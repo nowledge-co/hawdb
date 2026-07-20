@@ -310,6 +310,7 @@ jobs:
               "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title"
           }
           RS
+          migration_gate_json="$root/migration-gate.json"
           cargo run --quiet --bin skein -- \
             nowledge-cypher-migration-gate \
             --require-ready \
@@ -324,30 +325,30 @@ jobs:
             "$root" \
             self \
             cargo run --quiet --bin skein-shadow-self -- \
-            > "$root/gate.json"
-          grep -q '"decision": "ready"' "$root/gate.json"
-          grep -q '"shadow_run"' "$root/gate.json"
-          grep -q '"evidence_kind": "protocol_smoke"' "$root/gate.json"
-          grep -q '"self_shadow": true' "$root/gate.json"
-          grep -q '"cutover_evidence"' "$root/gate.json"
-          grep -q '"eligible": false' "$root/gate.json"
-          grep -q '"storage_recovery_present": true' "$root/gate.json"
-          grep -q '"storage_recovery_ready": true' "$root/gate.json"
-          grep -q '"storage_recovery_protocol_matches": true' "$root/gate.json"
-          grep -q '"background_maintenance_present": true' "$root/gate.json"
-          grep -q '"background_maintenance_ready": true' "$root/gate.json"
-          grep -q '"background_maintenance_protocol_matches": true' "$root/gate.json"
-          grep -q '"previous_wrapper_contract_evidence"' "$root/gate.json"
-          grep -q '"wrapper_identity": "nowledge-previous-wrapper:ci-smoke"' "$root/gate.json"
-          grep -q '"shadow_ready"' "$root/gate.json"
-          grep -q '"shadow_trace"' "$root/gate.json"
-          grep -q '"request_count"' "$root/gate.json"
-          grep -q '"project_graph"' "$root/gate.json"
+            > "$migration_gate_json"
+          grep -q '"decision": "ready"' "$migration_gate_json"
+          grep -q '"shadow_run"' "$migration_gate_json"
+          grep -q '"evidence_kind": "protocol_smoke"' "$migration_gate_json"
+          grep -q '"self_shadow": true' "$migration_gate_json"
+          grep -q '"cutover_evidence"' "$migration_gate_json"
+          grep -q '"eligible": false' "$migration_gate_json"
+          grep -q '"storage_recovery_present": true' "$migration_gate_json"
+          grep -q '"storage_recovery_ready": true' "$migration_gate_json"
+          grep -q '"storage_recovery_protocol_matches": true' "$migration_gate_json"
+          grep -q '"background_maintenance_present": true' "$migration_gate_json"
+          grep -q '"background_maintenance_ready": true' "$migration_gate_json"
+          grep -q '"background_maintenance_protocol_matches": true' "$migration_gate_json"
+          grep -q '"previous_wrapper_contract_evidence"' "$migration_gate_json"
+          grep -q '"wrapper_identity": "nowledge-previous-wrapper:ci-smoke"' "$migration_gate_json"
+          grep -q '"shadow_ready"' "$migration_gate_json"
+          grep -q '"shadow_trace"' "$migration_gate_json"
+          grep -q '"request_count"' "$migration_gate_json"
+          grep -q '"project_graph"' "$migration_gate_json"
           test -s "$root/shadow.jsonl"
           if cargo run --quiet --bin skein -- \
             nowledge-replacement-summary \
             --require-production-ready \
-            "$root/gate.json" \
+            "$migration_gate_json" \
             > "$root/replacement.json" 2> "$root/replacement.err"; then
             echo "expected protocol smoke replacement summary to fail production readiness"
             exit 1
