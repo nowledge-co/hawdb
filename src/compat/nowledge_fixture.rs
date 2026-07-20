@@ -3475,6 +3475,56 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
             ),
             CompatibilityCheck::Cypher(
                 CypherFixtureCheck::expect_rows(
+                    "memory evolves restore latest pair update",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) SET older.is_latest = true, newer.is_latest = true",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-restore-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-restore-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(2),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-restore-older', is_latest: false})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-restore-newer', is_latest: false})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) RETURN older.is_latest, newer.is_latest",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-restore-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-restore-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([
+                        ("older.is_latest", Value::Bool(true)),
+                        ("newer.is_latest", Value::Bool(true)),
+                    ])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-restore-older', 'evolves-restore-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
                     "memory latest demotion in space update",
                     CypherFixtureStatement::with_parameters(
                         "MATCH (older:Memory {id: $older_id}) WHERE older.space_id = $space_id SET older.is_latest = false",
@@ -3496,6 +3546,204 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                         "m.is_latest",
                         Value::Bool(false),
                     )])]),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "recent non-crystal memory attribution read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory) WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false) RETURN m.id, m.title, m.unit_type, m.importance, m.created_at, m.created_by_member_id, m.created_by_agent_key_id ORDER BY m.created_at DESC LIMIT 20",
+                        BTreeMap::from([(
+                            "cutoff".to_string(),
+                            Value::Int(9_100_000_000_000_000_000),
+                        )]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'recent-attribution-memory', title: 'Recent Attribution Memory', unit_type: 'fact', importance: 0.81, created_at: 9100000000000000001, is_crystal: false, created_by_member_id: 'member-1', created_by_agent_key_id: 'agent-key-1'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'recent-attribution-memory'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "thread create with attribution payload write",
+                    CypherFixtureStatement::with_parameters(
+                        "CREATE (t:Thread { id: $id, thread_id: $thread_id, title: $title, summary: $summary, message_count: $message_count, participants: $participants, source: $source, created_at: $created_at, updated_at: $updated_at, space_id: $space_id, project: $project, workspace: $workspace, tool_version: $tool_version, import_date: $import_date, metadata: $metadata, created_by_member_id: $created_by_member_id, created_by_agent_key_id: $created_by_agent_key_id })",
+                        BTreeMap::from([
+                            (
+                                "id".to_string(),
+                                Value::String("thread-create-attributed-node-1".to_string()),
+                            ),
+                            (
+                                "thread_id".to_string(),
+                                Value::String("thread-create-attributed-logical-1".to_string()),
+                            ),
+                            (
+                                "title".to_string(),
+                                Value::String("Attributed Thread".to_string()),
+                            ),
+                            ("summary".to_string(), Value::String(String::new())),
+                            ("message_count".to_string(), Value::Int(3)),
+                            (
+                                "participants".to_string(),
+                                Value::List(vec![Value::String("user".to_string())]),
+                            ),
+                            ("source".to_string(), Value::String("codex".to_string())),
+                            ("created_at".to_string(), Value::Int(201)),
+                            ("updated_at".to_string(), Value::Int(202)),
+                            ("space_id".to_string(), Value::String("default".to_string())),
+                            ("project".to_string(), Value::String("skein".to_string())),
+                            ("workspace".to_string(), Value::String("local".to_string())),
+                            ("tool_version".to_string(), Value::String("test".to_string())),
+                            ("import_date".to_string(), Value::Int(203)),
+                            ("metadata".to_string(), Value::String("{}".to_string())),
+                            (
+                                "created_by_member_id".to_string(),
+                                Value::String("member-1".to_string()),
+                            ),
+                            (
+                                "created_by_agent_key_id".to_string(),
+                                Value::String("agent-key-1".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (t:Thread {id: 'thread-create-attributed-node-1'}) DETACH DELETE t",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory update attribution write",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory {id: $id}) SET m.updated_by_member_id = $member_id, m.updated_by_agent_key_id = $agent_key_id",
+                        BTreeMap::from([
+                            (
+                                "id".to_string(),
+                                Value::String("memory-update-attribution-1".to_string()),
+                            ),
+                            (
+                                "member_id".to_string(),
+                                Value::String("member-updated".to_string()),
+                            ),
+                            (
+                                "agent_key_id".to_string(),
+                                Value::String("agent-key-updated".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'memory-update-attribution-1'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'memory-update-attribution-1'}) RETURN m.updated_by_member_id, m.updated_by_agent_key_id",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([
+                        (
+                            "m.updated_by_member_id",
+                            Value::String("member-updated".to_string()),
+                        ),
+                        (
+                            "m.updated_by_agent_key_id",
+                            Value::String("agent-key-updated".to_string()),
+                        ),
+                    ])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'memory-update-attribution-1'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "source create attribution write",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (s:Source {id: $id}) SET s.created_by_member_id = $m, s.created_by_agent_key_id = $a",
+                        BTreeMap::from([
+                            (
+                                "id".to_string(),
+                                Value::String("source-create-attribution-1".to_string()),
+                            ),
+                            ("m".to_string(), Value::String("member-source".to_string())),
+                            (
+                                "a".to_string(),
+                                Value::String("agent-key-source".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Source {id: 'source-create-attribution-1'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (s:Source {id: 'source-create-attribution-1'}) DETACH DELETE s",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "scheduler memory attribution bulk read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory) WHERE m.id IN $ids RETURN m.id, m.title, m.content, m.unit_type, m.source, m.importance, m.created_at, m.metadata, m.is_latest, m.lifecycle_state, m.created_by_member_id, m.created_by_agent_key_id",
+                        BTreeMap::from([(
+                            "ids".to_string(),
+                            Value::List(vec![Value::String(
+                                "scheduler-attribution-memory-1".to_string(),
+                            )]),
+                        )]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'scheduler-attribution-memory-1', title: 'Scheduler Attribution Memory', content: 'scheduler body', unit_type: 'fact', source: 'scheduler', importance: 0.7, created_at: 301, metadata: '{}', is_latest: true, lifecycle_state: 'active', created_by_member_id: 'member-scheduler', created_by_agent_key_id: 'agent-key-scheduler'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'scheduler-attribution-memory-1'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "team attribution memory bulk read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory) WHERE m.id IN $ids RETURN m.id, m.created_by_member_id, m.created_by_agent_key_id",
+                        BTreeMap::from([(
+                            "ids".to_string(),
+                            Value::List(vec![Value::String(
+                                "team-attribution-memory-1".to_string(),
+                            )]),
+                        )]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'team-attribution-memory-1', created_by_member_id: 'member-team', created_by_agent_key_id: 'agent-key-team'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'team-attribution-memory-1'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
                 ),
             ),
             CompatibilityCheck::Cypher(
@@ -14561,6 +14809,99 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
             ),
             CompatibilityCheck::Cypher(
                 CypherFixtureCheck::expect_rows(
+                    "rest graph entity overview community ranking read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (e:Entity) WHERE e.community_id >= 0 RETURN e.id, COALESCE(e.name, e.id), e.entity_type, e.description, COALESCE(e.pagerank_score, e.confidence, 0.5), e.community_id, e.confidence ORDER BY COALESCE(e.pagerank_score, e.confidence, 0.5) DESC LIMIT $limit",
+                        BTreeMap::from([("limit".to_string(), Value::Int(1))]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Entity {id: 'rest-graph-overview-entity-ranked', name: 'Overview Entity Ranked', entity_type: 'concept', description: 'overview entity', pagerank_score: 42.0, community_id: 9910, confidence: 0.91})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (e:Entity {id: 'rest-graph-overview-entity-ranked'}) DETACH DELETE e",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "rest graph memory overview ranking read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory) RETURN m.id, COALESCE(m.title, LEFT(m.content, 60)), m.title, LEFT(COALESCE(m.content, ''), 200), COALESCE(m.pagerank_score, m.importance, 0.5), m.community_id, m.space_id, m.created_at, m.updated_at, m.source, m.event_start, m.event_end, m.importance, m.created_by_member_id, m.created_by_agent_key_id ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC LIMIT $limit",
+                        BTreeMap::from([("limit".to_string(), Value::Int(1))]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'rest-graph-overview-memory-ranked', title: 'Overview Memory Ranked', content: 'overview memory body', pagerank_score: 43.0, community_id: 9911, space_id: 'default', created_at: 401, updated_at: 402, source: 'rest_graph', event_start: 403, event_end: 404, importance: 0.93, created_by_member_id: 'member-rest', created_by_agent_key_id: 'agent-key-rest'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'rest-graph-overview-memory-ranked'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "rest graph community memory overview ranking read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (m:Memory) WHERE m.community_id >= 0 RETURN m.id, COALESCE(m.title, LEFT(m.content, 60)), m.title, LEFT(COALESCE(m.content, ''), 200), COALESCE(m.pagerank_score, m.importance, 0.5), m.community_id, m.space_id, m.created_at, m.updated_at, m.source, m.event_start, m.event_end, m.importance, m.created_by_member_id, m.created_by_agent_key_id ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC LIMIT $limit",
+                        BTreeMap::from([("limit".to_string(), Value::Int(1))]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'rest-graph-community-memory-ranked', title: 'Community Memory Ranked', content: 'community memory body', pagerank_score: 44.0, community_id: 9912, space_id: 'default', created_at: 411, updated_at: 412, source: 'rest_graph', event_start: 413, event_end: 414, importance: 0.94, created_by_member_id: 'member-community-rest', created_by_agent_key_id: 'agent-key-community-rest'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'rest-graph-community-memory-ranked'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "rest graph entity community count read",
+                    CypherFixtureStatement::new(
+                        "MATCH (e:Entity) WHERE e.community_id >= 0 RETURN COUNT(e)",
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Entity {id: 'rest-graph-count-entity', community_id: 9913})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (e:Entity {id: 'rest-graph-count-entity'}) DETACH DELETE e",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "rest graph memory community count read",
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.community_id >= 0 RETURN COUNT(m)",
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'rest-graph-count-memory', community_id: 9914})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory {id: 'rest-graph-count-memory'}) DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
                     "rest graph community member memory read",
                     CypherFixtureStatement::with_parameters(
                         "MATCH (m:Memory) WHERE m.community_id = $cid RETURN m.id, COALESCE(m.title, LEFT(m.content, 60)), COALESCE(m.pagerank_score, m.importance, 0.5)",
@@ -21592,6 +21933,30 @@ pub fn nowledge_memory_core_inventory() -> CompatibilityQueryInventory {
                 "MATCH (s:Skill) WHERE s.stage IS NULL OR (s.stage <> 'archived' AND s.stage <> 'rejected' AND s.stage <> 'deprecated') WITH s, CASE WHEN s.stage = 'active' THEN 4 WHEN s.stage = 'promotable' THEN 3 WHEN s.stage = 'candidate' THEN 2 WHEN s.stage = 'draft' THEN 1 ELSE 0 END AS stage_rank, COALESCE(s.evidence_count, 0) AS evidence_score ORDER BY stage_rank DESC, evidence_score DESC, s.updated_at DESC LIMIT $limit RETURN s.id, COALESCE(s.name, s.title, 'Skill'), s.stage, s.kind, COALESCE(s.evidence_count, 0), s.confidence, COALESCE(s.use_count, 0), s.space_id, s.description, s.bundle_path, s.updated_at",
             ),
             CompatibilityQueryCallSite::new(
+                "rest graph entity overview community ranking read",
+                "graph_overview_read",
+                "nmem-server::rest_graph::entity_overview",
+            )
+            .with_cypher(
+                "MATCH (e:Entity) WHERE e.community_id >= 0 RETURN e.id, COALESCE(e.name, e.id), e.entity_type, e.description, COALESCE(e.pagerank_score, e.confidence, 0.5), e.community_id, e.confidence ORDER BY COALESCE(e.pagerank_score, e.confidence, 0.5) DESC LIMIT $limit",
+            ),
+            CompatibilityQueryCallSite::new(
+                "rest graph memory overview ranking read",
+                "graph_overview_read",
+                "nmem-server::rest_graph::memory_overview",
+            )
+            .with_cypher(
+                "MATCH (m:Memory) RETURN m.id, COALESCE(m.title, LEFT(m.content, 60)), m.title, LEFT(COALESCE(m.content, ''), 200), COALESCE(m.pagerank_score, m.importance, 0.5), m.community_id, m.space_id, m.created_at, m.updated_at, m.source, m.event_start, m.event_end, m.importance, m.created_by_member_id, m.created_by_agent_key_id ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC LIMIT $limit",
+            ),
+            CompatibilityQueryCallSite::new(
+                "rest graph community memory overview ranking read",
+                "graph_overview_read",
+                "nmem-server::rest_graph::community_memory_overview",
+            )
+            .with_cypher(
+                "MATCH (m:Memory) WHERE m.community_id >= 0 RETURN m.id, COALESCE(m.title, LEFT(m.content, 60)), m.title, LEFT(COALESCE(m.content, ''), 200), COALESCE(m.pagerank_score, m.importance, 0.5), m.community_id, m.space_id, m.created_at, m.updated_at, m.source, m.event_start, m.event_end, m.importance, m.created_by_member_id, m.created_by_agent_key_id ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC LIMIT $limit",
+            ),
+            CompatibilityQueryCallSite::new(
                 "rest graph overview edge list read",
                 "graph_overview_read",
                 "nmem-server::rest_graph::overview_edges",
@@ -21643,6 +22008,18 @@ pub fn nowledge_memory_core_inventory() -> CompatibilityQueryInventory {
                 "nmem-server::rest_graph::graph_statistics",
             )
             .with_cypher("MATCH (c:Community) RETURN COUNT(c)"),
+            CompatibilityQueryCallSite::new(
+                "rest graph entity community count read",
+                "graph_stats_read",
+                "nmem-server::rest_graph::community_entity_count",
+            )
+            .with_cypher("MATCH (e:Entity) WHERE e.community_id >= 0 RETURN COUNT(e)"),
+            CompatibilityQueryCallSite::new(
+                "rest graph memory community count read",
+                "graph_stats_read",
+                "nmem-server::rest_graph::community_memory_count",
+            )
+            .with_cypher("MATCH (m:Memory) WHERE m.community_id >= 0 RETURN COUNT(m)"),
             CompatibilityQueryCallSite::new(
                 "rest read batch community count",
                 "read_batch_stats",
@@ -24590,12 +24967,68 @@ pub fn nowledge_memory_core_inventory() -> CompatibilityQueryInventory {
             )
             .with_cypher("MATCH (m:Memory) WHERE m.id = $newer_id SET m.is_latest = true"),
             CompatibilityQueryCallSite::new(
+                "memory evolves restore latest pair update",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::restore_latest_pair",
+            )
+            .with_cypher(
+                "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) SET older.is_latest = true, newer.is_latest = true",
+            ),
+            CompatibilityQueryCallSite::new(
                 "memory latest demotion in space update",
                 "memory_evolution_write",
                 "nmem-graph::repo::add_evolves_edge_batch::demote_replaced_memory",
             )
             .with_cypher(
                 "MATCH (older:Memory {id: $older_id}) WHERE older.space_id = $space_id SET older.is_latest = false",
+            ),
+            CompatibilityQueryCallSite::new(
+                "recent non-crystal memory attribution read",
+                "agent_context_read",
+                "nmem-graph::agent_context::recent_memories",
+            )
+            .with_cypher(
+                "MATCH (m:Memory) WHERE m.created_at >= $cutoff AND (m.is_crystal IS NULL OR m.is_crystal = false) RETURN m.id, m.title, m.unit_type, m.importance, m.created_at, m.created_by_member_id, m.created_by_agent_key_id ORDER BY m.created_at DESC LIMIT 20",
+            ),
+            CompatibilityQueryCallSite::new(
+                "thread create with attribution payload write",
+                "thread_write",
+                "nmem-graph::repo::create_thread_with_identity::thread_attribution",
+            )
+            .with_cypher(
+                "CREATE (t:Thread { id: $id, thread_id: $thread_id, title: $title, summary: $summary, message_count: $message_count, participants: $participants, source: $source, created_at: $created_at, updated_at: $updated_at, space_id: $space_id, project: $project, workspace: $workspace, tool_version: $tool_version, import_date: $import_date, metadata: $metadata, created_by_member_id: $created_by_member_id, created_by_agent_key_id: $created_by_agent_key_id })",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory update attribution write",
+                "memory_write",
+                "nmem-graph::repo::update_memory_attribution",
+            )
+            .with_cypher(
+                "MATCH (m:Memory {id: $id}) SET m.updated_by_member_id = $member_id, m.updated_by_agent_key_id = $agent_key_id",
+            ),
+            CompatibilityQueryCallSite::new(
+                "source create attribution write",
+                "source_write",
+                "nmem-server::rest_sources::set_source_attribution",
+            )
+            .with_cypher(
+                "MATCH (s:Source {id: $id}) SET s.created_by_member_id = $m, s.created_by_agent_key_id = $a",
+            ),
+            CompatibilityQueryCallSite::new(
+                "scheduler memory attribution bulk read",
+                "scheduler_read",
+                "nmem-server::scheduler_service::memory_bulk_detail_attribution",
+            )
+            .with_cypher(
+                "MATCH (m:Memory) WHERE m.id IN $ids RETURN m.id, m.title, m.content, m.unit_type, m.source, m.importance, m.created_at, m.metadata, m.is_latest, m.lifecycle_state, m.created_by_member_id, m.created_by_agent_key_id",
+            ),
+            CompatibilityQueryCallSite::new(
+                "team attribution memory bulk read",
+                "team_attribution_read",
+                "nmem-server::team_attribution::memory_attribution",
+            )
+            .with_cypher(
+                "MATCH (m:Memory) WHERE m.id IN $ids RETURN m.id, m.created_by_member_id, m.created_by_agent_key_id",
             ),
             CompatibilityQueryCallSite::new(
                 "memory label transfer retarget relationship",

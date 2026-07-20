@@ -654,6 +654,26 @@ fn parses_match_set_return() {
 }
 
 #[test]
+fn parses_multi_node_match_set_as_id_in_update() {
+    let statement = parse(
+        "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) SET older.is_latest = true, newer.is_latest = true",
+    )
+    .unwrap();
+    let Statement::MatchSet(update) = statement else {
+        panic!("expected match set");
+    };
+    assert_eq!(update.variable, "older");
+    assert_eq!(update.label, "Memory");
+    assert_eq!(update.sets.len(), 1);
+    assert_eq!(update.sets[0].variable, "older");
+    assert_eq!(update.sets[0].property, "is_latest");
+    assert!(matches!(
+        update.predicate,
+        Some(PropertyPredicate::In { .. })
+    ));
+}
+
+#[test]
 fn parses_property_increment_set() {
     let statement =
         parse("MATCH (s:Source {id: $id}) SET s.memory_count = s.memory_count + 1").unwrap();

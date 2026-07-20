@@ -28,7 +28,7 @@ fn runs_nowledge_shaped_fixture() {
     let report = run_compatibility_fixture(&mut db, &fixture).unwrap();
 
     assert_eq!(report.fixture, "nowledge-memory-core");
-    assert_eq!(report.checks.len(), 659);
+    assert_eq!(report.checks.len(), 671);
 }
 
 #[test]
@@ -44,13 +44,13 @@ fn query_inventory_reports_fixture_coverage() {
 
     assert_eq!(coverage.inventory, "nowledge-memory-core-inventory");
     assert_eq!(coverage.fixture, "nowledge-memory-core");
-    assert_eq!(coverage.required_checks, 659);
-    assert_eq!(coverage.covered_checks, 659);
+    assert_eq!(coverage.required_checks, 671);
+    assert_eq!(coverage.covered_checks, 671);
     assert!(coverage.missing_checks.is_empty());
     assert!(coverage.extra_fixture_checks.is_empty());
     assert_eq!(gate.decision, CompatibilityCutoverDecision::Ready);
     assert!(gate.blockers.is_empty());
-    assert_eq!(coverage_json["covered_checks"], 659);
+    assert_eq!(coverage_json["covered_checks"], 671);
     assert_eq!(gate_json["decision"], "ready");
     assert_eq!(gate_json["blockers"].as_array().unwrap().len(), 0);
 }
@@ -80,7 +80,7 @@ fn public_nowledge_core_fixture_and_inventory_are_gate_ready() {
         CompatibilityCutoverDecision::Ready
     );
     assert!(bundle.migration_gate.blockers.is_empty());
-    assert_eq!(bundle_json["coverage"]["covered_checks"], 659);
+    assert_eq!(bundle_json["coverage"]["covered_checks"], 671);
     assert_eq!(bundle_json["coverage"]["coverage_per_million"], 1_000_000);
     assert!(bundle_json["coverage"]["coverage_by_query_family"]
         .as_array()
@@ -97,13 +97,13 @@ fn public_nowledge_core_fixture_and_inventory_are_gate_ready() {
         bundle_json["coverage"]["coverage_by_query_family"]
     );
     assert_eq!(bundle_json["cutover"]["decision"], "ready");
-    assert_eq!(bundle_json["cutover"]["matched_checks"], 659);
+    assert_eq!(bundle_json["cutover"]["matched_checks"], 671);
     assert_eq!(bundle_json["cutover"]["matched_per_million"], 1_000_000);
     assert_eq!(bundle_json["migration_gate"]["decision"], "ready");
     assert_eq!(bundle_json["migration_gate"]["inventory_decision"], "ready");
     assert_eq!(bundle_json["migration_gate"]["shadow_decision"], "ready");
-    assert_eq!(bundle_json["migration_gate"]["shadow_total_checks"], 659);
-    assert_eq!(bundle_json["migration_gate"]["shadow_matched_checks"], 659);
+    assert_eq!(bundle_json["migration_gate"]["shadow_total_checks"], 671);
+    assert_eq!(bundle_json["migration_gate"]["shadow_matched_checks"], 671);
     assert_eq!(
         bundle_json["migration_gate"]["shadow_matched_per_million"],
         1_000_000
@@ -466,15 +466,15 @@ fn runs_nowledge_shaped_fixture_against_shadow_engine() {
 
     assert_eq!(report.fixture, "nowledge-memory-core");
     assert_eq!(report.shadow_engine, "skein-shadow");
-    assert_eq!(report.primary_checks.len(), 659);
-    assert_eq!(report.shadow_checks.len(), 659);
+    assert_eq!(report.primary_checks.len(), 671);
+    assert_eq!(report.shadow_checks.len(), 671);
     assert_eq!(
         report
             .shadow_checks
             .iter()
             .filter(|check| check.status == CompatibilityShadowStatus::Matched)
             .count(),
-        659
+        671
     );
     assert_eq!(
         report.shadow_checks.last().map(|check| check.status),
@@ -483,7 +483,7 @@ fn runs_nowledge_shaped_fixture_against_shadow_engine() {
 
     let cutover = assess_compatibility_cutover(&report, CompatibilityCutoverPolicy::default());
     assert_eq!(cutover.decision, CompatibilityCutoverDecision::Ready);
-    assert_eq!(cutover.matched_checks, 659);
+    assert_eq!(cutover.matched_checks, 671);
     assert!(cutover.primary_only_checks.is_empty());
     assert!(cutover.blockers.is_empty());
 

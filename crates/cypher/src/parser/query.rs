@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skein_core::Result;
 
@@ -50,6 +50,19 @@ impl Parser<'_> {
             } else {
                 None
             };
+            if self.consume_keyword("SET") {
+                let sets = self.parse_set_properties()?;
+                return Ok(Statement::MatchSet(match_nodes_set_as_single_label_update(
+                    variable,
+                    label,
+                    properties,
+                    target_variable,
+                    target_label,
+                    target_properties,
+                    predicate,
+                    sets,
+                )?));
+            }
             if self.consume_keyword("RETURN") {
                 let returns = self.parse_return_items()?;
                 let limit = if self.consume_keyword("LIMIT") {
@@ -1247,6 +1260,90 @@ impl Parser<'_> {
             Ok(WithAliasFilterExpression::Column(variable))
         }
     }
+}
+
+fn match_nodes_set_as_single_label_update(
+    left_variable: String,
+    left_label: String,
+    left_properties: BTreeMap<String, ValueExpression>,
+    right_variable: String,
+    right_label: String,
+    right_properties: BTreeMap<String, ValueExpression>,
+    predicate: Option<PropertyPredicate>,
+    sets: Vec<SetProperty>,
+) -> Result<MatchSet> {
+    if left_label != right_label {
+        return Err(skein_core::SkeinError::Semantic(
+            "multi-node MATCH SET requires both nodes to use the same label".to_string(),
+        ));
+    }
+    if predicate.is_some() {
+        return Err(skein_core::SkeinError::Semantic(
+            "multi-node MATCH SET does not support WHERE predicates".to_string(),
+        ));
+    }
+    let left_id = single_id_property(left_properties)?;
+    let right_id = single_id_property(right_properties)?;
+    let mut by_property = BTreeMap::<String, SetValueExpression>::new();
+    for set in sets {
+        if set.variable != left_variable && set.variable != right_variable {
+            return Err(skein_core::SkeinError::Semantic(format!(
+                "unknown variable '{}' in multi-node MATCH SET",
+                set.variable
+            )));
+        }
+        match by_property.get(&set.property) {
+            Some(existing) if existing != &set.value => {
+                return Err(skein_core::SkeinError::Semantic(format!(
+                    "multi-node MATCH SET property '{}' uses different values per variable",
+                    set.property
+                )));
+            }
+            Some(_) => {}
+            None => {
+                by_property.insert(set.property, set.value);
+            }
+        }
+    }
+    if by_property.is_empty() {
+        return Err(skein_core::SkeinError::Semantic(
+            "SET requires at least one assignment".to_string(),
+        ));
+    }
+    Ok(MatchSet {
+        variable: left_variable.clone(),
+        label: left_label,
+        properties: BTreeMap::new(),
+        expand: None,
+        predicate: Some(PropertyPredicate::In {
+            variable: left_variable.clone(),
+            property: "id".to_string(),
+            values: ValueExpression::List(vec![left_id, right_id]),
+        }),
+        sets: by_property
+            .into_iter()
+            .map(|(property, value)| SetProperty {
+                variable: left_variable.clone(),
+                property,
+                value,
+            })
+            .collect(),
+    })
+}
+
+fn single_id_property(
+    mut properties: BTreeMap<String, ValueExpression>,
+) -> Result<ValueExpression> {
+    if properties.len() != 1 {
+        return Err(skein_core::SkeinError::Semantic(
+            "multi-node MATCH SET requires each node pattern to bind only id".to_string(),
+        ));
+    }
+    properties.remove("id").ok_or_else(|| {
+        skein_core::SkeinError::Semantic(
+            "multi-node MATCH SET requires each node pattern to bind id".to_string(),
+        )
+    })
 }
 
 fn combine_match_predicates(
