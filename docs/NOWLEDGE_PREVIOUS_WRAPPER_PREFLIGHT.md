@@ -65,12 +65,26 @@ scripts/nowledge-previous-wrapper-preflight.sh \
   --preflight-root "$NMEM_PREFLIGHT_ROOT" \
   --nowledge-root /Users/hawkingrei/devel/nowledge/mem \
   --wrapper-identity "$NOWLEDGE_WRAPPER_IDENTITY" \
+  --legacy-search-index "$LEGACY_LANCEDB_SEARCH_INDEX" \
+  --search-active-model "$SEARCH_ACTIVE_MODEL" \
+  --search-active-dimension "$SEARCH_ACTIVE_DIMENSION" \
+  --search-source-graph-commit-epoch "$SEARCH_SOURCE_GRAPH_COMMIT_EPOCH" \
+  --search-projection-allow-unbounded \
   -- "$NOWLEDGE_WRAPPER_COMMAND"
 ```
 
 The script prints `preflight-check.json` on success and leaves every
 intermediate artifact under `$NMEM_PREFLIGHT_ROOT`. Use the manual steps below
 when bringing up a new wrapper command or debugging a specific failed stage.
+`--legacy-search-index` enables the real LanceDB/Skein search-projection shadow
+evidence path. The runner reads the LanceDB projection through Nowledge Mem's
+`nmem-search` binary, captures table versions, exports a Skein projection delta,
+imports that delta into a temporary Skein search index, and feeds both probes to
+`nowledge-search-projection-shadow-evidence`. Use
+`--search-projection-allow-unbounded` only on an isolated snapshot intended for
+production cutover evidence. `--search-projection-max-rows <n>` is available for
+bounded debugging; it may fail closed on document-count parity when the index is
+larger than the bound.
 
 ## 1. Export The Contract
 
@@ -211,6 +225,20 @@ jq -e '
   .cutover_evidence.ready_wrapper_identity == env.NOWLEDGE_WRAPPER_IDENTITY and
   .previous_wrapper_contract_evidence.ready == true and
   .replacement_readiness_per_million == 1000000
+' "$NMEM_PREFLIGHT_ROOT/migration-gate.json"
+```
+
+For LanceDB replacement evidence, the release bundle must also carry both:
+
+```bash
+jq -e '
+  .search_projection_evidence.ready == true and
+  .search_projection_shadow_evidence.ready == true and
+  .search_projection_shadow_evidence.primary_engine == "lancedb" and
+  .search_projection_shadow_evidence.shadow_engine == "skein" and
+  .search_projection_shadow_evidence.document_count_parity == true and
+  .search_projection_shadow_evidence.table_parity.ready == true and
+  .search_projection_shadow_evidence.incremental_watermark_parity == true
 ' "$NMEM_PREFLIGHT_ROOT/migration-gate.json"
 ```
 

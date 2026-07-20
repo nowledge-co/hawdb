@@ -12,6 +12,11 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   --nowledge-root <dir> \
   --wrapper-identity <id> \
   [--shadow-timeout-ms <ms>] \
+  [--legacy-search-index <dir>] \
+  [--search-active-model <model>] \
+  [--search-active-dimension <dimension>] \
+  [--search-source-graph-commit-epoch <epoch>] \
+  [--search-projection-allow-unbounded | --search-projection-max-rows <n>] \
   [--search-projection-evidence-json <path>] \
   [--search-projection-shadow-evidence-json <path>] \
   [--bounded-read-evidence-json <path>] \
@@ -27,6 +32,12 @@ preflight_root=
 nowledge_root=
 wrapper_identity=
 shadow_timeout_ms=
+legacy_search_index=
+search_active_model=
+search_active_dimension=
+search_source_graph_commit_epoch=
+search_projection_allow_unbounded=
+search_projection_max_rows=
 search_projection_evidence_json=
 search_projection_shadow_evidence_json=
 bounded_read_evidence_json=
@@ -47,6 +58,30 @@ while (($# > 0)); do
       ;;
     --shadow-timeout-ms)
       shadow_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --legacy-search-index)
+      legacy_search_index="${2:-}"
+      shift 2
+      ;;
+    --search-active-model)
+      search_active_model="${2:-}"
+      shift 2
+      ;;
+    --search-active-dimension)
+      search_active_dimension="${2:-}"
+      shift 2
+      ;;
+    --search-source-graph-commit-epoch)
+      search_source_graph_commit_epoch="${2:-}"
+      shift 2
+      ;;
+    --search-projection-allow-unbounded)
+      search_projection_allow_unbounded=1
+      shift
+      ;;
+    --search-projection-max-rows)
+      search_projection_max_rows="${2:-}"
       shift 2
       ;;
     --search-projection-evidence-json)
@@ -91,10 +126,41 @@ if [[ ! -d "$nowledge_root" ]]; then
   exit 2
 fi
 
+if [[ -n "$legacy_search_index" ]]; then
+  if [[ -z "$search_active_model" || -z "$search_active_dimension" || -z "$search_source_graph_commit_epoch" ]]; then
+    echo "--legacy-search-index requires --search-active-model, --search-active-dimension, and --search-source-graph-commit-epoch" >&2
+    exit 2
+  fi
+  if [[ -n "$search_projection_allow_unbounded" && -n "$search_projection_max_rows" ]]; then
+    echo "use only one of --search-projection-allow-unbounded or --search-projection-max-rows" >&2
+    exit 2
+  fi
+  if [[ -z "$search_projection_allow_unbounded" && -z "$search_projection_max_rows" ]]; then
+    echo "--legacy-search-index requires --search-projection-allow-unbounded or --search-projection-max-rows" >&2
+    exit 2
+  fi
+  if [[ ! -d "$legacy_search_index" ]]; then
+    echo "--legacy-search-index does not exist or is not a directory: $legacy_search_index" >&2
+    exit 2
+  fi
+  if [[ ! -f "$nowledge_root/nmem-rs/Cargo.toml" ]]; then
+    echo "--nowledge-root must contain nmem-rs/Cargo.toml to generate LanceDB search projection evidence" >&2
+    exit 2
+  fi
+fi
+
 mkdir -p "$preflight_root"
 
 run_skein() {
   cargo run --quiet --bin skein -- "$@"
+}
+
+run_nmem_search() {
+  cargo run --quiet \
+    --manifest-path "$nowledge_root/nmem-rs/Cargo.toml" \
+    -p nmem-search \
+    --bin "$1" \
+    -- "${@:2}"
 }
 
 shadow_timeout_args=()
@@ -180,6 +246,58 @@ run_skein skein-search-projection-delta-probe \
   "$search_projection_index" \
   "$search_projection_delta_json" \
   > "$search_projection_probe_json"
+
+if [[ -z "$search_projection_shadow_evidence_json" && -n "$legacy_search_index" ]]; then
+  lance_snapshot_versions_json="$preflight_root/lancedb-search-projection-table-versions.json"
+  lancedb_primary_probe_json="$preflight_root/lancedb-search-projection-primary-probe.json"
+  lancedb_primary_delta_json="$preflight_root/lancedb-search-projection-delta.json"
+  skein_shadow_index="$preflight_root/search-projection-shadow-index"
+  skein_shadow_probe_json="$preflight_root/search-projection-shadow-probe.json"
+  search_projection_shadow_evidence_json="$preflight_root/search-projection-shadow-evidence.json"
+
+  run_nmem_search nmem-search-projection-probe \
+    --active-model "$search_active_model" \
+    --active-dimension "$search_active_dimension" \
+    --source-graph-commit-epoch "$search_source_graph_commit_epoch" \
+    --snapshot-versions-path "$lance_snapshot_versions_json" \
+    "$legacy_search_index" \
+    > "$lancedb_primary_probe_json"
+
+  delta_bound_args=()
+  if [[ -n "$search_projection_allow_unbounded" ]]; then
+    delta_bound_args+=(--allow-unbounded)
+  else
+    delta_bound_args+=(--max-rows "$search_projection_max_rows")
+  fi
+  run_nmem_search nmem-search-projection-delta \
+    "${delta_bound_args[@]}" \
+    --include-embeddings \
+    --source-graph-commit-epoch "$search_source_graph_commit_epoch" \
+    --snapshot-versions-path "$lance_snapshot_versions_json" \
+    "$legacy_search_index" \
+    > "$lancedb_primary_delta_json"
+
+  run_skein skein-search-projection-delta-probe \
+    --active-model "$search_active_model" \
+    --active-dimension "$search_active_dimension" \
+    "$skein_shadow_index" \
+    "$lancedb_primary_delta_json" \
+    > "$skein_shadow_probe_json"
+
+  run_skein nowledge-search-projection-shadow-evidence \
+    --require-ready \
+    --primary-probe-json "$lancedb_primary_probe_json" \
+    --shadow-probe-json "$skein_shadow_probe_json" \
+    > "$search_projection_shadow_evidence_json"
+
+  if [[ -z "$search_projection_evidence_json" ]]; then
+    search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
+    run_skein nowledge-search-projection-evidence \
+      --require-ready \
+      "$lancedb_primary_probe_json" \
+      > "$search_projection_evidence_json"
+  fi
+fi
 
 if [[ -z "$search_projection_evidence_json" ]]; then
   search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
