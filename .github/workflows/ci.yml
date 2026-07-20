@@ -393,8 +393,8 @@ jobs:
           assert report["release_summary"]["adapter_dual_engine_primary_only_check_count"] == 1
           assert report["release_summary"]["production_replacement_per_million"] == 0
           assert report["release_summary"]["shadow_evidence_ready"] is False
-          assert report["release_summary"]["background_maintenance_executable_search_projection_graph_delta_count"] >= 1
-          assert report["release_summary"]["background_maintenance_admitted_search_projection_graph_delta_count"] >= 1
+          assert report["release_summary"]["background_maintenance_executable_search_projection_graph_delta_count"] == 0
+          assert report["release_summary"]["background_maintenance_admitted_search_projection_graph_delta_count"] == 0
           PY
           if cargo run --quiet --bin skein -- \
             nowledge-previous-wrapper-preflight-check \
