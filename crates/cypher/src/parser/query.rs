@@ -53,14 +53,16 @@ impl Parser<'_> {
             if self.consume_keyword("SET") {
                 let sets = self.parse_set_properties()?;
                 return Ok(Statement::MatchSet(match_nodes_set_as_single_label_update(
-                    variable,
-                    label,
-                    properties,
-                    target_variable,
-                    target_label,
-                    target_properties,
-                    predicate,
-                    sets,
+                    MatchNodesSetInput {
+                        variable,
+                        label,
+                        properties,
+                        target_variable,
+                        target_label,
+                        target_properties,
+                        predicate,
+                        sets,
+                    },
                 )?));
             }
             if self.consume_keyword("RETURN") {
@@ -1262,16 +1264,28 @@ impl Parser<'_> {
     }
 }
 
-fn match_nodes_set_as_single_label_update(
-    left_variable: String,
-    left_label: String,
-    left_properties: BTreeMap<String, ValueExpression>,
-    right_variable: String,
-    right_label: String,
-    right_properties: BTreeMap<String, ValueExpression>,
+struct MatchNodesSetInput {
+    variable: String,
+    label: String,
+    properties: BTreeMap<String, ValueExpression>,
+    target_variable: String,
+    target_label: String,
+    target_properties: BTreeMap<String, ValueExpression>,
     predicate: Option<PropertyPredicate>,
     sets: Vec<SetProperty>,
-) -> Result<MatchSet> {
+}
+
+fn match_nodes_set_as_single_label_update(input: MatchNodesSetInput) -> Result<MatchSet> {
+    let MatchNodesSetInput {
+        variable: left_variable,
+        label: left_label,
+        properties: left_properties,
+        target_variable: right_variable,
+        target_label: right_label,
+        target_properties: right_properties,
+        predicate,
+        sets,
+    } = input;
     if left_label != right_label {
         return Err(skein_core::SkeinError::Semantic(
             "multi-node MATCH SET requires both nodes to use the same label".to_string(),
