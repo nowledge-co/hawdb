@@ -119,7 +119,7 @@ wrapper_command=("$@")
 adapter_command=(
   cargo run --quiet --example nowledge_previous_wrapper_shadow_adapter --
   --wrapper-identity "$wrapper_identity"
-  "${adapter_timeout_args[@]}"
+  ${adapter_timeout_args[@]+"${adapter_timeout_args[@]}"}
   --persistent-command "${wrapper_command[@]}"
 )
 
@@ -136,7 +136,7 @@ run_skein nowledge-fixture-contract-command-check \
 run_skein external-shadow-adapter-smoke \
   --require-previous-wrapper \
   --shadow-trace "$preflight_root/adapter-shadow.jsonl" \
-  "${shadow_timeout_args[@]}" \
+  ${shadow_timeout_args[@]+"${shadow_timeout_args[@]}"} \
   previous-wrapper \
   "${adapter_command[@]}" \
   > "$preflight_root/adapter-smoke.json"
@@ -176,13 +176,13 @@ run_skein nowledge-cypher-migration-gate \
   --require-cutover-evidence \
   --shadow-ready \
   --shadow-trace "$preflight_root/migration-shadow.jsonl" \
-  "${shadow_timeout_args[@]}" \
+  ${shadow_timeout_args[@]+"${shadow_timeout_args[@]}"} \
   --require-storage-recovery-evidence \
   --storage-recovery-report-json "$preflight_root/storage-recovery.json" \
   --require-background-maintenance-evidence \
   --background-maintenance-report-json "$preflight_root/background-maintenance.json" \
   --previous-wrapper-contract-evidence-json "$preflight_root/previous-wrapper-contract-evidence.json" \
-  "${search_projection_evidence_args[@]}" \
+  ${search_projection_evidence_args[@]+"${search_projection_evidence_args[@]}"} \
   "$nowledge_root" \
   previous-wrapper \
   "${adapter_command[@]}" \
