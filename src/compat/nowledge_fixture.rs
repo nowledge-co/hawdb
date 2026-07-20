@@ -2827,6 +2827,612 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
             ),
             CompatibilityCheck::Cypher(
                 CypherFixtureCheck::expect_rows(
+                    "memory evolves lifecycle pair read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) RETURN older.space_id, older.is_latest, older.lifecycle_state, newer.space_id, newer.is_latest, newer.lifecycle_state",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-lifecycle-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-lifecycle-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([
+                        ("older.space_id", Value::String("default".to_string())),
+                        ("older.is_latest", Value::Bool(false)),
+                        ("older.lifecycle_state", Value::String("superseded".to_string())),
+                        ("newer.space_id", Value::String("default".to_string())),
+                        ("newer.is_latest", Value::Bool(true)),
+                        ("newer.lifecycle_state", Value::String("active".to_string())),
+                    ])]),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-lifecycle-older', space_id: 'default', is_latest: false, lifecycle_state: 'superseded'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-lifecycle-newer', space_id: 'default', is_latest: true, lifecycle_state: 'active'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-lifecycle-older', 'evolves-lifecycle-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves edge relation read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id RETURN edge.content_relation",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-edge-read-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-edge-read-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "edge.content_relation",
+                        Value::String("replaces".to_string()),
+                    )])]),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-edge-read-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-edge-read-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-edge-read-older'}), (newer:Memory {id: 'evolves-edge-read-newer'}) CREATE (older)-[:EVOLVES {content_relation: 'replaces'}]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-edge-read-older', 'evolves-edge-read-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves edge count read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id RETURN COUNT(edge)",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-count-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-count-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "count(edge)",
+                        Value::Int(1),
+                    )])]),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-count-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-count-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-count-older'}), (newer:Memory {id: 'evolves-count-newer'}) CREATE (older)-[:EVOLVES]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-count-older', 'evolves-count-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves frontier successor read",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (source:Memory)-[:EVOLVES]->(target:Memory) WHERE source.id IN $frontier RETURN DISTINCT target.id",
+                        BTreeMap::from([(
+                            "frontier".to_string(),
+                            Value::List(vec![Value::String(
+                                "evolves-frontier-source".to_string(),
+                            )]),
+                        )]),
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "target.id",
+                        Value::String("evolves-frontier-target".to_string()),
+                    )])]),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-frontier-source'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-frontier-target'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (source:Memory {id: 'evolves-frontier-source'}), (target:Memory {id: 'evolves-frontier-target'}) CREATE (source)-[:EVOLVES]->(target)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-frontier-source', 'evolves-frontier-target'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves direct latest demotion",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory {id: $older_id}) SET older.is_latest = false",
+                        BTreeMap::from([(
+                            "older_id".to_string(),
+                            Value::String("evolves-direct-demote".to_string()),
+                        )]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-direct-demote', is_latest: true})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (older:Memory {id: 'evolves-direct-demote'}) RETURN older.is_latest",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "older.is_latest",
+                        Value::Bool(false),
+                    )])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (older:Memory {id: 'evolves-direct-demote'}) DETACH DELETE older",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves label carryover create",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory {id: $older_id})-[:HAS_LABEL]->(label:Label), (newer:Memory {id: $newer_id}) MERGE (newer)-[edge:HAS_LABEL]->(label) ON CREATE SET edge.assigned_by = 'system', edge.created_at = timestamp($now), edge.properties = '{}'",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-label-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-label-newer".to_string()),
+                            ),
+                            ("now".to_string(), Value::Int(1_700_000_020)),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-label-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-label-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Label {id: 'evolves-label', name: 'Evolves Label'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-label-older'}), (label:Label {id: 'evolves-label'}) CREATE (older)-[:HAS_LABEL]->(label)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (newer:Memory {id: 'evolves-label-newer'})-[edge:HAS_LABEL]->(label:Label {id: 'evolves-label'}) RETURN edge.assigned_by, edge.created_at, edge.properties",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([
+                        ("edge.assigned_by", Value::String("system".to_string())),
+                        ("edge.created_at", Value::Int(1_700_000_020)),
+                        ("edge.properties", Value::String("{}".to_string())),
+                    ])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (n) WHERE n.id IN ['evolves-label-older', 'evolves-label-newer', 'evolves-label'] DETACH DELETE n",
+                    ),
+                    ExpectedRows::RowCount(3),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves production create",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: $relation, is_progression: $is_progression, confidence: $confidence, detected_by: $detected_by, reviewed: false, reason: $reason, created_at: timestamp($now) }]->(newer)",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-prod-create-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-prod-create-newer".to_string()),
+                            ),
+                            (
+                                "relation".to_string(),
+                                Value::String("updates".to_string()),
+                            ),
+                            ("is_progression".to_string(), Value::Bool(true)),
+                            ("confidence".to_string(), Value::Float(0.87)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("rule".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                            ("now".to_string(), Value::Int(1_700_000_021)),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-prod-create-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-prod-create-newer'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-prod-create-older', 'evolves-prod-create-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves production unreviewed replacement update",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = 'replaces', edge.is_progression = true, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = false, edge.reason = $reason",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-prod-update-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-prod-update-newer".to_string()),
+                            ),
+                            ("confidence".to_string(), Value::Float(0.88)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("rule".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-prod-update-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-prod-update-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-prod-update-older'}), (newer:Memory {id: 'evolves-prod-update-newer'}) CREATE (older)-[:EVOLVES {content_relation: 'confirms'}]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-prod-update-older', 'evolves-prod-update-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves reverse edge delete",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (newer:Memory)-[edge:EVOLVES]->(older:Memory) WHERE newer.id = $newer_id AND older.id = $older_id DELETE edge",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-reverse-delete-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-reverse-delete-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reverse-delete-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reverse-delete-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (newer:Memory {id: 'evolves-reverse-delete-newer'}), (older:Memory {id: 'evolves-reverse-delete-older'}) CREATE (newer)-[:EVOLVES]->(older)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (newer:Memory {id: 'evolves-reverse-delete-newer'})-[edge:EVOLVES]->(older:Memory {id: 'evolves-reverse-delete-older'}) RETURN COUNT(edge)",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "count(edge)",
+                        Value::Int(0),
+                    )])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-reverse-delete-older', 'evolves-reverse-delete-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves forward edge delete",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id DELETE edge",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-forward-delete-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-forward-delete-newer".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-forward-delete-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-forward-delete-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-forward-delete-older'}), (newer:Memory {id: 'evolves-forward-delete-newer'}) CREATE (older)-[:EVOLVES]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (older:Memory {id: 'evolves-forward-delete-older'})-[edge:EVOLVES]->(newer:Memory {id: 'evolves-forward-delete-newer'}) RETURN COUNT(edge)",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "count(edge)",
+                        Value::Int(0),
+                    )])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-forward-delete-older', 'evolves-forward-delete-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves reviewed replacement create",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: 'replaces', is_progression: true, confidence: $confidence, detected_by: $detected_by, reviewed: true, reason: $reason, created_at: timestamp($now) }]->(newer)",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-reviewed-create-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-reviewed-create-newer".to_string()),
+                            ),
+                            ("confidence".to_string(), Value::Float(0.93)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("review".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                            ("now".to_string(), Value::Int(1_700_000_022)),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reviewed-create-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reviewed-create-newer'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-reviewed-create-older', 'evolves-reviewed-create-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves reviewed replacement update",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = 'replaces', edge.is_progression = true, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = true, edge.reason = $reason",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-reviewed-update-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-reviewed-update-newer".to_string()),
+                            ),
+                            ("confidence".to_string(), Value::Float(0.94)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("review".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reviewed-update-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-reviewed-update-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-reviewed-update-older'}), (newer:Memory {id: 'evolves-reviewed-update-newer'}) CREATE (older)-[:EVOLVES {content_relation: 'confirms'}]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-reviewed-update-older', 'evolves-reviewed-update-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves direct latest promotion",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (newer:Memory {id: $newer_id}) SET newer.is_latest = true",
+                        BTreeMap::from([(
+                            "newer_id".to_string(),
+                            Value::String("evolves-direct-promote".to_string()),
+                        )]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-direct-promote', is_latest: false})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (newer:Memory {id: 'evolves-direct-promote'}) RETURN newer.is_latest",
+                    ),
+                    ExpectedRows::Exact(vec![compatibility_row([(
+                        "newer.is_latest",
+                        Value::Bool(true),
+                    )])]),
+                )
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (newer:Memory {id: 'evolves-direct-promote'}) DETACH DELETE newer",
+                    ),
+                    ExpectedRows::RowCount(1),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves reviewed nonprogression create",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: $relation, is_progression: false, confidence: $confidence, detected_by: $detected_by, reviewed: true, reason: $reason, created_at: timestamp($now) }]->(newer)",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-nonprogress-create-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-nonprogress-create-newer".to_string()),
+                            ),
+                            (
+                                "relation".to_string(),
+                                Value::String("contradicts".to_string()),
+                            ),
+                            ("confidence".to_string(), Value::Float(0.81)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("review".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                            ("now".to_string(), Value::Int(1_700_000_023)),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-nonprogress-create-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-nonprogress-create-newer'})",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-nonprogress-create-older', 'evolves-nonprogress-create-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
+                    "memory evolves reviewed nonprogression update",
+                    CypherFixtureStatement::with_parameters(
+                        "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = $relation, edge.is_progression = false, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = true, edge.reason = $reason",
+                        BTreeMap::from([
+                            (
+                                "older_id".to_string(),
+                                Value::String("evolves-nonprogress-update-older".to_string()),
+                            ),
+                            (
+                                "newer_id".to_string(),
+                                Value::String("evolves-nonprogress-update-newer".to_string()),
+                            ),
+                            (
+                                "relation".to_string(),
+                                Value::String("contradicts".to_string()),
+                            ),
+                            ("confidence".to_string(), Value::Float(0.82)),
+                            (
+                                "detected_by".to_string(),
+                                Value::String("review".to_string()),
+                            ),
+                            (
+                                "reason".to_string(),
+                                Value::String("fixture".to_string()),
+                            ),
+                        ]),
+                    ),
+                    ExpectedRows::RowCount(1),
+                )
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-nonprogress-update-older'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "CREATE (:Memory {id: 'evolves-nonprogress-update-newer'})",
+                ))
+                .with_setup_query(CypherFixtureStatement::new(
+                    "MATCH (older:Memory {id: 'evolves-nonprogress-update-older'}), (newer:Memory {id: 'evolves-nonprogress-update-newer'}) CREATE (older)-[:EVOLVES {content_relation: 'related'}]->(newer)",
+                ))
+                .with_effect_query(
+                    CypherFixtureStatement::new(
+                        "MATCH (m:Memory) WHERE m.id IN ['evolves-nonprogress-update-older', 'evolves-nonprogress-update-newer'] DETACH DELETE m",
+                    ),
+                    ExpectedRows::RowCount(2),
+                ),
+            ),
+            CompatibilityCheck::Cypher(
+                CypherFixtureCheck::expect_rows(
                     "memory latest demotion update",
                     CypherFixtureStatement::with_parameters(
                         "MATCH (m:Memory) WHERE m.id = $older_id SET m.is_latest = false",
@@ -23852,6 +24458,122 @@ pub fn nowledge_memory_core_inventory() -> CompatibilityQueryInventory {
             )
             .with_cypher(
                 "MATCH (a:Memory)-[r:EVOLVES]->(b:Memory) WHERE a.id = $older_id AND b.id = $newer_id SET r.content_relation = 'replaces', r.is_progression = true, r.confidence = $confidence, r.detected_by = $detected_by, r.reviewed = $reviewed, r.reason = $reason",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves lifecycle pair read",
+                "evolves_read",
+                "nmem-graph::memory_evolves::validate_endpoints",
+            )
+            .with_cypher(
+                "MATCH (older:Memory {id: $older_id}), (newer:Memory {id: $newer_id}) RETURN older.space_id, older.is_latest, older.lifecycle_state, newer.space_id, newer.is_latest, newer.lifecycle_state",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves edge relation read",
+                "evolves_read",
+                "nmem-graph::memory_evolves::existing_relation",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id RETURN edge.content_relation",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves edge count read",
+                "evolves_read",
+                "nmem-graph::memory_evolves::count_existing_relation",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id RETURN COUNT(edge)",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves frontier successor read",
+                "evolves_read",
+                "nmem-graph::memory_evolves::frontier_successors",
+            )
+            .with_cypher(
+                "MATCH (source:Memory)-[:EVOLVES]->(target:Memory) WHERE source.id IN $frontier RETURN DISTINCT target.id",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves direct latest demotion",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::demote_older",
+            )
+            .with_cypher("MATCH (older:Memory {id: $older_id}) SET older.is_latest = false"),
+            CompatibilityQueryCallSite::new(
+                "memory evolves label carryover create",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::copy_labels",
+            )
+            .with_cypher(
+                "MATCH (older:Memory {id: $older_id})-[:HAS_LABEL]->(label:Label), (newer:Memory {id: $newer_id}) MERGE (newer)-[edge:HAS_LABEL]->(label) ON CREATE SET edge.assigned_by = 'system', edge.created_at = timestamp($now), edge.properties = '{}'",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves production create",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::create_unreviewed",
+            )
+            .with_cypher(
+                "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: $relation, is_progression: $is_progression, confidence: $confidence, detected_by: $detected_by, reviewed: false, reason: $reason, created_at: timestamp($now) }]->(newer)",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves production unreviewed replacement update",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::update_unreviewed_replacement",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = 'replaces', edge.is_progression = true, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = false, edge.reason = $reason",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves reverse edge delete",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::delete_reverse_edge",
+            )
+            .with_cypher(
+                "MATCH (newer:Memory)-[edge:EVOLVES]->(older:Memory) WHERE newer.id = $newer_id AND older.id = $older_id DELETE edge",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves forward edge delete",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::delete_forward_edge",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id DELETE edge",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves reviewed replacement create",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::create_reviewed_replacement",
+            )
+            .with_cypher(
+                "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: 'replaces', is_progression: true, confidence: $confidence, detected_by: $detected_by, reviewed: true, reason: $reason, created_at: timestamp($now) }]->(newer)",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves reviewed replacement update",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::update_reviewed_replacement",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = 'replaces', edge.is_progression = true, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = true, edge.reason = $reason",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves direct latest promotion",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::promote_newer",
+            )
+            .with_cypher("MATCH (newer:Memory {id: $newer_id}) SET newer.is_latest = true"),
+            CompatibilityQueryCallSite::new(
+                "memory evolves reviewed nonprogression create",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::create_reviewed_nonprogression",
+            )
+            .with_cypher(
+                "MATCH (older:Memory), (newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id CREATE (older)-[:EVOLVES { content_relation: $relation, is_progression: false, confidence: $confidence, detected_by: $detected_by, reviewed: true, reason: $reason, created_at: timestamp($now) }]->(newer)",
+            ),
+            CompatibilityQueryCallSite::new(
+                "memory evolves reviewed nonprogression update",
+                "memory_evolution_write",
+                "nmem-graph::memory_evolves::update_reviewed_nonprogression",
+            )
+            .with_cypher(
+                "MATCH (older:Memory)-[edge:EVOLVES]->(newer:Memory) WHERE older.id = $older_id AND newer.id = $newer_id SET edge.content_relation = $relation, edge.is_progression = false, edge.confidence = $confidence, edge.detected_by = $detected_by, edge.reviewed = true, edge.reason = $reason",
             ),
             CompatibilityQueryCallSite::new(
                 "memory latest demotion update",
