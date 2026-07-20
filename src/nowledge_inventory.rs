@@ -154,6 +154,9 @@ pub fn scan_nowledge_query_inventory_with_options(
 }
 
 fn scan_source_file(source_file: &str) -> bool {
+    if source_file.starts_with("skein/") {
+        return false;
+    }
     if source_file.starts_with("crates/nmem-content/") {
         return false;
     }
@@ -164,6 +167,12 @@ fn scan_source_file(source_file: &str) -> bool {
     if parts
         .iter()
         .any(|part| *part == "tests" || *part == "benches")
+    {
+        return false;
+    }
+    if parts
+        .last()
+        .is_some_and(|file_name| *file_name == "tests.rs" || file_name.ends_with("_test.rs"))
     {
         return false;
     }
@@ -2023,6 +2032,18 @@ mod tests {
             Some("CHECKPOINT".to_string())
         );
         assert_eq!(normalize_cypher_literal("checkpoint"), None);
+    }
+
+    #[test]
+    fn scan_source_file_skips_tests_and_embedded_skein_submodule() {
+        assert!(scan_source_file("nmem-rs/crates/nmem-graph/src/repo.rs"));
+        assert!(!scan_source_file("nmem-rs/crates/nmem-graph/src/tests.rs"));
+        assert!(!scan_source_file(
+            "nmem-rs/crates/nmem-graph/src/repo_test.rs"
+        ));
+        assert!(!scan_source_file("nmem-rs/crates/nmem-graph/tests/repo.rs"));
+        assert!(!scan_source_file("skein/src/api/mod.rs"));
+        assert!(!scan_source_file("skein/crates/cypher/src/tests.rs"));
     }
 
     #[test]
