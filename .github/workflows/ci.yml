@@ -349,16 +349,16 @@ jobs:
             nowledge-replacement-summary \
             --require-production-ready \
             "$migration_gate_json" \
-            > "$root/replacement.json" 2> "$root/replacement.err"; then
+            > "$root/replacement-summary.json" 2> "$root/replacement.err"; then
             echo "expected protocol smoke replacement summary to fail production readiness"
             exit 1
           fi
-          grep -q '"production_cutover_ready": false' "$root/replacement.json"
-          grep -q '"production_replacement_per_million": 0' "$root/replacement.json"
-          grep -q '"cutover_evidence"' "$root/replacement.json"
-          grep -q '"shadow_evidence"' "$root/replacement.json"
-          grep -q '"previous_wrapper_contract_evidence"' "$root/replacement.json"
-          grep -q '"wrapper_identity": "nowledge-previous-wrapper:ci-smoke"' "$root/replacement.json"
+          grep -q '"production_cutover_ready": false' "$root/replacement-summary.json"
+          grep -q '"production_replacement_per_million": 0' "$root/replacement-summary.json"
+          grep -q '"cutover_evidence"' "$root/replacement-summary.json"
+          grep -q '"shadow_evidence"' "$root/replacement-summary.json"
+          grep -q '"previous_wrapper_contract_evidence"' "$root/replacement-summary.json"
+          grep -q '"wrapper_identity": "nowledge-previous-wrapper:ci-smoke"' "$root/replacement-summary.json"
           grep -q "nowledge replacement summary is not production cutover ready" "$root/replacement.err"
           cargo run --quiet --bin skein -- \
             nowledge-previous-wrapper-preflight-check \
