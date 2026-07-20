@@ -29,9 +29,10 @@ use skein::{
     CompatibilityRollbackEvidence, CompatibilityShadowReport, CompatibilityShadowStatus,
     CypherFixtureCheck, CypherFixtureStatement, Database, DatabaseConfig, ExpectedRows,
     ExternalShadowCommand, ExternalShadowReady, GraphLightningBootstrapManifest,
-    NowledgeCypherMigrationGateJsonOptions, ProjectedGraphFixtureCheck, RecoveryMode, Result,
-    SearchIndex, SkeinError, StorageRecoveryReport, Value,
-    GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
+    NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph, NowledgeMemGraphMode,
+    NowledgeMemReadOptions, ProjectedGraphFixtureCheck, RecoveryMode, Result, SearchIndex,
+    SkeinError, StorageRecoveryReport, Value, GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
 use skein::{
     nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
@@ -144,6 +145,17 @@ fn main() -> Result<()> {
             {
                 return Err(SkeinError::Execution(
                     "nowledge search projection shadow evidence is not ready".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        if command == "nowledge-mem-bounded-read-evidence" {
+            let (json, require_ready) = run_nowledge_mem_bounded_read_evidence(args)?;
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
+            {
+                return Err(SkeinError::Execution(
+                    "nowledge mem bounded read evidence is not ready".to_string(),
                 ));
             }
             return Ok(());
@@ -1031,6 +1043,11 @@ fn nowledge_cypher_migration_gate_usage() -> String {
         .to_string()
 }
 
+fn nowledge_mem_bounded_read_evidence_usage() -> String {
+    "nowledge-mem-bounded-read-evidence requires [--require-ready] [--max-rows <n>] [--max-estimated-payload-bytes <n>] <database-path> <cypher>"
+        .to_string()
+}
+
 fn external_shadow_adapter_smoke_usage() -> String {
     "external-shadow-adapter-smoke requires [--require-previous-wrapper] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] <shadow-name> <program> [args...]"
         .to_string()
@@ -1191,6 +1208,76 @@ fn parse_max_blockers(raw_limit: &str) -> Result<usize> {
         ));
     }
     Ok(limit)
+}
+
+fn parse_nowledge_mem_bounded_read_limit(flag: &str, raw_limit: &str) -> Result<usize> {
+    let limit = raw_limit
+        .parse::<usize>()
+        .map_err(|error| SkeinError::Semantic(format!("invalid {flag} '{raw_limit}': {error}")))?;
+    if limit == 0 {
+        return Err(SkeinError::Semantic(format!(
+            "{flag} must be greater than zero"
+        )));
+    }
+    Ok(limit)
+}
+
+fn run_nowledge_mem_bounded_read_evidence(
+    args: impl Iterator<Item = String>,
+) -> Result<(serde_json::Value, bool)> {
+    let mut require_ready = false;
+    let mut max_rows = None;
+    let mut max_estimated_payload_bytes = None;
+    let mut positional = Vec::new();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--require-ready" => {
+                require_ready = true;
+            }
+            "--max-rows" => {
+                let Some(raw_limit) = args.next() else {
+                    return Err(SkeinError::Semantic(
+                        nowledge_mem_bounded_read_evidence_usage(),
+                    ));
+                };
+                max_rows = Some(parse_nowledge_mem_bounded_read_limit(
+                    "--max-rows",
+                    &raw_limit,
+                )?);
+            }
+            "--max-estimated-payload-bytes" => {
+                let Some(raw_limit) = args.next() else {
+                    return Err(SkeinError::Semantic(
+                        nowledge_mem_bounded_read_evidence_usage(),
+                    ));
+                };
+                max_estimated_payload_bytes = Some(parse_nowledge_mem_bounded_read_limit(
+                    "--max-estimated-payload-bytes",
+                    &raw_limit,
+                )?);
+            }
+            value if value.starts_with("--") => {
+                return Err(SkeinError::Semantic(
+                    nowledge_mem_bounded_read_evidence_usage(),
+                ));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+    if positional.len() != 2 {
+        return Err(SkeinError::Semantic(
+            nowledge_mem_bounded_read_evidence_usage(),
+        ));
+    }
+    let mut graph = NowledgeMemGraph::open(&positional[0], NowledgeMemGraphMode::ShadowReadOnly)?;
+    let options = NowledgeMemReadOptions {
+        max_rows: max_rows.or(NowledgeMemReadOptions::default().max_rows),
+        max_estimated_payload_bytes: max_estimated_payload_bytes
+            .or(NowledgeMemReadOptions::default().max_estimated_payload_bytes),
+    };
+    let read = graph.read_query_with_options(&positional[1], &options)?;
+    Ok((read.report.bounded_read_evidence_json(), require_ready))
 }
 
 fn parse_background_maintenance_limit(flag: &str, raw_limit: &str) -> Result<usize> {

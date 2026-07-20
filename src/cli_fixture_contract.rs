@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(json["fixture"], "nowledge-memory-core");
         assert_eq!(json["setup_count"], fixture.setup.len());
         assert_eq!(json["check_count"], fixture.checks.len());
-        assert_eq!(json["check_count"], 644);
+        assert_eq!(json["check_count"], 671);
         assert_eq!(json["setup"][0]["command_request"]["op"], "query");
         assert_eq!(json["setup"][0]["access"], "mutation");
         assert!(json["checks"].as_array().unwrap().iter().any(|check| {

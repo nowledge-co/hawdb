@@ -515,7 +515,8 @@ fn full_contract_evidence_summary(bundle: &serde_json::Value) -> FullContractEvi
         json_get_bool_path_from_dynamic(bundle, path, "full_contract_checked");
     let full_contract_ready = json_get_bool_path_from_dynamic(bundle, path, "full_contract_ready");
     let selected_checks = json_get_u64_path_from_dynamic(bundle, path, "selected_checks");
-    let check_count = json_get_u64_path_from_dynamic(bundle, path, "check_count");
+    let check_count = json_get_u64_path_from_dynamic(bundle, path, "check_count")
+        .or_else(|| json_get_u64_path_from_dynamic(bundle, path, "total_checks"));
     FullContractEvidenceSummary {
         ready: required_contract_ready == Some(true)
             && full_contract_checked == Some(true)
@@ -1787,6 +1788,24 @@ mod tests {
                         .iter()
                         .any(|field| field == "full_contract_ready")
             }));
+    }
+
+    #[test]
+    fn replacement_summary_accepts_total_checks_contract_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle["contract_evidence"] = serde_json::json!({
+            "required_contract_ready": true,
+            "full_contract_checked": true,
+            "full_contract_ready": true,
+            "selected_checks": 2,
+            "total_checks": 2,
+        });
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["full_contract_evidence"]["ready"], true);
+        assert_eq!(summary["full_contract_evidence"]["check_count"], 2);
+        assert_eq!(summary["production_cutover_ready"], true);
     }
 
     #[test]

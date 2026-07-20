@@ -104,17 +104,6 @@ if [[ -n "$shadow_timeout_ms" ]]; then
   adapter_timeout_args=(--command-timeout-ms "$shadow_timeout_ms")
 fi
 
-search_projection_evidence_args=()
-if [[ -n "$search_projection_evidence_json" ]]; then
-  search_projection_evidence_args+=(--search-projection-evidence-json "$search_projection_evidence_json")
-fi
-if [[ -n "$search_projection_shadow_evidence_json" ]]; then
-  search_projection_evidence_args+=(--search-projection-shadow-evidence-json "$search_projection_shadow_evidence_json")
-fi
-if [[ -n "$bounded_read_evidence_json" ]]; then
-  search_projection_evidence_args+=(--bounded-read-evidence-json "$bounded_read_evidence_json")
-fi
-
 wrapper_command=("$@")
 adapter_command=(
   cargo run --quiet --example nowledge_previous_wrapper_shadow_adapter --
@@ -144,6 +133,70 @@ run_skein external-shadow-adapter-smoke \
 TMPDIR="$preflight_root" run_skein > "$preflight_root/skein-demo.out"
 skein_preflight_db="$preflight_root/skein-demo"
 
+if [[ -z "$search_projection_evidence_json" ]]; then
+  search_projection_index="$preflight_root/search-projection-index"
+  search_projection_delta_json="$preflight_root/search-projection-delta.json"
+  search_projection_probe_json="$preflight_root/search-projection-probe.json"
+  search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
+  python3 - "$search_projection_delta_json" <<'PY'
+import json
+import sys
+
+rows = [
+    ("Memory", "mem_1", True),
+    ("Message", "msg_1", False),
+    ("Community", "community_1", True),
+    ("Entity", "entity_1", True),
+    ("Source", "source_1", True),
+    ("SourceChunk", "chunk_1", True),
+]
+payload = {
+    "protocol": "nmem-lancedb-skein-search-projection-delta",
+    "delta": {
+        "upserts": [
+            {
+                "kind": kind,
+                "external_id": external_id,
+                "title": f"{external_id} title",
+                "body": f"{external_id} body",
+                "embedding": [1.0, 0.0] if include_embedding else None,
+                "source_id": "source_1",
+                "metadata": {
+                    "space_id": "default",
+                },
+            }
+            for kind, external_id, include_embedding in rows
+        ],
+        "deletes": [],
+        "max_operations": 6,
+        "source_graph_commit_epoch": 13,
+    },
+}
+with open(sys.argv[1], "w", encoding="utf-8") as file:
+    json.dump(payload, file, indent=2)
+    file.write("\n")
+PY
+  run_skein skein-search-projection-delta-probe \
+    --active-model bge-m3 \
+    --active-dimension 2 \
+    "$search_projection_index" \
+    "$search_projection_delta_json" \
+    > "$search_projection_probe_json"
+  run_skein nowledge-search-projection-evidence \
+    --require-ready \
+    "$search_projection_probe_json" \
+    > "$search_projection_evidence_json"
+fi
+
+if [[ -z "$bounded_read_evidence_json" ]]; then
+  bounded_read_evidence_json="$preflight_root/bounded-read-evidence.json"
+  run_skein nowledge-mem-bounded-read-evidence \
+    --require-ready \
+    "$skein_preflight_db" \
+    "MATCH (m:Memory) RETURN m.title AS title" \
+    > "$bounded_read_evidence_json"
+fi
+
 run_skein storage-recovery-report \
   --max-wal-replay-entries 100 \
   --require-durable \
@@ -171,6 +224,17 @@ with open(sys.argv[2], "w", encoding="utf-8") as file:
     file.write("\n")
 PY
 
+search_projection_evidence_args=()
+if [[ -n "$search_projection_evidence_json" ]]; then
+  search_projection_evidence_args+=(--search-projection-evidence-json "$search_projection_evidence_json")
+fi
+if [[ -n "$search_projection_shadow_evidence_json" ]]; then
+  search_projection_evidence_args+=(--search-projection-shadow-evidence-json "$search_projection_shadow_evidence_json")
+fi
+if [[ -n "$bounded_read_evidence_json" ]]; then
+  search_projection_evidence_args+=(--bounded-read-evidence-json "$bounded_read_evidence_json")
+fi
+
 run_skein nowledge-cypher-migration-gate \
   --require-ready \
   --require-cutover-evidence \
@@ -187,6 +251,32 @@ run_skein nowledge-cypher-migration-gate \
   previous-wrapper \
   "${adapter_command[@]}" \
   > "$preflight_root/migration-gate.json"
+
+python3 - "$preflight_root/contract-evidence.json" \
+  "$preflight_root/migration-gate.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as file:
+    contract = json.load(file)
+with open(sys.argv[2], encoding="utf-8") as file:
+    bundle = json.load(file)
+
+bundle["contract_evidence"] = {
+    key: contract.get(key)
+    for key in [
+        "required_contract_ready",
+        "full_contract_checked",
+        "full_contract_ready",
+        "selected_checks",
+    ]
+}
+bundle["contract_evidence"]["check_count"] = contract.get("check_count", contract.get("total_checks"))
+
+with open(sys.argv[2], "w", encoding="utf-8") as file:
+    json.dump(bundle, file, indent=2)
+    file.write("\n")
+PY
 
 run_skein nowledge-replacement-summary \
   --require-production-ready \

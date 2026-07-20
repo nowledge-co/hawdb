@@ -2181,7 +2181,7 @@ mod tests {
         assert_eq!(coverage["missing_checks"].as_array().unwrap().len(), 0);
         assert_eq!(
             coverage["extra_fixture_checks"].as_array().unwrap().len(),
-            643
+            670
         );
 
         fs::remove_dir_all(root).unwrap();
