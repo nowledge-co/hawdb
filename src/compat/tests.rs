@@ -1,3 +1,4 @@
+use super::inventory_gate::CompatibilityQueryFamilyCoverage;
 use super::{
     assess_compatibility_cutover, assess_compatibility_cypher_migration_gate_bundle,
     assess_compatibility_cypher_migration_gate_bundle_with_rollback,
@@ -7,13 +8,14 @@ use super::{
     nowledge_memory_core_inventory, run_compatibility_fixture,
     run_compatibility_fixture_with_shadow, CompatibilityCheck, CompatibilityCheckReport,
     CompatibilityCutoverDecision, CompatibilityCutoverPolicy, CompatibilityCutoverReport,
-    CompatibilityFixture, CompatibilityInventoryCoveragePolicy, CompatibilityInventoryGateReport,
-    CompatibilityQueryCallSite, CompatibilityQueryInventory, CompatibilityQueryInventoryItem,
-    CompatibilityRollbackEvidence, CompatibilityShadowCheckReport, CompatibilityShadowEngine,
-    CompatibilityShadowReport, CompatibilityShadowStatus, CompatibilityTolerance,
-    CypherFixtureCheck, CypherFixtureStatement, ExpectedRows, ExternalShadowCommand,
-    ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput, ProjectedGraphShadowResult,
-    EXTERNAL_SHADOW_PROTOCOL_VERSION,
+    CompatibilityFixture, CompatibilityInventoryCoveragePolicy,
+    CompatibilityInventoryCoverageReport, CompatibilityInventoryGateReport,
+    CompatibilityMigrationGateBundle, CompatibilityMigrationGateReport, CompatibilityQueryCallSite,
+    CompatibilityQueryInventory, CompatibilityQueryInventoryItem, CompatibilityRollbackEvidence,
+    CompatibilityShadowCheckReport, CompatibilityShadowEngine, CompatibilityShadowReport,
+    CompatibilityShadowStatus, CompatibilityTolerance, CypherFixtureCheck, CypherFixtureStatement,
+    ExpectedRows, ExternalShadowCommand, ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput,
+    ProjectedGraphShadowResult, EXTERNAL_SHADOW_PROTOCOL_VERSION,
 };
 use crate::{Database, QueryOutput, Result, Value};
 use std::collections::BTreeMap;
@@ -877,7 +879,7 @@ fn migration_gate_bundle_reports_replacement_readiness_by_query_family() {
     assert_eq!(json["dual_engine_evidence"]["shadow_check_count"], 2);
     assert_eq!(json["dual_engine_evidence"]["matched_check_count"], 1);
     assert_eq!(json["dual_engine_evidence"]["primary_only_check_count"], 1);
-    assert_eq!(json["replacement_readiness_per_million"], 500_000);
+    assert_eq!(json["replacement_readiness_per_million"], 0);
     assert_eq!(families.len(), 2);
     assert_eq!(families[0]["query_family"], "mutation");
     assert_eq!(families[0]["covered_checks"], 1);
@@ -892,6 +894,92 @@ fn migration_gate_bundle_reports_replacement_readiness_by_query_family() {
     assert_eq!(families[1]["covered_checks"], 1);
     assert_eq!(families[1]["shadow_matched_checks"], 1);
     assert_eq!(families[1]["replacement_readiness_per_million"], 1_000_000);
+}
+
+#[test]
+fn migration_gate_bundle_top_level_readiness_uses_family_minimum() {
+    let bundle = CompatibilityMigrationGateBundle {
+        coverage: CompatibilityInventoryCoverageReport {
+            inventory: "inventory".to_string(),
+            fixture: "fixture".to_string(),
+            required_checks: 3,
+            covered_checks: 3,
+            coverage_by_query_family: vec![
+                CompatibilityQueryFamilyCoverage {
+                    query_family: "read".to_string(),
+                    required_checks: 2,
+                    covered_checks: 2,
+                    covered_check_names: vec!["read a".to_string(), "read b".to_string()],
+                    missing_checks: Vec::new(),
+                },
+                CompatibilityQueryFamilyCoverage {
+                    query_family: "mutation".to_string(),
+                    required_checks: 1,
+                    covered_checks: 1,
+                    covered_check_names: vec!["write a".to_string()],
+                    missing_checks: Vec::new(),
+                },
+            ],
+            missing_checks: Vec::new(),
+            extra_fixture_checks: Vec::new(),
+        },
+        inventory_gate: CompatibilityInventoryGateReport {
+            inventory: "inventory".to_string(),
+            fixture: "fixture".to_string(),
+            decision: CompatibilityCutoverDecision::Ready,
+            required_checks: 3,
+            covered_checks: 3,
+            coverage_by_query_family: Vec::new(),
+            missing_checks: Vec::new(),
+            extra_fixture_checks: Vec::new(),
+            blockers: Vec::new(),
+        },
+        cutover: CompatibilityCutoverReport {
+            fixture: "fixture".to_string(),
+            shadow_engine: "previous-wrapper".to_string(),
+            decision: CompatibilityCutoverDecision::Ready,
+            primary_check_count: 2,
+            total_checks: 2,
+            matched_checks: 2,
+            primary_only_checks: Vec::new(),
+            primary_only_reasons: BTreeMap::new(),
+            blockers: Vec::new(),
+        },
+        migration_gate: CompatibilityMigrationGateReport {
+            fixture: "fixture".to_string(),
+            inventory: "inventory".to_string(),
+            shadow_engine: "previous-wrapper".to_string(),
+            decision: CompatibilityCutoverDecision::Ready,
+            inventory_decision: CompatibilityCutoverDecision::Ready,
+            shadow_decision: CompatibilityCutoverDecision::Ready,
+            shadow_total_checks: 2,
+            shadow_matched_checks: 2,
+            shadow_primary_only_checks: 0,
+            shadow_evidence_present: true,
+            fixture_mismatch_blockers: 0,
+            inventory_blockers: 0,
+            shadow_blockers: 0,
+            rollback_required: false,
+            rollback_ready: false,
+            rollback_evidence: None,
+            rollback_blockers: 0,
+            fixture_mismatch_blocker_messages: Vec::new(),
+            inventory_blocker_messages: Vec::new(),
+            shadow_blocker_messages: Vec::new(),
+            rollback_blocker_messages: Vec::new(),
+            blockers: Vec::new(),
+        },
+    };
+
+    let json = super::compatibility_migration_gate_bundle_to_json(&bundle);
+
+    assert_eq!(json["cutover"]["matched_per_million"], 1_000_000);
+    assert_eq!(json["replacement_readiness_per_million"], 1_000_000);
+    assert!(json["replacement_readiness_by_query_family"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|family| family["replacement_readiness_per_million"] == 1_000_000));
 }
 
 #[test]

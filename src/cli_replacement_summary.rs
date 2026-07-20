@@ -40,8 +40,8 @@ pub fn nowledge_replacement_summary_json_with_options(
             .or_else(|| json_get_u64_path(bundle, &["coverage", "coverage_per_million"]));
     let shadow_parity_per_million = json_get_u64_path(bundle, &["cutover", "matched_per_million"])
         .or_else(|| json_get_u64_path(bundle, &["migration_gate", "shadow_matched_per_million"]));
-    let replacement_readiness_per_million =
-        json_get_u64_path(bundle, &["replacement_readiness_per_million"]);
+    let replacement_readiness_per_million = replacement_readiness_per_million_from_families(bundle)
+        .or_else(|| json_get_u64_path(bundle, &["replacement_readiness_per_million"]));
     let migration_gate_decision = json_get_str_path(bundle, &["migration_gate", "decision"]);
     let cutover_decision = json_get_str_path(bundle, &["cutover", "decision"]);
     let cutover_evidence_eligible =
@@ -362,6 +362,21 @@ fn replacement_readiness_family_summary(
         "min_replacement_readiness_per_million": min_replacement_readiness_per_million,
         "blocked_query_families": blocked_query_families,
     })
+}
+
+fn replacement_readiness_per_million_from_families(bundle: &serde_json::Value) -> Option<u64> {
+    bundle
+        .get("replacement_readiness_by_query_family")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .map(|family| {
+            family
+                .get("replacement_readiness_per_million")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
 }
 
 struct ReplacementReadinessInputs<'a> {
@@ -1919,6 +1934,27 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action["action"] == "close_blocked_query_families"));
+    }
+
+    #[test]
+    fn replacement_summary_uses_family_minimum_over_stale_top_level_readiness() {
+        let mut bundle = production_ready_bundle();
+        bundle["replacement_readiness_per_million"] = serde_json::json!(947_740);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["replacement_readiness_per_million"], 1_000_000);
+        assert_eq!(
+            summary["replacement_readiness_family_summary"]
+                ["min_replacement_readiness_per_million"],
+            1_000_000
+        );
+        assert_eq!(summary["production_cutover_ready"], true);
+        assert!(!summary["blocking_categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|category| category == "query_family_readiness"));
     }
 
     #[test]

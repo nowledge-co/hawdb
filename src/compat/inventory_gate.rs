@@ -362,17 +362,30 @@ pub fn compatibility_migration_gate_report_to_json(
 pub fn compatibility_migration_gate_bundle_to_json(
     bundle: &CompatibilityMigrationGateBundle,
 ) -> serde_json::Value {
+    let replacement_readiness_by_query_family =
+        replacement_readiness_by_query_family_to_json(bundle);
+    let replacement_readiness_per_million =
+        replacement_readiness_per_million_from_families(&replacement_readiness_by_query_family)
+            .unwrap_or_else(|| {
+                ratio_per_million(
+                    bundle
+                        .coverage
+                        .covered_checks
+                        .min(bundle.cutover.matched_checks),
+                    bundle
+                        .coverage
+                        .required_checks
+                        .max(bundle.cutover.total_checks),
+                )
+            });
     serde_json::json!({
         "coverage": compatibility_inventory_coverage_report_to_json(&bundle.coverage),
         "inventory_gate": compatibility_inventory_gate_report_to_json(&bundle.inventory_gate),
         "cutover": compatibility_cutover_report_to_json(&bundle.cutover),
         "migration_gate": compatibility_migration_gate_report_to_json(&bundle.migration_gate),
         "dual_engine_evidence": cutover_dual_engine_evidence_to_json(&bundle.cutover),
-        "replacement_readiness_by_query_family": replacement_readiness_by_query_family_to_json(bundle),
-        "replacement_readiness_per_million": ratio_per_million(
-            bundle.coverage.covered_checks.min(bundle.cutover.matched_checks),
-            bundle.coverage.required_checks.max(bundle.cutover.total_checks),
-        ),
+        "replacement_readiness_by_query_family": replacement_readiness_by_query_family,
+        "replacement_readiness_per_million": replacement_readiness_per_million,
     })
 }
 
@@ -458,6 +471,18 @@ fn replacement_readiness_by_query_family_to_json(
             })
         })
         .collect()
+}
+
+fn replacement_readiness_per_million_from_families(families: &[serde_json::Value]) -> Option<u64> {
+    families
+        .iter()
+        .map(|family| {
+            family
+                .get("replacement_readiness_per_million")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .collect::<Option<Vec<_>>>()
+        .and_then(|values| values.into_iter().min())
 }
 
 fn build_compatibility_query_inventory_from_items(
