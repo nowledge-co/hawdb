@@ -596,6 +596,13 @@ fn main() -> Result<()> {
                                 &raw_limit,
                             )?);
                     }
+                    "--search-projection-index" => {
+                        args.next();
+                        options.search_projection_index_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(background_maintenance_report_usage())
+                            })?);
+                    }
                     _ => break,
                 }
             }
@@ -612,7 +619,7 @@ fn main() -> Result<()> {
                     ..DatabaseConfig::default()
                 },
             )?;
-            let report = background_maintenance_report_json_with_options(&db, &options);
+            let report = background_maintenance_report_json_with_options(&db, &options)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             if require_cutover_ready {
                 let health = background_maintenance_evidence_health_from_bundle(
@@ -1023,6 +1030,7 @@ fn main() -> Result<()> {
     db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")?;
     db.query("CREATE (:Memory {id: 2, title: 'Runtime strategy'})")?;
     db.checkpoint()?;
+    db.query("CREATE (:Memory {id: 3, title: 'Incremental projection delta'})")?;
 
     let query = "MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title";
     let explain = db.explain_query(query)?;
@@ -1068,7 +1076,7 @@ fn storage_recovery_report_usage() -> String {
 }
 
 fn background_maintenance_report_usage() -> String {
-    "background-maintenance-report requires [--require-cutover-ready] [--disable-background] [--max-background-operations <n>] [--max-total-background-operations <n>] [--max-projection-background-operations <n>] <database-path>"
+    "background-maintenance-report requires [--require-cutover-ready] [--disable-background] [--max-background-operations <n>] [--max-total-background-operations <n>] [--max-projection-background-operations <n>] [--search-projection-index <path>] <database-path>"
         .to_string()
 }
 
@@ -1955,15 +1963,24 @@ struct BackgroundMaintenanceReportOptions {
     policy: LocalQosPolicy,
     state: LocalQosState,
     maintenance: BackgroundMaintenanceOptions,
+    search_projection_index_path: Option<String>,
 }
 
 fn background_maintenance_report_json_with_options(
     database: &Database,
     options: &BackgroundMaintenanceReportOptions,
-) -> serde_json::Value {
-    let search_index = SearchIndex::in_memory();
+) -> Result<serde_json::Value> {
+    let opened_search_index = options
+        .search_projection_index_path
+        .as_ref()
+        .map(SearchIndex::open)
+        .transpose()?;
+    let fallback_search_index = SearchIndex::in_memory();
+    let search_index = opened_search_index
+        .as_ref()
+        .unwrap_or(&fallback_search_index);
     let summary = database.background_maintenance_summary(
-        Some(&search_index),
+        Some(search_index),
         &options.policy,
         &options.state,
         options.maintenance.clone(),
@@ -1983,7 +2000,7 @@ fn background_maintenance_report_json_with_options(
             background_maintenance_qos_state_json(&options.state),
         );
     }
-    report
+    Ok(report)
 }
 
 fn background_maintenance_qos_policy_json(policy: &LocalQosPolicy) -> serde_json::Value {
@@ -4330,9 +4347,11 @@ mod tests {
         BackgroundMaintenanceOptions, CanonicalGraphSnapshotValidation,
         CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit, CompatibilityCheck,
         CompatibilityCheckReport, CompatibilityShadowCheckReport, CompatibilityShadowReport,
-        CompatibilityShadowStatus, Database, ExternalShadowReady, GraphLightningBootstrapManifest,
-        GraphLightningGraphStreamValidation, LocalQosPolicy, PlanCacheStats, RecoveryMode,
-        StorageRecoveryReport, Value, WorkClass, WorkRequest,
+        CompatibilityShadowStatus, Database, DatabaseConfig, ExternalShadowReady,
+        GraphLightningBootstrapManifest, GraphLightningGraphStreamValidation, LocalQosPolicy,
+        PlanCacheStats, RecoveryMode, SearchEmbeddingManifest, SearchIndex, SearchProjectionDelta,
+        SearchProjectionKind, SearchProjectionRow, StorageRecoveryReport, Value, WorkClass,
+        WorkRequest,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -5262,7 +5281,8 @@ mod tests {
         let json = background_maintenance_report_json_with_options(
             &db,
             &BackgroundMaintenanceReportOptions::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(json["protocol"], "skein-background-maintenance-report");
         assert_eq!(json["qos_policy"]["background_enabled"], true);
@@ -5301,7 +5321,8 @@ mod tests {
                 },
                 ..BackgroundMaintenanceReportOptions::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(json["protocol"], "skein-background-maintenance-report");
         assert_eq!(
@@ -5328,6 +5349,103 @@ mod tests {
     }
 
     #[test]
+    fn background_maintenance_report_uses_persisted_search_projection_watermark() {
+        let graph_dir = unique_main_test_dir("background_maintenance_graph_delta_graph");
+        let index_dir = unique_main_test_dir("background_maintenance_graph_delta_index");
+        {
+            let mut db = Database::open(&graph_dir).unwrap();
+            db.query("CREATE (:Memory {id: 'baseline', title: 'Baseline memory'})")
+                .unwrap();
+            db.checkpoint().unwrap();
+            let baseline_epoch = db
+                .prepare_graph_lightning_bootstrap_export()
+                .unwrap()
+                .manifest
+                .graph_commit_epoch;
+            let mut index = SearchIndex::open(&index_dir).unwrap();
+            index
+                .apply_embedding_manifest(SearchEmbeddingManifest {
+                    model: "bge-m3".to_string(),
+                    version: None,
+                    dimension: 2,
+                })
+                .unwrap();
+            index
+                .apply_projection_delta(SearchProjectionDelta {
+                    upserts: vec![SearchProjectionRow {
+                        kind: SearchProjectionKind::Memory,
+                        external_id: "baseline".to_string(),
+                        title: "Baseline memory".to_string(),
+                        body: "Baseline memory".to_string(),
+                        embedding: Some(vec![1.0, 0.0]),
+                        source_id: None,
+                        metadata: BTreeMap::from([("space_id".to_string(), "default".to_string())]),
+                    }],
+                    deletes: Vec::new(),
+                    max_operations: None,
+                    source_graph_commit_epoch: Some(baseline_epoch),
+                })
+                .unwrap();
+            index.checkpoint().unwrap();
+            db.query("CREATE (:Memory {id: 'delta', title: 'Delta memory'})")
+                .unwrap();
+        }
+        let db = Database::open_with_config(
+            &graph_dir,
+            DatabaseConfig {
+                read_only: true,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+
+        let report = background_maintenance_report_json_with_options(
+            &db,
+            &BackgroundMaintenanceReportOptions {
+                search_projection_index_path: Some(index_dir.to_string_lossy().to_string()),
+                maintenance: BackgroundMaintenanceOptions {
+                    include_schema_maintenance: false,
+                    include_property_index_projection: false,
+                    include_search_projection_rebuild: false,
+                    include_search_projection_metadata_repair: false,
+                    include_graph_lightning_bootstrap_export: false,
+                    include_external_content_artifact_jobs: false,
+                    ..BackgroundMaintenanceOptions::default()
+                },
+                ..BackgroundMaintenanceReportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report["executable_search_projection_graph_delta_count"], 1);
+        assert_eq!(report["admitted_search_projection_graph_delta_count"], 1);
+        assert_eq!(
+            report["executable_search_projection_graph_delta_operations"],
+            1
+        );
+        assert_eq!(
+            report["admitted_search_projection_graph_delta_operations"],
+            1
+        );
+        assert!(
+            report["max_search_projection_graph_delta_complete_through_graph_commit_epoch"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(
+            report["ranked"][0]["search_projection_graph_delta_upsert_node_count"],
+            1
+        );
+        assert_eq!(
+            report["ranked"][0]["search_projection_graph_delta_delete_document_count"],
+            0
+        );
+
+        std::fs::remove_dir_all(graph_dir).unwrap();
+        std::fs::remove_dir_all(index_dir).unwrap();
+    }
+
+    #[test]
     fn background_maintenance_report_usage_mentions_cutover_ready_gate() {
         assert!(background_maintenance_report_usage().contains("--require-cutover-ready"));
         assert!(background_maintenance_report_usage().contains("--disable-background"));
@@ -5335,6 +5453,7 @@ mod tests {
         assert!(background_maintenance_report_usage().contains("--max-total-background-operations"));
         assert!(background_maintenance_report_usage()
             .contains("--max-projection-background-operations"));
+        assert!(background_maintenance_report_usage().contains("--search-projection-index"));
         assert!(background_maintenance_report_usage().contains("<database-path>"));
     }
 
@@ -5369,7 +5488,8 @@ mod tests {
         let report = background_maintenance_report_json_with_options(
             &db,
             &BackgroundMaintenanceReportOptions::default(),
-        );
+        )
+        .unwrap();
         let bundle = serde_json::json!({
             "background_maintenance": report
         });

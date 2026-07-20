@@ -133,12 +133,10 @@ run_skein external-shadow-adapter-smoke \
 TMPDIR="$preflight_root" run_skein > "$preflight_root/skein-demo.out"
 skein_preflight_db="$preflight_root/skein-demo"
 
-if [[ -z "$search_projection_evidence_json" ]]; then
-  search_projection_index="$preflight_root/search-projection-index"
-  search_projection_delta_json="$preflight_root/search-projection-delta.json"
-  search_projection_probe_json="$preflight_root/search-projection-probe.json"
-  search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
-  python3 - "$search_projection_delta_json" <<'PY'
+search_projection_index="$preflight_root/search-projection-index"
+search_projection_delta_json="$preflight_root/search-projection-delta.json"
+search_projection_probe_json="$preflight_root/search-projection-probe.json"
+python3 - "$search_projection_delta_json" <<'PY'
 import json
 import sys
 
@@ -169,19 +167,22 @@ payload = {
         ],
         "deletes": [],
         "max_operations": 6,
-        "source_graph_commit_epoch": 13,
+        "source_graph_commit_epoch": 2,
     },
 }
 with open(sys.argv[1], "w", encoding="utf-8") as file:
     json.dump(payload, file, indent=2)
     file.write("\n")
 PY
-  run_skein skein-search-projection-delta-probe \
-    --active-model bge-m3 \
-    --active-dimension 2 \
-    "$search_projection_index" \
-    "$search_projection_delta_json" \
-    > "$search_projection_probe_json"
+run_skein skein-search-projection-delta-probe \
+  --active-model bge-m3 \
+  --active-dimension 2 \
+  "$search_projection_index" \
+  "$search_projection_delta_json" \
+  > "$search_projection_probe_json"
+
+if [[ -z "$search_projection_evidence_json" ]]; then
+  search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
   run_skein nowledge-search-projection-evidence \
     --require-ready \
     "$search_projection_probe_json" \
@@ -208,6 +209,7 @@ run_skein storage-recovery-report \
 
 run_skein background-maintenance-report \
   --require-cutover-ready \
+  --search-projection-index "$search_projection_index" \
   "$skein_preflight_db" \
   > "$preflight_root/background-maintenance.json"
 
