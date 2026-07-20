@@ -37,6 +37,9 @@ pub struct NowledgeCypherMigrationGateJsonOptions {
     pub background_maintenance_required: bool,
     pub background_maintenance: Option<serde_json::Value>,
     pub previous_wrapper_contract_evidence: Option<serde_json::Value>,
+    pub search_projection_evidence: Option<serde_json::Value>,
+    pub search_projection_shadow_evidence: Option<serde_json::Value>,
+    pub bounded_read_evidence: Option<serde_json::Value>,
     pub rollback: CompatibilityRollbackEvidence,
 }
 
@@ -302,6 +305,26 @@ fn add_shadow_metadata_to_migration_gate_json(
         migration_gate_json_object(bundle)?.insert(
             "previous_wrapper_contract_evidence".to_string(),
             contract_evidence.clone(),
+        );
+    }
+    if let Some(search_projection_evidence) = options.search_projection_evidence.as_ref() {
+        migration_gate_json_object(bundle)?.insert(
+            "search_projection_evidence".to_string(),
+            search_projection_evidence.clone(),
+        );
+    }
+    if let Some(search_projection_shadow_evidence) =
+        options.search_projection_shadow_evidence.as_ref()
+    {
+        migration_gate_json_object(bundle)?.insert(
+            "search_projection_shadow_evidence".to_string(),
+            search_projection_shadow_evidence.clone(),
+        );
+    }
+    if let Some(bounded_read_evidence) = options.bounded_read_evidence.as_ref() {
+        migration_gate_json_object(bundle)?.insert(
+            "bounded_read_evidence".to_string(),
+            bounded_read_evidence.clone(),
         );
     }
     if options.include_cutover_evidence {
@@ -2293,6 +2316,57 @@ mod tests {
         );
         assert!(bundle.get("shadow_run").is_none());
         assert!(bundle.get("cutover_evidence").is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scanned_cypher_migration_gate_can_attach_replacement_evidence_inputs() {
+        let root = std::env::temp_dir().join(format!(
+            "skein-nowledge-migration-gate-replacement-evidence-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_dir = root.join("crates/nmem-graph/src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("repo.rs"),
+            r#"
+                pub fn query() -> &'static str {
+                    "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title"
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mut shadow = TestShadowEngine::default();
+        let bundle = scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json(
+            &root,
+            &mut shadow,
+            NowledgeCypherMigrationGateJsonOptions {
+                search_projection_evidence: Some(serde_json::json!({
+                    "protocol": "skein-nowledge-search-projection-evidence",
+                    "ready": true,
+                })),
+                search_projection_shadow_evidence: Some(serde_json::json!({
+                    "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                    "ready": true,
+                })),
+                bounded_read_evidence: Some(serde_json::json!({
+                    "present": true,
+                    "ready": true,
+                    "max_rows": 512,
+                })),
+                ..NowledgeCypherMigrationGateJsonOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(bundle["search_projection_evidence"]["ready"], true);
+        assert_eq!(bundle["search_projection_shadow_evidence"]["ready"], true);
+        assert_eq!(bundle["bounded_read_evidence"]["max_rows"], 512);
 
         fs::remove_dir_all(root).unwrap();
     }

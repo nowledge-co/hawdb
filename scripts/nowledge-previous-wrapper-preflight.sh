@@ -12,6 +12,9 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   --nowledge-root <dir> \
   --wrapper-identity <id> \
   [--shadow-timeout-ms <ms>] \
+  [--search-projection-evidence-json <path>] \
+  [--search-projection-shadow-evidence-json <path>] \
+  [--bounded-read-evidence-json <path>] \
   -- <wrapper-command> [args...]
 
 Runs the Skein-side Nowledge previous-wrapper production preflight bundle.
@@ -24,6 +27,9 @@ preflight_root=
 nowledge_root=
 wrapper_identity=
 shadow_timeout_ms=
+search_projection_evidence_json=
+search_projection_shadow_evidence_json=
+bounded_read_evidence_json=
 
 while (($# > 0)); do
   case "$1" in
@@ -41,6 +47,18 @@ while (($# > 0)); do
       ;;
     --shadow-timeout-ms)
       shadow_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --search-projection-evidence-json)
+      search_projection_evidence_json="${2:-}"
+      shift 2
+      ;;
+    --search-projection-shadow-evidence-json)
+      search_projection_shadow_evidence_json="${2:-}"
+      shift 2
+      ;;
+    --bounded-read-evidence-json)
+      bounded_read_evidence_json="${2:-}"
       shift 2
       ;;
     --help|-h)
@@ -84,6 +102,17 @@ adapter_timeout_args=()
 if [[ -n "$shadow_timeout_ms" ]]; then
   shadow_timeout_args=(--shadow-timeout-ms "$shadow_timeout_ms")
   adapter_timeout_args=(--command-timeout-ms "$shadow_timeout_ms")
+fi
+
+search_projection_evidence_args=()
+if [[ -n "$search_projection_evidence_json" ]]; then
+  search_projection_evidence_args+=(--search-projection-evidence-json "$search_projection_evidence_json")
+fi
+if [[ -n "$search_projection_shadow_evidence_json" ]]; then
+  search_projection_evidence_args+=(--search-projection-shadow-evidence-json "$search_projection_shadow_evidence_json")
+fi
+if [[ -n "$bounded_read_evidence_json" ]]; then
+  search_projection_evidence_args+=(--bounded-read-evidence-json "$bounded_read_evidence_json")
 fi
 
 wrapper_command=("$@")
@@ -153,6 +182,7 @@ run_skein nowledge-cypher-migration-gate \
   --require-background-maintenance-evidence \
   --background-maintenance-report-json "$preflight_root/background-maintenance.json" \
   --previous-wrapper-contract-evidence-json "$preflight_root/previous-wrapper-contract-evidence.json" \
+  "${search_projection_evidence_args[@]}" \
   "$nowledge_root" \
   previous-wrapper \
   "${adapter_command[@]}" \

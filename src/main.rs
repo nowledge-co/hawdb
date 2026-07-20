@@ -274,6 +274,9 @@ fn main() -> Result<()> {
             let mut background_maintenance_required = false;
             let mut background_maintenance = None;
             let mut previous_wrapper_contract_evidence = None;
+            let mut search_projection_evidence = None;
+            let mut search_projection_shadow_evidence = None;
+            let mut bounded_read_evidence = None;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
                     "--require-ready" => {
@@ -345,6 +348,27 @@ fn main() -> Result<()> {
                         previous_wrapper_contract_evidence =
                             Some(read_json_file(Path::new(&path))?);
                     }
+                    "--search-projection-evidence-json" => {
+                        args.next();
+                        let path = args.next().ok_or_else(|| {
+                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                        })?;
+                        search_projection_evidence = Some(read_json_file(Path::new(&path))?);
+                    }
+                    "--search-projection-shadow-evidence-json" => {
+                        args.next();
+                        let path = args.next().ok_or_else(|| {
+                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                        })?;
+                        search_projection_shadow_evidence = Some(read_json_file(Path::new(&path))?);
+                    }
+                    "--bounded-read-evidence-json" => {
+                        args.next();
+                        let path = args.next().ok_or_else(|| {
+                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                        })?;
+                        bounded_read_evidence = Some(read_json_file(Path::new(&path))?);
+                    }
                     _ => break,
                 }
             }
@@ -413,6 +437,9 @@ fn main() -> Result<()> {
                         background_maintenance_required,
                         background_maintenance,
                         previous_wrapper_contract_evidence,
+                        search_projection_evidence,
+                        search_projection_shadow_evidence,
+                        bounded_read_evidence,
                         ..NowledgeCypherMigrationGateJsonOptions::default()
                     },
                 )?;
@@ -1000,7 +1027,7 @@ fn main() -> Result<()> {
 }
 
 fn nowledge_cypher_migration_gate_usage() -> String {
-    "nowledge-cypher-migration-gate requires [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] [--previous-wrapper-contract-evidence-json <path>] <root> <shadow-name> <program> [args...]"
+    "nowledge-cypher-migration-gate requires [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] [--previous-wrapper-contract-evidence-json <path>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] <root> <shadow-name> <program> [args...]"
         .to_string()
 }
 
@@ -5241,6 +5268,12 @@ mod tests {
         );
         assert!(nowledge_cypher_migration_gate_usage()
             .contains("--previous-wrapper-contract-evidence-json"));
+        assert!(
+            nowledge_cypher_migration_gate_usage().contains("--search-projection-evidence-json")
+        );
+        assert!(nowledge_cypher_migration_gate_usage()
+            .contains("--search-projection-shadow-evidence-json"));
+        assert!(nowledge_cypher_migration_gate_usage().contains("--bounded-read-evidence-json"));
     }
 
     #[test]
