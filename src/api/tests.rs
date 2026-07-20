@@ -32212,9 +32212,7 @@ fn database_config_caps_read_query_result_rows() {
     let error = db
         .query("MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC")
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("exceeding max_read_result_rows 2"));
+    assert!(error.to_string().contains("more than 2 rows"));
 
     let output = db
         .query("MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC LIMIT 2")
@@ -32235,9 +32233,7 @@ fn read_transaction_inherits_database_result_row_cap() {
     let error = read
         .query("MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC")
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("exceeding max_read_result_rows 1"));
+    assert!(error.to_string().contains("more than 1 rows"));
 }
 
 #[test]
