@@ -16,6 +16,7 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   [--search-active-model <model>] \
   [--search-active-dimension <dimension>] \
   [--search-source-graph-commit-epoch <epoch>] \
+  [--search-source-graph-commit-epoch-path <path>] \
   [--search-projection-allow-unbounded | --search-projection-max-rows <n>] \
   [--search-projection-evidence-json <path>] \
   [--search-projection-shadow-evidence-json <path>] \
@@ -36,6 +37,7 @@ legacy_search_index=
 search_active_model=
 search_active_dimension=
 search_source_graph_commit_epoch=
+search_source_graph_commit_epoch_path=
 search_projection_allow_unbounded=
 search_projection_max_rows=
 search_projection_evidence_json=
@@ -74,6 +76,10 @@ while (($# > 0)); do
       ;;
     --search-source-graph-commit-epoch)
       search_source_graph_commit_epoch="${2:-}"
+      shift 2
+      ;;
+    --search-source-graph-commit-epoch-path)
+      search_source_graph_commit_epoch_path="${2:-}"
       shift 2
       ;;
     --search-projection-allow-unbounded)
@@ -127,8 +133,16 @@ if [[ ! -d "$nowledge_root" ]]; then
 fi
 
 if [[ -n "$legacy_search_index" ]]; then
-  if [[ -z "$search_active_model" || -z "$search_active_dimension" || -z "$search_source_graph_commit_epoch" ]]; then
-    echo "--legacy-search-index requires --search-active-model, --search-active-dimension, and --search-source-graph-commit-epoch" >&2
+  if [[ -z "$search_active_model" || -z "$search_active_dimension" ]]; then
+    echo "--legacy-search-index requires --search-active-model and --search-active-dimension" >&2
+    exit 2
+  fi
+  if [[ -n "$search_source_graph_commit_epoch" && -n "$search_source_graph_commit_epoch_path" ]]; then
+    echo "use only one of --search-source-graph-commit-epoch or --search-source-graph-commit-epoch-path" >&2
+    exit 2
+  fi
+  if [[ -z "$search_source_graph_commit_epoch" && -z "$search_source_graph_commit_epoch_path" ]]; then
+    echo "--legacy-search-index requires --search-source-graph-commit-epoch or --search-source-graph-commit-epoch-path" >&2
     exit 2
   fi
   if [[ -n "$search_projection_allow_unbounded" && -n "$search_projection_max_rows" ]]; then
@@ -137,6 +151,10 @@ if [[ -n "$legacy_search_index" ]]; then
   fi
   if [[ -z "$search_projection_allow_unbounded" && -z "$search_projection_max_rows" ]]; then
     echo "--legacy-search-index requires --search-projection-allow-unbounded or --search-projection-max-rows" >&2
+    exit 2
+  fi
+  if [[ -n "$search_source_graph_commit_epoch_path" && ! -f "$search_source_graph_commit_epoch_path" ]]; then
+    echo "--search-source-graph-commit-epoch-path does not exist or is not a file: $search_source_graph_commit_epoch_path" >&2
     exit 2
   fi
   if [[ ! -d "$legacy_search_index" ]]; then
@@ -254,11 +272,17 @@ if [[ -z "$search_projection_shadow_evidence_json" && -n "$legacy_search_index" 
   skein_shadow_index="$preflight_root/search-projection-shadow-index"
   skein_shadow_probe_json="$preflight_root/search-projection-shadow-probe.json"
   search_projection_shadow_evidence_json="$preflight_root/search-projection-shadow-evidence.json"
+  source_graph_commit_epoch_args=()
+  if [[ -n "$search_source_graph_commit_epoch" ]]; then
+    source_graph_commit_epoch_args+=(--source-graph-commit-epoch "$search_source_graph_commit_epoch")
+  else
+    source_graph_commit_epoch_args+=(--source-graph-commit-epoch-path "$search_source_graph_commit_epoch_path")
+  fi
 
   run_nmem_search nmem-search-projection-probe \
     --active-model "$search_active_model" \
     --active-dimension "$search_active_dimension" \
-    --source-graph-commit-epoch "$search_source_graph_commit_epoch" \
+    "${source_graph_commit_epoch_args[@]}" \
     --snapshot-versions-path "$lance_snapshot_versions_json" \
     "$legacy_search_index" \
     > "$lancedb_primary_probe_json"
@@ -272,7 +296,7 @@ if [[ -z "$search_projection_shadow_evidence_json" && -n "$legacy_search_index" 
   run_nmem_search nmem-search-projection-delta \
     "${delta_bound_args[@]}" \
     --include-embeddings \
-    --source-graph-commit-epoch "$search_source_graph_commit_epoch" \
+    "${source_graph_commit_epoch_args[@]}" \
     --snapshot-versions-path "$lance_snapshot_versions_json" \
     "$legacy_search_index" \
     > "$lancedb_primary_delta_json"
