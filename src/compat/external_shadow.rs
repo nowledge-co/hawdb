@@ -631,7 +631,10 @@ impl ExternalShadowCommand {
 
     fn shadow_child_status_after_stdout_close(&mut self) -> String {
         match self.child.try_wait() {
-            Ok(Some(status)) => format!("; child status: {status}"),
+            Ok(Some(status)) => {
+                self.stderr.join_reader();
+                format!("; child status: {status}")
+            }
             Ok(None) => {
                 let killed_status = self.kill_shadow_child_status();
                 format!("; child was still running after stdout close{killed_status}")
@@ -643,7 +646,10 @@ impl ExternalShadowCommand {
     fn kill_shadow_child_status(&mut self) -> String {
         let _ = self.child.kill();
         match self.child.wait() {
-            Ok(status) => format!("; child status: {status}"),
+            Ok(status) => {
+                self.stderr.join_reader();
+                format!("; child status: {status}")
+            }
             Err(error) => format!("; failed to wait for child status: {error}"),
         }
     }
@@ -932,13 +938,17 @@ impl ExternalShadowStderr {
             Some(tail.to_string())
         }
     }
+
+    fn join_reader(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
 }
 
 impl Drop for ExternalShadowStderr {
     fn drop(&mut self) {
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        self.join_reader();
     }
 }
 
