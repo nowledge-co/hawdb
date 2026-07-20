@@ -1,4 +1,8 @@
 use crate::{Result, SearchIndex, SearchProjectionProbeOptions, SkeinError};
+use crate::{
+    SearchEmbeddingManifest, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
+};
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -26,6 +30,11 @@ pub fn nowledge_search_projection_evidence_usage() -> String {
 
 pub fn skein_search_projection_probe_usage() -> String {
     "skein-search-projection-probe requires [--active-model <model>] [--active-dimension <dimension>] <search-index-dir>"
+        .to_string()
+}
+
+pub fn skein_search_projection_delta_probe_usage() -> String {
+    "skein-search-projection-delta-probe requires --active-model <model> --active-dimension <dimension> <search-index-dir> <projection-delta-json>"
         .to_string()
 }
 
@@ -91,6 +100,64 @@ pub fn run_skein_search_projection_probe(
         }
     }
     Err(SkeinError::Semantic(skein_search_projection_probe_usage()))
+}
+
+pub fn run_skein_search_projection_delta_probe(
+    mut args: impl Iterator<Item = String>,
+) -> Result<serde_json::Value> {
+    let mut active_model = None;
+    let mut active_dimension = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--active-model" => {
+                active_model = Some(args.next().ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?);
+            }
+            "--active-dimension" => {
+                let raw_dimension = args.next().ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?;
+                active_dimension =
+                    Some(parse_positive_usize("--active-dimension", &raw_dimension)?);
+            }
+            path => {
+                let delta_path = args.next().ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?;
+                if args.next().is_some() {
+                    return Err(SkeinError::Semantic(
+                        skein_search_projection_delta_probe_usage(),
+                    ));
+                }
+                let active_model = active_model.ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?;
+                let active_dimension = active_dimension.ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?;
+                let delta_json = read_json_file(Path::new(&delta_path))?;
+                let delta = parse_search_projection_delta_json(&delta_json)?;
+                let mut index = SearchIndex::open(path)?;
+                index.apply_embedding_manifest(SearchEmbeddingManifest {
+                    model: active_model.clone(),
+                    version: None,
+                    dimension: active_dimension,
+                })?;
+                index.apply_projection_delta(delta)?;
+                index.checkpoint()?;
+                return Ok(index.nowledge_search_projection_probe_json(
+                    SearchProjectionProbeOptions {
+                        active_embedding_model: Some(active_model),
+                        active_embedding_dimension: Some(active_dimension),
+                    },
+                ));
+            }
+        }
+    }
+    Err(SkeinError::Semantic(
+        skein_search_projection_delta_probe_usage(),
+    ))
 }
 
 pub fn run_nowledge_search_projection_shadow_evidence(
@@ -480,6 +547,131 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     })
 }
 
+fn parse_search_projection_delta_json(value: &serde_json::Value) -> Result<SearchProjectionDelta> {
+    let delta = value_path(value, &["delta"]).unwrap_or(value);
+    let upserts = value_path(delta, &["upserts"])
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| SkeinError::Semantic("search projection delta missing upserts".to_string()))?
+        .iter()
+        .map(parse_search_projection_row_json)
+        .collect::<Result<Vec<_>>>()?;
+    let deletes = value_path(delta, &["deletes"])
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_string).ok_or_else(|| {
+                        SkeinError::Semantic(
+                            "search projection delta delete id must be a string".to_string(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let max_operations = u64_path(delta, &["max_operations"])
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| {
+            SkeinError::Semantic("search projection delta max_operations is too large".to_string())
+        })?;
+    let source_graph_commit_epoch = u64_path(delta, &["source_graph_commit_epoch"]);
+    Ok(SearchProjectionDelta {
+        upserts,
+        deletes,
+        max_operations,
+        source_graph_commit_epoch,
+    })
+}
+
+fn parse_search_projection_row_json(value: &serde_json::Value) -> Result<SearchProjectionRow> {
+    let kind =
+        parse_search_projection_kind(str_path(value, &["kind"]).ok_or_else(|| {
+            SkeinError::Semantic("search projection row missing kind".to_string())
+        })?)?;
+    let external_id = required_string(value, "external_id")?;
+    let title = required_string(value, "title")?;
+    let body = required_string(value, "body")?;
+    let embedding = value_path(value, &["embedding"])
+        .and_then(|value| {
+            if value.is_null() {
+                None
+            } else {
+                Some(parse_embedding_json(value))
+            }
+        })
+        .transpose()?;
+    let source_id = value_path(value, &["source_id"])
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let metadata = value_path(value, &["metadata"])
+        .and_then(serde_json::Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), metadata_value_to_string(value)))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    Ok(SearchProjectionRow {
+        kind,
+        external_id,
+        title,
+        body,
+        embedding,
+        source_id,
+        metadata,
+    })
+}
+
+fn required_string(value: &serde_json::Value, key: &str) -> Result<String> {
+    value_path(value, &[key])
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| SkeinError::Semantic(format!("search projection row missing {key}")))
+}
+
+fn parse_search_projection_kind(value: &str) -> Result<SearchProjectionKind> {
+    match value {
+        "Memory" | "memory" => Ok(SearchProjectionKind::Memory),
+        "Message" | "message" => Ok(SearchProjectionKind::Message),
+        "Community" | "community" => Ok(SearchProjectionKind::Community),
+        "Entity" | "entity" => Ok(SearchProjectionKind::Entity),
+        "Source" | "source" => Ok(SearchProjectionKind::Source),
+        "SourceChunk" | "source_chunk" | "chunk" => Ok(SearchProjectionKind::SourceChunk),
+        _ => Err(SkeinError::Semantic(format!(
+            "unknown search projection row kind '{value}'"
+        ))),
+    }
+}
+
+fn parse_embedding_json(value: &serde_json::Value) -> Result<Vec<f32>> {
+    value
+        .as_array()
+        .ok_or_else(|| {
+            SkeinError::Semantic("search projection embedding must be an array".to_string())
+        })?
+        .iter()
+        .map(|item| {
+            item.as_f64().map(|value| value as f32).ok_or_else(|| {
+                SkeinError::Semantic("search projection embedding item must be numeric".to_string())
+            })
+        })
+        .collect()
+}
+
+fn metadata_value_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => value.to_string(),
+    }
+}
+
 fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
     let parsed = value.parse::<usize>().map_err(|error| {
         SkeinError::Semantic(format!("invalid {flag} value '{value}': {error}"))
@@ -527,7 +719,7 @@ fn array_path(value: &serde_json::Value, path: &[&str]) -> Option<Vec<String>> {
 mod tests {
     use super::{
         nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
-        run_skein_search_projection_probe,
+        run_skein_search_projection_delta_probe, run_skein_search_projection_probe,
     };
     use crate::{
         SearchEmbeddingManifest, SearchIndex, SearchProjectionDelta, SearchProjectionKind,
@@ -660,6 +852,48 @@ mod tests {
     }
 
     #[test]
+    fn skein_delta_probe_imports_nmem_export_shape() {
+        let path = unique_test_dir("search_projection_delta_probe_command");
+        let delta_path = path.with_extension("json");
+        std::fs::write(
+            &delta_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "protocol": "nmem-lancedb-skein-search-projection-delta",
+                "delta": {
+                    "upserts": nowledge_probe_rows_json(),
+                    "deletes": [],
+                    "max_operations": 6,
+                    "source_graph_commit_epoch": 13
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = run_skein_search_projection_delta_probe(
+            [
+                "--active-model",
+                "bge-m3",
+                "--active-dimension",
+                "2",
+                path.to_str().unwrap(),
+                delta_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        let evidence = nowledge_search_projection_evidence_json(&probe);
+
+        assert_eq!(probe["protocol"], "skein-nowledge-search-projection-probe");
+        assert_eq!(probe["document_count"], 6);
+        assert_eq!(evidence["ready"], true);
+        assert_eq!(evidence["source_chunk_ready"], true);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_file(delta_path).unwrap();
+    }
+
+    #[test]
     fn search_projection_shadow_evidence_fails_closed_on_table_mismatch() {
         let primary = ready_probe();
         let mut shadow = ready_probe();
@@ -751,6 +985,41 @@ mod tests {
             nowledge_probe_row(SearchProjectionKind::Source, "source_1"),
             nowledge_probe_row(SearchProjectionKind::SourceChunk, "chunk_1"),
         ]
+    }
+
+    fn nowledge_probe_rows_json() -> Vec<serde_json::Value> {
+        vec![
+            nowledge_probe_row_json("Memory", "mem_1", true),
+            nowledge_probe_row_json("Message", "msg_1", false),
+            nowledge_probe_row_json("Community", "community_1", true),
+            nowledge_probe_row_json("Entity", "entity_1", true),
+            nowledge_probe_row_json("Source", "source_1", true),
+            nowledge_probe_row_json("SourceChunk", "chunk_1", true),
+        ]
+    }
+
+    fn nowledge_probe_row_json(
+        kind: &str,
+        external_id: &str,
+        include_embedding: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind,
+            "external_id": external_id,
+            "title": format!("{external_id} title"),
+            "body": format!("{external_id} body"),
+            "embedding": if include_embedding {
+                serde_json::json!([1.0, 0.0])
+            } else {
+                serde_json::Value::Null
+            },
+            "source_id": "source_1",
+            "metadata": {
+                "space_id": "default",
+                "score": 1,
+                "active": true
+            }
+        })
     }
 
     fn nowledge_probe_row(kind: SearchProjectionKind, external_id: &str) -> SearchProjectionRow {

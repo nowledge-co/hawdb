@@ -15,7 +15,7 @@ use cli_replacement_summary::{
 use skein::nowledge_inventory::background_maintenance_summary_to_json;
 use skein::search_projection_evidence::{
     run_nowledge_search_projection_evidence, run_nowledge_search_projection_shadow_evidence,
-    run_skein_search_projection_probe,
+    run_skein_search_projection_delta_probe, run_skein_search_projection_probe,
 };
 use skein::{
     background_maintenance_evidence_health_from_bundle, external_shadow_ready_missing_capabilities,
@@ -129,6 +129,11 @@ fn main() -> Result<()> {
         }
         if command == "skein-search-projection-probe" {
             let json = run_skein_search_projection_probe(args)?;
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            return Ok(());
+        }
+        if command == "skein-search-projection-delta-probe" {
+            let json = run_skein_search_projection_delta_probe(args)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             return Ok(());
         }
