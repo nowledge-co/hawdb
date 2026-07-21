@@ -93,6 +93,35 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ),
         ),
         check(
+            "cypher_coverage_evidence",
+            [
+                str_path(bundle, &["cypher_coverage_summary", "protocol"])
+                    == Some("nowledge-mem-skein-cypher-coverage-summary"),
+                bool_path(bundle, &["cypher_coverage_summary", "ready"]) == Some(true),
+                u64_path(bundle, &["cypher_coverage_summary", "coverage_per_million"])
+                    == Some(1_000_000),
+                u64_path(bundle, &["cypher_coverage_summary", "required_checks"])
+                    .is_some_and(|value| value > 0),
+                u64_path(bundle, &["cypher_coverage_summary", "covered_checks"])
+                    .is_some_and(|value| value > 0),
+                u64_path(bundle, &["cypher_coverage_summary", "missing_checks_count"]) == Some(0),
+                u64_path(
+                    bundle,
+                    &["cypher_coverage_summary", "blocked_query_family_count"],
+                ) == Some(0),
+            ],
+            [
+                "cypher_coverage_summary.protocol",
+                "cypher_coverage_summary.ready",
+                "cypher_coverage_summary.coverage_per_million",
+                "cypher_coverage_summary.required_checks",
+                "cypher_coverage_summary.covered_checks",
+                "cypher_coverage_summary.missing_checks_count",
+                "cypher_coverage_summary.blocked_query_family_count",
+            ],
+            blocker_codes(bundle, &[&["cypher_coverage_summary", "blocker_codes"][..]]),
+        ),
+        check(
             "graph_replacement_evidence",
             [
                 bool_path(bundle, &["replacement_summary", "production_cutover_ready"])
@@ -519,6 +548,27 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ["previous_wrapper_preflight.ready"],
         ));
     }
+    if bool_path(bundle, &["cypher_coverage_summary", "ready"]) != Some(true)
+        || u64_path(bundle, &["cypher_coverage_summary", "coverage_per_million"]) != Some(1_000_000)
+        || u64_path(
+            bundle,
+            &["cypher_coverage_summary", "blocked_query_family_count"],
+        ) != Some(0)
+    {
+        actions.push(next_action(
+            "attach_cypher_coverage_summary",
+            "scanned Nowledge Cypher business-surface coverage must be complete by query family",
+            [
+                "cypher_coverage_summary.protocol",
+                "cypher_coverage_summary.ready",
+                "cypher_coverage_summary.coverage_per_million",
+                "cypher_coverage_summary.required_checks",
+                "cypher_coverage_summary.covered_checks",
+                "cypher_coverage_summary.blocked_query_family_count",
+                "cypher_coverage_summary.blocker_codes",
+            ],
+        ));
+    }
     if bool_path(bundle, &["replacement_summary", "production_cutover_ready"]) != Some(true) {
         actions.push(next_action(
             "produce_replacement_summary",
@@ -828,6 +878,81 @@ mod tests {
     }
 
     #[test]
+    fn requires_cypher_coverage_summary() {
+        let mut bundle = ready_bundle();
+        bundle["cypher_coverage_summary"] = serde_json::json!(null);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["cypher_coverage_evidence"])
+        );
+        let coverage_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "cypher_coverage_evidence")
+            .unwrap();
+        assert_eq!(
+            coverage_check["failed_evidence_fields"],
+            serde_json::json!([
+                "cypher_coverage_summary.protocol",
+                "cypher_coverage_summary.ready",
+                "cypher_coverage_summary.coverage_per_million",
+                "cypher_coverage_summary.required_checks",
+                "cypher_coverage_summary.covered_checks",
+                "cypher_coverage_summary.missing_checks_count",
+                "cypher_coverage_summary.blocked_query_family_count"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "attach_cypher_coverage_summary"));
+    }
+
+    #[test]
+    fn blocks_incomplete_cypher_coverage_summary() {
+        let mut bundle = ready_bundle();
+        bundle["cypher_coverage_summary"]["ready"] = serde_json::json!(false);
+        bundle["cypher_coverage_summary"]["coverage_per_million"] = serde_json::json!(999_000);
+        bundle["cypher_coverage_summary"]["missing_checks_count"] = serde_json::json!(1);
+        bundle["cypher_coverage_summary"]["blocked_query_family_count"] = serde_json::json!(1);
+        bundle["cypher_coverage_summary"]["blocker_codes"] =
+            serde_json::json!(["cypher_coverage_incomplete"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["cypher_coverage_evidence"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["cypher_coverage_incomplete"])
+        );
+        let coverage_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "cypher_coverage_evidence")
+            .unwrap();
+        assert_eq!(
+            coverage_check["failed_evidence_fields"],
+            serde_json::json!([
+                "cypher_coverage_summary.ready",
+                "cypher_coverage_summary.coverage_per_million",
+                "cypher_coverage_summary.missing_checks_count",
+                "cypher_coverage_summary.blocked_query_family_count"
+            ])
+        );
+    }
+
+    #[test]
     fn requires_bounded_read_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["bounded_read_evidence"]["ready"] = serde_json::json!(false);
@@ -978,6 +1103,28 @@ mod tests {
                 "ready": true,
                 "blocker_codes": [],
                 "failed_checks": []
+            },
+            "cypher_coverage_summary": {
+                "protocol": "nowledge-mem-skein-cypher-coverage-summary",
+                "ready": true,
+                "coverage_per_million": 1_000_000,
+                "required_checks": 708,
+                "covered_checks": 708,
+                "missing_checks_count": 0,
+                "extra_fixture_checks_count": 0,
+                "query_family_count": 4,
+                "blocked_query_family_count": 0,
+                "blocked_query_families": [],
+                "coverage_by_query_family": [
+                    {
+                        "query_family": "read",
+                        "coverage_per_million": 1_000_000,
+                        "required_checks": 529,
+                        "covered_checks": 529,
+                        "missing_checks_count": 0
+                    }
+                ],
+                "blocker_codes": []
             },
             "replacement_summary": {
                 "production_cutover_ready": true,
