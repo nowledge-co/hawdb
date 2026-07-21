@@ -826,14 +826,16 @@ impl SearchIndex {
                 "required_graph_commit_epoch": options.required_graph_commit_epoch,
             },
             "blocker_codes": search_projection_probe_blocker_codes(
-                has_documents,
-                has_text,
-                has_vector,
-                manifest.is_some(),
-                model_matches,
-                dimension_matches,
-                options.required_graph_commit_epoch,
-                &freshness,
+                SearchProjectionProbeReadiness {
+                    has_documents,
+                    has_text,
+                    has_vector,
+                    has_manifest: manifest.is_some(),
+                    model_matches,
+                    dimension_matches,
+                    required_graph_commit_epoch: options.required_graph_commit_epoch,
+                    freshness: &freshness,
+                },
             ),
         })
     }
@@ -1691,7 +1693,7 @@ fn search_projection_probe_table_reports(
         .collect()
 }
 
-fn search_projection_probe_blocker_codes(
+struct SearchProjectionProbeReadiness<'a> {
     has_documents: bool,
     has_text: bool,
     has_vector: bool,
@@ -1699,41 +1701,46 @@ fn search_projection_probe_blocker_codes(
     model_matches: bool,
     dimension_matches: bool,
     required_graph_commit_epoch: Option<u64>,
-    freshness: &SearchProjectionFreshness,
-) -> Vec<String> {
+    freshness: &'a SearchProjectionFreshness,
+}
+
+fn search_projection_probe_blocker_codes(input: SearchProjectionProbeReadiness<'_>) -> Vec<String> {
     let mut blockers = BTreeSet::new();
-    if !has_documents {
+    if !input.has_documents {
         blockers.insert("empty_search_projection".to_string());
     }
-    if !has_text {
+    if !input.has_text {
         blockers.insert("missing_text_leg".to_string());
     }
-    if !has_vector {
+    if !input.has_vector {
         blockers.insert("missing_vector_leg".to_string());
     }
-    if !has_manifest {
+    if !input.has_manifest {
         blockers.insert("missing_embedding_manifest".to_string());
     }
-    if !model_matches {
+    if !input.model_matches {
         blockers.insert("embedding_model_mismatch".to_string());
     }
-    if !dimension_matches {
+    if !input.dimension_matches {
         blockers.insert("embedding_dimension_mismatch".to_string());
     }
-    if freshness.full_reindex_needed {
+    if input.freshness.full_reindex_needed {
         blockers.insert("full_reindex_needed".to_string());
     }
-    if freshness.metadata_repair_needed {
+    if input.freshness.metadata_repair_needed {
         blockers.insert("metadata_repair_needed".to_string());
     }
-    if freshness.source_graph_commit_epoch.is_none() {
+    if input.freshness.source_graph_commit_epoch.is_none() {
         blockers.insert("source_graph_commit_epoch_missing".to_string());
     }
-    if required_graph_commit_epoch.is_none() {
+    if input.required_graph_commit_epoch.is_none() {
         blockers.insert("required_graph_commit_epoch_missing".to_string());
     }
     if matches!(
-        (freshness.source_graph_commit_epoch, required_graph_commit_epoch),
+        (
+            input.freshness.source_graph_commit_epoch,
+            input.required_graph_commit_epoch
+        ),
         (Some(source), Some(required)) if source < required
     ) {
         blockers.insert("source_graph_commit_epoch_behind_required_graph_epoch".to_string());
