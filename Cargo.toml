@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 regex = "1"
 serde = "1"
 serde_json = "1"

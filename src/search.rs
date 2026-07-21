@@ -7,6 +7,7 @@ use crate::schema::Catalog;
 use crate::search_filter::{SearchFilterOp, SearchFilterPredicate, SearchFilterTarget};
 use crate::store::{GraphStore, NodeId, NodeRecord};
 use crate::value::Value;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +28,7 @@ const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
 const SEARCH_FILTER_SEGMENT_SIZE: usize = 128;
+const SEARCH_FILTER_SEGMENT_VALUE_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchDocument {
@@ -1150,6 +1152,23 @@ impl SearchIndex {
         if let Some(dimension) = self.embedding_dimension {
             body.push_str(&format!("embedding_dimension\t{dimension}\n"));
         }
+        let filter_segments = if self.filter_segments.is_empty() && !self.documents.is_empty() {
+            SearchFilterSegment::build_all(self.documents.values(), SEARCH_FILTER_SEGMENT_SIZE)
+        } else {
+            self.filter_segments.clone()
+        };
+        for segment in &filter_segments {
+            body.push_str(&format!(
+                "filter_segment\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                encode_string_list(&segment.document_ids),
+                encode_segment_value_map(&segment.field_values),
+                encode_string_set(&segment.saturated_fields),
+                encode_segment_value_map(&segment.json_metadata_path_values),
+                encode_string_set(&segment.saturated_json_metadata_paths),
+                encode_segment_numeric_ranges(&segment.numeric_ranges),
+                encode_segment_temporal_ranges(&segment.temporal_ranges),
+            ));
+        }
         for document in self.documents.values() {
             body.push_str(&format!(
                 "doc\t{}\t{}\t{}\t{}\t{}\n",
@@ -1541,6 +1560,7 @@ impl SearchIndex {
                 "search projection checksum mismatch: expected {checksum}, got {actual}"
             )));
         }
+        let mut persisted_filter_segments = Vec::new();
         for line in body.lines() {
             if line == "SKEIN_SEARCH_PROJECTION_V1" {
                 continue;
@@ -1577,6 +1597,42 @@ impl SearchIndex {
                     }
                     self.embedding_dimension = Some(dimension);
                 }
+                ["filter_segment", raw_document_ids, raw_field_values, raw_json_values, raw_numeric_ranges] =>
+                {
+                    persisted_filter_segments.push(SearchFilterSegment {
+                        document_ids: decode_string_list(raw_document_ids)?,
+                        field_values: decode_segment_value_map(raw_field_values)?,
+                        saturated_fields: BTreeSet::new(),
+                        json_metadata_path_values: decode_segment_value_map(raw_json_values)?,
+                        saturated_json_metadata_paths: BTreeSet::new(),
+                        numeric_ranges: decode_segment_numeric_ranges(raw_numeric_ranges)?,
+                        temporal_ranges: BTreeMap::new(),
+                    });
+                }
+                ["filter_segment", raw_document_ids, raw_field_values, raw_json_values, raw_numeric_ranges, raw_temporal_ranges] =>
+                {
+                    persisted_filter_segments.push(SearchFilterSegment {
+                        document_ids: decode_string_list(raw_document_ids)?,
+                        field_values: decode_segment_value_map(raw_field_values)?,
+                        saturated_fields: BTreeSet::new(),
+                        json_metadata_path_values: decode_segment_value_map(raw_json_values)?,
+                        saturated_json_metadata_paths: BTreeSet::new(),
+                        numeric_ranges: decode_segment_numeric_ranges(raw_numeric_ranges)?,
+                        temporal_ranges: decode_segment_temporal_ranges(raw_temporal_ranges)?,
+                    });
+                }
+                ["filter_segment", raw_document_ids, raw_field_values, raw_saturated_fields, raw_json_values, raw_saturated_json_paths, raw_numeric_ranges, raw_temporal_ranges] =>
+                {
+                    persisted_filter_segments.push(SearchFilterSegment {
+                        document_ids: decode_string_list(raw_document_ids)?,
+                        field_values: decode_segment_value_map(raw_field_values)?,
+                        saturated_fields: decode_string_set(raw_saturated_fields)?,
+                        json_metadata_path_values: decode_segment_value_map(raw_json_values)?,
+                        saturated_json_metadata_paths: decode_string_set(raw_saturated_json_paths)?,
+                        numeric_ranges: decode_segment_numeric_ranges(raw_numeric_ranges)?,
+                        temporal_ranges: decode_segment_temporal_ranges(raw_temporal_ranges)?,
+                    });
+                }
                 ["doc", raw_id, raw_title, raw_content, raw_embedding, raw_metadata] => {
                     let embedding = decode_embedding(raw_embedding)?;
                     if let Some(embedding) = &embedding {
@@ -1599,7 +1655,11 @@ impl SearchIndex {
                 }
             }
         }
-        self.rebuild_filter_segments();
+        if filter_segments_cover_documents(&persisted_filter_segments, &self.documents) {
+            self.filter_segments = persisted_filter_segments;
+        } else {
+            self.rebuild_filter_segments();
+        }
         Ok(())
     }
 
@@ -2063,8 +2123,11 @@ fn metadata_matches(document: &SearchDocument, filters: &BTreeMap<String, String
 struct SearchFilterSegment {
     document_ids: Vec<String>,
     field_values: BTreeMap<String, BTreeSet<String>>,
+    saturated_fields: BTreeSet<String>,
     json_metadata_path_values: BTreeMap<String, BTreeSet<String>>,
+    saturated_json_metadata_paths: BTreeSet<String>,
     numeric_ranges: BTreeMap<String, (f64, f64)>,
+    temporal_ranges: BTreeMap<String, (i64, i64)>,
 }
 
 impl SearchFilterSegment {
@@ -2092,27 +2155,27 @@ impl SearchFilterSegment {
         let mut segment = Self {
             document_ids: Vec::with_capacity(documents.len()),
             field_values: BTreeMap::new(),
+            saturated_fields: BTreeSet::new(),
             json_metadata_path_values: BTreeMap::new(),
+            saturated_json_metadata_paths: BTreeSet::new(),
             numeric_ranges: BTreeMap::new(),
+            temporal_ranges: BTreeMap::new(),
         };
         for document in documents {
             segment.document_ids.push(document.id.clone());
             if !document.metadata.contains_key("space_id") {
-                segment
-                    .field_values
-                    .entry("space_id".to_string())
-                    .or_default()
-                    .insert(DEFAULT_SPACE_ID.to_string());
+                segment.insert_field_value("space_id", DEFAULT_SPACE_ID);
             }
             for (key, value) in &document.metadata {
                 let value = normalized_segment_field_value(key, value);
-                segment
-                    .field_values
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(value.clone());
+                segment.insert_field_value(key, &value);
                 if let Ok(value) = value.parse::<f64>() {
                     segment.extend_numeric_range(key, value);
+                }
+                if is_temporal_filter_field(key) {
+                    if let Some(value) = parse_temporal_value_millis(&value) {
+                        segment.extend_temporal_range(key, value);
+                    }
                 }
             }
             if let Some(raw_metadata) = document.metadata.get("metadata") {
@@ -2137,23 +2200,36 @@ impl SearchFilterSegment {
                 if let Some(expected_values) = predicate.exact_values() {
                     let expected_values =
                         normalized_segment_expected_values(field, expected_values);
-                    return self.field_values.get(field).is_some_and(|values| {
-                        expected_values.iter().any(|value| values.contains(value))
-                    });
+                    return self.saturated_fields.contains(field)
+                        || self.field_values.get(field).is_some_and(|values| {
+                            expected_values.iter().any(|value| values.contains(value))
+                        });
                 }
                 if let Some(expected) = predicate.gte_value() {
-                    let Ok(expected) = expected.parse::<f64>() else {
-                        return false;
-                    };
-                    return self
-                        .numeric_ranges
-                        .get(field)
-                        .is_some_and(|(_, max)| *max >= expected);
+                    if let Ok(expected) = expected.parse::<f64>() {
+                        return self
+                            .numeric_ranges
+                            .get(field)
+                            .is_some_and(|(_, max)| *max >= expected);
+                    }
+                    if let Some(expected) = is_temporal_filter_field(field)
+                        .then(|| parse_temporal_value_millis(expected))
+                        .flatten()
+                    {
+                        return self
+                            .temporal_ranges
+                            .get(field)
+                            .is_some_and(|(_, max)| *max >= expected);
+                    }
+                    return false;
                 }
                 true
             }
             SearchFilterTarget::JsonMetadataPath(path) => {
                 if let Some(expected_values) = predicate.exact_values() {
+                    if self.saturated_json_metadata_paths.contains(path) {
+                        return true;
+                    }
                     return self
                         .json_metadata_path_values
                         .get(path)
@@ -2176,6 +2252,34 @@ impl SearchFilterSegment {
             .and_modify(|(min, max)| {
                 *min = min.min(value);
                 *max = max.max(value);
+            })
+            .or_insert((value, value));
+    }
+
+    fn insert_field_value(&mut self, key: &str, value: &str) {
+        insert_bounded_segment_value(
+            &mut self.field_values,
+            &mut self.saturated_fields,
+            key,
+            value,
+        );
+    }
+
+    fn insert_json_metadata_path_value(&mut self, key: &str, value: &str) {
+        insert_bounded_segment_value(
+            &mut self.json_metadata_path_values,
+            &mut self.saturated_json_metadata_paths,
+            key,
+            value,
+        );
+    }
+
+    fn extend_temporal_range(&mut self, key: &str, value: i64) {
+        self.temporal_ranges
+            .entry(key.to_string())
+            .and_modify(|(min, max)| {
+                *min = (*min).min(value);
+                *max = (*max).max(value);
             })
             .or_insert((value, value));
     }
@@ -2206,12 +2310,29 @@ impl SearchFilterSegment {
                 let Some(path) = path else {
                     return;
                 };
-                self.json_metadata_path_values
-                    .entry(path.to_string())
-                    .or_default()
-                    .insert(normalize_json_metadata_filter_value(value));
+                self.insert_json_metadata_path_value(
+                    path,
+                    &normalize_json_metadata_filter_value(value),
+                );
             }
         }
+    }
+}
+
+fn insert_bounded_segment_value(
+    values: &mut BTreeMap<String, BTreeSet<String>>,
+    saturated_keys: &mut BTreeSet<String>,
+    key: &str,
+    value: &str,
+) {
+    if saturated_keys.contains(key) {
+        return;
+    }
+    let values = values.entry(key.to_string()).or_default();
+    values.insert(value.to_string());
+    if values.len() > SEARCH_FILTER_SEGMENT_VALUE_LIMIT {
+        values.clear();
+        saturated_keys.insert(key.to_string());
     }
 }
 
@@ -2230,6 +2351,46 @@ fn normalized_segment_expected_values(field: &str, values: &[String]) -> Vec<Str
         .iter()
         .map(|value| normalized_segment_field_value(field, value))
         .collect()
+}
+
+fn is_temporal_filter_field(field: &str) -> bool {
+    let field = field.to_ascii_lowercase();
+    field == "created_at"
+        || field == "updated_at"
+        || field == "timestamp"
+        || field == "event_time"
+        || field == "recorded_at"
+        || field == "observed_at"
+        || field.ends_with("_at")
+        || field.ends_with("_time")
+        || field.ends_with("_date")
+}
+
+fn parse_temporal_value_millis(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(value) = value.parse::<i64>() {
+        return Some(value);
+    }
+    if let Ok(value) = DateTime::parse_from_rfc3339(value) {
+        return Some(value.timestamp_millis());
+    }
+    for format in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+    ] {
+        if let Ok(value) = NaiveDateTime::parse_from_str(value, format) {
+            return Some(Utc.from_utc_datetime(&value).timestamp_millis());
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|value| value.and_hms_opt(0, 0, 0))
+        .map(|value| Utc.from_utc_datetime(&value).timestamp_millis())
 }
 
 fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) -> bool {
@@ -2271,7 +2432,7 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
             (_, SearchFilterOp::Gte(expected)) => document
                 .metadata
                 .get(&field)
-                .is_some_and(|actual| metadata_number_gte(actual, &expected)),
+                .is_some_and(|actual| metadata_gte(&field, actual, &expected)),
             (_, SearchFilterOp::In(expected_values)) => document
                 .metadata
                 .get(&field)
@@ -2399,6 +2560,22 @@ fn normalize_json_metadata_filter_value(value: &serde_json::Value) -> String {
 fn metadata_number_gte(actual: &str, expected: &str) -> bool {
     match (actual.parse::<f64>(), expected.parse::<f64>()) {
         (Ok(actual), Ok(expected)) => actual >= expected,
+        _ => false,
+    }
+}
+
+fn metadata_gte(field: &str, actual: &str, expected: &str) -> bool {
+    if metadata_number_gte(actual, expected) {
+        return true;
+    }
+    if !is_temporal_filter_field(field) {
+        return false;
+    }
+    match (
+        parse_temporal_value_millis(actual),
+        parse_temporal_value_millis(expected),
+    ) {
+        (Some(actual), Some(expected)) => actual >= expected,
         _ => false,
     }
 }
@@ -2946,6 +3123,172 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
     Ok(metadata)
 }
 
+fn encode_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| encode_string(value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_string_list(input: &str) -> Result<Vec<String>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    input.split(',').map(decode_string).collect()
+}
+
+fn encode_string_set(values: &BTreeSet<String>) -> String {
+    values
+        .iter()
+        .map(|value| encode_string(value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_string_set(input: &str) -> Result<BTreeSet<String>> {
+    if input.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    input.split(',').map(decode_string).collect()
+}
+
+fn encode_segment_value_map(values: &BTreeMap<String, BTreeSet<String>>) -> String {
+    values
+        .iter()
+        .map(|(key, values)| {
+            format!(
+                "{}={}",
+                encode_string(key),
+                values
+                    .iter()
+                    .map(|value| encode_string(value))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn decode_segment_value_map(input: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut values = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(values);
+    }
+    for pair in input.split(';') {
+        let Some((raw_key, raw_values)) = pair.split_once('=') else {
+            return Err(SkeinError::Storage(format!(
+                "invalid search filter segment value pair: {pair}"
+            )));
+        };
+        let mut decoded_values = BTreeSet::new();
+        if !raw_values.is_empty() {
+            for raw_value in raw_values.split(',') {
+                decoded_values.insert(decode_string(raw_value)?);
+            }
+        }
+        values.insert(decode_string(raw_key)?, decoded_values);
+    }
+    Ok(values)
+}
+
+fn encode_segment_numeric_ranges(values: &BTreeMap<String, (f64, f64)>) -> String {
+    values
+        .iter()
+        .map(|(key, (min, max))| format!("{}={},{}", encode_string(key), min, max))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn decode_segment_numeric_ranges(input: &str) -> Result<BTreeMap<String, (f64, f64)>> {
+    let mut ranges = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(ranges);
+    }
+    for pair in input.split(';') {
+        let Some((raw_key, raw_range)) = pair.split_once('=') else {
+            return Err(SkeinError::Storage(format!(
+                "invalid search filter segment range pair: {pair}"
+            )));
+        };
+        let Some((raw_min, raw_max)) = raw_range.split_once(',') else {
+            return Err(SkeinError::Storage(format!(
+                "invalid search filter segment range value: {raw_range}"
+            )));
+        };
+        let min = raw_min.parse::<f64>().map_err(|_| {
+            SkeinError::Storage(format!(
+                "invalid search filter segment range min: {raw_min}"
+            ))
+        })?;
+        let max = raw_max.parse::<f64>().map_err(|_| {
+            SkeinError::Storage(format!(
+                "invalid search filter segment range max: {raw_max}"
+            ))
+        })?;
+        ranges.insert(decode_string(raw_key)?, (min, max));
+    }
+    Ok(ranges)
+}
+
+fn encode_segment_temporal_ranges(values: &BTreeMap<String, (i64, i64)>) -> String {
+    values
+        .iter()
+        .map(|(key, (min, max))| format!("{}={},{}", encode_string(key), min, max))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn decode_segment_temporal_ranges(input: &str) -> Result<BTreeMap<String, (i64, i64)>> {
+    let mut ranges = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(ranges);
+    }
+    for pair in input.split(';') {
+        let Some((raw_key, raw_range)) = pair.split_once('=') else {
+            return Err(SkeinError::Storage(format!(
+                "invalid search filter segment temporal range pair: {pair}"
+            )));
+        };
+        let Some((raw_min, raw_max)) = raw_range.split_once(',') else {
+            return Err(SkeinError::Storage(format!(
+                "invalid search filter segment temporal range value: {raw_range}"
+            )));
+        };
+        let min = raw_min.parse::<i64>().map_err(|_| {
+            SkeinError::Storage(format!(
+                "invalid search filter segment temporal range min: {raw_min}"
+            ))
+        })?;
+        let max = raw_max.parse::<i64>().map_err(|_| {
+            SkeinError::Storage(format!(
+                "invalid search filter segment temporal range max: {raw_max}"
+            ))
+        })?;
+        ranges.insert(decode_string(raw_key)?, (min, max));
+    }
+    Ok(ranges)
+}
+
+fn filter_segments_cover_documents(
+    segments: &[SearchFilterSegment],
+    documents: &BTreeMap<String, SearchDocument>,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    for segment in segments {
+        if segment.document_ids.is_empty() {
+            return false;
+        }
+        for document_id in &segment.document_ids {
+            if !documents.contains_key(document_id) || !seen.insert(document_id) {
+                return false;
+            }
+        }
+    }
+    seen.len() == documents.len()
+}
+
 fn encode_string(input: &str) -> String {
     input
         .as_bytes()
@@ -3438,6 +3781,124 @@ mod tests {
             topic.clone()
         ]));
         assert!(segments[1].may_match_all(&[unit_type, importance, topic]));
+    }
+
+    #[test]
+    fn filter_segments_prune_temporal_range_predicates() {
+        let old = SearchDocument {
+            id: "memory:old".to_string(),
+            title: "Old".to_string(),
+            content: "temporal pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([(
+                "created_at".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+            )]),
+        };
+        let new = SearchDocument {
+            id: "memory:new".to_string(),
+            title: "New".to_string(),
+            content: "temporal pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([(
+                "created_at".to_string(),
+                "2026-07-21T00:00:00Z".to_string(),
+            )]),
+        };
+        let segments = SearchFilterSegment::build_all([&old, &new].into_iter(), 1);
+        let predicate = SearchFilterPredicate::parse("created_at__gte", "2026-06-01T00:00:00Z");
+
+        assert!(!segments[0].may_match_all(std::slice::from_ref(&predicate)));
+        assert!(segments[1].may_match_all(&[predicate]));
+    }
+
+    #[test]
+    fn filter_segments_bound_high_cardinality_value_sets() {
+        let documents = (0..=SEARCH_FILTER_SEGMENT_VALUE_LIMIT)
+            .map(|value| SearchDocument {
+                id: format!("memory:{value}"),
+                title: "High cardinality".to_string(),
+                content: "bounded segment summary".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("external_id".to_string(), format!("item-{value}"))]),
+            })
+            .collect::<Vec<_>>();
+        let segments = SearchFilterSegment::build_all(
+            documents.iter().collect::<Vec<_>>().into_iter(),
+            SEARCH_FILTER_SEGMENT_VALUE_LIMIT + 1,
+        );
+
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].saturated_fields.contains("external_id"));
+        assert!(segments[0].field_values["external_id"].is_empty());
+        assert!(segments[0].may_match_all(&[SearchFilterPredicate::parse(
+            "external_id",
+            "not-materialized"
+        )]));
+    }
+
+    #[test]
+    fn filter_segments_round_trip_through_snapshot_metadata() {
+        let path = unique_test_dir("search_filter_segments_snapshot");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index
+                .upsert(SearchDocument {
+                    id: "memory:old".to_string(),
+                    title: "Old".to_string(),
+                    content: "temporal pruning".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([
+                        ("unit_type".to_string(), "task".to_string()),
+                        ("importance".to_string(), "0.2".to_string()),
+                        ("created_at".to_string(), "2026-01-01T00:00:00Z".to_string()),
+                    ]),
+                })
+                .unwrap();
+            index
+                .upsert(SearchDocument {
+                    id: "memory:new".to_string(),
+                    title: "New".to_string(),
+                    content: "temporal pruning".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([
+                        ("unit_type".to_string(), "decision".to_string()),
+                        ("importance".to_string(), "0.9".to_string()),
+                        ("created_at".to_string(), "2026-07-21T00:00:00Z".to_string()),
+                    ]),
+                })
+                .unwrap();
+            index.checkpoint().unwrap();
+        }
+
+        let snapshot = read_search_snapshot_text(&path.join(SEARCH_SNAPSHOT_FILE)).unwrap();
+        assert!(snapshot.contains("filter_segment\t"));
+        let index = SearchIndex::open(&path).unwrap();
+
+        assert!(!index.filter_segments.is_empty());
+        let result = index.search_with_options(
+            "temporal",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    ("unit_type".to_string(), "decision".to_string()),
+                    ("importance__gte".to_string(), "0.7".to_string()),
+                    (
+                        "created_at__gte".to_string(),
+                        "2026-06-01T00:00:00Z".to_string(),
+                    ),
+                ]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.filtered_document_count, 1);
+        assert_eq!(result.hits[0].id, "memory:new");
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
