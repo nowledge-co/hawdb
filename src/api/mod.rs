@@ -9042,6 +9042,12 @@ fn knowledge_graph_seed_matches_filter(
     key: &str,
     value: &str,
 ) -> bool {
+    if let Some(field) = key.strip_suffix("__gte") {
+        let Some(property) = node.properties.get(field) else {
+            return false;
+        };
+        return property_number_gte(property, value);
+    }
     match key {
         "kind" => {
             let Some(label) = search_kind_to_label(value) else {
@@ -9058,6 +9064,22 @@ fn knowledge_graph_seed_matches_filter(
             .properties
             .get(key)
             .is_some_and(|property| value_to_external_id(property) == value),
+    }
+}
+
+fn property_number_gte(actual: &Value, expected: &str) -> bool {
+    let actual = match actual {
+        Value::Int(value) => *value as f64,
+        Value::Float(value) => *value,
+        Value::String(value) => match value.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => return false,
+        },
+        _ => return false,
+    };
+    match expected.parse::<f64>() {
+        Ok(expected) => actual >= expected,
+        Err(_) => false,
     }
 }
 

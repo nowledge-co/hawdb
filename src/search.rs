@@ -2020,6 +2020,12 @@ fn metadata_matches(document: &SearchDocument, filters: &BTreeMap<String, String
 }
 
 fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) -> bool {
+    if let Some(field) = key.strip_suffix("__gte") {
+        let Some(actual) = document.metadata.get(field) else {
+            return false;
+        };
+        return metadata_number_gte(actual, expected);
+    }
     match key {
         "kind" => document
             .metadata
@@ -2038,6 +2044,13 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
             .metadata
             .get(key)
             .is_some_and(|actual| actual == expected),
+    }
+}
+
+fn metadata_number_gte(actual: &str, expected: &str) -> bool {
+    match (actual.parse::<f64>(), expected.parse::<f64>()) {
+        (Ok(actual), Ok(expected)) => actual >= expected,
+        _ => false,
     }
 }
 
@@ -3187,6 +3200,60 @@ mod tests {
         assert_eq!(text.candidate_count, 1);
         assert_eq!(text.candidate_set.cardinality, 1);
         assert_eq!(text.top_hit_ids, vec!["memory:thread_1".to_string()]);
+    }
+
+    #[test]
+    fn search_with_options_applies_numeric_gte_filters_before_ranking() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:high".to_string(),
+                title: "Graph memory".to_string(),
+                content: "range scoped retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("importance".to_string(), "0.9".to_string()),
+                    ("confidence".to_string(), "0.8".to_string()),
+                ]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:low".to_string(),
+                title: "Graph memory".to_string(),
+                content: "range scoped retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("importance".to_string(), "0.4".to_string()),
+                    ("confidence".to_string(), "0.8".to_string()),
+                ]),
+            })
+            .unwrap();
+
+        let result = index.search_with_options(
+            "range scoped retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("importance__gte".to_string(), "0.7".to_string()),
+                    ("confidence__gte".to_string(), "0.7".to_string()),
+                ]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.document_count, 2);
+        assert_eq!(result.filtered_document_count, 1);
+        assert_eq!(result.candidate_set.filtered_out_count, 1);
+        assert_eq!(result.hits[0].id, "memory:high");
     }
 
     #[test]

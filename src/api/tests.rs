@@ -2592,6 +2592,60 @@ fn knowledge_retrieval_applies_metadata_filters_to_search_and_graph_seeds() {
 }
 
 #[test]
+fn knowledge_retrieval_applies_numeric_gte_filters_to_search_and_graph_seeds() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'mem_high', title: 'Filtered graph', content: 'numeric scoped retrieval', source_id: 'thread_1', importance: 0.9, confidence: 0.8})")
+            .unwrap();
+    db.query("CREATE (:Memory {id: 'mem_low', title: 'Filtered graph', content: 'numeric scoped retrieval', source_id: 'thread_2', importance: 0.4, confidence: 0.8})")
+            .unwrap();
+
+    let mut search_index = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
+        .unwrap();
+
+    let output = db.retrieve_knowledge(
+        &search_index,
+        &KnowledgeRetrievalRequest {
+            query_text: "numeric scoped retrieval".to_string(),
+            query_embedding: None,
+            mode: SearchMode::Text,
+            limit: 10,
+            rank_window: None,
+            search_fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::from([
+                ("importance__gte".to_string(), "0.7".to_string()),
+                ("confidence__gte".to_string(), "0.7".to_string()),
+            ]),
+            candidate_limit: None,
+            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+            graph_seed_limit: 10,
+            graph_context_limit: 0,
+            graph_context_max_hops: 1,
+        },
+    );
+
+    assert_eq!(output.search.total_hits, 1);
+    assert_eq!(
+        output.search.hits[0].external_id.as_deref(),
+        Some("mem_high")
+    );
+    assert_eq!(output.diagnostics.search_filtered_document_count, 1);
+    assert_eq!(
+        output.diagnostics.search_candidate_set.filtered_out_count,
+        1
+    );
+    assert_eq!(output.diagnostics.graph_seed_candidate_count, 1);
+    assert_eq!(output.diagnostics.graph_seed_returned_count, 1);
+    assert_eq!(
+        output
+            .diagnostics
+            .graph_seed_input_candidate_set
+            .filtered_out_count,
+        1
+    );
+}
+
+#[test]
 fn knowledge_retrieval_kind_filter_accepts_canonical_labels() {
     let mut db = Database::new();
     db.query(
