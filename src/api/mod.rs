@@ -9056,6 +9056,9 @@ fn knowledge_graph_seed_matches_filter(
                 SearchFilterOp::In(values) => {
                     property_json_metadata_path_matches_any(metadata, &path, &values)
                 }
+                SearchFilterOp::NotIn(values) => {
+                    !property_json_metadata_path_matches_any(metadata, &path, &values)
+                }
                 SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => false,
             };
         }
@@ -9086,6 +9089,10 @@ fn knowledge_graph_seed_matches_filter(
                 .properties
                 .get(&field)
                 .is_some_and(|property| property_value_in(property, &values)),
+            (_, SearchFilterOp::NotIn(values)) => node
+                .properties
+                .get(&field)
+                .is_none_or(|property| !property_value_in(property, &values)),
         },
     }
 }

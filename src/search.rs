@@ -2257,6 +2257,17 @@ impl SearchFilterSegment {
                             expected_values.iter().any(|value| values.contains(value))
                         });
                 }
+                if let Some(excluded_values) = predicate.excluded_values() {
+                    if self.saturated_fields.contains(field) {
+                        return true;
+                    }
+                    let excluded_values =
+                        normalized_segment_expected_values(field, excluded_values);
+                    return self.field_values.get(field).is_none_or(|values| {
+                        values.is_empty()
+                            || values.iter().any(|value| !excluded_values.contains(value))
+                    });
+                }
                 if let Some(expected) = predicate.gte_value() {
                     if let Ok(expected) = expected.parse::<f64>() {
                         return self
@@ -2291,6 +2302,19 @@ impl SearchFilterSegment {
                                     &serde_json::Value::String(value.clone()),
                                 ))
                             })
+                        });
+                }
+                if let Some(excluded_values) = predicate.excluded_values() {
+                    if self.saturated_json_metadata_paths.contains(path) {
+                        return true;
+                    }
+                    let excluded_values = normalized_json_filter_values(excluded_values);
+                    return self
+                        .json_metadata_path_values
+                        .get(path)
+                        .is_none_or(|values| {
+                            values.is_empty()
+                                || values.iter().any(|value| !excluded_values.contains(value))
                         });
                 }
                 true
@@ -2459,6 +2483,9 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
                 SearchFilterOp::In(expected_values) => {
                     json_metadata_path_matches_any(raw_metadata, &path, &expected_values)
                 }
+                SearchFilterOp::NotIn(excluded_values) => {
+                    !json_metadata_path_matches_any(raw_metadata, &path, &excluded_values)
+                }
                 SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => false,
             };
         }
@@ -2489,6 +2516,10 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
                 .metadata
                 .get(&field)
                 .is_some_and(|actual| metadata_value_in(actual, &expected_values)),
+            (_, SearchFilterOp::NotIn(excluded_values)) => document
+                .metadata
+                .get(&field)
+                .is_none_or(|actual| !metadata_value_in(actual, &excluded_values)),
         },
     }
 }
@@ -3852,6 +3883,32 @@ mod tests {
     }
 
     #[test]
+    fn filter_segments_prune_not_in_predicates_when_all_values_are_excluded() {
+        let deleted = SearchDocument {
+            id: "memory:deleted".to_string(),
+            title: "Deleted".to_string(),
+            content: "history visible pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([("lifecycle_state".to_string(), "deleted".to_string())]),
+        };
+        let active = SearchDocument {
+            id: "memory:active".to_string(),
+            title: "Active".to_string(),
+            content: "history visible pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([("lifecycle_state".to_string(), "active".to_string())]),
+        };
+        let segments = SearchFilterSegment::build_all([&deleted, &active].into_iter(), 1);
+        let predicate = SearchFilterPredicate::parse(
+            "lifecycle_state__not_in",
+            &serde_json::to_string(&["deleted", "forgotten"]).unwrap(),
+        );
+
+        assert!(!segments[0].may_match_all(std::slice::from_ref(&predicate)));
+        assert!(segments[1].may_match_all(&[predicate]));
+    }
+
+    #[test]
     fn filter_segments_bound_high_cardinality_value_sets() {
         let documents = (0..=SEARCH_FILTER_SEGMENT_VALUE_LIMIT)
             .map(|value| SearchDocument {
@@ -4276,6 +4333,89 @@ mod tests {
         assert_eq!(result.filtered_document_count, 1);
         assert_eq!(result.candidate_set.filtered_out_count, 1);
         assert_eq!(result.hits[0].id, "memory:decision");
+    }
+
+    #[test]
+    fn search_with_options_applies_not_in_filters_before_ranking() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:active".to_string(),
+                title: "Graph memory".to_string(),
+                content: "history visible retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("lifecycle_state".to_string(), "active".to_string()),
+                    ("metadata".to_string(), r#"{"state":"active"}"#.to_string()),
+                ]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:archived".to_string(),
+                title: "Graph memory".to_string(),
+                content: "history visible retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("lifecycle_state".to_string(), "archived".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"state":"archived"}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:forgotten".to_string(),
+                title: "Graph memory".to_string(),
+                content: "history visible retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("lifecycle_state".to_string(), "forgotten".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"state":"forgotten"}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+
+        let result = index.search_with_options(
+            "history visible retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    (
+                        "lifecycle_state__not_in".to_string(),
+                        serde_json::to_string(&["deleted", "forgotten"]).unwrap(),
+                    ),
+                    (
+                        "metadata.state__not_in".to_string(),
+                        serde_json::to_string(&["deleted", "forgotten"]).unwrap(),
+                    ),
+                ]),
+                policy_epoch: None,
+            },
+        );
+        let hit_ids = result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(result.filtered_document_count, 2);
+        assert!(hit_ids.contains("memory:active"));
+        assert!(hit_ids.contains("memory:archived"));
+        assert!(!hit_ids.contains("memory:forgotten"));
     }
 
     #[test]

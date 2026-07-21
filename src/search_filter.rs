@@ -9,6 +9,7 @@ pub(crate) enum SearchFilterOp {
     Eq(String),
     Gte(String),
     In(Vec<String>),
+    NotIn(Vec<String>),
     InvalidIn,
 }
 
@@ -22,6 +23,11 @@ impl SearchFilterPredicate {
     pub(crate) fn parse(key: &str, value: &str) -> Self {
         let (field, op) = if let Some(field) = key.strip_suffix("__gte") {
             (field, SearchFilterOp::Gte(value.to_string()))
+        } else if let Some(field) = key.strip_suffix("__not_in") {
+            let op = serde_json::from_str::<Vec<String>>(value)
+                .map(SearchFilterOp::NotIn)
+                .unwrap_or(SearchFilterOp::InvalidIn);
+            (field, op)
         } else if let Some(field) = key.strip_suffix("__in") {
             let op = serde_json::from_str::<Vec<String>>(value)
                 .map(SearchFilterOp::In)
@@ -43,14 +49,27 @@ impl SearchFilterPredicate {
         match &self.op {
             SearchFilterOp::Eq(value) => Some(std::slice::from_ref(value)),
             SearchFilterOp::In(values) => Some(values.as_slice()),
-            SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => None,
+            SearchFilterOp::Gte(_) | SearchFilterOp::NotIn(_) | SearchFilterOp::InvalidIn => None,
         }
     }
 
     pub(crate) fn gte_value(&self) -> Option<&str> {
         match &self.op {
             SearchFilterOp::Gte(value) => Some(value),
-            SearchFilterOp::Eq(_) | SearchFilterOp::In(_) | SearchFilterOp::InvalidIn => None,
+            SearchFilterOp::Eq(_)
+            | SearchFilterOp::In(_)
+            | SearchFilterOp::NotIn(_)
+            | SearchFilterOp::InvalidIn => None,
+        }
+    }
+
+    pub(crate) fn excluded_values(&self) -> Option<&[String]> {
+        match &self.op {
+            SearchFilterOp::NotIn(values) => Some(values.as_slice()),
+            SearchFilterOp::Eq(_)
+            | SearchFilterOp::Gte(_)
+            | SearchFilterOp::In(_)
+            | SearchFilterOp::InvalidIn => None,
         }
     }
 }
@@ -97,6 +116,17 @@ mod tests {
         assert_eq!(
             SearchFilterPredicate::parse("unit_type__in", "decision").op,
             SearchFilterOp::InvalidIn
+        );
+    }
+
+    #[test]
+    fn parses_field_not_in_predicate() {
+        assert_eq!(
+            SearchFilterPredicate::parse("lifecycle_state__not_in", r#"["deleted","forgotten"]"#),
+            SearchFilterPredicate {
+                target: SearchFilterTarget::Field("lifecycle_state".to_string()),
+                op: SearchFilterOp::NotIn(vec!["deleted".to_string(), "forgotten".to_string()]),
+            }
         );
     }
 }
