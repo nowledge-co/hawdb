@@ -34,7 +34,7 @@ pub fn skein_search_projection_probe_usage() -> String {
 }
 
 pub fn skein_search_projection_delta_probe_usage() -> String {
-    "skein-search-projection-delta-probe requires --active-model <model> --active-dimension <dimension> <search-index-dir> <projection-delta-json>"
+    "skein-search-projection-delta-probe requires --active-model <model> --active-dimension <dimension> [--required-graph-commit-epoch <epoch>] <search-index-dir> <projection-delta-json>"
         .to_string()
 }
 
@@ -116,6 +116,7 @@ pub fn run_skein_search_projection_delta_probe(
 ) -> Result<serde_json::Value> {
     let mut active_model = None;
     let mut active_dimension = None;
+    let mut required_graph_commit_epoch = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--active-model" => {
@@ -129,6 +130,15 @@ pub fn run_skein_search_projection_delta_probe(
                 })?;
                 active_dimension =
                     Some(parse_positive_usize("--active-dimension", &raw_dimension)?);
+            }
+            "--required-graph-commit-epoch" => {
+                let raw_epoch = args.next().ok_or_else(|| {
+                    SkeinError::Semantic(skein_search_projection_delta_probe_usage())
+                })?;
+                required_graph_commit_epoch = Some(parse_positive_u64(
+                    "--required-graph-commit-epoch",
+                    &raw_epoch,
+                )?);
             }
             path => {
                 let delta_path = args.next().ok_or_else(|| {
@@ -147,7 +157,8 @@ pub fn run_skein_search_projection_delta_probe(
                 })?;
                 let delta_json = read_json_file(Path::new(&delta_path))?;
                 let delta = parse_search_projection_delta_json(&delta_json)?;
-                let required_graph_commit_epoch = delta.source_graph_commit_epoch;
+                let required_graph_commit_epoch =
+                    required_graph_commit_epoch.or(delta.source_graph_commit_epoch);
                 let mut index = SearchIndex::open(path)?;
                 index.apply_embedding_manifest(SearchEmbeddingManifest {
                     model: active_model.clone(),
@@ -929,6 +940,58 @@ mod tests {
         assert_eq!(probe["document_count"], 6);
         assert_eq!(evidence["ready"], true);
         assert_eq!(evidence["source_chunk_ready"], true);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_file(delta_path).unwrap();
+    }
+
+    #[test]
+    fn skein_delta_probe_applies_required_graph_epoch_override() {
+        let path = unique_test_dir("search_projection_delta_probe_required_epoch");
+        let delta_path = path.with_extension("json");
+        std::fs::write(
+            &delta_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "protocol": "nmem-lancedb-skein-search-projection-delta",
+                "delta": {
+                    "upserts": nowledge_probe_rows_json(),
+                    "deletes": [],
+                    "max_operations": 6,
+                    "source_graph_commit_epoch": 13
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = run_skein_search_projection_delta_probe(
+            [
+                "--active-model",
+                "bge-m3",
+                "--active-dimension",
+                "2",
+                "--required-graph-commit-epoch",
+                "14",
+                path.to_str().unwrap(),
+                delta_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        let evidence = nowledge_search_projection_evidence_json(&probe);
+
+        assert_eq!(probe["incremental_update"]["source_graph_commit_epoch"], 13);
+        assert_eq!(
+            probe["incremental_update"]["required_graph_commit_epoch"],
+            14
+        );
+        assert_eq!(evidence["ready"], false);
+        assert!(evidence["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code.as_str()
+                == Some("source_graph_commit_epoch_behind_required_graph_epoch")));
         std::fs::remove_dir_all(path).unwrap();
         std::fs::remove_file(delta_path).unwrap();
     }
