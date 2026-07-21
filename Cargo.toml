@@ -17,6 +17,10 @@ skein-plan-cache = { path = "crates/plan-cache" }
 skein-qos = { path = "crates/qos" }
 zstd = "0.13"
 
+[features]
+default = ["simd"]
+simd = []
+
 [workspace]
 members = [
   "crates/api-types",

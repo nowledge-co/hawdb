@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 mod analyzer_lexicon;
+mod vector_math;
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
+use vector_math::cosine_similarity;
 
 const SEARCH_SNAPSHOT_FILE: &str = "search_projection.skein";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
@@ -3101,26 +3103,6 @@ impl IdentifierCharKind {
             Self::Other
         }
     }
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
-    if left.len() != right.len() || left.is_empty() {
-        return None;
-    }
-    let mut dot = 0.0_f64;
-    let mut left_norm = 0.0_f64;
-    let mut right_norm = 0.0_f64;
-    for (l, r) in left.iter().zip(right.iter()) {
-        let l = f64::from(*l);
-        let r = f64::from(*r);
-        dot += l * r;
-        left_norm += l * l;
-        right_norm += r * r;
-    }
-    if left_norm == 0.0 || right_norm == 0.0 {
-        return None;
-    }
-    Some((dot / (left_norm.sqrt() * right_norm.sqrt())).max(0.0))
 }
 
 fn encode_embedding(embedding: Option<&[f32]>) -> String {
