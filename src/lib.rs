@@ -12,6 +12,7 @@ pub mod search;
 pub mod store;
 
 mod regex_cache;
+mod search_filter;
 #[path = "cli_search_projection_evidence.rs"]
 pub mod search_projection_evidence;
 

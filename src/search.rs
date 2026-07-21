@@ -4,6 +4,7 @@ use crate::qos::{
     QosAdmission, WorkClass, WorkRequest,
 };
 use crate::schema::Catalog;
+use crate::search_filter::{SearchFilterOp, SearchFilterPredicate, SearchFilterTarget};
 use crate::store::{GraphStore, NodeId, NodeRecord};
 use crate::value::Value;
 use std::cell::RefCell;
@@ -2020,48 +2021,50 @@ fn metadata_matches(document: &SearchDocument, filters: &BTreeMap<String, String
 }
 
 fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) -> bool {
-    if let Some(field) = key.strip_suffix("__gte") {
-        let Some(actual) = document.metadata.get(field) else {
-            return false;
-        };
-        return metadata_number_gte(actual, expected);
-    }
-    if let Some(field) = key.strip_suffix("__in") {
-        if let Some(path) = field.strip_prefix("metadata.") {
+    let predicate = SearchFilterPredicate::parse(key, expected);
+    match predicate.target {
+        SearchFilterTarget::JsonMetadataPath(path) => {
             let Some(raw_metadata) = document.metadata.get("metadata") else {
                 return false;
             };
-            return json_metadata_path_matches_any(raw_metadata, path, expected);
+            return match predicate.op {
+                SearchFilterOp::Eq(expected) => {
+                    json_metadata_path_matches(raw_metadata, &path, &expected)
+                }
+                SearchFilterOp::In(expected_values) => {
+                    json_metadata_path_matches_any(raw_metadata, &path, &expected_values)
+                }
+                SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => false,
+            };
         }
-        let Some(actual) = document.metadata.get(field) else {
-            return false;
-        };
-        return metadata_value_in(actual, expected);
-    }
-    if let Some(path) = key.strip_prefix("metadata.") {
-        let Some(raw_metadata) = document.metadata.get("metadata") else {
-            return false;
-        };
-        return json_metadata_path_matches(raw_metadata, path, expected);
-    }
-    match key {
-        "kind" => document
-            .metadata
-            .get(key)
-            .is_some_and(|actual| metadata_kind_matches(actual.as_str(), expected)),
-        "space_id" => {
-            let actual = document
+        SearchFilterTarget::Field(field) => match (field.as_str(), predicate.op) {
+            (_, SearchFilterOp::InvalidIn) => false,
+            ("kind", SearchFilterOp::Eq(expected)) => document
                 .metadata
-                .get(key)
-                .map(String::as_str)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(DEFAULT_SPACE_ID);
-            actual == expected
-        }
-        _ => document
-            .metadata
-            .get(key)
-            .is_some_and(|actual| metadata_text_matches(actual, expected)),
+                .get(&field)
+                .is_some_and(|actual| metadata_kind_matches(actual.as_str(), &expected)),
+            ("space_id", SearchFilterOp::Eq(expected)) => {
+                let actual = document
+                    .metadata
+                    .get(&field)
+                    .map(String::as_str)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(DEFAULT_SPACE_ID);
+                actual == expected
+            }
+            (_, SearchFilterOp::Eq(expected)) => document
+                .metadata
+                .get(&field)
+                .is_some_and(|actual| metadata_text_matches(actual, &expected)),
+            (_, SearchFilterOp::Gte(expected)) => document
+                .metadata
+                .get(&field)
+                .is_some_and(|actual| metadata_number_gte(actual, &expected)),
+            (_, SearchFilterOp::In(expected_values)) => document
+                .metadata
+                .get(&field)
+                .is_some_and(|actual| metadata_value_in(actual, &expected_values)),
+        },
     }
 }
 
@@ -2076,22 +2079,59 @@ fn json_metadata_path_matches(raw_metadata: &str, path: &str, expected: &str) ->
         .any(|value| normalize_json_metadata_filter_value(value) == expected)
 }
 
-fn json_metadata_path_matches_any(raw_metadata: &str, path: &str, expected_values: &str) -> bool {
-    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
-        return false;
-    };
+fn json_metadata_path_matches_any(
+    raw_metadata: &str,
+    path: &str,
+    expected_values: &[String],
+) -> bool {
     let Ok(metadata) = serde_json::from_str::<serde_json::Value>(raw_metadata) else {
         return false;
     };
-    let expected_values = expected_values
+    let expected_values = normalized_json_filter_values(expected_values);
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
+}
+
+fn normalized_json_filter_values(values: &[String]) -> BTreeSet<String> {
+    values
         .iter()
         .map(|value| {
             normalize_json_metadata_filter_value(&serde_json::Value::String(value.clone()))
         })
-        .collect::<BTreeSet<_>>();
-    json_metadata_values_at_path(&metadata, path)
+        .collect()
+}
+
+fn metadata_value_in(actual: &str, expected_values: &[String]) -> bool {
+    expected_values
         .iter()
-        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
+        .any(|expected| metadata_text_matches(actual, expected))
+}
+
+fn metadata_text_matches(actual: &str, expected: &str) -> bool {
+    actual == expected
+}
+
+fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
+    match (
+        normalized_projection_kind(actual),
+        normalized_projection_kind(expected),
+    ) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => actual == expected,
+    }
+}
+
+fn normalized_projection_kind(value: &str) -> Option<SearchProjectionKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "memory" | "mem" => Some(SearchProjectionKind::Memory),
+        "message" | "msg" => Some(SearchProjectionKind::Message),
+        "entity" => Some(SearchProjectionKind::Entity),
+        "source" => Some(SearchProjectionKind::Source),
+        "source_chunk" | "sourcechunk" | "chunk" => Some(SearchProjectionKind::SourceChunk),
+        "community" => Some(SearchProjectionKind::Community),
+        _ => None,
+    }
 }
 
 fn json_metadata_values_at_path(
@@ -2148,41 +2188,6 @@ fn metadata_number_gte(actual: &str, expected: &str) -> bool {
     match (actual.parse::<f64>(), expected.parse::<f64>()) {
         (Ok(actual), Ok(expected)) => actual >= expected,
         _ => false,
-    }
-}
-
-fn metadata_value_in(actual: &str, expected_values: &str) -> bool {
-    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
-        return false;
-    };
-    expected_values
-        .iter()
-        .any(|expected| metadata_text_matches(actual, expected))
-}
-
-fn metadata_text_matches(actual: &str, expected: &str) -> bool {
-    actual == expected
-}
-
-fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
-    match (
-        normalized_projection_kind(actual),
-        normalized_projection_kind(expected),
-    ) {
-        (Some(actual), Some(expected)) => actual == expected,
-        _ => actual == expected,
-    }
-}
-
-fn normalized_projection_kind(value: &str) -> Option<&'static str> {
-    match value {
-        "Memory" | "memory" => Some("memory"),
-        "Message" | "message" => Some("message"),
-        "Entity" | "entity" => Some("entity"),
-        "Source" | "source" => Some("source"),
-        "SourceChunk" | "source_chunk" | "sourcechunk" | "chunk" => Some("source_chunk"),
-        "Community" | "community" => Some("community"),
-        _ => None,
     }
 }
 

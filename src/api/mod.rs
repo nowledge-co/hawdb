@@ -25,6 +25,7 @@ use crate::search::{
     SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary, SearchResultSet,
     SearchRetrieverCandidateSetReport, SearchTruncationReasonCode,
 };
+use crate::search_filter::{SearchFilterOp, SearchFilterPredicate, SearchFilterTarget};
 use crate::store::{
     AdjacencyDirection, AdjacencyLayout, DurabilityPolicy, GraphMutation, GraphStore, NodeId,
     NodeRecord, ProjectedGraphStatus, PropertyIndexProjectionRebuildAction, RecoveryMode,
@@ -9042,46 +9043,50 @@ fn knowledge_graph_seed_matches_filter(
     key: &str,
     value: &str,
 ) -> bool {
-    if let Some(field) = key.strip_suffix("__gte") {
-        let Some(property) = node.properties.get(field) else {
-            return false;
-        };
-        return property_number_gte(property, value);
-    }
-    if let Some(field) = key.strip_suffix("__in") {
-        if let Some(path) = field.strip_prefix("metadata.") {
+    let predicate = SearchFilterPredicate::parse(key, value);
+    match predicate.target {
+        SearchFilterTarget::JsonMetadataPath(path) => {
             let Some(metadata) = node.properties.get("metadata") else {
                 return false;
             };
-            return property_json_metadata_path_matches_any(metadata, path, value);
-        }
-        let Some(property) = node.properties.get(field) else {
-            return false;
-        };
-        return property_value_in(property, value);
-    }
-    if let Some(path) = key.strip_prefix("metadata.") {
-        let Some(metadata) = node.properties.get("metadata") else {
-            return false;
-        };
-        return property_json_metadata_path_matches(metadata, path, value);
-    }
-    match key {
-        "kind" => {
-            let Some(label) = search_kind_to_label(value) else {
-                return false;
+            return match predicate.op {
+                SearchFilterOp::Eq(value) => {
+                    property_json_metadata_path_matches(metadata, &path, &value)
+                }
+                SearchFilterOp::In(values) => {
+                    property_json_metadata_path_matches_any(metadata, &path, &values)
+                }
+                SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => false,
             };
-            catalog
-                .label_id(label)
-                .is_some_and(|label_id| node.labels.contains(&label_id))
         }
-        "external_id" => projected_node_external_id(node) == value,
-        "source_id" => node_projection_source_id(node).as_deref() == Some(value),
-        "space_id" => normalized_node_space_id(node) == value,
-        _ => node
-            .properties
-            .get(key)
-            .is_some_and(|property| property_text_matches(property, value)),
+        SearchFilterTarget::Field(field) => match (field.as_str(), predicate.op) {
+            (_, SearchFilterOp::InvalidIn) => false,
+            ("kind", SearchFilterOp::Eq(value)) => {
+                let Some(label) = search_kind_to_label(&value) else {
+                    return false;
+                };
+                catalog
+                    .label_id(label)
+                    .is_some_and(|label_id| node.labels.contains(&label_id))
+            }
+            ("external_id", SearchFilterOp::Eq(value)) => projected_node_external_id(node) == value,
+            ("source_id", SearchFilterOp::Eq(value)) => {
+                node_projection_source_id(node).as_deref() == Some(value.as_str())
+            }
+            ("space_id", SearchFilterOp::Eq(value)) => normalized_node_space_id(node) == value,
+            (_, SearchFilterOp::Eq(value)) => node
+                .properties
+                .get(&field)
+                .is_some_and(|property| property_text_matches(property, &value)),
+            (_, SearchFilterOp::Gte(value)) => node
+                .properties
+                .get(&field)
+                .is_some_and(|property| property_number_gte(property, &value)),
+            (_, SearchFilterOp::In(values)) => node
+                .properties
+                .get(&field)
+                .is_some_and(|property| property_value_in(property, &values)),
+        },
     }
 }
 
@@ -9099,23 +9104,24 @@ fn property_json_metadata_path_matches(metadata: &Value, path: &str, expected: &
 fn property_json_metadata_path_matches_any(
     metadata: &Value,
     path: &str,
-    expected_values: &str,
+    expected_values: &[String],
 ) -> bool {
     let Some(metadata) = property_json_metadata_value(metadata) else {
         return false;
     };
-    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
-        return false;
-    };
-    let expected_values = expected_values
+    let expected_values = normalized_json_filter_values(expected_values);
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
+}
+
+fn normalized_json_filter_values(values: &[String]) -> BTreeSet<String> {
+    values
         .iter()
         .map(|value| {
             normalize_json_metadata_filter_value(&serde_json::Value::String(value.clone()))
         })
-        .collect::<BTreeSet<_>>();
-    json_metadata_values_at_path(&metadata, path)
-        .iter()
-        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
+        .collect()
 }
 
 fn property_json_metadata_value(metadata: &Value) -> Option<serde_json::Value> {
@@ -9215,10 +9221,7 @@ fn property_number_gte(actual: &Value, expected: &str) -> bool {
     }
 }
 
-fn property_value_in(actual: &Value, expected_values: &str) -> bool {
-    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
-        return false;
-    };
+fn property_value_in(actual: &Value, expected_values: &[String]) -> bool {
     expected_values
         .iter()
         .any(|expected| property_text_matches(actual, expected))
