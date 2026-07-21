@@ -9048,6 +9048,12 @@ fn knowledge_graph_seed_matches_filter(
         };
         return property_number_gte(property, value);
     }
+    if let Some(path) = key.strip_prefix("metadata.") {
+        let Some(metadata) = node.properties.get("metadata") else {
+            return false;
+        };
+        return property_json_metadata_path_matches(metadata, path, value);
+    }
     match key {
         "kind" => {
             let Some(label) = search_kind_to_label(value) else {
@@ -9064,6 +9070,98 @@ fn knowledge_graph_seed_matches_filter(
             .properties
             .get(key)
             .is_some_and(|property| value_to_external_id(property) == value),
+    }
+}
+
+fn property_json_metadata_path_matches(metadata: &Value, path: &str, expected: &str) -> bool {
+    let Some(metadata) = property_json_metadata_value(metadata) else {
+        return false;
+    };
+    let expected =
+        normalize_json_metadata_filter_value(&serde_json::Value::String(expected.to_string()));
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| normalize_json_metadata_filter_value(value) == expected)
+}
+
+fn property_json_metadata_value(metadata: &Value) -> Option<serde_json::Value> {
+    match metadata {
+        Value::String(raw) => serde_json::from_str(raw).ok(),
+        Value::Map(map) => Some(serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), value_to_json_metadata(value)))
+                .collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn value_to_json_metadata(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(value) => serde_json::Value::Bool(*value),
+        Value::Int(value) => serde_json::json!(value),
+        Value::Float(value) => serde_json::json!(value),
+        Value::String(value) => serde_json::Value::String(value.clone()),
+        Value::List(values) => {
+            serde_json::Value::Array(values.iter().map(value_to_json_metadata).collect())
+        }
+        Value::Map(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), value_to_json_metadata(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn json_metadata_values_at_path(
+    metadata: &serde_json::Value,
+    path: &str,
+) -> Vec<serde_json::Value> {
+    let mut values = vec![metadata.clone()];
+    for key in path.split('.').filter(|key| !key.is_empty()) {
+        let mut next = Vec::new();
+        for value in &values {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if let Some(value) = map.get(key) {
+                        next.push(value.clone());
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        if let serde_json::Value::Object(map) = item {
+                            if let Some(value) = map.get(key) {
+                                next.push(value.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        values = next;
+        if values.is_empty() {
+            return Vec::new();
+        }
+    }
+    let mut flattened = Vec::new();
+    for value in values {
+        match value {
+            serde_json::Value::Array(items) => flattened.extend(items),
+            other => flattened.push(other),
+        }
+    }
+    flattened
+}
+
+fn normalize_json_metadata_filter_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::String(value) => value.trim().to_lowercase(),
+        other => other.to_string().trim().to_lowercase(),
     }
 }
 

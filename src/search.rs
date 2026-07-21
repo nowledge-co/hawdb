@@ -2026,6 +2026,12 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
         };
         return metadata_number_gte(actual, expected);
     }
+    if let Some(path) = key.strip_prefix("metadata.") {
+        let Some(raw_metadata) = document.metadata.get("metadata") else {
+            return false;
+        };
+        return json_metadata_path_matches(raw_metadata, path, expected);
+    }
     match key {
         "kind" => document
             .metadata
@@ -2044,6 +2050,67 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
             .metadata
             .get(key)
             .is_some_and(|actual| actual == expected),
+    }
+}
+
+fn json_metadata_path_matches(raw_metadata: &str, path: &str, expected: &str) -> bool {
+    let Ok(metadata) = serde_json::from_str::<serde_json::Value>(raw_metadata) else {
+        return false;
+    };
+    let expected =
+        normalize_json_metadata_filter_value(&serde_json::Value::String(expected.to_string()));
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| normalize_json_metadata_filter_value(value) == expected)
+}
+
+fn json_metadata_values_at_path(
+    metadata: &serde_json::Value,
+    path: &str,
+) -> Vec<serde_json::Value> {
+    let mut values = vec![metadata.clone()];
+    for key in path.split('.').filter(|key| !key.is_empty()) {
+        let mut next = Vec::new();
+        for value in &values {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if let Some(value) = map.get(key) {
+                        next.push(value.clone());
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        if let serde_json::Value::Object(map) = item {
+                            if let Some(value) = map.get(key) {
+                                next.push(value.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        values = next;
+        if values.is_empty() {
+            return Vec::new();
+        }
+    }
+    let mut flattened = Vec::new();
+    for value in values {
+        match value {
+            serde_json::Value::Array(items) => flattened.extend(items),
+            other => flattened.push(other),
+        }
+    }
+    flattened
+}
+
+fn normalize_json_metadata_filter_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::String(value) => value.trim().to_lowercase(),
+        other => other.to_string().trim().to_lowercase(),
     }
 }
 
@@ -3254,6 +3321,65 @@ mod tests {
         assert_eq!(result.filtered_document_count, 1);
         assert_eq!(result.candidate_set.filtered_out_count, 1);
         assert_eq!(result.hits[0].id, "memory:high");
+    }
+
+    #[test]
+    fn search_with_options_applies_json_metadata_path_filters_before_ranking() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:match".to_string(),
+                title: "Graph memory".to_string(),
+                content: "metadata path retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"customer":{"tier":"Enterprise"},"tags":["Graph","Rust"]}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:miss".to_string(),
+                title: "Graph memory".to_string(),
+                content: "metadata path retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"customer":{"tier":"starter"},"tags":["Graph"]}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+
+        let result = index.search_with_options(
+            "metadata path retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    (
+                        "metadata.customer.tier".to_string(),
+                        "enterprise".to_string(),
+                    ),
+                    ("metadata.tags".to_string(), "rust".to_string()),
+                ]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.filtered_document_count, 1);
+        assert_eq!(result.candidate_set.filtered_out_count, 1);
+        assert_eq!(result.hits[0].id, "memory:match");
     }
 
     #[test]
