@@ -29,7 +29,7 @@ pub fn nowledge_search_projection_evidence_usage() -> String {
 }
 
 pub fn skein_search_projection_probe_usage() -> String {
-    "skein-search-projection-probe requires [--active-model <model>] [--active-dimension <dimension>] <search-index-dir>"
+    "skein-search-projection-probe requires [--active-model <model>] [--active-dimension <dimension>] [--required-graph-commit-epoch <epoch>] <search-index-dir>"
         .to_string()
 }
 
@@ -90,6 +90,15 @@ pub fn run_skein_search_projection_probe(
                 options.active_embedding_dimension =
                     Some(parse_positive_usize("--active-dimension", &raw_dimension)?);
             }
+            "--required-graph-commit-epoch" => {
+                let raw_epoch = args
+                    .next()
+                    .ok_or_else(|| SkeinError::Semantic(skein_search_projection_probe_usage()))?;
+                options.required_graph_commit_epoch = Some(parse_positive_u64(
+                    "--required-graph-commit-epoch",
+                    &raw_epoch,
+                )?);
+            }
             path => {
                 if args.next().is_some() {
                     return Err(SkeinError::Semantic(skein_search_projection_probe_usage()));
@@ -138,6 +147,7 @@ pub fn run_skein_search_projection_delta_probe(
                 })?;
                 let delta_json = read_json_file(Path::new(&delta_path))?;
                 let delta = parse_search_projection_delta_json(&delta_json)?;
+                let required_graph_commit_epoch = delta.source_graph_commit_epoch;
                 let mut index = SearchIndex::open(path)?;
                 index.apply_embedding_manifest(SearchEmbeddingManifest {
                     model: active_model.clone(),
@@ -150,6 +160,7 @@ pub fn run_skein_search_projection_delta_probe(
                     SearchProjectionProbeOptions {
                         active_embedding_model: Some(active_model),
                         active_embedding_dimension: Some(active_dimension),
+                        required_graph_commit_epoch,
                     },
                 ));
             }
@@ -315,6 +326,13 @@ pub fn nowledge_search_projection_shadow_evidence_json(
         shadow_probe,
         &["incremental_update", "source_graph_commit_epoch"],
     );
+    let required_graph_commit_epoch_parity = u64_path(
+        primary_probe,
+        &["incremental_update", "required_graph_commit_epoch"],
+    ) == u64_path(
+        shadow_probe,
+        &["incremental_update", "required_graph_commit_epoch"],
+    );
     let mut blocker_codes = BTreeSet::new();
     collect_prefixed_evidence_blockers("primary", &primary_evidence, &mut blocker_codes);
     collect_prefixed_evidence_blockers("shadow", &shadow_evidence, &mut blocker_codes);
@@ -339,6 +357,9 @@ pub fn nowledge_search_projection_shadow_evidence_json(
     if !incremental_watermark_parity {
         blocker_codes.insert("incremental_watermark_mismatch".to_string());
     }
+    if !required_graph_commit_epoch_parity {
+        blocker_codes.insert("required_graph_commit_epoch_mismatch".to_string());
+    }
     let ready = blocker_codes.is_empty();
     serde_json::json!({
         "protocol": "skein-nowledge-search-projection-shadow-evidence",
@@ -354,6 +375,7 @@ pub fn nowledge_search_projection_shadow_evidence_json(
         "embedding_identity_parity": embedding_identity_parity,
         "lifecycle_parity": lifecycle_parity,
         "incremental_watermark_parity": incremental_watermark_parity,
+        "required_graph_commit_epoch_parity": required_graph_commit_epoch_parity,
         "primary_evidence": primary_evidence,
         "shadow_evidence": shadow_evidence,
         "blocker_codes": blocker_codes.into_iter().collect::<Vec<_>>(),
@@ -511,6 +533,10 @@ fn incremental_update_report(probe: &serde_json::Value) -> serde_json::Value {
         "upsert_ready": bool_path(incremental, &["upsert_ready"]).unwrap_or(false),
         "delete_ready": bool_path(incremental, &["delete_ready"]).unwrap_or(false),
         "watermark_ready": bool_path(incremental, &["watermark_ready"]).unwrap_or(false),
+        "required_epoch_ready": bool_path(incremental, &["required_epoch_ready"]).unwrap_or(false),
+        "freshness_ready": bool_path(incremental, &["freshness_ready"]).unwrap_or(false),
+        "source_graph_commit_epoch": u64_path(incremental, &["source_graph_commit_epoch"]),
+        "required_graph_commit_epoch": u64_path(incremental, &["required_graph_commit_epoch"]),
     })
 }
 
@@ -684,6 +710,18 @@ fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
     Ok(parsed)
 }
 
+fn parse_positive_u64(flag: &str, value: &str) -> Result<u64> {
+    let parsed = value.parse::<u64>().map_err(|error| {
+        SkeinError::Semantic(format!("invalid {flag} value '{value}': {error}"))
+    })?;
+    if parsed == 0 {
+        return Err(SkeinError::Semantic(format!(
+            "invalid {flag} value '{value}': expected a positive integer"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn value_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
     let mut current = value;
     for key in path {
@@ -818,6 +856,8 @@ mod tests {
                 "bge-m3",
                 "--active-dimension",
                 "2",
+                "--required-graph-commit-epoch",
+                "11",
                 path.to_str().unwrap(),
             ]
             .into_iter()

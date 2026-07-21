@@ -93,6 +93,7 @@ pub struct SearchProjectionFreshness {
 pub struct SearchProjectionProbeOptions {
     pub active_embedding_model: Option<String>,
     pub active_embedding_dimension: Option<usize>,
+    pub required_graph_commit_epoch: Option<u64>,
 }
 
 impl SearchProjectionRow {
@@ -774,6 +775,17 @@ impl SearchIndex {
             .documents
             .values()
             .any(|document| document.embedding.is_some());
+        let required_epoch_ready = options.required_graph_commit_epoch.is_some();
+        let watermark_ready = freshness.source_graph_commit_epoch.is_some();
+        let freshness_ready = match (
+            freshness.source_graph_commit_epoch,
+            options.required_graph_commit_epoch,
+        ) {
+            (Some(source), Some(required)) => source >= required,
+            (Some(_), None) | (None, Some(_)) | (None, None) => false,
+        };
+        let incremental_update_ready =
+            has_documents && watermark_ready && required_epoch_ready && freshness_ready;
 
         serde_json::json!({
             "protocol": "skein-nowledge-search-projection-probe",
@@ -804,11 +816,14 @@ impl SearchIndex {
                 "source_graph_commit_epoch": freshness.source_graph_commit_epoch,
             },
             "incremental_update": {
-                "ready": has_documents && freshness.source_graph_commit_epoch.is_some(),
+                "ready": incremental_update_ready,
                 "upsert_ready": has_documents,
                 "delete_ready": has_documents,
-                "watermark_ready": freshness.source_graph_commit_epoch.is_some(),
+                "watermark_ready": watermark_ready,
+                "required_epoch_ready": required_epoch_ready,
+                "freshness_ready": freshness_ready,
                 "source_graph_commit_epoch": freshness.source_graph_commit_epoch,
+                "required_graph_commit_epoch": options.required_graph_commit_epoch,
             },
             "blocker_codes": search_projection_probe_blocker_codes(
                 has_documents,
@@ -817,6 +832,7 @@ impl SearchIndex {
                 manifest.is_some(),
                 model_matches,
                 dimension_matches,
+                options.required_graph_commit_epoch,
                 &freshness,
             ),
         })
@@ -1682,6 +1698,7 @@ fn search_projection_probe_blocker_codes(
     has_manifest: bool,
     model_matches: bool,
     dimension_matches: bool,
+    required_graph_commit_epoch: Option<u64>,
     freshness: &SearchProjectionFreshness,
 ) -> Vec<String> {
     let mut blockers = BTreeSet::new();
@@ -1708,6 +1725,18 @@ fn search_projection_probe_blocker_codes(
     }
     if freshness.metadata_repair_needed {
         blockers.insert("metadata_repair_needed".to_string());
+    }
+    if freshness.source_graph_commit_epoch.is_none() {
+        blockers.insert("source_graph_commit_epoch_missing".to_string());
+    }
+    if required_graph_commit_epoch.is_none() {
+        blockers.insert("required_graph_commit_epoch_missing".to_string());
+    }
+    if matches!(
+        (freshness.source_graph_commit_epoch, required_graph_commit_epoch),
+        (Some(source), Some(required)) if source < required
+    ) {
+        blockers.insert("source_graph_commit_epoch_behind_required_graph_epoch".to_string());
     }
     blockers.into_iter().collect()
 }
@@ -4600,6 +4629,7 @@ mod tests {
         let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
             active_embedding_model: Some("bge-m3".to_string()),
             active_embedding_dimension: Some(2),
+            required_graph_commit_epoch: Some(7),
         });
 
         assert_eq!(probe["derived_projection"], true);
@@ -4644,6 +4674,7 @@ mod tests {
         let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
             active_embedding_model: Some("text-embedding-3-small".to_string()),
             active_embedding_dimension: Some(1536),
+            required_graph_commit_epoch: Some(7),
         });
 
         assert_eq!(probe["embedding_manifest"]["model_matches"], false);

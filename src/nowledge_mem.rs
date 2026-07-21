@@ -944,6 +944,7 @@ mod tests {
             .search_projection_evidence_json(SearchProjectionProbeOptions {
                 active_embedding_model: Some("bge-m3".to_string()),
                 active_embedding_dimension: Some(2),
+                required_graph_commit_epoch: Some(17),
             })
             .unwrap();
 
@@ -984,6 +985,7 @@ mod tests {
         let probe_options = SearchProjectionProbeOptions {
             active_embedding_model: Some("bge-m3".to_string()),
             active_embedding_dimension: Some(2),
+            required_graph_commit_epoch: Some(17),
         };
         let primary_probe = store
             .search_projection_probe_json(probe_options.clone())
