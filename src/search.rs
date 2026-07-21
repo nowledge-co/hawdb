@@ -26,6 +26,7 @@ const BM25_B: f64 = 0.75;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
+const SEARCH_FILTER_SEGMENT_SIZE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchDocument {
@@ -539,6 +540,7 @@ pub struct SearchProjectionDeltaReport {
 #[derive(Debug, Default)]
 pub struct SearchIndex {
     documents: BTreeMap<String, SearchDocument>,
+    filter_segments: Vec<SearchFilterSegment>,
     path: Option<PathBuf>,
     embedding_dimension: Option<usize>,
     embedding_manifest: Option<SearchEmbeddingManifest>,
@@ -556,6 +558,7 @@ impl SearchIndex {
         fs::create_dir_all(path.as_ref())?;
         let mut index = Self {
             documents: BTreeMap::new(),
+            filter_segments: Vec::new(),
             path: Some(path.as_ref().to_path_buf()),
             embedding_dimension: None,
             embedding_manifest: None,
@@ -581,6 +584,7 @@ impl SearchIndex {
             self.validate_or_set_dimension(embedding.len())?;
         }
         self.documents.insert(document.id.clone(), document);
+        self.rebuild_filter_segments();
         Ok(())
     }
 
@@ -589,7 +593,9 @@ impl SearchIndex {
     }
 
     pub fn delete(&mut self, id: &str) {
-        self.documents.remove(id);
+        if self.documents.remove(id).is_some() {
+            self.rebuild_filter_segments();
+        }
     }
 
     pub fn apply_projection_delta(
@@ -646,6 +652,7 @@ impl SearchIndex {
         }
 
         self.documents = next_documents;
+        self.rebuild_filter_segments();
         self.embedding_dimension = next_embedding_dimension;
         let source_graph_commit_epoch_updated = delta.source_graph_commit_epoch.is_some();
         if let Some(epoch) = delta.source_graph_commit_epoch {
@@ -892,6 +899,7 @@ impl SearchIndex {
         }
 
         self.documents = next_documents;
+        self.rebuild_filter_segments();
         self.source_graph_commit_epoch = Some(store.commit_epoch());
         self.embedding_dimension = self
             .embedding_manifest
@@ -1039,6 +1047,7 @@ impl SearchIndex {
                 existing.metadata = metadata;
             }
         }
+        self.rebuild_filter_segments();
         if missing_documents > 0 {
             self.mark_full_reindex_needed("metadata repair found missing projection rows")?;
         }
@@ -1209,11 +1218,7 @@ impl SearchIndex {
         let mut vector_fallback_reasons = Vec::new();
         let limit = options.limit;
         let document_count = self.documents.len();
-        let filtered_documents = self
-            .documents
-            .values()
-            .filter(|document| metadata_matches(document, &options.metadata_filters))
-            .collect::<Vec<_>>();
+        let filtered_documents = self.filtered_documents(&options.metadata_filters);
         let filtered_document_count = filtered_documents.len();
         let candidate_set = SearchCandidateSetReport {
             id_space: "search_projection_document_id".to_string(),
@@ -1446,6 +1451,39 @@ impl SearchIndex {
         }
     }
 
+    fn rebuild_filter_segments(&mut self) {
+        self.filter_segments =
+            SearchFilterSegment::build_all(self.documents.values(), SEARCH_FILTER_SEGMENT_SIZE);
+    }
+
+    fn filtered_documents(&self, filters: &BTreeMap<String, String>) -> Vec<&SearchDocument> {
+        if filters.is_empty() {
+            return self.documents.values().collect();
+        }
+        let predicates = filters
+            .iter()
+            .map(|(key, value)| SearchFilterPredicate::parse(key, value))
+            .collect::<Vec<_>>();
+        if self.filter_segments.is_empty() {
+            return self
+                .documents
+                .values()
+                .filter(|document| metadata_matches(document, filters))
+                .collect();
+        }
+        self.filter_segments
+            .iter()
+            .filter(|segment| segment.may_match_all(&predicates))
+            .flat_map(|segment| {
+                segment.document_ids.iter().filter_map(|id| {
+                    self.documents
+                        .get(id)
+                        .filter(|document| metadata_matches(document, filters))
+                })
+            })
+            .collect()
+    }
+
     pub fn mark_full_reindex_needed(&self, reason: &str) -> Result<()> {
         self.append_marker(FULL_REINDEX_MARKER, reason)
     }
@@ -1561,6 +1599,7 @@ impl SearchIndex {
                 }
             }
         }
+        self.rebuild_filter_segments();
         Ok(())
     }
 
@@ -2018,6 +2057,179 @@ fn metadata_matches(document: &SearchDocument, filters: &BTreeMap<String, String
     filters
         .iter()
         .all(|(key, value)| metadata_value_matches(document, key, value))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SearchFilterSegment {
+    document_ids: Vec<String>,
+    field_values: BTreeMap<String, BTreeSet<String>>,
+    json_metadata_path_values: BTreeMap<String, BTreeSet<String>>,
+    numeric_ranges: BTreeMap<String, (f64, f64)>,
+}
+
+impl SearchFilterSegment {
+    fn build_all<'a>(
+        documents: impl Iterator<Item = &'a SearchDocument>,
+        segment_size: usize,
+    ) -> Vec<Self> {
+        let segment_size = segment_size.max(1);
+        let mut segments = Vec::new();
+        let mut batch = Vec::with_capacity(segment_size);
+        for document in documents {
+            batch.push(document);
+            if batch.len() == segment_size {
+                segments.push(Self::build(&batch));
+                batch.clear();
+            }
+        }
+        if !batch.is_empty() {
+            segments.push(Self::build(&batch));
+        }
+        segments
+    }
+
+    fn build(documents: &[&SearchDocument]) -> Self {
+        let mut segment = Self {
+            document_ids: Vec::with_capacity(documents.len()),
+            field_values: BTreeMap::new(),
+            json_metadata_path_values: BTreeMap::new(),
+            numeric_ranges: BTreeMap::new(),
+        };
+        for document in documents {
+            segment.document_ids.push(document.id.clone());
+            if !document.metadata.contains_key("space_id") {
+                segment
+                    .field_values
+                    .entry("space_id".to_string())
+                    .or_default()
+                    .insert(DEFAULT_SPACE_ID.to_string());
+            }
+            for (key, value) in &document.metadata {
+                let value = normalized_segment_field_value(key, value);
+                segment
+                    .field_values
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(value.clone());
+                if let Ok(value) = value.parse::<f64>() {
+                    segment.extend_numeric_range(key, value);
+                }
+            }
+            if let Some(raw_metadata) = document.metadata.get("metadata") {
+                segment.index_json_metadata_paths(raw_metadata);
+            }
+        }
+        segment
+    }
+
+    fn may_match_all(&self, predicates: &[SearchFilterPredicate]) -> bool {
+        predicates
+            .iter()
+            .all(|predicate| self.may_match_predicate(predicate))
+    }
+
+    fn may_match_predicate(&self, predicate: &SearchFilterPredicate) -> bool {
+        if matches!(predicate.op, SearchFilterOp::InvalidIn) {
+            return false;
+        }
+        match &predicate.target {
+            SearchFilterTarget::Field(field) => {
+                if let Some(expected_values) = predicate.exact_values() {
+                    let expected_values =
+                        normalized_segment_expected_values(field, expected_values);
+                    return self.field_values.get(field).is_some_and(|values| {
+                        expected_values.iter().any(|value| values.contains(value))
+                    });
+                }
+                if let Some(expected) = predicate.gte_value() {
+                    let Ok(expected) = expected.parse::<f64>() else {
+                        return false;
+                    };
+                    return self
+                        .numeric_ranges
+                        .get(field)
+                        .is_some_and(|(_, max)| *max >= expected);
+                }
+                true
+            }
+            SearchFilterTarget::JsonMetadataPath(path) => {
+                if let Some(expected_values) = predicate.exact_values() {
+                    return self
+                        .json_metadata_path_values
+                        .get(path)
+                        .is_some_and(|values| {
+                            expected_values.iter().any(|value| {
+                                values.contains(&normalize_json_metadata_filter_value(
+                                    &serde_json::Value::String(value.clone()),
+                                ))
+                            })
+                        });
+                }
+                true
+            }
+        }
+    }
+
+    fn extend_numeric_range(&mut self, key: &str, value: f64) {
+        self.numeric_ranges
+            .entry(key.to_string())
+            .and_modify(|(min, max)| {
+                *min = min.min(value);
+                *max = max.max(value);
+            })
+            .or_insert((value, value));
+    }
+
+    fn index_json_metadata_paths(&mut self, raw_metadata: &str) {
+        let Ok(metadata) = serde_json::from_str::<serde_json::Value>(raw_metadata) else {
+            return;
+        };
+        self.index_json_metadata_value(None, &metadata);
+    }
+
+    fn index_json_metadata_value(&mut self, path: Option<&str>, value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    let next_path = path
+                        .map(|path| format!("{path}.{key}"))
+                        .unwrap_or_else(|| key.clone());
+                    self.index_json_metadata_value(Some(&next_path), value);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.index_json_metadata_value(path, item);
+                }
+            }
+            _ => {
+                let Some(path) = path else {
+                    return;
+                };
+                self.json_metadata_path_values
+                    .entry(path.to_string())
+                    .or_default()
+                    .insert(normalize_json_metadata_filter_value(value));
+            }
+        }
+    }
+}
+
+fn normalized_segment_field_value(key: &str, value: &str) -> String {
+    match key {
+        "kind" => normalized_projection_kind(value)
+            .map(|kind| kind.as_str().to_string())
+            .unwrap_or_else(|| value.to_string()),
+        "space_id" if value.is_empty() => DEFAULT_SPACE_ID.to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn normalized_segment_expected_values(field: &str, values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| normalized_segment_field_value(field, value))
+        .collect()
 }
 
 fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) -> bool {
@@ -3173,6 +3385,78 @@ mod tests {
             .find(|hit| hit.id == "memory:visible_vector")
             .expect("visible vector should remain eligible");
         assert_eq!(visible_vector.vector_rank, Some(1));
+    }
+
+    #[test]
+    fn filter_segments_prune_exact_in_range_and_json_predicates() {
+        let hidden = SearchDocument {
+            id: "memory:hidden".to_string(),
+            title: "Hidden".to_string(),
+            content: "segment pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([
+                ("kind".to_string(), "memory".to_string()),
+                ("unit_type".to_string(), "task".to_string()),
+                ("importance".to_string(), "0.2".to_string()),
+                (
+                    "metadata".to_string(),
+                    r#"{"topic":"operations","tier":"bronze"}"#.to_string(),
+                ),
+            ]),
+        };
+        let visible = SearchDocument {
+            id: "memory:visible".to_string(),
+            title: "Visible".to_string(),
+            content: "segment pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([
+                ("kind".to_string(), "Memory".to_string()),
+                ("space_id".to_string(), "default".to_string()),
+                ("unit_type".to_string(), "decision".to_string()),
+                ("importance".to_string(), "0.9".to_string()),
+                (
+                    "metadata".to_string(),
+                    r#"{"topic":"search","tier":"gold"}"#.to_string(),
+                ),
+            ]),
+        };
+        let segments = SearchFilterSegment::build_all([&hidden, &visible].into_iter(), 1);
+
+        let unit_type = SearchFilterPredicate::parse(
+            "unit_type__in",
+            &serde_json::to_string(&["fact", "decision"]).unwrap(),
+        );
+        let importance = SearchFilterPredicate::parse("importance__gte", "0.7");
+        let topic = SearchFilterPredicate::parse(
+            "metadata.topic__in",
+            &serde_json::to_string(&["bridge", "search"]).unwrap(),
+        );
+
+        assert!(!segments[0].may_match_all(&[
+            unit_type.clone(),
+            importance.clone(),
+            topic.clone()
+        ]));
+        assert!(segments[1].may_match_all(&[unit_type, importance, topic]));
+    }
+
+    #[test]
+    fn filter_segments_preserve_default_space_and_kind_alias_semantics() {
+        let document = SearchDocument {
+            id: "memory:default-space".to_string(),
+            title: "Default space".to_string(),
+            content: "segment pruning".to_string(),
+            embedding: None,
+            metadata: BTreeMap::from([("kind".to_string(), "Memory".to_string())]),
+        };
+        let segments = SearchFilterSegment::build_all([&document].into_iter(), 1);
+
+        assert!(segments[0].may_match_all(&[
+            SearchFilterPredicate::parse("space_id", DEFAULT_SPACE_ID),
+            SearchFilterPredicate::parse("kind", "memory"),
+        ]));
+        assert!(!segments[0]
+            .may_match_all(&[SearchFilterPredicate::parse("unit_type__in", "decision")]));
     }
 
     #[test]

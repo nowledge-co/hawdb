@@ -38,6 +38,21 @@ impl SearchFilterPredicate {
 
         Self { target, op }
     }
+
+    pub(crate) fn exact_values(&self) -> Option<&[String]> {
+        match &self.op {
+            SearchFilterOp::Eq(value) => Some(std::slice::from_ref(value)),
+            SearchFilterOp::In(values) => Some(values.as_slice()),
+            SearchFilterOp::Gte(_) | SearchFilterOp::InvalidIn => None,
+        }
+    }
+
+    pub(crate) fn gte_value(&self) -> Option<&str> {
+        match &self.op {
+            SearchFilterOp::Gte(value) => Some(value),
+            SearchFilterOp::Eq(_) | SearchFilterOp::In(_) | SearchFilterOp::InvalidIn => None,
+        }
+    }
 }
 
 #[cfg(test)]
