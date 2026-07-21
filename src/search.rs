@@ -2026,6 +2026,18 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
         };
         return metadata_number_gte(actual, expected);
     }
+    if let Some(field) = key.strip_suffix("__in") {
+        if let Some(path) = field.strip_prefix("metadata.") {
+            let Some(raw_metadata) = document.metadata.get("metadata") else {
+                return false;
+            };
+            return json_metadata_path_matches_any(raw_metadata, path, expected);
+        }
+        let Some(actual) = document.metadata.get(field) else {
+            return false;
+        };
+        return metadata_value_in(actual, expected);
+    }
     if let Some(path) = key.strip_prefix("metadata.") {
         let Some(raw_metadata) = document.metadata.get("metadata") else {
             return false;
@@ -2049,7 +2061,7 @@ fn metadata_value_matches(document: &SearchDocument, key: &str, expected: &str) 
         _ => document
             .metadata
             .get(key)
-            .is_some_and(|actual| actual == expected),
+            .is_some_and(|actual| metadata_text_matches(actual, expected)),
     }
 }
 
@@ -2062,6 +2074,24 @@ fn json_metadata_path_matches(raw_metadata: &str, path: &str, expected: &str) ->
     json_metadata_values_at_path(&metadata, path)
         .iter()
         .any(|value| normalize_json_metadata_filter_value(value) == expected)
+}
+
+fn json_metadata_path_matches_any(raw_metadata: &str, path: &str, expected_values: &str) -> bool {
+    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<serde_json::Value>(raw_metadata) else {
+        return false;
+    };
+    let expected_values = expected_values
+        .iter()
+        .map(|value| {
+            normalize_json_metadata_filter_value(&serde_json::Value::String(value.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
 }
 
 fn json_metadata_values_at_path(
@@ -2119,6 +2149,19 @@ fn metadata_number_gte(actual: &str, expected: &str) -> bool {
         (Ok(actual), Ok(expected)) => actual >= expected,
         _ => false,
     }
+}
+
+fn metadata_value_in(actual: &str, expected_values: &str) -> bool {
+    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
+        return false;
+    };
+    expected_values
+        .iter()
+        .any(|expected| metadata_text_matches(actual, expected))
+}
+
+fn metadata_text_matches(actual: &str, expected: &str) -> bool {
+    actual == expected
 }
 
 fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
@@ -3380,6 +3423,70 @@ mod tests {
         assert_eq!(result.filtered_document_count, 1);
         assert_eq!(result.candidate_set.filtered_out_count, 1);
         assert_eq!(result.hits[0].id, "memory:match");
+    }
+
+    #[test]
+    fn search_with_options_applies_in_filters_before_ranking() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:decision".to_string(),
+                title: "Graph memory".to_string(),
+                content: "or scoped retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("unit_type".to_string(), "decision".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"topic":"search","tier":"gold"}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:other".to_string(),
+                title: "Graph memory".to_string(),
+                content: "or scoped retrieval".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("unit_type".to_string(), "task".to_string()),
+                    (
+                        "metadata".to_string(),
+                        r#"{"topic":"operations","tier":"bronze"}"#.to_string(),
+                    ),
+                ]),
+            })
+            .unwrap();
+
+        let result = index.search_with_options(
+            "or scoped retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    (
+                        "unit_type__in".to_string(),
+                        serde_json::to_string(&["fact", "decision"]).unwrap(),
+                    ),
+                    (
+                        "metadata.topic__in".to_string(),
+                        serde_json::to_string(&["bridge", "search"]).unwrap(),
+                    ),
+                ]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.filtered_document_count, 1);
+        assert_eq!(result.candidate_set.filtered_out_count, 1);
+        assert_eq!(result.hits[0].id, "memory:decision");
     }
 
     #[test]

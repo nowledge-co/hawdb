@@ -9048,6 +9048,18 @@ fn knowledge_graph_seed_matches_filter(
         };
         return property_number_gte(property, value);
     }
+    if let Some(field) = key.strip_suffix("__in") {
+        if let Some(path) = field.strip_prefix("metadata.") {
+            let Some(metadata) = node.properties.get("metadata") else {
+                return false;
+            };
+            return property_json_metadata_path_matches_any(metadata, path, value);
+        }
+        let Some(property) = node.properties.get(field) else {
+            return false;
+        };
+        return property_value_in(property, value);
+    }
     if let Some(path) = key.strip_prefix("metadata.") {
         let Some(metadata) = node.properties.get("metadata") else {
             return false;
@@ -9069,7 +9081,7 @@ fn knowledge_graph_seed_matches_filter(
         _ => node
             .properties
             .get(key)
-            .is_some_and(|property| value_to_external_id(property) == value),
+            .is_some_and(|property| property_text_matches(property, value)),
     }
 }
 
@@ -9082,6 +9094,28 @@ fn property_json_metadata_path_matches(metadata: &Value, path: &str, expected: &
     json_metadata_values_at_path(&metadata, path)
         .iter()
         .any(|value| normalize_json_metadata_filter_value(value) == expected)
+}
+
+fn property_json_metadata_path_matches_any(
+    metadata: &Value,
+    path: &str,
+    expected_values: &str,
+) -> bool {
+    let Some(metadata) = property_json_metadata_value(metadata) else {
+        return false;
+    };
+    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
+        return false;
+    };
+    let expected_values = expected_values
+        .iter()
+        .map(|value| {
+            normalize_json_metadata_filter_value(&serde_json::Value::String(value.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    json_metadata_values_at_path(&metadata, path)
+        .iter()
+        .any(|value| expected_values.contains(&normalize_json_metadata_filter_value(value)))
 }
 
 fn property_json_metadata_value(metadata: &Value) -> Option<serde_json::Value> {
@@ -9179,6 +9213,19 @@ fn property_number_gte(actual: &Value, expected: &str) -> bool {
         Ok(expected) => actual >= expected,
         Err(_) => false,
     }
+}
+
+fn property_value_in(actual: &Value, expected_values: &str) -> bool {
+    let Ok(expected_values) = serde_json::from_str::<Vec<String>>(expected_values) else {
+        return false;
+    };
+    expected_values
+        .iter()
+        .any(|expected| property_text_matches(actual, expected))
+}
+
+fn property_text_matches(actual: &Value, expected: &str) -> bool {
+    value_to_external_id(actual) == expected
 }
 
 fn normalized_node_space_id(node: &NodeRecord) -> String {
