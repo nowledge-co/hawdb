@@ -120,7 +120,7 @@ impl TurbovecSearchProjection {
                 "turbovec projection manifest encode failed: {error}"
             ))
         })?;
-        std::fs::write(manifest_path_for(path), manifest_bytes).map_err(|error| {
+        std::fs::write(Self::manifest_path_for(path), manifest_bytes).map_err(|error| {
             SkeinError::Storage(format!(
                 "turbovec projection manifest write failed: {error}"
             ))
@@ -133,7 +133,7 @@ impl TurbovecSearchProjection {
         let index = turbovec::IdMapIndex::load(path).map_err(|error| {
             SkeinError::Storage(format!("turbovec projection load failed: {error}"))
         })?;
-        let manifest_bytes = std::fs::read(manifest_path_for(path)).map_err(|error| {
+        let manifest_bytes = std::fs::read(Self::manifest_path_for(path)).map_err(|error| {
             SkeinError::Storage(format!("turbovec projection manifest read failed: {error}"))
         })?;
         let manifest: TurbovecSearchProjectionManifest = serde_json::from_slice(&manifest_bytes)
@@ -267,14 +267,18 @@ impl TurbovecSearchProjection {
     pub fn bit_width(&self) -> usize {
         self.bit_width
     }
-}
 
-fn manifest_path_for(index_path: &Path) -> PathBuf {
-    let file_name = index_path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| "projection.tvim".into());
-    index_path.with_file_name(format!("{file_name}.ids.json"))
+    pub fn mapped_document_ids(&self) -> BTreeSet<String> {
+        self.document_to_numeric_id.keys().cloned().collect()
+    }
+
+    pub fn manifest_path_for(index_path: &Path) -> PathBuf {
+        let file_name = index_path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "projection.tvim".into());
+        index_path.with_file_name(format!("{file_name}.ids.json"))
+    }
 }
 
 fn stable_numeric_id(document_id: &str, existing: &BTreeMap<u64, String>) -> u64 {
@@ -421,7 +425,7 @@ mod tests {
             mappings: Vec::new(),
         };
         std::fs::write(
-            manifest_path_for(&index_path),
+            TurbovecSearchProjection::manifest_path_for(&index_path),
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();

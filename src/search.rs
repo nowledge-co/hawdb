@@ -20,6 +20,10 @@ pub mod turbovec_projection;
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
 
 const SEARCH_SNAPSHOT_FILE: &str = "search_projection.skein";
+#[cfg(feature = "turbovec")]
+const SEARCH_TURBOVEC_PROJECTION_FILE: &str = "search_projection.tvim";
+#[cfg(feature = "turbovec")]
+const SEARCH_TURBOVEC_PROJECTION_BIT_WIDTH: usize = 4;
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
 const BM25_K1: f64 = 1.2;
@@ -740,6 +744,23 @@ impl SearchIndex {
         )
     }
 
+    #[cfg(feature = "turbovec")]
+    pub fn load_turbovec_projection(
+        &self,
+    ) -> Result<Option<turbovec_projection::TurbovecSearchProjection>> {
+        let Some(path) = &self.path else {
+            return Ok(None);
+        };
+        let artifact_path = path.join(SEARCH_TURBOVEC_PROJECTION_FILE);
+        if !artifact_path.exists() {
+            return Ok(None);
+        }
+        let projection =
+            turbovec_projection::TurbovecSearchProjection::load_from_path(&artifact_path)?;
+        self.validate_turbovec_projection_matches_documents(&projection)?;
+        Ok(Some(projection))
+    }
+
     pub fn embedding_manifest(&self) -> Option<&SearchEmbeddingManifest> {
         self.embedding_manifest.as_ref()
     }
@@ -1173,6 +1194,8 @@ impl SearchIndex {
         }
         fs::rename(tmp_path, &snapshot_path)?;
         sync_parent_dir(&snapshot_path)?;
+        #[cfg(feature = "turbovec")]
+        self.write_turbovec_projection_artifact(path)?;
         Ok(())
     }
 
@@ -1614,6 +1637,51 @@ impl SearchIndex {
         Ok(())
     }
 
+    #[cfg(feature = "turbovec")]
+    fn write_turbovec_projection_artifact(&self, path: &Path) -> Result<()> {
+        let artifact_path = path.join(SEARCH_TURBOVEC_PROJECTION_FILE);
+        match self.build_turbovec_projection(SEARCH_TURBOVEC_PROJECTION_BIT_WIDTH) {
+            Ok(Some(projection)) => projection.write_to_path(&artifact_path),
+            Ok(None) | Err(_) => {
+                remove_turbovec_projection_artifact_files(&artifact_path)?;
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(feature = "turbovec")]
+    fn validate_turbovec_projection_matches_documents(
+        &self,
+        projection: &turbovec_projection::TurbovecSearchProjection,
+    ) -> Result<()> {
+        if Some(projection.dimension()) != self.embedding_dimension {
+            return Err(SkeinError::Storage(format!(
+                "turbovec projection dimension {} does not match search projection dimension {:?}",
+                projection.dimension(),
+                self.embedding_dimension
+            )));
+        }
+        let expected_ids = self.vector_document_ids();
+        let actual_ids = projection.mapped_document_ids();
+        if actual_ids != expected_ids {
+            return Err(SkeinError::Storage(format!(
+                "turbovec projection maps {} vector documents but search projection has {} vector documents",
+                actual_ids.len(),
+                expected_ids.len()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "turbovec")]
+    fn vector_document_ids(&self) -> BTreeSet<String> {
+        self.documents
+            .values()
+            .filter(|document| document.embedding.is_some())
+            .map(|document| document.id.clone())
+            .collect()
+    }
+
     fn marker_path(&self, name: &str) -> Option<PathBuf> {
         self.path.as_ref().map(|path| path.join(name))
     }
@@ -1777,7 +1845,26 @@ fn search_projection_probe_predicate_pushdown_report(_index: &SearchIndex) -> se
 fn search_projection_probe_compressed_vector_projection_report(
     index: &SearchIndex,
 ) -> serde_json::Value {
-    match index.build_turbovec_projection(4) {
+    match index.load_turbovec_projection() {
+        Ok(Some(projection)) => {
+            return serde_json::json!({
+                "engine": "turbovec",
+                "compiled": true,
+                "ready": true,
+                "bit_width": projection.bit_width(),
+                "dimension": projection.dimension(),
+                "document_count": projection.document_count(),
+                "supports_allowlist": true,
+                "persisted_artifact_used": true,
+                "artifact_rebuilt_from_snapshot": false,
+                "blocker_codes": [],
+            });
+        }
+        Ok(None) => {}
+        Err(_) => {}
+    }
+
+    match index.build_turbovec_projection(SEARCH_TURBOVEC_PROJECTION_BIT_WIDTH) {
         Ok(Some(projection)) => serde_json::json!({
             "engine": "turbovec",
             "compiled": true,
@@ -1786,26 +1873,32 @@ fn search_projection_probe_compressed_vector_projection_report(
             "dimension": projection.dimension(),
             "document_count": projection.document_count(),
             "supports_allowlist": true,
+            "persisted_artifact_used": false,
+            "artifact_rebuilt_from_snapshot": true,
             "blocker_codes": [],
         }),
         Ok(None) => serde_json::json!({
             "engine": "turbovec",
             "compiled": true,
             "ready": false,
-            "bit_width": 4,
+            "bit_width": SEARCH_TURBOVEC_PROJECTION_BIT_WIDTH,
             "dimension": serde_json::Value::Null,
             "document_count": 0,
             "supports_allowlist": true,
+            "persisted_artifact_used": false,
+            "artifact_rebuilt_from_snapshot": false,
             "blocker_codes": ["missing_vector_leg"],
         }),
         Err(error) => serde_json::json!({
             "engine": "turbovec",
             "compiled": true,
             "ready": false,
-            "bit_width": 4,
+            "bit_width": SEARCH_TURBOVEC_PROJECTION_BIT_WIDTH,
             "dimension": serde_json::Value::Null,
             "document_count": 0,
             "supports_allowlist": true,
+            "persisted_artifact_used": false,
+            "artifact_rebuilt_from_snapshot": false,
             "blocker_codes": ["compressed_vector_projection_unavailable"],
             "error": error.to_string(),
         }),
@@ -1824,6 +1917,8 @@ fn search_projection_probe_compressed_vector_projection_report(
         "dimension": serde_json::Value::Null,
         "document_count": 0,
         "supports_allowlist": false,
+        "persisted_artifact_used": false,
+        "artifact_rebuilt_from_snapshot": false,
         "blocker_codes": ["turbovec_feature_disabled"],
     })
 }
@@ -2779,6 +2874,23 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
         metadata.insert(decode_string(key)?, decode_string(value)?);
     }
     Ok(metadata)
+}
+
+#[cfg(feature = "turbovec")]
+fn remove_turbovec_projection_artifact_files(artifact_path: &Path) -> Result<()> {
+    remove_file_if_exists(artifact_path)?;
+    remove_file_if_exists(
+        &turbovec_projection::TurbovecSearchProjection::manifest_path_for(artifact_path),
+    )
+}
+
+#[cfg(feature = "turbovec")]
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn encode_string(input: &str) -> String {
@@ -4707,6 +4819,112 @@ mod tests {
             })
         );
         assert!(index.document("a").is_some());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "turbovec")]
+    fn projection_checkpoint_publishes_turbovec_artifact() {
+        let path = unique_test_dir("search_turbovec_artifact_publish");
+        let artifact_path = path.join(SEARCH_TURBOVEC_PROJECTION_FILE);
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index
+                .apply_embedding_manifest(SearchEmbeddingManifest {
+                    model: "text-embedding-3-small".to_string(),
+                    version: None,
+                    dimension: 8,
+                })
+                .unwrap();
+            index
+                .upsert(doc(
+                    "memory:a",
+                    "Vector A",
+                    "Compressed projection",
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ))
+                .unwrap();
+            index
+                .upsert(doc(
+                    "memory:b",
+                    "Vector B",
+                    "Compressed projection",
+                    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ))
+                .unwrap();
+            index.checkpoint().unwrap();
+        }
+
+        assert!(artifact_path.exists());
+        assert!(
+            turbovec_projection::TurbovecSearchProjection::manifest_path_for(&artifact_path)
+                .exists()
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let projection = index.load_turbovec_projection().unwrap().unwrap();
+        let result = index.search_with_turbovec_projection(
+            &projection,
+            "",
+            Some(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            SearchMode::Vector,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                policy_epoch: None,
+            },
+        );
+        let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
+            active_embedding_model: Some("text-embedding-3-small".to_string()),
+            active_embedding_dimension: Some(8),
+        });
+
+        assert_eq!(result.hits[0].id, "memory:b");
+        assert_eq!(probe["compressed_vector_projection"]["ready"], true);
+        assert_eq!(
+            probe["compressed_vector_projection"]["persisted_artifact_used"],
+            true
+        );
+        assert_eq!(
+            probe["compressed_vector_projection"]["artifact_rebuilt_from_snapshot"],
+            false
+        );
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "turbovec")]
+    fn projection_checkpoint_removes_stale_turbovec_artifact_without_vectors() {
+        let path = unique_test_dir("search_turbovec_artifact_cleanup");
+        let artifact_path = path.join(SEARCH_TURBOVEC_PROJECTION_FILE);
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index
+                .upsert(doc(
+                    "memory:a",
+                    "Vector A",
+                    "Compressed projection",
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ))
+                .unwrap();
+            index.checkpoint().unwrap();
+            assert!(artifact_path.exists());
+        }
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index.delete("memory:a");
+            index.checkpoint().unwrap();
+        }
+
+        assert!(!artifact_path.exists());
+        assert!(
+            !turbovec_projection::TurbovecSearchProjection::manifest_path_for(&artifact_path)
+                .exists()
+        );
+
         std::fs::remove_dir_all(path).unwrap();
     }
 
