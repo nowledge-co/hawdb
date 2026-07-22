@@ -1738,11 +1738,7 @@ fn search_projection_probe_table_reports(
         .collect()
 }
 
-fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> serde_json::Value {
-    let segment_descriptor_ready = index
-        .segment_descriptor
-        .as_ref()
-        .is_some_and(|descriptor| descriptor.matches_documents(&index.documents));
+fn search_projection_probe_predicate_pushdown_report(_index: &SearchIndex) -> serde_json::Value {
     serde_json::json!({
         "ready": true,
         "equality_ready": true,
@@ -1750,9 +1746,9 @@ fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> ser
         "not_in_list_ready": true,
         "range_ready": true,
         "row_filter_ready": true,
-        "segment_pruning_ready": true,
+        "segment_pruning_ready": false,
         "numeric_min_max_ready": true,
-        "persisted_segment_descriptor_ready": segment_descriptor_ready,
+        "persisted_segment_descriptor_ready": false,
         "supported_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
         "scan_filter_fields": [
             "kind",
