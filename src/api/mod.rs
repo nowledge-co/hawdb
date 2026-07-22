@@ -9083,6 +9083,12 @@ fn knowledge_query_terms(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
+const KNOWLEDGE_ENTITY_QUERY_VARIABLE: &str = "n";
+const KNOWLEDGE_ENTITY_QUERY_ALIAS: &str = "__entity";
+const KNOWLEDGE_ENTITY_ID_PROPERTY: &str = "id";
+const KNOWLEDGE_ENTITY_EXTERNAL_ID_PARAM: &str = "external_id";
+const KNOWLEDGE_ENTITY_NODE_ID_PARAM: &str = "node_id";
+
 fn knowledge_entity_for(
     catalog: &Catalog,
     store: &GraphStore,
@@ -9107,7 +9113,7 @@ fn knowledge_entity_for(
         entity: output
             .rows
             .first()
-            .and_then(|row| row.get("__entity"))
+            .and_then(|row| row.get(KNOWLEDGE_ENTITY_QUERY_ALIAS))
             .and_then(knowledge_entity_from_projected_value),
     })
 }
@@ -9178,20 +9184,37 @@ fn knowledge_entity_query(
 ) -> Result<(String, BTreeMap<String, Value>)> {
     validate_cypher_identifier(&request.label, "label")?;
     let mut parameters = BTreeMap::from([(
-        "external_id".to_string(),
+        KNOWLEDGE_ENTITY_EXTERNAL_ID_PARAM.to_string(),
         Value::String(request.external_id.clone()),
     )]);
     let predicate = match request.external_id.parse::<i64>() {
         Ok(node_id) if node_id >= 0 => {
-            parameters.insert("node_id".to_string(), Value::Int(node_id));
-            "n.id = $external_id OR id(n) = $node_id"
+            parameters.insert(
+                KNOWLEDGE_ENTITY_NODE_ID_PARAM.to_string(),
+                Value::Int(node_id),
+            );
+            format!(
+                "{variable}.{property} = ${external_id_param} OR id({variable}) = ${node_id_param}",
+                variable = KNOWLEDGE_ENTITY_QUERY_VARIABLE,
+                property = KNOWLEDGE_ENTITY_ID_PROPERTY,
+                external_id_param = KNOWLEDGE_ENTITY_EXTERNAL_ID_PARAM,
+                node_id_param = KNOWLEDGE_ENTITY_NODE_ID_PARAM,
+            )
         }
-        _ => "n.id = $external_id",
+        _ => format!(
+            "{variable}.{property} = ${external_id_param}",
+            variable = KNOWLEDGE_ENTITY_QUERY_VARIABLE,
+            property = KNOWLEDGE_ENTITY_ID_PROPERTY,
+            external_id_param = KNOWLEDGE_ENTITY_EXTERNAL_ID_PARAM,
+        ),
     };
     Ok((
         format!(
-            "MATCH (n:{}) WHERE {} RETURN n AS __entity ORDER BY id(n) ASC LIMIT 1",
-            request.label, predicate
+            "MATCH ({variable}:{label}) WHERE {predicate} RETURN {variable} AS {alias} ORDER BY id({variable}) ASC LIMIT 1",
+            variable = KNOWLEDGE_ENTITY_QUERY_VARIABLE,
+            label = request.label,
+            predicate = predicate,
+            alias = KNOWLEDGE_ENTITY_QUERY_ALIAS,
         ),
         parameters,
     ))
@@ -30223,11 +30246,17 @@ fn optimized_query_plan_for(
         }
     }
 
-    let logical = planner::plan_with_params(statement_body(statement), parameters)?;
-    let (physical_plan, trace) = context.optimizer.optimize_with_catalog(
-        &logical,
-        &optimizer_catalog(context.catalog, &context.store.statistics()),
-    );
+    let body = statement_body(statement);
+    let fast_path_kind = ast_fast_path_kind(body);
+    let logical = planner::plan_with_params(body, parameters)?;
+    let catalog = optimizer_catalog(context.catalog, &context.store.statistics());
+    let (physical_plan, trace) = if let Some(kind) = fast_path_kind {
+        context
+            .optimizer
+            .optimize_fast_path_with_catalog(&logical, &catalog, kind.as_str())
+    } else {
+        context.optimizer.optimize_with_catalog(&logical, &catalog)
+    };
     let mut trace = trace;
     if cache_mode == PlanCacheMode::Use {
         let key = key.expect("cache key exists in use mode");
@@ -30248,6 +30277,52 @@ fn optimized_query_plan_for(
             .push(format!("plan cache bypass: {}", reason.as_str()));
     }
     Ok((physical_plan, trace))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AstFastPathKind {
+    SimpleSchema,
+    SimpleGraphProcedure,
+    SimpleCreate,
+}
+
+impl AstFastPathKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SimpleSchema => "simple schema statement",
+            Self::SimpleGraphProcedure => "simple graph procedure statement",
+            Self::SimpleCreate => "simple create statement",
+        }
+    }
+}
+
+fn ast_fast_path_kind(statement: &cypher::Statement) -> Option<AstFastPathKind> {
+    match statement {
+        cypher::Statement::CreateNodeLabel(_)
+        | cypher::Statement::CreateRelationshipType(_)
+        | cypher::Statement::CreateNodeTable(_)
+        | cypher::Statement::CreateRelationshipTable(_)
+        | cypher::Statement::CreateProperty(_)
+        | cypher::Statement::AlterTableState(_)
+        | cypher::Statement::AlterPropertyState(_)
+        | cypher::Statement::CreateIndex(_)
+        | cypher::Statement::CreateCompositeIndex(_)
+        | cypher::Statement::CreateRangeIndex(_)
+        | cypher::Statement::CreateFullTextIndex(_)
+        | cypher::Statement::CreateUniqueConstraint(_)
+        | cypher::Statement::CreateNodePropertyExistsConstraint(_)
+        | cypher::Statement::CreateRelationshipUniqueConstraint(_)
+        | cypher::Statement::CreateRelationshipPropertyExistsConstraint(_) => {
+            Some(AstFastPathKind::SimpleSchema)
+        }
+        cypher::Statement::ProjectGraph(_) | cypher::Statement::GraphAlgorithm(_) => {
+            Some(AstFastPathKind::SimpleGraphProcedure)
+        }
+        cypher::Statement::CreateNode(_) | cypher::Statement::CreateRelationship(_) => {
+            Some(AstFastPathKind::SimpleCreate)
+        }
+        _ => None,
+    }
 }
 
 fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {

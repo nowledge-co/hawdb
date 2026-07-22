@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub enum SearchMode {
     Memo,
     DirectFallback,
+    FastPath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,16 @@ impl OptimizationSearchReport {
             "optimizer memo budget exceeded: required_groups={required_groups} max_groups={max_groups}; used deterministic direct physical fallback"
         ));
         report
+    }
+
+    pub fn fast_path(groups: usize) -> Self {
+        Self {
+            groups,
+            mode: SearchMode::FastPath,
+            warnings: Vec::new(),
+            decisions: Vec::new(),
+            rule_events: Vec::new(),
+        }
     }
 
     pub fn groups(&self) -> usize {
@@ -188,7 +199,11 @@ impl RuleEvent {
 
 impl SearchMode {
     pub fn all() -> &'static [Self] {
-        const ALL: &[SearchMode] = &[SearchMode::Memo, SearchMode::DirectFallback];
+        const ALL: &[SearchMode] = &[
+            SearchMode::Memo,
+            SearchMode::DirectFallback,
+            SearchMode::FastPath,
+        ];
         ALL
     }
 
@@ -196,6 +211,7 @@ impl SearchMode {
         match self {
             SearchMode::Memo => "memo",
             SearchMode::DirectFallback => "direct_fallback",
+            SearchMode::FastPath => "fast_path",
         }
     }
 }

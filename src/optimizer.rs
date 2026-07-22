@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 type ValueRangeBound = (Value, bool);
 type ValueRangeBounds = (Option<ValueRangeBound>, Option<ValueRangeBound>);
 
+pub const AST_FAST_PATH_RULE_NAME: &str = "fast_path";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalPlan {
     CreateNodeLabel {
@@ -2002,6 +2004,22 @@ impl CascadesOptimizer {
         let mut decisions = Vec::new();
         let plan = best_physical(&memo, root, catalog, &mut decisions);
         let mut report = OptimizationSearchReport::memo(memo.group_count());
+        report.extend_decisions(decisions);
+        let selected = selected_plan_trace(&plan, catalog);
+        report.record_selected_plan_cost(selected.cost);
+        (plan, report.into_trace(selected))
+    }
+
+    pub fn optimize_fast_path_with_catalog(
+        &self,
+        logical: &LogicalPlan,
+        catalog: &OptimizerCatalog,
+        reason: &str,
+    ) -> (PhysicalPlan, OptimizerTrace) {
+        let mut decisions = Vec::new();
+        let plan = logical_to_physical_direct(logical, catalog, &mut decisions);
+        let mut report = OptimizationSearchReport::fast_path(logical_group_count(logical));
+        report.push_rule_event(RuleEvent::selected(AST_FAST_PATH_RULE_NAME, reason));
         report.extend_decisions(decisions);
         let selected = selected_plan_trace(&plan, catalog);
         report.record_selected_plan_cost(selected.cost);

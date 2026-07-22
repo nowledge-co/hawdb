@@ -110,7 +110,7 @@ use super::{
     NowledgeGraphStatement, QueryOutput, RecoveryMode, SearchProjectionGraphDeltaRequest,
     GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
 };
-use crate::optimizer::PlanCost;
+use crate::optimizer::{PlanCost, SearchMode as OptimizerSearchMode};
 use crate::qos::{
     BackgroundWorkHint, BackgroundWorkReasonCode, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkPriority, WorkRequest,
@@ -25201,6 +25201,36 @@ fn explains_query_with_optimizer_trace() {
         .decisions
         .iter()
         .any(|decision| decision.contains("choose IndexNodeSeek")));
+}
+
+#[test]
+fn explain_simple_create_uses_ast_fast_path() {
+    let db = Database::new();
+    let output = db
+        .explain_query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
+        .unwrap();
+
+    assert_eq!(output.trace.search_mode, OptimizerSearchMode::FastPath);
+    assert!(output.trace.selected_plan.contains("CreateNode"));
+    assert!(output.trace.rule_events.iter().any(|event| {
+        event.rule() == crate::optimizer::AST_FAST_PATH_RULE_NAME
+            && event.outcome() == crate::optimizer::RuleOutcome::Selected
+            && event.detail() == super::AstFastPathKind::SimpleCreate.as_str()
+    }));
+}
+
+#[test]
+fn explain_match_query_still_uses_memo_optimizer() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
+        .unwrap();
+
+    let output = db
+        .explain_query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+        .unwrap();
+
+    assert_eq!(output.trace.search_mode, OptimizerSearchMode::Memo);
+    assert!(output.trace.selected_plan.contains("ProjectExec"));
 }
 
 #[test]
