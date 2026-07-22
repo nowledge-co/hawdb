@@ -2773,11 +2773,9 @@ impl SearchFilterSegmentSummary {
             SearchPredicateOp::Gt(expected)
             | SearchPredicateOp::Gte(expected)
             | SearchPredicateOp::Lt(expected)
-            | SearchPredicateOp::Lte(expected) => self.numeric_range_may_match(
-                predicate.field().name(),
-                predicate.op(),
-                expected.as_str(),
-            ),
+            | SearchPredicateOp::Lte(expected) => {
+                self.range_may_match(predicate.field().name(), predicate.op(), expected.as_str())
+            }
         }
     }
 
@@ -2815,8 +2813,13 @@ impl SearchFilterSegmentSummary {
         })
     }
 
-    fn numeric_range_may_match(&self, field: &str, op: &SearchPredicateOp, expected: &str) -> bool {
-        metadata_numeric_range_may_match(self.numeric_ranges.get(field).copied(), op, expected)
+    fn range_may_match(&self, field: &str, op: &SearchPredicateOp, expected: &str) -> bool {
+        if metadata_numeric_range_may_match(self.numeric_ranges.get(field).copied(), op, expected) {
+            return true;
+        }
+        self.values
+            .get(field)
+            .is_some_and(|values| metadata_string_range_may_match(field, values, op, expected))
     }
 }
 
@@ -2934,11 +2937,9 @@ impl SearchSegmentDescriptorEntry {
             SearchPredicateOp::Gt(expected)
             | SearchPredicateOp::Gte(expected)
             | SearchPredicateOp::Lt(expected)
-            | SearchPredicateOp::Lte(expected) => self.numeric_range_may_match(
-                predicate.field().name(),
-                predicate.op(),
-                expected.as_str(),
-            ),
+            | SearchPredicateOp::Lte(expected) => {
+                self.range_may_match(predicate.field().name(), predicate.op(), expected.as_str())
+            }
         }
     }
 
@@ -2976,14 +2977,14 @@ impl SearchSegmentDescriptorEntry {
         })
     }
 
-    fn numeric_range_may_match(&self, field: &str, op: &SearchPredicateOp, expected: &str) -> bool {
-        metadata_numeric_range_may_match(
-            self.metadata
-                .get(field)
-                .and_then(|summary| summary.numeric_range),
-            op,
-            expected,
-        )
+    fn range_may_match(&self, field: &str, op: &SearchPredicateOp, expected: &str) -> bool {
+        let Some(summary) = self.metadata.get(field) else {
+            return false;
+        };
+        if metadata_numeric_range_may_match(summary.numeric_range, op, expected) {
+            return true;
+        }
+        metadata_string_range_may_match(field, &summary.values, op, expected)
     }
 }
 
@@ -3027,18 +3028,18 @@ fn search_document_matches_predicate(
                 !metadata_value_matches(predicate.field().name(), actual, excluded.as_str())
             })
         }),
-        SearchPredicateOp::Gt(expected) => {
-            actual.is_some_and(|actual| metadata_numeric_gt(actual, expected.as_str()))
-        }
-        SearchPredicateOp::Gte(expected) => {
-            actual.is_some_and(|actual| metadata_numeric_gte(actual, expected.as_str()))
-        }
-        SearchPredicateOp::Lt(expected) => {
-            actual.is_some_and(|actual| metadata_numeric_lt(actual, expected.as_str()))
-        }
-        SearchPredicateOp::Lte(expected) => {
-            actual.is_some_and(|actual| metadata_numeric_lte(actual, expected.as_str()))
-        }
+        SearchPredicateOp::Gt(expected) => actual.is_some_and(|actual| {
+            metadata_range_gt(predicate.field().name(), actual, expected.as_str())
+        }),
+        SearchPredicateOp::Gte(expected) => actual.is_some_and(|actual| {
+            metadata_range_gte(predicate.field().name(), actual, expected.as_str())
+        }),
+        SearchPredicateOp::Lt(expected) => actual.is_some_and(|actual| {
+            metadata_range_lt(predicate.field().name(), actual, expected.as_str())
+        }),
+        SearchPredicateOp::Lte(expected) => actual.is_some_and(|actual| {
+            metadata_range_lte(predicate.field().name(), actual, expected.as_str())
+        }),
     }
 }
 
@@ -3072,20 +3073,28 @@ fn metadata_numeric_value(value: &str) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
-fn metadata_numeric_gt(actual: &str, expected: &str) -> bool {
+fn metadata_range_gt(field: &str, actual: &str, expected: &str) -> bool {
     metadata_numeric_pair(actual, expected).is_some_and(|(actual, expected)| actual > expected)
+        || metadata_string_range_pair(field, actual, expected)
+            .is_some_and(|(actual, expected)| actual > expected)
 }
 
-fn metadata_numeric_gte(actual: &str, expected: &str) -> bool {
+fn metadata_range_gte(field: &str, actual: &str, expected: &str) -> bool {
     metadata_numeric_pair(actual, expected).is_some_and(|(actual, expected)| actual >= expected)
+        || metadata_string_range_pair(field, actual, expected)
+            .is_some_and(|(actual, expected)| actual >= expected)
 }
 
-fn metadata_numeric_lt(actual: &str, expected: &str) -> bool {
+fn metadata_range_lt(field: &str, actual: &str, expected: &str) -> bool {
     metadata_numeric_pair(actual, expected).is_some_and(|(actual, expected)| actual < expected)
+        || metadata_string_range_pair(field, actual, expected)
+            .is_some_and(|(actual, expected)| actual < expected)
 }
 
-fn metadata_numeric_lte(actual: &str, expected: &str) -> bool {
+fn metadata_range_lte(field: &str, actual: &str, expected: &str) -> bool {
     metadata_numeric_pair(actual, expected).is_some_and(|(actual, expected)| actual <= expected)
+        || metadata_string_range_pair(field, actual, expected)
+            .is_some_and(|(actual, expected)| actual <= expected)
 }
 
 fn metadata_numeric_pair(actual: &str, expected: &str) -> Option<(f64, f64)> {
@@ -3093,6 +3102,64 @@ fn metadata_numeric_pair(actual: &str, expected: &str) -> Option<(f64, f64)> {
         metadata_numeric_value(actual)?,
         metadata_numeric_value(expected)?,
     ))
+}
+
+fn metadata_string_range_may_match(
+    field: &str,
+    actual_values: &BTreeSet<String>,
+    op: &SearchPredicateOp,
+    expected: &str,
+) -> bool {
+    actual_values.iter().any(|actual| match op {
+        SearchPredicateOp::Gt(_) => metadata_range_gt(field, actual, expected),
+        SearchPredicateOp::Gte(_) => metadata_range_gte(field, actual, expected),
+        SearchPredicateOp::Lt(_) => metadata_range_lt(field, actual, expected),
+        SearchPredicateOp::Lte(_) => metadata_range_lte(field, actual, expected),
+        SearchPredicateOp::Eq(_) | SearchPredicateOp::In(_) | SearchPredicateOp::NotIn(_) => true,
+    })
+}
+
+fn metadata_string_range_pair(
+    field: &str,
+    actual: &str,
+    expected: &str,
+) -> Option<(String, String)> {
+    if !metadata_string_range_field(field) {
+        return None;
+    }
+    Some((
+        normalize_metadata_date_for_ordering(actual)?,
+        normalize_metadata_date_for_ordering(expected)?,
+    ))
+}
+
+fn metadata_string_range_field(field: &str) -> bool {
+    matches!(field, "event_start" | "event_end")
+}
+
+fn normalize_metadata_date_for_ordering(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let date = match trimmed.len() {
+        4 if trimmed.chars().all(|ch| ch.is_ascii_digit()) => format!("{trimmed}-01-01"),
+        7 if valid_year_month_prefix(trimmed) => format!("{trimmed}-01"),
+        10 if valid_year_month_day(trimmed) => trimmed.to_string(),
+        _ => return None,
+    };
+    Some(date)
+}
+
+fn valid_year_month_prefix(value: &str) -> bool {
+    value.as_bytes().get(4) == Some(&b'-')
+        && value[..4].chars().all(|ch| ch.is_ascii_digit())
+        && value[5..].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn valid_year_month_day(value: &str) -> bool {
+    value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value[..4].chars().all(|ch| ch.is_ascii_digit())
+        && value[5..7].chars().all(|ch| ch.is_ascii_digit())
+        && value[8..].chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn metadata_numeric_range_may_match(
@@ -4733,6 +4800,70 @@ mod tests {
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.filtered_document_count, 1);
         assert_eq!(result.hits[0].id, "memory:1_new_0");
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .segment_count,
+            2
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .scanned_segment_count,
+            1
+        );
+    }
+
+    #[test]
+    fn search_with_options_applies_date_string_range_filters_before_ranking() {
+        let mut index = SearchIndex::in_memory();
+        for (id, event_start) in [
+            ("memory:old_0", "2022"),
+            ("memory:old_1", "2023-05"),
+            ("memory:new", "2024-03-20"),
+        ] {
+            index
+                .upsert(SearchDocument {
+                    id: id.to_string(),
+                    title: "Graph memory".to_string(),
+                    content: "graph projection diagnostics".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([(
+                        "event_start".to_string(),
+                        event_start.to_string(),
+                    )]),
+                })
+                .unwrap();
+        }
+
+        let result = index.search_with_options(
+            "graph",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "event_start__gte".to_string(),
+                    "2024-01".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.filtered_document_count, 1);
+        assert_eq!(result.hits[0].id, "memory:new");
         assert_eq!(
             result
                 .candidate_set
