@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 mod analyzer_lexicon;
+#[cfg(feature = "turbovec")]
+pub mod turbovec_projection;
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
 
 const SEARCH_SNAPSHOT_FILE: &str = "search_projection.skein";
@@ -715,6 +717,17 @@ impl SearchIndex {
         self.documents.len()
     }
 
+    #[cfg(feature = "turbovec")]
+    pub fn build_turbovec_projection(
+        &self,
+        bit_width: usize,
+    ) -> Result<Option<turbovec_projection::TurbovecSearchProjection>> {
+        turbovec_projection::TurbovecSearchProjection::build_from_documents(
+            self.documents.values(),
+            bit_width,
+        )
+    }
+
     pub fn embedding_manifest(&self) -> Option<&SearchEmbeddingManifest> {
         self.embedding_manifest.as_ref()
     }
@@ -774,6 +787,9 @@ impl SearchIndex {
             .documents
             .values()
             .any(|document| document.embedding.is_some());
+        let predicate_pushdown = search_projection_probe_predicate_pushdown_report(self);
+        let compressed_vector_projection =
+            search_projection_probe_compressed_vector_projection_report(self);
 
         serde_json::json!({
             "protocol": "skein-nowledge-search-projection-probe",
@@ -810,6 +826,8 @@ impl SearchIndex {
                 "watermark_ready": freshness.source_graph_commit_epoch.is_some(),
                 "source_graph_commit_epoch": freshness.source_graph_commit_epoch,
             },
+            "compressed_vector_projection": compressed_vector_projection,
+            "predicate_pushdown": predicate_pushdown,
             "blocker_codes": search_projection_probe_blocker_codes(
                 has_documents,
                 has_text,
@@ -1673,6 +1691,94 @@ fn search_projection_probe_table_reports(
             })
         })
         .collect()
+}
+
+fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> serde_json::Value {
+    let segment_descriptor_ready = index
+        .segment_descriptor
+        .as_ref()
+        .is_some_and(|descriptor| descriptor.matches_documents(&index.documents));
+    serde_json::json!({
+        "ready": true,
+        "equality_ready": true,
+        "in_list_ready": true,
+        "not_in_list_ready": true,
+        "range_ready": true,
+        "row_filter_ready": true,
+        "segment_pruning_ready": true,
+        "numeric_min_max_ready": true,
+        "persisted_segment_descriptor_ready": segment_descriptor_ready,
+        "supported_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
+        "scan_filter_fields": [
+            "kind",
+            "external_id",
+            "source_id",
+            "space_id",
+            "unit_type",
+            "importance",
+            "confidence",
+            "created_at",
+            "updated_at",
+            "event_start",
+            "event_end",
+            "is_latest"
+        ],
+    })
+}
+
+#[cfg(feature = "turbovec")]
+fn search_projection_probe_compressed_vector_projection_report(
+    index: &SearchIndex,
+) -> serde_json::Value {
+    match index.build_turbovec_projection(4) {
+        Ok(Some(projection)) => serde_json::json!({
+            "engine": "turbovec",
+            "compiled": true,
+            "ready": true,
+            "bit_width": projection.bit_width(),
+            "dimension": projection.dimension(),
+            "document_count": projection.document_count(),
+            "supports_allowlist": true,
+            "blocker_codes": [],
+        }),
+        Ok(None) => serde_json::json!({
+            "engine": "turbovec",
+            "compiled": true,
+            "ready": false,
+            "bit_width": 4,
+            "dimension": serde_json::Value::Null,
+            "document_count": 0,
+            "supports_allowlist": true,
+            "blocker_codes": ["missing_vector_leg"],
+        }),
+        Err(error) => serde_json::json!({
+            "engine": "turbovec",
+            "compiled": true,
+            "ready": false,
+            "bit_width": 4,
+            "dimension": serde_json::Value::Null,
+            "document_count": 0,
+            "supports_allowlist": true,
+            "blocker_codes": ["compressed_vector_projection_unavailable"],
+            "error": error.to_string(),
+        }),
+    }
+}
+
+#[cfg(not(feature = "turbovec"))]
+fn search_projection_probe_compressed_vector_projection_report(
+    _index: &SearchIndex,
+) -> serde_json::Value {
+    serde_json::json!({
+        "engine": "turbovec",
+        "compiled": false,
+        "ready": false,
+        "bit_width": serde_json::Value::Null,
+        "dimension": serde_json::Value::Null,
+        "document_count": 0,
+        "supports_allowlist": false,
+        "blocker_codes": ["turbovec_feature_disabled"],
+    })
 }
 
 fn search_projection_probe_blocker_codes(
@@ -4615,7 +4721,65 @@ mod tests {
         assert_eq!(probe["lifecycle"]["rebuild_marker_ready"], true);
         assert_eq!(probe["lifecycle"]["metadata_repair_marker_ready"], true);
         assert_eq!(probe["incremental_update"]["ready"], true);
+        assert_eq!(probe["compressed_vector_projection"]["engine"], "turbovec");
         assert_eq!(probe["blocker_codes"], serde_json::json!([]));
+    }
+
+    #[test]
+    #[cfg(not(feature = "turbovec"))]
+    fn nowledge_search_projection_probe_reports_turbovec_disabled_by_default() {
+        let index = SearchIndex::in_memory();
+
+        let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
+            active_embedding_model: None,
+            active_embedding_dimension: None,
+        });
+
+        assert_eq!(probe["compressed_vector_projection"]["engine"], "turbovec");
+        assert_eq!(probe["compressed_vector_projection"]["compiled"], false);
+        assert_eq!(probe["compressed_vector_projection"]["ready"], false);
+        assert_eq!(
+            probe["compressed_vector_projection"]["blocker_codes"],
+            serde_json::json!(["turbovec_feature_disabled"])
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "turbovec")]
+    fn nowledge_search_projection_probe_reports_turbovec_ready_when_feature_enabled() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:turbovec".to_string(),
+                title: "Turbovec projection".to_string(),
+                content: "Compressed vector backend".to_string(),
+                embedding: Some(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                metadata: BTreeMap::from([
+                    ("kind".to_string(), "memory".to_string()),
+                    ("external_id".to_string(), "turbovec".to_string()),
+                ]),
+            })
+            .unwrap();
+
+        let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
+            active_embedding_model: None,
+            active_embedding_dimension: Some(8),
+        });
+
+        assert_eq!(probe["compressed_vector_projection"]["engine"], "turbovec");
+        assert_eq!(probe["compressed_vector_projection"]["compiled"], true);
+        assert_eq!(probe["compressed_vector_projection"]["ready"], true);
+        assert_eq!(probe["compressed_vector_projection"]["bit_width"], 4);
+        assert_eq!(probe["compressed_vector_projection"]["dimension"], 8);
+        assert_eq!(probe["compressed_vector_projection"]["document_count"], 1);
+        assert_eq!(
+            probe["compressed_vector_projection"]["supports_allowlist"],
+            true
+        );
+        assert_eq!(
+            probe["compressed_vector_projection"]["blocker_codes"],
+            serde_json::json!([])
+        );
     }
 
     #[test]

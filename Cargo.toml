@@ -15,6 +15,11 @@ skein-optimizer = { path = "crates/optimizer" }
 skein-plan-cache = { path = "crates/plan-cache" }
 skein-qos = { path = "crates/qos" }
 zstd = "0.13"
+turbovec = { version = "0.9.0", optional = true }
+
+[features]
+default = []
+turbovec = ["dep:turbovec"]
 
 [workspace]
 members = [
