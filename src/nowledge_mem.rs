@@ -1,4 +1,4 @@
-use crate::search::CompressedVectorSearchMode;
+use crate::search::{CompressedVectorSearchMode, SearchPredicatePushdownReport};
 use crate::search_projection_evidence::{
     nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
 };
@@ -271,6 +271,9 @@ pub struct NowledgeMemRetrievalReport {
     pub search_document_count: usize,
     pub search_filtered_document_count: usize,
     pub search_total_hits: usize,
+    pub search_candidate_filtered_out_count: usize,
+    pub search_metadata_filters: BTreeMap<String, String>,
+    pub search_metadata_predicate_pushdown: SearchPredicatePushdownReport,
     pub candidate_count: usize,
     pub candidate_total_count: usize,
     pub evidence_count: usize,
@@ -300,6 +303,9 @@ impl NowledgeMemRetrievalReport {
             "search_document_count": self.search_document_count,
             "search_filtered_document_count": self.search_filtered_document_count,
             "search_total_hits": self.search_total_hits,
+            "search_candidate_filtered_out_count": self.search_candidate_filtered_out_count,
+            "search_metadata_filters": self.search_metadata_filters,
+            "search_metadata_predicate_pushdown": search_predicate_pushdown_report_json(&self.search_metadata_predicate_pushdown),
             "candidate_count": self.candidate_count,
             "candidate_total_count": self.candidate_total_count,
             "evidence_count": self.evidence_count,
@@ -769,6 +775,17 @@ fn nowledge_mem_retrieval_report(
         search_document_count: output.search.document_count,
         search_filtered_document_count: output.search.filtered_document_count,
         search_total_hits: output.search.total_hits,
+        search_candidate_filtered_out_count: output.diagnostics.search_candidate_filtered_out_count,
+        search_metadata_filters: output
+            .diagnostics
+            .search_candidate_set
+            .metadata_filters
+            .clone(),
+        search_metadata_predicate_pushdown: output
+            .diagnostics
+            .search_candidate_set
+            .metadata_predicate_pushdown
+            .clone(),
         candidate_count: output.candidates.len(),
         candidate_total_count: output.diagnostics.candidate_total_count,
         evidence_count: output.evidence.len(),
@@ -789,6 +806,22 @@ fn nowledge_mem_retrieval_report(
         warning_count: output.diagnostics.warnings.len(),
         warnings: output.diagnostics.warnings.clone(),
     }
+}
+
+fn search_predicate_pushdown_report_json(
+    report: &SearchPredicatePushdownReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "input_predicate_count": report.input_predicate_count,
+        "pushed_predicate_count": report.pushed_predicate_count,
+        "residual_predicate_count": report.residual_predicate_count,
+        "unsatisfiable": report.unsatisfiable,
+        "parse_error": report.parse_error,
+        "segment_count": report.segment_count,
+        "pruned_segment_count": report.pruned_segment_count,
+        "scanned_segment_count": report.scanned_segment_count,
+        "persisted_segment_descriptor_used": report.persisted_segment_descriptor_used,
+    })
 }
 
 fn nowledge_mem_read_report(
@@ -1536,6 +1569,66 @@ mod tests {
             report.json()["protocol"],
             NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL
         );
+    }
+
+    #[test]
+    fn embedded_store_retrieval_report_exposes_search_filter_pushdown() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph
+            .query("CREATE (:Memory {id: 'mem-fact', title: 'Fact retrieval', content: 'filter me', unit_type: 'fact'})")
+            .unwrap();
+        graph
+            .query("CREATE (:Memory {id: 'mem-task', title: 'Task retrieval', content: 'filter me', unit_type: 'task'})")
+            .unwrap();
+        let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
+        let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
+        let delta = store
+            .build_search_projection_graph_delta_request_from_freshness(Some(8))
+            .unwrap()
+            .expect("expected search projection delta");
+        store.apply_search_projection_graph_delta(delta).unwrap();
+
+        let retrieval = store
+            .retrieve_knowledge_with_report(&KnowledgeRetrievalRequest {
+                query_text: "filter".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("unit_type".to_string(), "fact".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 0,
+            })
+            .unwrap();
+        let report = retrieval.report;
+        let report_json = report.json();
+
+        assert_eq!(report.search_metadata_filters["unit_type"], "fact");
+        assert_eq!(report.search_filtered_document_count, 1);
+        assert_eq!(report.search_candidate_filtered_out_count, 1);
+        assert_eq!(
+            report
+                .search_metadata_predicate_pushdown
+                .input_predicate_count,
+            1
+        );
+        assert_eq!(
+            report
+                .search_metadata_predicate_pushdown
+                .pushed_predicate_count,
+            1
+        );
+        assert_eq!(report_json["search_metadata_filters"]["unit_type"], "fact");
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["pushed_predicate_count"],
+            1
+        );
+        assert_eq!(report_json["search_candidate_filtered_out_count"], 1);
     }
 
     #[test]
