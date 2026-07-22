@@ -344,6 +344,15 @@ pub struct SearchQueryOptions {
     pub policy_epoch: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+enum VectorSearchBackend<'a> {
+    Scalar,
+    #[cfg(not(feature = "turbovec"))]
+    _Lifetime(std::marker::PhantomData<&'a ()>),
+    #[cfg(feature = "turbovec")]
+    Turbovec(&'a turbovec_projection::TurbovecSearchProjection),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchAnalyzerLexicon {
     alias_rules: Vec<SearchAnalyzerAliasRule>,
@@ -1203,6 +1212,41 @@ impl SearchIndex {
         mode: SearchMode,
         options: SearchQueryOptions,
     ) -> SearchResultSet {
+        self.search_with_options_using_vector_backend(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            VectorSearchBackend::Scalar,
+        )
+    }
+
+    #[cfg(feature = "turbovec")]
+    pub fn search_with_turbovec_projection(
+        &self,
+        projection: &turbovec_projection::TurbovecSearchProjection,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+    ) -> SearchResultSet {
+        self.search_with_options_using_vector_backend(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            VectorSearchBackend::Turbovec(projection),
+        )
+    }
+
+    fn search_with_options_using_vector_backend(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        vector_backend: VectorSearchBackend<'_>,
+    ) -> SearchResultSet {
         let query_terms = tokenize(query_text, &self.analyzer_lexicon);
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
@@ -1273,17 +1317,21 @@ impl SearchIndex {
         };
         let projection_freshness = self.projection_freshness();
 
-        let mut vector_scores = BTreeMap::new();
+        let vector_scores = if vector_available && mode != SearchMode::Text {
+            vector_scores_for_backend(
+                query_embedding.expect("vector_available requires query embedding"),
+                &filtered_documents,
+                vector_backend,
+                limit,
+                options.rank_window,
+                &mut vector_fallback_reason_codes,
+                &mut vector_fallback_reasons,
+            )
+        } else {
+            BTreeMap::new()
+        };
         let mut text_scores = BTreeMap::new();
         for document in &filtered_documents {
-            let vector_score = if vector_available && mode != SearchMode::Text {
-                query_embedding
-                    .zip(document.embedding.as_deref())
-                    .and_then(|(query, document)| cosine_similarity(query, document))
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            };
             let text_score = if text_available && mode != SearchMode::Vector {
                 text_corpus
                     .as_ref()
@@ -1294,9 +1342,6 @@ impl SearchIndex {
             } else {
                 0.0
             };
-            if vector_score > 0.0 {
-                vector_scores.insert(document.id.clone(), vector_score);
-            }
             if text_score > 0.0 {
                 text_scores.insert(document.id.clone(), text_score);
             }
@@ -1920,6 +1965,64 @@ fn value_to_projection_string(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join(","),
     }
+}
+
+fn vector_scores_for_backend(
+    query_embedding: &[f32],
+    documents: &[&SearchDocument],
+    backend: VectorSearchBackend<'_>,
+    limit: usize,
+    rank_window: Option<usize>,
+    fallback_reason_codes: &mut Vec<SearchFallbackReasonCode>,
+    fallback_reasons: &mut Vec<String>,
+) -> BTreeMap<String, f64> {
+    #[cfg(not(feature = "turbovec"))]
+    let _ = (limit, rank_window, fallback_reason_codes, fallback_reasons);
+
+    match backend {
+        VectorSearchBackend::Scalar => scalar_vector_scores(query_embedding, documents),
+        #[cfg(not(feature = "turbovec"))]
+        VectorSearchBackend::_Lifetime(_) => unreachable!("lifetime marker is never constructed"),
+        #[cfg(feature = "turbovec")]
+        VectorSearchBackend::Turbovec(projection) => {
+            let allowlist = documents
+                .iter()
+                .map(|document| document.id.clone())
+                .collect::<BTreeSet<_>>();
+            let candidate_limit = limit.max(rank_window.unwrap_or(0)).max(1);
+            match projection.search(query_embedding, candidate_limit, Some(&allowlist)) {
+                Ok(hits) => hits
+                    .into_iter()
+                    .filter(|hit| hit.score > 0.0)
+                    .map(|hit| (hit.id, hit.score))
+                    .collect(),
+                Err(error) => {
+                    fallback_reason_codes.push(SearchFallbackReasonCode::VectorIndexEmpty);
+                    fallback_reasons.push(format!(
+                        "compressed vector projection unavailable; fell back to scalar vector scan: {error}"
+                    ));
+                    scalar_vector_scores(query_embedding, documents)
+                }
+            }
+        }
+    }
+}
+
+fn scalar_vector_scores(
+    query_embedding: &[f32],
+    documents: &[&SearchDocument],
+) -> BTreeMap<String, f64> {
+    documents
+        .iter()
+        .filter_map(|document| {
+            document
+                .embedding
+                .as_deref()
+                .and_then(|embedding| cosine_similarity(query_embedding, embedding))
+                .filter(|score| *score > 0.0)
+                .map(|score| (document.id.clone(), score))
+        })
+        .collect()
 }
 
 fn ranked_scores(scores: &BTreeMap<String, f64>) -> BTreeMap<String, usize> {
@@ -4780,6 +4883,53 @@ mod tests {
             probe["compressed_vector_projection"]["blocker_codes"],
             serde_json::json!([])
         );
+    }
+
+    #[test]
+    #[cfg(feature = "turbovec")]
+    fn turbovec_projection_executes_vector_search_with_filter_allowlist() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "memory:a".to_string(),
+                title: "Vector A".to_string(),
+                content: String::new(),
+                embedding: Some(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                metadata: BTreeMap::from([("space_id".to_string(), "allowed".to_string())]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:b".to_string(),
+                title: "Vector B".to_string(),
+                content: String::new(),
+                embedding: Some(vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                metadata: BTreeMap::from([("space_id".to_string(), "blocked".to_string())]),
+            })
+            .unwrap();
+        let projection = index.build_turbovec_projection(4).unwrap().unwrap();
+
+        let result = index.search_with_turbovec_projection(
+            &projection,
+            "",
+            Some(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            SearchMode::Vector,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("space_id".to_string(), "allowed".to_string())]),
+                policy_epoch: Some(42),
+            },
+        );
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].id, "memory:a");
+        assert_eq!(result.retrievers[0].name, "vector");
+        assert!(result.retrievers[0].available);
+        assert_eq!(result.candidate_set.cardinality, 1);
+        assert_eq!(result.candidate_set.filtered_out_count, 1);
+        assert_eq!(result.candidate_set.policy_epoch, Some(42));
     }
 
     #[test]
