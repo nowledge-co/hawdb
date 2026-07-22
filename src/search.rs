@@ -155,6 +155,9 @@ pub enum SearchMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub id: String,
+    pub title: String,
+    pub content: String,
+    pub metadata: BTreeMap<String, String>,
     pub score: f64,
     pub vector_score: f64,
     pub text_score: f64,
@@ -1407,6 +1410,9 @@ impl SearchIndex {
             if score > 0.0 {
                 hits.push(SearchHit {
                     id: document.id.clone(),
+                    title: document.title.clone(),
+                    content: document.content.clone(),
+                    metadata: document.metadata.clone(),
                     score,
                     vector_score,
                     text_score,
@@ -4319,6 +4325,8 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "memory:mem_1");
+        assert_eq!(hits[0].title, "GraphRAG retrieval");
+        assert_eq!(hits[0].content, "Evidence from source chunks");
         assert_eq!(hits[0].kind.as_deref(), Some("memory"));
         assert_eq!(hits[0].external_id.as_deref(), Some("mem_1"));
         assert_eq!(hits[0].source_id.as_deref(), Some("thread_1"));
