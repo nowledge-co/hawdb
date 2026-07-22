@@ -6,7 +6,7 @@ Build a runnable embedded graph database slice that proves the first Skein
 pipeline:
 
 ```text
-schema -> parser -> planner -> Cascades optimizer -> executor -> demo
+schema -> parser -> AST classifier -> planner -> optimizer/direct lowering -> executor -> demo
 ```
 
 The MVP should execute a small Cypher subset end to end:
@@ -33,6 +33,7 @@ In scope:
 - parser for `MATCH` one-hop outgoing relationship patterns
 - parser for `RETURN` property projections with optional aliases
 - logical plan builder
+- AST-shaped fast-path classifier for simple statement families
 - Cascades-style memo skeleton
 - physical plan implementation rules for scan, expand, filter, project, and
   create
@@ -89,6 +90,11 @@ and a result row containing:
 ```text
 Graph foundations
 ```
+
+Use `explain_query` or `skein explain-json` for route visibility. Simple schema
+and `CREATE` statements can report `search_mode = fast_path`; predicate-bearing
+`MATCH` queries should continue to report `search_mode = memo` and expose
+implementation-rule events such as indexed node seeks.
 
 ## Next Tasks
 

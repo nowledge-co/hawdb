@@ -149,10 +149,15 @@ Exit gate:
 - missing parameters fail before mutation or storage access
 - the first read and mutation fixture families match Ladybug behavior
 
-Status: parameter binding is implemented. `NowledgeGraphAdapter` now exposes a
-typed front door for parameterized query, explain, and grouped mutation
-transaction execution without requiring raw string interpolation.
-The typed knowledge facade also covers endpoint-known entity lookup,
+Status: parameter binding is implemented. `NowledgeGraphAdapter` now exposes
+parameterized query, explain, and grouped mutation transaction execution as the
+preferred application-facing path. Typed knowledge APIs are compatibility
+facades for existing Nowledge integration points and bounded legacy adapter
+shapes; new graph behavior should be added through parameterized Cypher first,
+then exposed through a facade only when parity, snapshot ownership, or migration
+evidence requires one. `Database::knowledge_entity` now reuses the query path
+internally instead of performing an application-side store scan.
+The typed knowledge facade still covers endpoint-known entity lookup,
 create/upsert/update/delete, relationship lookup/create/upsert/update/delete,
 normalized-space batch moves, memory access/click-dwell touches, ordered batch
 mutation, source memory-count adjustments, source lifecycle updates, source
@@ -1483,6 +1488,13 @@ Current implemented slice:
   and rule event recording are crate-level optimizer scaffolding while root
   `src/optimizer.rs` still owns Cypher-specific graph rules and
   catalog-dependent costing
+- `SearchMode::FastPath` reports AST-shaped planning shortcuts for simple
+  statement families. The initial classifier is intentionally shallow and checks
+  only the top-level AST statement kind: schema DDL, graph procedure statements,
+  and basic `CREATE` node/relationship statements. It still runs parameter
+  binding and semantic validation before deterministic direct physical lowering;
+  `MATCH`, predicates, traversal, joins, updates, and deletes continue through
+  Cascades search
 - the first graph-specific implementation rule now uses that scaffold for
   single-property node equality seeks, preserving the existing physical plan and
   fingerprint while recording a stable

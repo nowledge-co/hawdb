@@ -161,9 +161,10 @@ dense segments.
 ```text
 Cypher text
   -> AST
+  -> AST fast-path classifier for simple statement families
   -> Semantic graph query model
   -> Logical plan
-  -> Cascades optimizer
+  -> Cascades optimizer or deterministic direct physical lowering
   -> Physical plan
   -> Executor
   -> Rows
@@ -202,6 +203,17 @@ recognition, AST construction, and semantic validation remain separate
 concerns. The current hand-written parser should keep that boundary while
 avoiding a generated grammar until the Cypher subset is large and stable enough
 to justify it.
+
+Fast-path planning follows the same boundary. The parser never emits executable
+plans. The planning entry point first classifies simple AST statement families,
+then still runs parameter binding and semantic validation before selecting a
+deterministic direct physical lowering. The initial fast-path whitelist is
+deliberately shallow: schema DDL, graph procedure statements, and basic
+`CREATE` node/relationship statements. Predicate-bearing reads, traversal,
+joins, updates, and deletes continue through the Cascades memo optimizer.
+`OptimizerTrace::search_mode` reports `fast_path`, `memo`, or
+`direct_fallback` so migration gates and CLI users can observe the chosen route
+without parsing physical-plan text.
 
 The optimizer should follow the same incremental split while graph-specific
 contracts are still in the root crate:
@@ -392,16 +404,16 @@ The replacement should preserve the current local wrapper shape:
 - recovery path for WAL/lock sidecars
 - projected graph operations as rebuildable outputs, not canonical data
 
-`NowledgeGraphAdapter` is the typed front door for this local wrapper shape. It
-accepts `NowledgeGraphStatement` values containing Cypher text plus typed
-parameters, and exposes query, explain, and grouped mutation transaction
-execution through the same planner and storage paths as `Database`. It also
-forwards the Knowledge Retrieval facade over a caller-owned `SearchIndex`, plus
-typed knowledge navigation APIs for entity lookup, bounded neighbors, bounded
-paths, and bounded subgraph expansion, including traversal diagnostics. This
-keeps the compatibility boundary parameterized and reviewable without adding an
-ACL layer to the embedded built-in core, while preserving the rule that search
-projections stay outside canonical graph state.
+`NowledgeGraphAdapter` is the compatibility front door for this local wrapper
+shape. New usage should prefer `NowledgeGraphStatement` values containing
+Cypher text plus typed parameters, then use query, explain, and grouped mutation
+transaction execution through the same planner and storage paths as `Database`.
+The typed knowledge navigation APIs remain for existing Nowledge integration
+points, bounded snapshot ownership, and parity with legacy adapter shapes; they
+should not become the default way to add new graph behavior. This keeps the
+compatibility boundary parameterized and reviewable without adding an ACL layer
+to the embedded built-in core, while preserving the rule that search projections
+stay outside canonical graph state.
 
 Migration gates use a machine-readable query inventory. `scan-nowledge-inventory`
 walks Nowledge Rust source files, extracts conservative Cypher string-literal
@@ -754,12 +766,13 @@ falling back to untyped relationship expansion.
 `Database::knowledge_subgraph` expands a bounded typed subgraph from one
 identity, returning canonical node snapshots, relationship evidence segments,
 node/relationship fan-out reasons, and node/relationship count diagnostics.
-`DatabaseReadTransaction` exposes the same Knowledge Retrieval facade and typed
-knowledge operations over its pinned catalog and graph snapshot, so callers can
-perform stable retrieval and navigation without falling back to ad hoc Cypher.
-This makes common knowledge-application navigation a first-class API instead of
-forcing application code to construct ad hoc Cypher for every retrieval, entity
-lookup, neighborhood lookup, path query, or local subgraph expansion.
+`DatabaseReadTransaction` exposes query/explain plus the same Knowledge
+Retrieval facade and typed knowledge operations over its pinned catalog and
+graph snapshot. Compatibility facades should internally reuse parameterized
+Cypher where the supported query subset can express the behavior; hand-written
+store scans are reserved for bounded retrieval/projection surfaces that cannot
+yet be represented by the query language without widening the production
+Cypher subset.
 
 ## Milestones
 
