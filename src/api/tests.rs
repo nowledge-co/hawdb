@@ -4024,6 +4024,36 @@ fn retrieves_knowledge_entity_without_search_projection() {
 }
 
 #[test]
+fn typed_knowledge_entity_read_uses_optimizer_index_seek() {
+    let mut db = Database::new();
+    db.query("CREATE INDEX ON :Entity(id)").unwrap();
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'Skein'})")
+        .unwrap();
+    let request = KnowledgeEntityRequest {
+        label: "Entity".to_string(),
+        external_id: "entity_1".to_string(),
+    };
+
+    let (cypher, parameters) = super::knowledge_entity_query(&request).unwrap();
+    let explain = db.explain_query_with_params(&cypher, &parameters).unwrap();
+
+    assert!(explain.physical_plan.explain(0).contains("IndexNodeSeek"));
+    assert!(explain
+        .trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("choose IndexNodeSeek")));
+
+    let output = db.knowledge_entity(&request);
+    let entity = output.entity.expect("expected entity");
+    assert_eq!(entity.external_id.as_deref(), Some("entity_1"));
+    assert_eq!(
+        entity.properties.get("name"),
+        Some(&Value::String("Skein".to_string()))
+    );
+}
+
+#[test]
 fn scoped_knowledge_entity_filters_by_metadata() {
     let mut db = Database::new();
     db.query(

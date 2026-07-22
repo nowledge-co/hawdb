@@ -6721,7 +6721,18 @@ impl Database {
     }
 
     pub fn knowledge_entity(&self, request: &KnowledgeEntityRequest) -> KnowledgeEntityOutput {
-        knowledge_entity_for(&self.catalog, &self.store, request)
+        knowledge_entity_for(
+            &self.catalog,
+            &self.store,
+            &self.optimizer,
+            &self.config,
+            &self.plan_cache,
+            request,
+        )
+        .unwrap_or_else(|_| KnowledgeEntityOutput {
+            graph_commit_epoch: self.store.commit_epoch(),
+            entity: None,
+        })
     }
 
     pub fn knowledge_entity_batch(
@@ -9075,16 +9086,71 @@ fn knowledge_query_terms(text: &str) -> BTreeSet<String> {
 fn knowledge_entity_for(
     catalog: &Catalog,
     store: &GraphStore,
+    optimizer: &CascadesOptimizer,
+    config: &DatabaseConfig,
+    plan_cache: &RefCell<PlanCache>,
     request: &KnowledgeEntityRequest,
-) -> KnowledgeEntityOutput {
-    let entity = match knowledge_scoped_entity_match(catalog, store, request, &BTreeMap::new()) {
-        KnowledgeScopedEntityMatch::Found(entity) => Some(entity),
-        KnowledgeScopedEntityMatch::Missing | KnowledgeScopedEntityMatch::FilteredOut => None,
+) -> Result<KnowledgeEntityOutput> {
+    let graph_commit_epoch = store.commit_epoch();
+    let (cypher, parameters) = knowledge_entity_query(request)?;
+    let output = execute_read_query_with_params(
+        catalog,
+        store,
+        optimizer,
+        config,
+        plan_cache,
+        &cypher,
+        &parameters,
+    )?;
+    Ok(KnowledgeEntityOutput {
+        graph_commit_epoch,
+        entity: output
+            .rows
+            .first()
+            .and_then(|row| row.get("__entity"))
+            .and_then(knowledge_entity_from_projected_value),
+    })
+}
+
+fn execute_read_query_with_params(
+    catalog: &Catalog,
+    store: &GraphStore,
+    optimizer: &CascadesOptimizer,
+    config: &DatabaseConfig,
+    plan_cache: &RefCell<PlanCache>,
+    cypher_text: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<QueryOutput> {
+    let statement = cypher::parse(cypher_text)?;
+    query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
+    let cache_mode = if statement_uses_plan_cache(&statement) {
+        PlanCacheMode::Use
+    } else {
+        PlanCacheMode::Bypass(PlanCacheBypassReason::StatementNotCacheable)
     };
-    KnowledgeEntityOutput {
-        graph_commit_epoch: store.commit_epoch(),
-        entity,
+    let (physical, _) = optimized_query_plan_for(
+        cypher_text,
+        &statement,
+        parameters,
+        cache_mode,
+        PlanCacheContext {
+            catalog,
+            store,
+            optimizer,
+            config,
+            cache: plan_cache,
+        },
+    )?;
+    if executor::is_mutation_plan(&physical)? {
+        return Err(SkeinError::Execution(
+            "typed read query must not compile to a mutation".to_string(),
+        ));
     }
+    let mut catalog = catalog.clone();
+    let mut store = store.snapshot();
+    let rows = executor::execute(&physical, &mut catalog, &mut store)?;
+    enforce_read_result_row_limit(&rows, config)?;
+    Ok(QueryOutput { rows })
 }
 
 fn knowledge_scoped_entity_for(
@@ -9105,6 +9171,64 @@ fn knowledge_scoped_entity_for(
         graph_commit_epoch: store.commit_epoch(),
         entity,
     }
+}
+
+fn knowledge_entity_query(
+    request: &KnowledgeEntityRequest,
+) -> Result<(String, BTreeMap<String, Value>)> {
+    validate_cypher_identifier(&request.label, "label")?;
+    let mut parameters = BTreeMap::from([(
+        "external_id".to_string(),
+        Value::String(request.external_id.clone()),
+    )]);
+    let predicate = match request.external_id.parse::<i64>() {
+        Ok(node_id) if node_id >= 0 => {
+            parameters.insert("node_id".to_string(), Value::Int(node_id));
+            "n.id = $external_id OR id(n) = $node_id"
+        }
+        _ => "n.id = $external_id",
+    };
+    Ok((
+        format!(
+            "MATCH (n:{}) WHERE {} RETURN n AS __entity ORDER BY id(n) ASC LIMIT 1",
+            request.label, predicate
+        ),
+        parameters,
+    ))
+}
+
+fn knowledge_entity_from_projected_value(value: &Value) -> Option<KnowledgeEntity> {
+    let Value::Map(values) = value else {
+        return None;
+    };
+    let node_id = match values.get("_id") {
+        Some(Value::Int(value)) => u64::try_from(*value).ok()?,
+        _ => return None,
+    };
+    let labels = match values.get("labels") {
+        Some(Value::List(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(value) => Some(value.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut properties = values.clone();
+    properties.remove("_id");
+    properties.remove("labels");
+    let external_id = properties
+        .get("id")
+        .map(value_to_external_id)
+        .filter(|external_id| !external_id.is_empty())
+        .or_else(|| Some(node_id.to_string()));
+    Some(KnowledgeEntity {
+        node_id,
+        labels,
+        external_id,
+        properties,
+    })
 }
 
 fn knowledge_entity_batch_for(
@@ -30281,7 +30405,18 @@ impl DatabaseReadTransaction {
     }
 
     pub fn knowledge_entity(&self, request: &KnowledgeEntityRequest) -> KnowledgeEntityOutput {
-        knowledge_entity_for(&self.catalog, &self.store, request)
+        knowledge_entity_for(
+            &self.catalog,
+            &self.store,
+            &self.optimizer,
+            &self.config,
+            &self.plan_cache,
+            request,
+        )
+        .unwrap_or_else(|_| KnowledgeEntityOutput {
+            graph_commit_epoch: self.store.commit_epoch(),
+            entity: None,
+        })
     }
 
     pub fn knowledge_entity_batch(
