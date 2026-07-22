@@ -19,6 +19,19 @@ const VECTOR_TABLES: &[&str] = &[
     "source_chunks_index",
 ];
 
+const REQUIRED_PREDICATE_PUSHDOWN_OPS: &[&str] = &["eq", "in", "not_in", "gt", "gte", "lt", "lte"];
+
+const REQUIRED_SCAN_FILTER_FIELDS: &[&str] = &[
+    "space_id",
+    "unit_type",
+    "importance",
+    "confidence",
+    "created_at",
+    "event_start",
+    "event_end",
+    "is_latest",
+];
+
 pub fn nowledge_search_projection_evidence_usage() -> String {
     "nowledge-search-projection-evidence requires [--require-ready] <search-projection-probe-json>"
         .to_string()
@@ -44,7 +57,8 @@ pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
         "purpose": "primary LanceDB and shadow Skein probes must use this shape before search projection shadow evidence can pass",
         "required_tables": REQUIRED_TABLES,
         "vector_tables": VECTOR_TABLES,
-        "required_predicate_pushdown_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
+        "required_predicate_pushdown_ops": REQUIRED_PREDICATE_PUSHDOWN_OPS,
+        "required_scan_filter_fields": REQUIRED_SCAN_FILTER_FIELDS,
         "required_top_level_fields": [
             "engine",
             "derived_projection",
@@ -94,6 +108,10 @@ pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
             "row_filter_ready",
             "segment_pruning_ready",
             "numeric_min_max_ready",
+            "required_ops_ready",
+            "required_scan_filter_fields_ready",
+            "required_ops",
+            "required_scan_filter_fields",
             "supported_ops",
             "scan_filter_fields"
         ],
@@ -437,12 +455,20 @@ fn predicate_pushdown_parity_matches(
         "segment_pruning_ready",
         "numeric_min_max_ready",
         "required_ops_ready",
+        "required_scan_filter_fields_ready",
     ];
     fields.iter().all(|field| {
         bool_path(primary_evidence, &["predicate_pushdown", field])
             == bool_path(shadow_evidence, &["predicate_pushdown", field])
     }) && array_path(primary_evidence, &["predicate_pushdown", "required_ops"])
         == array_path(shadow_evidence, &["predicate_pushdown", "required_ops"])
+        && array_path(
+            primary_evidence,
+            &["predicate_pushdown", "required_scan_filter_fields"],
+        ) == array_path(
+            shadow_evidence,
+            &["predicate_pushdown", "required_scan_filter_fields"],
+        )
         && array_path(primary_evidence, &["predicate_pushdown", "supported_ops"])
             == array_path(shadow_evidence, &["predicate_pushdown", "supported_ops"])
 }
@@ -523,8 +549,17 @@ fn ready_probe_template(engine: &str) -> serde_json::Value {
             "row_filter_ready": true,
             "segment_pruning_ready": true,
             "numeric_min_max_ready": true,
-            "supported_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
-            "scan_filter_fields": ["unit_type", "metadata", "importance", "confidence", "history", "latest"]
+            "supported_ops": REQUIRED_PREDICATE_PUSHDOWN_OPS,
+            "scan_filter_fields": [
+                "space_id",
+                "unit_type",
+                "importance",
+                "confidence",
+                "created_at",
+                "event_start",
+                "event_end",
+                "is_latest"
+            ]
         },
         "compressed_vector_projection": {
             "engine": "turbovec",
@@ -672,10 +707,13 @@ fn predicate_pushdown_report(probe: &serde_json::Value) -> serde_json::Value {
     let persisted_segment_descriptor_ready =
         bool_path(predicate, &["persisted_segment_descriptor_ready"]).unwrap_or(false);
     let supported_ops = array_path(predicate, &["supported_ops"]).unwrap_or_default();
-    let required_ops = ["eq", "in", "not_in", "gt", "gte", "lt", "lte"];
-    let required_ops_ready = required_ops
+    let required_ops_ready = REQUIRED_PREDICATE_PUSHDOWN_OPS
         .iter()
         .all(|required| supported_ops.iter().any(|op| op == required));
+    let scan_filter_fields = array_path(predicate, &["scan_filter_fields"]).unwrap_or_default();
+    let required_scan_filter_fields_ready = REQUIRED_SCAN_FILTER_FIELDS
+        .iter()
+        .all(|required| scan_filter_fields.iter().any(|field| field == required));
     let ready = equality_ready
         && in_list_ready
         && not_in_list_ready
@@ -683,7 +721,8 @@ fn predicate_pushdown_report(probe: &serde_json::Value) -> serde_json::Value {
         && row_filter_ready
         && segment_pruning_ready
         && numeric_min_max_ready
-        && required_ops_ready;
+        && required_ops_ready
+        && required_scan_filter_fields_ready;
     serde_json::json!({
         "ready": ready,
         "equality_ready": equality_ready,
@@ -695,9 +734,11 @@ fn predicate_pushdown_report(probe: &serde_json::Value) -> serde_json::Value {
         "numeric_min_max_ready": numeric_min_max_ready,
         "persisted_segment_descriptor_ready": persisted_segment_descriptor_ready,
         "required_ops_ready": required_ops_ready,
-        "required_ops": required_ops,
+        "required_scan_filter_fields_ready": required_scan_filter_fields_ready,
+        "required_ops": REQUIRED_PREDICATE_PUSHDOWN_OPS,
+        "required_scan_filter_fields": REQUIRED_SCAN_FILTER_FIELDS,
         "supported_ops": supported_ops,
-        "scan_filter_fields": array_path(predicate, &["scan_filter_fields"]).unwrap_or_default(),
+        "scan_filter_fields": scan_filter_fields,
     })
 }
 
@@ -809,6 +850,23 @@ mod tests {
         assert_eq!(report["incremental_update_ready"], true);
         assert_eq!(report["source_chunk_ready"], true);
         assert_eq!(report["predicate_pushdown_ready"], true);
+        assert_eq!(
+            report["predicate_pushdown"]["required_scan_filter_fields_ready"],
+            true
+        );
+        assert_eq!(
+            report["predicate_pushdown"]["required_scan_filter_fields"],
+            serde_json::json!([
+                "space_id",
+                "unit_type",
+                "importance",
+                "confidence",
+                "created_at",
+                "event_start",
+                "event_end",
+                "is_latest"
+            ])
+        );
         assert_eq!(report["compressed_vector_projection_required"], true);
         assert_eq!(report["compressed_vector_projection_ready"], true);
         assert_eq!(report["blocker_codes"], serde_json::json!([]));
@@ -922,6 +980,28 @@ mod tests {
     }
 
     #[test]
+    fn search_projection_evidence_fails_closed_for_missing_scan_filter_field() {
+        let mut probe = ready_probe();
+        probe["predicate_pushdown"]["scan_filter_fields"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|field| field.as_str() != Some("created_at"));
+
+        let report = nowledge_search_projection_evidence_json(&probe);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(report["predicate_pushdown_ready"], false);
+        assert_eq!(
+            report["predicate_pushdown"]["required_scan_filter_fields_ready"],
+            false
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["predicate_pushdown_not_ready"])
+        );
+    }
+
+    #[test]
     fn skein_probe_output_feeds_search_projection_evidence() {
         let path = unique_test_dir("search_projection_probe_command");
         {
@@ -1013,6 +1093,27 @@ mod tests {
 
         assert_eq!(report["ready"], true);
         assert_eq!(report["predicate_pushdown_parity"], true);
+    }
+
+    #[test]
+    fn search_projection_shadow_evidence_fails_closed_on_scan_filter_field_mismatch() {
+        let primary = ready_probe();
+        let mut shadow = ready_probe();
+        shadow["predicate_pushdown"]["scan_filter_fields"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|field| field.as_str() != Some("event_start"));
+
+        let report = nowledge_search_projection_shadow_evidence_json(&primary, &shadow);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(report["shadow_ready"], false);
+        assert_eq!(report["predicate_pushdown_parity"], false);
+        assert!(report["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "predicate_pushdown_mismatch"));
     }
 
     #[test]
