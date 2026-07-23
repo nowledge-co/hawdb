@@ -419,6 +419,8 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                         "ready",
                     ],
                 ) == Some(true),
+                search_candidate_shadow_scan_field_pruning_ready(bundle),
+                search_candidate_shadow_scan_field_summary_ready(bundle),
                 search_candidate_primary_or_shadow_ready(bundle),
             ],
             [
@@ -447,6 +449,8 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
                 "replacement_summary.search_candidate_shadow_evidence.evidence_source",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                 "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
             ],
             blocker_codes(
@@ -1798,6 +1802,8 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
                 "replacement_summary.search_candidate_shadow_evidence.evidence_source",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                 "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
                 "replacement_summary.search_candidate_shadow_evidence.candidate_primary_engine",
                 "replacement_summary.search_candidate_shadow_evidence.primary_engine",
@@ -2301,6 +2307,31 @@ fn search_candidate_primary_or_shadow_ready(bundle: &serde_json::Value) -> bool 
     search_candidate_primary_read_ready(bundle) || search_candidate_shadow_parity_ready(bundle)
 }
 
+fn search_candidate_shadow_scan_field_pruning_ready(bundle: &serde_json::Value) -> bool {
+    search_candidate_primary_read_ready(bundle)
+        || bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "shadow_scan_field_pruning_ready",
+            ],
+        ) == Some(true)
+}
+
+fn search_candidate_shadow_scan_field_summary_ready(bundle: &serde_json::Value) -> bool {
+    search_candidate_primary_read_ready(bundle)
+        || u64_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "shadow_scan_field_summary_count",
+            ],
+        )
+        .is_some_and(|count| count > 0)
+}
+
 fn search_candidate_primary_read_ready(bundle: &serde_json::Value) -> bool {
     str_path(
         bundle,
@@ -2377,6 +2408,8 @@ fn search_candidate_shadow_parity_ready(bundle: &serde_json::Value) -> bool {
                 "shadow_scan_filter_pushdown_ready",
             ],
         ) == Some(true)
+        && search_candidate_shadow_scan_field_pruning_ready(bundle)
+        && search_candidate_shadow_scan_field_summary_ready(bundle)
 }
 
 fn replacement_summary_bounded_read_ready(bundle: &serde_json::Value) -> bool {
@@ -3162,6 +3195,58 @@ mod tests {
                         .any(|field| {
                             field
                                 == "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready"
+                        })
+            }));
+    }
+
+    #[test]
+    fn requires_search_candidate_shadow_scan_field_pruning_evidence() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]["search_candidate_shadow_evidence"]
+            ["shadow_scan_field_pruning_ready"] = serde_json::json!(false);
+        bundle["replacement_summary"]["search_candidate_shadow_evidence"]
+            ["shadow_scan_field_summary_count"] = serde_json::json!(0);
+        bundle["replacement_summary"]["search_candidate_shadow_evidence"]["blocker_codes"] =
+            serde_json::json!(["candidate_field_pruning_missing"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["search_projection_replacement_evidence"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["candidate_field_pruning_missing"])
+        );
+        let search_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "search_projection_replacement_evidence")
+            .unwrap();
+        assert_eq!(
+            search_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_summary_count",
+                "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "attach_search_projection_replacement_evidence"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| {
+                            field
+                                == "replacement_summary.search_candidate_shadow_evidence.shadow_scan_field_pruning_ready"
                         })
             }));
     }
@@ -4755,6 +4840,8 @@ mod tests {
             "vector_top_k_overlap_ready": true,
             "fts_top_k_overlap_ready": true,
             "shadow_scan_filter_pushdown_ready": true,
+            "shadow_scan_field_pruning_ready": true,
+            "shadow_scan_field_summary_count": 2,
             "primary_engine": "lancedb",
             "shadow_engine": "skein",
             "blocker_codes": []
@@ -4775,6 +4862,8 @@ mod tests {
             "vector_top_k_overlap_ready": false,
             "fts_top_k_overlap_ready": false,
             "shadow_scan_filter_pushdown_ready": false,
+            "shadow_scan_field_pruning_ready": false,
+            "shadow_scan_field_summary_count": 0,
             "blocker_codes": []
         })
     }
