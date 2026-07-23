@@ -7341,7 +7341,7 @@ impl Database {
         &self,
         request: &KnowledgeSourceSourcedMemoryCountRequest,
     ) -> Result<KnowledgeSourceSourcedMemoryCountOutput> {
-        knowledge_source_sourced_memory_count_for(&self.catalog, &self.store, request)
+        knowledge_source_sourced_memory_count_via_query_runtime(self, request)
     }
 
     pub fn knowledge_source_memories(
@@ -16994,6 +16994,63 @@ fn knowledge_source_sourced_memory_count_for(
         source_node_id: Some(source.id.0),
         found: true,
         sourced_memory_count: source_sourced_memory_count(catalog, store, source.id),
+    })
+}
+
+fn knowledge_source_sourced_memory_count_via_query_runtime(
+    db: &Database,
+    request: &KnowledgeSourceSourcedMemoryCountRequest,
+) -> Result<KnowledgeSourceSourcedMemoryCountOutput> {
+    if request.source_id.is_empty() {
+        return Err(SkeinError::Semantic(
+            "knowledge source sourced-memory count requires a non-empty source id".to_string(),
+        ));
+    }
+
+    let mut parameters = BTreeMap::new();
+    parameters.insert(
+        "source_id".to_string(),
+        Value::String(request.source_id.clone()),
+    );
+    let source = db.query_read_only_with_params_bounded(
+        "MATCH (s:Source {id: $source_id}) RETURN id(s) AS source_node_id LIMIT 1",
+        &parameters,
+        Some(1),
+    )?;
+    let Some(source_node_id) = source
+        .rows
+        .first()
+        .and_then(|row| row.get("source_node_id"))
+        .and_then(value_to_non_negative_u64)
+    else {
+        return Ok(KnowledgeSourceSourcedMemoryCountOutput {
+            graph_commit_epoch: db.store.commit_epoch(),
+            source_id: request.source_id.clone(),
+            source_node_id: None,
+            found: false,
+            sourced_memory_count: 0,
+        });
+    };
+
+    let count = db.query_read_only_with_params_bounded(
+        "MATCH (:Memory)-[r:SOURCED_FROM]->(:Source {id: $source_id}) \
+         RETURN count(r) AS sourced_memory_count",
+        &parameters,
+        Some(1),
+    )?;
+    let sourced_memory_count = count
+        .rows
+        .first()
+        .and_then(|row| row.get("sourced_memory_count"))
+        .and_then(value_to_non_negative_usize)
+        .unwrap_or(0);
+
+    Ok(KnowledgeSourceSourcedMemoryCountOutput {
+        graph_commit_epoch: db.store.commit_epoch(),
+        source_id: request.source_id.clone(),
+        source_node_id: Some(source_node_id),
+        found: true,
+        sourced_memory_count,
     })
 }
 

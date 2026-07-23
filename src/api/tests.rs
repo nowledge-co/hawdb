@@ -25703,6 +25703,42 @@ fn knowledge_source_detail_uses_query_runtime_plan_cache() {
 }
 
 #[test]
+fn knowledge_source_sourced_memory_count_uses_query_runtime_plan_cache() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        statement_summary_capacity: 8,
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Source {id: 'source_a'})").unwrap();
+    db.query("CREATE (:Memory {id: 'memory_a'})").unwrap();
+    db.query("CREATE (:Entity {id: 'entity_a'})").unwrap();
+    db.query(
+        "MATCH (m:Memory {id: 'memory_a'}), (s:Source {id: 'source_a'}) \
+         CREATE (m)-[:SOURCED_FROM]->(s)",
+    )
+    .unwrap();
+    db.query(
+        "MATCH (e:Entity {id: 'entity_a'}), (s:Source {id: 'source_a'}) \
+         CREATE (e)-[:SOURCED_FROM]->(s)",
+    )
+    .unwrap();
+    let request = KnowledgeSourceSourcedMemoryCountRequest {
+        source_id: "source_a".to_string(),
+    };
+
+    let first = db.knowledge_source_sourced_memory_count(&request).unwrap();
+    let second = db.knowledge_source_sourced_memory_count(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert!(first.found);
+    assert_eq!(first.sourced_memory_count, 1);
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.misses, 2);
+    assert_eq!(stats.hits, 2);
+}
+
+#[test]
 fn plan_cache_misses_after_graph_commit_epoch_changes() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
