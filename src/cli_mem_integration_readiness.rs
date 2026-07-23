@@ -657,9 +657,11 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                     .is_some_and(|value| value > 0),
                 bool_path(bundle, &["graph_route_readiness", "route_primary_ready"]) == Some(true),
                 graph_route_primary_ready_count_matches(bundle),
+                graph_route_primary_ready_routes_cover_required(bundle),
                 bool_path(bundle, &["graph_route_readiness", "route_query_runtime_ready"])
                     == Some(true),
                 graph_route_query_runtime_count_matches(bundle),
+                graph_route_query_runtime_routes_cover_required(bundle),
                 string_array_path(bundle, &["graph_route_readiness", "missing_query_runtime_routes"])
                     .is_empty(),
                 string_array_path(bundle, &["graph_route_readiness", "route_primary_blocker_codes"])
@@ -670,8 +672,10 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
+                "graph_route_readiness.routes.primary_ready",
                 "graph_route_readiness.route_query_runtime_ready",
                 "graph_route_readiness.query_runtime_route_count",
+                "graph_route_readiness.routes.query_runtime_ready",
                 "graph_route_readiness.missing_query_runtime_routes",
                 "graph_route_readiness.route_primary_blocker_codes",
             ],
@@ -1883,8 +1887,10 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
+                "graph_route_readiness.routes.primary_ready",
                 "graph_route_readiness.route_query_runtime_ready",
                 "graph_route_readiness.query_runtime_route_count",
+                "graph_route_readiness.routes.query_runtime_ready",
                 "graph_route_readiness.missing_query_runtime_routes",
                 "graph_route_readiness.route_primary_blocker_codes",
             ],
@@ -2456,11 +2462,13 @@ fn graph_route_readiness_ready(bundle: &serde_json::Value) -> bool {
             .is_some_and(|value| value > 0)
         && bool_path(bundle, &["graph_route_readiness", "route_primary_ready"]) == Some(true)
         && graph_route_primary_ready_count_matches(bundle)
+        && graph_route_primary_ready_routes_cover_required(bundle)
         && bool_path(
             bundle,
             &["graph_route_readiness", "route_query_runtime_ready"],
         ) == Some(true)
         && graph_route_query_runtime_count_matches(bundle)
+        && graph_route_query_runtime_routes_cover_required(bundle)
         && string_array_path(
             bundle,
             &["graph_route_readiness", "missing_query_runtime_routes"],
@@ -2625,6 +2633,11 @@ fn graph_route_primary_ready_count_matches(bundle: &serde_json::Value) -> bool {
     route_count.is_some_and(|value| value > 0) && route_count == primary_ready_route_count
 }
 
+fn graph_route_primary_ready_routes_cover_required(bundle: &serde_json::Value) -> bool {
+    graph_route_ready_routes(bundle, "primary_ready")
+        .is_superset(&required_nowledge_mem_bounded_read_routes())
+}
+
 fn graph_route_query_runtime_count_matches(bundle: &serde_json::Value) -> bool {
     let route_count = u64_path(bundle, &["graph_route_readiness", "route_count"]);
     let query_runtime_route_count = u64_path(
@@ -2632,6 +2645,32 @@ fn graph_route_query_runtime_count_matches(bundle: &serde_json::Value) -> bool {
         &["graph_route_readiness", "query_runtime_route_count"],
     );
     route_count.is_some_and(|value| value > 0) && route_count == query_runtime_route_count
+}
+
+fn graph_route_query_runtime_routes_cover_required(bundle: &serde_json::Value) -> bool {
+    graph_route_ready_routes(bundle, "query_runtime_ready")
+        .is_superset(&required_nowledge_mem_bounded_read_routes())
+}
+
+fn required_nowledge_mem_bounded_read_routes() -> std::collections::BTreeSet<String> {
+    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        .iter()
+        .map(|route| (*route).to_string())
+        .collect()
+}
+
+fn graph_route_ready_routes(
+    bundle: &serde_json::Value,
+    ready_field: &str,
+) -> std::collections::BTreeSet<String> {
+    json_get_path(bundle, &["graph_route_readiness", "routes"])
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|route| route.get(ready_field).and_then(serde_json::Value::as_bool) == Some(true))
+        .filter_map(|route| route.get("route").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 fn graph_route_readiness_alignment_ready(bundle: &serde_json::Value) -> bool {
@@ -2834,7 +2873,9 @@ fn json_get_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a 
 
 #[cfg(test)]
 mod tests {
-    use super::nowledge_mem_integration_readiness_json;
+    use super::{
+        nowledge_mem_integration_readiness_json, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    };
 
     #[test]
     fn reports_ready_when_mem_integration_evidence_is_complete() {
@@ -3524,8 +3565,10 @@ mod tests {
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
+                "graph_route_readiness.routes.primary_ready",
                 "graph_route_readiness.route_query_runtime_ready",
-                "graph_route_readiness.query_runtime_route_count"
+                "graph_route_readiness.query_runtime_route_count",
+                "graph_route_readiness.routes.query_runtime_ready"
             ])
         );
         assert!(report["next_actions"]
@@ -3603,6 +3646,36 @@ mod tests {
                 "graph_route_readiness.route_query_runtime_ready",
                 "graph_route_readiness.query_runtime_route_count",
                 "graph_route_readiness.missing_query_runtime_routes"
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_graph_route_readiness_when_route_entries_do_not_cover_required_routes() {
+        let mut bundle = ready_bundle();
+        bundle["graph_route_readiness"]["routes"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_readiness"])
+        );
+        let route_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "graph_route_readiness")
+            .unwrap();
+        assert_eq!(
+            route_check["failed_evidence_fields"],
+            serde_json::json!([
+                "graph_route_readiness.routes.primary_ready",
+                "graph_route_readiness.routes.query_runtime_ready"
             ])
         );
     }
@@ -4048,6 +4121,19 @@ mod tests {
     }
 
     fn ready_bundle() -> serde_json::Value {
+        let graph_route_count = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len();
+        let graph_route_readiness_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+            .iter()
+            .map(|route| {
+                serde_json::json!({
+                    "route": route,
+                    "shadow_compare_ready": true,
+                    "primary_ready": true,
+                    "query_runtime_ready": true,
+                    "blocker_codes": []
+                })
+            })
+            .collect::<Vec<_>>();
         let mut bundle = serde_json::json!({
             "protocol": "nowledge-mem-skein-integration-bundle",
             "submodule": {
@@ -4265,24 +4351,16 @@ mod tests {
         });
         bundle["graph_route_readiness"] = serde_json::json!({
             "protocol": "nmem-graph-route-readiness-v1",
-            "route_count": 15,
-            "shadow_compare_route_count": 15,
-            "primary_ready_route_count": 15,
-            "query_runtime_route_count": 15,
-            "query_runtime_report_count": 15,
+            "route_count": graph_route_count,
+            "shadow_compare_route_count": graph_route_count,
+            "primary_ready_route_count": graph_route_count,
+            "query_runtime_route_count": graph_route_count,
+            "query_runtime_report_count": graph_route_count,
             "missing_query_runtime_routes": [],
             "route_query_runtime_ready": true,
             "route_primary_ready": true,
             "route_primary_blocker_codes": [],
-            "routes": [
-                {
-                    "route": "/graph/overview",
-                    "shadow_compare_ready": true,
-                    "primary_ready": true,
-                    "query_runtime_ready": true,
-                    "blocker_codes": []
-                }
-            ]
+            "routes": graph_route_readiness_routes
         });
         bundle["replacement_summary_graph_route_alignment"] = serde_json::json!({
             "ready": true,
