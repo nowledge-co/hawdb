@@ -10,6 +10,9 @@ const SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-search-projection-shadow-evidence";
 const SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-search-candidate-shadow-evidence";
+const SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE: &str = "/search-index/skein-shadow/evidence";
+const SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE: &str =
+    "/search-index/skein-shadow/candidate-evidence";
 const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-mem-bounded-read-evidence-v1";
 const NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL: &str =
@@ -302,6 +305,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         },
         "search_projection_shadow_evidence": {
             "protocol": search_projection_shadow_evidence.protocol,
+            "route": search_projection_shadow_evidence.route,
             "present": search_projection_shadow_evidence.present,
             "ready": search_projection_shadow_evidence.ready,
             "primary_ready": search_projection_shadow_evidence.primary_ready,
@@ -317,6 +321,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         },
         "search_candidate_shadow_evidence": {
             "protocol": search_candidate_shadow_evidence.protocol,
+            "route": search_candidate_shadow_evidence.route,
             "present": search_candidate_shadow_evidence.present,
             "ready": search_candidate_shadow_evidence.ready,
             "reported_ready": search_candidate_shadow_evidence.reported_ready,
@@ -839,6 +844,7 @@ struct SearchProjectionEvidenceSummary {
 
 struct SearchProjectionShadowEvidenceSummary<'a> {
     protocol: Option<String>,
+    route: Option<&'a str>,
     present: bool,
     ready: bool,
     primary_ready: Option<bool>,
@@ -855,6 +861,7 @@ struct SearchProjectionShadowEvidenceSummary<'a> {
 
 struct SearchCandidateShadowEvidenceSummary<'a> {
     protocol: Option<String>,
+    route: Option<&'a str>,
     present: bool,
     ready: bool,
     reported_ready: Option<bool>,
@@ -1079,6 +1086,7 @@ fn search_projection_shadow_evidence_summary(
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
+    let route = json_get_str_path_from_dynamic(bundle, path, "route");
     let primary_ready = json_get_bool_path_from_dynamic(bundle, path, "primary_ready");
     let shadow_ready = json_get_bool_path_from_dynamic(bundle, path, "shadow_ready");
     let document_count_parity =
@@ -1094,17 +1102,23 @@ fn search_projection_shadow_evidence_summary(
     let lifecycle_parity = json_get_bool_path_from_dynamic(bundle, path, "lifecycle_parity");
     let incremental_watermark_parity =
         json_get_bool_path_from_dynamic(bundle, path, "incremental_watermark_parity");
+    let primary_engine = json_get_str_path_from_dynamic(bundle, path, "primary_engine");
+    let shadow_engine = json_get_str_path_from_dynamic(bundle, path, "shadow_engine");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
+        && route == Some(SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE)
         && primary_ready == Some(true)
         && shadow_ready == Some(true)
         && document_count_parity == Some(true)
         && table_parity_ready == Some(true)
         && embedding_identity_parity == Some(true)
         && lifecycle_parity == Some(true)
-        && incremental_watermark_parity == Some(true);
+        && incremental_watermark_parity == Some(true)
+        && primary_engine == Some("lancedb")
+        && shadow_engine == Some("skein");
     SearchProjectionShadowEvidenceSummary {
         protocol,
+        route,
         present,
         ready,
         primary_ready,
@@ -1114,8 +1128,8 @@ fn search_projection_shadow_evidence_summary(
         embedding_identity_parity,
         lifecycle_parity,
         incremental_watermark_parity,
-        primary_engine: json_get_str_path_from_dynamic(bundle, path, "primary_engine"),
-        shadow_engine: json_get_str_path_from_dynamic(bundle, path, "shadow_engine"),
+        primary_engine,
+        shadow_engine,
         blocker_codes: json_get_array_path_from_dynamic(bundle, path, "blocker_codes"),
     }
 }
@@ -1130,7 +1144,10 @@ fn search_candidate_shadow_evidence_summary(
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
+    let route = json_get_str_path_from_dynamic(bundle, path, "route");
     let reported_ready = json_get_bool_path_from_dynamic(bundle, path, "ready");
+    let primary_engine = json_get_str_path_from_dynamic(bundle, path, "primary_engine");
+    let shadow_engine = json_get_str_path_from_dynamic(bundle, path, "shadow_engine");
     let row_count_parity =
         json_get_bool_path_from_dynamic_nested(bundle, path, &["row_counts", "matches"]);
     let vector_top_k_overlap_ready =
@@ -1187,7 +1204,10 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_unsatisfiable != Some(true);
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
+        && route == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE)
         && reported_ready == Some(true)
+        && primary_engine == Some("lancedb")
+        && shadow_engine == Some("skein")
         && row_count_parity == Some(true)
         && vector_top_k_overlap_ready == Some(true)
         && fts_top_k_overlap_ready == Some(true)
@@ -1195,11 +1215,12 @@ fn search_candidate_shadow_evidence_summary(
         && blocker_codes_empty;
     SearchCandidateShadowEvidenceSummary {
         protocol,
+        route,
         present,
         ready,
         reported_ready,
-        primary_engine: json_get_str_path_from_dynamic(bundle, path, "primary_engine"),
-        shadow_engine: json_get_str_path_from_dynamic(bundle, path, "shadow_engine"),
+        primary_engine,
+        shadow_engine,
         row_count_parity,
         vector_top_k_overlap_ready,
         fts_top_k_overlap_ready,
@@ -1826,8 +1847,11 @@ fn nowledge_replacement_next_actions(
             "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
             [
                 "search_projection_shadow_evidence.protocol",
+                "search_projection_shadow_evidence.route",
                 "search_projection_shadow_evidence.present",
                 "search_projection_shadow_evidence.ready",
+                "search_projection_shadow_evidence.primary_engine",
+                "search_projection_shadow_evidence.shadow_engine",
                 "search_projection_shadow_evidence.primary_ready",
                 "search_projection_shadow_evidence.shadow_ready",
                 "search_projection_shadow_evidence.document_count_parity",
@@ -1845,9 +1869,12 @@ fn nowledge_replacement_next_actions(
             "LanceDB/Skein candidate shadow evidence is missing or lacks scan-filter pushdown proof",
             [
                 "search_candidate_shadow_evidence.protocol",
+                "search_candidate_shadow_evidence.route",
                 "search_candidate_shadow_evidence.present",
                 "search_candidate_shadow_evidence.ready",
                 "search_candidate_shadow_evidence.reported_ready",
+                "search_candidate_shadow_evidence.primary_engine",
+                "search_candidate_shadow_evidence.shadow_engine",
                 "search_candidate_shadow_evidence.row_count_parity",
                 "search_candidate_shadow_evidence.vector_top_k_overlap_ready",
                 "search_candidate_shadow_evidence.fts_top_k_overlap_ready",
@@ -2943,6 +2970,10 @@ mod tests {
         );
         assert_eq!(summary["search_projection_shadow_evidence"]["ready"], true);
         assert_eq!(
+            summary["search_projection_shadow_evidence"]["route"],
+            "/search-index/skein-shadow/evidence"
+        );
+        assert_eq!(
             summary["search_projection_shadow_evidence"]["primary_engine"],
             "lancedb"
         );
@@ -2956,6 +2987,10 @@ mod tests {
         );
         assert_eq!(summary["search_candidate_shadow_evidence"]["present"], true);
         assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], true);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["route"],
+            "/search-index/skein-shadow/candidate-evidence"
+        );
         assert_eq!(
             summary["search_candidate_shadow_evidence"]["row_count_parity"],
             true
@@ -3221,6 +3256,36 @@ mod tests {
     }
 
     #[test]
+    fn replacement_summary_requires_search_projection_shadow_route_and_engines() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_projection_shadow_evidence"]["route"] =
+            serde_json::json!("/search-index/legacy-shadow/evidence");
+        bundle["search_projection_shadow_evidence"]["primary_engine"] = serde_json::json!("sqlite");
+        bundle["search_projection_shadow_evidence"]["shadow_engine"] = serde_json::json!("custom");
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["search_projection_shadow_evidence"]["ready"], false);
+        assert_eq!(
+            summary["search_projection_shadow_evidence"]["route"],
+            "/search-index/legacy-shadow/evidence"
+        );
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_projection_shadow_evidence"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| field == "search_projection_shadow_evidence.route")
+            }));
+    }
+
+    #[test]
     fn replacement_summary_blocks_production_without_search_candidate_shadow_evidence() {
         let mut bundle = production_ready_bundle();
         bundle
@@ -3322,6 +3387,36 @@ mod tests {
                         .unwrap()
                         .iter()
                         .any(|field| field == "search_candidate_shadow_evidence.protocol")
+            }));
+    }
+
+    #[test]
+    fn replacement_summary_requires_search_candidate_shadow_route_and_engines() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_candidate_shadow_evidence"]["route"] =
+            serde_json::json!("/search-index/legacy-shadow/candidate-evidence");
+        bundle["search_candidate_shadow_evidence"]["primary_engine"] = serde_json::json!("sqlite");
+        bundle["search_candidate_shadow_evidence"]["shadow_engine"] = serde_json::json!("custom");
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], false);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["route"],
+            "/search-index/legacy-shadow/candidate-evidence"
+        );
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_candidate_shadow_compare"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| field == "search_candidate_shadow_evidence.route")
             }));
     }
 
@@ -4466,8 +4561,11 @@ mod tests {
                     "reason": "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
                     "evidence_fields": [
                         "search_projection_shadow_evidence.protocol",
+                        "search_projection_shadow_evidence.route",
                         "search_projection_shadow_evidence.present",
                         "search_projection_shadow_evidence.ready",
+                        "search_projection_shadow_evidence.primary_engine",
+                        "search_projection_shadow_evidence.shadow_engine",
                         "search_projection_shadow_evidence.primary_ready",
                         "search_projection_shadow_evidence.shadow_ready",
                         "search_projection_shadow_evidence.document_count_parity",
@@ -4483,9 +4581,12 @@ mod tests {
                     "reason": "LanceDB/Skein candidate shadow evidence is missing or lacks scan-filter pushdown proof",
                     "evidence_fields": [
                         "search_candidate_shadow_evidence.protocol",
+                        "search_candidate_shadow_evidence.route",
                         "search_candidate_shadow_evidence.present",
                         "search_candidate_shadow_evidence.ready",
                         "search_candidate_shadow_evidence.reported_ready",
+                        "search_candidate_shadow_evidence.primary_engine",
+                        "search_candidate_shadow_evidence.shadow_engine",
                         "search_candidate_shadow_evidence.row_count_parity",
                         "search_candidate_shadow_evidence.vector_top_k_overlap_ready",
                         "search_candidate_shadow_evidence.fts_top_k_overlap_ready",
@@ -4881,6 +4982,7 @@ mod tests {
             },
             "search_projection_shadow_evidence": {
                 "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "route": "/search-index/skein-shadow/evidence",
                 "ready": true,
                 "primary_engine": "lancedb",
                 "shadow_engine": "skein",
@@ -5143,6 +5245,7 @@ mod tests {
     fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
         serde_json::json!({
             "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "route": "/search-index/skein-shadow/candidate-evidence",
             "engine": "skein-shadow",
             "ready": true,
             "primary_engine": "lancedb",
