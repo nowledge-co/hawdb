@@ -3,7 +3,7 @@ use crate::search_projection_evidence::{
     nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
 };
 use crate::{
-    BackgroundMaintenanceOptions, BackgroundMaintenanceSummary, BackgroundWorkHint,
+    cypher, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary, BackgroundWorkHint,
     BackgroundWorkPlan, Database, DatabaseConfig, KnowledgeRetrievalOutput,
     KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosScheduler, LocalQosState, QueryOutput,
     ReadExecutionProfile, Result, SearchIndex, SearchProjectionDeltaReport,
@@ -12,6 +12,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemGraphMode {
@@ -110,11 +111,13 @@ impl NowledgeMemOpenReport {
 
 pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "skein-nowledge-mem-open-report";
 pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "skein-nowledge-mem-read-report";
+pub const NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-query-report-v1";
 pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
 pub const NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-mem-bounded-read-evidence-v1";
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS: usize = 512;
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+pub const DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_THRESHOLD_MS: u64 = 1_000;
 
 impl NowledgeMemGraphMode {
     pub fn as_str(self) -> &'static str {
@@ -260,6 +263,62 @@ pub struct NowledgeMemReadOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowledgeMemQueryReportOptions {
+    pub capture_physical_plan: bool,
+    pub slow_query_threshold_ms: Option<u64>,
+}
+
+impl Default for NowledgeMemQueryReportOptions {
+    fn default() -> Self {
+        Self {
+            capture_physical_plan: false,
+            slow_query_threshold_ms: Some(DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_THRESHOLD_MS),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowledgeMemQueryReport {
+    pub protocol: String,
+    pub mode: NowledgeMemGraphMode,
+    pub statement_class: String,
+    pub query_shape: String,
+    pub fast_path_candidate: bool,
+    pub capture_physical_plan: bool,
+    pub physical_plan: Option<String>,
+    pub selected_plan_fingerprint: Option<String>,
+    pub elapsed_micros: u128,
+    pub slow_query_threshold_ms: Option<u64>,
+    pub slow_query: bool,
+    pub row_count: usize,
+}
+
+impl NowledgeMemQueryReport {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "protocol": self.protocol,
+            "mode": self.mode.as_str(),
+            "statement_class": self.statement_class,
+            "query_shape": self.query_shape,
+            "fast_path_candidate": self.fast_path_candidate,
+            "capture_physical_plan": self.capture_physical_plan,
+            "physical_plan": self.physical_plan,
+            "selected_plan_fingerprint": self.selected_plan_fingerprint,
+            "elapsed_micros": self.elapsed_micros,
+            "slow_query_threshold_ms": self.slow_query_threshold_ms,
+            "slow_query": self.slow_query,
+            "row_count": self.row_count,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowledgeMemQueryOutput {
+    pub output: QueryOutput,
+    pub report: NowledgeMemQueryReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemRetrievalReport {
     pub protocol: String,
     pub mode: NowledgeMemGraphMode,
@@ -376,6 +435,62 @@ impl NowledgeMemGraph {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
         self.db.query_with_params(cypher, parameters)
+    }
+
+    pub fn query_with_report(&mut self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
+        self.query_with_params_report(
+            cypher,
+            &BTreeMap::new(),
+            &NowledgeMemQueryReportOptions::default(),
+        )
+    }
+
+    pub fn query_with_options_report(
+        &mut self,
+        cypher: &str,
+        options: &NowledgeMemQueryReportOptions,
+    ) -> Result<NowledgeMemQueryOutput> {
+        self.query_with_params_report(cypher, &BTreeMap::new(), options)
+    }
+
+    pub fn query_with_params_report(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &NowledgeMemQueryReportOptions,
+    ) -> Result<NowledgeMemQueryOutput> {
+        let statement = cypher::parse(cypher)?;
+        let classification = classify_nowledge_mem_query(statement_body(&statement));
+        let explain = if options.capture_physical_plan {
+            Some(self.db.explain_query_with_params(cypher, parameters)?)
+        } else {
+            None
+        };
+        let start = Instant::now();
+        let output = self.db.query_with_params(cypher, parameters)?;
+        let elapsed_micros = start.elapsed().as_micros();
+        let slow_query = options
+            .slow_query_threshold_ms
+            .is_some_and(|threshold| elapsed_micros >= u128::from(threshold) * 1_000);
+        let report = NowledgeMemQueryReport {
+            protocol: NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL.to_string(),
+            mode: self.mode,
+            statement_class: classification.statement_class.to_string(),
+            query_shape: classification.query_shape.to_string(),
+            fast_path_candidate: classification.fast_path_candidate,
+            capture_physical_plan: options.capture_physical_plan,
+            physical_plan: explain
+                .as_ref()
+                .map(|explain| explain.physical_plan.explain(0)),
+            selected_plan_fingerprint: explain
+                .as_ref()
+                .map(|explain| explain.trace.selected_plan_fingerprint.clone()),
+            elapsed_micros,
+            slow_query_threshold_ms: options.slow_query_threshold_ms,
+            slow_query,
+            row_count: output.rows.len(),
+        };
+        Ok(NowledgeMemQueryOutput { output, report })
     }
 
     pub fn read_query(&mut self, cypher: &str) -> Result<NowledgeMemReadOutput> {
@@ -663,6 +778,28 @@ impl NowledgeMemEmbeddedStore {
             .read_query_with_params(cypher, parameters, options)
     }
 
+    pub fn query_with_report(&mut self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
+        self.graph.query_with_report(cypher)
+    }
+
+    pub fn query_with_options_report(
+        &mut self,
+        cypher: &str,
+        options: &NowledgeMemQueryReportOptions,
+    ) -> Result<NowledgeMemQueryOutput> {
+        self.graph.query_with_options_report(cypher, options)
+    }
+
+    pub fn query_with_params_report(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &NowledgeMemQueryReportOptions,
+    ) -> Result<NowledgeMemQueryOutput> {
+        self.graph
+            .query_with_params_report(cypher, parameters, options)
+    }
+
     pub fn background_maintenance_summary(
         &self,
         policy: &LocalQosPolicy,
@@ -696,6 +833,121 @@ fn require_search_projection_mut(
     search_projection
         .as_mut()
         .ok_or_else(missing_search_projection_error)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NowledgeMemQueryClassification {
+    statement_class: &'static str,
+    query_shape: &'static str,
+    fast_path_candidate: bool,
+}
+
+fn classify_nowledge_mem_query(statement: &cypher::Statement) -> NowledgeMemQueryClassification {
+    use cypher::Statement;
+    match statement {
+        Statement::MatchReturn(query) if is_simple_node_lookup(query) => {
+            NowledgeMemQueryClassification {
+                statement_class: "read",
+                query_shape: "simple_node_lookup",
+                fast_path_candidate: true,
+            }
+        }
+        Statement::MatchReturn(query)
+            if query.expand.is_some()
+                && query.post_match_expand.is_none()
+                && query.optional_expand.is_none()
+                && query.optional_with.is_none()
+                && query.collect_with.is_none()
+                && query.distinct_with.is_none()
+                && query.with_projection.is_none()
+                && query.aggregate_with.is_none()
+                && query.aggregate_with_filter.is_none()
+                && query.post_with_match.is_none() =>
+        {
+            NowledgeMemQueryClassification {
+                statement_class: "read",
+                query_shape: "simple_one_hop_expand",
+                fast_path_candidate: true,
+            }
+        }
+        Statement::MatchReturn(_)
+        | Statement::ShortestPathReturn(_)
+        | Statement::MatchNodesReturn(_)
+        | Statement::MatchOptionalRelationshipCountSum(_)
+        | Statement::MatchThreadRepairStats(_)
+        | Statement::GraphAlgorithm(_) => NowledgeMemQueryClassification {
+            statement_class: "read",
+            query_shape: "general_read",
+            fast_path_candidate: false,
+        },
+        Statement::CreateNode(_)
+        | Statement::CreateRelationship(_)
+        | Statement::MergeNode(_)
+        | Statement::MergeRelationship(_)
+        | Statement::MatchSet(_)
+        | Statement::MatchSetReturn(_)
+        | Statement::MatchDelete(_)
+        | Statement::MatchCreateRelationship(_)
+        | Statement::MatchMergeRelationship(_)
+        | Statement::MatchExpandMergeRelationship(_)
+        | Statement::MatchExpandMatchMergeRelationship(_) => NowledgeMemQueryClassification {
+            statement_class: "write",
+            query_shape: "mutation",
+            fast_path_candidate: false,
+        },
+        Statement::SetSystemVariable(_) => NowledgeMemQueryClassification {
+            statement_class: "session",
+            query_shape: "set_system_variable",
+            fast_path_candidate: false,
+        },
+        Statement::BeginTransaction | Statement::Commit | Statement::Rollback => {
+            NowledgeMemQueryClassification {
+                statement_class: "transaction",
+                query_shape: "transaction_control",
+                fast_path_candidate: false,
+            }
+        }
+        Statement::Checkpoint => NowledgeMemQueryClassification {
+            statement_class: "maintenance",
+            query_shape: "checkpoint",
+            fast_path_candidate: false,
+        },
+        Statement::CypherQuery(query) => classify_nowledge_mem_query(&query.statement),
+        _ => NowledgeMemQueryClassification {
+            statement_class: "schema",
+            query_shape: "schema_or_catalog",
+            fast_path_candidate: false,
+        },
+    }
+}
+
+fn is_simple_node_lookup(query: &cypher::MatchReturn) -> bool {
+    query.expand.is_none()
+        && query.post_match_expand.is_none()
+        && query.optional_expand.is_none()
+        && query.optional_with.is_none()
+        && query.collect_with.is_none()
+        && query.distinct_with.is_none()
+        && query.with_projection.is_none()
+        && query.with_order_by.is_empty()
+        && query.with_offset.is_none()
+        && query.with_limit.is_none()
+        && query.aggregate_with.is_none()
+        && query.aggregate_with_filter.is_none()
+        && query.post_with_match.is_none()
+        && query.predicate.is_none()
+        && !query.distinct
+        && query.order_by.is_empty()
+        && query.offset.is_none()
+        && query.limit.is_none()
+        && !query.properties.is_empty()
+}
+
+fn statement_body(statement: &cypher::Statement) -> &cypher::Statement {
+    match statement {
+        cypher::Statement::CypherQuery(query) => &query.statement,
+        _ => statement,
+    }
 }
 
 fn nowledge_mem_retrieval_report(
@@ -884,10 +1136,11 @@ mod tests {
     use super::{
         nowledge_mem_bounded_read_evidence_json, nowledge_mem_graph_config,
         nowledge_mem_graph_config_with_search_mode, NowledgeMemEmbeddedStore, NowledgeMemGraph,
-        NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
-        NowledgeMemReadReport, NowledgeMemSearchProjection,
+        NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemQueryReportOptions,
+        NowledgeMemReadOptions, NowledgeMemReadReport, NowledgeMemSearchProjection,
         NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL,
-        NOWLEDGE_MEM_READ_REPORT_PROTOCOL, NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
+        NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
+        NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
     };
     use crate::nowledge_contract::{
         SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
@@ -937,6 +1190,92 @@ mod tests {
 
         assert_eq!(output.rows.len(), 1);
         assert_eq!(graph.mode(), NowledgeMemGraphMode::WritableCutover);
+    }
+
+    #[test]
+    fn graph_query_with_report_classifies_fast_path_without_explain_by_default() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph
+            .query("CREATE (:Memory {id: 'mem-1', title: 'Query report'})")
+            .unwrap();
+
+        let output = graph
+            .query_with_report("MATCH (m:Memory {id: 'mem-1'}) RETURN m.title AS title")
+            .unwrap();
+
+        assert_eq!(output.output.rows.len(), 1);
+        assert_eq!(output.report.protocol, NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL);
+        assert_eq!(output.report.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(output.report.statement_class, "read");
+        assert_eq!(output.report.query_shape, "simple_node_lookup");
+        assert!(output.report.fast_path_candidate);
+        assert!(!output.report.capture_physical_plan);
+        assert!(output.report.physical_plan.is_none());
+        assert!(output.report.selected_plan_fingerprint.is_none());
+        assert_eq!(output.report.row_count, 1);
+        assert_eq!(output.report.slow_query_threshold_ms, Some(1_000));
+        assert!(!output.report.slow_query);
+        assert_eq!(
+            output.report.json()["protocol"],
+            NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL
+        );
+        assert_eq!(output.report.json()["query_shape"], "simple_node_lookup");
+    }
+
+    #[test]
+    fn graph_query_with_report_can_capture_physical_plan_on_request() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph
+            .query("CREATE (:Memory {id: 'mem-1', title: 'Explain report'})")
+            .unwrap();
+
+        let output = graph
+            .query_with_options_report(
+                "MATCH (m:Memory {id: 'mem-1'}) RETURN m.title AS title",
+                &NowledgeMemQueryReportOptions {
+                    capture_physical_plan: true,
+                    slow_query_threshold_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert!(output.report.capture_physical_plan);
+        assert!(output
+            .report
+            .physical_plan
+            .as_deref()
+            .unwrap()
+            .contains("ProjectExec"));
+        assert!(output
+            .report
+            .selected_plan_fingerprint
+            .as_deref()
+            .unwrap()
+            .contains("Memory"));
+        assert_eq!(output.report.slow_query_threshold_ms, None);
+        assert!(!output.report.slow_query);
+    }
+
+    #[test]
+    fn graph_query_with_report_marks_slow_query_from_threshold() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+
+        let output = graph
+            .query_with_options_report(
+                "MATCH (m:Memory) RETURN m.id AS id",
+                &NowledgeMemQueryReportOptions {
+                    capture_physical_plan: false,
+                    slow_query_threshold_ms: Some(0),
+                },
+            )
+            .unwrap();
+
+        assert!(output.report.slow_query);
+        assert_eq!(output.report.query_shape, "general_read");
+        assert_eq!(output.report.statement_class, "read");
     }
 
     #[test]
