@@ -325,6 +325,8 @@ pub fn nowledge_replacement_summary_json_with_options(
             "present": search_candidate_shadow_evidence.present,
             "ready": search_candidate_shadow_evidence.ready,
             "reported_ready": search_candidate_shadow_evidence.reported_ready,
+            "engine": search_candidate_shadow_evidence.engine,
+            "candidate_primary_engine": search_candidate_shadow_evidence.candidate_primary_engine,
             "primary_engine": search_candidate_shadow_evidence.primary_engine,
             "shadow_engine": search_candidate_shadow_evidence.shadow_engine,
             "row_count_parity": search_candidate_shadow_evidence.row_count_parity,
@@ -865,6 +867,8 @@ struct SearchCandidateShadowEvidenceSummary<'a> {
     present: bool,
     ready: bool,
     reported_ready: Option<bool>,
+    engine: Option<&'a str>,
+    candidate_primary_engine: Option<&'a str>,
     primary_engine: Option<&'a str>,
     shadow_engine: Option<&'a str>,
     row_count_parity: Option<bool>,
@@ -1146,6 +1150,9 @@ fn search_candidate_shadow_evidence_summary(
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
     let route = json_get_str_path_from_dynamic(bundle, path, "route");
     let reported_ready = json_get_bool_path_from_dynamic(bundle, path, "ready");
+    let engine = json_get_str_path_from_dynamic(bundle, path, "engine");
+    let candidate_primary_engine =
+        json_get_str_path_from_dynamic(bundle, path, "candidate_primary_engine");
     let primary_engine = json_get_str_path_from_dynamic(bundle, path, "primary_engine");
     let shadow_engine = json_get_str_path_from_dynamic(bundle, path, "shadow_engine");
     let row_count_parity =
@@ -1202,23 +1209,31 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_residual_predicate_count == Some(0)
         && shadow_scan_parse_error.is_none()
         && shadow_scan_unsatisfiable != Some(true);
-    let ready = present
+    let stable_envelope_ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
         && route == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE)
         && reported_ready == Some(true)
+        && blocker_codes_empty;
+    let primary_read_ready = stable_envelope_ready
+        && engine == Some("skein-primary")
+        && candidate_primary_engine == Some("skein")
+        && primary_engine == Some("skein");
+    let shadow_parity_ready = stable_envelope_ready
         && primary_engine == Some("lancedb")
         && shadow_engine == Some("skein")
         && row_count_parity == Some(true)
         && vector_top_k_overlap_ready == Some(true)
         && fts_top_k_overlap_ready == Some(true)
-        && shadow_scan_filter_pushdown_ready
-        && blocker_codes_empty;
+        && shadow_scan_filter_pushdown_ready;
+    let ready = primary_read_ready || shadow_parity_ready;
     SearchCandidateShadowEvidenceSummary {
         protocol,
         route,
         present,
         ready,
         reported_ready,
+        engine,
+        candidate_primary_engine,
         primary_engine,
         shadow_engine,
         row_count_parity,
@@ -1873,6 +1888,8 @@ fn nowledge_replacement_next_actions(
                 "search_candidate_shadow_evidence.present",
                 "search_candidate_shadow_evidence.ready",
                 "search_candidate_shadow_evidence.reported_ready",
+                "search_candidate_shadow_evidence.engine",
+                "search_candidate_shadow_evidence.candidate_primary_engine",
                 "search_candidate_shadow_evidence.primary_engine",
                 "search_candidate_shadow_evidence.shadow_engine",
                 "search_candidate_shadow_evidence.row_count_parity",
@@ -3051,6 +3068,34 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action["action"] == "close_blocked_query_families"));
+    }
+
+    #[test]
+    fn replacement_summary_accepts_search_candidate_primary_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_candidate_shadow_evidence"] = ready_search_candidate_primary_evidence();
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], true);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["present"], true);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], true);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["engine"],
+            "skein-primary"
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["candidate_primary_engine"],
+            "skein"
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["primary_engine"],
+            "skein"
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_filter_pushdown_ready"],
+            false
+        );
     }
 
     #[test]
@@ -4585,6 +4630,8 @@ mod tests {
                         "search_candidate_shadow_evidence.present",
                         "search_candidate_shadow_evidence.ready",
                         "search_candidate_shadow_evidence.reported_ready",
+                        "search_candidate_shadow_evidence.engine",
+                        "search_candidate_shadow_evidence.candidate_primary_engine",
                         "search_candidate_shadow_evidence.primary_engine",
                         "search_candidate_shadow_evidence.shadow_engine",
                         "search_candidate_shadow_evidence.row_count_parity",
@@ -5294,6 +5341,18 @@ mod tests {
             "fts": {
                 "top_k_overlap_ready": true
             },
+            "blocker_codes": []
+        })
+    }
+
+    fn ready_search_candidate_primary_evidence() -> serde_json::Value {
+        serde_json::json!({
+            "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "route": "/search-index/skein-shadow/candidate-evidence",
+            "engine": "skein-primary",
+            "ready": true,
+            "candidate_primary_engine": "skein",
+            "primary_engine": "skein",
             "blocker_codes": []
         })
     }
