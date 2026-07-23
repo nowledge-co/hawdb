@@ -488,7 +488,17 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                     bundle,
                     &["replacement_summary", "bounded_read_evidence", "streaming"],
                 ) == Some(false),
-                bounded_read_route_coverage_ready(bundle),
+                bounded_read_covered_routes_ready(bundle),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "bounded_read_evidence",
+                        "route_primary_ready",
+                    ],
+                ) == Some(true),
+                bounded_read_primary_ready_routes_cover_required(bundle),
+                bounded_read_missing_primary_routes_empty(bundle),
             ],
             [
                 "replacement_summary.bounded_read_evidence.present",
@@ -502,6 +512,9 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "replacement_summary.bounded_read_evidence.blocking_operator_count",
                 "replacement_summary.bounded_read_evidence.streaming",
                 "replacement_summary.bounded_read_evidence.covered_routes",
+                "replacement_summary.bounded_read_evidence.route_primary_ready",
+                "replacement_summary.bounded_read_evidence.primary_ready_routes",
+                "replacement_summary.bounded_read_evidence.missing_primary_routes",
             ],
             blocker_codes(
                 bundle,
@@ -1315,6 +1328,20 @@ fn bounded_read_alignment_ready(bundle: &serde_json::Value) -> bool {
 }
 
 fn bounded_read_route_coverage_ready(bundle: &serde_json::Value) -> bool {
+    bounded_read_covered_routes_ready(bundle)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "bounded_read_evidence",
+                "route_primary_ready",
+            ],
+        ) == Some(true)
+        && bounded_read_primary_ready_routes_cover_required(bundle)
+        && bounded_read_missing_primary_routes_empty(bundle)
+}
+
+fn bounded_read_covered_routes_ready(bundle: &serde_json::Value) -> bool {
     let covered_routes = string_array_path(
         bundle,
         &[
@@ -1335,6 +1362,32 @@ fn bounded_read_route_coverage_ready(bundle: &serde_json::Value) -> bool {
             ],
         )
         .is_empty()
+}
+
+fn bounded_read_primary_ready_routes_cover_required(bundle: &serde_json::Value) -> bool {
+    let primary_ready_routes = string_array_path(
+        bundle,
+        &[
+            "replacement_summary",
+            "bounded_read_evidence",
+            "primary_ready_routes",
+        ],
+    );
+    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        .iter()
+        .all(|route| primary_ready_routes.iter().any(|ready| ready == route))
+}
+
+fn bounded_read_missing_primary_routes_empty(bundle: &serde_json::Value) -> bool {
+    string_array_path(
+        bundle,
+        &[
+            "replacement_summary",
+            "bounded_read_evidence",
+            "missing_primary_routes",
+        ],
+    )
+    .is_empty()
 }
 
 fn graph_route_readiness_ready(bundle: &serde_json::Value) -> bool {
@@ -1925,6 +1978,39 @@ mod tests {
     }
 
     #[test]
+    fn requires_bounded_read_primary_route_coverage() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]["bounded_read_evidence"]["route_primary_ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary"]["bounded_read_evidence"]["primary_ready_routes"] =
+            serde_json::json!(["/graph/overview"]);
+        bundle["replacement_summary"]["bounded_read_evidence"]["missing_primary_routes"] =
+            serde_json::json!(["/graph/explore"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["bounded_read_evidence"])
+        );
+        let read_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "bounded_read_evidence")
+            .unwrap();
+        assert_eq!(
+            read_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary.bounded_read_evidence.route_primary_ready",
+                "replacement_summary.bounded_read_evidence.primary_ready_routes",
+                "replacement_summary.bounded_read_evidence.missing_primary_routes"
+            ])
+        );
+    }
+
+    #[test]
     fn rejects_stale_bounded_read_summary_when_live_evidence_is_not_ready() {
         let mut bundle = ready_bundle();
         bundle["bounded_read_evidence"]["ready"] = serde_json::json!(false);
@@ -2398,6 +2484,25 @@ mod tests {
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
+                "route_primary_ready": true,
+                "primary_ready_routes": [
+                    "/graph/overview",
+                    "/graph/explore",
+                    "/graph/expand/{node_id}",
+                    "/graph/live-preview",
+                    "/graph/live-preview/{node_id}",
+                    "/graph/community-members/{community_id}",
+                    "/library/community/{community_id}/subgraph",
+                    "/library/community/{community_id}/recent-memories",
+                    "/library/community/{community_id}/related",
+                    "/graph/analysis",
+                    "/graph/augmentation/state",
+                    "/graph/augmentation/pagerank/plan",
+                    "/graph/node-details/{node_id}",
+                    "/graph/orphans",
+                    "/graph/shortest-path"
+                ],
+                "missing_primary_routes": [],
                 "blocker_codes": []
             },
             "replacement_summary_bounded_read_alignment": {
@@ -2492,6 +2597,25 @@ mod tests {
                         "/graph/shortest-path"
                     ],
                     "missing_covered_routes": [],
+                    "route_primary_ready": true,
+                    "primary_ready_routes": [
+                        "/graph/overview",
+                        "/graph/explore",
+                        "/graph/expand/{node_id}",
+                        "/graph/live-preview",
+                        "/graph/live-preview/{node_id}",
+                        "/graph/community-members/{community_id}",
+                        "/library/community/{community_id}/subgraph",
+                        "/library/community/{community_id}/recent-memories",
+                        "/library/community/{community_id}/related",
+                        "/graph/analysis",
+                        "/graph/augmentation/state",
+                        "/graph/augmentation/pagerank/plan",
+                        "/graph/node-details/{node_id}",
+                        "/graph/orphans",
+                        "/graph/shortest-path"
+                    ],
+                    "missing_primary_routes": [],
                     "blocker_codes": []
                 },
                 "cutover_evidence": {

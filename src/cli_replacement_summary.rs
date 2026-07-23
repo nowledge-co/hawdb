@@ -270,6 +270,9 @@ pub fn nowledge_replacement_summary_json_with_options(
             "covered_routes": bounded_read_evidence.covered_routes,
             "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
             "missing_covered_routes": bounded_read_evidence.missing_covered_routes,
+            "route_primary_ready": bounded_read_evidence.route_primary_ready,
+            "primary_ready_routes": bounded_read_evidence.primary_ready_routes,
+            "missing_primary_routes": bounded_read_evidence.missing_primary_routes,
             "blocker_codes": bounded_read_evidence.blocker_codes,
         },
         "cutover_evidence": {
@@ -578,6 +581,9 @@ struct BoundedReadEvidenceSummary<'a> {
     blocking_operator_count: Option<u64>,
     covered_routes: Vec<String>,
     missing_covered_routes: Vec<&'static str>,
+    route_primary_ready: Option<bool>,
+    primary_ready_routes: Vec<String>,
+    missing_primary_routes: Vec<String>,
     blocker_codes: serde_json::Value,
 }
 
@@ -912,11 +918,26 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let primary_ready_routes =
+        json_get_string_array_path_from_dynamic(bundle, path, "primary_ready_routes");
+    let primary_ready_route_set = primary_ready_routes
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let missing_covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !covered_route_set.contains(route))
         .collect::<Vec<_>>();
+    let missing_primary_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        .iter()
+        .copied()
+        .filter(|route| !primary_ready_route_set.contains(route))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let reported_missing_primary_routes =
+        json_get_string_array_path_from_dynamic(bundle, path, "missing_primary_routes");
+    let route_primary_ready = json_get_bool_path_from_dynamic(bundle, path, "route_primary_ready");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL)
         && mode == Some("shadow_read_only")
@@ -924,7 +945,10 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         && execution_row_cap == max_rows.and_then(|value| value.checked_add(1))
         && row_limit_enforced_before_output == Some(true)
         && operator_row_cap_enabled == Some(true)
-        && missing_covered_routes.is_empty();
+        && missing_covered_routes.is_empty()
+        && route_primary_ready == Some(true)
+        && missing_primary_routes.is_empty()
+        && reported_missing_primary_routes.is_empty();
     BoundedReadEvidenceSummary {
         protocol,
         present,
@@ -938,6 +962,9 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         blocking_operator_count,
         covered_routes,
         missing_covered_routes,
+        route_primary_ready,
+        primary_ready_routes,
+        missing_primary_routes,
         blocker_codes: json_get_array_path_from_dynamic(bundle, path, "blocker_codes"),
     }
 }
@@ -1262,6 +1289,9 @@ fn nowledge_replacement_next_actions(
                 "bounded_read_evidence.operator_row_cap_enabled",
                 "bounded_read_evidence.blocking_operator_count",
                 "bounded_read_evidence.covered_routes",
+                "bounded_read_evidence.route_primary_ready",
+                "bounded_read_evidence.primary_ready_routes",
+                "bounded_read_evidence.missing_primary_routes",
                 "bounded_read_evidence.blocker_codes",
             ],
         ));
@@ -2202,6 +2232,56 @@ mod tests {
     }
 
     #[test]
+    fn replacement_summary_requires_bounded_read_primary_route_coverage() {
+        let mut bundle = production_ready_bundle();
+        bundle["bounded_read_evidence"]["route_primary_ready"] = serde_json::json!(false);
+        bundle["bounded_read_evidence"]["primary_ready_routes"] = serde_json::json!([
+            "/graph/overview",
+            "/graph/expand/{node_id}",
+            "/graph/live-preview",
+            "/graph/live-preview/{node_id}",
+            "/graph/community-members/{community_id}",
+            "/library/community/{community_id}/subgraph",
+            "/library/community/{community_id}/recent-memories",
+            "/library/community/{community_id}/related",
+            "/graph/analysis",
+            "/graph/augmentation/state",
+            "/graph/augmentation/pagerank/plan",
+            "/graph/node-details/{node_id}",
+            "/graph/orphans",
+            "/graph/shortest-path"
+        ]);
+        bundle["bounded_read_evidence"]["missing_primary_routes"] =
+            serde_json::json!(["/graph/explore"]);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["bounded_read_evidence"]["ready"], false);
+        assert_eq!(
+            summary["bounded_read_evidence"]["missing_primary_routes"],
+            serde_json::json!(["/graph/explore"])
+        );
+        assert!(summary["blocking_categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "bounded_read_evidence"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "attach_bounded_read_profile"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| field == "bounded_read_evidence.primary_ready_routes")
+            }));
+    }
+
+    #[test]
     fn replacement_summary_requires_bounded_read_evidence_protocol() {
         let mut bundle = production_ready_bundle();
         bundle["bounded_read_evidence"]["protocol"] = serde_json::json!("handwritten");
@@ -3021,6 +3101,25 @@ mod tests {
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
+                "route_primary_ready": true,
+                "primary_ready_routes": [
+                    "/graph/overview",
+                    "/graph/explore",
+                    "/graph/expand/{node_id}",
+                    "/graph/live-preview",
+                    "/graph/live-preview/{node_id}",
+                    "/graph/community-members/{community_id}",
+                    "/library/community/{community_id}/subgraph",
+                    "/library/community/{community_id}/recent-memories",
+                    "/library/community/{community_id}/related",
+                    "/graph/analysis",
+                    "/graph/augmentation/state",
+                    "/graph/augmentation/pagerank/plan",
+                    "/graph/node-details/{node_id}",
+                    "/graph/orphans",
+                    "/graph/shortest-path"
+                ],
+                "missing_primary_routes": [],
                 "blocker_codes": []
             },
             "previous_wrapper_contract_evidence": {
