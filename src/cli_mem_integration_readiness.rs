@@ -601,6 +601,8 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             [
                 str_path(bundle, &["graph_route_readiness", "protocol"])
                     == Some(NMEM_GRAPH_ROUTE_READINESS_PROTOCOL),
+                str_path(bundle, &["graph_route_readiness", "evidence_source"])
+                    == Some("graph_route_execution_evidence"),
                 u64_path(bundle, &["graph_route_readiness", "route_count"])
                     .is_some_and(|value| value > 0),
                 bool_path(bundle, &["graph_route_readiness", "route_primary_ready"]) == Some(true),
@@ -617,6 +619,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ],
             [
                 "graph_route_readiness.protocol",
+                "graph_route_readiness.evidence_source",
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
@@ -641,6 +644,13 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 bool_path(
                     bundle,
                     &["replacement_summary_graph_route_alignment", "ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "execution_evidence_source",
+                    ],
                 ) == Some(true),
                 bool_path(
                     bundle,
@@ -701,6 +711,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ],
             [
                 "replacement_summary_graph_route_alignment.ready",
+                "replacement_summary_graph_route_alignment.execution_evidence_source",
                 "replacement_summary_graph_route_alignment.evidence_route_primary_ready",
                 "replacement_summary_graph_route_alignment.evidence_route_query_runtime_ready",
                 "replacement_summary_graph_route_alignment.summary_route_primary_ready",
@@ -1832,6 +1843,7 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             "Nowledge Mem graph cutover requires route-level primary-read readiness evidence",
             [
                 "graph_route_readiness.protocol",
+                "graph_route_readiness.evidence_source",
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
@@ -1850,6 +1862,7 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             "live graph route primary-read readiness must match the replacement summary before Mem cutover",
             [
                 "replacement_summary_graph_route_alignment.ready",
+                "replacement_summary_graph_route_alignment.execution_evidence_source",
                 "replacement_summary_graph_route_alignment.evidence_route_primary_ready",
                 "replacement_summary_graph_route_alignment.evidence_route_query_runtime_ready",
                 "replacement_summary_graph_route_alignment.summary_route_primary_ready",
@@ -2471,6 +2484,8 @@ fn graph_route_readiness_ready(bundle: &serde_json::Value) -> bool {
         == Some(NMEM_GRAPH_ROUTE_READINESS_PROTOCOL)
         && u64_path(bundle, &["graph_route_readiness", "route_count"])
             .is_some_and(|value| value > 0)
+        && str_path(bundle, &["graph_route_readiness", "evidence_source"])
+            == Some("graph_route_execution_evidence")
         && bool_path(bundle, &["graph_route_readiness", "route_primary_ready"]) == Some(true)
         && graph_route_primary_ready_count_matches(bundle)
         && graph_route_primary_ready_routes_cover_required(bundle)
@@ -2687,6 +2702,10 @@ fn graph_route_ready_routes(
 fn graph_route_readiness_alignment_ready(bundle: &serde_json::Value) -> bool {
     [
         &["replacement_summary_graph_route_alignment", "ready"][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "execution_evidence_source",
+        ][..],
         &[
             "replacement_summary_graph_route_alignment",
             "evidence_route_primary_ready",
@@ -3584,6 +3603,7 @@ mod tests {
             route_check["failed_evidence_fields"],
             serde_json::json!([
                 "graph_route_readiness.protocol",
+                "graph_route_readiness.evidence_source",
                 "graph_route_readiness.route_count",
                 "graph_route_readiness.route_primary_ready",
                 "graph_route_readiness.primary_ready_route_count",
@@ -3598,6 +3618,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action["action"] == "attach_graph_route_readiness_evidence"));
+    }
+
+    #[test]
+    fn rejects_graph_route_readiness_without_execution_evidence_source() {
+        let mut bundle = ready_bundle();
+        bundle["graph_route_readiness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence_source");
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_readiness"])
+        );
+        let route_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "graph_route_readiness")
+            .unwrap();
+        assert_eq!(
+            route_check["failed_evidence_fields"],
+            serde_json::json!(["graph_route_readiness.evidence_source"])
+        );
     }
 
     #[test]
@@ -3723,6 +3770,35 @@ mod tests {
         assert_eq!(
             route_check["failed_evidence_fields"],
             serde_json::json!(["graph_route_readiness.protocol"])
+        );
+    }
+
+    #[test]
+    fn rejects_graph_route_alignment_without_execution_evidence_source() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_graph_route_alignment"]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_evidence_source");
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_readiness_alignment"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "graph_route_readiness_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_graph_route_alignment.execution_evidence_source"
+            ])
         );
     }
 
@@ -4373,6 +4449,7 @@ mod tests {
         });
         bundle["graph_route_readiness"] = serde_json::json!({
             "protocol": "nmem-graph-route-readiness-v1",
+            "evidence_source": "graph_route_execution_evidence",
             "route_count": graph_route_count,
             "shadow_compare_route_count": graph_route_count,
             "primary_ready_route_count": graph_route_count,
@@ -4389,6 +4466,7 @@ mod tests {
             "evidence_present": true,
             "summary_present": true,
             "protocol_matches": true,
+            "execution_evidence_source": true,
             "evidence_route_primary_ready": true,
             "evidence_route_query_runtime_ready": true,
             "summary_route_primary_ready": true,

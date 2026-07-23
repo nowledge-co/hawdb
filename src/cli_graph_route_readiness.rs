@@ -95,6 +95,7 @@ fn nowledge_graph_route_readiness_json(evidence: &serde_json::Value) -> Result<s
 
     Ok(serde_json::json!({
         "protocol": NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
+        "evidence_source": "graph_route_execution_evidence",
         "route_count": route_count,
         "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
         "missing_required_routes": missing_required_routes,
