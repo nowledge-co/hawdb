@@ -12,6 +12,8 @@ const SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-search-candidate-shadow-evidence";
 const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-mem-bounded-read-evidence-v1";
+const NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL: &str =
+    "nmem-graph-route-shadow-parity-evidence-v1";
 const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
     "/graph/overview",
     "/graph/explore",
@@ -617,6 +619,54 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ),
         ),
         check(
+            "graph_route_overview_parity_evidence",
+            [
+                replacement_summary_overview_parity_ready(bundle),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "overview",
+                        "protocol",
+                    ],
+                ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "overview",
+                        "route",
+                    ],
+                ) == Some("/graph/overview"),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "overview",
+                        "matches",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary.graph_route_parity_evidence.overview.ready",
+                "replacement_summary.graph_route_parity_evidence.overview.protocol",
+                "replacement_summary.graph_route_parity_evidence.overview.route",
+                "replacement_summary.graph_route_parity_evidence.overview.matches",
+            ],
+            blocker_codes(
+                bundle,
+                &[&[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    "overview",
+                    "blocker_codes",
+                ][..]],
+            ),
+        ),
+        check(
             "background_maintenance_evidence",
             [
                 bool_path(
@@ -1042,6 +1092,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !replacement_summary_overview_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_overview_route_shadow_compare",
+            "overview graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.overview.protocol",
+                "replacement_summary.graph_route_parity_evidence.overview.ready",
+                "replacement_summary.graph_route_parity_evidence.overview.route",
+                "replacement_summary.graph_route_parity_evidence.overview.matches",
+                "replacement_summary.graph_route_parity_evidence.overview.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.overview.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.overview.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_storage_recovery_ready(bundle) {
         actions.push(next_action(
             "attach_storage_recovery_report",
@@ -1400,6 +1465,73 @@ fn graph_route_readiness_ready(bundle: &serde_json::Value) -> bool {
         && string_array_path(
             bundle,
             &["graph_route_readiness", "route_primary_blocker_codes"],
+        )
+        .is_empty()
+}
+
+fn replacement_summary_overview_parity_ready(bundle: &serde_json::Value) -> bool {
+    str_path(
+        bundle,
+        &[
+            "replacement_summary",
+            "graph_route_parity_evidence",
+            "overview",
+            "protocol",
+        ],
+    ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "ready",
+            ],
+        ) == Some(true)
+        && str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "route",
+            ],
+        ) == Some("/graph/overview")
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "matches",
+            ],
+        ) == Some(true)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "primary_ready",
+            ],
+        ) == Some(true)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "shadow_ready",
+            ],
+        ) == Some(true)
+        && string_array_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                "overview",
+                "blocker_codes",
+            ],
         )
         .is_empty()
 }
@@ -2266,6 +2398,64 @@ mod tests {
     }
 
     #[test]
+    fn requires_overview_route_parity_evidence() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]
+            .as_object_mut()
+            .unwrap()
+            .remove("graph_route_parity_evidence");
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_overview_parity_evidence"])
+        );
+        let parity_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "graph_route_overview_parity_evidence")
+            .unwrap();
+        assert_eq!(
+            parity_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary.graph_route_parity_evidence.overview.ready",
+                "replacement_summary.graph_route_parity_evidence.overview.protocol",
+                "replacement_summary.graph_route_parity_evidence.overview.route",
+                "replacement_summary.graph_route_parity_evidence.overview.matches"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "run_overview_route_shadow_compare"));
+    }
+
+    #[test]
+    fn rejects_overview_route_parity_mismatch() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]["graph_route_parity_evidence"]["overview"]["matches"] =
+            serde_json::json!(false);
+        bundle["replacement_summary"]["graph_route_parity_evidence"]["overview"]["blocker_codes"] =
+            serde_json::json!(["overview_route_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_overview_parity_evidence"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["overview_route_mismatch"])
+        );
+    }
+
+    #[test]
     fn requires_background_maintenance_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["cutover_evidence"]["background_maintenance_ready"] =
@@ -2658,6 +2848,21 @@ mod tests {
                     "blocker_codes": []
                 }
             ]
+        });
+        bundle["replacement_summary"]["graph_route_parity_evidence"] = serde_json::json!({
+            "overview": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/overview",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            }
         });
         bundle["replacement_summary"]["search_candidate_shadow_evidence"] =
             ready_search_candidate_shadow_evidence_summary();
