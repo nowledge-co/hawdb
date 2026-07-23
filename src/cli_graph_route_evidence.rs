@@ -109,7 +109,7 @@ impl RouteQuery {
             blocker_codes.push("missing_route_queries".to_string());
         }
         for query in &self.queries {
-            match graph.read_query_with_params(&query.cypher, &query.parameters, &options) {
+            match graph.read_query_with_params(&query.cypher, &query.parameters, options) {
                 Ok(output) => query_reports.push(output.report.json()),
                 Err(error) => {
                     blocker_codes.push("query_runtime_execution_failed".to_string());

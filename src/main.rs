@@ -771,29 +771,30 @@ fn main() -> Result<()> {
                 return Err(SkeinError::Semantic(nowledge_replacement_summary_usage()));
             }
             let mut bundle = read_json_file(Path::new(&bundle_path))?;
-            merge_replacement_summary_evidence(
-                &mut bundle,
-                search_projection_evidence_path.as_deref(),
-                search_projection_shadow_evidence_path.as_deref(),
-                search_candidate_shadow_evidence_path.as_deref(),
-                bounded_read_evidence_path.as_deref(),
-                augmentation_state_parity_evidence_path.as_deref(),
-                pagerank_plan_parity_evidence_path.as_deref(),
-                overview_parity_evidence_path.as_deref(),
-                explore_parity_evidence_path.as_deref(),
-                expand_parity_evidence_path.as_deref(),
-                live_preview_parity_evidence_path.as_deref(),
-                live_preview_node_parity_evidence_path.as_deref(),
-                node_details_parity_evidence_path.as_deref(),
-                orphans_parity_evidence_path.as_deref(),
-                shortest_path_parity_evidence_path.as_deref(),
-                community_members_parity_evidence_path.as_deref(),
-                community_subgraph_parity_evidence_path.as_deref(),
-                community_recent_memories_parity_evidence_path.as_deref(),
-                related_communities_parity_evidence_path.as_deref(),
-                graph_analysis_parity_evidence_path.as_deref(),
-                query_family_evidence_path.as_deref(),
-            )?;
+            let evidence_paths = ReplacementSummaryEvidencePaths {
+                search_projection: search_projection_evidence_path.as_deref(),
+                search_projection_shadow: search_projection_shadow_evidence_path.as_deref(),
+                search_candidate_shadow: search_candidate_shadow_evidence_path.as_deref(),
+                bounded_read: bounded_read_evidence_path.as_deref(),
+                augmentation_state_parity: augmentation_state_parity_evidence_path.as_deref(),
+                pagerank_plan_parity: pagerank_plan_parity_evidence_path.as_deref(),
+                overview_parity: overview_parity_evidence_path.as_deref(),
+                explore_parity: explore_parity_evidence_path.as_deref(),
+                expand_parity: expand_parity_evidence_path.as_deref(),
+                live_preview_parity: live_preview_parity_evidence_path.as_deref(),
+                live_preview_node_parity: live_preview_node_parity_evidence_path.as_deref(),
+                node_details_parity: node_details_parity_evidence_path.as_deref(),
+                orphans_parity: orphans_parity_evidence_path.as_deref(),
+                shortest_path_parity: shortest_path_parity_evidence_path.as_deref(),
+                community_members_parity: community_members_parity_evidence_path.as_deref(),
+                community_subgraph_parity: community_subgraph_parity_evidence_path.as_deref(),
+                community_recent_memories_parity: community_recent_memories_parity_evidence_path
+                    .as_deref(),
+                related_communities_parity: related_communities_parity_evidence_path.as_deref(),
+                graph_analysis_parity: graph_analysis_parity_evidence_path.as_deref(),
+                query_family: query_family_evidence_path.as_deref(),
+            };
+            merge_replacement_summary_evidence(&mut bundle, &evidence_paths)?;
             let summary = if custom_summary_options {
                 nowledge_replacement_summary_json_with_options(&bundle, options)
             } else {
@@ -1495,163 +1496,168 @@ fn parse_positive_usize(flag: &str, raw_value: &str) -> Result<usize> {
     Ok(value)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ReplacementSummaryEvidencePaths<'a> {
+    search_projection: Option<&'a str>,
+    search_projection_shadow: Option<&'a str>,
+    search_candidate_shadow: Option<&'a str>,
+    bounded_read: Option<&'a str>,
+    augmentation_state_parity: Option<&'a str>,
+    pagerank_plan_parity: Option<&'a str>,
+    overview_parity: Option<&'a str>,
+    explore_parity: Option<&'a str>,
+    expand_parity: Option<&'a str>,
+    live_preview_parity: Option<&'a str>,
+    live_preview_node_parity: Option<&'a str>,
+    node_details_parity: Option<&'a str>,
+    orphans_parity: Option<&'a str>,
+    shortest_path_parity: Option<&'a str>,
+    community_members_parity: Option<&'a str>,
+    community_subgraph_parity: Option<&'a str>,
+    community_recent_memories_parity: Option<&'a str>,
+    related_communities_parity: Option<&'a str>,
+    graph_analysis_parity: Option<&'a str>,
+    query_family: Option<&'a str>,
+}
+
 fn merge_replacement_summary_evidence(
     bundle: &mut serde_json::Value,
-    search_projection_evidence_path: Option<&str>,
-    search_projection_shadow_evidence_path: Option<&str>,
-    search_candidate_shadow_evidence_path: Option<&str>,
-    bounded_read_evidence_path: Option<&str>,
-    augmentation_state_parity_evidence_path: Option<&str>,
-    pagerank_plan_parity_evidence_path: Option<&str>,
-    overview_parity_evidence_path: Option<&str>,
-    explore_parity_evidence_path: Option<&str>,
-    expand_parity_evidence_path: Option<&str>,
-    live_preview_parity_evidence_path: Option<&str>,
-    live_preview_node_parity_evidence_path: Option<&str>,
-    node_details_parity_evidence_path: Option<&str>,
-    orphans_parity_evidence_path: Option<&str>,
-    shortest_path_parity_evidence_path: Option<&str>,
-    community_members_parity_evidence_path: Option<&str>,
-    community_subgraph_parity_evidence_path: Option<&str>,
-    community_recent_memories_parity_evidence_path: Option<&str>,
-    related_communities_parity_evidence_path: Option<&str>,
-    graph_analysis_parity_evidence_path: Option<&str>,
-    query_family_evidence_path: Option<&str>,
+    paths: &ReplacementSummaryEvidencePaths<'_>,
 ) -> Result<()> {
-    if let Some(path) = search_projection_evidence_path {
+    if let Some(path) = paths.search_projection {
         insert_replacement_summary_artifact(
             bundle,
             "search_projection_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = search_projection_shadow_evidence_path {
+    if let Some(path) = paths.search_projection_shadow {
         insert_replacement_summary_artifact(
             bundle,
             "search_projection_shadow_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = search_candidate_shadow_evidence_path {
+    if let Some(path) = paths.search_candidate_shadow {
         insert_replacement_summary_artifact(
             bundle,
             "search_candidate_shadow_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = bounded_read_evidence_path {
+    if let Some(path) = paths.bounded_read {
         insert_replacement_summary_artifact(
             bundle,
             "bounded_read_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = augmentation_state_parity_evidence_path {
+    if let Some(path) = paths.augmentation_state_parity {
         insert_replacement_summary_artifact(
             bundle,
             "augmentation_state_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = pagerank_plan_parity_evidence_path {
+    if let Some(path) = paths.pagerank_plan_parity {
         insert_replacement_summary_artifact(
             bundle,
             "pagerank_plan_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = overview_parity_evidence_path {
+    if let Some(path) = paths.overview_parity {
         insert_replacement_summary_artifact(
             bundle,
             "overview_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = explore_parity_evidence_path {
+    if let Some(path) = paths.explore_parity {
         insert_replacement_summary_artifact(
             bundle,
             "explore_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = expand_parity_evidence_path {
+    if let Some(path) = paths.expand_parity {
         insert_replacement_summary_artifact(
             bundle,
             "expand_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = live_preview_parity_evidence_path {
+    if let Some(path) = paths.live_preview_parity {
         insert_replacement_summary_artifact(
             bundle,
             "live_preview_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = live_preview_node_parity_evidence_path {
+    if let Some(path) = paths.live_preview_node_parity {
         insert_replacement_summary_artifact(
             bundle,
             "live_preview_node_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = node_details_parity_evidence_path {
+    if let Some(path) = paths.node_details_parity {
         insert_replacement_summary_artifact(
             bundle,
             "node_details_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = orphans_parity_evidence_path {
+    if let Some(path) = paths.orphans_parity {
         insert_replacement_summary_artifact(
             bundle,
             "orphans_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = shortest_path_parity_evidence_path {
+    if let Some(path) = paths.shortest_path_parity {
         insert_replacement_summary_artifact(
             bundle,
             "shortest_path_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = community_members_parity_evidence_path {
+    if let Some(path) = paths.community_members_parity {
         insert_replacement_summary_artifact(
             bundle,
             "community_members_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = community_subgraph_parity_evidence_path {
+    if let Some(path) = paths.community_subgraph_parity {
         insert_replacement_summary_artifact(
             bundle,
             "community_subgraph_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = community_recent_memories_parity_evidence_path {
+    if let Some(path) = paths.community_recent_memories_parity {
         insert_replacement_summary_artifact(
             bundle,
             "community_recent_memories_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = related_communities_parity_evidence_path {
+    if let Some(path) = paths.related_communities_parity {
         insert_replacement_summary_artifact(
             bundle,
             "related_communities_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = graph_analysis_parity_evidence_path {
+    if let Some(path) = paths.graph_analysis_parity {
         insert_replacement_summary_artifact(
             bundle,
             "graph_analysis_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
-    if let Some(path) = query_family_evidence_path {
+    if let Some(path) = paths.query_family {
         let query_family_evidence = read_json_file(Path::new(path))?;
         let families = query_family_evidence
             .get("replacement_readiness_by_query_family")
@@ -4737,7 +4743,7 @@ mod tests {
         stage_graph_lightning_bootstrap_export_with_storage_recovery, storage_recovery_report_json,
         validate_canonical_snapshot_usage, value_json, verify_graph_lightning_published_manifest,
         verify_graph_lightning_staging_catalog, BackgroundMaintenanceReportOptions,
-        PublishGraphLightningOptions, StorageRecoveryRequirements,
+        PublishGraphLightningOptions, ReplacementSummaryEvidencePaths, StorageRecoveryRequirements,
     };
     use skein::{
         api::ExplainOutput,
@@ -5200,30 +5206,31 @@ mod tests {
             "protocol": "skein-nowledge-cypher-migration-gate"
         });
 
-        merge_replacement_summary_evidence(
-            &mut bundle,
-            Some(search_path.to_str().unwrap()),
-            Some(shadow_path.to_str().unwrap()),
-            Some(candidate_shadow_path.to_str().unwrap()),
-            Some(bounded_path.to_str().unwrap()),
-            Some(augmentation_state_path.to_str().unwrap()),
-            Some(pagerank_plan_path.to_str().unwrap()),
-            Some(overview_path.to_str().unwrap()),
-            Some(explore_path.to_str().unwrap()),
-            Some(expand_path.to_str().unwrap()),
-            Some(live_preview_path.to_str().unwrap()),
-            Some(live_preview_node_path.to_str().unwrap()),
-            Some(node_details_path.to_str().unwrap()),
-            Some(orphans_path.to_str().unwrap()),
-            Some(shortest_path_path.to_str().unwrap()),
-            Some(community_members_path.to_str().unwrap()),
-            Some(community_subgraph_path.to_str().unwrap()),
-            Some(community_recent_memories_path.to_str().unwrap()),
-            Some(related_communities_path.to_str().unwrap()),
-            Some(graph_analysis_path.to_str().unwrap()),
-            Some(family_path.to_str().unwrap()),
-        )
-        .unwrap();
+        let paths = ReplacementSummaryEvidencePaths {
+            search_projection: Some(search_path.to_str().unwrap()),
+            search_projection_shadow: Some(shadow_path.to_str().unwrap()),
+            search_candidate_shadow: Some(candidate_shadow_path.to_str().unwrap()),
+            bounded_read: Some(bounded_path.to_str().unwrap()),
+            augmentation_state_parity: Some(augmentation_state_path.to_str().unwrap()),
+            pagerank_plan_parity: Some(pagerank_plan_path.to_str().unwrap()),
+            overview_parity: Some(overview_path.to_str().unwrap()),
+            explore_parity: Some(explore_path.to_str().unwrap()),
+            expand_parity: Some(expand_path.to_str().unwrap()),
+            live_preview_parity: Some(live_preview_path.to_str().unwrap()),
+            live_preview_node_parity: Some(live_preview_node_path.to_str().unwrap()),
+            node_details_parity: Some(node_details_path.to_str().unwrap()),
+            orphans_parity: Some(orphans_path.to_str().unwrap()),
+            shortest_path_parity: Some(shortest_path_path.to_str().unwrap()),
+            community_members_parity: Some(community_members_path.to_str().unwrap()),
+            community_subgraph_parity: Some(community_subgraph_path.to_str().unwrap()),
+            community_recent_memories_parity: Some(
+                community_recent_memories_path.to_str().unwrap(),
+            ),
+            related_communities_parity: Some(related_communities_path.to_str().unwrap()),
+            graph_analysis_parity: Some(graph_analysis_path.to_str().unwrap()),
+            query_family: Some(family_path.to_str().unwrap()),
+        };
+        merge_replacement_summary_evidence(&mut bundle, &paths).unwrap();
 
         assert_eq!(bundle["search_projection_evidence"]["ready"], true);
         assert_eq!(bundle["search_projection_shadow_evidence"]["ready"], true);
