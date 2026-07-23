@@ -25706,7 +25706,6 @@ fn knowledge_source_detail_uses_query_runtime_plan_cache() {
 fn knowledge_source_sourced_memory_count_uses_query_runtime_plan_cache() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
-        statement_summary_capacity: 8,
         ..DatabaseConfig::default()
     });
     db.query("CREATE (:Source {id: 'source_a'})").unwrap();
@@ -25736,6 +25735,48 @@ fn knowledge_source_sourced_memory_count_uses_query_runtime_plan_cache() {
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.hits, 2);
+}
+
+#[test]
+fn knowledge_source_memories_uses_query_runtime_plan_cache() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Source {id: 'source_a'})").unwrap();
+    db.query("CREATE (:Memory {id: 'memory_a', title: 'Alpha', content: 'alpha', unit_type: 'fact', confidence: 0.8})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'memory_b', title: 'Beta', content: 'beta', unit_type: 'note', confidence: 0.6})")
+        .unwrap();
+    db.query("CREATE (:Entity {id: 'entity_a'})").unwrap();
+    db.query("MATCH (m:Memory {id: 'memory_a'}), (s:Source {id: 'source_a'}) CREATE (m)-[:SOURCED_FROM {chunk_index: 2, chunk_range: '10..20', source_version: 'v1', created_at: 200}]->(s)")
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'memory_b'}), (s:Source {id: 'source_a'}) CREATE (m)-[:SOURCED_FROM {chunk_index: 1, chunk_range: '0..10', source_version: 'v1', created_at: 100}]->(s)")
+        .unwrap();
+    db.query(
+        "MATCH (e:Entity {id: 'entity_a'}), (s:Source {id: 'source_a'}) \
+         CREATE (e)-[:SOURCED_FROM {chunk_index: 0}]->(s)",
+    )
+    .unwrap();
+    let request = KnowledgeSourceMemoryListRequest {
+        source_id: "source_a".to_string(),
+        limit: 1,
+    };
+
+    let first = db.knowledge_source_memories(&request).unwrap();
+    let second = db.knowledge_source_memories(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert!(first.found);
+    assert_eq!(first.matched_count, 2);
+    assert_eq!(first.returned_count, 1);
+    assert_eq!(first.rows[0].memory_id.as_deref(), Some("memory_b"));
+    assert_eq!(first.rows[0].chunk_index, Some(1));
+    assert_eq!(first.rows[0].created_at, Some(Value::Int(100)));
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 3);
+    assert_eq!(stats.misses, 3);
+    assert_eq!(stats.hits, 3);
 }
 
 #[test]

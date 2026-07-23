@@ -7348,7 +7348,7 @@ impl Database {
         &self,
         request: &KnowledgeSourceMemoryListRequest,
     ) -> Result<KnowledgeSourceMemoryListOutput> {
-        knowledge_source_memories_for(&self.catalog, &self.store, request)
+        knowledge_source_memories_via_query_runtime(self, request)
     }
 
     pub fn knowledge_source_memory_projected_list(
@@ -16750,18 +16750,30 @@ fn knowledge_source_list_row_direct(
     }
 }
 
-fn knowledge_source_memories_for(
-    catalog: &Catalog,
-    store: &GraphStore,
+fn knowledge_source_memories_via_query_runtime(
+    db: &Database,
     request: &KnowledgeSourceMemoryListRequest,
 ) -> Result<KnowledgeSourceMemoryListOutput> {
     validate_knowledge_source_memory_list_request(request)?;
-    let graph_commit_epoch = store.commit_epoch();
-    let Some(source) =
-        seed_node_by_label_and_external_id(catalog, store, "Source", &request.source_id)
+
+    let mut parameters = BTreeMap::new();
+    parameters.insert(
+        "source_id".to_string(),
+        Value::String(request.source_id.clone()),
+    );
+    let source = db.query_read_only_with_params_bounded(
+        "MATCH (s:Source {id: $source_id}) RETURN id(s) AS source_node_id LIMIT 1",
+        &parameters,
+        Some(1),
+    )?;
+    let Some(source_node_id) = source
+        .rows
+        .first()
+        .and_then(|row| row.get("source_node_id"))
+        .and_then(value_to_non_negative_u64)
     else {
         return Ok(KnowledgeSourceMemoryListOutput {
-            graph_commit_epoch,
+            graph_commit_epoch: db.store.commit_epoch(),
             source_id: request.source_id.clone(),
             source_node_id: None,
             found: false,
@@ -16771,16 +16783,49 @@ fn knowledge_source_memories_for(
         });
     };
 
-    let mut rows = source_memory_rows(catalog, store, source.id);
-    let matched_count = rows.len();
-    if request.limit > 0 {
-        rows.truncate(request.limit);
-    }
+    let count = db.query_read_only_with_params_bounded(
+        "MATCH (m:Memory)-[r:SOURCED_FROM]->(:Source {id: $source_id}) \
+         RETURN count(r) AS matched_count",
+        &parameters,
+        Some(1),
+    )?;
+    let matched_count = count
+        .rows
+        .first()
+        .and_then(|row| row.get("matched_count"))
+        .and_then(value_to_non_negative_usize)
+        .unwrap_or(0);
+
+    let limit_clause = if request.limit > 0 {
+        parameters.insert(
+            "limit".to_string(),
+            Value::Int(i64::try_from(request.limit).unwrap_or(i64::MAX)),
+        );
+        " LIMIT $limit"
+    } else {
+        ""
+    };
+    let list_query = format!(
+        "MATCH (m:Memory)-[r:SOURCED_FROM]->(:Source {{id: $source_id}}) \
+         RETURN m.id AS memory_id, id(m) AS node_id, id(r) AS relationship_id, \
+         m.title AS title, m.content AS content, m.unit_type AS unit_type, \
+         m.confidence AS confidence, r.chunk_index AS chunk_index, \
+         r.chunk_range AS chunk_range, r.source_version AS source_version, \
+         r.created_at AS created_at \
+         ORDER BY chunk_index ASC, memory_id ASC, relationship_id ASC{limit_clause}"
+    );
+    let list = db.query_read_only_with_params_bounded(&list_query, &parameters, None)?;
+    let rows = list
+        .rows
+        .iter()
+        .map(knowledge_source_memory_row_from_query)
+        .collect::<Result<Vec<_>>>()?;
     let returned_count = rows.len();
+
     Ok(KnowledgeSourceMemoryListOutput {
-        graph_commit_epoch,
+        graph_commit_epoch: db.store.commit_epoch(),
         source_id: request.source_id.clone(),
-        source_node_id: Some(source.id.0),
+        source_node_id: Some(source_node_id),
         found: true,
         rows,
         matched_count,
@@ -16860,35 +16905,6 @@ fn validate_knowledge_source_memory_projected_list_request(
     Ok(())
 }
 
-fn source_memory_rows(
-    catalog: &Catalog,
-    store: &GraphStore,
-    source_node_id: NodeId,
-) -> Vec<KnowledgeSourceMemoryRow> {
-    let Some(rel_type_id) = catalog.rel_type_id("SOURCED_FROM") else {
-        return Vec::new();
-    };
-    let Some(memory_label_id) = catalog.label_id("Memory") else {
-        return Vec::new();
-    };
-    let mut rows = store
-        .incoming_relationships(source_node_id, rel_type_id)
-        .filter_map(|relationship| {
-            store
-                .node(relationship.source)
-                .filter(|memory| memory.labels.contains(&memory_label_id))
-                .map(|memory| source_memory_row(memory, relationship))
-        })
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        left.chunk_index
-            .cmp(&right.chunk_index)
-            .then_with(|| left.memory_id.cmp(&right.memory_id))
-            .then_with(|| left.relationship_id.cmp(&right.relationship_id))
-    });
-    rows
-}
-
 fn source_memory_projected_rows(
     catalog: &Catalog,
     store: &GraphStore,
@@ -16928,22 +16944,6 @@ fn source_memory_projected_rows(
             .then_with(|| left.0.relationship_id.cmp(&right.0.relationship_id))
     });
     rows.into_iter().map(|(row, _chunk_index)| row).collect()
-}
-
-fn source_memory_row(memory: &NodeRecord, relationship: &RelRecord) -> KnowledgeSourceMemoryRow {
-    KnowledgeSourceMemoryRow {
-        memory_id: node_external_id(memory),
-        node_id: memory.id.0,
-        relationship_id: relationship.id.0,
-        title: string_property(memory, "title"),
-        content: string_property(memory, "content"),
-        unit_type: string_property(memory, "unit_type"),
-        confidence: memory.properties.get("confidence").cloned(),
-        chunk_index: relationship_integer_property(relationship, "chunk_index"),
-        chunk_range: relationship_string_property(relationship, "chunk_range"),
-        source_version: relationship_string_property(relationship, "source_version"),
-        created_at: relationship.properties.get("created_at").cloned(),
-    }
 }
 
 fn source_memory_projected_row(
