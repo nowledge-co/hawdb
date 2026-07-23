@@ -394,54 +394,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                         "ready",
                     ],
                 ) == Some(true),
-                bool_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "row_count_parity",
-                    ],
-                ) == Some(true),
-                bool_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "vector_top_k_overlap_ready",
-                    ],
-                ) == Some(true),
-                bool_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "fts_top_k_overlap_ready",
-                    ],
-                ) == Some(true),
-                bool_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "shadow_scan_filter_pushdown_ready",
-                    ],
-                ) == Some(true),
-                str_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "primary_engine",
-                    ],
-                ) == Some("lancedb"),
-                str_path(
-                    bundle,
-                    &[
-                        "replacement_summary",
-                        "search_candidate_shadow_evidence",
-                        "shadow_engine",
-                    ],
-                ) == Some("skein"),
+                search_candidate_primary_or_shadow_ready(bundle),
             ],
             [
                 "replacement_summary.search_projection_evidence.ready",
@@ -466,12 +419,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "replacement_summary.search_candidate_shadow_evidence.route",
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
-                "replacement_summary.search_candidate_shadow_evidence.row_count_parity",
-                "replacement_summary.search_candidate_shadow_evidence.vector_top_k_overlap_ready",
-                "replacement_summary.search_candidate_shadow_evidence.fts_top_k_overlap_ready",
-                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
-                "replacement_summary.search_candidate_shadow_evidence.primary_engine",
-                "replacement_summary.search_candidate_shadow_evidence.shadow_engine",
+                "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
             ],
             blocker_codes(
                 bundle,
@@ -1808,10 +1756,10 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary.search_projection_shadow_evidence.blocker_codes",
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
-                "replacement_summary.search_candidate_shadow_evidence.row_count_parity",
-                "replacement_summary.search_candidate_shadow_evidence.vector_top_k_overlap_ready",
-                "replacement_summary.search_candidate_shadow_evidence.fts_top_k_overlap_ready",
-                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
+                "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
+                "replacement_summary.search_candidate_shadow_evidence.candidate_primary_engine",
+                "replacement_summary.search_candidate_shadow_evidence.primary_engine",
+                "replacement_summary.search_candidate_shadow_evidence.shadow_engine",
                 "replacement_summary.search_candidate_shadow_evidence.blocker_codes",
             ],
         ));
@@ -2275,29 +2223,92 @@ fn replacement_summary_search_projection_ready(bundle: &serde_json::Value) -> bo
             "search_candidate_shadow_evidence",
             "ready",
         ][..],
-        &[
-            "replacement_summary",
-            "search_candidate_shadow_evidence",
-            "row_count_parity",
-        ][..],
-        &[
-            "replacement_summary",
-            "search_candidate_shadow_evidence",
-            "vector_top_k_overlap_ready",
-        ][..],
-        &[
-            "replacement_summary",
-            "search_candidate_shadow_evidence",
-            "fts_top_k_overlap_ready",
-        ][..],
-        &[
-            "replacement_summary",
-            "search_candidate_shadow_evidence",
-            "shadow_scan_filter_pushdown_ready",
-        ][..],
     ]
     .iter()
     .all(|path| bool_path(bundle, path) == Some(true))
+        && search_candidate_primary_or_shadow_ready(bundle)
+}
+
+fn search_candidate_primary_or_shadow_ready(bundle: &serde_json::Value) -> bool {
+    search_candidate_primary_read_ready(bundle) || search_candidate_shadow_parity_ready(bundle)
+}
+
+fn search_candidate_primary_read_ready(bundle: &serde_json::Value) -> bool {
+    str_path(
+        bundle,
+        &[
+            "replacement_summary",
+            "search_candidate_shadow_evidence",
+            "engine",
+        ],
+    ) == Some("skein-primary")
+        && str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "candidate_primary_engine",
+            ],
+        ) == Some("skein")
+        && str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "primary_engine",
+            ],
+        ) == Some("skein")
+}
+
+fn search_candidate_shadow_parity_ready(bundle: &serde_json::Value) -> bool {
+    str_path(
+        bundle,
+        &[
+            "replacement_summary",
+            "search_candidate_shadow_evidence",
+            "primary_engine",
+        ],
+    ) == Some("lancedb")
+        && str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "shadow_engine",
+            ],
+        ) == Some("skein")
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "row_count_parity",
+            ],
+        ) == Some(true)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "vector_top_k_overlap_ready",
+            ],
+        ) == Some(true)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "fts_top_k_overlap_ready",
+            ],
+        ) == Some(true)
+        && bool_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "shadow_scan_filter_pushdown_ready",
+            ],
+        ) == Some(true)
 }
 
 fn replacement_summary_bounded_read_ready(bundle: &serde_json::Value) -> bool {
@@ -3053,7 +3064,7 @@ mod tests {
             search_check["failed_evidence_fields"],
             serde_json::json!([
                 "replacement_summary.search_candidate_shadow_evidence.ready",
-                "replacement_summary.search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready"
+                "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready"
             ])
         );
         assert!(report["next_actions"]
@@ -3068,7 +3079,7 @@ mod tests {
                         .iter()
                         .any(|field| {
                             field
-                                == "replacement_summary.search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready"
+                                == "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready"
                         })
             }));
     }
@@ -3210,10 +3221,21 @@ mod tests {
             search_check["failed_evidence_fields"],
             serde_json::json!([
                 "replacement_summary.search_candidate_shadow_evidence.route",
-                "replacement_summary.search_candidate_shadow_evidence.primary_engine",
-                "replacement_summary.search_candidate_shadow_evidence.shadow_engine"
+                "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready"
             ])
         );
+    }
+
+    #[test]
+    fn accepts_search_candidate_primary_evidence() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]["search_candidate_shadow_evidence"] =
+            ready_search_candidate_primary_evidence_summary();
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], true);
+        assert_eq!(report["failed_checks"], serde_json::json!([]));
     }
 
     #[test]
@@ -4591,6 +4613,23 @@ mod tests {
             "shadow_scan_filter_pushdown_ready": true,
             "primary_engine": "lancedb",
             "shadow_engine": "skein",
+            "blocker_codes": []
+        })
+    }
+
+    fn ready_search_candidate_primary_evidence_summary() -> serde_json::Value {
+        serde_json::json!({
+            "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "route": "/search-index/skein-shadow/candidate-evidence",
+            "present": true,
+            "engine": "skein-primary",
+            "ready": true,
+            "candidate_primary_engine": "skein",
+            "primary_engine": "skein",
+            "row_count_parity": false,
+            "vector_top_k_overlap_ready": false,
+            "fts_top_k_overlap_ready": false,
+            "shadow_scan_filter_pushdown_ready": false,
             "blocker_codes": []
         })
     }
