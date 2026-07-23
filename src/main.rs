@@ -570,6 +570,7 @@ fn main() -> Result<()> {
             let mut node_details_parity_evidence_path = None;
             let mut orphans_parity_evidence_path = None;
             let mut shortest_path_parity_evidence_path = None;
+            let mut community_members_parity_evidence_path = None;
             let mut query_family_evidence_path = None;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -675,6 +676,13 @@ fn main() -> Result<()> {
                                 SkeinError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
+                    "--community-members-parity-evidence-json" => {
+                        args.next();
+                        community_members_parity_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
+                    }
                     "--query-family-evidence-json" => {
                         args.next();
                         query_family_evidence_path = Some(args.next().ok_or_else(|| {
@@ -705,6 +713,7 @@ fn main() -> Result<()> {
                 node_details_parity_evidence_path.as_deref(),
                 orphans_parity_evidence_path.as_deref(),
                 shortest_path_parity_evidence_path.as_deref(),
+                community_members_parity_evidence_path.as_deref(),
                 query_family_evidence_path.as_deref(),
             )?;
             let summary = if custom_summary_options {
@@ -1422,6 +1431,7 @@ fn merge_replacement_summary_evidence(
     node_details_parity_evidence_path: Option<&str>,
     orphans_parity_evidence_path: Option<&str>,
     shortest_path_parity_evidence_path: Option<&str>,
+    community_members_parity_evidence_path: Option<&str>,
     query_family_evidence_path: Option<&str>,
 ) -> Result<()> {
     if let Some(path) = search_projection_evidence_path {
@@ -1505,6 +1515,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "shortest_path_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = community_members_parity_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "community_members_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -4778,6 +4795,7 @@ mod tests {
         let node_details_path = unique_json_file("node_details_parity_evidence");
         let orphans_path = unique_json_file("orphans_parity_evidence");
         let shortest_path_path = unique_json_file("shortest_path_parity_evidence");
+        let community_members_path = unique_json_file("community_members_parity_evidence");
         let family_path = unique_json_file("query_family_evidence");
         std::fs::write(
             &search_path,
@@ -4928,6 +4946,20 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            &community_members_path,
+            serde_json::json!({
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/community-members/{community_id}",
+                "matches": true,
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             &family_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-query-family-evidence-v1",
@@ -4959,6 +4991,7 @@ mod tests {
             Some(node_details_path.to_str().unwrap()),
             Some(orphans_path.to_str().unwrap()),
             Some(shortest_path_path.to_str().unwrap()),
+            Some(community_members_path.to_str().unwrap()),
             Some(family_path.to_str().unwrap()),
         )
         .unwrap();
@@ -4994,6 +5027,10 @@ mod tests {
             "/graph/shortest-path"
         );
         assert_eq!(
+            bundle["community_members_parity_evidence"]["route"],
+            "/graph/community-members/{community_id}"
+        );
+        assert_eq!(
             bundle["query_family_evidence"]["protocol"],
             "skein-nowledge-query-family-evidence-v1"
         );
@@ -5007,7 +5044,13 @@ mod tests {
         std::fs::remove_file(bounded_path).unwrap();
         std::fs::remove_file(overview_path).unwrap();
         std::fs::remove_file(explore_path).unwrap();
+        std::fs::remove_file(expand_path).unwrap();
         std::fs::remove_file(live_preview_path).unwrap();
+        std::fs::remove_file(live_preview_node_path).unwrap();
+        std::fs::remove_file(node_details_path).unwrap();
+        std::fs::remove_file(orphans_path).unwrap();
+        std::fs::remove_file(shortest_path_path).unwrap();
+        std::fs::remove_file(community_members_path).unwrap();
         std::fs::remove_file(family_path).unwrap();
     }
 
