@@ -336,6 +336,8 @@ pub fn nowledge_replacement_summary_json_with_options(
             "fts_top_k_overlap_ready": search_candidate_shadow_evidence.fts_top_k_overlap_ready,
             "shadow_scan_present": search_candidate_shadow_evidence.shadow_scan_present,
             "shadow_scan_filter_pushdown_ready": search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready,
+            "shadow_scan_field_pruning_ready": search_candidate_shadow_evidence.shadow_scan_field_pruning_ready,
+            "shadow_scan_field_summary_count": search_candidate_shadow_evidence.shadow_scan_field_summary_count,
             "shadow_scan_input_predicate_count": search_candidate_shadow_evidence.shadow_scan_input_predicate_count,
             "shadow_scan_pushed_predicate_count": search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count,
             "shadow_scan_residual_predicate_count": search_candidate_shadow_evidence.shadow_scan_residual_predicate_count,
@@ -881,6 +883,8 @@ struct SearchCandidateShadowEvidenceSummary<'a> {
     fts_top_k_overlap_ready: Option<bool>,
     shadow_scan_present: bool,
     shadow_scan_filter_pushdown_ready: bool,
+    shadow_scan_field_pruning_ready: bool,
+    shadow_scan_field_summary_count: Option<u64>,
     shadow_scan_input_predicate_count: Option<u64>,
     shadow_scan_pushed_predicate_count: Option<u64>,
     shadow_scan_residual_predicate_count: Option<u64>,
@@ -1212,6 +1216,11 @@ fn search_candidate_shadow_evidence_summary(
         path,
         &nested_path(predicate_path, "unsatisfiable"),
     );
+    let shadow_scan_field_summary_count = json_get_array_len_path_from_dynamic_nested(
+        bundle,
+        path,
+        &nested_path(predicate_path, "field_summaries"),
+    );
     let blocker_codes = json_get_array_path_from_dynamic(bundle, path, "blocker_codes");
     let blocker_codes_empty = blocker_codes
         .as_array()
@@ -1222,6 +1231,11 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_residual_predicate_count == Some(0)
         && shadow_scan_parse_error.is_none()
         && shadow_scan_unsatisfiable != Some(true);
+    let shadow_scan_field_pruning_ready = match shadow_scan_pushed_predicate_count {
+        Some(0) => true,
+        Some(_) => shadow_scan_field_summary_count.is_some_and(|count| count > 0),
+        None => false,
+    };
     let stable_envelope_ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
         && evidence_source == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE)
@@ -1238,7 +1252,8 @@ fn search_candidate_shadow_evidence_summary(
         && row_count_parity == Some(true)
         && vector_top_k_overlap_ready == Some(true)
         && fts_top_k_overlap_ready == Some(true)
-        && shadow_scan_filter_pushdown_ready;
+        && shadow_scan_filter_pushdown_ready
+        && shadow_scan_field_pruning_ready;
     let ready = primary_read_ready || shadow_parity_ready;
     SearchCandidateShadowEvidenceSummary {
         protocol,
@@ -1256,6 +1271,8 @@ fn search_candidate_shadow_evidence_summary(
         fts_top_k_overlap_ready,
         shadow_scan_present,
         shadow_scan_filter_pushdown_ready,
+        shadow_scan_field_pruning_ready: primary_read_ready || shadow_scan_field_pruning_ready,
+        shadow_scan_field_summary_count,
         shadow_scan_input_predicate_count,
         shadow_scan_pushed_predicate_count,
         shadow_scan_residual_predicate_count,
@@ -1605,6 +1622,16 @@ fn json_get_u64_path_from_dynamic_nested(
     json_get_path_from_dynamic_nested(value, base_path, fields).and_then(serde_json::Value::as_u64)
 }
 
+fn json_get_array_len_path_from_dynamic_nested(
+    value: &serde_json::Value,
+    base_path: &[&str],
+    fields: &[&str],
+) -> Option<u64> {
+    json_get_path_from_dynamic_nested(value, base_path, fields)?
+        .as_array()
+        .and_then(|items| u64::try_from(items.len()).ok())
+}
+
 fn json_get_str_path_from_dynamic_nested<'a>(
     value: &'a serde_json::Value,
     base_path: &[&str],
@@ -1915,6 +1942,8 @@ fn nowledge_replacement_next_actions(
                 "search_candidate_shadow_evidence.fts_top_k_overlap_ready",
                 "search_candidate_shadow_evidence.shadow_scan_present",
                 "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
+                "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                 "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_residual_predicate_count",
@@ -3043,6 +3072,14 @@ mod tests {
             true
         );
         assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_field_pruning_ready"],
+            true
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_field_summary_count"],
+            2
+        );
+        assert_eq!(
             summary["search_candidate_shadow_evidence"]["shadow_scan_pushed_predicate_count"],
             2
         );
@@ -3432,6 +3469,53 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item == "candidate_filter_residual"));
+    }
+
+    #[test]
+    fn replacement_summary_requires_search_candidate_shadow_field_pruning_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["metadata_predicate_pushdown"]
+            .as_object_mut()
+            .unwrap()
+            .remove("field_summaries");
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], false);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_filter_pushdown_ready"],
+            true
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_field_pruning_ready"],
+            false
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_field_summary_count"],
+            serde_json::Value::Null
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "search_candidate_shadow_evidence_ready"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_candidate_shadow_compare"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| {
+                            field
+                                == "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready"
+                        })
+            }));
     }
 
     #[test]
@@ -4668,6 +4752,8 @@ mod tests {
                         "search_candidate_shadow_evidence.fts_top_k_overlap_ready",
                         "search_candidate_shadow_evidence.shadow_scan_present",
                         "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
+                        "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                        "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                         "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_residual_predicate_count",
@@ -5358,7 +5444,27 @@ mod tests {
                         "segment_count": 3,
                         "pruned_segment_count": 1,
                         "scanned_segment_count": 2,
-                        "persisted_segment_descriptor_used": true
+                        "persisted_segment_descriptor_used": true,
+                        "field_summaries": [
+                            {
+                                "field": "unit_type",
+                                "operation_kinds": ["equals"],
+                                "segment_count": 3,
+                                "pruned_segment_count": 1,
+                                "scanned_segment_count": 2,
+                                "numeric_range_summary_used": false,
+                                "value_summary_used": true
+                            },
+                            {
+                                "field": "is_latest",
+                                "operation_kinds": ["equals"],
+                                "segment_count": 3,
+                                "pruned_segment_count": 0,
+                                "scanned_segment_count": 3,
+                                "numeric_range_summary_used": false,
+                                "value_summary_used": true
+                            }
+                        ]
                     }
                 }
             },
