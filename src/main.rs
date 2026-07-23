@@ -560,6 +560,7 @@ fn main() -> Result<()> {
             let mut custom_summary_options = false;
             let mut search_projection_evidence_path = None;
             let mut search_projection_shadow_evidence_path = None;
+            let mut search_candidate_shadow_evidence_path = None;
             let mut bounded_read_evidence_path = None;
             let mut query_family_evidence_path = None;
             while let Some(flag) = args.peek() {
@@ -603,6 +604,13 @@ fn main() -> Result<()> {
                                 SkeinError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
+                    "--search-candidate-shadow-evidence-json" => {
+                        args.next();
+                        search_candidate_shadow_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
+                    }
                     "--bounded-read-evidence-json" => {
                         args.next();
                         bounded_read_evidence_path = Some(args.next().ok_or_else(|| {
@@ -629,6 +637,7 @@ fn main() -> Result<()> {
                 &mut bundle,
                 search_projection_evidence_path.as_deref(),
                 search_projection_shadow_evidence_path.as_deref(),
+                search_candidate_shadow_evidence_path.as_deref(),
                 bounded_read_evidence_path.as_deref(),
                 query_family_evidence_path.as_deref(),
             )?;
@@ -1337,6 +1346,7 @@ fn merge_replacement_summary_evidence(
     bundle: &mut serde_json::Value,
     search_projection_evidence_path: Option<&str>,
     search_projection_shadow_evidence_path: Option<&str>,
+    search_candidate_shadow_evidence_path: Option<&str>,
     bounded_read_evidence_path: Option<&str>,
     query_family_evidence_path: Option<&str>,
 ) -> Result<()> {
@@ -1351,6 +1361,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "search_projection_shadow_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = search_candidate_shadow_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "search_candidate_shadow_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -4621,6 +4638,7 @@ mod tests {
     fn merges_replacement_summary_evidence_artifacts() {
         let search_path = unique_json_file("search_projection_evidence");
         let shadow_path = unique_json_file("search_projection_shadow_evidence");
+        let candidate_shadow_path = unique_json_file("search_candidate_shadow_evidence");
         let bounded_path = unique_json_file("bounded_read_evidence");
         let family_path = unique_json_file("query_family_evidence");
         std::fs::write(
@@ -4636,6 +4654,15 @@ mod tests {
             &shadow_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "ready": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &candidate_shadow_path,
+            serde_json::json!({
+                "protocol": "skein-nowledge-search-candidate-shadow-evidence",
                 "ready": true
             })
             .to_string(),
@@ -4672,6 +4699,7 @@ mod tests {
             &mut bundle,
             Some(search_path.to_str().unwrap()),
             Some(shadow_path.to_str().unwrap()),
+            Some(candidate_shadow_path.to_str().unwrap()),
             Some(bounded_path.to_str().unwrap()),
             Some(family_path.to_str().unwrap()),
         )
@@ -4679,6 +4707,7 @@ mod tests {
 
         assert_eq!(bundle["search_projection_evidence"]["ready"], true);
         assert_eq!(bundle["search_projection_shadow_evidence"]["ready"], true);
+        assert_eq!(bundle["search_candidate_shadow_evidence"]["ready"], true);
         assert_eq!(bundle["bounded_read_evidence"]["ready"], true);
         assert_eq!(
             bundle["query_family_evidence"]["protocol"],
@@ -4690,6 +4719,7 @@ mod tests {
         );
         std::fs::remove_file(search_path).unwrap();
         std::fs::remove_file(shadow_path).unwrap();
+        std::fs::remove_file(candidate_shadow_path).unwrap();
         std::fs::remove_file(bounded_path).unwrap();
         std::fs::remove_file(family_path).unwrap();
     }
