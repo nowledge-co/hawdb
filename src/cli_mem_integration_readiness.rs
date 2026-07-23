@@ -234,6 +234,14 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                     bundle,
                     &["replacement_summary", "search_projection_evidence", "protocol"],
                 ) == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "search_projection_evidence",
+                        "evidence_source",
+                    ],
+                ) == Some("search_projection_probe"),
                 bool_path(
                     bundle,
                     &[
@@ -306,6 +314,14 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                         "protocol",
                     ],
                 ) == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "search_projection_shadow_evidence",
+                        "evidence_source",
+                    ],
+                ) == Some("search_projection_shadow_probe_pair"),
                 bool_path(
                     bundle,
                     &[
@@ -386,6 +402,14 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                         "protocol",
                     ],
                 ) == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "search_candidate_shadow_evidence",
+                        "evidence_source",
+                    ],
+                ) == Some("search_candidate_shadow_trace"),
                 bool_path(
                     bundle,
                     &[
@@ -399,6 +423,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             [
                 "replacement_summary.search_projection_evidence.ready",
                 "replacement_summary.search_projection_evidence.protocol",
+                "replacement_summary.search_projection_evidence.evidence_source",
                 "replacement_summary.search_projection_evidence.fts_ready",
                 "replacement_summary.search_projection_evidence.vector_ready",
                 "replacement_summary.search_projection_evidence.incremental_update_ready",
@@ -408,6 +433,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "replacement_summary.search_projection_shadow_evidence.present",
                 "replacement_summary.search_projection_shadow_evidence.route",
                 "replacement_summary.search_projection_shadow_evidence.protocol",
+                "replacement_summary.search_projection_shadow_evidence.evidence_source",
                 "replacement_summary.search_projection_shadow_evidence.ready",
                 "replacement_summary.search_projection_shadow_evidence.document_count_parity",
                 "replacement_summary.search_projection_shadow_evidence.table_parity_ready",
@@ -418,6 +444,7 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 "replacement_summary.search_candidate_shadow_evidence.present",
                 "replacement_summary.search_candidate_shadow_evidence.route",
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
+                "replacement_summary.search_candidate_shadow_evidence.evidence_source",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
                 "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
             ],
@@ -1756,6 +1783,7 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             [
                 "replacement_summary.search_projection_evidence.ready",
                 "replacement_summary.search_projection_evidence.protocol",
+                "replacement_summary.search_projection_evidence.evidence_source",
                 "replacement_summary.search_projection_evidence.fts_ready",
                 "replacement_summary.search_projection_evidence.vector_ready",
                 "replacement_summary.search_projection_evidence.incremental_update_ready",
@@ -1763,9 +1791,11 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary.search_projection_evidence.compressed_vector_projection_required",
                 "replacement_summary.search_projection_evidence.compressed_vector_projection_ready",
                 "replacement_summary.search_projection_shadow_evidence.protocol",
+                "replacement_summary.search_projection_shadow_evidence.evidence_source",
                 "replacement_summary.search_projection_shadow_evidence.ready",
                 "replacement_summary.search_projection_shadow_evidence.blocker_codes",
                 "replacement_summary.search_candidate_shadow_evidence.protocol",
+                "replacement_summary.search_candidate_shadow_evidence.evidence_source",
                 "replacement_summary.search_candidate_shadow_evidence.ready",
                 "replacement_summary.search_candidate_shadow_evidence.primary_or_shadow_ready",
                 "replacement_summary.search_candidate_shadow_evidence.candidate_primary_engine",
@@ -2186,6 +2216,30 @@ fn replacement_summary_search_projection_ready(bundle: &serde_json::Value) -> bo
                 "protocol",
             ],
         ) != Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
+        || str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_projection_evidence",
+                "evidence_source",
+            ],
+        ) != Some("search_projection_probe")
+        || str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_projection_shadow_evidence",
+                "evidence_source",
+            ],
+        ) != Some("search_projection_shadow_probe_pair")
+        || str_path(
+            bundle,
+            &[
+                "replacement_summary",
+                "search_candidate_shadow_evidence",
+                "evidence_source",
+            ],
+        ) != Some("search_candidate_shadow_trace")
     {
         return false;
     }
@@ -4350,6 +4404,7 @@ mod tests {
                 },
                 "search_projection_evidence": {
                     "protocol": "skein-nowledge-search-projection-evidence",
+                    "evidence_source": "search_projection_probe",
                     "ready": true,
                     "fts_ready": true,
                     "vector_ready": true,
@@ -4361,6 +4416,7 @@ mod tests {
                 },
                 "search_projection_shadow_evidence": {
                     "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                    "evidence_source": "search_projection_shadow_probe_pair",
                     "route": "/search-index/skein-shadow/evidence",
                     "present": true,
                     "ready": true,
@@ -4682,6 +4738,7 @@ mod tests {
     fn ready_search_candidate_shadow_evidence_summary() -> serde_json::Value {
         serde_json::json!({
             "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "evidence_source": "search_candidate_shadow_trace",
             "route": "/search-index/skein-shadow/candidate-evidence",
             "present": true,
             "ready": true,
@@ -4698,6 +4755,7 @@ mod tests {
     fn ready_search_candidate_primary_evidence_summary() -> serde_json::Value {
         serde_json::json!({
             "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "evidence_source": "search_candidate_shadow_trace",
             "route": "/search-index/skein-shadow/candidate-evidence",
             "present": true,
             "engine": "skein-primary",

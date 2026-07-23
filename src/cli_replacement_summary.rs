@@ -284,6 +284,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         },
         "search_projection_evidence": {
             "protocol": search_projection_evidence.protocol,
+            "evidence_source": search_projection_evidence.evidence_source,
             "present": search_projection_evidence.present,
             "ready": search_projection_evidence.ready,
             "derived_projection": search_projection_evidence.derived_projection,
@@ -305,6 +306,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         },
         "search_projection_shadow_evidence": {
             "protocol": search_projection_shadow_evidence.protocol,
+            "evidence_source": search_projection_shadow_evidence.evidence_source,
             "route": search_projection_shadow_evidence.route,
             "present": search_projection_shadow_evidence.present,
             "ready": search_projection_shadow_evidence.ready,
@@ -321,6 +323,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         },
         "search_candidate_shadow_evidence": {
             "protocol": search_candidate_shadow_evidence.protocol,
+            "evidence_source": search_candidate_shadow_evidence.evidence_source,
             "route": search_candidate_shadow_evidence.route,
             "present": search_candidate_shadow_evidence.present,
             "ready": search_candidate_shadow_evidence.ready,
@@ -824,6 +827,7 @@ struct ShadowEvidenceSummary<'a> {
 
 struct SearchProjectionEvidenceSummary {
     protocol: Option<String>,
+    evidence_source: Option<String>,
     present: bool,
     ready: bool,
     derived_projection: Option<bool>,
@@ -846,6 +850,7 @@ struct SearchProjectionEvidenceSummary {
 
 struct SearchProjectionShadowEvidenceSummary<'a> {
     protocol: Option<String>,
+    evidence_source: Option<&'a str>,
     route: Option<&'a str>,
     present: bool,
     ready: bool,
@@ -863,6 +868,7 @@ struct SearchProjectionShadowEvidenceSummary<'a> {
 
 struct SearchCandidateShadowEvidenceSummary<'a> {
     protocol: Option<String>,
+    evidence_source: Option<&'a str>,
     route: Option<&'a str>,
     present: bool,
     ready: bool,
@@ -1019,6 +1025,8 @@ fn search_projection_evidence_summary(
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
+    let evidence_source =
+        json_get_str_path_from_dynamic(bundle, path, "evidence_source").map(str::to_string);
     let covered_table_count = json_get_u64_path_from_dynamic(bundle, path, "covered_table_count");
     let required_table_count = json_get_u64_path_from_dynamic(bundle, path, "required_table_count");
     let derived_projection = json_get_bool_path_from_dynamic(bundle, path, "derived_projection");
@@ -1043,6 +1051,7 @@ fn search_projection_evidence_summary(
         json_get_bool_path_from_dynamic(bundle, path, "compressed_vector_projection_ready");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL)
+        && evidence_source.as_deref() == Some("search_projection_probe")
         && derived_projection == Some(true)
         && all_tables_covered == Some(true)
         && covered_table_count.is_some_and(|count| count > 0)
@@ -1059,6 +1068,7 @@ fn search_projection_evidence_summary(
         && compressed_vector_projection_ready.unwrap_or(true);
     SearchProjectionEvidenceSummary {
         protocol,
+        evidence_source,
         present,
         ready,
         derived_projection,
@@ -1090,6 +1100,7 @@ fn search_projection_shadow_evidence_summary(
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
+    let evidence_source = json_get_str_path_from_dynamic(bundle, path, "evidence_source");
     let route = json_get_str_path_from_dynamic(bundle, path, "route");
     let primary_ready = json_get_bool_path_from_dynamic(bundle, path, "primary_ready");
     let shadow_ready = json_get_bool_path_from_dynamic(bundle, path, "shadow_ready");
@@ -1110,6 +1121,7 @@ fn search_projection_shadow_evidence_summary(
     let shadow_engine = json_get_str_path_from_dynamic(bundle, path, "shadow_engine");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
+        && evidence_source == Some("search_projection_shadow_probe_pair")
         && route == Some(SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE)
         && primary_ready == Some(true)
         && shadow_ready == Some(true)
@@ -1122,6 +1134,7 @@ fn search_projection_shadow_evidence_summary(
         && shadow_engine == Some("skein");
     SearchProjectionShadowEvidenceSummary {
         protocol,
+        evidence_source,
         route,
         present,
         ready,
@@ -1148,6 +1161,7 @@ fn search_candidate_shadow_evidence_summary(
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
+    let evidence_source = json_get_str_path_from_dynamic(bundle, path, "evidence_source");
     let route = json_get_str_path_from_dynamic(bundle, path, "route");
     let reported_ready = json_get_bool_path_from_dynamic(bundle, path, "ready");
     let engine = json_get_str_path_from_dynamic(bundle, path, "engine");
@@ -1211,6 +1225,7 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_unsatisfiable != Some(true);
     let stable_envelope_ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
+        && evidence_source == Some("search_candidate_shadow_trace")
         && route == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE)
         && reported_ready == Some(true)
         && blocker_codes_empty;
@@ -1228,6 +1243,7 @@ fn search_candidate_shadow_evidence_summary(
     let ready = primary_read_ready || shadow_parity_ready;
     SearchCandidateShadowEvidenceSummary {
         protocol,
+        evidence_source,
         route,
         present,
         ready,
@@ -1835,6 +1851,7 @@ fn nowledge_replacement_next_actions(
             "LanceDB replacement evidence is missing or not ready",
             [
                 "search_projection_evidence.protocol",
+                "search_projection_evidence.evidence_source",
                 "search_projection_evidence.present",
                 "search_projection_evidence.ready",
                 "search_projection_evidence.derived_projection",
@@ -1862,6 +1879,7 @@ fn nowledge_replacement_next_actions(
             "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
             [
                 "search_projection_shadow_evidence.protocol",
+                "search_projection_shadow_evidence.evidence_source",
                 "search_projection_shadow_evidence.route",
                 "search_projection_shadow_evidence.present",
                 "search_projection_shadow_evidence.ready",
@@ -1884,6 +1902,7 @@ fn nowledge_replacement_next_actions(
             "LanceDB/Skein candidate shadow evidence is missing or lacks scan-filter pushdown proof",
             [
                 "search_candidate_shadow_evidence.protocol",
+                "search_candidate_shadow_evidence.evidence_source",
                 "search_candidate_shadow_evidence.route",
                 "search_candidate_shadow_evidence.present",
                 "search_candidate_shadow_evidence.ready",
@@ -4581,6 +4600,7 @@ mod tests {
                     "reason": "LanceDB replacement evidence is missing or not ready",
                     "evidence_fields": [
                         "search_projection_evidence.protocol",
+                        "search_projection_evidence.evidence_source",
                         "search_projection_evidence.present",
                         "search_projection_evidence.ready",
                         "search_projection_evidence.derived_projection",
@@ -4606,6 +4626,7 @@ mod tests {
                     "reason": "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
                     "evidence_fields": [
                         "search_projection_shadow_evidence.protocol",
+                        "search_projection_shadow_evidence.evidence_source",
                         "search_projection_shadow_evidence.route",
                         "search_projection_shadow_evidence.present",
                         "search_projection_shadow_evidence.ready",
@@ -4626,6 +4647,7 @@ mod tests {
                     "reason": "LanceDB/Skein candidate shadow evidence is missing or lacks scan-filter pushdown proof",
                     "evidence_fields": [
                         "search_candidate_shadow_evidence.protocol",
+                        "search_candidate_shadow_evidence.evidence_source",
                         "search_candidate_shadow_evidence.route",
                         "search_candidate_shadow_evidence.present",
                         "search_candidate_shadow_evidence.ready",
@@ -5009,6 +5031,7 @@ mod tests {
             },
             "search_projection_evidence": {
                 "protocol": "skein-nowledge-search-projection-evidence",
+                "evidence_source": "search_projection_probe",
                 "ready": true,
                 "derived_projection": true,
                 "all_tables_covered": true,
@@ -5029,6 +5052,7 @@ mod tests {
             },
             "search_projection_shadow_evidence": {
                 "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "evidence_source": "search_projection_shadow_probe_pair",
                 "route": "/search-index/skein-shadow/evidence",
                 "ready": true,
                 "primary_engine": "lancedb",
@@ -5292,6 +5316,7 @@ mod tests {
     fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
         serde_json::json!({
             "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "evidence_source": "search_candidate_shadow_trace",
             "route": "/search-index/skein-shadow/candidate-evidence",
             "engine": "skein-shadow",
             "ready": true,
@@ -5348,6 +5373,7 @@ mod tests {
     fn ready_search_candidate_primary_evidence() -> serde_json::Value {
         serde_json::json!({
             "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+            "evidence_source": "search_candidate_shadow_trace",
             "route": "/search-index/skein-shadow/candidate-evidence",
             "engine": "skein-primary",
             "ready": true,

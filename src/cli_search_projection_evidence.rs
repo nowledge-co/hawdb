@@ -304,6 +304,7 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
     let ready = blocker_codes.is_empty();
     serde_json::json!({
         "protocol": "skein-nowledge-search-projection-evidence",
+        "evidence_source": "search_projection_probe",
         "ready": ready,
         "derived_projection": derived_projection,
         "all_tables_covered": all_tables_covered,
@@ -384,6 +385,7 @@ pub fn nowledge_search_projection_shadow_evidence_json(
     let ready = blocker_codes.is_empty();
     serde_json::json!({
         "protocol": "skein-nowledge-search-projection-shadow-evidence",
+        "evidence_source": "search_projection_shadow_probe_pair",
         "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
         "ready": ready,
         "primary_engine": str_path(primary_probe, &["engine"]).unwrap_or("lancedb"),
