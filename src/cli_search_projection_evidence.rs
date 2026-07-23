@@ -20,6 +20,7 @@ const VECTOR_TABLES: &[&str] = &[
 ];
 
 const REQUIRED_PREDICATE_PUSHDOWN_OPS: &[&str] = &["eq", "in", "not_in", "gt", "gte", "lt", "lte"];
+const SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE: &str = "/search-index/skein-shadow/evidence";
 
 const REQUIRED_SCAN_FILTER_FIELDS: &[&str] = &[
     "space_id",
@@ -383,6 +384,7 @@ pub fn nowledge_search_projection_shadow_evidence_json(
     let ready = blocker_codes.is_empty();
     serde_json::json!({
         "protocol": "skein-nowledge-search-projection-shadow-evidence",
+        "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
         "ready": ready,
         "primary_engine": str_path(primary_probe, &["engine"]).unwrap_or("lancedb"),
         "shadow_engine": str_path(shadow_probe, &["engine"]).unwrap_or("skein"),
@@ -1071,6 +1073,7 @@ mod tests {
 
         let report = nowledge_search_projection_shadow_evidence_json(&primary, &shadow);
 
+        assert_eq!(report["route"], "/search-index/skein-shadow/evidence");
         assert_eq!(report["ready"], true);
         assert_eq!(report["primary_ready"], true);
         assert_eq!(report["shadow_ready"], true);

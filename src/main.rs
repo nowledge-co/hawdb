@@ -4943,6 +4943,9 @@ mod tests {
             &shadow_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "route": "/search-index/skein-shadow/evidence",
+                "primary_engine": "lancedb",
+                "shadow_engine": "skein",
                 "ready": true
             })
             .to_string(),
@@ -4952,6 +4955,9 @@ mod tests {
             &candidate_shadow_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+                "route": "/search-index/skein-shadow/candidate-evidence",
+                "primary_engine": "lancedb",
+                "shadow_engine": "skein",
                 "ready": true
             })
             .to_string(),
