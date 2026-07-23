@@ -618,6 +618,20 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 ],
             ),
         ),
+        graph_route_parity_check(
+            bundle,
+            "graph_route_augmentation_state_parity_evidence",
+            "augmentation_state",
+            "/graph/augmentation/state",
+            replacement_summary_augmentation_state_parity_ready(bundle),
+        ),
+        graph_route_parity_check(
+            bundle,
+            "graph_route_pagerank_plan_parity_evidence",
+            "pagerank_plan",
+            "/graph/augmentation/pagerank/plan",
+            replacement_summary_pagerank_plan_parity_ready(bundle),
+        ),
         check(
             "graph_route_overview_parity_evidence",
             [
@@ -1194,6 +1208,13 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 ][..]],
             ),
         ),
+        graph_route_parity_check(
+            bundle,
+            "graph_route_graph_analysis_parity_evidence",
+            "graph_analysis",
+            "/graph/analysis",
+            replacement_summary_graph_analysis_parity_ready(bundle),
+        ),
         check(
             "background_maintenance_evidence",
             [
@@ -1416,18 +1437,24 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
     })
 }
 
-fn check(
+fn check<S>(
     name: &'static str,
     conditions: impl IntoIterator<Item = bool>,
-    evidence_fields: impl IntoIterator<Item = &'static str>,
+    evidence_fields: impl IntoIterator<Item = S>,
     blocker_codes: Vec<String>,
-) -> serde_json::Value {
+) -> serde_json::Value
+where
+    S: Into<String>,
+{
     let conditions = conditions.into_iter().collect::<Vec<_>>();
-    let evidence_fields = evidence_fields.into_iter().collect::<Vec<_>>();
+    let evidence_fields = evidence_fields
+        .into_iter()
+        .map(Into::into)
+        .collect::<Vec<_>>();
     let failed_evidence_fields = conditions
         .iter()
         .zip(evidence_fields.iter())
-        .filter_map(|(condition, field)| (!*condition).then_some(*field))
+        .filter_map(|(condition, field)| (!*condition).then_some(field.clone()))
         .collect::<Vec<_>>();
     serde_json::json!({
         "name": name,
@@ -1436,6 +1463,68 @@ fn check(
         "failed_evidence_fields": failed_evidence_fields,
         "blocker_codes": blocker_codes,
     })
+}
+
+fn graph_route_parity_check(
+    bundle: &serde_json::Value,
+    name: &'static str,
+    key: &'static str,
+    route: &'static str,
+    ready: bool,
+) -> serde_json::Value {
+    let protocol_field = format!("replacement_summary.graph_route_parity_evidence.{key}.protocol");
+    let ready_field = format!("replacement_summary.graph_route_parity_evidence.{key}.ready");
+    let route_field = format!("replacement_summary.graph_route_parity_evidence.{key}.route");
+    let matches_field = format!("replacement_summary.graph_route_parity_evidence.{key}.matches");
+    let evidence_fields = [
+        ready_field.as_str(),
+        protocol_field.as_str(),
+        route_field.as_str(),
+        matches_field.as_str(),
+    ];
+    check(
+        name,
+        [
+            ready,
+            str_path(
+                bundle,
+                &[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    key,
+                    "protocol",
+                ],
+            ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL),
+            str_path(
+                bundle,
+                &[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    key,
+                    "route",
+                ],
+            ) == Some(route),
+            bool_path(
+                bundle,
+                &[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    key,
+                    "matches",
+                ],
+            ) == Some(true),
+        ],
+        evidence_fields,
+        blocker_codes(
+            bundle,
+            &[&[
+                "replacement_summary",
+                "graph_route_parity_evidence",
+                key,
+                "blocker_codes",
+            ][..]],
+        ),
+    )
 }
 
 fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Value> {
@@ -1591,6 +1680,36 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary.bounded_read_evidence.blocking_operator_count",
                 "replacement_summary.bounded_read_evidence.streaming",
                 "replacement_summary.bounded_read_evidence.blocker_codes",
+            ],
+        ));
+    }
+    if !replacement_summary_augmentation_state_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_augmentation_state_route_shadow_compare",
+            "augmentation-state graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.protocol",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.ready",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.route",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.matches",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.augmentation_state.blocker_codes",
+            ],
+        ));
+    }
+    if !replacement_summary_pagerank_plan_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_pagerank_plan_route_shadow_compare",
+            "pagerank-plan graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.protocol",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.ready",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.route",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.matches",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.pagerank_plan.blocker_codes",
             ],
         ));
     }
@@ -1797,6 +1916,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary.graph_route_parity_evidence.related_communities.primary_ready",
                 "replacement_summary.graph_route_parity_evidence.related_communities.shadow_ready",
                 "replacement_summary.graph_route_parity_evidence.related_communities.blocker_codes",
+            ],
+        ));
+    }
+    if !replacement_summary_graph_analysis_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_graph_analysis_route_shadow_compare",
+            "graph-analysis route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.protocol",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.ready",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.route",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.matches",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.graph_analysis.blocker_codes",
             ],
         ));
     }
@@ -2162,6 +2296,14 @@ fn graph_route_readiness_ready(bundle: &serde_json::Value) -> bool {
         .is_empty()
 }
 
+fn replacement_summary_augmentation_state_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "augmentation_state", "/graph/augmentation/state")
+}
+
+fn replacement_summary_pagerank_plan_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "pagerank_plan", "/graph/augmentation/pagerank/plan")
+}
+
 fn replacement_summary_overview_parity_ready(bundle: &serde_json::Value) -> bool {
     graph_route_parity_ready(bundle, "overview", "/graph/overview")
 }
@@ -2224,6 +2366,10 @@ fn replacement_summary_related_communities_parity_ready(bundle: &serde_json::Val
         "related_communities",
         "/library/community/{community_id}/related",
     )
+}
+
+fn replacement_summary_graph_analysis_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "graph_analysis", "/graph/analysis")
 }
 
 fn graph_route_parity_ready(bundle: &serde_json::Value, key: &str, route: &str) -> bool {
@@ -3754,6 +3900,32 @@ mod tests {
             ]
         });
         bundle["replacement_summary"]["graph_route_parity_evidence"] = serde_json::json!({
+            "augmentation_state": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/augmentation/state",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "pagerank_plan": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/augmentation/pagerank/plan",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
             "overview": {
                 "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
                 "present": true,
@@ -3903,6 +4075,19 @@ mod tests {
                 "ready": true,
                 "reported_ready": true,
                 "route": "/library/community/{community_id}/related",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "graph_analysis": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/analysis",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",

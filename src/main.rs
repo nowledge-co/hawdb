@@ -562,6 +562,8 @@ fn main() -> Result<()> {
             let mut search_projection_shadow_evidence_path = None;
             let mut search_candidate_shadow_evidence_path = None;
             let mut bounded_read_evidence_path = None;
+            let mut augmentation_state_parity_evidence_path = None;
+            let mut pagerank_plan_parity_evidence_path = None;
             let mut overview_parity_evidence_path = None;
             let mut explore_parity_evidence_path = None;
             let mut expand_parity_evidence_path = None;
@@ -574,6 +576,7 @@ fn main() -> Result<()> {
             let mut community_subgraph_parity_evidence_path = None;
             let mut community_recent_memories_parity_evidence_path = None;
             let mut related_communities_parity_evidence_path = None;
+            let mut graph_analysis_parity_evidence_path = None;
             let mut query_family_evidence_path = None;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -628,6 +631,20 @@ fn main() -> Result<()> {
                         bounded_read_evidence_path = Some(args.next().ok_or_else(|| {
                             SkeinError::Semantic(nowledge_replacement_summary_usage())
                         })?);
+                    }
+                    "--augmentation-state-parity-evidence-json" => {
+                        args.next();
+                        augmentation_state_parity_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
+                    }
+                    "--pagerank-plan-parity-evidence-json" => {
+                        args.next();
+                        pagerank_plan_parity_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
                     }
                     "--overview-parity-evidence-json" => {
                         args.next();
@@ -707,6 +724,13 @@ fn main() -> Result<()> {
                                 SkeinError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
+                    "--graph-analysis-parity-evidence-json" => {
+                        args.next();
+                        graph_analysis_parity_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
+                    }
                     "--query-family-evidence-json" => {
                         args.next();
                         query_family_evidence_path = Some(args.next().ok_or_else(|| {
@@ -729,6 +753,8 @@ fn main() -> Result<()> {
                 search_projection_shadow_evidence_path.as_deref(),
                 search_candidate_shadow_evidence_path.as_deref(),
                 bounded_read_evidence_path.as_deref(),
+                augmentation_state_parity_evidence_path.as_deref(),
+                pagerank_plan_parity_evidence_path.as_deref(),
                 overview_parity_evidence_path.as_deref(),
                 explore_parity_evidence_path.as_deref(),
                 expand_parity_evidence_path.as_deref(),
@@ -741,6 +767,7 @@ fn main() -> Result<()> {
                 community_subgraph_parity_evidence_path.as_deref(),
                 community_recent_memories_parity_evidence_path.as_deref(),
                 related_communities_parity_evidence_path.as_deref(),
+                graph_analysis_parity_evidence_path.as_deref(),
                 query_family_evidence_path.as_deref(),
             )?;
             let summary = if custom_summary_options {
@@ -1450,6 +1477,8 @@ fn merge_replacement_summary_evidence(
     search_projection_shadow_evidence_path: Option<&str>,
     search_candidate_shadow_evidence_path: Option<&str>,
     bounded_read_evidence_path: Option<&str>,
+    augmentation_state_parity_evidence_path: Option<&str>,
+    pagerank_plan_parity_evidence_path: Option<&str>,
     overview_parity_evidence_path: Option<&str>,
     explore_parity_evidence_path: Option<&str>,
     expand_parity_evidence_path: Option<&str>,
@@ -1462,6 +1491,7 @@ fn merge_replacement_summary_evidence(
     community_subgraph_parity_evidence_path: Option<&str>,
     community_recent_memories_parity_evidence_path: Option<&str>,
     related_communities_parity_evidence_path: Option<&str>,
+    graph_analysis_parity_evidence_path: Option<&str>,
     query_family_evidence_path: Option<&str>,
 ) -> Result<()> {
     if let Some(path) = search_projection_evidence_path {
@@ -1489,6 +1519,20 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "bounded_read_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = augmentation_state_parity_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "augmentation_state_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = pagerank_plan_parity_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "pagerank_plan_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -1573,6 +1617,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "related_communities_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = graph_analysis_parity_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "graph_analysis_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -4851,6 +4902,9 @@ mod tests {
         let community_recent_memories_path =
             unique_json_file("community_recent_memories_parity_evidence");
         let related_communities_path = unique_json_file("related_communities_parity_evidence");
+        let augmentation_state_path = unique_json_file("augmentation_state_parity_evidence");
+        let pagerank_plan_path = unique_json_file("pagerank_plan_parity_evidence");
+        let graph_analysis_path = unique_json_file("graph_analysis_parity_evidence");
         let family_path = unique_json_file("query_family_evidence");
         std::fs::write(
             &search_path,
@@ -5057,6 +5111,48 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            &augmentation_state_path,
+            serde_json::json!({
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/augmentation/state",
+                "matches": true,
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &pagerank_plan_path,
+            serde_json::json!({
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/augmentation/pagerank/plan",
+                "matches": true,
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &graph_analysis_path,
+            serde_json::json!({
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/analysis",
+                "matches": true,
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             &family_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-query-family-evidence-v1",
@@ -5080,6 +5176,8 @@ mod tests {
             Some(shadow_path.to_str().unwrap()),
             Some(candidate_shadow_path.to_str().unwrap()),
             Some(bounded_path.to_str().unwrap()),
+            Some(augmentation_state_path.to_str().unwrap()),
+            Some(pagerank_plan_path.to_str().unwrap()),
             Some(overview_path.to_str().unwrap()),
             Some(explore_path.to_str().unwrap()),
             Some(expand_path.to_str().unwrap()),
@@ -5092,6 +5190,7 @@ mod tests {
             Some(community_subgraph_path.to_str().unwrap()),
             Some(community_recent_memories_path.to_str().unwrap()),
             Some(related_communities_path.to_str().unwrap()),
+            Some(graph_analysis_path.to_str().unwrap()),
             Some(family_path.to_str().unwrap()),
         )
         .unwrap();
@@ -5143,6 +5242,18 @@ mod tests {
             "/library/community/{community_id}/related"
         );
         assert_eq!(
+            bundle["augmentation_state_parity_evidence"]["route"],
+            "/graph/augmentation/state"
+        );
+        assert_eq!(
+            bundle["pagerank_plan_parity_evidence"]["route"],
+            "/graph/augmentation/pagerank/plan"
+        );
+        assert_eq!(
+            bundle["graph_analysis_parity_evidence"]["route"],
+            "/graph/analysis"
+        );
+        assert_eq!(
             bundle["query_family_evidence"]["protocol"],
             "skein-nowledge-query-family-evidence-v1"
         );
@@ -5166,6 +5277,9 @@ mod tests {
         std::fs::remove_file(community_subgraph_path).unwrap();
         std::fs::remove_file(community_recent_memories_path).unwrap();
         std::fs::remove_file(related_communities_path).unwrap();
+        std::fs::remove_file(augmentation_state_path).unwrap();
+        std::fs::remove_file(pagerank_plan_path).unwrap();
+        std::fs::remove_file(graph_analysis_path).unwrap();
         std::fs::remove_file(family_path).unwrap();
     }
 
