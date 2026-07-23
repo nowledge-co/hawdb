@@ -322,6 +322,18 @@ pub struct SearchPredicatePushdownReport {
     pub pruned_segment_count: usize,
     pub scanned_segment_count: usize,
     pub persisted_segment_descriptor_used: bool,
+    pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchPredicateFieldPruningReport {
+    pub field: String,
+    pub operation_kinds: Vec<String>,
+    pub segment_count: usize,
+    pub pruned_segment_count: usize,
+    pub scanned_segment_count: usize,
+    pub numeric_range_summary_used: bool,
+    pub value_summary_used: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1465,6 +1477,7 @@ impl SearchIndex {
         predicate_pushdown.report.scanned_segment_count = filtered.scanned_segment_count;
         predicate_pushdown.report.persisted_segment_descriptor_used =
             filtered.persisted_segment_descriptor_used;
+        predicate_pushdown.report.field_summaries = filtered.field_summaries;
         let filtered_documents = filtered.documents;
         let filtered_document_count = filtered_documents.len();
         let candidate_set = SearchCandidateSetReport {
@@ -2525,6 +2538,7 @@ pub(crate) fn search_metadata_predicate_pushdown(
         pruned_segment_count: 0,
         scanned_segment_count: 0,
         persisted_segment_descriptor_used: false,
+        field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown {
         predicates: pushdown.pushed().clone(),
@@ -2551,6 +2565,7 @@ struct FilteredSearchDocuments<'a> {
     pruned_segment_count: usize,
     scanned_segment_count: usize,
     persisted_segment_descriptor_used: bool,
+    field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2601,6 +2616,7 @@ fn filter_search_documents_with_segment_pruning<'a>(
             pruned_segment_count: 0,
             scanned_segment_count: 0,
             persisted_segment_descriptor_used: false,
+            field_summaries: Vec::new(),
         };
     }
 
@@ -2611,6 +2627,7 @@ fn filter_search_documents_with_segment_pruning<'a>(
     }
 
     let predicate_fields = search_predicate_fields(predicates);
+    let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
     let mut filtered_documents = Vec::new();
     let mut segment_documents = Vec::with_capacity(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS);
     let mut segment_count = 0;
@@ -2628,6 +2645,7 @@ fn filter_search_documents_with_segment_pruning<'a>(
                 &segment_documents,
                 &predicate_fields,
                 predicates,
+                &mut field_pruning,
             );
             segment_documents.clear();
         }
@@ -2642,6 +2660,7 @@ fn filter_search_documents_with_segment_pruning<'a>(
             &segment_documents,
             &predicate_fields,
             predicates,
+            &mut field_pruning,
         );
     }
 
@@ -2651,6 +2670,7 @@ fn filter_search_documents_with_segment_pruning<'a>(
         pruned_segment_count,
         scanned_segment_count,
         persisted_segment_descriptor_used: false,
+        field_summaries: field_pruning.into_reports(),
     }
 }
 
@@ -2662,8 +2682,10 @@ fn filter_search_documents_with_persisted_segments<'a>(
     let mut filtered_documents = Vec::new();
     let mut pruned_segment_count = 0;
     let mut scanned_segment_count = 0;
+    let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
 
     for segment in &descriptor.segments {
+        field_pruning.observe_persisted_segment(segment, predicates);
         if !segment.may_match_predicates(predicates) {
             pruned_segment_count += 1;
             continue;
@@ -2683,6 +2705,7 @@ fn filter_search_documents_with_persisted_segments<'a>(
         pruned_segment_count,
         scanned_segment_count,
         persisted_segment_descriptor_used: true,
+        field_summaries: field_pruning.into_reports(),
     }
 }
 
@@ -2694,9 +2717,11 @@ fn filter_search_document_segment<'a>(
     segment_documents: &[&'a SearchDocument],
     predicate_fields: &BTreeSet<String>,
     predicates: &SearchPredicateSet,
+    field_pruning: &mut SearchFieldPruningAccumulator,
 ) {
     *segment_count += 1;
     let summary = SearchFilterSegmentSummary::from_documents(segment_documents, predicate_fields);
+    field_pruning.observe_in_memory_segment(&summary, predicates);
     if !summary.may_match_predicates(predicates) {
         *pruned_segment_count += 1;
         return;
@@ -2716,6 +2741,119 @@ fn search_predicate_fields(predicates: &SearchPredicateSet) -> BTreeSet<String> 
         .iter()
         .map(|predicate| predicate.field().name().to_string())
         .collect()
+}
+
+#[derive(Debug, Clone, Default)]
+struct SearchFieldPruningAccumulator {
+    fields: BTreeMap<String, SearchFieldPruningStats>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SearchFieldPruningStats {
+    operation_kinds: BTreeSet<String>,
+    segment_count: usize,
+    pruned_segment_count: usize,
+    scanned_segment_count: usize,
+    numeric_range_summary_used: bool,
+    value_summary_used: bool,
+}
+
+impl SearchFieldPruningAccumulator {
+    fn new(predicates: &SearchPredicateSet) -> Self {
+        let mut fields = BTreeMap::<String, SearchFieldPruningStats>::new();
+        for predicate in predicates.predicates() {
+            let stats = fields
+                .entry(predicate.field().name().to_string())
+                .or_default();
+            stats
+                .operation_kinds
+                .insert(search_predicate_op_kind(predicate.op()).to_string());
+            match predicate.op() {
+                SearchPredicateOp::Eq(_)
+                | SearchPredicateOp::In(_)
+                | SearchPredicateOp::NotIn(_) => stats.value_summary_used = true,
+                SearchPredicateOp::Gt(_)
+                | SearchPredicateOp::Gte(_)
+                | SearchPredicateOp::Lt(_)
+                | SearchPredicateOp::Lte(_) => stats.numeric_range_summary_used = true,
+            }
+        }
+        Self { fields }
+    }
+
+    fn observe_in_memory_segment(
+        &mut self,
+        summary: &SearchFilterSegmentSummary,
+        predicates: &SearchPredicateSet,
+    ) {
+        self.observe_segment(predicates, |field_predicates| {
+            field_predicates
+                .iter()
+                .all(|predicate| summary.may_match_predicate(predicate))
+        });
+    }
+
+    fn observe_persisted_segment(
+        &mut self,
+        segment: &SearchSegmentDescriptorEntry,
+        predicates: &SearchPredicateSet,
+    ) {
+        self.observe_segment(predicates, |field_predicates| {
+            field_predicates
+                .iter()
+                .all(|predicate| segment.may_match_predicate(predicate))
+        });
+    }
+
+    fn observe_segment(
+        &mut self,
+        predicates: &SearchPredicateSet,
+        mut may_match: impl FnMut(&[&SearchPredicate]) -> bool,
+    ) {
+        let mut predicates_by_field = BTreeMap::<String, Vec<&SearchPredicate>>::new();
+        for predicate in predicates.predicates() {
+            predicates_by_field
+                .entry(predicate.field().name().to_string())
+                .or_default()
+                .push(predicate);
+        }
+        for (field, field_predicates) in predicates_by_field {
+            let stats = self.fields.entry(field).or_default();
+            stats.segment_count += 1;
+            if may_match(&field_predicates) {
+                stats.scanned_segment_count += 1;
+            } else {
+                stats.pruned_segment_count += 1;
+            }
+        }
+    }
+
+    fn into_reports(self) -> Vec<SearchPredicateFieldPruningReport> {
+        self.fields
+            .into_iter()
+            .map(|(field, stats)| SearchPredicateFieldPruningReport {
+                field,
+                operation_kinds: stats.operation_kinds.into_iter().collect(),
+                segment_count: stats.segment_count,
+                pruned_segment_count: stats.pruned_segment_count,
+                scanned_segment_count: stats.scanned_segment_count,
+                numeric_range_summary_used: stats.numeric_range_summary_used,
+                value_summary_used: stats.value_summary_used,
+            })
+            .collect()
+    }
+}
+
+fn search_predicate_op_kind(op: &SearchPredicateOp) -> &'static str {
+    match op {
+        SearchPredicateOp::Eq(_) => "eq",
+        SearchPredicateOp::In(_) => "in",
+        SearchPredicateOp::NotIn(_) => "not_in",
+        SearchPredicateOp::Gt(_) => "gt",
+        SearchPredicateOp::Gte(_) => "gte",
+        SearchPredicateOp::Lt(_) => "lt",
+        SearchPredicateOp::Lte(_) => "lte",
+    }
 }
 
 impl SearchFilterSegmentSummary {
@@ -4705,6 +4843,21 @@ mod tests {
             .metadata_predicate_pushdown
             .parse_error
             .is_none());
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "unit_type".to_string(),
+                operation_kinds: vec!["in".to_string()],
+                segment_count: 1,
+                pruned_segment_count: 0,
+                scanned_segment_count: 1,
+                numeric_range_summary_used: false,
+                value_summary_used: true,
+            }]
+        );
     }
 
     #[test]
@@ -4820,6 +4973,21 @@ mod tests {
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
             1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "created_at".to_string(),
+                operation_kinds: vec!["gt".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                numeric_range_summary_used: true,
+                value_summary_used: false,
+            }]
         );
     }
 
@@ -6788,6 +6956,21 @@ mod tests {
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
             1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "created_at".to_string(),
+                operation_kinds: vec!["gte".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                numeric_range_summary_used: true,
+                value_summary_used: false,
+            }]
         );
         std::fs::remove_dir_all(path).unwrap();
     }
