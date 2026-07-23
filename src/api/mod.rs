@@ -7355,7 +7355,7 @@ impl Database {
         &self,
         request: &KnowledgeSourceMemoryProjectedListRequest,
     ) -> Result<KnowledgeSourceMemoryProjectedListOutput> {
-        knowledge_source_memory_projected_list_for(&self.catalog, &self.store, request)
+        knowledge_source_memory_projected_list_for(self, request)
     }
 
     pub fn knowledge_memory_source_attributions(
@@ -16834,17 +16834,29 @@ fn knowledge_source_memories_via_query_runtime(
 }
 
 fn knowledge_source_memory_projected_list_for(
-    catalog: &Catalog,
-    store: &GraphStore,
+    db: &Database,
     request: &KnowledgeSourceMemoryProjectedListRequest,
 ) -> Result<KnowledgeSourceMemoryProjectedListOutput> {
     validate_knowledge_source_memory_projected_list_request(request)?;
-    let graph_commit_epoch = store.commit_epoch();
-    let Some(source) =
-        seed_node_by_label_and_external_id(catalog, store, "Source", &request.list.source_id)
+
+    let mut parameters = BTreeMap::new();
+    parameters.insert(
+        "source_id".to_string(),
+        Value::String(request.list.source_id.clone()),
+    );
+    let source = db.query_read_only_with_params_bounded(
+        "MATCH (s:Source {id: $source_id}) RETURN id(s) AS source_node_id LIMIT 1",
+        &parameters,
+        Some(1),
+    )?;
+    let Some(source_node_id) = source
+        .rows
+        .first()
+        .and_then(|row| row.get("source_node_id"))
+        .and_then(value_to_non_negative_u64)
     else {
         return Ok(KnowledgeSourceMemoryProjectedListOutput {
-            graph_commit_epoch,
+            graph_commit_epoch: db.store.commit_epoch(),
             source_id: request.list.source_id.clone(),
             source_node_id: None,
             found: false,
@@ -16854,22 +16866,52 @@ fn knowledge_source_memory_projected_list_for(
         });
     };
 
-    let mut rows = source_memory_projected_rows(
-        catalog,
-        store,
-        source.id,
-        &request.memory_property_names,
-        &request.relationship_property_names,
+    let count = db.query_read_only_with_params_bounded(
+        "MATCH (m:Memory)-[r:SOURCED_FROM]->(:Source {id: $source_id}) \
+         RETURN count(r) AS matched_count",
+        &parameters,
+        Some(1),
+    )?;
+    let matched_count = count
+        .rows
+        .first()
+        .and_then(|row| row.get("matched_count"))
+        .and_then(value_to_non_negative_usize)
+        .unwrap_or(0);
+
+    let limit_clause = if request.list.limit > 0 {
+        parameters.insert(
+            "limit".to_string(),
+            Value::Int(i64::try_from(request.list.limit).unwrap_or(i64::MAX)),
+        );
+        " LIMIT $limit"
+    } else {
+        ""
+    };
+    let list_query = format!(
+        "MATCH (m:Memory)-[r:SOURCED_FROM]->(:Source {{id: $source_id}}) \
+         RETURN m.id AS memory_id, id(m) AS memory_node_id, id(r) AS relationship_id, \
+         m AS memory, r AS relationship, m.space_id AS normalized_space_id, \
+         r.chunk_index AS chunk_index \
+         ORDER BY chunk_index ASC, memory_id ASC, relationship_id ASC{limit_clause}"
     );
-    let matched_count = rows.len();
-    if request.list.limit > 0 {
-        rows.truncate(request.list.limit);
-    }
+    let list = db.query_read_only_with_params_bounded(&list_query, &parameters, None)?;
+    let rows = list
+        .rows
+        .iter()
+        .map(|row| {
+            knowledge_source_memory_projected_row_from_query(
+                row,
+                &request.memory_property_names,
+                &request.relationship_property_names,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
     let returned_count = rows.len();
     Ok(KnowledgeSourceMemoryProjectedListOutput {
-        graph_commit_epoch,
+        graph_commit_epoch: db.store.commit_epoch(),
         source_id: request.list.source_id.clone(),
-        source_node_id: Some(source.id.0),
+        source_node_id: Some(source_node_id),
         found: true,
         rows,
         matched_count,
@@ -16905,7 +16947,51 @@ fn validate_knowledge_source_memory_projected_list_request(
     Ok(())
 }
 
-fn source_memory_projected_rows(
+fn knowledge_source_memory_projected_list_direct(
+    catalog: &Catalog,
+    store: &GraphStore,
+    request: &KnowledgeSourceMemoryProjectedListRequest,
+) -> Result<KnowledgeSourceMemoryProjectedListOutput> {
+    validate_knowledge_source_memory_projected_list_request(request)?;
+    let graph_commit_epoch = store.commit_epoch();
+    let Some(source) =
+        seed_node_by_label_and_external_id(catalog, store, "Source", &request.list.source_id)
+    else {
+        return Ok(KnowledgeSourceMemoryProjectedListOutput {
+            graph_commit_epoch,
+            source_id: request.list.source_id.clone(),
+            source_node_id: None,
+            found: false,
+            rows: Vec::new(),
+            matched_count: 0,
+            returned_count: 0,
+        });
+    };
+
+    let mut rows = source_memory_projected_rows_direct(
+        catalog,
+        store,
+        source.id,
+        &request.memory_property_names,
+        &request.relationship_property_names,
+    );
+    let matched_count = rows.len();
+    if request.list.limit > 0 {
+        rows.truncate(request.list.limit);
+    }
+    let returned_count = rows.len();
+    Ok(KnowledgeSourceMemoryProjectedListOutput {
+        graph_commit_epoch,
+        source_id: request.list.source_id.clone(),
+        source_node_id: Some(source.id.0),
+        found: true,
+        rows,
+        matched_count,
+        returned_count,
+    })
+}
+
+fn source_memory_projected_rows_direct(
     catalog: &Catalog,
     store: &GraphStore,
     source_node_id: NodeId,
@@ -16926,7 +17012,7 @@ fn source_memory_projected_rows(
                 .filter(|memory| memory.labels.contains(&memory_label_id))
                 .map(|memory| {
                     (
-                        source_memory_projected_row(
+                        source_memory_projected_row_direct(
                             memory,
                             relationship,
                             memory_property_names,
@@ -16946,7 +17032,7 @@ fn source_memory_projected_rows(
     rows.into_iter().map(|(row, _chunk_index)| row).collect()
 }
 
-fn source_memory_projected_row(
+fn source_memory_projected_row_direct(
     memory: &NodeRecord,
     relationship: &RelRecord,
     memory_property_names: &[String],
@@ -31650,7 +31736,7 @@ impl DatabaseReadTransaction {
         &self,
         request: &KnowledgeSourceMemoryProjectedListRequest,
     ) -> Result<KnowledgeSourceMemoryProjectedListOutput> {
-        knowledge_source_memory_projected_list_for(&self.catalog, &self.store, request)
+        knowledge_source_memory_projected_list_direct(&self.catalog, &self.store, request)
     }
 
     pub fn knowledge_entity_label_projected_list(

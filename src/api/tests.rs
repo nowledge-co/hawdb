@@ -25780,6 +25780,66 @@ fn knowledge_source_memories_uses_query_runtime_plan_cache() {
 }
 
 #[test]
+fn knowledge_source_memory_projected_list_uses_query_runtime_plan_cache() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Source {id: 'source_a'})").unwrap();
+    db.query("CREATE (:Memory {id: 'memory_a', title: 'Alpha', unit_type: 'fact', space_id: 'space_a', hidden: 'no'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'memory_b', title: 'Beta', unit_type: 'note', space_id: '', hidden: 'no'})")
+        .unwrap();
+    db.query("CREATE (:Entity {id: 'entity_a', title: 'Entity'})")
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'memory_a'}), (s:Source {id: 'source_a'}) CREATE (m)-[:SOURCED_FROM {chunk_index: 2, chunk_range: '10..20', source_version: 'v1', hidden: 'no'}]->(s)")
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'memory_b'}), (s:Source {id: 'source_a'}) CREATE (m)-[:SOURCED_FROM {chunk_index: 1, chunk_range: '0..10', source_version: 'v2', hidden: 'no'}]->(s)")
+        .unwrap();
+    db.query(
+        "MATCH (e:Entity {id: 'entity_a'}), (s:Source {id: 'source_a'}) \
+         CREATE (e)-[:SOURCED_FROM {chunk_index: 0, chunk_range: 'ignored'}]->(s)",
+    )
+    .unwrap();
+    let request = KnowledgeSourceMemoryProjectedListRequest {
+        list: KnowledgeSourceMemoryListRequest {
+            source_id: "source_a".to_string(),
+            limit: 1,
+        },
+        memory_property_names: vec!["title".to_string(), "unit_type".to_string()],
+        relationship_property_names: vec!["chunk_range".to_string()],
+    };
+
+    let first = db.knowledge_source_memory_projected_list(&request).unwrap();
+    let second = db.knowledge_source_memory_projected_list(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert!(first.found);
+    assert_eq!(first.matched_count, 2);
+    assert_eq!(first.returned_count, 1);
+    assert_eq!(first.rows[0].memory_id.as_deref(), Some("memory_b"));
+    assert_eq!(first.rows[0].normalized_space_id, "default");
+    assert_eq!(
+        first.rows[0].memory_properties,
+        BTreeMap::from([
+            ("title".to_string(), Value::String("Beta".to_string())),
+            ("unit_type".to_string(), Value::String("note".to_string())),
+        ])
+    );
+    assert_eq!(
+        first.rows[0].relationship_properties,
+        BTreeMap::from([(
+            "chunk_range".to_string(),
+            Value::String("0..10".to_string())
+        )])
+    );
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 3);
+    assert_eq!(stats.misses, 3);
+    assert_eq!(stats.hits, 3);
+}
+
+#[test]
 fn plan_cache_misses_after_graph_commit_epoch_changes() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
