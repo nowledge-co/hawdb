@@ -33,7 +33,7 @@ const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
 ];
 
 pub fn nowledge_replacement_summary_usage() -> String {
-    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--shortest-path-parity-evidence-json <path>] [--community-members-parity-evidence-json <path>] [--community-subgraph-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
+    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--shortest-path-parity-evidence-json <path>] [--community-members-parity-evidence-json <path>] [--community-subgraph-parity-evidence-json <path>] [--community-recent-memories-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
         .to_string()
 }
 
@@ -117,6 +117,10 @@ pub fn nowledge_replacement_summary_json_with_options(
     let community_members_parity_evidence_ready = community_members_parity_evidence.ready;
     let community_subgraph_parity_evidence = community_subgraph_parity_evidence_summary(bundle);
     let community_subgraph_parity_evidence_ready = community_subgraph_parity_evidence.ready;
+    let community_recent_memories_parity_evidence =
+        community_recent_memories_parity_evidence_summary(bundle);
+    let community_recent_memories_parity_evidence_ready =
+        community_recent_memories_parity_evidence.ready;
     let background_graph_delta_evidence_missing =
         background_maintenance_graph_delta_evidence_missing(bundle);
     let family_health = replacement_readiness_family_evidence_health_from_bundle(bundle);
@@ -144,6 +148,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         && shortest_path_parity_evidence_ready
         && community_members_parity_evidence_ready
         && community_subgraph_parity_evidence_ready
+        && community_recent_memories_parity_evidence_ready
         && !background_graph_delta_evidence_missing
         && family_evidence_ready
         && replacement_readiness_per_million == Some(1_000_000);
@@ -181,6 +186,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             shortest_path_parity_evidence_ready,
             community_members_parity_evidence_ready,
             community_subgraph_parity_evidence_ready,
+            community_recent_memories_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
         },
@@ -219,6 +225,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             shortest_path_parity_evidence_ready,
             community_members_parity_evidence_ready,
             community_subgraph_parity_evidence_ready,
+            community_recent_memories_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
             production_cutover_ready,
@@ -458,6 +465,19 @@ pub fn nowledge_replacement_summary_json_with_options(
                 "shadow_ready": community_subgraph_parity_evidence.shadow_ready,
                 "blocker_codes": community_subgraph_parity_evidence.blocker_codes,
             },
+            "community_recent_memories": {
+                "protocol": community_recent_memories_parity_evidence.protocol,
+                "present": community_recent_memories_parity_evidence.present,
+                "ready": community_recent_memories_parity_evidence.ready,
+                "reported_ready": community_recent_memories_parity_evidence.reported_ready,
+                "route": community_recent_memories_parity_evidence.route,
+                "matches": community_recent_memories_parity_evidence.matches,
+                "primary_engine": community_recent_memories_parity_evidence.primary_engine,
+                "shadow_engine": community_recent_memories_parity_evidence.shadow_engine,
+                "primary_ready": community_recent_memories_parity_evidence.primary_ready,
+                "shadow_ready": community_recent_memories_parity_evidence.shadow_ready,
+                "blocker_codes": community_recent_memories_parity_evidence.blocker_codes,
+            },
         },
         "cutover_evidence": {
             "eligible": cutover_evidence_eligible,
@@ -655,6 +675,7 @@ struct ReplacementReadinessInputs<'a> {
     shortest_path_parity_evidence_ready: bool,
     community_members_parity_evidence_ready: bool,
     community_subgraph_parity_evidence_ready: bool,
+    community_recent_memories_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
 }
@@ -686,6 +707,7 @@ struct NextActionInputs<'a> {
     shortest_path_parity_evidence_ready: bool,
     community_members_parity_evidence_ready: bool,
     community_subgraph_parity_evidence_ready: bool,
+    community_recent_memories_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
     production_cutover_ready: bool,
@@ -1299,6 +1321,18 @@ fn community_subgraph_parity_evidence_summary(
     )
 }
 
+fn community_recent_memories_parity_evidence_summary(
+    bundle: &serde_json::Value,
+) -> RouteParityEvidenceSummary<'_> {
+    route_parity_evidence_summary(
+        bundle,
+        "community_recent_memories_parity_evidence",
+        "community_recent_memories",
+        "community_recent_memories_parity_evidence",
+        "/library/community/{community_id}/recent-memories",
+    )
+}
+
 fn route_parity_evidence_summary<'a>(
     bundle: &'a serde_json::Value,
     top_level_key: &'static str,
@@ -1486,6 +1520,9 @@ fn nowledge_replacement_blocking_categories(
     }
     if !inputs.community_subgraph_parity_evidence_ready {
         categories.insert("community_subgraph_parity_evidence".to_string());
+    }
+    if !inputs.community_recent_memories_parity_evidence_ready {
+        categories.insert("community_recent_memories_parity_evidence".to_string());
     }
     if json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_required"]) == Some(true)
         && json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_ready"]) != Some(true)
@@ -1867,6 +1904,22 @@ fn nowledge_replacement_next_actions(
             ],
         ));
     }
+    if !inputs.community_recent_memories_parity_evidence_ready {
+        actions.push(next_action(
+            "run_community_recent_memories_route_shadow_compare",
+            "community recent memories graph route parity evidence is missing or not ready",
+            [
+                "graph_route_parity_evidence.community_recent_memories.protocol",
+                "graph_route_parity_evidence.community_recent_memories.present",
+                "graph_route_parity_evidence.community_recent_memories.ready",
+                "graph_route_parity_evidence.community_recent_memories.route",
+                "graph_route_parity_evidence.community_recent_memories.matches",
+                "graph_route_parity_evidence.community_recent_memories.primary_ready",
+                "graph_route_parity_evidence.community_recent_memories.shadow_ready",
+                "graph_route_parity_evidence.community_recent_memories.blocker_codes",
+            ],
+        ));
+    }
     if json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_required"]) == Some(true)
         && json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_ready"]) != Some(true)
     {
@@ -2114,6 +2167,27 @@ fn nowledge_replacement_missing_evidence(bundle: &serde_json::Value) -> Vec<Stri
     } else if !community_subgraph_parity_evidence_summary(bundle).ready {
         missing.push("community_subgraph_parity_evidence_ready".to_string());
     }
+    if bundle
+        .get("community_recent_memories_parity_evidence")
+        .is_none()
+        && json_get_path(
+            bundle,
+            &["graph_route_parity_evidence", "community_recent_memories"],
+        )
+        .is_none()
+        && json_get_path(
+            bundle,
+            &[
+                "cutover_evidence",
+                "community_recent_memories_parity_evidence",
+            ],
+        )
+        .is_none()
+    {
+        missing.push("community_recent_memories_parity_evidence".to_string());
+    } else if !community_recent_memories_parity_evidence_summary(bundle).ready {
+        missing.push("community_recent_memories_parity_evidence_ready".to_string());
+    }
     if bundle.get("shadow_run").is_none() {
         missing.push("shadow_run".to_string());
     }
@@ -2272,6 +2346,17 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
             "community_subgraph_parity_evidence",
             "blocker_codes",
         ][..],
+        &["community_recent_memories_parity_evidence", "blocker_codes"][..],
+        &[
+            "graph_route_parity_evidence",
+            "community_recent_memories",
+            "blocker_codes",
+        ][..],
+        &[
+            "cutover_evidence",
+            "community_recent_memories_parity_evidence",
+            "blocker_codes",
+        ][..],
     ] {
         for blocker in json_get_string_array_path(bundle, path) {
             blockers.insert(blocker);
@@ -2393,6 +2478,7 @@ mod tests {
             serde_json::json!([
                 "bounded_read_evidence",
                 "community_members_parity_evidence",
+                "community_recent_memories_parity_evidence",
                 "community_subgraph_parity_evidence",
                 "cutover_evidence",
                 "dual_engine_evidence",
@@ -3908,6 +3994,7 @@ mod tests {
                 "background_maintenance",
                 "bounded_read_evidence",
                 "community_members_parity_evidence",
+                "community_recent_memories_parity_evidence",
                 "community_subgraph_parity_evidence",
                 "cutover_evidence",
                 "dual_engine_evidence",
@@ -3952,6 +4039,7 @@ mod tests {
                 "shortest_path_parity_evidence",
                 "community_members_parity_evidence",
                 "community_subgraph_parity_evidence",
+                "community_recent_memories_parity_evidence",
                 "shadow_run",
                 "shadow_ready"
             ])
@@ -4256,6 +4344,20 @@ mod tests {
                     ]
                 },
                 {
+                    "action": "run_community_recent_memories_route_shadow_compare",
+                    "reason": "community recent memories graph route parity evidence is missing or not ready",
+                    "evidence_fields": [
+                        "graph_route_parity_evidence.community_recent_memories.protocol",
+                        "graph_route_parity_evidence.community_recent_memories.present",
+                        "graph_route_parity_evidence.community_recent_memories.ready",
+                        "graph_route_parity_evidence.community_recent_memories.route",
+                        "graph_route_parity_evidence.community_recent_memories.matches",
+                        "graph_route_parity_evidence.community_recent_memories.primary_ready",
+                        "graph_route_parity_evidence.community_recent_memories.shadow_ready",
+                        "graph_route_parity_evidence.community_recent_memories.blocker_codes"
+                    ]
+                },
+                {
                     "action": "attach_storage_recovery_report",
                     "reason": "required storage recovery evidence is missing or blocked",
                     "evidence_fields": [
@@ -4310,6 +4412,8 @@ mod tests {
         );
         assert!(nowledge_replacement_summary_usage()
             .contains("--community-subgraph-parity-evidence-json"));
+        assert!(nowledge_replacement_summary_usage()
+            .contains("--community-recent-memories-parity-evidence-json"));
         assert!(nowledge_replacement_summary_usage().contains("--query-family-evidence-json"));
     }
 
@@ -4569,6 +4673,17 @@ mod tests {
                 "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
                 "ready": true,
                 "route": "/library/community/{community_id}/subgraph",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "community_recent_memories_parity_evidence": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/library/community/{community_id}/recent-memories",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
