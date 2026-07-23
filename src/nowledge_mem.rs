@@ -10,7 +10,7 @@ use crate::{
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
     SkeinError, Value,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -118,6 +118,7 @@ pub const NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS: usize = 512;
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_THRESHOLD_MS: u64 = 1_000;
+pub const DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_RING_CAPACITY: usize = 64;
 
 impl NowledgeMemGraphMode {
     pub fn as_str(self) -> &'static str {
@@ -132,6 +133,9 @@ impl NowledgeMemGraphMode {
 pub struct NowledgeMemGraph {
     db: Database,
     mode: NowledgeMemGraphMode,
+    slow_queries: VecDeque<NowledgeMemQueryReport>,
+    slow_query_ring_capacity: usize,
+    slow_query_dropped_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +270,7 @@ pub struct NowledgeMemReadOutput {
 pub struct NowledgeMemQueryReportOptions {
     pub capture_physical_plan: bool,
     pub slow_query_threshold_ms: Option<u64>,
+    pub record_slow_query: bool,
 }
 
 impl Default for NowledgeMemQueryReportOptions {
@@ -273,6 +278,7 @@ impl Default for NowledgeMemQueryReportOptions {
         Self {
             capture_physical_plan: false,
             slow_query_threshold_ms: Some(DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_THRESHOLD_MS),
+            record_slow_query: true,
         }
     }
 }
@@ -316,6 +322,25 @@ impl NowledgeMemQueryReport {
 pub struct NowledgeMemQueryOutput {
     pub output: QueryOutput,
     pub report: NowledgeMemQueryReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowledgeMemSlowQueryRingReport {
+    pub capacity: usize,
+    pub len: usize,
+    pub dropped_count: u64,
+    pub reports: Vec<NowledgeMemQueryReport>,
+}
+
+impl NowledgeMemSlowQueryRingReport {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "capacity": self.capacity,
+            "len": self.len,
+            "dropped_count": self.dropped_count,
+            "reports": self.reports.iter().map(NowledgeMemQueryReport::json).collect::<Vec<_>>(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,7 +417,7 @@ pub struct NowledgeMemRetrievalOutput {
 impl NowledgeMemGraph {
     pub fn open(path: impl AsRef<Path>, mode: NowledgeMemGraphMode) -> Result<Self> {
         let db = Database::open_with_config(path, nowledge_mem_graph_config(mode))?;
-        Ok(Self { db, mode })
+        Ok(Self::from_database(db, mode))
     }
 
     pub fn open_with_config(path: impl AsRef<Path>, config: DatabaseConfig) -> Result<Self> {
@@ -402,11 +427,17 @@ impl NowledgeMemGraph {
             NowledgeMemGraphMode::WritableCutover
         };
         let db = Database::open_with_config(path, config)?;
-        Ok(Self { db, mode })
+        Ok(Self::from_database(db, mode))
     }
 
     pub fn from_database(db: Database, mode: NowledgeMemGraphMode) -> Self {
-        Self { db, mode }
+        Self {
+            db,
+            mode,
+            slow_queries: VecDeque::new(),
+            slow_query_ring_capacity: DEFAULT_NOWLEDGE_MEM_SLOW_QUERY_RING_CAPACITY,
+            slow_query_dropped_count: 0,
+        }
     }
 
     pub fn mode(&self) -> NowledgeMemGraphMode {
@@ -423,6 +454,29 @@ impl NowledgeMemGraph {
 
     pub fn into_database(self) -> Database {
         self.db
+    }
+
+    pub fn slow_query_ring_capacity(&self) -> usize {
+        self.slow_query_ring_capacity
+    }
+
+    pub fn set_slow_query_ring_capacity(&mut self, capacity: usize) {
+        self.slow_query_ring_capacity = capacity;
+        self.trim_slow_query_ring();
+    }
+
+    pub fn slow_query_ring_report(&self) -> NowledgeMemSlowQueryRingReport {
+        NowledgeMemSlowQueryRingReport {
+            capacity: self.slow_query_ring_capacity,
+            len: self.slow_queries.len(),
+            dropped_count: self.slow_query_dropped_count,
+            reports: self.slow_queries.iter().cloned().collect(),
+        }
+    }
+
+    pub fn clear_slow_query_ring(&mut self) {
+        self.slow_queries.clear();
+        self.slow_query_dropped_count = 0;
     }
 
     pub fn query(&mut self, cypher: &str) -> Result<QueryOutput> {
@@ -490,6 +544,9 @@ impl NowledgeMemGraph {
             slow_query,
             row_count: output.rows.len(),
         };
+        if options.record_slow_query && report.slow_query {
+            self.push_slow_query_report(report.clone());
+        }
         Ok(NowledgeMemQueryOutput { output, report })
     }
 
@@ -539,6 +596,27 @@ impl NowledgeMemGraph {
             output: bounded.output,
             report,
         })
+    }
+}
+
+impl NowledgeMemGraph {
+    fn push_slow_query_report(&mut self, report: NowledgeMemQueryReport) {
+        if self.slow_query_ring_capacity == 0 {
+            self.slow_query_dropped_count = self.slow_query_dropped_count.saturating_add(1);
+            return;
+        }
+        while self.slow_queries.len() >= self.slow_query_ring_capacity {
+            self.slow_queries.pop_front();
+            self.slow_query_dropped_count = self.slow_query_dropped_count.saturating_add(1);
+        }
+        self.slow_queries.push_back(report);
+    }
+
+    fn trim_slow_query_ring(&mut self) {
+        while self.slow_queries.len() > self.slow_query_ring_capacity {
+            self.slow_queries.pop_front();
+            self.slow_query_dropped_count = self.slow_query_dropped_count.saturating_add(1);
+        }
     }
 }
 
@@ -637,6 +715,18 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn graph_mut(&mut self) -> &mut NowledgeMemGraph {
         &mut self.graph
+    }
+
+    pub fn slow_query_ring_report(&self) -> NowledgeMemSlowQueryRingReport {
+        self.graph.slow_query_ring_report()
+    }
+
+    pub fn clear_slow_query_ring(&mut self) {
+        self.graph.clear_slow_query_ring();
+    }
+
+    pub fn set_slow_query_ring_capacity(&mut self, capacity: usize) {
+        self.graph.set_slow_query_ring_capacity(capacity);
     }
 
     pub fn search_projection(&self) -> Option<&NowledgeMemSearchProjection> {
@@ -1237,6 +1327,7 @@ mod tests {
                 &NowledgeMemQueryReportOptions {
                     capture_physical_plan: true,
                     slow_query_threshold_ms: None,
+                    record_slow_query: true,
                 },
             )
             .unwrap();
@@ -1269,6 +1360,7 @@ mod tests {
                 &NowledgeMemQueryReportOptions {
                     capture_physical_plan: false,
                     slow_query_threshold_ms: Some(0),
+                    record_slow_query: true,
                 },
             )
             .unwrap();
@@ -1276,6 +1368,75 @@ mod tests {
         assert!(output.report.slow_query);
         assert_eq!(output.report.query_shape, "general_read");
         assert_eq!(output.report.statement_class, "read");
+    }
+
+    #[test]
+    fn graph_slow_query_ring_records_successful_slow_reports_without_query_text() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+
+        graph
+            .query_with_options_report(
+                "MATCH (m:Memory {id: 'secret-id'}) RETURN m.id AS id",
+                &NowledgeMemQueryReportOptions {
+                    capture_physical_plan: false,
+                    slow_query_threshold_ms: Some(0),
+                    record_slow_query: true,
+                },
+            )
+            .unwrap();
+
+        let ring = graph.slow_query_ring_report();
+        assert_eq!(ring.capacity, 64);
+        assert_eq!(ring.len, 1);
+        assert_eq!(ring.dropped_count, 0);
+        assert_eq!(ring.reports[0].query_shape, "simple_node_lookup");
+        assert!(ring.reports[0].slow_query);
+        let json = ring.json().to_string();
+        assert!(!json.contains("secret-id"));
+        assert!(!json.contains("MATCH"));
+    }
+
+    #[test]
+    fn graph_slow_query_ring_enforces_bounded_capacity() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph.set_slow_query_ring_capacity(1);
+
+        for id in ["first", "second"] {
+            graph
+                .query_with_options_report(
+                    &format!("MATCH (m:Memory {{id: '{id}'}}) RETURN m.id AS id"),
+                    &NowledgeMemQueryReportOptions {
+                        capture_physical_plan: false,
+                        slow_query_threshold_ms: Some(0),
+                        record_slow_query: true,
+                    },
+                )
+                .unwrap();
+        }
+
+        let ring = graph.slow_query_ring_report();
+        assert_eq!(ring.capacity, 1);
+        assert_eq!(ring.len, 1);
+        assert_eq!(ring.dropped_count, 1);
+
+        graph.set_slow_query_ring_capacity(0);
+        assert_eq!(graph.slow_query_ring_report().len, 0);
+        graph
+            .query_with_options_report(
+                "MATCH (m:Memory {id: 'third'}) RETURN m.id AS id",
+                &NowledgeMemQueryReportOptions {
+                    capture_physical_plan: false,
+                    slow_query_threshold_ms: Some(0),
+                    record_slow_query: true,
+                },
+            )
+            .unwrap();
+        let ring = graph.slow_query_ring_report();
+        assert_eq!(ring.capacity, 0);
+        assert_eq!(ring.len, 0);
+        assert_eq!(ring.dropped_count, 3);
     }
 
     #[test]

@@ -320,7 +320,7 @@ pub use nowledge_mem::{
     NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemOpenReport, NowledgeMemQueryOutput,
     NowledgeMemQueryReport, NowledgeMemQueryReportOptions, NowledgeMemReadOptions,
     NowledgeMemReadOutput, NowledgeMemReadReport, NowledgeMemRetrievalOutput,
-    NowledgeMemRetrievalReport, NowledgeMemSearchProjection,
+    NowledgeMemRetrievalReport, NowledgeMemSearchProjection, NowledgeMemSlowQueryRingReport,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL,
     NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
     NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
