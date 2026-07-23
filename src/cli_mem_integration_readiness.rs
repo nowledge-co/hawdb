@@ -1147,6 +1147,54 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ),
         ),
         check(
+            "graph_route_related_communities_parity_evidence",
+            [
+                replacement_summary_related_communities_parity_ready(bundle),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "related_communities",
+                        "protocol",
+                    ],
+                ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "related_communities",
+                        "route",
+                    ],
+                ) == Some("/library/community/{community_id}/related"),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "related_communities",
+                        "matches",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary.graph_route_parity_evidence.related_communities.ready",
+                "replacement_summary.graph_route_parity_evidence.related_communities.protocol",
+                "replacement_summary.graph_route_parity_evidence.related_communities.route",
+                "replacement_summary.graph_route_parity_evidence.related_communities.matches",
+            ],
+            blocker_codes(
+                bundle,
+                &[&[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    "related_communities",
+                    "blocker_codes",
+                ][..]],
+            ),
+        ),
+        check(
             "background_maintenance_evidence",
             [
                 bool_path(
@@ -1737,6 +1785,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !replacement_summary_related_communities_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_related_communities_route_shadow_compare",
+            "related communities graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.related_communities.protocol",
+                "replacement_summary.graph_route_parity_evidence.related_communities.ready",
+                "replacement_summary.graph_route_parity_evidence.related_communities.route",
+                "replacement_summary.graph_route_parity_evidence.related_communities.matches",
+                "replacement_summary.graph_route_parity_evidence.related_communities.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.related_communities.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.related_communities.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_storage_recovery_ready(bundle) {
         actions.push(next_action(
             "attach_storage_recovery_report",
@@ -2152,6 +2215,14 @@ fn replacement_summary_community_recent_memories_parity_ready(bundle: &serde_jso
         bundle,
         "community_recent_memories",
         "/library/community/{community_id}/recent-memories",
+    )
+}
+
+fn replacement_summary_related_communities_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(
+        bundle,
+        "related_communities",
+        "/library/community/{community_id}/related",
     )
 }
 
@@ -3819,6 +3890,19 @@ mod tests {
                 "ready": true,
                 "reported_ready": true,
                 "route": "/library/community/{community_id}/recent-memories",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "related_communities": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/library/community/{community_id}/related",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
