@@ -618,6 +618,73 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 ],
             ),
         ),
+        check(
+            "graph_route_readiness_alignment",
+            [
+                bool_path(
+                    bundle,
+                    &["replacement_summary_graph_route_alignment", "ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "evidence_route_primary_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "summary_route_primary_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "route_primary_ready_matches",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "primary_ready_routes_match",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "evidence_required_routes_covered",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_graph_route_alignment",
+                        "summary_required_routes_covered",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary_graph_route_alignment.ready",
+                "replacement_summary_graph_route_alignment.evidence_route_primary_ready",
+                "replacement_summary_graph_route_alignment.summary_route_primary_ready",
+                "replacement_summary_graph_route_alignment.route_primary_ready_matches",
+                "replacement_summary_graph_route_alignment.primary_ready_routes_match",
+                "replacement_summary_graph_route_alignment.evidence_required_routes_covered",
+                "replacement_summary_graph_route_alignment.summary_required_routes_covered",
+            ],
+            blocker_codes(
+                bundle,
+                &[&[
+                    "replacement_summary_graph_route_alignment",
+                    "blocker_codes",
+                ][..]],
+            ),
+        ),
         graph_route_parity_check(
             bundle,
             "graph_route_augmentation_state_parity_evidence",
@@ -1739,6 +1806,20 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !graph_route_readiness_alignment_ready(bundle) {
+        actions.push(next_action(
+            "regenerate_graph_route_readiness_alignment",
+            "live graph route primary-read readiness must match the replacement summary before Mem cutover",
+            [
+                "replacement_summary_graph_route_alignment.ready",
+                "replacement_summary_graph_route_alignment.evidence_route_primary_ready",
+                "replacement_summary_graph_route_alignment.summary_route_primary_ready",
+                "replacement_summary_graph_route_alignment.route_primary_ready_matches",
+                "replacement_summary_graph_route_alignment.primary_ready_routes_match",
+                "replacement_summary_graph_route_alignment.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_overview_parity_ready(bundle) {
         actions.push(next_action(
             "run_overview_route_shadow_compare",
@@ -2446,6 +2527,38 @@ fn graph_route_primary_ready_count_matches(bundle: &serde_json::Value) -> bool {
         &["graph_route_readiness", "primary_ready_route_count"],
     );
     route_count.is_some_and(|value| value > 0) && route_count == primary_ready_route_count
+}
+
+fn graph_route_readiness_alignment_ready(bundle: &serde_json::Value) -> bool {
+    [
+        &["replacement_summary_graph_route_alignment", "ready"][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "evidence_route_primary_ready",
+        ][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "summary_route_primary_ready",
+        ][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "route_primary_ready_matches",
+        ][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "primary_ready_routes_match",
+        ][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "evidence_required_routes_covered",
+        ][..],
+        &[
+            "replacement_summary_graph_route_alignment",
+            "summary_required_routes_covered",
+        ][..],
+    ]
+    .iter()
+    .all(|path| bool_path(bundle, path) == Some(true))
 }
 
 fn replacement_summary_storage_recovery_ready(bundle: &serde_json::Value) -> bool {
@@ -3301,6 +3414,52 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stale_graph_route_readiness_summary() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_graph_route_alignment"]["ready"] = serde_json::json!(false);
+        bundle["replacement_summary_graph_route_alignment"]["summary_route_primary_ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_graph_route_alignment"]["route_primary_ready_matches"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_graph_route_alignment"]["primary_ready_routes_match"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_graph_route_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_graph_route_readiness_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_readiness_alignment"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_graph_route_readiness_mismatch"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "graph_route_readiness_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_graph_route_alignment.ready",
+                "replacement_summary_graph_route_alignment.summary_route_primary_ready",
+                "replacement_summary_graph_route_alignment.route_primary_ready_matches",
+                "replacement_summary_graph_route_alignment.primary_ready_routes_match"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "regenerate_graph_route_readiness_alignment"));
+    }
+
+    #[test]
     fn requires_overview_route_parity_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["graph_route_parity_evidence"]
@@ -3898,6 +4057,19 @@ mod tests {
                     "blocker_codes": []
                 }
             ]
+        });
+        bundle["replacement_summary_graph_route_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "protocol_matches": true,
+            "evidence_route_primary_ready": true,
+            "summary_route_primary_ready": true,
+            "route_primary_ready_matches": true,
+            "primary_ready_routes_match": true,
+            "evidence_required_routes_covered": true,
+            "summary_required_routes_covered": true,
+            "blocker_codes": []
         });
         bundle["replacement_summary"]["graph_route_parity_evidence"] = serde_json::json!({
             "augmentation_state": {
