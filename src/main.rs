@@ -564,6 +564,7 @@ fn main() -> Result<()> {
             let mut bounded_read_evidence_path = None;
             let mut overview_parity_evidence_path = None;
             let mut explore_parity_evidence_path = None;
+            let mut live_preview_parity_evidence_path = None;
             let mut query_family_evidence_path = None;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -631,6 +632,12 @@ fn main() -> Result<()> {
                             SkeinError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
+                    "--live-preview-parity-evidence-json" => {
+                        args.next();
+                        live_preview_parity_evidence_path = Some(args.next().ok_or_else(|| {
+                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                        })?);
+                    }
                     "--query-family-evidence-json" => {
                         args.next();
                         query_family_evidence_path = Some(args.next().ok_or_else(|| {
@@ -655,6 +662,7 @@ fn main() -> Result<()> {
                 bounded_read_evidence_path.as_deref(),
                 overview_parity_evidence_path.as_deref(),
                 explore_parity_evidence_path.as_deref(),
+                live_preview_parity_evidence_path.as_deref(),
                 query_family_evidence_path.as_deref(),
             )?;
             let summary = if custom_summary_options {
@@ -1366,6 +1374,7 @@ fn merge_replacement_summary_evidence(
     bounded_read_evidence_path: Option<&str>,
     overview_parity_evidence_path: Option<&str>,
     explore_parity_evidence_path: Option<&str>,
+    live_preview_parity_evidence_path: Option<&str>,
     query_family_evidence_path: Option<&str>,
 ) -> Result<()> {
     if let Some(path) = search_projection_evidence_path {
@@ -1407,6 +1416,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "explore_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = live_preview_parity_evidence_path {
+        insert_replacement_summary_artifact(
+            bundle,
+            "live_preview_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -4674,6 +4690,7 @@ mod tests {
         let bounded_path = unique_json_file("bounded_read_evidence");
         let overview_path = unique_json_file("overview_parity_evidence");
         let explore_path = unique_json_file("explore_parity_evidence");
+        let live_preview_path = unique_json_file("live_preview_parity_evidence");
         let family_path = unique_json_file("query_family_evidence");
         std::fs::write(
             &search_path,
@@ -4740,6 +4757,20 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            &live_preview_path,
+            serde_json::json!({
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/live-preview",
+                "matches": true,
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             &family_path,
             serde_json::json!({
                 "protocol": "skein-nowledge-query-family-evidence-v1",
@@ -4765,6 +4796,7 @@ mod tests {
             Some(bounded_path.to_str().unwrap()),
             Some(overview_path.to_str().unwrap()),
             Some(explore_path.to_str().unwrap()),
+            Some(live_preview_path.to_str().unwrap()),
             Some(family_path.to_str().unwrap()),
         )
         .unwrap();
@@ -4779,6 +4811,10 @@ mod tests {
         );
         assert_eq!(bundle["explore_parity_evidence"]["route"], "/graph/explore");
         assert_eq!(
+            bundle["live_preview_parity_evidence"]["route"],
+            "/graph/live-preview"
+        );
+        assert_eq!(
             bundle["query_family_evidence"]["protocol"],
             "skein-nowledge-query-family-evidence-v1"
         );
@@ -4790,6 +4826,9 @@ mod tests {
         std::fs::remove_file(shadow_path).unwrap();
         std::fs::remove_file(candidate_shadow_path).unwrap();
         std::fs::remove_file(bounded_path).unwrap();
+        std::fs::remove_file(overview_path).unwrap();
+        std::fs::remove_file(explore_path).unwrap();
+        std::fs::remove_file(live_preview_path).unwrap();
         std::fs::remove_file(family_path).unwrap();
     }
 
