@@ -1,3 +1,8 @@
+use crate::nowledge_contract::{
+    SEARCH_PROJECTION_EVIDENCE_SOURCE, SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
+    SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE, SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+    SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+};
 use crate::{Result, SearchIndex, SearchProjectionProbeOptions, SkeinError};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,8 +25,6 @@ const VECTOR_TABLES: &[&str] = &[
 ];
 
 const REQUIRED_PREDICATE_PUSHDOWN_OPS: &[&str] = &["eq", "in", "not_in", "gt", "gte", "lt", "lte"];
-const SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE: &str = "/search-index/skein-shadow/evidence";
-
 const REQUIRED_SCAN_FILTER_FIELDS: &[&str] = &[
     "space_id",
     "unit_type",
@@ -303,8 +306,8 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
 
     let ready = blocker_codes.is_empty();
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-evidence",
-        "evidence_source": "search_projection_probe",
+        "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+        "evidence_source": SEARCH_PROJECTION_EVIDENCE_SOURCE,
         "ready": ready,
         "derived_projection": derived_projection,
         "all_tables_covered": all_tables_covered,
@@ -384,8 +387,8 @@ pub fn nowledge_search_projection_shadow_evidence_json(
     }
     let ready = blocker_codes.is_empty();
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-shadow-evidence",
-        "evidence_source": "search_projection_shadow_probe_pair",
+        "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+        "evidence_source": SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
         "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
         "ready": ready,
         "primary_engine": str_path(primary_probe, &["engine"]).unwrap_or("lancedb"),
@@ -828,6 +831,7 @@ mod tests {
         nowledge_search_projection_evidence_json, nowledge_search_projection_probe_contract_json,
         nowledge_search_projection_shadow_evidence_json, run_skein_search_projection_probe,
     };
+    use crate::nowledge_contract::SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE;
     use crate::{
         SearchEmbeddingManifest, SearchIndex, SearchProjectionDelta, SearchProjectionKind,
         SearchProjectionRow,
@@ -1075,7 +1079,7 @@ mod tests {
 
         let report = nowledge_search_projection_shadow_evidence_json(&primary, &shadow);
 
-        assert_eq!(report["route"], "/search-index/skein-shadow/evidence");
+        assert_eq!(report["route"], SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE);
         assert_eq!(report["ready"], true);
         assert_eq!(report["primary_ready"], true);
         assert_eq!(report["shadow_ready"], true);

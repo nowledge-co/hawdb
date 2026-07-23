@@ -4745,6 +4745,11 @@ mod tests {
         verify_graph_lightning_staging_catalog, BackgroundMaintenanceReportOptions,
         PublishGraphLightningOptions, ReplacementSummaryEvidencePaths, StorageRecoveryRequirements,
     };
+    use skein::nowledge_contract::{
+        SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE, SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
+        SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+    };
     use skein::{
         api::ExplainOutput,
         optimizer::{OptimizerTrace, PhysicalPlan, PlanCost, PlanCostBreakdown},
@@ -4948,8 +4953,8 @@ mod tests {
         std::fs::write(
             &shadow_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-projection-shadow-evidence",
-                "route": "/search-index/skein-shadow/evidence",
+                "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+                "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
                 "primary_engine": "lancedb",
                 "shadow_engine": "skein",
                 "ready": true
@@ -4960,8 +4965,8 @@ mod tests {
         std::fs::write(
             &candidate_shadow_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-candidate-shadow-evidence",
-                "route": "/search-index/skein-shadow/candidate-evidence",
+                "protocol": SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+                "route": SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE,
                 "primary_engine": "lancedb",
                 "shadow_engine": "skein",
                 "ready": true

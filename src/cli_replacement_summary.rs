@@ -1,18 +1,17 @@
 use skein::{
+    nowledge_contract::{
+        SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE, SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE,
+        SEARCH_PROJECTION_EVIDENCE_SOURCE, SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
+        SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+    },
     replacement_readiness_family_evidence_health_from_bundle,
     REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
 use std::collections::BTreeSet;
 
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-candidate-shadow-evidence";
-const SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE: &str = "/search-index/skein-shadow/evidence";
-const SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE: &str =
-    "/search-index/skein-shadow/candidate-evidence";
 const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-mem-bounded-read-evidence-v1";
 const NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL: &str =
@@ -1051,7 +1050,7 @@ fn search_projection_evidence_summary(
         json_get_bool_path_from_dynamic(bundle, path, "compressed_vector_projection_ready");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL)
-        && evidence_source.as_deref() == Some("search_projection_probe")
+        && evidence_source.as_deref() == Some(SEARCH_PROJECTION_EVIDENCE_SOURCE)
         && derived_projection == Some(true)
         && all_tables_covered == Some(true)
         && covered_table_count.is_some_and(|count| count > 0)
@@ -1121,7 +1120,7 @@ fn search_projection_shadow_evidence_summary(
     let shadow_engine = json_get_str_path_from_dynamic(bundle, path, "shadow_engine");
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
-        && evidence_source == Some("search_projection_shadow_probe_pair")
+        && evidence_source == Some(SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE)
         && route == Some(SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE)
         && primary_ready == Some(true)
         && shadow_ready == Some(true)
@@ -1225,7 +1224,7 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_unsatisfiable != Some(true);
     let stable_envelope_ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
-        && evidence_source == Some("search_candidate_shadow_trace")
+        && evidence_source == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE)
         && route == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE)
         && reported_ready == Some(true)
         && blocker_codes_empty;
@@ -2810,6 +2809,14 @@ mod tests {
         nowledge_replacement_summary_json, nowledge_replacement_summary_json_with_options,
         nowledge_replacement_summary_usage, NowledgeReplacementSummaryOptions,
     };
+    use skein::nowledge_contract::{
+        SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE, SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE,
+        SEARCH_PROJECTION_EVIDENCE_SOURCE, SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
+        SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+    };
 
     #[test]
     fn replacement_summary_keeps_production_replacement_zero_without_cutover_evidence() {
@@ -3007,7 +3014,7 @@ mod tests {
         assert_eq!(summary["search_projection_shadow_evidence"]["ready"], true);
         assert_eq!(
             summary["search_projection_shadow_evidence"]["route"],
-            "/search-index/skein-shadow/evidence"
+            SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE
         );
         assert_eq!(
             summary["search_projection_shadow_evidence"]["primary_engine"],
@@ -3025,7 +3032,7 @@ mod tests {
         assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], true);
         assert_eq!(
             summary["search_candidate_shadow_evidence"]["route"],
-            "/search-index/skein-shadow/candidate-evidence"
+            SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE
         );
         assert_eq!(
             summary["search_candidate_shadow_evidence"]["row_count_parity"],
@@ -5030,8 +5037,8 @@ mod tests {
                 "matched_per_million": 1_000_000
             },
             "search_projection_evidence": {
-                "protocol": "skein-nowledge-search-projection-evidence",
-                "evidence_source": "search_projection_probe",
+                "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+                "evidence_source": SEARCH_PROJECTION_EVIDENCE_SOURCE,
                 "ready": true,
                 "derived_projection": true,
                 "all_tables_covered": true,
@@ -5051,9 +5058,9 @@ mod tests {
                 "blocker_codes": []
             },
             "search_projection_shadow_evidence": {
-                "protocol": "skein-nowledge-search-projection-shadow-evidence",
-                "evidence_source": "search_projection_shadow_probe_pair",
-                "route": "/search-index/skein-shadow/evidence",
+                "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+                "evidence_source": SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+                "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
                 "ready": true,
                 "primary_engine": "lancedb",
                 "shadow_engine": "skein",
@@ -5315,9 +5322,9 @@ mod tests {
 
     fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-search-candidate-shadow-evidence",
-            "evidence_source": "search_candidate_shadow_trace",
-            "route": "/search-index/skein-shadow/candidate-evidence",
+            "protocol": SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            "evidence_source": SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE,
+            "route": SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE,
             "engine": "skein-shadow",
             "ready": true,
             "primary_engine": "lancedb",
@@ -5372,9 +5379,9 @@ mod tests {
 
     fn ready_search_candidate_primary_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-search-candidate-shadow-evidence",
-            "evidence_source": "search_candidate_shadow_trace",
-            "route": "/search-index/skein-shadow/candidate-evidence",
+            "protocol": SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            "evidence_source": SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE,
+            "route": SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE,
             "engine": "skein-primary",
             "ready": true,
             "candidate_primary_engine": "skein",

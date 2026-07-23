@@ -3,6 +3,7 @@ pub mod api;
 pub mod compat;
 pub mod cypher;
 pub mod executor;
+pub mod nowledge_contract;
 pub mod nowledge_inventory;
 pub mod nowledge_mem;
 pub mod optimizer;

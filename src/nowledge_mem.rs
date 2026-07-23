@@ -889,6 +889,10 @@ mod tests {
         NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL,
         NOWLEDGE_MEM_READ_REPORT_PROTOCOL, NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
     };
+    use crate::nowledge_contract::{
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+        SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+    };
     use crate::search::CompressedVectorSearchMode;
     use crate::search::SearchFusionWeights;
     use crate::{
@@ -1248,7 +1252,7 @@ mod tests {
 
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-search-projection-evidence"
+            SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL
         );
         #[cfg(feature = "turbovec")]
         assert_eq!(evidence["ready"], true);
@@ -1309,7 +1313,7 @@ mod tests {
 
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-search-projection-shadow-evidence"
+            SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL
         );
         #[cfg(feature = "turbovec")]
         {
