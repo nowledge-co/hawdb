@@ -33,7 +33,7 @@ const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
 ];
 
 pub fn nowledge_replacement_summary_usage() -> String {
-    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
+    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
         .to_string()
 }
 
@@ -101,8 +101,12 @@ pub fn nowledge_replacement_summary_json_with_options(
     let overview_parity_evidence_ready = overview_parity_evidence.ready;
     let explore_parity_evidence = explore_parity_evidence_summary(bundle);
     let explore_parity_evidence_ready = explore_parity_evidence.ready;
+    let expand_parity_evidence = expand_parity_evidence_summary(bundle);
+    let expand_parity_evidence_ready = expand_parity_evidence.ready;
     let live_preview_parity_evidence = live_preview_parity_evidence_summary(bundle);
     let live_preview_parity_evidence_ready = live_preview_parity_evidence.ready;
+    let live_preview_node_parity_evidence = live_preview_node_parity_evidence_summary(bundle);
+    let live_preview_node_parity_evidence_ready = live_preview_node_parity_evidence.ready;
     let background_graph_delta_evidence_missing =
         background_maintenance_graph_delta_evidence_missing(bundle);
     let family_health = replacement_readiness_family_evidence_health_from_bundle(bundle);
@@ -122,7 +126,9 @@ pub fn nowledge_replacement_summary_json_with_options(
         && bounded_read_evidence_ready
         && overview_parity_evidence_ready
         && explore_parity_evidence_ready
+        && expand_parity_evidence_ready
         && live_preview_parity_evidence_ready
+        && live_preview_node_parity_evidence_ready
         && !background_graph_delta_evidence_missing
         && family_evidence_ready
         && replacement_readiness_per_million == Some(1_000_000);
@@ -152,7 +158,9 @@ pub fn nowledge_replacement_summary_json_with_options(
             bounded_read_evidence_ready,
             overview_parity_evidence_ready,
             explore_parity_evidence_ready,
+            expand_parity_evidence_ready,
             live_preview_parity_evidence_ready,
+            live_preview_node_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
         },
@@ -183,7 +191,9 @@ pub fn nowledge_replacement_summary_json_with_options(
             bounded_read_evidence_ready,
             overview_parity_evidence_ready,
             explore_parity_evidence_ready,
+            expand_parity_evidence_ready,
             live_preview_parity_evidence_ready,
+            live_preview_node_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
             production_cutover_ready,
@@ -319,6 +329,19 @@ pub fn nowledge_replacement_summary_json_with_options(
                 "shadow_ready": explore_parity_evidence.shadow_ready,
                 "blocker_codes": explore_parity_evidence.blocker_codes,
             },
+            "expand": {
+                "protocol": expand_parity_evidence.protocol,
+                "present": expand_parity_evidence.present,
+                "ready": expand_parity_evidence.ready,
+                "reported_ready": expand_parity_evidence.reported_ready,
+                "route": expand_parity_evidence.route,
+                "matches": expand_parity_evidence.matches,
+                "primary_engine": expand_parity_evidence.primary_engine,
+                "shadow_engine": expand_parity_evidence.shadow_engine,
+                "primary_ready": expand_parity_evidence.primary_ready,
+                "shadow_ready": expand_parity_evidence.shadow_ready,
+                "blocker_codes": expand_parity_evidence.blocker_codes,
+            },
             "live_preview": {
                 "protocol": live_preview_parity_evidence.protocol,
                 "present": live_preview_parity_evidence.present,
@@ -331,6 +354,19 @@ pub fn nowledge_replacement_summary_json_with_options(
                 "primary_ready": live_preview_parity_evidence.primary_ready,
                 "shadow_ready": live_preview_parity_evidence.shadow_ready,
                 "blocker_codes": live_preview_parity_evidence.blocker_codes,
+            },
+            "live_preview_node": {
+                "protocol": live_preview_node_parity_evidence.protocol,
+                "present": live_preview_node_parity_evidence.present,
+                "ready": live_preview_node_parity_evidence.ready,
+                "reported_ready": live_preview_node_parity_evidence.reported_ready,
+                "route": live_preview_node_parity_evidence.route,
+                "matches": live_preview_node_parity_evidence.matches,
+                "primary_engine": live_preview_node_parity_evidence.primary_engine,
+                "shadow_engine": live_preview_node_parity_evidence.shadow_engine,
+                "primary_ready": live_preview_node_parity_evidence.primary_ready,
+                "shadow_ready": live_preview_node_parity_evidence.shadow_ready,
+                "blocker_codes": live_preview_node_parity_evidence.blocker_codes,
             },
         },
         "cutover_evidence": {
@@ -521,7 +557,9 @@ struct ReplacementReadinessInputs<'a> {
     bounded_read_evidence_ready: bool,
     overview_parity_evidence_ready: bool,
     explore_parity_evidence_ready: bool,
+    expand_parity_evidence_ready: bool,
     live_preview_parity_evidence_ready: bool,
+    live_preview_node_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
 }
@@ -545,7 +583,9 @@ struct NextActionInputs<'a> {
     bounded_read_evidence_ready: bool,
     overview_parity_evidence_ready: bool,
     explore_parity_evidence_ready: bool,
+    expand_parity_evidence_ready: bool,
     live_preview_parity_evidence_ready: bool,
+    live_preview_node_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
     production_cutover_ready: bool,
@@ -1048,98 +1088,75 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
 }
 
 fn overview_parity_evidence_summary(bundle: &serde_json::Value) -> RouteParityEvidenceSummary<'_> {
-    let path = if json_get_path(bundle, &["overview_parity_evidence"]).is_some() {
-        &["overview_parity_evidence"][..]
-    } else if json_get_path(bundle, &["graph_route_parity_evidence", "overview"]).is_some() {
-        &["graph_route_parity_evidence", "overview"][..]
-    } else {
-        &["cutover_evidence", "overview_parity_evidence"][..]
-    };
-    let present = json_get_path(bundle, path).is_some();
-    let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
-    let reported_ready = json_get_bool_path_from_dynamic(bundle, path, "ready");
-    let route = json_get_str_path_from_dynamic(bundle, path, "route");
-    let matches = json_get_bool_path_from_dynamic(bundle, path, "matches");
-    let primary_ready = json_get_bool_path_from_dynamic(bundle, path, "primary_ready");
-    let shadow_ready = json_get_bool_path_from_dynamic(bundle, path, "shadow_ready");
-    let blocker_codes = json_get_array_path_from_dynamic(bundle, path, "blocker_codes");
-    let blocker_codes_empty = blocker_codes
-        .as_array()
-        .is_some_and(|blockers| blockers.is_empty());
-    let ready = present
-        && protocol.as_deref() == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL)
-        && reported_ready == Some(true)
-        && route == Some("/graph/overview")
-        && matches == Some(true)
-        && primary_ready == Some(true)
-        && shadow_ready == Some(true)
-        && blocker_codes_empty;
-    RouteParityEvidenceSummary {
-        protocol,
-        present,
-        ready,
-        reported_ready,
-        route,
-        matches,
-        primary_engine: json_get_str_path_from_dynamic(bundle, path, "primary_engine"),
-        shadow_engine: json_get_str_path_from_dynamic(bundle, path, "shadow_engine"),
-        primary_ready,
-        shadow_ready,
-        blocker_codes,
-    }
+    route_parity_evidence_summary(
+        bundle,
+        "overview_parity_evidence",
+        "overview",
+        "overview_parity_evidence",
+        "/graph/overview",
+    )
 }
 
 fn explore_parity_evidence_summary(bundle: &serde_json::Value) -> RouteParityEvidenceSummary<'_> {
-    let path = if json_get_path(bundle, &["explore_parity_evidence"]).is_some() {
-        &["explore_parity_evidence"][..]
-    } else if json_get_path(bundle, &["graph_route_parity_evidence", "explore"]).is_some() {
-        &["graph_route_parity_evidence", "explore"][..]
-    } else {
-        &["cutover_evidence", "explore_parity_evidence"][..]
-    };
-    let present = json_get_path(bundle, path).is_some();
-    let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
-    let reported_ready = json_get_bool_path_from_dynamic(bundle, path, "ready");
-    let route = json_get_str_path_from_dynamic(bundle, path, "route");
-    let matches = json_get_bool_path_from_dynamic(bundle, path, "matches");
-    let primary_ready = json_get_bool_path_from_dynamic(bundle, path, "primary_ready");
-    let shadow_ready = json_get_bool_path_from_dynamic(bundle, path, "shadow_ready");
-    let blocker_codes = json_get_array_path_from_dynamic(bundle, path, "blocker_codes");
-    let blocker_codes_empty = blocker_codes
-        .as_array()
-        .is_some_and(|blockers| blockers.is_empty());
-    let ready = present
-        && protocol.as_deref() == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL)
-        && reported_ready == Some(true)
-        && route == Some("/graph/explore")
-        && matches == Some(true)
-        && primary_ready == Some(true)
-        && shadow_ready == Some(true)
-        && blocker_codes_empty;
-    RouteParityEvidenceSummary {
-        protocol,
-        present,
-        ready,
-        reported_ready,
-        route,
-        matches,
-        primary_engine: json_get_str_path_from_dynamic(bundle, path, "primary_engine"),
-        shadow_engine: json_get_str_path_from_dynamic(bundle, path, "shadow_engine"),
-        primary_ready,
-        shadow_ready,
-        blocker_codes,
-    }
+    route_parity_evidence_summary(
+        bundle,
+        "explore_parity_evidence",
+        "explore",
+        "explore_parity_evidence",
+        "/graph/explore",
+    )
+}
+
+fn expand_parity_evidence_summary(bundle: &serde_json::Value) -> RouteParityEvidenceSummary<'_> {
+    route_parity_evidence_summary(
+        bundle,
+        "expand_parity_evidence",
+        "expand",
+        "expand_parity_evidence",
+        "/graph/expand/{node_id}",
+    )
 }
 
 fn live_preview_parity_evidence_summary(
     bundle: &serde_json::Value,
 ) -> RouteParityEvidenceSummary<'_> {
-    let path = if json_get_path(bundle, &["live_preview_parity_evidence"]).is_some() {
-        &["live_preview_parity_evidence"][..]
-    } else if json_get_path(bundle, &["graph_route_parity_evidence", "live_preview"]).is_some() {
-        &["graph_route_parity_evidence", "live_preview"][..]
+    route_parity_evidence_summary(
+        bundle,
+        "live_preview_parity_evidence",
+        "live_preview",
+        "live_preview_parity_evidence",
+        "/graph/live-preview",
+    )
+}
+
+fn live_preview_node_parity_evidence_summary(
+    bundle: &serde_json::Value,
+) -> RouteParityEvidenceSummary<'_> {
+    route_parity_evidence_summary(
+        bundle,
+        "live_preview_node_parity_evidence",
+        "live_preview_node",
+        "live_preview_node_parity_evidence",
+        "/graph/live-preview/{node_id}",
+    )
+}
+
+fn route_parity_evidence_summary<'a>(
+    bundle: &'a serde_json::Value,
+    top_level_key: &'static str,
+    nested_key: &'static str,
+    cutover_key: &'static str,
+    expected_route: &'static str,
+) -> RouteParityEvidenceSummary<'a> {
+    let top_level_path = [top_level_key];
+    let nested_path = ["graph_route_parity_evidence", nested_key];
+    let cutover_path = ["cutover_evidence", cutover_key];
+    let path = if json_get_path(bundle, &top_level_path).is_some() {
+        &top_level_path[..]
+    } else if json_get_path(bundle, &nested_path).is_some() {
+        &nested_path[..]
     } else {
-        &["cutover_evidence", "live_preview_parity_evidence"][..]
+        &cutover_path[..]
     };
     let present = json_get_path(bundle, path).is_some();
     let protocol = json_get_str_path_from_dynamic(bundle, path, "protocol").map(str::to_string);
@@ -1155,7 +1172,7 @@ fn live_preview_parity_evidence_summary(
     let ready = present
         && protocol.as_deref() == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL)
         && reported_ready == Some(true)
-        && route == Some("/graph/live-preview")
+        && route == Some(expected_route)
         && matches == Some(true)
         && primary_ready == Some(true)
         && shadow_ready == Some(true)
@@ -1288,8 +1305,14 @@ fn nowledge_replacement_blocking_categories(
     if !inputs.explore_parity_evidence_ready {
         categories.insert("explore_parity_evidence".to_string());
     }
+    if !inputs.expand_parity_evidence_ready {
+        categories.insert("expand_parity_evidence".to_string());
+    }
     if !inputs.live_preview_parity_evidence_ready {
         categories.insert("live_preview_parity_evidence".to_string());
+    }
+    if !inputs.live_preview_node_parity_evidence_ready {
+        categories.insert("live_preview_node_parity_evidence".to_string());
     }
     if json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_required"]) == Some(true)
         && json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_ready"]) != Some(true)
@@ -1543,6 +1566,22 @@ fn nowledge_replacement_next_actions(
             ],
         ));
     }
+    if !inputs.expand_parity_evidence_ready {
+        actions.push(next_action(
+            "run_expand_route_shadow_compare",
+            "expand graph route parity evidence is missing or not ready",
+            [
+                "graph_route_parity_evidence.expand.protocol",
+                "graph_route_parity_evidence.expand.present",
+                "graph_route_parity_evidence.expand.ready",
+                "graph_route_parity_evidence.expand.route",
+                "graph_route_parity_evidence.expand.matches",
+                "graph_route_parity_evidence.expand.primary_ready",
+                "graph_route_parity_evidence.expand.shadow_ready",
+                "graph_route_parity_evidence.expand.blocker_codes",
+            ],
+        ));
+    }
     if !inputs.live_preview_parity_evidence_ready {
         actions.push(next_action(
             "run_live_preview_route_shadow_compare",
@@ -1556,6 +1595,22 @@ fn nowledge_replacement_next_actions(
                 "graph_route_parity_evidence.live_preview.primary_ready",
                 "graph_route_parity_evidence.live_preview.shadow_ready",
                 "graph_route_parity_evidence.live_preview.blocker_codes",
+            ],
+        ));
+    }
+    if !inputs.live_preview_node_parity_evidence_ready {
+        actions.push(next_action(
+            "run_live_preview_node_route_shadow_compare",
+            "live-preview node graph route parity evidence is missing or not ready",
+            [
+                "graph_route_parity_evidence.live_preview_node.protocol",
+                "graph_route_parity_evidence.live_preview_node.present",
+                "graph_route_parity_evidence.live_preview_node.ready",
+                "graph_route_parity_evidence.live_preview_node.route",
+                "graph_route_parity_evidence.live_preview_node.matches",
+                "graph_route_parity_evidence.live_preview_node.primary_ready",
+                "graph_route_parity_evidence.live_preview_node.shadow_ready",
+                "graph_route_parity_evidence.live_preview_node.blocker_codes",
             ],
         ));
     }
@@ -1706,6 +1761,14 @@ fn nowledge_replacement_missing_evidence(bundle: &serde_json::Value) -> Vec<Stri
     } else if !explore_parity_evidence_summary(bundle).ready {
         missing.push("explore_parity_evidence_ready".to_string());
     }
+    if bundle.get("expand_parity_evidence").is_none()
+        && json_get_path(bundle, &["graph_route_parity_evidence", "expand"]).is_none()
+        && json_get_path(bundle, &["cutover_evidence", "expand_parity_evidence"]).is_none()
+    {
+        missing.push("expand_parity_evidence".to_string());
+    } else if !expand_parity_evidence_summary(bundle).ready {
+        missing.push("expand_parity_evidence_ready".to_string());
+    }
     if bundle.get("live_preview_parity_evidence").is_none()
         && json_get_path(bundle, &["graph_route_parity_evidence", "live_preview"]).is_none()
         && json_get_path(
@@ -1717,6 +1780,22 @@ fn nowledge_replacement_missing_evidence(bundle: &serde_json::Value) -> Vec<Stri
         missing.push("live_preview_parity_evidence".to_string());
     } else if !live_preview_parity_evidence_summary(bundle).ready {
         missing.push("live_preview_parity_evidence_ready".to_string());
+    }
+    if bundle.get("live_preview_node_parity_evidence").is_none()
+        && json_get_path(
+            bundle,
+            &["graph_route_parity_evidence", "live_preview_node"],
+        )
+        .is_none()
+        && json_get_path(
+            bundle,
+            &["cutover_evidence", "live_preview_node_parity_evidence"],
+        )
+        .is_none()
+    {
+        missing.push("live_preview_node_parity_evidence".to_string());
+    } else if !live_preview_node_parity_evidence_summary(bundle).ready {
+        missing.push("live_preview_node_parity_evidence_ready".to_string());
     }
     if bundle.get("shadow_run").is_none() {
         missing.push("shadow_run".to_string());
@@ -1796,6 +1875,13 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
             "explore_parity_evidence",
             "blocker_codes",
         ][..],
+        &["expand_parity_evidence", "blocker_codes"][..],
+        &["graph_route_parity_evidence", "expand", "blocker_codes"][..],
+        &[
+            "cutover_evidence",
+            "expand_parity_evidence",
+            "blocker_codes",
+        ][..],
         &["live_preview_parity_evidence", "blocker_codes"][..],
         &[
             "graph_route_parity_evidence",
@@ -1805,6 +1891,17 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
         &[
             "cutover_evidence",
             "live_preview_parity_evidence",
+            "blocker_codes",
+        ][..],
+        &["live_preview_node_parity_evidence", "blocker_codes"][..],
+        &[
+            "graph_route_parity_evidence",
+            "live_preview_node",
+            "blocker_codes",
+        ][..],
+        &[
+            "cutover_evidence",
+            "live_preview_node_parity_evidence",
             "blocker_codes",
         ][..],
     ] {
@@ -1929,7 +2026,9 @@ mod tests {
                 "bounded_read_evidence",
                 "cutover_evidence",
                 "dual_engine_evidence",
+                "expand_parity_evidence",
                 "explore_parity_evidence",
+                "live_preview_node_parity_evidence",
                 "live_preview_parity_evidence",
                 "overview_parity_evidence",
                 "previous_wrapper_contract",
@@ -2743,6 +2842,57 @@ mod tests {
     }
 
     #[test]
+    fn replacement_summary_blocks_production_without_expand_parity_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle
+            .as_object_mut()
+            .unwrap()
+            .remove("expand_parity_evidence");
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(
+            summary["graph_route_parity_evidence"]["expand"]["present"],
+            false
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "expand_parity_evidence"));
+        assert!(summary["blocking_categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "expand_parity_evidence"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "run_expand_route_shadow_compare"));
+    }
+
+    #[test]
+    fn replacement_summary_recomputes_expand_parity_readiness() {
+        let mut bundle = production_ready_bundle();
+        bundle["expand_parity_evidence"]["matches"] = serde_json::json!(false);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(
+            summary["graph_route_parity_evidence"]["expand"]["ready"],
+            false
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "expand_parity_evidence_ready"));
+    }
+
+    #[test]
     fn replacement_summary_blocks_production_without_live_preview_parity_evidence() {
         let mut bundle = production_ready_bundle();
         bundle
@@ -2791,6 +2941,57 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item == "live_preview_parity_evidence_ready"));
+    }
+
+    #[test]
+    fn replacement_summary_blocks_production_without_live_preview_node_parity_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle
+            .as_object_mut()
+            .unwrap()
+            .remove("live_preview_node_parity_evidence");
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(
+            summary["graph_route_parity_evidence"]["live_preview_node"]["present"],
+            false
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "live_preview_node_parity_evidence"));
+        assert!(summary["blocking_categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "live_preview_node_parity_evidence"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "run_live_preview_node_route_shadow_compare"));
+    }
+
+    #[test]
+    fn replacement_summary_recomputes_live_preview_node_parity_readiness() {
+        let mut bundle = production_ready_bundle();
+        bundle["live_preview_node_parity_evidence"]["matches"] = serde_json::json!(false);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(
+            summary["graph_route_parity_evidence"]["live_preview_node"]["ready"],
+            false
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "live_preview_node_parity_evidence_ready"));
     }
 
     #[test]
@@ -3233,7 +3434,9 @@ mod tests {
                 "bounded_read_evidence",
                 "cutover_evidence",
                 "dual_engine_evidence",
+                "expand_parity_evidence",
                 "explore_parity_evidence",
+                "live_preview_node_parity_evidence",
                 "live_preview_parity_evidence",
                 "migration_gate",
                 "overview_parity_evidence",
@@ -3261,7 +3464,9 @@ mod tests {
                 "bounded_read_evidence",
                 "overview_parity_evidence",
                 "explore_parity_evidence",
+                "expand_parity_evidence",
                 "live_preview_parity_evidence",
+                "live_preview_node_parity_evidence",
                 "shadow_run",
                 "shadow_ready"
             ])
@@ -3454,6 +3659,20 @@ mod tests {
                     ]
                 },
                 {
+                    "action": "run_expand_route_shadow_compare",
+                    "reason": "expand graph route parity evidence is missing or not ready",
+                    "evidence_fields": [
+                        "graph_route_parity_evidence.expand.protocol",
+                        "graph_route_parity_evidence.expand.present",
+                        "graph_route_parity_evidence.expand.ready",
+                        "graph_route_parity_evidence.expand.route",
+                        "graph_route_parity_evidence.expand.matches",
+                        "graph_route_parity_evidence.expand.primary_ready",
+                        "graph_route_parity_evidence.expand.shadow_ready",
+                        "graph_route_parity_evidence.expand.blocker_codes"
+                    ]
+                },
+                {
                     "action": "run_live_preview_route_shadow_compare",
                     "reason": "live-preview graph route parity evidence is missing or not ready",
                     "evidence_fields": [
@@ -3465,6 +3684,20 @@ mod tests {
                         "graph_route_parity_evidence.live_preview.primary_ready",
                         "graph_route_parity_evidence.live_preview.shadow_ready",
                         "graph_route_parity_evidence.live_preview.blocker_codes"
+                    ]
+                },
+                {
+                    "action": "run_live_preview_node_route_shadow_compare",
+                    "reason": "live-preview node graph route parity evidence is missing or not ready",
+                    "evidence_fields": [
+                        "graph_route_parity_evidence.live_preview_node.protocol",
+                        "graph_route_parity_evidence.live_preview_node.present",
+                        "graph_route_parity_evidence.live_preview_node.ready",
+                        "graph_route_parity_evidence.live_preview_node.route",
+                        "graph_route_parity_evidence.live_preview_node.matches",
+                        "graph_route_parity_evidence.live_preview_node.primary_ready",
+                        "graph_route_parity_evidence.live_preview_node.shadow_ready",
+                        "graph_route_parity_evidence.live_preview_node.blocker_codes"
                     ]
                 },
                 {
@@ -3507,9 +3740,12 @@ mod tests {
         assert!(nowledge_replacement_summary_usage().contains("--bounded-read-evidence-json"));
         assert!(nowledge_replacement_summary_usage().contains("--overview-parity-evidence-json"));
         assert!(nowledge_replacement_summary_usage().contains("--explore-parity-evidence-json"));
+        assert!(nowledge_replacement_summary_usage().contains("--expand-parity-evidence-json"));
         assert!(
             nowledge_replacement_summary_usage().contains("--live-preview-parity-evidence-json")
         );
+        assert!(nowledge_replacement_summary_usage()
+            .contains("--live-preview-node-parity-evidence-json"));
         assert!(nowledge_replacement_summary_usage().contains("--query-family-evidence-json"));
     }
 
@@ -3688,10 +3924,32 @@ mod tests {
                 "shadow_ready": true,
                 "blocker_codes": []
             },
+            "expand_parity_evidence": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/expand/{node_id}",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
             "live_preview_parity_evidence": {
                 "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
                 "ready": true,
                 "route": "/graph/live-preview",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "live_preview_node_parity_evidence": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/live-preview/{node_id}",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
