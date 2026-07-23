@@ -33,7 +33,7 @@ const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
 ];
 
 pub fn nowledge_replacement_summary_usage() -> String {
-    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
+    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--shortest-path-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
         .to_string()
 }
 
@@ -111,6 +111,8 @@ pub fn nowledge_replacement_summary_json_with_options(
     let node_details_parity_evidence_ready = node_details_parity_evidence.ready;
     let orphans_parity_evidence = orphans_parity_evidence_summary(bundle);
     let orphans_parity_evidence_ready = orphans_parity_evidence.ready;
+    let shortest_path_parity_evidence = shortest_path_parity_evidence_summary(bundle);
+    let shortest_path_parity_evidence_ready = shortest_path_parity_evidence.ready;
     let background_graph_delta_evidence_missing =
         background_maintenance_graph_delta_evidence_missing(bundle);
     let family_health = replacement_readiness_family_evidence_health_from_bundle(bundle);
@@ -135,6 +137,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         && live_preview_node_parity_evidence_ready
         && node_details_parity_evidence_ready
         && orphans_parity_evidence_ready
+        && shortest_path_parity_evidence_ready
         && !background_graph_delta_evidence_missing
         && family_evidence_ready
         && replacement_readiness_per_million == Some(1_000_000);
@@ -169,6 +172,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             live_preview_node_parity_evidence_ready,
             node_details_parity_evidence_ready,
             orphans_parity_evidence_ready,
+            shortest_path_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
         },
@@ -204,6 +208,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             live_preview_node_parity_evidence_ready,
             node_details_parity_evidence_ready,
             orphans_parity_evidence_ready,
+            shortest_path_parity_evidence_ready,
             background_graph_delta_evidence_missing,
             family_evidence_ready,
             production_cutover_ready,
@@ -404,6 +409,19 @@ pub fn nowledge_replacement_summary_json_with_options(
                 "shadow_ready": orphans_parity_evidence.shadow_ready,
                 "blocker_codes": orphans_parity_evidence.blocker_codes,
             },
+            "shortest_path": {
+                "protocol": shortest_path_parity_evidence.protocol,
+                "present": shortest_path_parity_evidence.present,
+                "ready": shortest_path_parity_evidence.ready,
+                "reported_ready": shortest_path_parity_evidence.reported_ready,
+                "route": shortest_path_parity_evidence.route,
+                "matches": shortest_path_parity_evidence.matches,
+                "primary_engine": shortest_path_parity_evidence.primary_engine,
+                "shadow_engine": shortest_path_parity_evidence.shadow_engine,
+                "primary_ready": shortest_path_parity_evidence.primary_ready,
+                "shadow_ready": shortest_path_parity_evidence.shadow_ready,
+                "blocker_codes": shortest_path_parity_evidence.blocker_codes,
+            },
         },
         "cutover_evidence": {
             "eligible": cutover_evidence_eligible,
@@ -598,6 +616,7 @@ struct ReplacementReadinessInputs<'a> {
     live_preview_node_parity_evidence_ready: bool,
     node_details_parity_evidence_ready: bool,
     orphans_parity_evidence_ready: bool,
+    shortest_path_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
 }
@@ -626,6 +645,7 @@ struct NextActionInputs<'a> {
     live_preview_node_parity_evidence_ready: bool,
     node_details_parity_evidence_ready: bool,
     orphans_parity_evidence_ready: bool,
+    shortest_path_parity_evidence_ready: bool,
     background_graph_delta_evidence_missing: bool,
     family_evidence_ready: bool,
     production_cutover_ready: bool,
@@ -1203,6 +1223,18 @@ fn orphans_parity_evidence_summary(bundle: &serde_json::Value) -> RouteParityEvi
     )
 }
 
+fn shortest_path_parity_evidence_summary(
+    bundle: &serde_json::Value,
+) -> RouteParityEvidenceSummary<'_> {
+    route_parity_evidence_summary(
+        bundle,
+        "shortest_path_parity_evidence",
+        "shortest_path",
+        "shortest_path_parity_evidence",
+        "/graph/shortest-path",
+    )
+}
+
 fn route_parity_evidence_summary<'a>(
     bundle: &'a serde_json::Value,
     top_level_key: &'static str,
@@ -1381,6 +1413,9 @@ fn nowledge_replacement_blocking_categories(
     }
     if !inputs.orphans_parity_evidence_ready {
         categories.insert("orphans_parity_evidence".to_string());
+    }
+    if !inputs.shortest_path_parity_evidence_ready {
+        categories.insert("shortest_path_parity_evidence".to_string());
     }
     if json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_required"]) == Some(true)
         && json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_ready"]) != Some(true)
@@ -1714,6 +1749,22 @@ fn nowledge_replacement_next_actions(
             ],
         ));
     }
+    if !inputs.shortest_path_parity_evidence_ready {
+        actions.push(next_action(
+            "run_shortest_path_route_shadow_compare",
+            "shortest-path graph route parity evidence is missing or not ready",
+            [
+                "graph_route_parity_evidence.shortest_path.protocol",
+                "graph_route_parity_evidence.shortest_path.present",
+                "graph_route_parity_evidence.shortest_path.ready",
+                "graph_route_parity_evidence.shortest_path.route",
+                "graph_route_parity_evidence.shortest_path.matches",
+                "graph_route_parity_evidence.shortest_path.primary_ready",
+                "graph_route_parity_evidence.shortest_path.shadow_ready",
+                "graph_route_parity_evidence.shortest_path.blocker_codes",
+            ],
+        ));
+    }
     if json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_required"]) == Some(true)
         && json_get_bool_path(bundle, &["cutover_evidence", "storage_recovery_ready"]) != Some(true)
     {
@@ -1917,6 +1968,18 @@ fn nowledge_replacement_missing_evidence(bundle: &serde_json::Value) -> Vec<Stri
     } else if !orphans_parity_evidence_summary(bundle).ready {
         missing.push("orphans_parity_evidence_ready".to_string());
     }
+    if bundle.get("shortest_path_parity_evidence").is_none()
+        && json_get_path(bundle, &["graph_route_parity_evidence", "shortest_path"]).is_none()
+        && json_get_path(
+            bundle,
+            &["cutover_evidence", "shortest_path_parity_evidence"],
+        )
+        .is_none()
+    {
+        missing.push("shortest_path_parity_evidence".to_string());
+    } else if !shortest_path_parity_evidence_summary(bundle).ready {
+        missing.push("shortest_path_parity_evidence_ready".to_string());
+    }
     if bundle.get("shadow_run").is_none() {
         missing.push("shadow_run".to_string());
     }
@@ -2040,6 +2103,17 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
         &[
             "cutover_evidence",
             "orphans_parity_evidence",
+            "blocker_codes",
+        ][..],
+        &["shortest_path_parity_evidence", "blocker_codes"][..],
+        &[
+            "graph_route_parity_evidence",
+            "shortest_path",
+            "blocker_codes",
+        ][..],
+        &[
+            "cutover_evidence",
+            "shortest_path_parity_evidence",
             "blocker_codes",
         ][..],
     ] {
@@ -2176,7 +2250,8 @@ mod tests {
                 "search_candidate_shadow_evidence",
                 "search_projection_evidence",
                 "search_projection_shadow_evidence",
-                "shadow_parity"
+                "shadow_parity",
+                "shortest_path_parity_evidence"
             ])
         );
         assert!(summary["missing_evidence"]
@@ -3690,6 +3765,7 @@ mod tests {
                 "search_projection_evidence",
                 "search_projection_shadow_evidence",
                 "shadow_parity",
+                "shortest_path_parity_evidence",
                 "storage_recovery"
             ])
         );
@@ -3713,6 +3789,7 @@ mod tests {
                 "live_preview_node_parity_evidence",
                 "node_details_parity_evidence",
                 "orphans_parity_evidence",
+                "shortest_path_parity_evidence",
                 "shadow_run",
                 "shadow_ready"
             ])
@@ -3975,6 +4052,20 @@ mod tests {
                     ]
                 },
                 {
+                    "action": "run_shortest_path_route_shadow_compare",
+                    "reason": "shortest-path graph route parity evidence is missing or not ready",
+                    "evidence_fields": [
+                        "graph_route_parity_evidence.shortest_path.protocol",
+                        "graph_route_parity_evidence.shortest_path.present",
+                        "graph_route_parity_evidence.shortest_path.ready",
+                        "graph_route_parity_evidence.shortest_path.route",
+                        "graph_route_parity_evidence.shortest_path.matches",
+                        "graph_route_parity_evidence.shortest_path.primary_ready",
+                        "graph_route_parity_evidence.shortest_path.shadow_ready",
+                        "graph_route_parity_evidence.shortest_path.blocker_codes"
+                    ]
+                },
+                {
                     "action": "attach_storage_recovery_report",
                     "reason": "required storage recovery evidence is missing or blocked",
                     "evidence_fields": [
@@ -4024,6 +4115,9 @@ mod tests {
             nowledge_replacement_summary_usage().contains("--node-details-parity-evidence-json")
         );
         assert!(nowledge_replacement_summary_usage().contains("--orphans-parity-evidence-json"));
+        assert!(
+            nowledge_replacement_summary_usage().contains("--shortest-path-parity-evidence-json")
+        );
         assert!(nowledge_replacement_summary_usage().contains("--query-family-evidence-json"));
     }
 
@@ -4250,6 +4344,17 @@ mod tests {
                 "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
                 "ready": true,
                 "route": "/graph/orphans",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "shortest_path_parity_evidence": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/graph/shortest-path",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",

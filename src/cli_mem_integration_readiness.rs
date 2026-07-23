@@ -955,6 +955,54 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ),
         ),
         check(
+            "graph_route_shortest_path_parity_evidence",
+            [
+                replacement_summary_shortest_path_parity_ready(bundle),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "shortest_path",
+                        "protocol",
+                    ],
+                ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "shortest_path",
+                        "route",
+                    ],
+                ) == Some("/graph/shortest-path"),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "shortest_path",
+                        "matches",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary.graph_route_parity_evidence.shortest_path.ready",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.protocol",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.route",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.matches",
+            ],
+            blocker_codes(
+                bundle,
+                &[&[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    "shortest_path",
+                    "blocker_codes",
+                ][..]],
+            ),
+        ),
+        check(
             "background_maintenance_evidence",
             [
                 bool_path(
@@ -1485,6 +1533,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !replacement_summary_shortest_path_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_shortest_path_route_shadow_compare",
+            "shortest-path graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.shortest_path.protocol",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.ready",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.route",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.matches",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.shortest_path.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_storage_recovery_ready(bundle) {
         actions.push(next_action(
             "attach_storage_recovery_report",
@@ -1873,6 +1936,10 @@ fn replacement_summary_node_details_parity_ready(bundle: &serde_json::Value) -> 
 
 fn replacement_summary_orphans_parity_ready(bundle: &serde_json::Value) -> bool {
     graph_route_parity_ready(bundle, "orphans", "/graph/orphans")
+}
+
+fn replacement_summary_shortest_path_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "shortest_path", "/graph/shortest-path")
 }
 
 fn graph_route_parity_ready(bundle: &serde_json::Value, key: &str, route: &str) -> bool {
@@ -2988,6 +3055,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_shortest_path_route_parity_mismatch() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary"]["graph_route_parity_evidence"]["shortest_path"]["matches"] =
+            serde_json::json!(false);
+        bundle["replacement_summary"]["graph_route_parity_evidence"]["shortest_path"]
+            ["blocker_codes"] = serde_json::json!(["shortest_path_route_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["graph_route_shortest_path_parity_evidence"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["shortest_path_route_mismatch"])
+        );
+    }
+
+    #[test]
     fn requires_background_maintenance_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["cutover_evidence"]["background_maintenance_ready"] =
@@ -3466,6 +3554,19 @@ mod tests {
                 "ready": true,
                 "reported_ready": true,
                 "route": "/graph/orphans",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "shortest_path": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/shortest-path",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
