@@ -34,6 +34,7 @@ const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
     "/graph/augmentation/state",
     "/graph/augmentation/pagerank/plan",
     "/graph/node-details/{node_id}",
+    "/sources/{source_id}",
     "/graph/orphans",
     "/graph/shortest-path",
 ];
@@ -1249,6 +1250,54 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ),
         ),
         check(
+            "graph_route_source_detail_parity_evidence",
+            [
+                replacement_summary_source_detail_parity_ready(bundle),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "source_detail",
+                        "protocol",
+                    ],
+                ) == Some(NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL),
+                str_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "source_detail",
+                        "route",
+                    ],
+                ) == Some("/sources/{source_id}"),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary",
+                        "graph_route_parity_evidence",
+                        "source_detail",
+                        "matches",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary.graph_route_parity_evidence.source_detail.ready",
+                "replacement_summary.graph_route_parity_evidence.source_detail.protocol",
+                "replacement_summary.graph_route_parity_evidence.source_detail.route",
+                "replacement_summary.graph_route_parity_evidence.source_detail.matches",
+            ],
+            blocker_codes(
+                bundle,
+                &[&[
+                    "replacement_summary",
+                    "graph_route_parity_evidence",
+                    "source_detail",
+                    "blocker_codes",
+                ][..]],
+            ),
+        ),
+        check(
             "graph_route_orphans_parity_evidence",
             [
                 replacement_summary_orphans_parity_ready(bundle),
@@ -2299,6 +2348,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !replacement_summary_source_detail_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_source_detail_route_shadow_compare",
+            "source-detail graph route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.source_detail.protocol",
+                "replacement_summary.graph_route_parity_evidence.source_detail.ready",
+                "replacement_summary.graph_route_parity_evidence.source_detail.route",
+                "replacement_summary.graph_route_parity_evidence.source_detail.matches",
+                "replacement_summary.graph_route_parity_evidence.source_detail.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.source_detail.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.source_detail.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_orphans_parity_ready(bundle) {
         actions.push(next_action(
             "run_orphans_route_shadow_compare",
@@ -2924,6 +2988,10 @@ fn replacement_summary_live_preview_node_parity_ready(bundle: &serde_json::Value
 
 fn replacement_summary_node_details_parity_ready(bundle: &serde_json::Value) -> bool {
     graph_route_parity_ready(bundle, "node_details", "/graph/node-details/{node_id}")
+}
+
+fn replacement_summary_source_detail_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "source_detail", "/sources/{source_id}")
 }
 
 fn replacement_summary_orphans_parity_ready(bundle: &serde_json::Value) -> bool {
@@ -5119,6 +5187,7 @@ mod tests {
                     "/graph/augmentation/state",
                     "/graph/augmentation/pagerank/plan",
                     "/graph/node-details/{node_id}",
+                    "/sources/{source_id}",
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
@@ -5137,6 +5206,7 @@ mod tests {
                     "/graph/augmentation/state",
                     "/graph/augmentation/pagerank/plan",
                     "/graph/node-details/{node_id}",
+                    "/sources/{source_id}",
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
@@ -5236,6 +5306,7 @@ mod tests {
                         "/graph/augmentation/state",
                         "/graph/augmentation/pagerank/plan",
                         "/graph/node-details/{node_id}",
+                        "/sources/{source_id}",
                         "/graph/orphans",
                         "/graph/shortest-path"
                     ],
@@ -5255,6 +5326,7 @@ mod tests {
                         "/graph/augmentation/state",
                         "/graph/augmentation/pagerank/plan",
                         "/graph/node-details/{node_id}",
+                        "/sources/{source_id}",
                         "/graph/orphans",
                         "/graph/shortest-path"
                     ],
@@ -5471,6 +5543,19 @@ mod tests {
                 "ready": true,
                 "reported_ready": true,
                 "route": "/graph/node-details/{node_id}",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "source_detail": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/sources/{source_id}",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",

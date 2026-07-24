@@ -643,6 +643,7 @@ fn main() -> Result<()> {
             let mut live_preview_parity_evidence_path = None;
             let mut live_preview_node_parity_evidence_path = None;
             let mut node_details_parity_evidence_path = None;
+            let mut source_detail_parity_evidence_path = None;
             let mut orphans_parity_evidence_path = None;
             let mut shortest_path_parity_evidence_path = None;
             let mut community_members_parity_evidence_path = None;
@@ -756,6 +757,13 @@ fn main() -> Result<()> {
                             SkeinError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
+                    "--source-detail-parity-evidence-json" => {
+                        args.next();
+                        source_detail_parity_evidence_path =
+                            Some(args.next().ok_or_else(|| {
+                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            })?);
+                    }
                     "--orphans-parity-evidence-json" => {
                         args.next();
                         orphans_parity_evidence_path = Some(args.next().ok_or_else(|| {
@@ -833,6 +841,7 @@ fn main() -> Result<()> {
                 live_preview_parity: live_preview_parity_evidence_path.as_deref(),
                 live_preview_node_parity: live_preview_node_parity_evidence_path.as_deref(),
                 node_details_parity: node_details_parity_evidence_path.as_deref(),
+                source_detail_parity: source_detail_parity_evidence_path.as_deref(),
                 orphans_parity: orphans_parity_evidence_path.as_deref(),
                 shortest_path_parity: shortest_path_parity_evidence_path.as_deref(),
                 community_members_parity: community_members_parity_evidence_path.as_deref(),
@@ -1564,6 +1573,7 @@ struct ReplacementSummaryEvidencePaths<'a> {
     live_preview_parity: Option<&'a str>,
     live_preview_node_parity: Option<&'a str>,
     node_details_parity: Option<&'a str>,
+    source_detail_parity: Option<&'a str>,
     orphans_parity: Option<&'a str>,
     shortest_path_parity: Option<&'a str>,
     community_members_parity: Option<&'a str>,
@@ -1659,6 +1669,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "node_details_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = paths.source_detail_parity {
+        insert_replacement_summary_artifact(
+            bundle,
+            "source_detail_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -5378,6 +5395,7 @@ mod tests {
             live_preview_parity: Some(live_preview_path.to_str().unwrap()),
             live_preview_node_parity: Some(live_preview_node_path.to_str().unwrap()),
             node_details_parity: Some(node_details_path.to_str().unwrap()),
+            source_detail_parity: None,
             orphans_parity: Some(orphans_path.to_str().unwrap()),
             shortest_path_parity: Some(shortest_path_path.to_str().unwrap()),
             community_members_parity: Some(community_members_path.to_str().unwrap()),

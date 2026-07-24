@@ -30,12 +30,13 @@ const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
     "/graph/augmentation/state",
     "/graph/augmentation/pagerank/plan",
     "/graph/node-details/{node_id}",
+    "/sources/{source_id}",
     "/graph/orphans",
     "/graph/shortest-path",
 ];
 
 pub fn nowledge_replacement_summary_usage() -> String {
-    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--augmentation-state-parity-evidence-json <path>] [--pagerank-plan-parity-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--shortest-path-parity-evidence-json <path>] [--community-members-parity-evidence-json <path>] [--community-subgraph-parity-evidence-json <path>] [--community-recent-memories-parity-evidence-json <path>] [--related-communities-parity-evidence-json <path>] [--graph-analysis-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
+    "nowledge-replacement-summary requires [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--augmentation-state-parity-evidence-json <path>] [--pagerank-plan-parity-evidence-json <path>] [--overview-parity-evidence-json <path>] [--explore-parity-evidence-json <path>] [--expand-parity-evidence-json <path>] [--live-preview-parity-evidence-json <path>] [--live-preview-node-parity-evidence-json <path>] [--node-details-parity-evidence-json <path>] [--source-detail-parity-evidence-json <path>] [--orphans-parity-evidence-json <path>] [--shortest-path-parity-evidence-json <path>] [--community-members-parity-evidence-json <path>] [--community-subgraph-parity-evidence-json <path>] [--community-recent-memories-parity-evidence-json <path>] [--related-communities-parity-evidence-json <path>] [--graph-analysis-parity-evidence-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>"
         .to_string()
 }
 
@@ -115,6 +116,8 @@ pub fn nowledge_replacement_summary_json_with_options(
     let live_preview_node_parity_evidence_ready = live_preview_node_parity_evidence.ready;
     let node_details_parity_evidence = node_details_parity_evidence_summary(bundle);
     let node_details_parity_evidence_ready = node_details_parity_evidence.ready;
+    let source_detail_parity_evidence = source_detail_parity_evidence_summary(bundle);
+    let source_detail_parity_evidence_ready = source_detail_parity_evidence.ready;
     let orphans_parity_evidence = orphans_parity_evidence_summary(bundle);
     let orphans_parity_evidence_ready = orphans_parity_evidence.ready;
     let shortest_path_parity_evidence = shortest_path_parity_evidence_summary(bundle);
@@ -156,6 +159,7 @@ pub fn nowledge_replacement_summary_json_with_options(
         && live_preview_parity_evidence_ready
         && live_preview_node_parity_evidence_ready
         && node_details_parity_evidence_ready
+        && source_detail_parity_evidence_ready
         && orphans_parity_evidence_ready
         && shortest_path_parity_evidence_ready
         && community_members_parity_evidence_ready
@@ -198,6 +202,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             live_preview_parity_evidence_ready,
             live_preview_node_parity_evidence_ready,
             node_details_parity_evidence_ready,
+            source_detail_parity_evidence_ready,
             orphans_parity_evidence_ready,
             shortest_path_parity_evidence_ready,
             community_members_parity_evidence_ready,
@@ -241,6 +246,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             live_preview_parity_evidence_ready,
             live_preview_node_parity_evidence_ready,
             node_details_parity_evidence_ready,
+            source_detail_parity_evidence_ready,
             orphans_parity_evidence_ready,
             shortest_path_parity_evidence_ready,
             community_members_parity_evidence_ready,
@@ -469,6 +475,19 @@ pub fn nowledge_replacement_summary_json_with_options(
                 "primary_ready": node_details_parity_evidence.primary_ready,
                 "shadow_ready": node_details_parity_evidence.shadow_ready,
                 "blocker_codes": node_details_parity_evidence.blocker_codes,
+            },
+            "source_detail": {
+                "protocol": source_detail_parity_evidence.protocol,
+                "present": source_detail_parity_evidence.present,
+                "ready": source_detail_parity_evidence.ready,
+                "reported_ready": source_detail_parity_evidence.reported_ready,
+                "route": source_detail_parity_evidence.route,
+                "matches": source_detail_parity_evidence.matches,
+                "primary_engine": source_detail_parity_evidence.primary_engine,
+                "shadow_engine": source_detail_parity_evidence.shadow_engine,
+                "primary_ready": source_detail_parity_evidence.primary_ready,
+                "shadow_ready": source_detail_parity_evidence.shadow_ready,
+                "blocker_codes": source_detail_parity_evidence.blocker_codes,
             },
             "orphans": {
                 "protocol": orphans_parity_evidence.protocol,
@@ -756,6 +775,7 @@ struct ReplacementReadinessInputs<'a> {
     live_preview_parity_evidence_ready: bool,
     live_preview_node_parity_evidence_ready: bool,
     node_details_parity_evidence_ready: bool,
+    source_detail_parity_evidence_ready: bool,
     orphans_parity_evidence_ready: bool,
     shortest_path_parity_evidence_ready: bool,
     community_members_parity_evidence_ready: bool,
@@ -792,6 +812,7 @@ struct NextActionInputs<'a> {
     live_preview_parity_evidence_ready: bool,
     live_preview_node_parity_evidence_ready: bool,
     node_details_parity_evidence_ready: bool,
+    source_detail_parity_evidence_ready: bool,
     orphans_parity_evidence_ready: bool,
     shortest_path_parity_evidence_ready: bool,
     community_members_parity_evidence_ready: bool,
@@ -1423,6 +1444,18 @@ fn node_details_parity_evidence_summary(
     )
 }
 
+fn source_detail_parity_evidence_summary(
+    bundle: &serde_json::Value,
+) -> RouteParityEvidenceSummary<'_> {
+    route_parity_evidence_summary(
+        bundle,
+        "source_detail_parity_evidence",
+        "source_detail",
+        "source_detail_parity_evidence",
+        "/sources/{source_id}",
+    )
+}
+
 fn orphans_parity_evidence_summary(bundle: &serde_json::Value) -> RouteParityEvidenceSummary<'_> {
     route_parity_evidence_summary(
         bundle,
@@ -1720,6 +1753,9 @@ fn nowledge_replacement_blocking_categories(
     }
     if !inputs.node_details_parity_evidence_ready {
         categories.insert("node_details_parity_evidence".to_string());
+    }
+    if !inputs.source_detail_parity_evidence_ready {
+        categories.insert("source_detail_parity_evidence".to_string());
     }
     if !inputs.orphans_parity_evidence_ready {
         categories.insert("orphans_parity_evidence".to_string());
@@ -2103,6 +2139,22 @@ fn nowledge_replacement_next_actions(
             ],
         ));
     }
+    if !inputs.source_detail_parity_evidence_ready {
+        actions.push(next_action(
+            "run_source_detail_route_shadow_compare",
+            "source-detail graph route parity evidence is missing or not ready",
+            [
+                "graph_route_parity_evidence.source_detail.protocol",
+                "graph_route_parity_evidence.source_detail.present",
+                "graph_route_parity_evidence.source_detail.ready",
+                "graph_route_parity_evidence.source_detail.route",
+                "graph_route_parity_evidence.source_detail.matches",
+                "graph_route_parity_evidence.source_detail.primary_ready",
+                "graph_route_parity_evidence.source_detail.shadow_ready",
+                "graph_route_parity_evidence.source_detail.blocker_codes",
+            ],
+        ));
+    }
     if !inputs.orphans_parity_evidence_ready {
         actions.push(next_action(
             "run_orphans_route_shadow_compare",
@@ -2438,6 +2490,18 @@ fn nowledge_replacement_missing_evidence(bundle: &serde_json::Value) -> Vec<Stri
     } else if !node_details_parity_evidence_summary(bundle).ready {
         missing.push("node_details_parity_evidence_ready".to_string());
     }
+    if bundle.get("source_detail_parity_evidence").is_none()
+        && json_get_path(bundle, &["graph_route_parity_evidence", "source_detail"]).is_none()
+        && json_get_path(
+            bundle,
+            &["cutover_evidence", "source_detail_parity_evidence"],
+        )
+        .is_none()
+    {
+        missing.push("source_detail_parity_evidence".to_string());
+    } else if !source_detail_parity_evidence_summary(bundle).ready {
+        missing.push("source_detail_parity_evidence_ready".to_string());
+    }
     if bundle.get("orphans_parity_evidence").is_none()
         && json_get_path(bundle, &["graph_route_parity_evidence", "orphans"]).is_none()
         && json_get_path(bundle, &["cutover_evidence", "orphans_parity_evidence"]).is_none()
@@ -2679,6 +2743,17 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
             "node_details_parity_evidence",
             "blocker_codes",
         ][..],
+        &["source_detail_parity_evidence", "blocker_codes"][..],
+        &[
+            "graph_route_parity_evidence",
+            "source_detail",
+            "blocker_codes",
+        ][..],
+        &[
+            "cutover_evidence",
+            "source_detail_parity_evidence",
+            "blocker_codes",
+        ][..],
         &["orphans_parity_evidence", "blocker_codes"][..],
         &["graph_route_parity_evidence", "orphans", "blocker_codes"][..],
         &[
@@ -2902,7 +2977,8 @@ mod tests {
                 "search_projection_evidence",
                 "search_projection_shadow_evidence",
                 "shadow_parity",
-                "shortest_path_parity_evidence"
+                "shortest_path_parity_evidence",
+                "source_detail_parity_evidence"
             ])
         );
         assert!(summary["missing_evidence"]
@@ -3646,6 +3722,7 @@ mod tests {
             "/graph/augmentation/state",
             "/graph/augmentation/pagerank/plan",
             "/graph/node-details/{node_id}",
+            "/sources/{source_id}",
             "/graph/orphans",
             "/graph/shortest-path"
         ]);
@@ -3699,6 +3776,7 @@ mod tests {
             "/graph/augmentation/state",
             "/graph/augmentation/pagerank/plan",
             "/graph/node-details/{node_id}",
+            "/sources/{source_id}",
             "/graph/orphans",
             "/graph/shortest-path"
         ]);
@@ -4575,6 +4653,7 @@ mod tests {
                 "search_projection_shadow_evidence",
                 "shadow_parity",
                 "shortest_path_parity_evidence",
+                "source_detail_parity_evidence",
                 "storage_recovery"
             ])
         );
@@ -4599,6 +4678,7 @@ mod tests {
                 "live_preview_parity_evidence",
                 "live_preview_node_parity_evidence",
                 "node_details_parity_evidence",
+                "source_detail_parity_evidence",
                 "orphans_parity_evidence",
                 "shortest_path_parity_evidence",
                 "community_members_parity_evidence",
@@ -4895,6 +4975,20 @@ mod tests {
                     ]
                 },
                 {
+                    "action": "run_source_detail_route_shadow_compare",
+                    "reason": "source-detail graph route parity evidence is missing or not ready",
+                    "evidence_fields": [
+                        "graph_route_parity_evidence.source_detail.protocol",
+                        "graph_route_parity_evidence.source_detail.present",
+                        "graph_route_parity_evidence.source_detail.ready",
+                        "graph_route_parity_evidence.source_detail.route",
+                        "graph_route_parity_evidence.source_detail.matches",
+                        "graph_route_parity_evidence.source_detail.primary_ready",
+                        "graph_route_parity_evidence.source_detail.shadow_ready",
+                        "graph_route_parity_evidence.source_detail.blocker_codes"
+                    ]
+                },
+                {
                     "action": "run_orphans_route_shadow_compare",
                     "reason": "orphans graph route parity evidence is missing or not ready",
                     "evidence_fields": [
@@ -5184,6 +5278,7 @@ mod tests {
                     "/graph/augmentation/state",
                     "/graph/augmentation/pagerank/plan",
                     "/graph/node-details/{node_id}",
+                    "/sources/{source_id}",
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
@@ -5202,6 +5297,7 @@ mod tests {
                     "/graph/augmentation/state",
                     "/graph/augmentation/pagerank/plan",
                     "/graph/node-details/{node_id}",
+                    "/sources/{source_id}",
                     "/graph/orphans",
                     "/graph/shortest-path"
                 ],
@@ -5289,6 +5385,17 @@ mod tests {
                 "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
                 "ready": true,
                 "route": "/graph/node-details/{node_id}",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "source_detail_parity_evidence": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "ready": true,
+                "route": "/sources/{source_id}",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
