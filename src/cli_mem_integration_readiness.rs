@@ -16,6 +16,8 @@ const NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL: &str =
 const SKEIN_NOWLEDGE_REPLACEMENT_SUMMARY_PROTOCOL: &str = "skein-nowledge-replacement-summary";
 const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
     "skein-nowledge-mem-bounded-read-evidence-v1";
+const SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
+    "skein-nowledge-query-runtime-preflight-v1";
 const NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL: &str =
     "nmem-graph-route-shadow-parity-evidence-v1";
 const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
@@ -789,6 +791,36 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                     "replacement_summary_graph_route_alignment",
                     "blocker_codes",
                 ][..]],
+            ),
+        ),
+        check(
+            "query_runtime_preflight",
+            [
+                str_path(bundle, &["query_runtime_preflight", "protocol"])
+                    == Some(SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL),
+                bool_path(bundle, &["query_runtime_preflight", "ready"]) == Some(true),
+                bool_path(bundle, &["query_runtime_preflight", "database_opened"]) == Some(true),
+                u64_path(bundle, &["query_runtime_preflight", "probe_count"])
+                    .is_some_and(|value| value > 0),
+                query_runtime_preflight_counts_match(bundle),
+                u64_path(bundle, &["query_runtime_preflight", "failed_probe_count"]) == Some(0),
+                query_runtime_preflight_probe_details_ready(bundle),
+            ],
+            [
+                "query_runtime_preflight.protocol",
+                "query_runtime_preflight.ready",
+                "query_runtime_preflight.database_opened",
+                "query_runtime_preflight.probe_count",
+                "query_runtime_preflight.passed_probe_count",
+                "query_runtime_preflight.failed_probe_count",
+                "query_runtime_preflight.probes",
+            ],
+            blocker_codes(
+                bundle,
+                &[
+                    &["query_runtime_preflight", "blocker_codes"][..],
+                    &["query_runtime_preflight", "failed_checks"][..],
+                ],
             ),
         ),
         check(
@@ -2107,6 +2139,22 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !query_runtime_preflight_ready(bundle) {
+        actions.push(next_action(
+            "attach_query_runtime_preflight_evidence",
+            "Nowledge Mem cutover requires read-only query runtime EXPLAIN ANALYZE preflight evidence",
+            [
+                "query_runtime_preflight.protocol",
+                "query_runtime_preflight.ready",
+                "query_runtime_preflight.database_opened",
+                "query_runtime_preflight.probe_count",
+                "query_runtime_preflight.passed_probe_count",
+                "query_runtime_preflight.failed_probe_count",
+                "query_runtime_preflight.blocker_codes",
+                "query_runtime_preflight.probes",
+            ],
+        ));
+    }
     if !cutover_alignment_ready(bundle) {
         actions.push(next_action(
             "regenerate_cutover_evidence_alignment",
@@ -3091,6 +3139,41 @@ fn cutover_alignment_ready(bundle: &serde_json::Value) -> bool {
     ]
     .iter()
     .all(|path| bool_path(bundle, path) == Some(true))
+}
+
+fn query_runtime_preflight_ready(bundle: &serde_json::Value) -> bool {
+    str_path(bundle, &["query_runtime_preflight", "protocol"])
+        == Some(SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
+        && bool_path(bundle, &["query_runtime_preflight", "ready"]) == Some(true)
+        && bool_path(bundle, &["query_runtime_preflight", "database_opened"]) == Some(true)
+        && u64_path(bundle, &["query_runtime_preflight", "probe_count"])
+            .is_some_and(|value| value > 0)
+        && query_runtime_preflight_counts_match(bundle)
+        && u64_path(bundle, &["query_runtime_preflight", "failed_probe_count"]) == Some(0)
+        && query_runtime_preflight_probe_details_ready(bundle)
+}
+
+fn query_runtime_preflight_counts_match(bundle: &serde_json::Value) -> bool {
+    let probe_count = u64_path(bundle, &["query_runtime_preflight", "probe_count"]);
+    let passed_probe_count = u64_path(bundle, &["query_runtime_preflight", "passed_probe_count"]);
+    probe_count.is_some_and(|value| value > 0) && probe_count == passed_probe_count
+}
+
+fn query_runtime_preflight_probe_details_ready(bundle: &serde_json::Value) -> bool {
+    let Some(probes) = json_get_path(bundle, &["query_runtime_preflight", "probes"])
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    !probes.is_empty()
+        && probes.iter().all(|probe| {
+            bool_path(probe, &["ready"]) == Some(true)
+                && bool_path(probe, &["success"]) == Some(true)
+                && non_empty_str_path(probe, &["selected_plan_fingerprint"])
+                && u64_path(probe, &["output_row_count"]).is_some()
+                && u64_path(probe, &["execution_profile", "scan_pruning_report_count"]).is_some()
+                && string_array_path(probe, &["blocker_codes"]).is_empty()
+        })
 }
 
 fn search_projection_alignment_ready(bundle: &serde_json::Value) -> bool {
@@ -4427,6 +4510,73 @@ mod tests {
     }
 
     #[test]
+    fn requires_query_runtime_preflight_evidence() {
+        let mut bundle = ready_bundle();
+        bundle
+            .as_object_mut()
+            .unwrap()
+            .remove("query_runtime_preflight");
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["query_runtime_preflight"])
+        );
+        let check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "query_runtime_preflight")
+            .unwrap();
+        assert_eq!(
+            check["failed_evidence_fields"],
+            serde_json::json!([
+                "query_runtime_preflight.protocol",
+                "query_runtime_preflight.ready",
+                "query_runtime_preflight.database_opened",
+                "query_runtime_preflight.probe_count",
+                "query_runtime_preflight.passed_probe_count",
+                "query_runtime_preflight.failed_probe_count",
+                "query_runtime_preflight.probes"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "attach_query_runtime_preflight_evidence"));
+    }
+
+    #[test]
+    fn rejects_weak_query_runtime_preflight_even_if_ready_flag_is_true() {
+        let mut bundle = ready_bundle();
+        bundle["query_runtime_preflight"]["probes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("selected_plan_fingerprint");
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["query_runtime_preflight"])
+        );
+        let check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "query_runtime_preflight")
+            .unwrap();
+        assert_eq!(
+            check["failed_evidence_fields"],
+            serde_json::json!(["query_runtime_preflight.probes"])
+        );
+    }
+
+    #[test]
     fn rejects_stale_graph_route_readiness_summary() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary_graph_route_alignment"]["ready"] = serde_json::json!(false);
@@ -5149,6 +5299,31 @@ mod tests {
             "route_primary_ready": true,
             "route_primary_blocker_codes": [],
             "routes": graph_route_readiness_routes
+        });
+        bundle["query_runtime_preflight"] = serde_json::json!({
+            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "ready": true,
+            "database_opened": true,
+            "probe_count": 1,
+            "passed_probe_count": 1,
+            "failed_probe_count": 0,
+            "blocker_codes": [],
+            "probes": [
+                {
+                    "name": "memory-lookup",
+                    "route": "/graph/node-details/{node_id}",
+                    "query_family": "memory_lookup",
+                    "ready": true,
+                    "success": true,
+                    "output_row_count": 1,
+                    "selected_plan_fingerprint": "IndexNodeSeek(1:m:6:Memory)",
+                    "execution_profile": {
+                        "scan_pruning_report_count": 1,
+                        "pruned_scan_count": 1
+                    },
+                    "blocker_codes": []
+                }
+            ]
         });
         bundle["query_family_evidence"] = serde_json::json!({
             "protocol": "skein-nowledge-query-family-evidence-v1",
