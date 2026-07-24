@@ -25479,6 +25479,26 @@ fn cypher_explain_analyze_returns_execution_profile_row() {
     );
     assert_eq!(row.get("row_count"), Some(&Value::Int(2)));
     assert_eq!(row.get("scan_pruning_report_count"), Some(&Value::Int(1)));
+    let Some(Value::List(scan_reports)) = row.get("scan_pruning_reports") else {
+        panic!("expected scan pruning reports");
+    };
+    assert_eq!(scan_reports.len(), 1);
+    let Value::Map(scan_report) = &scan_reports[0] else {
+        panic!("expected scan pruning report map");
+    };
+    assert_eq!(scan_report.get("pruned"), Some(&Value::Bool(true)));
+    assert_eq!(scan_report.get("output_count"), Some(&Value::Int(2)));
+    let Some(Value::Map(strategy)) = scan_report.get("strategy") else {
+        panic!("expected scan pruning strategy map");
+    };
+    assert_eq!(
+        strategy.get("kind"),
+        Some(&Value::String("property_eq".to_string()))
+    );
+    assert_eq!(
+        strategy.get("property"),
+        Some(&Value::String("kind".to_string()))
+    );
     assert_eq!(
         row.get("operator_row_cap_enabled"),
         Some(&Value::Bool(false))

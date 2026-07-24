@@ -29,8 +29,8 @@ use crate::search::{
 use crate::store::{
     AdjacencyDirection, AdjacencyLayout, DurabilityPolicy, GraphMutation, GraphStore, NodeId,
     NodeRecord, ProjectedGraphStatus, PropertyIndexProjectionRebuildAction, RecoveryMode,
-    RelRecord, SchemaMaintenanceAction, StorageReclamationWatermark, StorageRecoveryReport,
-    StoreStableIdMapping, WalReplayConfig,
+    RelRecord, ScanPruningReport, ScanPruningStrategy, SchemaMaintenanceAction,
+    StorageReclamationWatermark, StorageRecoveryReport, StoreStableIdMapping, WalReplayConfig,
 };
 use crate::value::Value;
 use plan_cache::{CachedPlan, PlanCache, PlanCacheKey, DEFAULT_PLAN_CACHE_MAX_ENTRIES};
@@ -30502,6 +30502,16 @@ fn explain_analyze_output_row(
         usize_value(profile.scan_pruning_reports.len()),
     );
     row.insert(
+        "scan_pruning_reports".to_string(),
+        Value::List(
+            profile
+                .scan_pruning_reports
+                .iter()
+                .map(scan_pruning_report_value)
+                .collect(),
+        ),
+    );
+    row.insert(
         "row_limit_enforced_before_output".to_string(),
         Value::Bool(profile.row_limit_enforced_before_output),
     );
@@ -30510,6 +30520,69 @@ fn explain_analyze_output_row(
         Value::Bool(profile.operator_row_cap_enabled),
     );
     row
+}
+
+fn scan_pruning_report_value(report: &ScanPruningReport) -> Value {
+    Value::Map(BTreeMap::from([
+        (
+            "label_id".to_string(),
+            report
+                .label_id
+                .map(|label_id| Value::Int(i64::try_from(label_id.0).unwrap_or(i64::MAX)))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "strategy".to_string(),
+            scan_pruning_strategy_value(&report.strategy),
+        ),
+        ("pruned".to_string(), Value::Bool(report.pruned)),
+        ("exact_empty".to_string(), Value::Bool(report.exact_empty)),
+        (
+            "candidate_count_before_filter".to_string(),
+            usize_value(report.candidate_count_before_filter),
+        ),
+        ("output_count".to_string(), usize_value(report.output_count)),
+        (
+            "filtered_out_count".to_string(),
+            usize_value(report.filtered_out_count),
+        ),
+    ]))
+}
+
+fn scan_pruning_strategy_value(strategy: &ScanPruningStrategy) -> Value {
+    match strategy {
+        ScanPruningStrategy::FullLabelScan => {
+            Value::Map(BTreeMap::from([kind_value_pair("full_label_scan")]))
+        }
+        ScanPruningStrategy::Empty => Value::Map(BTreeMap::from([kind_value_pair("empty")])),
+        ScanPruningStrategy::IdEq => Value::Map(BTreeMap::from([kind_value_pair("id_eq")])),
+        ScanPruningStrategy::IdIn => Value::Map(BTreeMap::from([kind_value_pair("id_in")])),
+        ScanPruningStrategy::IdRange => Value::Map(BTreeMap::from([kind_value_pair("id_range")])),
+        ScanPruningStrategy::PropertyEq { property } => {
+            scan_pruning_property_strategy_value("property_eq", property)
+        }
+        ScanPruningStrategy::PropertyNotEq { property } => {
+            scan_pruning_property_strategy_value("property_not_eq", property)
+        }
+        ScanPruningStrategy::PropertyIn { property } => {
+            scan_pruning_property_strategy_value("property_in", property)
+        }
+        ScanPruningStrategy::PropertyRange { property } => {
+            scan_pruning_property_strategy_value("property_range", property)
+        }
+        ScanPruningStrategy::OrUnion => Value::Map(BTreeMap::from([kind_value_pair("or_union")])),
+    }
+}
+
+fn scan_pruning_property_strategy_value(kind: &str, property: &str) -> Value {
+    Value::Map(BTreeMap::from([
+        kind_value_pair(kind),
+        ("property".to_string(), Value::String(property.to_string())),
+    ]))
+}
+
+fn kind_value_pair(kind: &str) -> (String, Value) {
+    ("kind".to_string(), Value::String(kind.to_string()))
 }
 
 fn explain_work_request_value(work_request: WorkRequest) -> Value {
