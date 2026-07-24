@@ -3188,7 +3188,7 @@ impl SearchSegmentDescriptorEntry {
         expected_values: impl Iterator<Item = &'a str>,
     ) -> bool {
         let Some(summary) = self.metadata.get(field) else {
-            return false;
+            return true;
         };
         expected_values.into_iter().any(|expected| {
             summary
@@ -3218,7 +3218,7 @@ impl SearchSegmentDescriptorEntry {
 
     fn range_may_match(&self, field: &str, op: &SearchPredicateOp, expected: &str) -> bool {
         let Some(summary) = self.metadata.get(field) else {
-            return false;
+            return true;
         };
         if metadata_numeric_range_may_match(summary.numeric_range, op, expected) {
             return true;
@@ -3240,18 +3240,12 @@ impl SearchSegmentFieldSummary {
 }
 
 fn search_segment_descriptor_fields(
-    documents: &BTreeMap<String, SearchDocument>,
+    _documents: &BTreeMap<String, SearchDocument>,
 ) -> BTreeSet<String> {
-    let mut fields = NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
+    NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
         .iter()
         .map(|field| (*field).to_string())
-        .collect::<BTreeSet<_>>();
-    fields.extend(
-        documents
-            .values()
-            .flat_map(|document| document.metadata.keys().cloned()),
-    );
-    fields
+        .collect::<BTreeSet<_>>()
 }
 
 fn search_segment_descriptor_document_fingerprint(
@@ -7597,6 +7591,95 @@ mod tests {
                 .get("source_id")
                 .map(|summary| summary.present_count),
             Some(1)
+        );
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_omits_arbitrary_metadata_fields() {
+        let path = unique_test_dir("search_segment_descriptor_bounded_metadata_fields");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for (id, customer) in [
+                ("memory:0_acme", "acme"),
+                ("memory:0_globex", "globex"),
+                ("memory:1_acme", "acme"),
+            ] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor arbitrary metadata retrieval".to_string(),
+                        embedding: None,
+                        metadata: BTreeMap::from([("customer".to_string(), customer.to_string())]),
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert!(descriptor
+            .segments
+            .iter()
+            .all(|segment| !segment.metadata.contains_key("customer")));
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor arbitrary metadata retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("customer".to_string(), "globex".to_string())]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.hits[0].id, "memory:0_globex");
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            0
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .scanned_segment_count,
+            2
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "customer".to_string(),
+                value_kind: "numeric_or_string".to_string(),
+                operation_kinds: vec!["eq".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 0,
+                scanned_segment_count: 2,
+                pruned_document_count: 0,
+                scanned_document_count: 3,
+                numeric_range_summary_used: false,
+                value_summary_used: true,
+            }]
         );
 
         std::fs::remove_dir_all(path).unwrap();
