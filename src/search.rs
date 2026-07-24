@@ -37,6 +37,7 @@ const BM25_B: f64 = 0.75;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
+const SEARCH_DOCUMENT_ID_FIELD: &str = "document_id";
 #[cfg(not(test))]
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 128;
 #[cfg(test)]
@@ -3300,7 +3301,7 @@ fn search_document_matches_predicate(
 
 fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> Option<&'a str> {
     match key {
-        "id" | "document_id" => Some(document.id.as_str()),
+        "id" | SEARCH_DOCUMENT_ID_FIELD => Some(document.id.as_str()),
         "kind" => document
             .metadata
             .get(key)
@@ -7295,11 +7296,11 @@ mod tests {
         assert_eq!(
             descriptor.segments[0]
                 .metadata
-                .get("document_id")
+                .get(SEARCH_DOCUMENT_ID_FIELD)
                 .map(|summary| summary.values.clone()),
             Some(BTreeSet::from([
                 "memory:0_old".to_string(),
-                "memory:1_old".to_string(),
+                "memory:1_old".to_string()
             ]))
         );
 
@@ -7313,8 +7314,8 @@ mod tests {
                 rank_window: None,
                 fusion_weights: SearchFusionWeights::default(),
                 metadata_filters: BTreeMap::from([(
-                    "document_id".to_string(),
-                    "memory:2_new".to_string(),
+                    "document_id__in".to_string(),
+                    r#"["memory:2_new"]"#.to_string(),
                 )]),
                 policy_epoch: None,
             },
@@ -7332,7 +7333,21 @@ mod tests {
             result
                 .candidate_set
                 .metadata_predicate_pushdown
+                .segment_count,
+            2
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
                 .pruned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .scanned_segment_count,
             1
         );
         assert_eq!(
@@ -7341,9 +7356,9 @@ mod tests {
                 .metadata_predicate_pushdown
                 .field_summaries,
             vec![SearchPredicateFieldPruningReport {
-                field: "document_id".to_string(),
+                field: SEARCH_DOCUMENT_ID_FIELD.to_string(),
                 value_kind: "numeric_or_string".to_string(),
-                operation_kinds: vec!["eq".to_string()],
+                operation_kinds: vec!["in".to_string()],
                 segment_count: 2,
                 pruned_segment_count: 1,
                 scanned_segment_count: 1,
