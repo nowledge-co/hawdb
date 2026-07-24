@@ -1216,6 +1216,7 @@ fn search_predicate_field_pruning_report_json(
 ) -> serde_json::Value {
     serde_json::json!({
         "field": &report.field,
+        "value_kind": &report.value_kind,
         "operation_kinds": &report.operation_kinds,
         "segment_count": report.segment_count,
         "pruned_segment_count": report.pruned_segment_count,
@@ -2256,6 +2257,10 @@ mod tests {
         assert_eq!(
             report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]["field"],
             "unit_type"
+        );
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]["value_kind"],
+            "enum"
         );
         assert_eq!(
             report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
