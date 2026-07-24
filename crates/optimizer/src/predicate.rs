@@ -17,6 +17,7 @@ pub struct SearchFieldRef {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SearchScalarValue {
     String(String),
+    Enum(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,33 +79,55 @@ impl SearchScalarValue {
         Self::String(value.into())
     }
 
+    pub fn enumeration(value: impl Into<String>) -> Self {
+        Self::Enum(value.into())
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
-            Self::String(value) => value,
+            Self::String(value) | Self::Enum(value) => value,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::String(_) => "string",
+            Self::Enum(_) => "enum",
         }
     }
 }
 
 impl SearchPredicate {
     pub fn eq(field: impl Into<String>, value: impl Into<String>) -> Self {
+        let field = field.into();
         Self {
-            field: SearchFieldRef::new(field),
-            op: SearchPredicateOp::Eq(SearchScalarValue::string(value)),
+            field: SearchFieldRef::new(field.clone()),
+            op: SearchPredicateOp::Eq(search_scalar_value_for_field(&field, value.into())),
         }
     }
 
     pub fn in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
+        let field = field.into();
         Self {
-            field: SearchFieldRef::new(field),
-            op: SearchPredicateOp::In(values.into_iter().map(SearchScalarValue::string).collect()),
+            field: SearchFieldRef::new(field.clone()),
+            op: SearchPredicateOp::In(
+                values
+                    .into_iter()
+                    .map(|value| search_scalar_value_for_field(&field, value))
+                    .collect(),
+            ),
         }
     }
 
     pub fn not_in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
+        let field = field.into();
         Self {
-            field: SearchFieldRef::new(field),
+            field: SearchFieldRef::new(field.clone()),
             op: SearchPredicateOp::NotIn(
-                values.into_iter().map(SearchScalarValue::string).collect(),
+                values
+                    .into_iter()
+                    .map(|value| search_scalar_value_for_field(&field, value))
+                    .collect(),
             ),
         }
     }
@@ -156,6 +179,25 @@ impl SearchPredicate {
             | SearchPredicateOp::Lte(_) => support.range,
         }
     }
+}
+
+fn search_scalar_value_for_field(field: &str, value: String) -> SearchScalarValue {
+    if search_field_is_enum_like(field) {
+        SearchScalarValue::enumeration(normalize_search_enum_value(&value))
+    } else {
+        SearchScalarValue::string(value)
+    }
+}
+
+pub fn search_field_is_enum_like(field: &str) -> bool {
+    matches!(
+        field,
+        "kind" | "unit_type" | "lifecycle_state" | "review_status" | "temporal_context"
+    )
+}
+
+pub fn normalize_search_enum_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 impl SearchPredicateSet {
@@ -354,11 +396,13 @@ mod tests {
         ));
         assert!(matches!(
             predicates.predicates()[2].op(),
-            SearchPredicateOp::NotIn(values) if values.len() == 2
+            SearchPredicateOp::NotIn(values)
+                if values.len() == 2 && values.iter().all(|value| value.kind() == "enum")
         ));
         assert!(matches!(
             predicates.predicates()[3].op(),
-            SearchPredicateOp::In(values) if values.len() == 2
+            SearchPredicateOp::In(values)
+                if values.len() == 2 && values.iter().all(|value| value.kind() == "enum")
         ));
         assert!(matches!(
             predicates.predicates()[4].op(),

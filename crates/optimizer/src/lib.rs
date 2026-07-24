@@ -14,9 +14,9 @@ pub use operator::{
     PlanChildren, PlanNode,
 };
 pub use predicate::{
-    push_search_predicates, SearchFieldRef, SearchPredicate, SearchPredicateOp,
-    SearchPredicateParseError, SearchPredicatePushdown, SearchPredicateSet, SearchScalarValue,
-    SearchScanPredicateSupport,
+    normalize_search_enum_value, push_search_predicates, search_field_is_enum_like, SearchFieldRef,
+    SearchPredicate, SearchPredicateOp, SearchPredicateParseError, SearchPredicatePushdown,
+    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport,
 };
 pub use properties::{Distribution, PhysicalProperties, RequiredProperties};
 pub use rule::{

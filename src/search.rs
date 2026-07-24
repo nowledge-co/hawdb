@@ -7,7 +7,8 @@ use crate::schema::Catalog;
 use crate::store::{GraphStore, NodeId, NodeRecord};
 use crate::value::Value;
 use skein_optimizer::{
-    push_search_predicates, SearchPredicate, SearchPredicateOp, SearchPredicateSet,
+    normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
+    SearchPredicate, SearchPredicateOp, SearchPredicateSet, SearchScalarValue,
     SearchScanPredicateSupport,
 };
 use std::cell::RefCell;
@@ -328,6 +329,7 @@ pub struct SearchPredicatePushdownReport {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchPredicateFieldPruningReport {
     pub field: String,
+    pub value_kind: String,
     pub operation_kinds: Vec<String>,
     pub segment_count: usize,
     pub pruned_segment_count: usize,
@@ -2751,6 +2753,7 @@ struct SearchFieldPruningAccumulator {
 
 #[derive(Debug, Clone, Default)]
 struct SearchFieldPruningStats {
+    value_kinds: BTreeSet<String>,
     operation_kinds: BTreeSet<String>,
     segment_count: usize,
     pruned_segment_count: usize,
@@ -2769,6 +2772,9 @@ impl SearchFieldPruningAccumulator {
             stats
                 .operation_kinds
                 .insert(search_predicate_op_kind(predicate.op()).to_string());
+            stats
+                .value_kinds
+                .insert(search_predicate_value_kind(predicate).to_string());
             match predicate.op() {
                 SearchPredicateOp::Eq(_)
                 | SearchPredicateOp::In(_)
@@ -2834,6 +2840,7 @@ impl SearchFieldPruningAccumulator {
             .into_iter()
             .map(|(field, stats)| SearchPredicateFieldPruningReport {
                 field,
+                value_kind: search_pruning_value_kind(&stats.value_kinds),
                 operation_kinds: stats.operation_kinds.into_iter().collect(),
                 segment_count: stats.segment_count,
                 pruned_segment_count: stats.pruned_segment_count,
@@ -2842,6 +2849,39 @@ impl SearchFieldPruningAccumulator {
                 value_summary_used: stats.value_summary_used,
             })
             .collect()
+    }
+}
+
+fn search_pruning_value_kind(value_kinds: &BTreeSet<String>) -> String {
+    match value_kinds.len() {
+        0 => "unknown".to_string(),
+        1 => value_kinds
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string()),
+        _ => "mixed".to_string(),
+    }
+}
+
+fn search_predicate_value_kind(predicate: &SearchPredicate) -> &'static str {
+    match predicate.op() {
+        SearchPredicateOp::Eq(value)
+        | SearchPredicateOp::Gt(value)
+        | SearchPredicateOp::Gte(value)
+        | SearchPredicateOp::Lt(value)
+        | SearchPredicateOp::Lte(value) => search_scalar_report_kind(value),
+        SearchPredicateOp::In(values) | SearchPredicateOp::NotIn(values) => values
+            .iter()
+            .next()
+            .map(search_scalar_report_kind)
+            .unwrap_or("unknown"),
+    }
+}
+
+fn search_scalar_report_kind(value: &SearchScalarValue) -> &'static str {
+    match value {
+        SearchScalarValue::Enum(_) => "enum",
+        SearchScalarValue::String(_) => "numeric_or_string",
     }
 }
 
@@ -2871,7 +2911,7 @@ impl SearchFilterSegmentSummary {
                 values
                     .entry(field.clone())
                     .or_default()
-                    .insert(value.to_string());
+                    .insert(search_segment_summary_value(field, value));
                 if let Some(number) = metadata_numeric_value(value) {
                     numeric_ranges
                         .entry(field.clone())
@@ -3043,7 +3083,9 @@ impl SearchSegmentDescriptorEntry {
                 };
                 let summary = metadata.entry(field.clone()).or_default();
                 summary.present_count += 1;
-                summary.values.insert(value.to_string());
+                summary
+                    .values
+                    .insert(search_segment_summary_value(field, value));
                 summary.update_numeric(value);
             }
         }
@@ -3216,6 +3258,16 @@ fn metadata_value_matches(key: &str, actual: &str, expected: &str) -> bool {
     match key {
         "kind" => metadata_kind_matches(actual, expected),
         _ => normalize_metadata_filter_value(actual) == normalize_metadata_filter_value(expected),
+    }
+}
+
+fn search_segment_summary_value(key: &str, value: &str) -> String {
+    match key {
+        "kind" => normalized_projection_kind(value)
+            .map(str::to_string)
+            .unwrap_or_else(|| normalize_search_enum_value(value)),
+        key if search_field_is_enum_like(key) => normalize_search_enum_value(value),
+        _ => value.to_string(),
     }
 }
 
@@ -4875,6 +4927,7 @@ mod tests {
                 .field_summaries,
             vec![SearchPredicateFieldPruningReport {
                 field: "unit_type".to_string(),
+                value_kind: "enum".to_string(),
                 operation_kinds: vec!["in".to_string()],
                 segment_count: 1,
                 pruned_segment_count: 0,
@@ -4941,6 +4994,14 @@ mod tests {
         assert!(hit_ids.contains("memory:active"));
         assert!(hit_ids.contains("memory:legacy"));
         assert!(!hit_ids.contains("memory:deleted"));
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries[0]
+                .value_kind,
+            "enum"
+        );
     }
 
     #[test]
@@ -5006,6 +5067,7 @@ mod tests {
                 .field_summaries,
             vec![SearchPredicateFieldPruningReport {
                 field: "created_at".to_string(),
+                value_kind: "numeric_or_string".to_string(),
                 operation_kinds: vec!["gt".to_string()],
                 segment_count: 2,
                 pruned_segment_count: 1,
@@ -7051,12 +7113,104 @@ mod tests {
                 .field_summaries,
             vec![SearchPredicateFieldPruningReport {
                 field: "created_at".to_string(),
+                value_kind: "numeric_or_string".to_string(),
                 operation_kinds: vec!["gte".to_string()],
                 segment_count: 2,
                 pruned_segment_count: 1,
                 scanned_segment_count: 1,
                 numeric_range_summary_used: true,
                 value_summary_used: false,
+            }]
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_prunes_enum_not_in_filters() {
+        let path = unique_test_dir("search_segment_descriptor_enum_not_in");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for (id, lifecycle_state) in [
+                ("memory:0_deleted", "deleted"),
+                ("memory:0_forgotten", " forgotten "),
+                ("memory:1_active", "ACTIVE"),
+            ] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor enum retrieval".to_string(),
+                        embedding: None,
+                        metadata: BTreeMap::from([(
+                            "lifecycle_state".to_string(),
+                            lifecycle_state.to_string(),
+                        )]),
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert_eq!(
+            descriptor.segments[0]
+                .metadata
+                .get("lifecycle_state")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from([
+                "deleted".to_string(),
+                "forgotten".to_string()
+            ]))
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor enum retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "lifecycle_state__not_in".to_string(),
+                    r#"["deleted","forgotten"]"#.to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.hits[0].id, "memory:1_active");
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "lifecycle_state".to_string(),
+                value_kind: "enum".to_string(),
+                operation_kinds: vec!["not_in".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                numeric_range_summary_used: false,
+                value_summary_used: true,
             }]
         );
         std::fs::remove_dir_all(path).unwrap();
