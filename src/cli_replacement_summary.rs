@@ -354,6 +354,8 @@ pub fn nowledge_replacement_summary_json_with_options(
             "shadow_scan_pushed_predicate_count": search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count,
             "shadow_scan_residual_predicate_count": search_candidate_shadow_evidence.shadow_scan_residual_predicate_count,
             "shadow_scan_filtered_out_count": search_candidate_shadow_evidence.shadow_scan_filtered_out_count,
+            "shadow_scan_pruned_document_count": search_candidate_shadow_evidence.shadow_scan_pruned_document_count,
+            "shadow_scan_scanned_document_count": search_candidate_shadow_evidence.shadow_scan_scanned_document_count,
             "shadow_scan_parse_error": search_candidate_shadow_evidence.shadow_scan_parse_error,
             "shadow_scan_unsatisfiable": search_candidate_shadow_evidence.shadow_scan_unsatisfiable,
             "blocker_codes": search_candidate_shadow_evidence.blocker_codes,
@@ -931,6 +933,8 @@ struct SearchCandidateShadowEvidenceSummary<'a> {
     shadow_scan_pushed_predicate_count: Option<u64>,
     shadow_scan_residual_predicate_count: Option<u64>,
     shadow_scan_filtered_out_count: Option<u64>,
+    shadow_scan_pruned_document_count: Option<u64>,
+    shadow_scan_scanned_document_count: Option<u64>,
     shadow_scan_parse_error: Option<&'a str>,
     shadow_scan_unsatisfiable: Option<bool>,
     blocker_codes: serde_json::Value,
@@ -1248,6 +1252,16 @@ fn search_candidate_shadow_evidence_summary(
         path,
         &["filter_pushdown", "shadow_scan", "filtered_out_count"],
     );
+    let shadow_scan_pruned_document_count = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &nested_path(predicate_path, "pruned_document_count"),
+    );
+    let shadow_scan_scanned_document_count = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &nested_path(predicate_path, "scanned_document_count"),
+    );
     let shadow_scan_parse_error = json_get_str_path_from_dynamic_nested(
         bundle,
         path,
@@ -1319,6 +1333,8 @@ fn search_candidate_shadow_evidence_summary(
         shadow_scan_pushed_predicate_count,
         shadow_scan_residual_predicate_count,
         shadow_scan_filtered_out_count,
+        shadow_scan_pruned_document_count,
+        shadow_scan_scanned_document_count,
         shadow_scan_parse_error,
         shadow_scan_unsatisfiable,
         blocker_codes,
@@ -2019,6 +2035,8 @@ fn nowledge_replacement_next_actions(
                 "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_residual_predicate_count",
+                "search_candidate_shadow_evidence.shadow_scan_pruned_document_count",
+                "search_candidate_shadow_evidence.shadow_scan_scanned_document_count",
                 "search_candidate_shadow_evidence.shadow_scan_parse_error",
                 "search_candidate_shadow_evidence.shadow_scan_unsatisfiable",
                 "search_candidate_shadow_evidence.blocker_codes",

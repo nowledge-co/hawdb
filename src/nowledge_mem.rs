@@ -1206,6 +1206,8 @@ fn search_predicate_pushdown_report_json(
         "segment_count": report.segment_count,
         "pruned_segment_count": report.pruned_segment_count,
         "scanned_segment_count": report.scanned_segment_count,
+        "pruned_document_count": report.pruned_document_count,
+        "scanned_document_count": report.scanned_document_count,
         "persisted_segment_descriptor_used": report.persisted_segment_descriptor_used,
         "field_summaries": report.field_summaries.iter().map(search_predicate_field_pruning_report_json).collect::<Vec<_>>(),
     })
@@ -1221,6 +1223,8 @@ fn search_predicate_field_pruning_report_json(
         "segment_count": report.segment_count,
         "pruned_segment_count": report.pruned_segment_count,
         "scanned_segment_count": report.scanned_segment_count,
+        "pruned_document_count": report.pruned_document_count,
+        "scanned_document_count": report.scanned_document_count,
         "numeric_range_summary_used": report.numeric_range_summary_used,
         "value_summary_used": report.value_summary_used,
     })
@@ -2255,6 +2259,10 @@ mod tests {
             1
         );
         assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["scanned_document_count"],
+            2
+        );
+        assert_eq!(
             report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]["field"],
             "unit_type"
         );
@@ -2266,6 +2274,11 @@ mod tests {
             report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
                 ["operation_kinds"],
             serde_json::json!(["eq"])
+        );
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
+                ["scanned_document_count"],
+            2
         );
         assert_eq!(
             report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
