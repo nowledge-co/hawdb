@@ -38,6 +38,8 @@ const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
 const SEARCH_DOCUMENT_ID_FIELD: &str = "document_id";
+const DEFAULT_MEMORY_LIFECYCLE_STATE: &str = "active";
+const DEFAULT_IS_LATEST: &str = "true";
 #[cfg(not(test))]
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 128;
 #[cfg(test)]
@@ -3312,6 +3314,21 @@ fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> O
             .get(key)
             .map(String::as_str)
             .or_else(|| search_projection_external_id_from_document_id(&document.id)),
+        "lifecycle_state" => document
+            .metadata
+            .get(key)
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                (search_document_projection_kind(document) == Some("memory"))
+                    .then_some(DEFAULT_MEMORY_LIFECYCLE_STATE)
+            }),
+        "is_latest" => document
+            .metadata
+            .get(key)
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .or(Some(DEFAULT_IS_LATEST)),
         "space_id" => Some(
             document
                 .metadata
@@ -3322,6 +3339,18 @@ fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> O
         ),
         _ => document.metadata.get(key).map(String::as_str),
     }
+}
+
+fn search_document_projection_kind(document: &SearchDocument) -> Option<&'static str> {
+    document
+        .metadata
+        .get("kind")
+        .and_then(|value| normalized_projection_kind(value))
+        .or_else(|| search_projection_normalized_kind_from_document_id(&document.id))
+}
+
+fn search_projection_normalized_kind_from_document_id(document_id: &str) -> Option<&'static str> {
+    search_projection_kind_from_document_id(document_id).and_then(normalized_projection_kind)
 }
 
 fn search_projection_kind_from_document_id(document_id: &str) -> Option<&str> {
@@ -5084,6 +5113,61 @@ mod tests {
                 .value_kind,
             "enum"
         );
+    }
+
+    #[test]
+    fn search_with_options_treats_missing_memory_lifecycle_as_active() {
+        let mut index = SearchIndex::in_memory();
+        for (id, metadata) in [
+            (
+                "memory:0_deleted",
+                BTreeMap::from([("lifecycle_state".to_string(), "deleted".to_string())]),
+            ),
+            (
+                "memory:1_legacy",
+                BTreeMap::from([("kind".to_string(), "memory".to_string())]),
+            ),
+            (
+                "memory:2_active",
+                BTreeMap::from([("lifecycle_state".to_string(), "ACTIVE".to_string())]),
+            ),
+        ] {
+            index
+                .upsert(SearchDocument {
+                    id: id.to_string(),
+                    title: "Graph memory".to_string(),
+                    content: "graph projection diagnostics".to_string(),
+                    embedding: None,
+                    metadata,
+                })
+                .unwrap();
+        }
+
+        let result = index.search_with_options(
+            "graph",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "lifecycle_state".to_string(),
+                    "active".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+        let hit_ids = result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(result.filtered_document_count, 2);
+        assert!(hit_ids.contains("memory:1_legacy"));
+        assert!(hit_ids.contains("memory:2_active"));
+        assert!(!hit_ids.contains("memory:0_deleted"));
     }
 
     #[test]
@@ -7251,7 +7335,14 @@ mod tests {
                 .metadata
                 .get("lifecycle_state")
                 .map(|summary| summary.present_count),
-            Some(0)
+            Some(1)
+        );
+        assert_eq!(
+            segment
+                .metadata
+                .get("lifecycle_state")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from(["active".to_string()]))
         );
         assert_eq!(
             segment
@@ -7537,6 +7628,110 @@ mod tests {
                 value_summary_used: true,
             }]
         );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_prunes_active_lifecycle_with_legacy_memory_defaults() {
+        let path = unique_test_dir("search_segment_descriptor_lifecycle_defaults");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for (id, metadata) in [
+                (
+                    "memory:0_deleted",
+                    BTreeMap::from([("lifecycle_state".to_string(), "deleted".to_string())]),
+                ),
+                (
+                    "memory:0_forgotten",
+                    BTreeMap::from([("lifecycle_state".to_string(), "forgotten".to_string())]),
+                ),
+                ("memory:1_legacy", BTreeMap::new()),
+                (
+                    "memory:1_active",
+                    BTreeMap::from([("lifecycle_state".to_string(), "ACTIVE".to_string())]),
+                ),
+            ] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor lifecycle defaults".to_string(),
+                        embedding: None,
+                        metadata,
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert_eq!(
+            descriptor.segments[1]
+                .metadata
+                .get("lifecycle_state")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from(["active".to_string()]))
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor lifecycle defaults",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "lifecycle_state".to_string(),
+                    "active".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+        let hit_ids = result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(result.total_hits, 2);
+        assert!(hit_ids.contains("memory:1_legacy"));
+        assert!(hit_ids.contains("memory:1_active"));
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "lifecycle_state".to_string(),
+                value_kind: "enum".to_string(),
+                operation_kinds: vec!["eq".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                pruned_document_count: 2,
+                scanned_document_count: 2,
+                numeric_range_summary_used: false,
+                value_summary_used: true,
+            }]
+        );
+
         std::fs::remove_dir_all(path).unwrap();
     }
 

@@ -4935,6 +4935,8 @@ mod tests {
                         "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_residual_predicate_count",
+                        "search_candidate_shadow_evidence.shadow_scan_pruned_document_count",
+                        "search_candidate_shadow_evidence.shadow_scan_scanned_document_count",
                         "search_candidate_shadow_evidence.shadow_scan_parse_error",
                         "search_candidate_shadow_evidence.shadow_scan_unsatisfiable",
                         "search_candidate_shadow_evidence.blocker_codes"
