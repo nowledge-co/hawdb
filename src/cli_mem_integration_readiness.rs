@@ -1512,6 +1512,35 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             replacement_summary_graph_analysis_parity_ready(bundle),
         ),
         check(
+            "cutover_evidence_alignment",
+            [
+                bool_path(bundle, &["replacement_summary_cutover_alignment", "ready"])
+                    == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_cutover_alignment", "evidence_ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_cutover_alignment", "summary_ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_cutover_alignment", "fields_match"],
+                ) == Some(true),
+            ],
+            [
+                "replacement_summary_cutover_alignment.ready",
+                "replacement_summary_cutover_alignment.evidence_ready",
+                "replacement_summary_cutover_alignment.summary_ready",
+                "replacement_summary_cutover_alignment.fields_match",
+            ],
+            blocker_codes(
+                bundle,
+                &[&["replacement_summary_cutover_alignment", "blocker_codes"][..]],
+            ),
+        ),
+        check(
             "background_maintenance_evidence",
             [
                 bool_path(
@@ -2075,6 +2104,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
                 "replacement_summary_graph_route_alignment.primary_ready_routes_match",
                 "replacement_summary_graph_route_alignment.evidence_query_runtime_routes_covered",
                 "replacement_summary_graph_route_alignment.blocker_codes",
+            ],
+        ));
+    }
+    if !cutover_alignment_ready(bundle) {
+        actions.push(next_action(
+            "regenerate_cutover_evidence_alignment",
+            "live cutover evidence must match the replacement summary before Mem cutover",
+            [
+                "cutover_evidence.ready",
+                "replacement_summary.cutover_evidence",
+                "replacement_summary_cutover_alignment.ready",
+                "replacement_summary_cutover_alignment.evidence_ready",
+                "replacement_summary_cutover_alignment.summary_ready",
+                "replacement_summary_cutover_alignment.fields_match",
+                "replacement_summary_cutover_alignment.blocker_codes",
             ],
         ));
     }
@@ -3033,6 +3077,17 @@ fn graph_route_readiness_alignment_ready(bundle: &serde_json::Value) -> bool {
             "replacement_summary_graph_route_alignment",
             "summary_required_routes_covered",
         ][..],
+    ]
+    .iter()
+    .all(|path| bool_path(bundle, path) == Some(true))
+}
+
+fn cutover_alignment_ready(bundle: &serde_json::Value) -> bool {
+    [
+        &["replacement_summary_cutover_alignment", "ready"][..],
+        &["replacement_summary_cutover_alignment", "evidence_ready"][..],
+        &["replacement_summary_cutover_alignment", "summary_ready"][..],
+        &["replacement_summary_cutover_alignment", "fields_match"][..],
     ]
     .iter()
     .all(|path| bool_path(bundle, path) == Some(true))
@@ -4668,6 +4723,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stale_cutover_alignment_even_if_summary_is_ready() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_cutover_alignment"]["ready"] = serde_json::json!(false);
+        bundle["replacement_summary_cutover_alignment"]["fields_match"] = serde_json::json!(false);
+        bundle["replacement_summary_cutover_alignment"]["mismatched_fields"] =
+            serde_json::json!(["storage_recovery_wal_replay_bounded"]);
+        bundle["replacement_summary_cutover_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_cutover_evidence_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["cutover_evidence_alignment"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_cutover_evidence_mismatch"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "cutover_evidence_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_cutover_alignment.ready",
+                "replacement_summary_cutover_alignment.fields_match"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "regenerate_cutover_evidence_alignment"));
+    }
+
+    #[test]
     fn rejects_incomplete_background_maintenance_graph_delta_summary() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["cutover_evidence"]
@@ -5060,6 +5156,10 @@ mod tests {
             "replacement_readiness_by_query_family": query_family_readiness,
             "blocker_codes": []
         });
+        bundle["cutover_evidence"] = serde_json::json!({
+            "ready": true,
+            "blocker_codes": []
+        });
         bundle["replacement_summary_query_family_alignment"] = serde_json::json!({
             "ready": true,
             "evidence_present": true,
@@ -5070,6 +5170,16 @@ mod tests {
             "required_families_present": true,
             "summary_required_families_present": true,
             "mismatched_families": [],
+            "blocker_codes": []
+        });
+        bundle["replacement_summary_cutover_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "evidence_ready": true,
+            "summary_ready": true,
+            "fields_match": true,
+            "mismatched_fields": [],
             "blocker_codes": []
         });
         bundle["replacement_summary_graph_route_alignment"] = serde_json::json!({
