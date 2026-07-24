@@ -2112,6 +2112,13 @@ fn nowledge_replacement_next_actions(
                 "search_projection_shadow_evidence.embedding_identity_parity",
                 "search_projection_shadow_evidence.lifecycle_parity",
                 "search_projection_shadow_evidence.incremental_watermark_parity",
+                "search_projection_shadow_evidence.predicate_pushdown_parity",
+                "search_projection_shadow_evidence.pushdown_evidence.ready",
+                "search_projection_shadow_evidence.pushdown_evidence.primary_predicate_pushdown_ready",
+                "search_projection_shadow_evidence.pushdown_evidence.shadow_predicate_pushdown_ready",
+                "search_projection_shadow_evidence.pushdown_evidence.shadow_persisted_segment_descriptor_ready",
+                "search_projection_shadow_evidence.pushdown_evidence.primary_scan_filter_fields",
+                "search_projection_shadow_evidence.pushdown_evidence.shadow_scan_filter_fields",
                 "search_projection_shadow_evidence.blocker_codes",
             ],
         ));
@@ -2828,6 +2835,11 @@ fn background_maintenance_graph_delta_evidence_missing(bundle: &serde_json::Valu
 
 fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
     let mut blockers = BTreeSet::new();
+    for blocker in
+        json_string_array(&search_projection_shadow_evidence_summary(bundle).blocker_codes)
+    {
+        blockers.insert(blocker);
+    }
     for path in [
         &["inventory_gate", "blockers"][..],
         &["cutover", "blockers"][..],
@@ -3100,6 +3112,15 @@ fn json_get_array_path(value: &serde_json::Value, path: &[&str]) -> serde_json::
 fn json_get_string_array_path(value: &serde_json::Value, path: &[&str]) -> Vec<String> {
     json_get_path(value, path)
         .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+fn json_string_array(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| item.as_str().map(str::to_string))
@@ -3659,6 +3680,16 @@ mod tests {
                 .iter()
                 .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING)
         );
+        assert!(summary["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY));
+        assert!(summary["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING));
         assert!(summary["missing_evidence"]
             .as_array()
             .unwrap()
@@ -3669,6 +3700,21 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item == "search_projection_shadow_evidence"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_projection_shadow_evidence"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| {
+                            field
+                                == "search_projection_shadow_evidence.pushdown_evidence.shadow_persisted_segment_descriptor_ready"
+                        })
+            }));
     }
 
     #[test]
@@ -4813,8 +4859,8 @@ mod tests {
         );
 
         assert_eq!(summary["blockers"], serde_json::json!([]));
-        assert_eq!(summary["blocker_summary"]["total_count"], 5);
-        assert_eq!(summary["blocker_summary"]["omitted_count"], 5);
+        assert_eq!(summary["blocker_summary"]["total_count"], 7);
+        assert_eq!(summary["blocker_summary"]["omitted_count"], 7);
         assert_eq!(
             summary["replacement_readiness_by_query_family"],
             serde_json::json!([])
@@ -4836,8 +4882,8 @@ mod tests {
         );
 
         assert_eq!(summary["blockers"].as_array().unwrap().len(), 2);
-        assert_eq!(summary["blocker_summary"]["total_count"], 5);
-        assert_eq!(summary["blocker_summary"]["omitted_count"], 3);
+        assert_eq!(summary["blocker_summary"]["total_count"], 7);
+        assert_eq!(summary["blocker_summary"]["omitted_count"], 5);
     }
 
     #[test]
@@ -5073,6 +5119,13 @@ mod tests {
                         "search_projection_shadow_evidence.embedding_identity_parity",
                         "search_projection_shadow_evidence.lifecycle_parity",
                         "search_projection_shadow_evidence.incremental_watermark_parity",
+                        "search_projection_shadow_evidence.predicate_pushdown_parity",
+                        "search_projection_shadow_evidence.pushdown_evidence.ready",
+                        "search_projection_shadow_evidence.pushdown_evidence.primary_predicate_pushdown_ready",
+                        "search_projection_shadow_evidence.pushdown_evidence.shadow_predicate_pushdown_ready",
+                        "search_projection_shadow_evidence.pushdown_evidence.shadow_persisted_segment_descriptor_ready",
+                        "search_projection_shadow_evidence.pushdown_evidence.primary_scan_filter_fields",
+                        "search_projection_shadow_evidence.pushdown_evidence.shadow_scan_filter_fields",
                         "search_projection_shadow_evidence.blocker_codes"
                     ]
                 },
