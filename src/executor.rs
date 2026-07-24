@@ -17,9 +17,10 @@ use crate::store::{
     NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, ProjectedGraphDefinition,
     PropertyFilter, RelRecord, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
     RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-    RelationshipTargetNodeDelete,
+    RelationshipTargetNodeDelete, ScanPruningReport, ScanPruningStrategy,
 };
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type Row = BTreeMap<String, Value>;
@@ -38,6 +39,17 @@ pub struct ReadExecutionProfile {
     pub row_limit_enforced_before_output: bool,
     pub operator_row_cap_enabled: bool,
     pub blocking_operator_kinds: Vec<String>,
+    pub scan_pruning_reports: Vec<ScanPruningReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfiledQueryRows {
+    pub rows: Vec<Row>,
+    pub profile: ReadExecutionProfile,
+}
+
+thread_local! {
+    static SCAN_PRUNING_REPORT_CAPTURE: RefCell<Option<Vec<ScanPruningReport>>> = const { RefCell::new(None) };
 }
 
 impl ExecutionLimit {
@@ -104,6 +116,22 @@ pub fn execute_with_row_limit(
     collect_rows(bindings, max_rows)
 }
 
+pub fn execute_with_row_limit_profile(
+    plan: &PhysicalPlan,
+    catalog: &mut Catalog,
+    store: &mut GraphStore,
+    max_rows: Option<usize>,
+) -> Result<ProfiledQueryRows> {
+    let execution_limit = ExecutionLimit::from_user_max_rows(max_rows)?;
+    let mut profile = read_execution_profile(plan, max_rows)?;
+    let (bindings, scan_pruning_reports) = capture_scan_pruning_reports(|| {
+        execute_bindings_with_limit(plan, catalog, store, execution_limit)
+    })?;
+    profile.scan_pruning_reports = scan_pruning_reports;
+    let rows = collect_rows(bindings, max_rows)?;
+    Ok(ProfiledQueryRows { rows, profile })
+}
+
 pub fn read_execution_profile(
     plan: &PhysicalPlan,
     max_rows: Option<usize>,
@@ -117,7 +145,27 @@ pub fn read_execution_profile(
         row_limit_enforced_before_output: max_rows.is_some(),
         operator_row_cap_enabled: execution_limit.output_rows.is_some(),
         blocking_operator_kinds: blocking_operator_kinds.into_iter().collect(),
+        scan_pruning_reports: Vec::new(),
     })
+}
+
+fn capture_scan_pruning_reports<T>(
+    f: impl FnOnce() -> Result<T>,
+) -> Result<(T, Vec<ScanPruningReport>)> {
+    SCAN_PRUNING_REPORT_CAPTURE.with(|capture| {
+        let previous = capture.replace(Some(Vec::new()));
+        let result = f();
+        let captured = capture.replace(previous).unwrap_or_default();
+        result.map(|value| (value, captured))
+    })
+}
+
+fn record_scan_pruning_report(report: ScanPruningReport) {
+    SCAN_PRUNING_REPORT_CAPTURE.with(|capture| {
+        if let Some(reports) = capture.borrow_mut().as_mut() {
+            reports.push(report);
+        }
+    });
 }
 
 fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<String>) {
@@ -1756,20 +1804,14 @@ fn execute_bindings_with_limit(
                 })
                 .collect())
         }
-        PhysicalPlan::SeqNodeScan { variable, label } => {
-            let label_ids = label_ids_for_pattern(catalog, label);
-            Ok(store
-                .scan_nodes(None)
-                .filter(|node| node_matches_label_pattern(node, label_ids.as_deref()))
-                .take(execution_limit.output_rows.unwrap_or(usize::MAX))
-                .cloned()
-                .map(|node| Binding {
-                    values: BTreeMap::new(),
-                    nodes: BTreeMap::from([(variable.clone(), node)]),
-                    relationships: BTreeMap::new(),
-                })
-                .collect())
-        }
+        PhysicalPlan::SeqNodeScan { variable, label } => execute_node_scan_with_optional_filter(
+            variable,
+            label,
+            None,
+            catalog,
+            store,
+            execution_limit,
+        ),
         PhysicalPlan::NodeCartesianProductExec { left, right } => {
             let left = execute_bindings(left, catalog, store)?;
             let right = execute_bindings(right, catalog, store)?;
@@ -1848,8 +1890,24 @@ fn execute_bindings_with_limit(
             let Some(label_id) = catalog.label_id(label) else {
                 return Ok(Vec::new());
             };
-            Ok(store
+            let nodes = store
                 .seek_nodes_by_property(label_id, property, value)
+                .collect::<Vec<_>>();
+            record_scan_pruning_report(ScanPruningReport {
+                label_id: Some(label_id),
+                strategy: ScanPruningStrategy::PropertyEq {
+                    property: property.clone(),
+                },
+                pruned: true,
+                exact_empty: nodes.is_empty(),
+                candidate_count_before_filter: nodes.len(),
+                output_count: nodes
+                    .len()
+                    .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
+                filtered_out_count: 0,
+            });
+            Ok(nodes
+                .into_iter()
                 .take(execution_limit.output_rows.unwrap_or(usize::MAX))
                 .cloned()
                 .map(|node| Binding {
@@ -1869,22 +1927,37 @@ fn execute_bindings_with_limit(
                 return Ok(Vec::new());
             };
             let mut seen = std::collections::BTreeSet::new();
-            let mut output = Vec::new();
+            let mut nodes = Vec::new();
             for value in values {
                 for node in store.seek_nodes_by_property(label_id, property, value) {
                     if seen.insert(node.id) {
-                        output.push(Binding {
-                            values: BTreeMap::new(),
-                            nodes: BTreeMap::from([(variable.clone(), node.clone())]),
-                            relationships: BTreeMap::new(),
-                        });
-                        if execution_limit.is_reached(output.len()) {
-                            return Ok(output);
-                        }
+                        nodes.push(node);
                     }
                 }
             }
-            Ok(output)
+            record_scan_pruning_report(ScanPruningReport {
+                label_id: Some(label_id),
+                strategy: ScanPruningStrategy::PropertyIn {
+                    property: property.clone(),
+                },
+                pruned: true,
+                exact_empty: nodes.is_empty(),
+                candidate_count_before_filter: nodes.len(),
+                output_count: nodes
+                    .len()
+                    .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
+                filtered_out_count: 0,
+            });
+            Ok(nodes
+                .into_iter()
+                .take(execution_limit.output_rows.unwrap_or(usize::MAX))
+                .cloned()
+                .map(|node| Binding {
+                    values: BTreeMap::new(),
+                    nodes: BTreeMap::from([(variable.clone(), node)]),
+                    relationships: BTreeMap::new(),
+                })
+                .collect())
         }
         PhysicalPlan::IndexNodeCompositeSeek {
             variable,
@@ -1916,8 +1989,24 @@ fn execute_bindings_with_limit(
             let Some(label_id) = catalog.label_id(label) else {
                 return Ok(Vec::new());
             };
-            Ok(store
+            let nodes = store
                 .seek_nodes_by_property_range(label_id, property, lower.as_ref(), upper.as_ref())
+                .into_iter()
+                .collect::<Vec<_>>();
+            record_scan_pruning_report(ScanPruningReport {
+                label_id: Some(label_id),
+                strategy: ScanPruningStrategy::PropertyRange {
+                    property: property.clone(),
+                },
+                pruned: true,
+                exact_empty: nodes.is_empty(),
+                candidate_count_before_filter: nodes.len(),
+                output_count: nodes
+                    .len()
+                    .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
+                filtered_out_count: 0,
+            });
+            Ok(nodes
                 .into_iter()
                 .take(execution_limit.output_rows.unwrap_or(usize::MAX))
                 .cloned()
@@ -2176,6 +2265,18 @@ fn execute_bindings_with_limit(
             },
         ),
         PhysicalPlan::FilterExec { predicate, input } => {
+            if let PhysicalPlan::SeqNodeScan { variable, label } = input.as_ref() {
+                if let Ok(filter) = property_filter_from_predicate(predicate) {
+                    return execute_node_scan_with_optional_filter(
+                        variable,
+                        label,
+                        Some((predicate, &filter)),
+                        catalog,
+                        store,
+                        execution_limit,
+                    );
+                }
+            }
             let input = execute_bindings(input, catalog, store)?;
             let mut output = Vec::new();
             for binding in input {
@@ -2240,6 +2341,61 @@ fn execute_bindings_with_limit(
             Ok(rows)
         }
     }
+}
+
+fn execute_node_scan_with_optional_filter(
+    variable: &str,
+    label: &str,
+    filter: Option<(&Predicate, &PropertyFilter)>,
+    catalog: &Catalog,
+    store: &GraphStore,
+    execution_limit: ExecutionLimit,
+) -> Result<Vec<Binding>> {
+    if let Some(label_id) = exact_scan_label_id(catalog, label) {
+        let scan = store.scan_nodes_with_filter_pruning(label_id, filter.map(|(_, filter)| filter));
+        record_scan_pruning_report(scan.report.clone());
+        let mut output = Vec::new();
+        for node in scan.nodes {
+            let binding = Binding {
+                values: BTreeMap::new(),
+                nodes: BTreeMap::from([(variable.to_string(), node.clone())]),
+                relationships: BTreeMap::new(),
+            };
+            if filter
+                .map(|(predicate, _)| evaluate_predicate(predicate, catalog, store, &binding))
+                .unwrap_or(true)
+            {
+                output.push(binding);
+                if execution_limit.is_reached(output.len()) {
+                    return Ok(output);
+                }
+            }
+        }
+        return Ok(output);
+    }
+
+    let label_ids = label_ids_for_pattern(catalog, label);
+    Ok(store
+        .scan_nodes(None)
+        .filter(|node| node_matches_label_pattern(node, label_ids.as_deref()))
+        .take(execution_limit.output_rows.unwrap_or(usize::MAX))
+        .cloned()
+        .map(|node| Binding {
+            values: BTreeMap::new(),
+            nodes: BTreeMap::from([(variable.to_string(), node)]),
+            relationships: BTreeMap::new(),
+        })
+        .collect())
+}
+
+fn exact_scan_label_id(catalog: &Catalog, label: &str) -> Option<Option<crate::schema::LabelId>> {
+    if label.is_empty() {
+        return Some(None);
+    }
+    if label.contains(':') {
+        return None;
+    }
+    catalog.label_id(label).map(Some)
 }
 
 fn execute_aggregate(

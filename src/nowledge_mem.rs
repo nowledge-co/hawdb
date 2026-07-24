@@ -2,6 +2,7 @@ use crate::search::{CompressedVectorSearchMode, SearchPredicatePushdownReport};
 use crate::search_projection_evidence::{
     nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
 };
+use crate::store::{ScanPruningReport, ScanPruningStrategy};
 use crate::{
     cypher, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary, BackgroundWorkHint,
     BackgroundWorkPlan, Database, DatabaseConfig, KnowledgeRetrievalOutput,
@@ -297,6 +298,7 @@ pub struct NowledgeMemQueryReport {
     pub slow_query_threshold_ms: Option<u64>,
     pub slow_query: bool,
     pub row_count: usize,
+    pub scan_pruning_reports: Vec<ScanPruningReport>,
 }
 
 impl NowledgeMemQueryReport {
@@ -314,6 +316,8 @@ impl NowledgeMemQueryReport {
             "slow_query_threshold_ms": self.slow_query_threshold_ms,
             "slow_query": self.slow_query,
             "row_count": self.row_count,
+            "scan_pruning_report_count": self.scan_pruning_reports.len(),
+            "scan_pruning_reports": self.scan_pruning_reports.iter().map(scan_pruning_report_json).collect::<Vec<_>>(),
         })
     }
 }
@@ -521,8 +525,10 @@ impl NowledgeMemGraph {
             None
         };
         let start = Instant::now();
-        let output = self.db.query_with_params(cypher, parameters)?;
+        let profiled = self.db.query_with_params_profile(cypher, parameters)?;
         let elapsed_micros = start.elapsed().as_micros();
+        let scan_pruning_reports = profiled.execution_profile.scan_pruning_reports.clone();
+        let output = profiled.output;
         let slow_query = options
             .slow_query_threshold_ms
             .is_some_and(|threshold| elapsed_micros >= u128::from(threshold) * 1_000);
@@ -543,6 +549,7 @@ impl NowledgeMemGraph {
             slow_query_threshold_ms: options.slow_query_threshold_ms,
             slow_query,
             row_count: output.rows.len(),
+            scan_pruning_reports,
         };
         if options.record_slow_query && report.slow_query {
             self.push_slow_query_report(report.clone());
@@ -923,6 +930,41 @@ fn require_search_projection_mut(
     search_projection
         .as_mut()
         .ok_or_else(missing_search_projection_error)
+}
+
+fn scan_pruning_report_json(report: &ScanPruningReport) -> serde_json::Value {
+    serde_json::json!({
+        "label_id": report.label_id.map(|label_id| label_id.0),
+        "strategy": scan_pruning_strategy_json(&report.strategy),
+        "pruned": report.pruned,
+        "exact_empty": report.exact_empty,
+        "candidate_count_before_filter": report.candidate_count_before_filter,
+        "output_count": report.output_count,
+        "filtered_out_count": report.filtered_out_count,
+    })
+}
+
+fn scan_pruning_strategy_json(strategy: &ScanPruningStrategy) -> serde_json::Value {
+    match strategy {
+        ScanPruningStrategy::FullLabelScan => serde_json::json!({"kind": "full_label_scan"}),
+        ScanPruningStrategy::Empty => serde_json::json!({"kind": "empty"}),
+        ScanPruningStrategy::IdEq => serde_json::json!({"kind": "id_eq"}),
+        ScanPruningStrategy::IdIn => serde_json::json!({"kind": "id_in"}),
+        ScanPruningStrategy::IdRange => serde_json::json!({"kind": "id_range"}),
+        ScanPruningStrategy::PropertyEq { property } => {
+            serde_json::json!({"kind": "property_eq", "property": property})
+        }
+        ScanPruningStrategy::PropertyNotEq { property } => {
+            serde_json::json!({"kind": "property_not_eq", "property": property})
+        }
+        ScanPruningStrategy::PropertyIn { property } => {
+            serde_json::json!({"kind": "property_in", "property": property})
+        }
+        ScanPruningStrategy::PropertyRange { property } => {
+            serde_json::json!({"kind": "property_range", "property": property})
+        }
+        ScanPruningStrategy::OrUnion => serde_json::json!({"kind": "or_union"}),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1350,6 +1392,38 @@ mod tests {
     }
 
     #[test]
+    fn graph_query_with_report_exposes_storage_scan_pruning() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph
+            .query("CREATE (:Memory {id: 'mem-prune-1', kind: 'note', title: 'Keep'})")
+            .unwrap();
+        graph
+            .query("CREATE (:Memory {id: 'mem-prune-2', kind: 'note', title: 'Also keep'})")
+            .unwrap();
+
+        let query = graph
+            .query_with_report("MATCH (m:Memory) WHERE m.kind = 'note' RETURN m.title AS title")
+            .unwrap();
+
+        assert_eq!(query.output.rows.len(), 2);
+        assert_eq!(query.report.scan_pruning_reports.len(), 1);
+        let scan = &query.report.scan_pruning_reports[0];
+        assert!(scan.pruned);
+        assert_eq!(scan.candidate_count_before_filter, 2);
+        assert_eq!(scan.output_count, 2);
+        assert_eq!(query.report.json()["scan_pruning_report_count"], 1);
+        assert_eq!(
+            query.report.json()["scan_pruning_reports"][0]["strategy"]["kind"],
+            "property_eq"
+        );
+        assert_eq!(
+            query.report.json()["scan_pruning_reports"][0]["strategy"]["property"],
+            "kind"
+        );
+    }
+
+    #[test]
     fn graph_query_with_report_marks_slow_query_from_threshold() {
         let db = Database::new();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
@@ -1394,6 +1468,36 @@ mod tests {
         assert!(ring.reports[0].slow_query);
         let json = ring.json().to_string();
         assert!(!json.contains("secret-id"));
+        assert!(!json.contains("MATCH"));
+    }
+
+    #[test]
+    fn graph_slow_query_ring_preserves_scan_pruning_report_without_query_text() {
+        let db = Database::new();
+        let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        graph
+            .query("CREATE (:Memory {id: 'secret-prune-id', kind: 'note', title: 'Slow'})")
+            .unwrap();
+
+        graph
+            .query_with_options_report(
+                "MATCH (m:Memory) WHERE m.kind = 'note' RETURN m.title AS title",
+                &NowledgeMemQueryReportOptions {
+                    capture_physical_plan: false,
+                    slow_query_threshold_ms: Some(0),
+                    record_slow_query: true,
+                },
+            )
+            .unwrap();
+
+        let ring = graph.slow_query_ring_report();
+        assert_eq!(ring.len, 1);
+        assert_eq!(ring.reports[0].scan_pruning_reports.len(), 1);
+        assert!(ring.reports[0].scan_pruning_reports[0].pruned);
+        let json = ring.json().to_string();
+        assert!(json.contains("property_eq"));
+        assert!(json.contains("kind"));
+        assert!(!json.contains("secret-prune-id"));
         assert!(!json.contains("MATCH"));
     }
 

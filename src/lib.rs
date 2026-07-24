@@ -39,7 +39,7 @@ pub use api::{
     CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode, CanonicalSnapshotRelationship,
     CanonicalStableIdMapping, Database, DatabaseConfig, DatabaseReadTransaction,
     DatabaseTransaction, DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
-    ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
+    ExplainAnalyzeOutput, ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
     ExternalContentArtifactRuntimeManifest, GraphLightningBootstrapExport,
     GraphLightningBootstrapManifest, GraphLightningGraphStream,
     GraphLightningGraphStreamValidation, KnowledgeAugmentationJob,

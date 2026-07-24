@@ -25372,6 +25372,27 @@ fn explain_query_reports_effective_resource_hints() {
 }
 
 #[test]
+fn explain_analyze_reports_storage_scan_pruning_profile() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'mem-analyze-1', kind: 'note', title: 'Analyze'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'mem-analyze-2', kind: 'note', title: 'Profile'})")
+        .unwrap();
+
+    let output = db
+        .explain_analyze_query("MATCH (m:Memory) WHERE m.kind = 'note' RETURN m.title AS title")
+        .unwrap();
+
+    assert_eq!(output.output.rows.len(), 2);
+    assert!(output.physical_plan.explain(0).contains("ProjectExec"));
+    assert_eq!(output.execution_profile.scan_pruning_reports.len(), 1);
+    let scan = &output.execution_profile.scan_pruning_reports[0];
+    assert!(scan.pruned);
+    assert_eq!(scan.candidate_count_before_filter, 2);
+    assert_eq!(scan.output_count, 2);
+}
+
+#[test]
 fn plan_cache_reuses_exact_parameterized_physical_plan() {
     let db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),

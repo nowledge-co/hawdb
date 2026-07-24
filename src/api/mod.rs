@@ -5473,6 +5473,15 @@ pub struct ExplainOutput {
     pub work_request: WorkRequest,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplainAnalyzeOutput {
+    pub output: QueryOutput,
+    pub execution_profile: executor::ReadExecutionProfile,
+    pub physical_plan: PhysicalPlan,
+    pub trace: OptimizerTrace,
+    pub work_request: WorkRequest,
+}
+
 #[derive(Debug)]
 pub struct DatabaseTransaction<'a> {
     db: &'a mut Database,
@@ -5641,11 +5650,34 @@ impl Database {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
+        Ok(self
+            .query_with_params_profile(cypher_text, parameters)?
+            .output)
+    }
+
+    pub fn query_with_params_profile(
+        &mut self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<BoundedReadQueryOutput> {
         let statement = cypher::parse(cypher_text)?;
         let body = statement_body(&statement);
         if let cypher::Statement::SetSystemVariable(set) = body {
             reject_system_variable_parameters(parameters)?;
-            return self.system_variables.apply_set_system_variable(set);
+            return self
+                .system_variables
+                .apply_set_system_variable(set)
+                .map(|output| BoundedReadQueryOutput {
+                    output,
+                    execution_profile: executor::ReadExecutionProfile {
+                        max_rows: None,
+                        detection_row_cap: None,
+                        row_limit_enforced_before_output: false,
+                        operator_row_cap_enabled: false,
+                        blocking_operator_kinds: Vec::new(),
+                        scan_pruning_reports: Vec::new(),
+                    },
+                });
         }
         if matches!(body, cypher::Statement::Checkpoint) {
             if !parameters.is_empty() {
@@ -5654,7 +5686,17 @@ impl Database {
                 ));
             }
             self.checkpoint()?;
-            return Ok(QueryOutput { rows: Vec::new() });
+            return Ok(BoundedReadQueryOutput {
+                output: QueryOutput { rows: Vec::new() },
+                execution_profile: executor::ReadExecutionProfile {
+                    max_rows: None,
+                    detection_row_cap: None,
+                    row_limit_enforced_before_output: false,
+                    operator_row_cap_enabled: false,
+                    blocking_operator_kinds: Vec::new(),
+                    scan_pruning_reports: Vec::new(),
+                },
+            });
         }
         query_work_request_for_statement(&self.system_variables, &statement)?;
         let (physical, _) = self.optimized_query_plan(cypher_text, &statement, parameters)?;
@@ -5662,17 +5704,26 @@ impl Database {
         if is_mutation {
             self.ensure_writable()?;
         }
-        let rows = if is_mutation {
-            executor::execute(&physical, &mut self.catalog, &mut self.store)?
+        if is_mutation {
+            let rows = executor::execute(&physical, &mut self.catalog, &mut self.store)?;
+            Ok(BoundedReadQueryOutput {
+                output: QueryOutput { rows },
+                execution_profile: executor::read_execution_profile(&physical, None)?,
+            })
         } else {
-            executor::execute_with_row_limit(
+            let profiled = executor::execute_with_row_limit_profile(
                 &physical,
                 &mut self.catalog,
                 &mut self.store,
                 self.config.max_read_result_rows,
-            )?
-        };
-        Ok(QueryOutput { rows })
+            )?;
+            Ok(BoundedReadQueryOutput {
+                output: QueryOutput {
+                    rows: profiled.rows,
+                },
+                execution_profile: profiled.profile,
+            })
+        }
     }
 
     pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
@@ -5724,6 +5775,41 @@ impl Database {
         let (physical_plan, trace) =
             self.optimized_query_plan(cypher_text, &statement, parameters)?;
         Ok(ExplainOutput {
+            physical_plan,
+            trace,
+            work_request,
+        })
+    }
+
+    pub fn explain_analyze_query(&mut self, cypher_text: &str) -> Result<ExplainAnalyzeOutput> {
+        self.explain_analyze_query_with_params(cypher_text, &BTreeMap::new())
+    }
+
+    pub fn explain_analyze_query_with_params(
+        &mut self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<ExplainAnalyzeOutput> {
+        let statement = cypher::parse(cypher_text)?;
+        let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
+        let (physical_plan, trace) =
+            self.optimized_query_plan(cypher_text, &statement, parameters)?;
+        if executor::is_mutation_plan(&physical_plan)? {
+            return Err(SkeinError::Execution(
+                "EXPLAIN ANALYZE only supports read queries".to_string(),
+            ));
+        }
+        let profiled = executor::execute_with_row_limit_profile(
+            &physical_plan,
+            &mut self.catalog,
+            &mut self.store,
+            self.config.max_read_result_rows,
+        )?;
+        Ok(ExplainAnalyzeOutput {
+            output: QueryOutput {
+                rows: profiled.rows,
+            },
+            execution_profile: profiled.profile,
             physical_plan,
             trace,
             work_request,
@@ -30307,16 +30393,17 @@ impl DatabaseReadTransaction {
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
-        let execution_profile = executor::read_execution_profile(&physical, max_rows)?;
-        let rows = executor::execute_with_row_limit(
+        let profiled = executor::execute_with_row_limit_profile(
             &physical,
             &mut self.catalog,
             &mut self.store,
             max_rows,
         )?;
         Ok(BoundedReadQueryOutput {
-            output: QueryOutput { rows },
-            execution_profile,
+            output: QueryOutput {
+                rows: profiled.rows,
+            },
+            execution_profile: profiled.profile,
         })
     }
 
