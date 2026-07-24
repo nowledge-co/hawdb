@@ -844,6 +844,46 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 ],
             ),
         ),
+        check(
+            "search_candidate_shadow_evidence_alignment",
+            [
+                bool_path(bundle, &["search_candidate_shadow_evidence", "ready"]) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_search_candidate_alignment", "ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_candidate_alignment",
+                        "evidence_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_candidate_alignment",
+                        "summary_ready",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "search_candidate_shadow_evidence.ready",
+                "replacement_summary_search_candidate_alignment.ready",
+                "replacement_summary_search_candidate_alignment.evidence_ready",
+                "replacement_summary_search_candidate_alignment.summary_ready",
+            ],
+            blocker_codes(
+                bundle,
+                &[
+                    &["search_candidate_shadow_evidence", "blocker_codes"][..],
+                    &[
+                        "replacement_summary_search_candidate_alignment",
+                        "blocker_codes",
+                    ][..],
+                ],
+            ),
+        ),
         graph_route_parity_check(
             bundle,
             "graph_route_augmentation_state_parity_evidence",
@@ -2019,6 +2059,19 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !search_candidate_shadow_alignment_ready(bundle) {
+        actions.push(next_action(
+            "regenerate_search_candidate_shadow_alignment",
+            "live search candidate shadow evidence must match the replacement summary before Mem cutover",
+            [
+                "search_candidate_shadow_evidence.ready",
+                "replacement_summary_search_candidate_alignment.ready",
+                "replacement_summary_search_candidate_alignment.evidence_ready",
+                "replacement_summary_search_candidate_alignment.summary_ready",
+                "replacement_summary_search_candidate_alignment.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_overview_parity_ready(bundle) {
         actions.push(next_action(
             "run_overview_route_shadow_compare",
@@ -2977,6 +3030,23 @@ fn search_projection_shadow_alignment_ready(bundle: &serde_json::Value) -> bool 
         .all(|path| bool_path(bundle, path) == Some(true))
 }
 
+fn search_candidate_shadow_alignment_ready(bundle: &serde_json::Value) -> bool {
+    bool_path(bundle, &["search_candidate_shadow_evidence", "ready"]) == Some(true)
+        && [
+            &["replacement_summary_search_candidate_alignment", "ready"][..],
+            &[
+                "replacement_summary_search_candidate_alignment",
+                "evidence_ready",
+            ][..],
+            &[
+                "replacement_summary_search_candidate_alignment",
+                "summary_ready",
+            ][..],
+        ]
+        .iter()
+        .all(|path| bool_path(bundle, path) == Some(true))
+}
+
 fn replacement_summary_storage_recovery_ready(bundle: &serde_json::Value) -> bool {
     [
         &[
@@ -3874,6 +3944,47 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action["action"] == "regenerate_search_projection_shadow_alignment"));
+    }
+
+    #[test]
+    fn rejects_search_candidate_shadow_alignment_when_summary_is_stale() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_search_candidate_alignment"]["ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_candidate_alignment"]["evidence_ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_candidate_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_search_candidate_evidence_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["search_candidate_shadow_evidence_alignment"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_search_candidate_evidence_mismatch"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "search_candidate_shadow_evidence_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_search_candidate_alignment.ready",
+                "replacement_summary_search_candidate_alignment.evidence_ready"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| { action["action"] == "regenerate_search_candidate_shadow_alignment" }));
     }
 
     #[test]
@@ -5106,9 +5217,69 @@ mod tests {
             "mismatched_fields": [],
             "blocker_codes": []
         });
+        bundle["search_candidate_shadow_evidence"] = ready_search_candidate_shadow_evidence();
+        bundle["replacement_summary_search_candidate_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "evidence_ready": true,
+            "summary_ready": true,
+            "mismatched_fields": [],
+            "blocker_codes": []
+        });
         bundle["replacement_summary"]["search_candidate_shadow_evidence"] =
             ready_search_candidate_shadow_evidence_summary();
         bundle
+    }
+
+    fn ready_search_candidate_shadow_evidence() -> serde_json::Value {
+        serde_json::json!({
+            "protocol": SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+            "evidence_source": SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE,
+            "route": SEARCH_CANDIDATE_SHADOW_EVIDENCE_ROUTE,
+            "ready": true,
+            "primary_engine": "lancedb",
+            "shadow_engine": "skein",
+            "row_counts": {
+                "matches": true
+            },
+            "vector": {
+                "top_k_overlap_ready": true
+            },
+            "fts": {
+                "top_k_overlap_ready": true
+            },
+            "filter_pushdown": {
+                "shadow_scan": {
+                    "filtered_out_count": 1,
+                    "metadata_predicate_pushdown": {
+                        "input_predicate_count": 2,
+                        "pushed_predicate_count": 2,
+                        "residual_predicate_count": 0,
+                        "unsatisfiable": false,
+                        "field_summaries": [
+                            {
+                                "field": "metadata.importance",
+                                "operation_kinds": ["range"],
+                                "segment_count": 1,
+                                "pruned_segment_count": 1,
+                                "scanned_segment_count": 0,
+                                "numeric_range_summary_used": true
+                            },
+                            {
+                                "field": "unit_type",
+                                "operation_kinds": ["enum"],
+                                "segment_count": 1,
+                                "pruned_segment_count": 0,
+                                "scanned_segment_count": 1,
+                                "enum_summary_used": true
+                            }
+                        ]
+                    }
+                }
+            },
+            "blocker_codes": []
+        })
     }
 
     fn ready_search_candidate_shadow_evidence_summary() -> serde_json::Value {
