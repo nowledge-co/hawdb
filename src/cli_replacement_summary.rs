@@ -384,6 +384,12 @@ pub fn nowledge_replacement_summary_json_with_options(
             "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
             "missing_covered_routes": bounded_read_evidence.missing_covered_routes,
             "route_primary_ready": bounded_read_evidence.route_primary_ready,
+            "query_runtime_report_count": bounded_read_evidence.query_runtime_report_count,
+            "query_runtime_plan_report_count": bounded_read_evidence.query_runtime_plan_report_count,
+            "query_runtime_profile_report_count": bounded_read_evidence.query_runtime_profile_report_count,
+            "query_runtime_failed_query_count": bounded_read_evidence.query_runtime_failed_query_count,
+            "query_runtime_missing_plan_evidence_count": bounded_read_evidence.query_runtime_missing_plan_evidence_count,
+            "query_runtime_missing_profile_evidence_count": bounded_read_evidence.query_runtime_missing_profile_evidence_count,
             "primary_ready_routes": bounded_read_evidence.primary_ready_routes,
             "missing_primary_routes": bounded_read_evidence.missing_primary_routes,
             "blocker_codes": bounded_read_evidence.blocker_codes,
@@ -968,6 +974,12 @@ struct BoundedReadEvidenceSummary<'a> {
     covered_routes: Vec<String>,
     missing_covered_routes: Vec<&'static str>,
     route_primary_ready: Option<bool>,
+    query_runtime_report_count: Option<u64>,
+    query_runtime_plan_report_count: Option<u64>,
+    query_runtime_profile_report_count: Option<u64>,
+    query_runtime_failed_query_count: Option<u64>,
+    query_runtime_missing_plan_evidence_count: Option<u64>,
+    query_runtime_missing_profile_evidence_count: Option<u64>,
     primary_ready_routes: Vec<String>,
     missing_primary_routes: Vec<String>,
     blocker_codes: serde_json::Value,
@@ -1567,6 +1579,21 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
     let reported_missing_primary_routes =
         json_get_string_array_path_from_dynamic(bundle, path, "missing_primary_routes");
     let route_primary_ready = json_get_bool_path_from_dynamic(bundle, path, "route_primary_ready");
+    let query_runtime_report_count =
+        json_get_u64_path_from_dynamic(bundle, path, "query_runtime_report_count");
+    let query_runtime_plan_report_count =
+        json_get_u64_path_from_dynamic(bundle, path, "query_runtime_plan_report_count");
+    let query_runtime_profile_report_count =
+        json_get_u64_path_from_dynamic(bundle, path, "query_runtime_profile_report_count");
+    let query_runtime_failed_query_count =
+        json_get_u64_path_from_dynamic(bundle, path, "query_runtime_failed_query_count");
+    let query_runtime_missing_plan_evidence_count =
+        json_get_u64_path_from_dynamic(bundle, path, "query_runtime_missing_plan_evidence_count");
+    let query_runtime_missing_profile_evidence_count = json_get_u64_path_from_dynamic(
+        bundle,
+        path,
+        "query_runtime_missing_profile_evidence_count",
+    );
     let ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL)
         && mode == Some("shadow_read_only")
@@ -1592,6 +1619,12 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
         covered_routes,
         missing_covered_routes,
         route_primary_ready,
+        query_runtime_report_count,
+        query_runtime_plan_report_count,
+        query_runtime_profile_report_count,
+        query_runtime_failed_query_count,
+        query_runtime_missing_plan_evidence_count,
+        query_runtime_missing_profile_evidence_count,
         primary_ready_routes,
         missing_primary_routes,
         blocker_codes: json_get_array_path_from_dynamic(bundle, path, "blocker_codes"),
@@ -2252,6 +2285,12 @@ fn nowledge_replacement_next_actions(
                 "bounded_read_evidence.blocking_operator_count",
                 "bounded_read_evidence.covered_routes",
                 "bounded_read_evidence.route_primary_ready",
+                "bounded_read_evidence.query_runtime_report_count",
+                "bounded_read_evidence.query_runtime_plan_report_count",
+                "bounded_read_evidence.query_runtime_profile_report_count",
+                "bounded_read_evidence.query_runtime_failed_query_count",
+                "bounded_read_evidence.query_runtime_missing_plan_evidence_count",
+                "bounded_read_evidence.query_runtime_missing_profile_evidence_count",
                 "bounded_read_evidence.primary_ready_routes",
                 "bounded_read_evidence.missing_primary_routes",
                 "bounded_read_evidence.blocker_codes",
@@ -3311,6 +3350,22 @@ mod tests {
         assert_eq!(summary["bounded_read_evidence"]["ready"], true);
         assert_eq!(summary["bounded_read_evidence"]["mode"], "shadow_read_only");
         assert_eq!(summary["bounded_read_evidence"]["execution_row_cap"], 513);
+        assert_eq!(
+            summary["bounded_read_evidence"]["query_runtime_report_count"],
+            17
+        );
+        assert_eq!(
+            summary["bounded_read_evidence"]["query_runtime_plan_report_count"],
+            17
+        );
+        assert_eq!(
+            summary["bounded_read_evidence"]["query_runtime_profile_report_count"],
+            17
+        );
+        assert_eq!(
+            summary["bounded_read_evidence"]["query_runtime_failed_query_count"],
+            0
+        );
         assert_eq!(
             summary["graph_route_parity_evidence"]["overview"]["ready"],
             true
@@ -5385,6 +5440,12 @@ mod tests {
                         "bounded_read_evidence.blocking_operator_count",
                         "bounded_read_evidence.covered_routes",
                         "bounded_read_evidence.route_primary_ready",
+                        "bounded_read_evidence.query_runtime_report_count",
+                        "bounded_read_evidence.query_runtime_plan_report_count",
+                        "bounded_read_evidence.query_runtime_profile_report_count",
+                        "bounded_read_evidence.query_runtime_failed_query_count",
+                        "bounded_read_evidence.query_runtime_missing_plan_evidence_count",
+                        "bounded_read_evidence.query_runtime_missing_profile_evidence_count",
                         "bounded_read_evidence.primary_ready_routes",
                         "bounded_read_evidence.missing_primary_routes",
                         "bounded_read_evidence.blocker_codes"
@@ -5836,6 +5897,12 @@ mod tests {
                     "/graph/shortest-path"
                 ],
                 "route_primary_ready": true,
+                "query_runtime_report_count": 17,
+                "query_runtime_plan_report_count": 17,
+                "query_runtime_profile_report_count": 17,
+                "query_runtime_failed_query_count": 0,
+                "query_runtime_missing_plan_evidence_count": 0,
+                "query_runtime_missing_profile_evidence_count": 0,
                 "primary_ready_routes": [
                     "/graph/overview",
                     "/graph/search",
