@@ -2586,6 +2586,7 @@ struct SearchFilterSegmentSummary {
 struct SearchSegmentDescriptor {
     target_documents: usize,
     document_count: usize,
+    document_fingerprint: Option<u64>,
     segments: Vec<SearchSegmentDescriptorEntry>,
 }
 
@@ -3001,6 +3002,7 @@ impl SearchSegmentDescriptor {
         Self {
             target_documents: SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
             document_count: documents.len(),
+            document_fingerprint: Some(search_segment_descriptor_document_fingerprint(documents)),
             segments,
         }
     }
@@ -3008,6 +3010,8 @@ impl SearchSegmentDescriptor {
     fn matches_documents(&self, documents: &BTreeMap<String, SearchDocument>) -> bool {
         self.target_documents == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
             && self.document_count == documents.len()
+            && self.document_fingerprint
+                == Some(search_segment_descriptor_document_fingerprint(documents))
             && self
                 .segments
                 .first()
@@ -3145,6 +3149,19 @@ fn search_segment_descriptor_fields(
         .values()
         .flat_map(|document| document.metadata.keys().cloned())
         .collect()
+}
+
+fn search_segment_descriptor_document_fingerprint(
+    documents: &BTreeMap<String, SearchDocument>,
+) -> u64 {
+    let mut body = String::new();
+    for document in documents.values() {
+        body.push_str(&encode_string(&document.id));
+        body.push('\t');
+        body.push_str(&encode_metadata(&document.metadata));
+        body.push('\n');
+    }
+    checksum_bytes(body.as_bytes())
 }
 
 fn search_document_matches_predicate(
@@ -3938,6 +3955,9 @@ fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -
         descriptor.target_documents
     ));
     body.push_str(&format!("document_count\t{}\n", descriptor.document_count));
+    if let Some(fingerprint) = descriptor.document_fingerprint {
+        body.push_str(&format!("document_fingerprint\t{fingerprint}\n"));
+    }
     for segment in &descriptor.segments {
         body.push_str(&format!(
             "segment\t{}\t{}\t{}\n",
@@ -3971,6 +3991,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
 
     let mut target_documents = None;
     let mut document_count = None;
+    let mut document_fingerprint = None;
     let mut segments = Vec::new();
     let mut current_segment = None::<SearchSegmentDescriptorEntry>;
 
@@ -3985,6 +4006,9 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
             }
             ["document_count", raw] => {
                 document_count = Some(parse_usize(raw, "search segment document count")?);
+            }
+            ["document_fingerprint", raw] => {
+                document_fingerprint = Some(parse_u64(raw, "search segment document fingerprint")?);
             }
             ["segment", raw_first, raw_last, raw_count] => {
                 if let Some(segment) = current_segment.take() {
@@ -4056,6 +4080,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
         document_count: document_count.ok_or_else(|| {
             SkeinError::Storage("search segment descriptor missing document_count".to_string())
         })?,
+        document_fingerprint,
         segments,
     })
 }
@@ -5052,6 +5077,68 @@ mod tests {
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
             1
+        );
+    }
+
+    #[test]
+    fn search_ignores_stale_persisted_segment_descriptor_fingerprint() {
+        let mut index = SearchIndex::in_memory();
+        for (id, source_id) in [
+            ("memory:0", "thread_1"),
+            ("memory:1", "thread_1"),
+            ("memory:2", "thread_2"),
+        ] {
+            index
+                .upsert(SearchDocument {
+                    id: id.to_string(),
+                    title: "Graph memory".to_string(),
+                    content: "graph projection diagnostics".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([("source_id".to_string(), source_id.to_string())]),
+                })
+                .unwrap();
+        }
+        let stale_descriptor = SearchSegmentDescriptor::build(&index.documents);
+        index
+            .upsert(SearchDocument {
+                id: "memory:0".to_string(),
+                title: "Graph memory".to_string(),
+                content: "graph projection diagnostics".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("source_id".to_string(), "thread_2".to_string())]),
+            })
+            .unwrap();
+        index.segment_descriptor = Some(stale_descriptor);
+
+        let result = index.search_with_options(
+            "graph",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id".to_string(),
+                    "thread_2".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+        let hit_ids = result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(result.filtered_document_count, 2);
+        assert!(hit_ids.contains("memory:0"));
+        assert!(hit_ids.contains("memory:2"));
+        assert!(
+            !result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
         );
     }
 
