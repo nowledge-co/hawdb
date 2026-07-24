@@ -26008,6 +26008,43 @@ fn plan_cache_records_bypassed_mutation_explain_separately() {
 }
 
 #[test]
+fn plan_cache_bypasses_thread_repair_stats_queries() {
+    let db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    let query = "\
+        MATCH (t:Thread) \
+        OPTIONAL MATCH (ti:ThreadIdentity) WHERE ti.thread_node_id = t.id \
+        WITH t, COUNT(ti) AS identity_refs \
+        OPTIONAL MATCH (t)-[:CONTAINS]->(msg:Message) \
+        WITH t, identity_refs, COUNT(msg) AS legacy_messages \
+        OPTIONAL MATCH (t)-[:COMPACTS_TO]->(m:Memory) \
+        RETURN t.id, t.thread_id, \
+        CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END, \
+        COALESCE(t.message_count, 0), identity_refs, legacy_messages, COUNT(m) \
+        ORDER BY t.id ASC";
+
+    let first = db.explain_query(query).unwrap();
+    let second = db.explain_query(query).unwrap();
+
+    for output in [&first, &second] {
+        assert!(output
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision == "plan cache bypass: statement_not_cacheable"));
+    }
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 0);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.misses, 0);
+    assert_eq!(stats.disabled_misses, 0);
+    assert_eq!(stats.bypasses, 2);
+    assert_eq!(stats.evictions, 0);
+}
+
+#[test]
 fn explain_uses_scan_without_index_descriptor() {
     let db = Database::new();
     let output = db

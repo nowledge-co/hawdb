@@ -31309,7 +31309,6 @@ fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
             | cypher::Statement::ShortestPathReturn(_)
             | cypher::Statement::MatchNodesReturn(_)
             | cypher::Statement::MatchOptionalRelationshipCountSum(_)
-            | cypher::Statement::MatchThreadRepairStats(_)
             | cypher::Statement::GraphAlgorithm(_)
     )
 }
