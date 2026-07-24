@@ -1,4 +1,6 @@
-use crate::search::{CompressedVectorSearchMode, SearchPredicatePushdownReport};
+use crate::search::{
+    CompressedVectorSearchMode, SearchPredicateFieldPruningReport, SearchPredicatePushdownReport,
+};
 use crate::search_projection_evidence::{
     nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
 };
@@ -1205,6 +1207,21 @@ fn search_predicate_pushdown_report_json(
         "pruned_segment_count": report.pruned_segment_count,
         "scanned_segment_count": report.scanned_segment_count,
         "persisted_segment_descriptor_used": report.persisted_segment_descriptor_used,
+        "field_summaries": report.field_summaries.iter().map(search_predicate_field_pruning_report_json).collect::<Vec<_>>(),
+    })
+}
+
+fn search_predicate_field_pruning_report_json(
+    report: &SearchPredicateFieldPruningReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "field": &report.field,
+        "operation_kinds": &report.operation_kinds,
+        "segment_count": report.segment_count,
+        "pruned_segment_count": report.pruned_segment_count,
+        "scanned_segment_count": report.scanned_segment_count,
+        "numeric_range_summary_used": report.numeric_range_summary_used,
+        "value_summary_used": report.value_summary_used,
     })
 }
 
@@ -2235,6 +2252,20 @@ mod tests {
         assert_eq!(
             report_json["search_metadata_predicate_pushdown"]["pushed_predicate_count"],
             1
+        );
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]["field"],
+            "unit_type"
+        );
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
+                ["operation_kinds"],
+            serde_json::json!(["eq"])
+        );
+        assert_eq!(
+            report_json["search_metadata_predicate_pushdown"]["field_summaries"][0]
+                ["value_summary_used"],
+            true
         );
         assert_eq!(report_json["search_candidate_filtered_out_count"], 1);
     }
