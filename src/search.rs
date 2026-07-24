@@ -3329,6 +3329,18 @@ fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> O
             .map(String::as_str)
             .filter(|value| !value.trim().is_empty())
             .or(Some(DEFAULT_IS_LATEST)),
+        "created_at" => document.metadata.get(key).map(String::as_str).or_else(|| {
+            document
+                .metadata
+                .get("created_at_epoch_us")
+                .map(String::as_str)
+        }),
+        "updated_at" => document.metadata.get(key).map(String::as_str).or_else(|| {
+            document
+                .metadata
+                .get("updated_at_epoch_us")
+                .map(String::as_str)
+        }),
         "space_id" => Some(
             document
                 .metadata
@@ -7280,6 +7292,116 @@ mod tests {
                 .candidate_set
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "created_at".to_string(),
+                value_kind: "numeric_or_string".to_string(),
+                operation_kinds: vec!["gte".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                pruned_document_count: 2,
+                scanned_document_count: 1,
+                numeric_range_summary_used: true,
+                value_summary_used: false,
+            }]
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_prunes_created_at_epoch_alias_filters() {
+        let path = unique_test_dir("search_segment_descriptor_created_at_epoch_alias");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for (id, created_at_epoch_us) in [
+                ("memory:0_old_0", "1704067200000000"),
+                ("memory:0_old_1", "1704153600000000"),
+                ("memory:1_new_0", "1735689600000000"),
+            ] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor created-at retrieval".to_string(),
+                        embedding: None,
+                        metadata: BTreeMap::from([(
+                            "created_at_epoch_us".to_string(),
+                            created_at_epoch_us.to_string(),
+                        )]),
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert_eq!(
+            descriptor.segments[0]
+                .metadata
+                .get("created_at")
+                .and_then(|summary| summary.numeric_range),
+            Some(SearchNumericRange {
+                min: 1_704_067_200_000_000.0,
+                max: 1_704_153_600_000_000.0
+            })
+        );
+        assert_eq!(
+            descriptor.segments[1]
+                .metadata
+                .get("created_at")
+                .and_then(|summary| summary.numeric_range),
+            Some(SearchNumericRange {
+                min: 1_735_689_600_000_000.0,
+                max: 1_735_689_600_000_000.0
+            })
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor created-at retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "created_at__gte".to_string(),
+                    "1735689600000000".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.hits[0].id, "memory:1_new_0");
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .segment_count,
+            2
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
             1
         );
         assert_eq!(
