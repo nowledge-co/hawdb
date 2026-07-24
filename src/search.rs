@@ -346,6 +346,8 @@ pub struct SearchPredicatePushdownReport {
     pub pruned_document_count: usize,
     pub scanned_document_count: usize,
     pub persisted_segment_descriptor_used: bool,
+    pub segment_descriptor_field_count: Option<usize>,
+    pub segment_descriptor_bounded: Option<bool>,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -1506,6 +1508,9 @@ impl SearchIndex {
         predicate_pushdown.report.scanned_document_count = filtered.scanned_document_count;
         predicate_pushdown.report.persisted_segment_descriptor_used =
             filtered.persisted_segment_descriptor_used;
+        predicate_pushdown.report.segment_descriptor_field_count =
+            filtered.segment_descriptor_field_count;
+        predicate_pushdown.report.segment_descriptor_bounded = filtered.segment_descriptor_bounded;
         predicate_pushdown.report.field_summaries = filtered.field_summaries;
         let filtered_documents = filtered.documents;
         let filtered_document_count = filtered_documents.len();
@@ -2561,6 +2566,8 @@ pub(crate) fn search_metadata_predicate_pushdown(
         pruned_document_count: 0,
         scanned_document_count: 0,
         persisted_segment_descriptor_used: false,
+        segment_descriptor_field_count: None,
+        segment_descriptor_bounded: None,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown {
@@ -2590,6 +2597,8 @@ struct FilteredSearchDocuments<'a> {
     pruned_document_count: usize,
     scanned_document_count: usize,
     persisted_segment_descriptor_used: bool,
+    segment_descriptor_field_count: Option<usize>,
+    segment_descriptor_bounded: Option<bool>,
     field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -2644,6 +2653,8 @@ fn filter_search_documents_with_segment_pruning<'a>(
             pruned_document_count: 0,
             scanned_document_count: 0,
             persisted_segment_descriptor_used: false,
+            segment_descriptor_field_count: None,
+            segment_descriptor_bounded: None,
             field_summaries: Vec::new(),
         };
     }
@@ -2706,6 +2717,8 @@ fn filter_search_documents_with_segment_pruning<'a>(
         pruned_document_count,
         scanned_document_count,
         persisted_segment_descriptor_used: false,
+        segment_descriptor_field_count: None,
+        segment_descriptor_bounded: None,
         field_summaries: field_pruning.into_reports(),
     }
 }
@@ -2747,6 +2760,8 @@ fn filter_search_documents_with_persisted_segments<'a>(
         pruned_document_count,
         scanned_document_count,
         persisted_segment_descriptor_used: true,
+        segment_descriptor_field_count: Some(descriptor.field_count()),
+        segment_descriptor_bounded: Some(descriptor.is_bounded_to_nowledge_scan_fields()),
         field_summaries: field_pruning.into_reports(),
     }
 }
@@ -3112,6 +3127,27 @@ impl SearchSegmentDescriptor {
                 .last()
                 .map(|segment| segment.last_document_id.as_str())
                 == documents.keys().next_back().map(String::as_str)
+    }
+
+    fn field_count(&self) -> usize {
+        self.segments
+            .iter()
+            .flat_map(|segment| segment.metadata.keys())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn is_bounded_to_nowledge_scan_fields(&self) -> bool {
+        let allowed = NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.segments.iter().all(|segment| {
+            segment
+                .metadata
+                .keys()
+                .all(|field| allowed.contains(field.as_str()))
+        })
     }
 }
 
@@ -7648,6 +7684,20 @@ mod tests {
                 .candidate_set
                 .metadata_predicate_pushdown
                 .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .segment_descriptor_field_count,
+            Some(NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS.len())
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .segment_descriptor_bounded,
+            Some(true)
         );
         assert_eq!(
             result
