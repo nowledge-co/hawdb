@@ -21,6 +21,9 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   [--bounded-read-params-json <json-object>] \
   [--bounded-read-max-rows <n>] \
   [--bounded-read-max-estimated-payload-bytes <n>] \
+  [--query-runtime-preflight-json <path>] \
+  [--query-runtime-probe-json <path>] \
+  [--query-runtime-database <path>] \
   -- <wrapper-command> [args...]
 
 Runs the Skein-side Nowledge previous-wrapper production preflight bundle.
@@ -42,6 +45,9 @@ bounded_read_cypher=
 bounded_read_params_json=
 bounded_read_max_rows=
 bounded_read_max_estimated_payload_bytes=
+query_runtime_preflight_json=
+query_runtime_probe_json=
+query_runtime_database=
 
 while (($# > 0)); do
   case "$1" in
@@ -97,6 +103,18 @@ while (($# > 0)); do
       bounded_read_max_estimated_payload_bytes="${2:-}"
       shift 2
       ;;
+    --query-runtime-preflight-json)
+      query_runtime_preflight_json="${2:-}"
+      shift 2
+      ;;
+    --query-runtime-probe-json)
+      query_runtime_probe_json="${2:-}"
+      shift 2
+      ;;
+    --query-runtime-database)
+      query_runtime_database="${2:-}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -131,7 +149,9 @@ for evidence_path in \
   "$search_projection_evidence_json" \
   "$search_projection_shadow_evidence_json" \
   "$bounded_read_evidence_json" \
-  "$bounded_read_report_json"; do
+  "$bounded_read_report_json" \
+  "$query_runtime_preflight_json" \
+  "$query_runtime_probe_json"; do
   if [[ -n "$evidence_path" && ! -f "$evidence_path" ]]; then
     echo "evidence JSON does not exist or is not a file: $evidence_path" >&2
     exit 2
@@ -155,6 +175,21 @@ fi
 
 if [[ -n "$bounded_read_database" && ! -e "$bounded_read_database" ]]; then
   echo "--bounded-read-database does not exist: $bounded_read_database" >&2
+  exit 2
+fi
+
+if [[ -n "$query_runtime_database" && ! -e "$query_runtime_database" ]]; then
+  echo "--query-runtime-database does not exist: $query_runtime_database" >&2
+  exit 2
+fi
+
+if [[ -n "$query_runtime_preflight_json" && -n "$query_runtime_probe_json" ]]; then
+  echo "--query-runtime-preflight-json cannot be combined with --query-runtime-probe-json" >&2
+  exit 2
+fi
+
+if [[ -z "$query_runtime_preflight_json" && -z "$query_runtime_probe_json" ]]; then
+  echo "previous-wrapper preflight requires --query-runtime-preflight-json or --query-runtime-probe-json" >&2
   exit 2
 fi
 
@@ -303,6 +338,18 @@ run_skein nowledge-replacement-summary \
   "${replacement_summary_evidence_args[@]}" \
   "$preflight_root/migration-gate.json" \
   > "$preflight_root/replacement-summary.json"
+
+if [[ -n "$query_runtime_preflight_json" ]]; then
+  if [[ "$query_runtime_preflight_json" != "$preflight_root/query-runtime-preflight.json" ]]; then
+    cp "$query_runtime_preflight_json" "$preflight_root/query-runtime-preflight.json"
+  fi
+else
+  run_skein nowledge-query-runtime-preflight \
+    --require-ready \
+    --probe-json "$query_runtime_probe_json" \
+    "${query_runtime_database:-$skein_preflight_db}" \
+    > "$preflight_root/query-runtime-preflight.json"
+fi
 
 run_skein nowledge-previous-wrapper-preflight-check \
   --require-ready \

@@ -57,14 +57,15 @@ export NOWLEDGE_WRAPPER_IDENTITY="nowledge-previous-wrapper:local-copy"
 
 Use the checked-in bundle runner for release preflight. It runs the full
 contract, adapter smoke, storage recovery, background maintenance, migration
-gate, replacement summary, and final preflight verifier in the fail-closed
-order documented below:
+gate, replacement summary, query runtime preflight, and final preflight
+verifier in the fail-closed order documented below:
 
 ```bash
 scripts/nowledge-previous-wrapper-preflight.sh \
   --preflight-root "$NMEM_PREFLIGHT_ROOT" \
   --nowledge-root /Users/hawkingrei/devel/nowledge/mem \
   --wrapper-identity "$NOWLEDGE_WRAPPER_IDENTITY" \
+  --query-runtime-probe-json "$NMEM_PREFLIGHT_ROOT/query-runtime-probes.json" \
   -- "$NOWLEDGE_WRAPPER_COMMAND"
 ```
 
@@ -241,9 +242,26 @@ jq -e '
 If this command fails, inspect `next_actions` first. The action codes are
 stable enough for dashboards and release automation.
 
-## 7. Verify The Whole Preflight Bundle
+## 7. Run Query Runtime Preflight
 
-Use the bundle checker to collapse the four evidence files into one
+The query runtime preflight independently runs JSON-defined probes through the
+read-only Skein runtime with `EXPLAIN ANALYZE`, then emits plan/profile
+evidence without rows, parameters, or local paths:
+
+```bash
+cargo run --quiet --bin skein -- \
+  nowledge-query-runtime-preflight \
+  --probe-json "$NMEM_PREFLIGHT_ROOT/query-runtime-probes.json" \
+  "$NMEM_PREFLIGHT_GRAPH" \
+  > "$NMEM_PREFLIGHT_ROOT/query-runtime-preflight.json"
+```
+
+Use probes from active Nowledge Mem route fixtures. Missing or weak probe
+evidence keeps the whole previous-wrapper preflight fail-closed.
+
+## 8. Verify The Whole Preflight Bundle
+
+Use the bundle checker to collapse the evidence files into one
 release-facing preflight verdict:
 
 ```bash
@@ -257,10 +275,11 @@ cargo run --quiet --bin skein -- \
 
 The verifier checks wrapper identity consistency across the full contract,
 adapter smoke, migration gate, storage recovery evidence, background
-maintenance evidence, and replacement summary artifacts. It fails closed unless
-every stage is ready, the storage/background evidence is explicitly required and
-present in the migration gate, and the replacement summary has no blockers,
-missing evidence, or next actions.
+maintenance evidence, replacement summary, and query runtime preflight
+artifacts. It fails closed unless every stage is ready, the storage/background
+evidence is explicitly required and present in the migration gate, the
+replacement summary has no blockers, missing evidence, or next actions, and the
+query runtime probes all produce plan/profile evidence.
 The final preflight is stricter than compatibility summary generation: the
 replacement summary must carry `dual_engine_evidence.present == true` and
 `dual_engine_evidence.ready == true`.
@@ -272,8 +291,9 @@ can report the exact missing or mismatched field without parsing blocker text.
 The final JSON also includes `release_summary`, a compact copy of the wrapper
 identity, contract counts, adapter request counts, migration/cutover decisions,
 replacement readiness, storage/background readiness, and dual-engine counts
-needed by release notes and dashboards.
+needed by release notes and dashboards, plus query runtime probe counts for
+plan-readiness tracking.
 For targeted debugging, the same command still accepts explicit
 `--contract-evidence-json`, `--adapter-smoke-json`, `--migration-gate-json`,
-and `--replacement-summary-json` paths; explicit files override the standard
-names loaded from `--bundle-dir`.
+`--replacement-summary-json`, and `--query-runtime-preflight-json` paths;
+explicit files override the standard names loaded from `--bundle-dir`.

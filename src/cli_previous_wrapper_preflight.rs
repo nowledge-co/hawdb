@@ -1,8 +1,10 @@
 use skein::{Result, SkeinError};
 use std::path::Path;
 
+const NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str = "skein-nowledge-query-runtime-preflight-v1";
+
 pub fn nowledge_previous_wrapper_preflight_check_usage() -> String {
-    "nowledge-previous-wrapper-preflight-check requires [--require-ready] --wrapper-identity <id> (--bundle-dir <dir> | --contract-evidence-json <path> --adapter-smoke-json <path> --migration-gate-json <path> --replacement-summary-json <path>)".to_string()
+    "nowledge-previous-wrapper-preflight-check requires [--require-ready] --wrapper-identity <id> (--bundle-dir <dir> | --contract-evidence-json <path> --adapter-smoke-json <path> --migration-gate-json <path> --replacement-summary-json <path> --query-runtime-preflight-json <path>)".to_string()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -13,6 +15,7 @@ struct PreviousWrapperPreflightCheckInputs {
     adapter_smoke: Option<serde_json::Value>,
     migration_gate: Option<serde_json::Value>,
     replacement_summary: Option<serde_json::Value>,
+    query_runtime_preflight: Option<serde_json::Value>,
 }
 
 pub fn run_nowledge_previous_wrapper_preflight_check(
@@ -59,6 +62,9 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
             "--replacement-summary-json" => {
                 inputs.replacement_summary = Some(read_json_arg(&mut args)?);
             }
+            "--query-runtime-preflight-json" => {
+                inputs.query_runtime_preflight = Some(read_json_arg(&mut args)?);
+            }
             _ => {
                 return Err(SkeinError::Semantic(
                     nowledge_previous_wrapper_preflight_check_usage(),
@@ -89,6 +95,11 @@ fn fill_bundle_dir_inputs(inputs: &mut PreviousWrapperPreflightCheckInputs) -> R
     if inputs.replacement_summary.is_none() {
         inputs.replacement_summary = Some(read_json_file(
             &bundle_dir.join("replacement-summary.json"),
+        )?);
+    }
+    if inputs.query_runtime_preflight.is_none() {
+        inputs.query_runtime_preflight = Some(read_json_file(
+            &bundle_dir.join("query-runtime-preflight.json"),
         )?);
     }
     Ok(())
@@ -133,6 +144,9 @@ fn nowledge_previous_wrapper_preflight_check_json(
         .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let replacement_summary = inputs
         .replacement_summary
+        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+    let query_runtime_preflight = inputs
+        .query_runtime_preflight
         .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let search_candidate_primary_ready = str_path(
         &replacement_summary,
@@ -571,6 +585,32 @@ fn nowledge_previous_wrapper_preflight_check_json(
                 ],
             ),
         ),
+        preflight_check(
+            "query_runtime_preflight",
+            [
+                str_path(&query_runtime_preflight, &["protocol"])
+                    == Some(NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL),
+                bool_path(&query_runtime_preflight, &["ready"]) == Some(true),
+                bool_path(&query_runtime_preflight, &["database_opened"]) == Some(true),
+                u64_path(&query_runtime_preflight, &["probe_count"]).is_some_and(|value| value > 0),
+                query_runtime_preflight_counts_match(&query_runtime_preflight),
+                u64_path(&query_runtime_preflight, &["failed_probe_count"]) == Some(0),
+                query_runtime_preflight_probe_details_ready(&query_runtime_preflight),
+            ],
+            [
+                "query_runtime_preflight.protocol",
+                "query_runtime_preflight.ready",
+                "query_runtime_preflight.database_opened",
+                "query_runtime_preflight.probe_count",
+                "query_runtime_preflight.passed_probe_count",
+                "query_runtime_preflight.failed_probe_count",
+                "query_runtime_preflight.probes",
+            ],
+            blocker_codes(
+                &query_runtime_preflight,
+                &[&["blocker_codes"][..], &["failed_checks"][..]],
+            ),
+        ),
     ];
     let ready = checks.iter().all(|check| {
         check
@@ -590,6 +630,7 @@ fn nowledge_previous_wrapper_preflight_check_json(
         &adapter_smoke,
         &migration_gate,
         &replacement_summary,
+        &query_runtime_preflight,
     );
 
     Ok(serde_json::json!({
@@ -608,6 +649,7 @@ fn previous_wrapper_preflight_release_summary(
     adapter_smoke: &serde_json::Value,
     migration_gate: &serde_json::Value,
     replacement_summary: &serde_json::Value,
+    query_runtime_preflight: &serde_json::Value,
 ) -> serde_json::Value {
     let mut summary = serde_json::Map::new();
     insert_json_value(&mut summary, "wrapper_identity", wrapper_identity);
@@ -1072,6 +1114,31 @@ fn previous_wrapper_preflight_release_summary(
             ],
         ),
     );
+    insert_json_value(
+        &mut summary,
+        "query_runtime_preflight_ready",
+        bool_path(query_runtime_preflight, &["ready"]),
+    );
+    insert_json_value(
+        &mut summary,
+        "query_runtime_preflight_database_opened",
+        bool_path(query_runtime_preflight, &["database_opened"]),
+    );
+    insert_json_value(
+        &mut summary,
+        "query_runtime_preflight_probe_count",
+        u64_path(query_runtime_preflight, &["probe_count"]),
+    );
+    insert_json_value(
+        &mut summary,
+        "query_runtime_preflight_passed_probe_count",
+        u64_path(query_runtime_preflight, &["passed_probe_count"]),
+    );
+    insert_json_value(
+        &mut summary,
+        "query_runtime_preflight_failed_probe_count",
+        u64_path(query_runtime_preflight, &["failed_probe_count"]),
+    );
     serde_json::Value::Object(summary)
 }
 
@@ -1124,6 +1191,38 @@ fn str_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> 
 
 fn u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
     value_path(value, path).and_then(serde_json::Value::as_u64)
+}
+
+fn query_runtime_preflight_counts_match(value: &serde_json::Value) -> bool {
+    let Some(probe_count) = u64_path(value, &["probe_count"]) else {
+        return false;
+    };
+    let Some(passed_probe_count) = u64_path(value, &["passed_probe_count"]) else {
+        return false;
+    };
+    let Some(failed_probe_count) = u64_path(value, &["failed_probe_count"]) else {
+        return false;
+    };
+    probe_count > 0 && passed_probe_count == probe_count && failed_probe_count == 0
+}
+
+fn query_runtime_preflight_probe_details_ready(value: &serde_json::Value) -> bool {
+    let Some(probes) = value
+        .get("probes")
+        .and_then(serde_json::Value::as_array)
+        .filter(|probes| !probes.is_empty())
+    else {
+        return false;
+    };
+    probes.iter().all(|probe| {
+        bool_path(probe, &["ready"]) == Some(true)
+            && bool_path(probe, &["success"]) == Some(true)
+            && str_path(probe, &["selected_plan_fingerprint"])
+                .is_some_and(|value| !value.trim().is_empty())
+            && value_path(probe, &["output_row_count"]).is_some()
+            && value_path(probe, &["execution_profile", "scan_pruning_report_count"]).is_some()
+            && empty_array_path(probe, &["blocker_codes"])
+    })
 }
 
 fn full_contract_check_count_ready(value: &serde_json::Value) -> bool {
@@ -1366,6 +1465,11 @@ mod tests {
             "search_candidate_shadow_scan_field_summary_count",
             2,
         );
+        assert_release_summary_field(summary, "query_runtime_preflight_ready", true);
+        assert_release_summary_field(summary, "query_runtime_preflight_database_opened", true);
+        assert_release_summary_field(summary, "query_runtime_preflight_probe_count", 1);
+        assert_release_summary_field(summary, "query_runtime_preflight_passed_probe_count", 1);
+        assert_release_summary_field(summary, "query_runtime_preflight_failed_probe_count", 0);
         assert!(report["checks"]
             .as_array()
             .unwrap()
@@ -1628,6 +1732,37 @@ mod tests {
     }
 
     #[test]
+    fn preflight_check_requires_query_runtime_preflight() {
+        let mut inputs = ready_inputs();
+        let preflight = inputs.query_runtime_preflight.as_mut().unwrap();
+        preflight["ready"] = serde_json::json!(false);
+        preflight["failed_probe_count"] = serde_json::json!(1);
+        preflight["blocker_codes"] = serde_json::json!(["query_runtime_probe_failed"]);
+        preflight["probes"][0]["selected_plan_fingerprint"] = serde_json::json!("");
+
+        let report = nowledge_previous_wrapper_preflight_check_json(inputs).unwrap();
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["query_runtime_preflight"])
+        );
+        assert_eq!(
+            check_by_name(&report, "query_runtime_preflight")["failed_evidence_fields"],
+            serde_json::json!([
+                "query_runtime_preflight.ready",
+                "query_runtime_preflight.passed_probe_count",
+                "query_runtime_preflight.failed_probe_count",
+                "query_runtime_preflight.probes"
+            ])
+        );
+        assert_eq!(
+            check_by_name(&report, "query_runtime_preflight")["blocker_codes"],
+            serde_json::json!(["query_runtime_probe_failed"])
+        );
+    }
+
+    #[test]
     fn preflight_check_requires_storage_recovery_evidence() {
         let mut inputs = ready_inputs();
         let cutover_evidence = inputs
@@ -1868,6 +2003,10 @@ mod tests {
             bundle_dir.join("replacement-summary.json"),
             inputs.replacement_summary.as_ref().unwrap(),
         );
+        write_json(
+            bundle_dir.join("query-runtime-preflight.json"),
+            inputs.query_runtime_preflight.as_ref().unwrap(),
+        );
 
         let (report, require_ready) = run_nowledge_previous_wrapper_preflight_check(
             vec![
@@ -2004,7 +2143,36 @@ mod tests {
                 "search_projection_shadow_evidence": ready_search_projection_shadow_evidence(),
                 "search_candidate_shadow_evidence": ready_search_candidate_shadow_evidence()
             })),
+            query_runtime_preflight: Some(ready_query_runtime_preflight()),
         }
+    }
+
+    fn ready_query_runtime_preflight() -> serde_json::Value {
+        serde_json::json!({
+            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "ready": true,
+            "database_opened": true,
+            "probe_count": 1,
+            "passed_probe_count": 1,
+            "failed_probe_count": 0,
+            "blocker_codes": [],
+            "failed_checks": [],
+            "probes": [
+                {
+                    "name": "memory_lookup",
+                    "query_family": "memory_lookup",
+                    "ready": true,
+                    "success": true,
+                    "output_row_count": 1,
+                    "selected_plan_fingerprint": "ProjectExec(IndexNodeSeek)",
+                    "execution_profile": {
+                        "scan_pruning_report_count": 1,
+                        "pruned_scan_count": 1
+                    },
+                    "blocker_codes": []
+                }
+            ]
+        })
     }
 
     fn ready_search_projection_evidence() -> serde_json::Value {
