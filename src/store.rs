@@ -459,6 +459,37 @@ pub enum PropertyFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanPruningStrategy {
+    FullLabelScan,
+    Empty,
+    IdEq,
+    IdIn,
+    IdRange,
+    PropertyEq { property: String },
+    PropertyNotEq { property: String },
+    PropertyIn { property: String },
+    PropertyRange { property: String },
+    OrUnion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPruningReport {
+    pub label_id: Option<LabelId>,
+    pub strategy: ScanPruningStrategy,
+    pub pruned: bool,
+    pub exact_empty: bool,
+    pub candidate_count_before_filter: usize,
+    pub output_count: usize,
+    pub filtered_out_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanPrunedNodeScan<'a> {
+    pub nodes: Vec<&'a NodeRecord>,
+    pub report: ScanPruningReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
 }
@@ -577,6 +608,23 @@ pub struct GraphStore {
     max_search_projection_change_log_entries: Option<usize>,
     storage_recovery_report: StorageRecoveryReport,
     durable: Option<DurableStore>,
+}
+
+#[derive(Debug, Clone)]
+struct ScanPruningCandidate {
+    strategy: ScanPruningStrategy,
+    node_ids: BTreeSet<NodeId>,
+    exact_empty: bool,
+}
+
+impl ScanPruningCandidate {
+    fn exact(strategy: ScanPruningStrategy, node_ids: BTreeSet<NodeId>) -> Self {
+        Self {
+            strategy,
+            exact_empty: node_ids.is_empty(),
+            node_ids,
+        }
+    }
 }
 
 impl GraphStore {
@@ -4815,6 +4863,315 @@ impl GraphStore {
             .filter(move |node| label_id.map(|id| node.labels.contains(&id)).unwrap_or(true))
     }
 
+    pub fn scan_nodes_with_filter_pruning<'a>(
+        &'a self,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+    ) -> ScanPrunedNodeScan<'a> {
+        let candidate = filter.and_then(|filter| self.prune_node_candidates(label_id, filter));
+        let Some(candidate) = candidate else {
+            let candidate_count_before_filter = self.label_node_count(label_id);
+            let nodes = self
+                .scan_nodes(label_id)
+                .filter(|node| {
+                    filter
+                        .map(|filter| property_filter_matches(filter, node.id.0, &node.properties))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
+            let output_count = nodes.len();
+            return ScanPrunedNodeScan {
+                nodes,
+                report: ScanPruningReport {
+                    label_id,
+                    strategy: ScanPruningStrategy::FullLabelScan,
+                    pruned: false,
+                    exact_empty: false,
+                    candidate_count_before_filter,
+                    output_count,
+                    filtered_out_count: candidate_count_before_filter.saturating_sub(output_count),
+                },
+            };
+        };
+
+        let candidate_count_before_filter = candidate.node_ids.len();
+        let nodes = candidate
+            .node_ids
+            .iter()
+            .filter_map(|node_id| self.nodes.get(node_id))
+            .filter(|node| self.node_matches_label(node, label_id))
+            .filter(|node| {
+                filter
+                    .map(|filter| property_filter_matches(filter, node.id.0, &node.properties))
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
+        let output_count = nodes.len();
+        ScanPrunedNodeScan {
+            nodes,
+            report: ScanPruningReport {
+                label_id,
+                strategy: candidate.strategy,
+                pruned: true,
+                exact_empty: candidate.exact_empty,
+                candidate_count_before_filter,
+                output_count,
+                filtered_out_count: candidate_count_before_filter.saturating_sub(output_count),
+            },
+        }
+    }
+
+    fn label_node_count(&self, label_id: Option<LabelId>) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| self.node_matches_label(node, label_id))
+            .count()
+    }
+
+    fn node_matches_label(&self, node: &NodeRecord, label_id: Option<LabelId>) -> bool {
+        label_id
+            .map(|label_id| node.labels.contains(&label_id))
+            .unwrap_or(true)
+    }
+
+    fn prune_node_candidates(
+        &self,
+        label_id: Option<LabelId>,
+        filter: &PropertyFilter,
+    ) -> Option<ScanPruningCandidate> {
+        match filter {
+            PropertyFilter::And(filters) => self.prune_and_node_candidates(label_id, filters),
+            PropertyFilter::Or(filters) => self.prune_or_node_candidates(label_id, filters),
+            PropertyFilter::Not(_) => None,
+            PropertyFilter::IdEq { value } => Some(ScanPruningCandidate::exact(
+                ScanPruningStrategy::IdEq,
+                self.node_ids_for_id_values(label_id, std::slice::from_ref(value)),
+            )),
+            PropertyFilter::IdNotEq { .. } => None,
+            PropertyFilter::IdRange { lower, upper } => {
+                if lower.is_none() && upper.is_none() {
+                    return None;
+                }
+                Some(ScanPruningCandidate::exact(
+                    ScanPruningStrategy::IdRange,
+                    self.node_ids_for_id_range(label_id, lower.as_ref(), upper.as_ref()),
+                ))
+            }
+            PropertyFilter::IdIn { values } => Some(ScanPruningCandidate::exact(
+                if values.is_empty() {
+                    ScanPruningStrategy::Empty
+                } else {
+                    ScanPruningStrategy::IdIn
+                },
+                self.node_ids_for_id_values(label_id, values),
+            )),
+            PropertyFilter::Eq { property, value } => Some(ScanPruningCandidate::exact(
+                ScanPruningStrategy::PropertyEq {
+                    property: property.clone(),
+                },
+                self.node_ids_for_property_values(label_id, property, std::slice::from_ref(value)),
+            )),
+            PropertyFilter::NotEq { property, value } => Some(ScanPruningCandidate::exact(
+                ScanPruningStrategy::PropertyNotEq {
+                    property: property.clone(),
+                },
+                self.node_ids_for_property_not_in_values(
+                    label_id,
+                    property,
+                    std::slice::from_ref(value),
+                ),
+            )),
+            PropertyFilter::IsNull { .. }
+            | PropertyFilter::IsNotNull { .. }
+            | PropertyFilter::ListContains { .. }
+            | PropertyFilter::Contains { .. }
+            | PropertyFilter::StartsWith { .. }
+            | PropertyFilter::EndsWith { .. }
+            | PropertyFilter::RegexMatch { .. }
+            | PropertyFilter::DefaultIfNullOrEq { .. } => None,
+            PropertyFilter::In { property, values } => Some(ScanPruningCandidate::exact(
+                if values.is_empty() {
+                    ScanPruningStrategy::Empty
+                } else {
+                    ScanPruningStrategy::PropertyIn {
+                        property: property.clone(),
+                    }
+                },
+                self.node_ids_for_property_values(label_id, property, values),
+            )),
+            PropertyFilter::Range {
+                property,
+                lower,
+                upper,
+            } => {
+                if lower.is_none() && upper.is_none() {
+                    return None;
+                }
+                Some(ScanPruningCandidate::exact(
+                    ScanPruningStrategy::PropertyRange {
+                        property: property.clone(),
+                    },
+                    self.node_ids_for_property_range(
+                        label_id,
+                        property,
+                        lower.as_ref(),
+                        upper.as_ref(),
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn prune_and_node_candidates(
+        &self,
+        label_id: Option<LabelId>,
+        filters: &[PropertyFilter],
+    ) -> Option<ScanPruningCandidate> {
+        let mut best: Option<ScanPruningCandidate> = None;
+        for filter in filters {
+            let Some(candidate) = self.prune_node_candidates(label_id, filter) else {
+                continue;
+            };
+            if candidate.exact_empty {
+                return Some(candidate);
+            }
+            if best
+                .as_ref()
+                .map(|best| candidate.node_ids.len() < best.node_ids.len())
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    fn prune_or_node_candidates(
+        &self,
+        label_id: Option<LabelId>,
+        filters: &[PropertyFilter],
+    ) -> Option<ScanPruningCandidate> {
+        if filters.is_empty() {
+            return Some(ScanPruningCandidate {
+                strategy: ScanPruningStrategy::Empty,
+                node_ids: BTreeSet::new(),
+                exact_empty: true,
+            });
+        }
+
+        let mut node_ids = BTreeSet::new();
+        for filter in filters {
+            let candidate = self.prune_node_candidates(label_id, filter)?;
+            node_ids.extend(candidate.node_ids);
+        }
+        Some(ScanPruningCandidate::exact(
+            ScanPruningStrategy::OrUnion,
+            node_ids,
+        ))
+    }
+
+    fn node_ids_for_id_values(
+        &self,
+        label_id: Option<LabelId>,
+        values: &[Value],
+    ) -> BTreeSet<NodeId> {
+        values
+            .iter()
+            .filter_map(|value| match value {
+                Value::Int(value) => u64::try_from(*value).ok().map(NodeId),
+                _ => None,
+            })
+            .filter(|node_id| {
+                self.nodes
+                    .get(node_id)
+                    .map(|node| self.node_matches_label(node, label_id))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn node_ids_for_id_range(
+        &self,
+        label_id: Option<LabelId>,
+        lower: Option<&(Value, bool)>,
+        upper: Option<&(Value, bool)>,
+    ) -> BTreeSet<NodeId> {
+        self.nodes
+            .keys()
+            .copied()
+            .filter(|node_id| range_bounds_match(&Value::Int(node_id.0 as i64), lower, upper))
+            .filter(|node_id| {
+                self.nodes
+                    .get(node_id)
+                    .map(|node| self.node_matches_label(node, label_id))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn node_ids_for_property_values(
+        &self,
+        label_id: Option<LabelId>,
+        property: &str,
+        values: &[Value],
+    ) -> BTreeSet<NodeId> {
+        if values.is_empty() {
+            return BTreeSet::new();
+        }
+        let values = values.iter().collect::<BTreeSet<_>>();
+        self.property_index
+            .iter()
+            .filter(|((candidate_label_id, candidate_property, value), _)| {
+                label_id
+                    .map(|label_id| *candidate_label_id == label_id)
+                    .unwrap_or(true)
+                    && candidate_property == property
+                    && values.contains(value)
+            })
+            .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect()
+    }
+
+    fn node_ids_for_property_not_in_values(
+        &self,
+        label_id: Option<LabelId>,
+        property: &str,
+        values: &[Value],
+    ) -> BTreeSet<NodeId> {
+        let values = values.iter().collect::<BTreeSet<_>>();
+        self.property_index
+            .iter()
+            .filter(|((candidate_label_id, candidate_property, value), _)| {
+                label_id
+                    .map(|label_id| *candidate_label_id == label_id)
+                    .unwrap_or(true)
+                    && candidate_property == property
+                    && !values.contains(value)
+            })
+            .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect()
+    }
+
+    fn node_ids_for_property_range(
+        &self,
+        label_id: Option<LabelId>,
+        property: &str,
+        lower: Option<&(Value, bool)>,
+        upper: Option<&(Value, bool)>,
+    ) -> BTreeSet<NodeId> {
+        self.property_index
+            .iter()
+            .filter(|((candidate_label_id, candidate_property, value), _)| {
+                label_id
+                    .map(|label_id| *candidate_label_id == label_id)
+                    .unwrap_or(true)
+                    && candidate_property == property
+                    && range_bounds_match(value, lower, upper)
+            })
+            .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect()
+    }
+
     pub fn seek_nodes_by_property<'a>(
         &'a self,
         label_id: LabelId,
@@ -5245,22 +5602,10 @@ impl GraphStore {
         label_id: Option<LabelId>,
         filter: Option<&'a PropertyFilter>,
     ) -> impl Iterator<Item = NodeId> + 'a {
-        self.nodes.values().filter_map(move |node| {
-            if label_id
-                .map(|label_id| !node.labels.contains(&label_id))
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            if filter
-                .map(|filter| property_filter_matches(filter, node.id.0, &node.properties))
-                .unwrap_or(true)
-            {
-                Some(node.id)
-            } else {
-                None
-            }
-        })
+        self.scan_nodes_with_filter_pruning(label_id, filter)
+            .nodes
+            .into_iter()
+            .map(|node| node.id)
     }
 
     fn apply_set_node_property(
@@ -9482,8 +9827,8 @@ mod tests {
         checksum_bytes, compute_statistics, encode_durable_text, read_durable_text,
         AdjacencyDirection, AdjacencyGroupStats, AdjacencyLayout, ConnectedNodesCreate,
         DurableCompression, GraphStore, NodeId, NodeRecord, OrderedAdjacencyEntry,
-        ProjectedGraphDefinition, RelId, RelRecord, RelTypeId, DENSE_ADJACENCY_DEGREE_THRESHOLD,
-        DURABLE_COMPRESSION_HEADER,
+        ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord, RelTypeId, ScanPruningStrategy,
+        DENSE_ADJACENCY_DEGREE_THRESHOLD, DURABLE_COMPRESSION_HEADER,
     };
     use crate::schema::{Catalog, LabelId};
     use crate::value::Value;
@@ -10027,6 +10372,334 @@ mod tests {
             assert_eq!(nodes[0].properties.get("id"), Some(&Value::Int(1)));
         }
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn scan_pruning_uses_property_eq_index_for_unique_key() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("stable_id", Value::String("memory:1".to_string())),
+                    ("title", Value::String("Graph foundations".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("stable_id", Value::String("memory:2".to_string())),
+                    ("title", Value::String("Storage notes".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::Eq {
+                property: "stable_id".to_string(),
+                value: Value::String("memory:2".to_string()),
+            }),
+        );
+
+        assert_eq!(scan.nodes.len(), 1);
+        assert_eq!(
+            scan.nodes[0].properties.get("title"),
+            Some(&Value::String("Storage notes".to_string()))
+        );
+        assert_eq!(
+            scan.report.strategy,
+            ScanPruningStrategy::PropertyEq {
+                property: "stable_id".to_string()
+            }
+        );
+        assert!(scan.report.pruned);
+        assert_eq!(scan.report.candidate_count_before_filter, 1);
+        assert_eq!(scan.report.filtered_out_count, 0);
+    }
+
+    #[test]
+    fn scan_pruning_treats_in_values_as_enum_set() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        for state in ["active", "deleted", "forgotten"] {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("state", Value::String(state.to_string()))]),
+                )
+                .unwrap();
+        }
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::In {
+                property: "state".to_string(),
+                values: vec![
+                    Value::String("deleted".to_string()),
+                    Value::String("forgotten".to_string()),
+                ],
+            }),
+        );
+        let states = scan
+            .nodes
+            .iter()
+            .map(|node| node.properties.get("state").unwrap().clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            states,
+            BTreeSet::from([
+                Value::String("deleted".to_string()),
+                Value::String("forgotten".to_string()),
+            ])
+        );
+        assert_eq!(
+            scan.report.strategy,
+            ScanPruningStrategy::PropertyIn {
+                property: "state".to_string()
+            }
+        );
+        assert_eq!(scan.report.candidate_count_before_filter, 2);
+    }
+
+    #[test]
+    fn scan_pruning_uses_smallest_candidate_in_and_filter() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("stable_id", Value::String("memory:1".to_string())),
+                    ("state", Value::String("active".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("stable_id", Value::String("memory:2".to_string())),
+                    ("state", Value::String("active".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("stable_id", Value::String("memory:3".to_string())),
+                    ("state", Value::String("forgotten".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::And(vec![
+                PropertyFilter::In {
+                    property: "state".to_string(),
+                    values: vec![
+                        Value::String("active".to_string()),
+                        Value::String("forgotten".to_string()),
+                    ],
+                },
+                PropertyFilter::Eq {
+                    property: "stable_id".to_string(),
+                    value: Value::String("memory:2".to_string()),
+                },
+            ])),
+        );
+
+        assert_eq!(scan.nodes.len(), 1);
+        assert_eq!(
+            scan.report.strategy,
+            ScanPruningStrategy::PropertyEq {
+                property: "stable_id".to_string()
+            }
+        );
+        assert_eq!(scan.report.candidate_count_before_filter, 1);
+    }
+
+    #[test]
+    fn scan_pruning_unions_prunable_or_branches() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        for state in ["active", "deleted", "forgotten"] {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("state", Value::String(state.to_string()))]),
+                )
+                .unwrap();
+        }
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::Or(vec![
+                PropertyFilter::Eq {
+                    property: "state".to_string(),
+                    value: Value::String("active".to_string()),
+                },
+                PropertyFilter::Eq {
+                    property: "state".to_string(),
+                    value: Value::String("forgotten".to_string()),
+                },
+            ])),
+        );
+
+        assert_eq!(scan.nodes.len(), 2);
+        assert_eq!(scan.report.strategy, ScanPruningStrategy::OrUnion);
+        assert_eq!(scan.report.candidate_count_before_filter, 2);
+        assert!(scan.report.pruned);
+    }
+
+    #[test]
+    fn scan_pruning_reports_exact_empty_for_empty_in_filter() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("state", Value::String("active".to_string()))]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::In {
+                property: "state".to_string(),
+                values: vec![],
+            }),
+        );
+
+        assert!(scan.nodes.is_empty());
+        assert_eq!(scan.report.strategy, ScanPruningStrategy::Empty);
+        assert!(scan.report.exact_empty);
+        assert_eq!(scan.report.candidate_count_before_filter, 0);
+    }
+
+    #[test]
+    fn scan_pruning_uses_property_range_for_numeric_and_iso_date_strings() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("importance", Value::Float(0.2)),
+                    ("updated_at", Value::String("2026-07-01".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("importance", Value::Float(0.7)),
+                    ("updated_at", Value::String("2026-07-15".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("importance", Value::Float(0.9)),
+                    ("updated_at", Value::String("2026-08-01".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let numeric_scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::Range {
+                property: "importance".to_string(),
+                lower: Some((Value::Float(0.5), true)),
+                upper: Some((Value::Float(0.8), true)),
+            }),
+        );
+        assert_eq!(numeric_scan.nodes.len(), 1);
+        assert_eq!(
+            numeric_scan.report.strategy,
+            ScanPruningStrategy::PropertyRange {
+                property: "importance".to_string()
+            }
+        );
+        assert_eq!(numeric_scan.report.candidate_count_before_filter, 1);
+
+        let date_scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::Range {
+                property: "updated_at".to_string(),
+                lower: Some((Value::String("2026-07-01".to_string()), true)),
+                upper: Some((Value::String("2026-07-31".to_string()), true)),
+            }),
+        );
+        assert_eq!(date_scan.nodes.len(), 2);
+        assert_eq!(
+            date_scan.report.strategy,
+            ScanPruningStrategy::PropertyRange {
+                property: "updated_at".to_string()
+            }
+        );
+        assert_eq!(date_scan.report.candidate_count_before_filter, 2);
+    }
+
+    #[test]
+    fn scan_pruning_falls_back_for_unindexed_string_contains() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("title", Value::String("Graph foundations".to_string()))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("title", Value::String("Storage notes".to_string()))]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let scan = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::Contains {
+                property: "title".to_string(),
+                value: "Graph".to_string(),
+            }),
+        );
+
+        assert_eq!(scan.nodes.len(), 1);
+        assert_eq!(scan.report.strategy, ScanPruningStrategy::FullLabelScan);
+        assert!(!scan.report.pruned);
+        assert_eq!(scan.report.candidate_count_before_filter, 2);
+        assert_eq!(scan.report.filtered_out_count, 1);
     }
 
     #[test]
