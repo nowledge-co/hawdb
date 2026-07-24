@@ -25583,6 +25583,72 @@ fn plan_cache_reuses_exact_parameterized_physical_plan() {
 }
 
 #[test]
+fn knowledge_sources_uses_query_runtime_plan_cache() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Source {id: 'source_a', original_name: 'Alpha', memory_count: 2})")
+        .unwrap();
+    db.query("CREATE (:Source {id: 'source_b', original_name: 'Beta', memory_count: 5})")
+        .unwrap();
+    let request = KnowledgeSourceListRequest {
+        source_ids: vec!["source_b".to_string(), "source_a".to_string()],
+        limit: 1,
+        order: KnowledgeSourceListOrder::MemoryCountDesc,
+        ..KnowledgeSourceListRequest::default()
+    };
+
+    let first = db.knowledge_sources(&request).unwrap();
+    let second = db.knowledge_sources(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(first.matched_count, 2);
+    assert_eq!(first.returned_count, 1);
+    assert_eq!(first.rows[0].source_id.as_deref(), Some("source_b"));
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 3);
+    assert_eq!(stats.misses, 3);
+    assert_eq!(stats.hits, 3);
+}
+
+#[test]
+fn knowledge_source_projected_list_uses_query_runtime_plan_cache() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Source {id: 'source_a', original_name: 'Alpha', memory_count: 2})")
+        .unwrap();
+    db.query("CREATE (:Source {id: 'source_b', original_name: 'Beta', memory_count: 5})")
+        .unwrap();
+    let request = KnowledgeSourceProjectedListRequest {
+        list: KnowledgeSourceListRequest {
+            limit: 1,
+            order: KnowledgeSourceListOrder::MemoryCountDesc,
+            ..KnowledgeSourceListRequest::default()
+        },
+        property_names: vec!["original_name".to_string()],
+    };
+
+    let first = db.knowledge_source_projected_list(&request).unwrap();
+    let second = db.knowledge_source_projected_list(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(first.matched_count, 2);
+    assert_eq!(first.returned_count, 1);
+    assert_eq!(first.rows[0].source_id.as_deref(), Some("source_b"));
+    assert_eq!(
+        first.rows[0].properties.get("original_name"),
+        Some(&Value::String("Beta".to_string()))
+    );
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.misses, 2);
+    assert_eq!(stats.hits, 2);
+}
+
+#[test]
 fn plan_cache_misses_after_graph_commit_epoch_changes() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),

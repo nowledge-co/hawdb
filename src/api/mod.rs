@@ -5729,6 +5729,39 @@ impl Database {
         }
     }
 
+    fn query_read_only_with_params_bounded(
+        &self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: Option<usize>,
+    ) -> Result<QueryOutput> {
+        let statement = cypher::parse(cypher_text)?;
+        let body = statement_body(&statement);
+        if matches!(body, cypher::Statement::Checkpoint) {
+            reject_transaction_control_parameters("CHECKPOINT", parameters)?;
+            return Err(SkeinError::Execution(
+                "CHECKPOINT is not allowed inside a read-only query runtime".to_string(),
+            ));
+        }
+        if matches!(body, cypher::Statement::SetSystemVariable(_)) {
+            reject_system_variable_parameters(parameters)?;
+            return Err(SkeinError::Execution(
+                "SET system variable is not allowed inside a read-only query runtime".to_string(),
+            ));
+        }
+        query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
+        let (physical, _) = self.optimized_query_plan(cypher_text, &statement, parameters)?;
+        if executor::is_mutation_plan(&physical)? {
+            return Err(SkeinError::Execution(
+                "read-only query runtime must not execute a mutation".to_string(),
+            ));
+        }
+        let mut catalog = self.catalog.clone();
+        let mut store = self.store.snapshot();
+        let rows = executor::execute_with_row_limit(&physical, &mut catalog, &mut store, max_rows)?;
+        Ok(QueryOutput { rows })
+    }
+
     fn execute_explain_statement(
         &mut self,
         cypher_text: &str,
@@ -7285,14 +7318,14 @@ impl Database {
         &self,
         request: &KnowledgeSourceListRequest,
     ) -> Result<KnowledgeSourceListOutput> {
-        knowledge_sources_for(&self.catalog, &self.store, request)
+        knowledge_sources_via_query_runtime(self, request)
     }
 
     pub fn knowledge_source_projected_list(
         &self,
         request: &KnowledgeSourceProjectedListRequest,
     ) -> Result<KnowledgeSourceProjectedListOutput> {
-        knowledge_source_projected_list_for(&self.catalog, &self.store, request)
+        knowledge_source_projected_list_via_query_runtime(self, request)
     }
 
     pub fn knowledge_source_count(&self) -> KnowledgeSourceCountOutput {
@@ -15403,7 +15436,7 @@ fn knowledge_source_latest_version_for(
     let mut rows = store
         .scan_nodes(Some(source_label_id))
         .filter(|node| source_matches_version_lookup(node, request))
-        .map(|node| knowledge_source_list_row(catalog, store, node))
+        .map(|node| knowledge_source_list_row_direct(catalog, store, node))
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         right
@@ -15866,44 +15899,52 @@ fn knowledge_source_ids_for(
     })
 }
 
-fn knowledge_sources_for(
-    catalog: &Catalog,
-    store: &GraphStore,
+fn knowledge_sources_via_query_runtime(
+    db: &Database,
     request: &KnowledgeSourceListRequest,
 ) -> Result<KnowledgeSourceListOutput> {
     validate_knowledge_source_list_request(request)?;
-    let graph_commit_epoch = store.commit_epoch();
-    let Some(label_id) = catalog.label_id("Source") else {
-        return Ok(KnowledgeSourceListOutput {
-            graph_commit_epoch,
-            rows: Vec::new(),
-            matched_count: 0,
-            returned_count: 0,
-            missing_source_ids: request.source_ids.clone(),
-        });
-    };
+    let graph_commit_epoch = db.store.commit_epoch();
+    let mut parameters = BTreeMap::new();
+    let predicate = knowledge_source_list_predicate(request, &mut parameters);
 
-    let requested_ids = request.source_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut matched_source_ids = BTreeSet::new();
-    let mut rows = store
-        .scan_nodes(Some(label_id))
-        .filter(|node| source_matches_list_request(node, request, &requested_ids))
-        .map(|node| {
-            if let Some(source_id) = node_external_id(node) {
-                matched_source_ids.insert(source_id);
-            }
-            knowledge_source_list_row(catalog, store, node)
-        })
-        .collect::<Vec<_>>();
+    let count_query = format!("MATCH (s:Source){predicate} RETURN count(s) AS matched_count");
+    let count = db.query_read_only_with_params_bounded(&count_query, &parameters, Some(1))?;
+    let matched_count = count
+        .rows
+        .first()
+        .and_then(|row| row.get("matched_count"))
+        .and_then(value_to_non_negative_usize)
+        .unwrap_or(0);
 
-    sort_source_list_rows(&mut rows, request.order);
-    let matched_count = rows.len();
-    if request.offset > 0 {
-        rows = rows.into_iter().skip(request.offset).collect();
-    }
-    if request.limit > 0 {
-        rows.truncate(request.limit);
-    }
+    let matched_source_ids =
+        knowledge_source_matched_ids_via_query_runtime(db, request, &predicate, &parameters)?;
+    let page_clause = knowledge_source_page_clause(request, &mut parameters);
+    let order_clause = knowledge_source_list_order_clause(request.order);
+    let list_query = format!(
+        "MATCH (s:Source){predicate} \
+         OPTIONAL MATCH (m:Memory)-[r:SOURCED_FROM]->(s) \
+         WITH s, count(r) AS sourced_memory_count \
+         RETURN s.id AS source_id, id(s) AS node_id, s.original_name AS original_name, \
+         s.title AS title, s.summary AS summary, s.source_type AS source_type, \
+         s.lifecycle_state AS lifecycle_state, s.space_id AS raw_space_id, \
+         s.parsed_path AS parsed_path, s.file_path AS file_path, s.mime_type AS mime_type, \
+         s.source_url AS source_url, s.metadata AS metadata, s.memory_count AS memory_count, \
+         s.chunk_count AS chunk_count, s.size_bytes AS size_bytes, s.version AS version, \
+         s.created_at AS created_at, s.updated_at AS updated_at, \
+         sourced_memory_count AS sourced_memory_count \
+         ORDER BY {order_clause}{page_clause}"
+    );
+    let list = db.query_read_only_with_params_bounded(
+        &list_query,
+        &parameters,
+        request.limit.gt(&0).then_some(request.limit),
+    )?;
+    let rows = list
+        .rows
+        .iter()
+        .map(knowledge_source_list_row_from_query)
+        .collect::<Result<Vec<_>>>()?;
     let returned_count = rows.len();
     let missing_source_ids = request
         .source_ids
@@ -15921,58 +15962,45 @@ fn knowledge_sources_for(
     })
 }
 
-fn knowledge_source_projected_list_for(
-    catalog: &Catalog,
-    store: &GraphStore,
+fn knowledge_source_projected_list_via_query_runtime(
+    db: &Database,
     request: &KnowledgeSourceProjectedListRequest,
 ) -> Result<KnowledgeSourceProjectedListOutput> {
     validate_knowledge_source_projected_list_request(request)?;
-    let graph_commit_epoch = store.commit_epoch();
-    let Some(label_id) = catalog.label_id("Source") else {
-        return Ok(KnowledgeSourceProjectedListOutput {
-            graph_commit_epoch,
-            rows: Vec::new(),
-            matched_count: 0,
-            returned_count: 0,
-            missing_source_ids: request.list.source_ids.clone(),
-        });
-    };
+    let graph_commit_epoch = db.store.commit_epoch();
+    let mut parameters = BTreeMap::new();
+    let predicate = knowledge_source_list_predicate(&request.list, &mut parameters);
 
-    let requested_ids = request
-        .list
-        .source_ids
+    let count_query = format!("MATCH (s:Source){predicate} RETURN count(s) AS matched_count");
+    let count = db.query_read_only_with_params_bounded(&count_query, &parameters, Some(1))?;
+    let matched_count = count
+        .rows
+        .first()
+        .and_then(|row| row.get("matched_count"))
+        .and_then(value_to_non_negative_usize)
+        .unwrap_or(0);
+
+    let matched_source_ids =
+        knowledge_source_matched_ids_via_query_runtime(db, &request.list, &predicate, &parameters)?;
+    let page_clause = knowledge_source_page_clause(&request.list, &mut parameters);
+    let order_clause = knowledge_source_list_order_clause(request.list.order);
+    let list_query = format!(
+        "MATCH (s:Source){predicate} \
+         RETURN s.id AS source_id, id(s) AS node_id, s AS source, s.space_id AS raw_space_id, \
+         s.memory_count AS memory_count, s.created_at AS created_at \
+         ORDER BY {order_clause}{page_clause}"
+    );
+    let list = db.query_read_only_with_params_bounded(
+        &list_query,
+        &parameters,
+        request.list.limit.gt(&0).then_some(request.list.limit),
+    )?;
+    let rows = list
+        .rows
         .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let mut matched_source_ids = BTreeSet::new();
-    let mut rows = store
-        .scan_nodes(Some(label_id))
-        .filter(|node| source_matches_list_request(node, &request.list, &requested_ids))
-        .map(|node| {
-            if let Some(source_id) = node_external_id(node) {
-                matched_source_ids.insert(source_id);
-            }
-            (
-                knowledge_source_projected_row(node, &request.property_names),
-                integer_property(node, "memory_count").unwrap_or(0),
-                node.properties.get("created_at").cloned(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    sort_source_projected_rows(&mut rows, request.list.order);
-    let matched_count = rows.len();
-    if request.list.offset > 0 {
-        rows = rows.into_iter().skip(request.list.offset).collect();
-    }
-    if request.list.limit > 0 {
-        rows.truncate(request.list.limit);
-    }
+        .map(|row| knowledge_source_projected_row_from_query(row, &request.property_names))
+        .collect::<Result<Vec<_>>>()?;
     let returned_count = rows.len();
-    let rows = rows
-        .into_iter()
-        .map(|(row, _memory_count, _created_at)| row)
-        .collect::<Vec<_>>();
     let missing_source_ids = request
         .list
         .source_ids
@@ -15987,6 +16015,246 @@ fn knowledge_source_projected_list_for(
         matched_count,
         returned_count,
         missing_source_ids,
+    })
+}
+
+fn knowledge_source_matched_ids_via_query_runtime(
+    db: &Database,
+    request: &KnowledgeSourceListRequest,
+    predicate: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BTreeSet<String>> {
+    if request.source_ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let query = format!("MATCH (s:Source){predicate} RETURN s.id AS source_id");
+    let output =
+        db.query_read_only_with_params_bounded(&query, parameters, Some(request.source_ids.len()))?;
+    Ok(output
+        .rows
+        .iter()
+        .filter_map(|row| row.get("source_id").map(value_to_external_id))
+        .filter(|source_id| !source_id.is_empty())
+        .collect())
+}
+
+fn knowledge_source_list_predicate(
+    request: &KnowledgeSourceListRequest,
+    parameters: &mut BTreeMap<String, Value>,
+) -> String {
+    let mut predicates = Vec::new();
+    if !request.source_ids.is_empty() {
+        parameters.insert(
+            "source_ids".to_string(),
+            Value::List(
+                request
+                    .source_ids
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        predicates.push("s.id IN $source_ids");
+    }
+    if let Some(after_source_id) = &request.after_source_id {
+        parameters.insert(
+            "after_source_id".to_string(),
+            Value::String(after_source_id.clone()),
+        );
+        predicates.push("s.id > $after_source_id");
+    }
+    if !request.lifecycle_states.is_empty() {
+        parameters.insert(
+            "lifecycle_states".to_string(),
+            Value::List(
+                request
+                    .lifecycle_states
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        predicates.push("s.lifecycle_state IN $lifecycle_states");
+    }
+    if let Some(normalized_space_id) = &request.normalized_space_id {
+        parameters.insert(
+            "normalized_space_id".to_string(),
+            Value::String(normalized_space_id.clone()),
+        );
+        if normalized_space_id == "default" {
+            predicates.push(
+                "(s.space_id IS NULL OR s.space_id = '' OR s.space_id = $normalized_space_id)",
+            );
+        } else {
+            predicates.push("s.space_id = $normalized_space_id");
+        }
+    }
+    if let Some(source_type) = &request.source_type {
+        parameters.insert(
+            "source_type".to_string(),
+            Value::String(source_type.clone()),
+        );
+        predicates.push("s.source_type = $source_type");
+    }
+    if let Some(marker) = &request.metadata_contains {
+        parameters.insert(
+            "metadata_contains".to_string(),
+            Value::String(marker.clone()),
+        );
+        predicates.push("s.metadata CONTAINS $metadata_contains");
+    }
+    if request.parsed_path_required {
+        predicates.push("s.parsed_path IS NOT NULL AND s.parsed_path <> ''");
+    }
+
+    if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", predicates.join(" AND "))
+    }
+}
+
+fn knowledge_source_page_clause(
+    request: &KnowledgeSourceListRequest,
+    parameters: &mut BTreeMap<String, Value>,
+) -> String {
+    let mut clause = String::new();
+    if request.offset > 0 {
+        parameters.insert(
+            "offset".to_string(),
+            Value::Int(i64::try_from(request.offset).unwrap_or(i64::MAX)),
+        );
+        clause.push_str(" SKIP $offset");
+    }
+    if request.limit > 0 {
+        parameters.insert(
+            "limit".to_string(),
+            Value::Int(i64::try_from(request.limit).unwrap_or(i64::MAX)),
+        );
+        clause.push_str(" LIMIT $limit");
+    }
+    clause
+}
+
+fn knowledge_source_list_order_clause(order: KnowledgeSourceListOrder) -> &'static str {
+    match order {
+        KnowledgeSourceListOrder::SourceIdAsc => "source_id ASC, node_id ASC",
+        KnowledgeSourceListOrder::MemoryCountDesc => {
+            "memory_count DESC, source_id ASC, node_id ASC"
+        }
+        KnowledgeSourceListOrder::CreatedAtDesc => "created_at DESC, source_id ASC, node_id ASC",
+    }
+}
+
+fn value_to_non_negative_usize(value: &Value) -> Option<usize> {
+    match value {
+        Value::Int(value) if *value >= 0 => usize::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn value_to_non_negative_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Int(value) if *value >= 0 => u64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn value_to_map(value: &Value) -> Option<&BTreeMap<String, Value>> {
+    match value {
+        Value::Map(values) => Some(values),
+        _ => None,
+    }
+}
+
+fn optional_string_cell(row: &Row, column: &str) -> Option<String> {
+    row.get(column)
+        .filter(|value| !matches!(value, Value::Null))
+        .map(value_to_external_id)
+        .filter(|value| !value.is_empty())
+}
+
+fn optional_i64_cell(row: &Row, column: &str) -> Option<i64> {
+    match row.get(column) {
+        Some(Value::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn optional_value_cell(row: &Row, column: &str) -> Option<Value> {
+    row.get(column)
+        .filter(|value| !matches!(value, Value::Null))
+        .cloned()
+}
+
+fn knowledge_source_list_row_from_query(row: &Row) -> Result<KnowledgeSourceListRow> {
+    let node_id = row
+        .get("node_id")
+        .and_then(value_to_non_negative_u64)
+        .ok_or_else(|| {
+            SkeinError::Execution("knowledge source list row is missing node_id".to_string())
+        })?;
+    let original_name = optional_string_cell(row, "original_name");
+    let title = optional_string_cell(row, "title");
+    let file_path = optional_string_cell(row, "file_path");
+    let source_type = optional_string_cell(row, "source_type");
+    let display_name = original_name
+        .clone()
+        .or_else(|| title.clone())
+        .or_else(|| file_path.clone())
+        .or_else(|| source_type.clone())
+        .unwrap_or_else(|| "Source".to_string());
+    Ok(KnowledgeSourceListRow {
+        source_id: optional_string_cell(row, "source_id"),
+        node_id,
+        display_name,
+        original_name,
+        title,
+        summary: optional_string_cell(row, "summary"),
+        source_type,
+        lifecycle_state: optional_string_cell(row, "lifecycle_state"),
+        raw_space_id: optional_string_cell(row, "raw_space_id"),
+        normalized_space_id: optional_string_cell(row, "raw_space_id")
+            .unwrap_or_else(|| "default".to_string()),
+        parsed_path: optional_string_cell(row, "parsed_path"),
+        file_path,
+        mime_type: optional_string_cell(row, "mime_type"),
+        source_url: optional_string_cell(row, "source_url"),
+        metadata: optional_value_cell(row, "metadata"),
+        memory_count: optional_i64_cell(row, "memory_count").unwrap_or(0),
+        chunk_count: optional_i64_cell(row, "chunk_count").unwrap_or(0),
+        size_bytes: optional_i64_cell(row, "size_bytes").unwrap_or(0),
+        version: optional_i64_cell(row, "version").unwrap_or(1),
+        created_at: optional_value_cell(row, "created_at"),
+        updated_at: optional_value_cell(row, "updated_at"),
+        sourced_memory_count: row
+            .get("sourced_memory_count")
+            .and_then(value_to_non_negative_usize)
+            .unwrap_or(0),
+    })
+}
+
+fn knowledge_source_projected_row_from_query(
+    row: &Row,
+    property_names: &[String],
+) -> Result<KnowledgeSourceProjectedRow> {
+    let node_id = row
+        .get("node_id")
+        .and_then(value_to_non_negative_u64)
+        .ok_or_else(|| {
+            SkeinError::Execution("knowledge source projected row is missing node_id".to_string())
+        })?;
+    let source = row.get("source").and_then(value_to_map).ok_or_else(|| {
+        SkeinError::Execution("knowledge source projected row is missing source map".to_string())
+    })?;
+    Ok(KnowledgeSourceProjectedRow {
+        source_id: optional_string_cell(row, "source_id"),
+        node_id,
+        properties: projected_properties(source, property_names),
+        normalized_space_id: optional_string_cell(row, "raw_space_id")
+            .unwrap_or_else(|| "default".to_string()),
     })
 }
 
@@ -16069,7 +16337,7 @@ fn validate_knowledge_source_list_request(request: &KnowledgeSourceListRequest) 
     Ok(())
 }
 
-fn source_matches_list_request(
+fn source_matches_list_request_direct(
     node: &NodeRecord,
     request: &KnowledgeSourceListRequest,
     requested_ids: &BTreeSet<String>,
@@ -16114,21 +16382,90 @@ fn source_matches_list_request(
     if request
         .metadata_contains
         .as_ref()
-        .is_some_and(|marker| !source_metadata_contains(node, marker))
+        .is_some_and(|marker| !source_metadata_contains_direct(node, marker))
     {
         return false;
     }
     true
 }
 
-fn source_metadata_contains(node: &NodeRecord, marker: &str) -> bool {
+fn source_metadata_contains_direct(node: &NodeRecord, marker: &str) -> bool {
     node.properties
         .get("metadata")
         .map(value_to_external_id)
         .is_some_and(|metadata| metadata.contains(marker))
 }
 
-fn knowledge_source_projected_row(
+fn knowledge_source_projected_list_direct(
+    catalog: &Catalog,
+    store: &GraphStore,
+    request: &KnowledgeSourceProjectedListRequest,
+) -> Result<KnowledgeSourceProjectedListOutput> {
+    validate_knowledge_source_projected_list_request(request)?;
+    let graph_commit_epoch = store.commit_epoch();
+    let Some(label_id) = catalog.label_id("Source") else {
+        return Ok(KnowledgeSourceProjectedListOutput {
+            graph_commit_epoch,
+            rows: Vec::new(),
+            matched_count: 0,
+            returned_count: 0,
+            missing_source_ids: request.list.source_ids.clone(),
+        });
+    };
+
+    let requested_ids = request
+        .list
+        .source_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut matched_source_ids = BTreeSet::new();
+    let mut rows = store
+        .scan_nodes(Some(label_id))
+        .filter(|node| source_matches_list_request_direct(node, &request.list, &requested_ids))
+        .map(|node| {
+            if let Some(source_id) = node_external_id(node) {
+                matched_source_ids.insert(source_id);
+            }
+            (
+                knowledge_source_projected_row_direct(node, &request.property_names),
+                integer_property(node, "memory_count").unwrap_or(0),
+                node.properties.get("created_at").cloned(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    sort_source_projected_rows_direct(&mut rows, request.list.order);
+    let matched_count = rows.len();
+    if request.list.offset > 0 {
+        rows = rows.into_iter().skip(request.list.offset).collect();
+    }
+    if request.list.limit > 0 {
+        rows.truncate(request.list.limit);
+    }
+    let returned_count = rows.len();
+    let rows = rows
+        .into_iter()
+        .map(|(row, _memory_count, _created_at)| row)
+        .collect::<Vec<_>>();
+    let missing_source_ids = request
+        .list
+        .source_ids
+        .iter()
+        .filter(|source_id| !matched_source_ids.contains(*source_id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Ok(KnowledgeSourceProjectedListOutput {
+        graph_commit_epoch,
+        rows,
+        matched_count,
+        returned_count,
+        missing_source_ids,
+    })
+}
+
+fn knowledge_source_projected_row_direct(
     node: &NodeRecord,
     property_names: &[String],
 ) -> KnowledgeSourceProjectedRow {
@@ -16140,7 +16477,35 @@ fn knowledge_source_projected_row(
     }
 }
 
-fn knowledge_source_list_row(
+fn sort_source_projected_rows_direct(
+    rows: &mut [(KnowledgeSourceProjectedRow, i64, Option<Value>)],
+    order: KnowledgeSourceListOrder,
+) {
+    rows.sort_by(|left, right| match order {
+        KnowledgeSourceListOrder::SourceIdAsc => compare_source_projected_ids(&left.0, &right.0),
+        KnowledgeSourceListOrder::MemoryCountDesc => right
+            .1
+            .cmp(&left.1)
+            .then_with(|| compare_source_projected_ids(&left.0, &right.0)),
+        KnowledgeSourceListOrder::CreatedAtDesc => compare_skill_memory_created_at(
+            &left.2,
+            &right.2,
+            KnowledgeSkillMemoryListOrder::CreatedAtDesc,
+        )
+        .then_with(|| compare_source_projected_ids(&left.0, &right.0)),
+    });
+}
+
+fn compare_source_projected_ids(
+    left: &KnowledgeSourceProjectedRow,
+    right: &KnowledgeSourceProjectedRow,
+) -> std::cmp::Ordering {
+    left.source_id
+        .cmp(&right.source_id)
+        .then_with(|| left.node_id.cmp(&right.node_id))
+}
+
+fn knowledge_source_list_row_direct(
     catalog: &Catalog,
     store: &GraphStore,
     node: &NodeRecord,
@@ -16179,59 +16544,6 @@ fn knowledge_source_list_row(
         updated_at: node.properties.get("updated_at").cloned(),
         sourced_memory_count: source_sourced_memory_count(catalog, store, node.id),
     }
-}
-
-fn sort_source_list_rows(rows: &mut [KnowledgeSourceListRow], order: KnowledgeSourceListOrder) {
-    rows.sort_by(|left, right| match order {
-        KnowledgeSourceListOrder::SourceIdAsc => compare_source_list_ids(left, right),
-        KnowledgeSourceListOrder::MemoryCountDesc => right
-            .memory_count
-            .cmp(&left.memory_count)
-            .then_with(|| compare_source_list_ids(left, right)),
-        KnowledgeSourceListOrder::CreatedAtDesc => compare_skill_memory_created_at(
-            &left.created_at,
-            &right.created_at,
-            KnowledgeSkillMemoryListOrder::CreatedAtDesc,
-        )
-        .then_with(|| compare_source_list_ids(left, right)),
-    });
-}
-
-fn compare_source_list_ids(
-    left: &KnowledgeSourceListRow,
-    right: &KnowledgeSourceListRow,
-) -> std::cmp::Ordering {
-    left.source_id
-        .cmp(&right.source_id)
-        .then_with(|| left.node_id.cmp(&right.node_id))
-}
-
-fn sort_source_projected_rows(
-    rows: &mut [(KnowledgeSourceProjectedRow, i64, Option<Value>)],
-    order: KnowledgeSourceListOrder,
-) {
-    rows.sort_by(|left, right| match order {
-        KnowledgeSourceListOrder::SourceIdAsc => compare_source_projected_ids(&left.0, &right.0),
-        KnowledgeSourceListOrder::MemoryCountDesc => right
-            .1
-            .cmp(&left.1)
-            .then_with(|| compare_source_projected_ids(&left.0, &right.0)),
-        KnowledgeSourceListOrder::CreatedAtDesc => compare_skill_memory_created_at(
-            &left.2,
-            &right.2,
-            KnowledgeSkillMemoryListOrder::CreatedAtDesc,
-        )
-        .then_with(|| compare_source_projected_ids(&left.0, &right.0)),
-    });
-}
-
-fn compare_source_projected_ids(
-    left: &KnowledgeSourceProjectedRow,
-    right: &KnowledgeSourceProjectedRow,
-) -> std::cmp::Ordering {
-    left.source_id
-        .cmp(&right.source_id)
-        .then_with(|| left.node_id.cmp(&right.node_id))
 }
 
 fn knowledge_source_row(
@@ -31095,7 +31407,7 @@ impl DatabaseReadTransaction {
         &self,
         request: &KnowledgeSourceProjectedListRequest,
     ) -> Result<KnowledgeSourceProjectedListOutput> {
-        knowledge_source_projected_list_for(&self.catalog, &self.store, request)
+        knowledge_source_projected_list_direct(&self.catalog, &self.store, request)
     }
 
     pub fn knowledge_source_memory_projected_list(
