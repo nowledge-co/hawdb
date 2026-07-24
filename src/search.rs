@@ -42,6 +42,8 @@ const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 128;
 #[cfg(test)]
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 2;
 pub const NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS: &[&str] = &[
+    "id",
+    "document_id",
     "kind",
     "external_id",
     "source_id",
@@ -3293,6 +3295,7 @@ fn search_document_matches_predicate(
 
 fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> Option<&'a str> {
     match key {
+        "id" | "document_id" => Some(document.id.as_str()),
         "space_id" => Some(
             document
                 .metadata
@@ -7237,6 +7240,93 @@ mod tests {
                 .get("source_id")
                 .map(|summary| summary.present_count),
             Some(1)
+        );
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_prunes_document_id_filters() {
+        let path = unique_test_dir("search_segment_descriptor_document_id");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for id in ["memory:0_old", "memory:1_old", "memory:2_new"] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor document id retrieval".to_string(),
+                        embedding: None,
+                        metadata: BTreeMap::new(),
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert_eq!(
+            descriptor.segments[0]
+                .metadata
+                .get("document_id")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from([
+                "memory:0_old".to_string(),
+                "memory:1_old".to_string(),
+            ]))
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor document id retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "document_id".to_string(),
+                    "memory:2_new".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.hits[0].id, "memory:2_new");
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            1
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .field_summaries,
+            vec![SearchPredicateFieldPruningReport {
+                field: "document_id".to_string(),
+                value_kind: "numeric_or_string".to_string(),
+                operation_kinds: vec!["eq".to_string()],
+                segment_count: 2,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                pruned_document_count: 2,
+                scanned_document_count: 1,
+                numeric_range_summary_used: false,
+                value_summary_used: true,
+            }]
         );
 
         std::fs::remove_dir_all(path).unwrap();
