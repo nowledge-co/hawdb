@@ -1666,8 +1666,13 @@ impl SearchIndex {
                     text_rrf_score,
                     vector_rank,
                     text_rank,
-                    kind: document.metadata.get("kind").cloned(),
-                    external_id: document.metadata.get("external_id").cloned(),
+                    kind: document.metadata.get("kind").cloned().or_else(|| {
+                        search_projection_kind_from_document_id(&document.id).map(str::to_string)
+                    }),
+                    external_id: document.metadata.get("external_id").cloned().or_else(|| {
+                        search_projection_external_id_from_document_id(&document.id)
+                            .map(str::to_string)
+                    }),
                     source_id: document.metadata.get("source_id").cloned(),
                     matched_terms: matched_query_terms(
                         &query_terms,
@@ -3296,6 +3301,16 @@ fn search_document_matches_predicate(
 fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> Option<&'a str> {
     match key {
         "id" | "document_id" => Some(document.id.as_str()),
+        "kind" => document
+            .metadata
+            .get(key)
+            .map(String::as_str)
+            .or_else(|| search_projection_kind_from_document_id(&document.id)),
+        "external_id" => document
+            .metadata
+            .get(key)
+            .map(String::as_str)
+            .or_else(|| search_projection_external_id_from_document_id(&document.id)),
         "space_id" => Some(
             document
                 .metadata
@@ -3306,6 +3321,16 @@ fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> O
         ),
         _ => document.metadata.get(key).map(String::as_str),
     }
+}
+
+fn search_projection_kind_from_document_id(document_id: &str) -> Option<&str> {
+    let (kind, external_id) = document_id.split_once(':')?;
+    (!kind.is_empty() && !external_id.is_empty()).then_some(kind)
+}
+
+fn search_projection_external_id_from_document_id(document_id: &str) -> Option<&str> {
+    let (_kind, external_id) = document_id.split_once(':')?;
+    (!external_id.is_empty()).then_some(external_id)
 }
 
 fn metadata_value_matches(key: &str, actual: &str, expected: &str) -> bool {
@@ -7327,6 +7352,81 @@ mod tests {
                 numeric_range_summary_used: false,
                 value_summary_used: true,
             }]
+        );
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_prunes_kind_and_external_id_from_document_id() {
+        let path = unique_test_dir("search_segment_descriptor_derived_ids");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            for id in ["memory:0_old", "memory:1_old", "entity:2_new"] {
+                index
+                    .upsert(SearchDocument {
+                        id: id.to_string(),
+                        title: "Graph memory".to_string(),
+                        content: "segment descriptor derived id retrieval".to_string(),
+                        embedding: None,
+                        metadata: BTreeMap::new(),
+                    })
+                    .unwrap();
+            }
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        assert_eq!(
+            descriptor.segments[0]
+                .metadata
+                .get("kind")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from(["entity".to_string(), "memory".to_string()]))
+        );
+        assert_eq!(
+            descriptor.segments[1]
+                .metadata
+                .get("external_id")
+                .map(|summary| summary.values.clone()),
+            Some(BTreeSet::from(["1_old".to_string()]))
+        );
+
+        let index = SearchIndex::open(&path).unwrap();
+        let result = index.search_with_options(
+            "segment descriptor derived id retrieval",
+            None,
+            SearchMode::Text,
+            SearchQueryOptions {
+                limit: 10,
+                rank_window: None,
+                fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "external_id".to_string(),
+                    "1_old".to_string(),
+                )]),
+                policy_epoch: None,
+            },
+        );
+
+        assert_eq!(result.total_hits, 1);
+        assert_eq!(result.hits[0].id, "memory:1_old");
+        assert_eq!(result.hits[0].kind.as_deref(), Some("memory"));
+        assert_eq!(result.hits[0].external_id.as_deref(), Some("1_old"));
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .persisted_segment_descriptor_used
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .pruned_segment_count,
+            1
         );
 
         std::fs::remove_dir_all(path).unwrap();
