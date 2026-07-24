@@ -761,6 +761,89 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 ][..]],
             ),
         ),
+        check(
+            "search_projection_evidence_alignment",
+            [
+                bool_path(bundle, &["search_projection_evidence", "ready"]) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_search_projection_alignment", "ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_projection_alignment",
+                        "evidence_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_projection_alignment",
+                        "summary_ready",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "search_projection_evidence.ready",
+                "replacement_summary_search_projection_alignment.ready",
+                "replacement_summary_search_projection_alignment.evidence_ready",
+                "replacement_summary_search_projection_alignment.summary_ready",
+            ],
+            blocker_codes(
+                bundle,
+                &[
+                    &["search_projection_evidence", "blocker_codes"][..],
+                    &[
+                        "replacement_summary_search_projection_alignment",
+                        "blocker_codes",
+                    ][..],
+                ],
+            ),
+        ),
+        check(
+            "search_projection_shadow_evidence_alignment",
+            [
+                bool_path(bundle, &["search_projection_shadow_evidence", "ready"]) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_projection_shadow_alignment",
+                        "ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_projection_shadow_alignment",
+                        "evidence_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_search_projection_shadow_alignment",
+                        "summary_ready",
+                    ],
+                ) == Some(true),
+            ],
+            [
+                "search_projection_shadow_evidence.ready",
+                "replacement_summary_search_projection_shadow_alignment.ready",
+                "replacement_summary_search_projection_shadow_alignment.evidence_ready",
+                "replacement_summary_search_projection_shadow_alignment.summary_ready",
+            ],
+            blocker_codes(
+                bundle,
+                &[
+                    &["search_projection_shadow_evidence", "blocker_codes"][..],
+                    &[
+                        "replacement_summary_search_projection_shadow_alignment",
+                        "blocker_codes",
+                    ][..],
+                ],
+            ),
+        ),
         graph_route_parity_check(
             bundle,
             "graph_route_augmentation_state_parity_evidence",
@@ -1910,6 +1993,32 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !search_projection_alignment_ready(bundle) {
+        actions.push(next_action(
+            "regenerate_search_projection_alignment",
+            "live search projection evidence must match the replacement summary before Mem cutover",
+            [
+                "search_projection_evidence.ready",
+                "replacement_summary_search_projection_alignment.ready",
+                "replacement_summary_search_projection_alignment.evidence_ready",
+                "replacement_summary_search_projection_alignment.summary_ready",
+                "replacement_summary_search_projection_alignment.blocker_codes",
+            ],
+        ));
+    }
+    if !search_projection_shadow_alignment_ready(bundle) {
+        actions.push(next_action(
+            "regenerate_search_projection_shadow_alignment",
+            "live search projection shadow evidence must match the replacement summary before Mem cutover",
+            [
+                "search_projection_shadow_evidence.ready",
+                "replacement_summary_search_projection_shadow_alignment.ready",
+                "replacement_summary_search_projection_shadow_alignment.evidence_ready",
+                "replacement_summary_search_projection_shadow_alignment.summary_ready",
+                "replacement_summary_search_projection_shadow_alignment.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_overview_parity_ready(bundle) {
         actions.push(next_action(
             "run_overview_route_shadow_compare",
@@ -2831,6 +2940,43 @@ fn graph_route_readiness_alignment_ready(bundle: &serde_json::Value) -> bool {
     .all(|path| bool_path(bundle, path) == Some(true))
 }
 
+fn search_projection_alignment_ready(bundle: &serde_json::Value) -> bool {
+    bool_path(bundle, &["search_projection_evidence", "ready"]) == Some(true)
+        && [
+            &["replacement_summary_search_projection_alignment", "ready"][..],
+            &[
+                "replacement_summary_search_projection_alignment",
+                "evidence_ready",
+            ][..],
+            &[
+                "replacement_summary_search_projection_alignment",
+                "summary_ready",
+            ][..],
+        ]
+        .iter()
+        .all(|path| bool_path(bundle, path) == Some(true))
+}
+
+fn search_projection_shadow_alignment_ready(bundle: &serde_json::Value) -> bool {
+    bool_path(bundle, &["search_projection_shadow_evidence", "ready"]) == Some(true)
+        && [
+            &[
+                "replacement_summary_search_projection_shadow_alignment",
+                "ready",
+            ][..],
+            &[
+                "replacement_summary_search_projection_shadow_alignment",
+                "evidence_ready",
+            ][..],
+            &[
+                "replacement_summary_search_projection_shadow_alignment",
+                "summary_ready",
+            ][..],
+        ]
+        .iter()
+        .all(|path| bool_path(bundle, path) == Some(true))
+}
+
 fn replacement_summary_storage_recovery_ready(bundle: &serde_json::Value) -> bool {
     [
         &[
@@ -3646,6 +3792,88 @@ mod tests {
                 "replacement_summary_bounded_read_alignment.covered_routes_matches"
             ])
         );
+    }
+
+    #[test]
+    fn rejects_search_projection_alignment_when_summary_is_stale() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_search_projection_alignment"]["ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_projection_alignment"]["summary_ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_projection_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_search_projection_evidence_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["search_projection_evidence_alignment"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_search_projection_evidence_mismatch"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "search_projection_evidence_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_search_projection_alignment.ready",
+                "replacement_summary_search_projection_alignment.summary_ready"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "regenerate_search_projection_alignment"));
+    }
+
+    #[test]
+    fn rejects_search_projection_shadow_alignment_when_summary_is_stale() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_search_projection_shadow_alignment"]["ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_projection_shadow_alignment"]["evidence_ready"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_search_projection_shadow_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_search_projection_shadow_evidence_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["search_projection_shadow_evidence_alignment"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_search_projection_shadow_evidence_mismatch"])
+        );
+        let alignment_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "search_projection_shadow_evidence_alignment")
+            .unwrap();
+        assert_eq!(
+            alignment_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_search_projection_shadow_alignment.ready",
+                "replacement_summary_search_projection_shadow_alignment.evidence_ready"
+            ])
+        );
+        assert!(report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["action"] == "regenerate_search_projection_shadow_alignment"));
     }
 
     #[test]
@@ -4823,6 +5051,60 @@ mod tests {
                 "shadow_ready": true,
                 "blocker_codes": []
             }
+        });
+        bundle["search_projection_evidence"] = serde_json::json!({
+            "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+            "evidence_source": SEARCH_PROJECTION_EVIDENCE_SOURCE,
+            "ready": true,
+            "derived_projection": true,
+            "all_tables_covered": true,
+            "covered_table_count": 2,
+            "required_table_count": 2,
+            "fts_ready": true,
+            "vector_ready": true,
+            "embedding_identity_ready": true,
+            "fail_soft_ready": true,
+            "rebuild_marker_ready": true,
+            "metadata_repair_marker_ready": true,
+            "incremental_update_ready": true,
+            "source_chunk_ready": true,
+            "predicate_pushdown_ready": true,
+            "compressed_vector_projection_required": true,
+            "compressed_vector_projection_ready": true,
+            "blocker_codes": []
+        });
+        bundle["search_projection_shadow_evidence"] = serde_json::json!({
+            "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+            "evidence_source": SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+            "route": SEARCH_PROJECTION_SHADOW_EVIDENCE_ROUTE,
+            "ready": true,
+            "primary_ready": true,
+            "shadow_ready": true,
+            "document_count_parity": true,
+            "embedding_identity_parity": true,
+            "lifecycle_parity": true,
+            "incremental_watermark_parity": true,
+            "primary_engine": "lancedb",
+            "shadow_engine": "skein",
+            "blocker_codes": []
+        });
+        bundle["replacement_summary_search_projection_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "evidence_ready": true,
+            "summary_ready": true,
+            "mismatched_fields": [],
+            "blocker_codes": []
+        });
+        bundle["replacement_summary_search_projection_shadow_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "evidence_ready": true,
+            "summary_ready": true,
+            "mismatched_fields": [],
+            "blocker_codes": []
         });
         bundle["replacement_summary"]["search_candidate_shadow_evidence"] =
             ready_search_candidate_shadow_evidence_summary();
