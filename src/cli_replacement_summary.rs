@@ -1457,6 +1457,15 @@ fn search_candidate_shadow_evidence_summary(
         && shadow_scan_field_pruning_ready
         && shadow_scan_reduction_ready;
     let ready = primary_read_ready || shadow_parity_ready;
+    let mut synthesized_blocker_codes = json_string_array(&blocker_codes)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if present && !primary_read_ready && !shadow_scan_reduction_ready {
+        synthesized_blocker_codes
+            .insert("skein_search_scan_reduction_evidence_missing".to_string());
+    }
+    let blocker_codes =
+        serde_json::json!(synthesized_blocker_codes.into_iter().collect::<Vec<_>>());
     SearchCandidateShadowEvidenceSummary {
         protocol,
         evidence_source,
@@ -2882,6 +2891,11 @@ fn nowledge_replacement_blockers(bundle: &serde_json::Value) -> Vec<String> {
     {
         blockers.insert(blocker);
     }
+    for blocker in
+        json_string_array(&search_candidate_shadow_evidence_summary(bundle).blocker_codes)
+    {
+        blockers.insert(blocker);
+    }
     for path in [
         &["inventory_gate", "blockers"][..],
         &["cutover", "blockers"][..],
@@ -3979,6 +3993,16 @@ mod tests {
             summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
             false
         );
+        assert!(summary["search_candidate_shadow_evidence"]["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "skein_search_scan_reduction_evidence_missing"));
+        assert!(summary["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "skein_search_scan_reduction_evidence_missing"));
         assert!(summary["missing_evidence"]
             .as_array()
             .unwrap()
