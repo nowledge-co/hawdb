@@ -3455,27 +3455,11 @@ fn metadata_string_range_field(field: &str) -> bool {
 
 fn normalize_metadata_date_for_ordering(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    let date = match trimmed.len() {
-        4 if trimmed.chars().all(|ch| ch.is_ascii_digit()) => format!("{trimmed}-01-01"),
-        7 if valid_year_month_prefix(trimmed) => format!("{trimmed}-01"),
-        10 if valid_year_month_day(trimmed) => trimmed.to_string(),
-        _ => return None,
-    };
-    Some(date)
-}
-
-fn valid_year_month_prefix(value: &str) -> bool {
-    value.as_bytes().get(4) == Some(&b'-')
-        && value[..4].chars().all(|ch| ch.is_ascii_digit())
-        && value[5..].chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn valid_year_month_day(value: &str) -> bool {
-    value.as_bytes().get(4) == Some(&b'-')
-        && value.as_bytes().get(7) == Some(&b'-')
-        && value[..4].chars().all(|ch| ch.is_ascii_digit())
-        && value[5..7].chars().all(|ch| ch.is_ascii_digit())
-        && value[8..].chars().all(|ch| ch.is_ascii_digit())
+    Some(match trimmed.len() {
+        4 => format!("{trimmed}-01-01"),
+        7 => format!("{trimmed}-01"),
+        _ => trimmed.to_string(),
+    })
 }
 
 fn metadata_numeric_range_may_match(
@@ -5307,6 +5291,30 @@ mod tests {
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
             1
+        );
+    }
+
+    #[test]
+    fn date_string_range_ordering_matches_legacy_partial_padding() {
+        assert_eq!(
+            normalize_metadata_date_for_ordering("2024"),
+            Some("2024-01-01".to_string())
+        );
+        assert_eq!(
+            normalize_metadata_date_for_ordering("2024-03"),
+            Some("2024-03-01".to_string())
+        );
+        assert_eq!(
+            normalize_metadata_date_for_ordering("abcd"),
+            Some("abcd-01-01".to_string())
+        );
+        assert_eq!(
+            normalize_metadata_date_for_ordering("2024-0x"),
+            Some("2024-0x-01".to_string())
+        );
+        assert_eq!(
+            normalize_metadata_date_for_ordering("not-a-date"),
+            Some("not-a-date".to_string())
         );
     }
 
