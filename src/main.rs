@@ -7,6 +7,7 @@ mod cli_graph_route_readiness;
 mod cli_mem_integration_readiness;
 mod cli_previous_wrapper_preflight;
 mod cli_query_family_evidence;
+mod cli_query_runtime_preflight;
 mod cli_replacement_summary;
 mod cli_storage_recovery_evidence;
 
@@ -19,6 +20,7 @@ use cli_graph_route_readiness::run_nowledge_graph_route_readiness;
 use cli_mem_integration_readiness::run_nowledge_mem_integration_readiness;
 use cli_previous_wrapper_preflight::run_nowledge_previous_wrapper_preflight_check;
 use cli_query_family_evidence::run_nowledge_query_family_evidence;
+use cli_query_runtime_preflight::run_nowledge_query_runtime_preflight;
 use cli_replacement_summary::{
     nowledge_replacement_summary_json, nowledge_replacement_summary_json_with_options,
     nowledge_replacement_summary_usage, NowledgeReplacementSummaryOptions,
@@ -272,6 +274,17 @@ fn main() -> Result<()> {
             {
                 return Err(SkeinError::Execution(
                     "nowledge query family evidence is not ready".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        if command == "nowledge-query-runtime-preflight" {
+            let (json, require_ready) = run_nowledge_query_runtime_preflight(args)?;
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
+            {
+                return Err(SkeinError::Execution(
+                    "nowledge query runtime preflight is not ready".to_string(),
                 ));
             }
             return Ok(());

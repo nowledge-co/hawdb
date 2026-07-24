@@ -92,6 +92,11 @@ query family, or cutover gate requires them.
   optimizer budget, chosen indexes, scan-pruning decisions, and resource class.
 - [ ] Add typed preflight or harness commands for all replacement artifacts so
   Python-only validation scripts can be retired from the critical path.
+  - `nowledge-query-runtime-preflight` runs JSON-defined probes through the
+    read-only query runtime with `EXPLAIN ANALYZE` and emits plan/profile
+    evidence without rows, parameters, or local paths.
+  - Do not add new query-shape-specific typed APIs unless they are required for
+    compatibility with an existing caller during migration.
 
 ## P1: Performance From Architecture
 
