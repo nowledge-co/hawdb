@@ -355,6 +355,7 @@ pub fn nowledge_replacement_summary_json_with_options(
             "shadow_scan_present": search_candidate_shadow_evidence.shadow_scan_present,
             "shadow_scan_filter_pushdown_ready": search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready,
             "shadow_scan_field_pruning_ready": search_candidate_shadow_evidence.shadow_scan_field_pruning_ready,
+            "shadow_scan_reduction_ready": search_candidate_shadow_evidence.shadow_scan_reduction_ready,
             "shadow_scan_field_summary_count": search_candidate_shadow_evidence.shadow_scan_field_summary_count,
             "shadow_scan_input_predicate_count": search_candidate_shadow_evidence.shadow_scan_input_predicate_count,
             "shadow_scan_pushed_predicate_count": search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count,
@@ -936,6 +937,7 @@ struct SearchCandidateShadowEvidenceSummary<'a> {
     shadow_scan_present: bool,
     shadow_scan_filter_pushdown_ready: bool,
     shadow_scan_field_pruning_ready: bool,
+    shadow_scan_reduction_ready: bool,
     shadow_scan_field_summary_count: Option<u64>,
     shadow_scan_input_predicate_count: Option<u64>,
     shadow_scan_pushed_predicate_count: Option<u64>,
@@ -1358,6 +1360,25 @@ fn search_candidate_shadow_evidence_summary(
         path,
         &["filter_pushdown", "shadow_scan", "filtered_out_count"],
     );
+    let shadow_scan_document_count = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &["filter_pushdown", "shadow_scan", "document_count"],
+    );
+    let shadow_scan_filtered_document_count = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &["filter_pushdown", "shadow_scan", "filtered_document_count"],
+    );
+    let shadow_scan_candidate_set_cardinality = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &[
+            "filter_pushdown",
+            "shadow_scan",
+            "candidate_set_cardinality",
+        ],
+    );
     let shadow_scan_pruned_document_count = json_get_u64_path_from_dynamic_nested(
         bundle,
         path,
@@ -1398,6 +1419,24 @@ fn search_candidate_shadow_evidence_summary(
         Some(_) => shadow_scan_field_summary_count.is_some_and(|count| count > 0),
         None => false,
     };
+    let shadow_scan_reduction_ready = match shadow_scan_pushed_predicate_count {
+        Some(0) => true,
+        Some(_) => {
+            shadow_scan_filtered_out_count.is_some_and(|count| count > 0)
+                || shadow_scan_pruned_document_count.is_some_and(|count| count > 0)
+                || matches!(
+                    (
+                        shadow_scan_document_count,
+                        shadow_scan_filtered_document_count,
+                        shadow_scan_candidate_set_cardinality,
+                    ),
+                    (Some(document_count), Some(filtered_document_count), Some(candidate_count))
+                        if filtered_document_count < document_count
+                            && candidate_count == filtered_document_count
+                )
+        }
+        None => false,
+    };
     let stable_envelope_ready = present
         && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
         && evidence_source == Some(SEARCH_CANDIDATE_SHADOW_EVIDENCE_SOURCE)
@@ -1415,7 +1454,8 @@ fn search_candidate_shadow_evidence_summary(
         && vector_top_k_overlap_ready == Some(true)
         && fts_top_k_overlap_ready == Some(true)
         && shadow_scan_filter_pushdown_ready
-        && shadow_scan_field_pruning_ready;
+        && shadow_scan_field_pruning_ready
+        && shadow_scan_reduction_ready;
     let ready = primary_read_ready || shadow_parity_ready;
     SearchCandidateShadowEvidenceSummary {
         protocol,
@@ -1434,6 +1474,7 @@ fn search_candidate_shadow_evidence_summary(
         shadow_scan_present,
         shadow_scan_filter_pushdown_ready,
         shadow_scan_field_pruning_ready: primary_read_ready || shadow_scan_field_pruning_ready,
+        shadow_scan_reduction_ready: primary_read_ready || shadow_scan_reduction_ready,
         shadow_scan_field_summary_count,
         shadow_scan_input_predicate_count,
         shadow_scan_pushed_predicate_count,
@@ -2144,6 +2185,7 @@ fn nowledge_replacement_next_actions(
                 "search_candidate_shadow_evidence.shadow_scan_present",
                 "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
                 "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                "search_candidate_shadow_evidence.shadow_scan_reduction_ready",
                 "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                 "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
@@ -3388,6 +3430,10 @@ mod tests {
             true
         );
         assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
+            true
+        );
+        assert_eq!(
             summary["search_candidate_shadow_evidence"]["shadow_scan_field_summary_count"],
             2
         );
@@ -3470,6 +3516,10 @@ mod tests {
         assert_eq!(
             summary["search_candidate_shadow_evidence"]["shadow_scan_filter_pushdown_ready"],
             false
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
+            true
         );
     }
 
@@ -3895,6 +3945,57 @@ mod tests {
                         .any(|field| {
                             field
                                 == "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready"
+                        })
+            }));
+    }
+
+    #[test]
+    fn replacement_summary_requires_search_candidate_shadow_scan_reduction_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["filtered_out_count"] = serde_json::json!(0);
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["filtered_document_count"] = serde_json::json!(12);
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["candidate_set_cardinality"] = serde_json::json!(12);
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["metadata_predicate_pushdown"]["pruned_document_count"] = serde_json::json!(0);
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["metadata_predicate_pushdown"]["scanned_document_count"] = serde_json::json!(12);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], false);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_filter_pushdown_ready"],
+            true
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_field_pruning_ready"],
+            true
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
+            false
+        );
+        assert!(summary["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "search_candidate_shadow_evidence_ready"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_candidate_shadow_compare"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| {
+                            field == "search_candidate_shadow_evidence.shadow_scan_reduction_ready"
                         })
             }));
     }
@@ -5149,6 +5250,7 @@ mod tests {
                         "search_candidate_shadow_evidence.shadow_scan_present",
                         "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
                         "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+                        "search_candidate_shadow_evidence.shadow_scan_reduction_ready",
                         "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                         "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
