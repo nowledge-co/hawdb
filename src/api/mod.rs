@@ -5662,6 +5662,9 @@ impl Database {
     ) -> Result<BoundedReadQueryOutput> {
         let statement = cypher::parse(cypher_text)?;
         let body = statement_body(&statement);
+        if let cypher::Statement::Explain(explain) = &statement {
+            return self.execute_explain_statement(cypher_text, explain, parameters);
+        }
         if let cypher::Statement::SetSystemVariable(set) = body {
             reject_system_variable_parameters(parameters)?;
             return self
@@ -5724,6 +5727,57 @@ impl Database {
                 execution_profile: profiled.profile,
             })
         }
+    }
+
+    fn execute_explain_statement(
+        &mut self,
+        cypher_text: &str,
+        explain: &cypher::Explain,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<BoundedReadQueryOutput> {
+        let work_request =
+            query_work_request_for_statement(&self.system_variables, &explain.statement)?;
+        let (physical_plan, trace) =
+            self.optimized_query_plan(cypher_text, &explain.statement, parameters)?;
+        let inner_statement_kind = statement_kind(statement_body(&explain.statement));
+        if explain.analyze {
+            if executor::is_mutation_plan(&physical_plan)? {
+                return Err(SkeinError::Execution(
+                    "EXPLAIN ANALYZE only supports read queries".to_string(),
+                ));
+            }
+            let profiled = executor::execute_with_row_limit_profile(
+                &physical_plan,
+                &mut self.catalog,
+                &mut self.store,
+                self.config.max_read_result_rows,
+            )?;
+            let row_count = profiled.rows.len();
+            return Ok(BoundedReadQueryOutput {
+                output: QueryOutput {
+                    rows: vec![explain_analyze_output_row(
+                        &physical_plan,
+                        &trace,
+                        work_request,
+                        inner_statement_kind,
+                        row_count,
+                        &profiled.profile,
+                    )],
+                },
+                execution_profile: profiled.profile,
+            });
+        }
+        Ok(BoundedReadQueryOutput {
+            output: QueryOutput {
+                rows: vec![explain_output_row(
+                    &physical_plan,
+                    &trace,
+                    work_request,
+                    inner_statement_kind,
+                )],
+            },
+            execution_profile: empty_read_execution_profile(),
+        })
     }
 
     pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
@@ -28785,6 +28839,67 @@ fn statement_body(statement: &cypher::Statement) -> &cypher::Statement {
     }
 }
 
+fn statement_kind(statement: &cypher::Statement) -> &'static str {
+    match statement {
+        cypher::Statement::AlterPropertyState(_) => "alter_property_state",
+        cypher::Statement::AlterTableState(_) => "alter_table_state",
+        cypher::Statement::BeginTransaction => "begin_transaction",
+        cypher::Statement::Checkpoint => "checkpoint",
+        cypher::Statement::Commit => "commit",
+        cypher::Statement::CreateCompositeIndex(_) => "create_composite_index",
+        cypher::Statement::CreateFullTextIndex(_) => "create_full_text_index",
+        cypher::Statement::CreateIndex(_) => "create_index",
+        cypher::Statement::CreateNode(_) => "create_node",
+        cypher::Statement::CreateNodeLabel(_) => "create_node_label",
+        cypher::Statement::CreateNodePropertyExistsConstraint(_) => {
+            "create_node_property_exists_constraint"
+        }
+        cypher::Statement::CreateNodeTable(_) => "create_node_table",
+        cypher::Statement::CreateProperty(_) => "create_property",
+        cypher::Statement::CreateRangeIndex(_) => "create_range_index",
+        cypher::Statement::CreateRelationship(_) => "create_relationship",
+        cypher::Statement::CreateRelationshipPropertyExistsConstraint(_) => {
+            "create_relationship_property_exists_constraint"
+        }
+        cypher::Statement::CreateRelationshipTable(_) => "create_relationship_table",
+        cypher::Statement::CreateRelationshipType(_) => "create_relationship_type",
+        cypher::Statement::CreateRelationshipUniqueConstraint(_) => {
+            "create_relationship_unique_constraint"
+        }
+        cypher::Statement::CreateUniqueConstraint(_) => "create_unique_constraint",
+        cypher::Statement::CypherQuery(query) => statement_kind(&query.statement),
+        cypher::Statement::Explain(explain) => {
+            if explain.analyze {
+                "explain_analyze"
+            } else {
+                "explain"
+            }
+        }
+        cypher::Statement::GraphAlgorithm(_) => "graph_algorithm",
+        cypher::Statement::MatchCreateRelationship(_) => "match_create_relationship",
+        cypher::Statement::MatchDelete(_) => "match_delete",
+        cypher::Statement::MatchExpandMatchMergeRelationship(_) => {
+            "match_expand_match_merge_relationship"
+        }
+        cypher::Statement::MatchExpandMergeRelationship(_) => "match_expand_merge_relationship",
+        cypher::Statement::MatchMergeRelationship(_) => "match_merge_relationship",
+        cypher::Statement::MatchNodesReturn(_) => "match_nodes_return",
+        cypher::Statement::MatchOptionalRelationshipCountSum(_) => {
+            "match_optional_relationship_count_sum"
+        }
+        cypher::Statement::MatchReturn(_) => "match_return",
+        cypher::Statement::MatchSet(_) => "match_set",
+        cypher::Statement::MatchSetReturn(_) => "match_set_return",
+        cypher::Statement::MatchThreadRepairStats(_) => "match_thread_repair_stats",
+        cypher::Statement::MergeNode(_) => "merge_node",
+        cypher::Statement::MergeRelationship(_) => "merge_relationship",
+        cypher::Statement::ProjectGraph(_) => "project_graph",
+        cypher::Statement::Rollback => "rollback",
+        cypher::Statement::SetSystemVariable(_) => "set_system_variable",
+        cypher::Statement::ShortestPathReturn(_) => "shortest_path_return",
+    }
+}
+
 fn query_work_request_for_statement(
     variables: &QuerySystemVariables,
     statement: &cypher::Statement,
@@ -28793,6 +28908,9 @@ fn query_work_request_for_statement(
         cypher::Statement::CypherQuery(query) => variables
             .apply_system_variable_hints(&query.system_variables)
             .map(|variables| variables.query_work_request()),
+        cypher::Statement::Explain(explain) => {
+            query_work_request_for_statement(variables, &explain.statement)
+        }
         _ => Ok(variables.query_work_request()),
     }
 }
@@ -30277,6 +30395,95 @@ struct PlanCacheContext<'a> {
     optimizer: &'a CascadesOptimizer,
     config: &'a DatabaseConfig,
     cache: &'a RefCell<PlanCache>,
+}
+
+fn explain_output_row(
+    physical_plan: &PhysicalPlan,
+    trace: &OptimizerTrace,
+    work_request: WorkRequest,
+    statement_kind: &'static str,
+) -> Row {
+    let mut row = Row::new();
+    row.insert("mode".to_string(), Value::String("explain".to_string()));
+    row.insert(
+        "statement_kind".to_string(),
+        Value::String(statement_kind.to_string()),
+    );
+    row.insert("plan".to_string(), Value::String(physical_plan.explain(0)));
+    row.insert(
+        "selected_plan".to_string(),
+        Value::String(trace.selected_plan.clone()),
+    );
+    row.insert(
+        "selected_plan_fingerprint".to_string(),
+        Value::String(trace.selected_plan_fingerprint.clone()),
+    );
+    row.insert(
+        "work_request".to_string(),
+        explain_work_request_value(work_request),
+    );
+    row
+}
+
+fn explain_analyze_output_row(
+    physical_plan: &PhysicalPlan,
+    trace: &OptimizerTrace,
+    work_request: WorkRequest,
+    statement_kind: &'static str,
+    row_count: usize,
+    profile: &executor::ReadExecutionProfile,
+) -> Row {
+    let mut row = explain_output_row(physical_plan, trace, work_request, statement_kind);
+    row.insert(
+        "mode".to_string(),
+        Value::String("explain_analyze".to_string()),
+    );
+    row.insert("row_count".to_string(), usize_value(row_count));
+    row.insert(
+        "scan_pruning_report_count".to_string(),
+        usize_value(profile.scan_pruning_reports.len()),
+    );
+    row.insert(
+        "row_limit_enforced_before_output".to_string(),
+        Value::Bool(profile.row_limit_enforced_before_output),
+    );
+    row.insert(
+        "operator_row_cap_enabled".to_string(),
+        Value::Bool(profile.operator_row_cap_enabled),
+    );
+    row
+}
+
+fn explain_work_request_value(work_request: WorkRequest) -> Value {
+    Value::Map(BTreeMap::from([
+        (
+            "priority".to_string(),
+            Value::String(work_request.priority.as_str().to_string()),
+        ),
+        (
+            "class".to_string(),
+            Value::String(work_request.class.as_str().to_string()),
+        ),
+        (
+            "estimated_operations".to_string(),
+            usize_value(work_request.estimated_operations),
+        ),
+    ]))
+}
+
+fn usize_value(value: usize) -> Value {
+    Value::Int(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+fn empty_read_execution_profile() -> executor::ReadExecutionProfile {
+    executor::ReadExecutionProfile {
+        max_rows: None,
+        detection_row_cap: None,
+        row_limit_enforced_before_output: false,
+        operator_row_cap_enabled: false,
+        blocking_operator_kinds: Vec::new(),
+        scan_pruning_reports: Vec::new(),
+    }
 }
 
 fn optimized_query_plan_for(

@@ -25393,6 +25393,73 @@ fn explain_analyze_reports_storage_scan_pruning_profile() {
 }
 
 #[test]
+fn cypher_explain_returns_structured_plan_row() {
+    let mut db = Database::new();
+
+    let output = db
+        .query("EXPLAIN MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    let row = &output.rows[0];
+    assert_eq!(row.get("mode"), Some(&Value::String("explain".to_string())));
+    assert_eq!(
+        row.get("statement_kind"),
+        Some(&Value::String("match_return".to_string()))
+    );
+    assert!(matches!(row.get("plan"), Some(Value::String(plan)) if plan.contains("ProjectExec")));
+    assert!(matches!(
+        row.get("selected_plan_fingerprint"),
+        Some(Value::String(fingerprint)) if fingerprint.contains("Memory")
+    ));
+    assert!(row.contains_key("work_request"));
+}
+
+#[test]
+fn cypher_explain_analyze_returns_execution_profile_row() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'mem-cypher-analyze-1', kind: 'note', title: 'Analyze'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'mem-cypher-analyze-2', kind: 'note', title: 'Profile'})")
+        .unwrap();
+
+    let output = db
+        .query(
+            "EXPLAIN ANALYZE MATCH (m:Memory) \
+             WHERE m.kind = 'note' RETURN m.title AS title",
+        )
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    let row = &output.rows[0];
+    assert_eq!(
+        row.get("mode"),
+        Some(&Value::String("explain_analyze".to_string()))
+    );
+    assert_eq!(row.get("row_count"), Some(&Value::Int(2)));
+    assert_eq!(row.get("scan_pruning_report_count"), Some(&Value::Int(1)));
+    assert_eq!(
+        row.get("operator_row_cap_enabled"),
+        Some(&Value::Bool(false))
+    );
+}
+
+#[test]
+fn cypher_explain_analyze_rejects_mutation() {
+    let mut db = Database::new();
+
+    let error = db
+        .query("EXPLAIN ANALYZE CREATE (:Memory {id: 1})")
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("EXPLAIN ANALYZE only supports read queries"));
+    let output = db.query("MATCH (m:Memory) RETURN m.id AS id").unwrap();
+    assert!(output.rows.is_empty());
+}
+
+#[test]
 fn plan_cache_reuses_exact_parameterized_physical_plan() {
     let db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),

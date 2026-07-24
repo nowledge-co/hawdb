@@ -113,6 +113,38 @@ fn parses_cypher_system_hints() {
 }
 
 #[test]
+fn parses_explain_statements() {
+    let statement = parse("EXPLAIN MATCH (m:Memory) RETURN m.id AS id").unwrap();
+    let Statement::Explain(explain) = statement else {
+        panic!("expected explain");
+    };
+    assert!(!explain.analyze);
+    let Statement::MatchReturn(query) = explain.statement else {
+        panic!("expected inner match return");
+    };
+    assert_eq!(query.variable, "m");
+
+    let statement = parse("EXPLAIN ANALYZE MATCH (m:Memory) RETURN m.id AS id").unwrap();
+    let Statement::Explain(explain) = statement else {
+        panic!("expected explain analyze");
+    };
+    assert!(explain.analyze);
+}
+
+#[test]
+fn rejects_explain_control_statements() {
+    let error = parse("EXPLAIN CHECKPOINT").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("EXPLAIN requires a query or mutation statement"));
+
+    let error = parse("EXPLAIN EXPLAIN MATCH (m:Memory) RETURN m.id AS id").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("EXPLAIN requires a query or mutation statement"));
+}
+
+#[test]
 fn rejects_cypher_system_hints_on_control_statements() {
     let error = parse("CYPHER system.work_priority = 'background' SET system.work_class = 'query'")
         .unwrap_err();

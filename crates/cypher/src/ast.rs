@@ -6,6 +6,7 @@ pub enum Statement {
     BeginTransaction,
     Checkpoint,
     CypherQuery(Box<CypherQuery>),
+    Explain(Box<Explain>),
     Commit,
     CreateNodeLabel(String),
     CreateRelationshipType(String),
@@ -42,6 +43,12 @@ pub enum Statement {
     MatchExpandMatchMergeRelationship(MatchExpandMatchMergeRelationship),
     SetSystemVariable(SetSystemVariable),
     Rollback,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explain {
+    pub analyze: bool,
+    pub statement: Statement,
 }
 
 #[derive(Debug, Clone, PartialEq)]

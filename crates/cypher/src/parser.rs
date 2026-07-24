@@ -1,4 +1,4 @@
-use super::ast::{CypherQuery, SetSystemVariable, Statement};
+use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
 use skein_core::Result;
 
 mod cursor;
@@ -25,6 +25,7 @@ enum StatementDispatch {
     Create,
     Alter,
     Cypher,
+    Explain,
     Merge,
     Match,
     Set,
@@ -39,6 +40,7 @@ const TOP_LEVEL_STATEMENTS: &[(&str, StatementDispatch)] = &[
     ("CREATE", StatementDispatch::Create),
     ("ALTER", StatementDispatch::Alter),
     ("CYPHER", StatementDispatch::Cypher),
+    ("EXPLAIN", StatementDispatch::Explain),
     ("MERGE", StatementDispatch::Merge),
     ("MATCH", StatementDispatch::Match),
     ("SET", StatementDispatch::Set),
@@ -72,6 +74,7 @@ impl<'a> Parser<'a> {
             StatementDispatch::Create => self.parse_create_statement(),
             StatementDispatch::Alter => self.parse_alter_statement(),
             StatementDispatch::Cypher => self.parse_cypher_query_statement(),
+            StatementDispatch::Explain => self.parse_explain_statement(),
             StatementDispatch::Merge => self.parse_merge_statement(),
             StatementDispatch::Match => self.parse_match_statement(),
             StatementDispatch::Set => self.parse_set_system_variable_statement(),
@@ -85,7 +88,7 @@ impl<'a> Parser<'a> {
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {
         self.parse_keyword_choice(
             TOP_LEVEL_STATEMENTS,
-            "expected BEGIN, CREATE, ALTER, CYPHER, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
+            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
         )
     }
 
@@ -116,6 +119,7 @@ impl<'a> Parser<'a> {
             | Statement::Checkpoint
             | Statement::Commit
             | Statement::CypherQuery(_)
+            | Statement::Explain(_)
             | Statement::Rollback
             | Statement::SetSystemVariable(_) => {
                 return Err(self.error("CYPHER system hints require a query or mutation statement"));
@@ -126,6 +130,25 @@ impl<'a> Parser<'a> {
             system_variables,
             statement,
         })))
+    }
+
+    fn parse_explain_statement(&mut self) -> Result<Statement> {
+        let analyze = self.consume_keyword("ANALYZE");
+        let statement = self.parse_statement()?;
+        let body = explain_statement_body(&statement);
+        match body {
+            Statement::BeginTransaction
+            | Statement::Checkpoint
+            | Statement::Commit
+            | Statement::CypherQuery(_)
+            | Statement::Explain(_)
+            | Statement::Rollback
+            | Statement::SetSystemVariable(_) => {
+                return Err(self.error("EXPLAIN requires a query or mutation statement"));
+            }
+            _ => {}
+        }
+        Ok(Statement::Explain(Box::new(Explain { analyze, statement })))
     }
 
     fn parse_system_variable_assignment(
@@ -151,5 +174,12 @@ impl<'a> Parser<'a> {
             self.expect_char('.')?;
         }
         self.parse_ident()
+    }
+}
+
+fn explain_statement_body(statement: &Statement) -> &Statement {
+    match statement {
+        Statement::CypherQuery(query) => &query.statement,
+        _ => statement,
     }
 }
