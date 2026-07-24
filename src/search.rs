@@ -41,14 +41,16 @@ const SEARCH_COMPRESSION_LEVEL: i32 = 3;
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 128;
 #[cfg(test)]
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 2;
-const NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS: &[&str] = &[
+pub const NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS: &[&str] = &[
     "kind",
     "external_id",
     "source_id",
     "space_id",
     "unit_type",
+    "lifecycle_state",
     "importance",
     "confidence",
+    "temporal_context",
     "created_at",
     "updated_at",
     "event_start",
@@ -7212,6 +7214,20 @@ mod tests {
             segment
                 .metadata
                 .get("unit_type")
+                .map(|summary| summary.present_count),
+            Some(0)
+        );
+        assert_eq!(
+            segment
+                .metadata
+                .get("lifecycle_state")
+                .map(|summary| summary.present_count),
+            Some(0)
+        );
+        assert_eq!(
+            segment
+                .metadata
+                .get("temporal_context")
                 .map(|summary| summary.present_count),
             Some(0)
         );
