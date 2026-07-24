@@ -57,6 +57,7 @@ pub fn run_nowledge_graph_route_readiness(
 
 fn nowledge_graph_route_readiness_json(evidence: &serde_json::Value) -> Result<serde_json::Value> {
     let routes = parse_route_evidence(evidence)?;
+    let route_count = routes.len();
     let route_names = routes
         .iter()
         .map(|route| route.route.clone())
@@ -89,9 +90,36 @@ fn nowledge_graph_route_readiness_json(evidence: &serde_json::Value) -> Result<s
         .iter()
         .map(|route| route.query_reports.len())
         .sum::<usize>();
+    let query_runtime_plan_report_count = routes
+        .iter()
+        .map(RouteEvidence::query_runtime_plan_report_count)
+        .sum::<usize>();
+    let query_runtime_profile_report_count = routes
+        .iter()
+        .map(RouteEvidence::query_runtime_profile_report_count)
+        .sum::<usize>();
+    let query_runtime_failed_query_count = routes
+        .iter()
+        .map(RouteEvidence::query_runtime_failed_query_count)
+        .sum::<usize>();
+    let query_runtime_missing_plan_evidence_count = routes
+        .iter()
+        .map(RouteEvidence::query_runtime_missing_plan_evidence_count)
+        .sum::<usize>();
+    let query_runtime_missing_profile_evidence_count = routes
+        .iter()
+        .map(RouteEvidence::query_runtime_missing_profile_evidence_count)
+        .sum::<usize>();
+    let route_query_plan_evidence_ready = route_count
+        == REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+        && routes.iter().all(RouteEvidence::query_plan_evidence_ready);
+    let route_query_profile_evidence_ready = route_count
+        == REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+        && routes
+            .iter()
+            .all(RouteEvidence::query_profile_evidence_ready);
     let route_primary_ready =
         missing_required_routes.is_empty() && route_primary_blocker_codes.is_empty();
-    let route_count = routes.len();
 
     Ok(serde_json::json!({
         "protocol": NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
@@ -103,8 +131,15 @@ fn nowledge_graph_route_readiness_json(evidence: &serde_json::Value) -> Result<s
         "primary_ready_route_count": primary_ready_route_count,
         "query_runtime_route_count": query_runtime_route_count,
         "query_runtime_report_count": query_runtime_report_count,
+        "query_runtime_plan_report_count": query_runtime_plan_report_count,
+        "query_runtime_profile_report_count": query_runtime_profile_report_count,
+        "query_runtime_failed_query_count": query_runtime_failed_query_count,
+        "query_runtime_missing_plan_evidence_count": query_runtime_missing_plan_evidence_count,
+        "query_runtime_missing_profile_evidence_count": query_runtime_missing_profile_evidence_count,
         "missing_query_runtime_routes": missing_query_runtime_routes,
         "route_query_runtime_ready": missing_query_runtime_routes.is_empty(),
+        "route_query_plan_evidence_ready": route_query_plan_evidence_ready,
+        "route_query_profile_evidence_ready": route_query_profile_evidence_ready,
         "route_primary_ready": route_primary_ready,
         "route_primary_blocker_codes": route_primary_blocker_codes,
         "routes": routes.into_iter().map(RouteEvidence::json).collect::<Vec<_>>(),
@@ -125,9 +160,61 @@ impl RouteEvidence {
         !self.query_reports.is_empty() && self.query_reports.iter().all(QueryRuntimeReport::ready)
     }
 
+    fn query_runtime_plan_report_count(&self) -> usize {
+        self.query_reports
+            .iter()
+            .filter(|report| report.has_plan_evidence())
+            .count()
+    }
+
+    fn query_runtime_profile_report_count(&self) -> usize {
+        self.query_reports
+            .iter()
+            .filter(|report| report.has_execution_profile())
+            .count()
+    }
+
+    fn query_runtime_failed_query_count(&self) -> usize {
+        self.query_reports
+            .iter()
+            .filter(|report| !report.query_runtime_ready())
+            .count()
+    }
+
+    fn query_runtime_missing_plan_evidence_count(&self) -> usize {
+        self.query_reports
+            .len()
+            .saturating_sub(self.query_runtime_plan_report_count())
+    }
+
+    fn query_runtime_missing_profile_evidence_count(&self) -> usize {
+        self.query_reports
+            .len()
+            .saturating_sub(self.query_runtime_profile_report_count())
+    }
+
+    fn query_plan_evidence_ready(&self) -> bool {
+        !self.query_reports.is_empty()
+            && self.query_runtime_plan_report_count() == self.query_reports.len()
+    }
+
+    fn query_profile_evidence_ready(&self) -> bool {
+        !self.query_reports.is_empty()
+            && self.query_runtime_profile_report_count() == self.query_reports.len()
+    }
+
     fn json(self) -> serde_json::Value {
         let query_runtime_ready = self.query_runtime_ready();
         let query_report_count = self.query_reports.len();
+        let query_runtime_plan_report_count = self.query_runtime_plan_report_count();
+        let query_runtime_profile_report_count = self.query_runtime_profile_report_count();
+        let query_runtime_failed_query_count = self.query_runtime_failed_query_count();
+        let query_runtime_missing_plan_evidence_count =
+            self.query_runtime_missing_plan_evidence_count();
+        let query_runtime_missing_profile_evidence_count =
+            self.query_runtime_missing_profile_evidence_count();
+        let query_plan_evidence_ready = self.query_plan_evidence_ready();
+        let query_profile_evidence_ready = self.query_profile_evidence_ready();
         let query_reports = self
             .query_reports
             .into_iter()
@@ -139,6 +226,14 @@ impl RouteEvidence {
             "primary_ready": self.primary_ready,
             "query_runtime_ready": query_runtime_ready,
             "query_report_count": query_report_count,
+            "query_runtime_report_count": query_report_count,
+            "query_runtime_plan_report_count": query_runtime_plan_report_count,
+            "query_runtime_profile_report_count": query_runtime_profile_report_count,
+            "query_runtime_failed_query_count": query_runtime_failed_query_count,
+            "query_runtime_missing_plan_evidence_count": query_runtime_missing_plan_evidence_count,
+            "query_runtime_missing_profile_evidence_count": query_runtime_missing_profile_evidence_count,
+            "query_plan_evidence_ready": query_plan_evidence_ready,
+            "query_profile_evidence_ready": query_profile_evidence_ready,
             "query_reports": query_reports,
             "blocker_codes": self.blocker_codes,
         })
@@ -160,6 +255,9 @@ struct QueryRuntimeReport {
     operator_row_cap_enabled: Option<bool>,
     blocking_operator_count: Option<u64>,
     streaming: Option<bool>,
+    query_runtime_ready: Option<bool>,
+    plan_evidence: bool,
+    execution_profile: bool,
     blocker_codes: Vec<String>,
 }
 
@@ -182,6 +280,9 @@ impl QueryRuntimeReport {
             operator_row_cap_enabled: bool_path(value, &["operator_row_cap_enabled"]),
             blocking_operator_count: u64_path(value, &["blocking_operator_count"]),
             streaming: bool_path(value, &["streaming"]),
+            query_runtime_ready: bool_path(value, &["query_runtime_ready"]),
+            plan_evidence: query_runtime_report_has_plan_evidence(value),
+            execution_profile: query_runtime_report_has_execution_profile(value),
             blocker_codes: Vec::new(),
         };
         report.blocker_codes = report.computed_blocker_codes();
@@ -190,6 +291,18 @@ impl QueryRuntimeReport {
 
     fn ready(&self) -> bool {
         self.blocker_codes.is_empty()
+    }
+
+    fn query_runtime_ready(&self) -> bool {
+        self.query_runtime_ready.unwrap_or_else(|| self.ready())
+    }
+
+    fn has_plan_evidence(&self) -> bool {
+        self.plan_evidence
+    }
+
+    fn has_execution_profile(&self) -> bool {
+        self.execution_profile
     }
 
     fn json(self) -> serde_json::Value {
@@ -207,6 +320,9 @@ impl QueryRuntimeReport {
             "operator_row_cap_enabled": self.operator_row_cap_enabled,
             "blocking_operator_count": self.blocking_operator_count,
             "streaming": self.streaming,
+            "query_runtime_ready": self.query_runtime_ready(),
+            "plan_evidence": self.plan_evidence,
+            "execution_profile": self.execution_profile,
             "ready": self.ready(),
             "blocker_codes": self.blocker_codes,
         })
@@ -256,8 +372,75 @@ impl QueryRuntimeReport {
         if self.streaming != Some(false) {
             blockers.insert("query_report_streaming_enabled".to_string());
         }
+        if self.query_runtime_ready == Some(false) {
+            blockers.insert("query_report_runtime_failed".to_string());
+        }
         blockers.into_iter().collect()
     }
+}
+
+fn query_runtime_report_has_plan_evidence(report: &serde_json::Value) -> bool {
+    let Some(body) = report.get("report").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    body.get("selected_plan_fingerprint")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.is_empty())
+        && body
+            .get("selected_plan_operator_counts")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|counts| !counts.is_empty())
+        && body
+            .get("selected_plan_class_counts")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|counts| !counts.is_empty())
+        && body
+            .get("work_request")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|work_request| {
+                work_request
+                    .get("priority")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && work_request
+                        .get("class")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                    && work_request
+                        .get("estimated_operations")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some()
+            })
+}
+
+fn query_runtime_report_has_execution_profile(report: &serde_json::Value) -> bool {
+    let Some(profile) = report
+        .get("report")
+        .and_then(|report| report.get("execution_profile"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    profile
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|source| !source.is_empty())
+        && profile
+            .get("row_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+        && profile
+            .get("physical_plan_captured")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && profile
+            .get("scan_pruning_report_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+        && profile
+            .get("scan_pruning_reports")
+            .and_then(serde_json::Value::as_array)
+            .is_some()
 }
 
 fn parse_route_evidence(evidence: &serde_json::Value) -> Result<Vec<RouteEvidence>> {
@@ -311,6 +494,12 @@ fn route_primary_blocker_codes(
         }
         if !route.query_runtime_ready() {
             blockers.insert("route_query_runtime_not_ready".to_string());
+        }
+        if route.query_runtime_ready() && !route.query_plan_evidence_ready() {
+            blockers.insert("query_report_plan_evidence_missing".to_string());
+        }
+        if route.query_runtime_ready() && !route.query_profile_evidence_ready() {
+            blockers.insert("query_report_execution_profile_missing".to_string());
         }
         for report in &route.query_reports {
             blockers.extend(report.blocker_codes.iter().cloned());
@@ -382,10 +571,25 @@ mod tests {
         );
         assert_eq!(readiness["route_primary_ready"], true);
         assert_eq!(readiness["route_query_runtime_ready"], true);
+        assert_eq!(readiness["route_query_plan_evidence_ready"], true);
+        assert_eq!(readiness["route_query_profile_evidence_ready"], true);
         assert_eq!(
             readiness["query_runtime_route_count"],
             serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
         );
+        assert_eq!(
+            readiness["query_runtime_plan_report_count"],
+            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        );
+        assert_eq!(
+            readiness["query_runtime_profile_report_count"],
+            serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len())
+        );
+        assert_eq!(readiness["query_runtime_failed_query_count"], 0);
+        assert_eq!(readiness["query_runtime_missing_plan_evidence_count"], 0);
+        assert_eq!(readiness["query_runtime_missing_profile_evidence_count"], 0);
+        assert_eq!(readiness["routes"][0]["query_plan_evidence_ready"], true);
+        assert_eq!(readiness["routes"][0]["query_profile_evidence_ready"], true);
         assert_eq!(
             readiness["route_primary_blocker_codes"],
             serde_json::json!([])
@@ -470,6 +674,54 @@ mod tests {
             .any(|code| code == "query_report_protocol_mismatch"));
     }
 
+    #[test]
+    fn route_readiness_fails_closed_without_query_plan_evidence() {
+        let mut routes = ready_routes();
+        routes[0]["query_reports"][0]["report"]
+            .as_object_mut()
+            .unwrap()
+            .remove("selected_plan_fingerprint");
+
+        let readiness = nowledge_graph_route_readiness_json(&serde_json::json!({
+            "routes": routes
+        }))
+        .unwrap();
+
+        assert_eq!(readiness["route_primary_ready"], false);
+        assert_eq!(readiness["route_query_runtime_ready"], true);
+        assert_eq!(readiness["route_query_plan_evidence_ready"], false);
+        assert_eq!(readiness["query_runtime_missing_plan_evidence_count"], 1);
+        assert!(readiness["route_primary_blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "query_report_plan_evidence_missing"));
+    }
+
+    #[test]
+    fn route_readiness_fails_closed_without_query_profile_evidence() {
+        let mut routes = ready_routes();
+        routes[0]["query_reports"][0]["report"]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_profile");
+
+        let readiness = nowledge_graph_route_readiness_json(&serde_json::json!({
+            "routes": routes
+        }))
+        .unwrap();
+
+        assert_eq!(readiness["route_primary_ready"], false);
+        assert_eq!(readiness["route_query_runtime_ready"], true);
+        assert_eq!(readiness["route_query_profile_evidence_ready"], false);
+        assert_eq!(readiness["query_runtime_missing_profile_evidence_count"], 1);
+        assert!(readiness["route_primary_blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "query_report_execution_profile_missing"));
+    }
+
     fn ready_routes() -> Vec<serde_json::Value> {
         REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
             .iter()
@@ -500,7 +752,29 @@ mod tests {
             "operator_row_cap_enabled": true,
             "blocking_operator_count": 0,
             "blocking_operator_kinds": [],
-            "streaming": false
+            "streaming": false,
+            "query_runtime_ready": true,
+            "report": {
+                "selected_plan_fingerprint": "plan-1",
+                "selected_plan_operator_counts": {
+                    "ProjectExec": 1
+                },
+                "selected_plan_class_counts": {
+                    "Read": 1
+                },
+                "work_request": {
+                    "priority": "normal",
+                    "class": "foreground",
+                    "estimated_operations": 1
+                },
+                "execution_profile": {
+                    "source": "query_with_report",
+                    "row_count": 1,
+                    "physical_plan_captured": true,
+                    "scan_pruning_report_count": 0,
+                    "scan_pruning_reports": []
+                }
+            }
         })
     }
 }
