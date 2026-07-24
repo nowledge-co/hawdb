@@ -1581,6 +1581,40 @@ fn session_explain_reports_session_scoped_resource_intent() {
 }
 
 #[test]
+fn session_cypher_explain_reports_session_scoped_resource_intent() {
+    let mut db = Database::new();
+    let mut session = db.session();
+    session
+        .query("SET system.work_priority = 'background'")
+        .unwrap();
+    session.query("SET system.work_class = 'import'").unwrap();
+    session
+        .query("SET system.estimated_operations = 8")
+        .unwrap();
+
+    let output = session
+        .query("EXPLAIN MATCH (m:Memory) RETURN m.id AS id")
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    let Some(Value::Map(work_request)) = output.rows[0].get("work_request") else {
+        panic!("expected work request map");
+    };
+    assert_eq!(
+        work_request.get("priority"),
+        Some(&Value::String("background".to_string()))
+    );
+    assert_eq!(
+        work_request.get("class"),
+        Some(&Value::String("import".to_string()))
+    );
+    assert_eq!(
+        work_request.get("estimated_operations"),
+        Some(&Value::Int(8))
+    );
+}
+
+#[test]
 fn session_explain_is_rejected_inside_active_transaction() {
     let mut db = Database::new();
     let mut session = db.session();
@@ -1588,6 +1622,13 @@ fn session_explain_is_rejected_inside_active_transaction() {
 
     let error = session
         .explain_query("MATCH (m:Memory) RETURN m.id AS id")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("EXPLAIN is not allowed inside an active transaction"));
+
+    let error = session
+        .query("EXPLAIN MATCH (m:Memory) RETURN m.id AS id")
         .unwrap_err();
     assert!(error
         .to_string()
@@ -25441,6 +25482,30 @@ fn cypher_explain_analyze_returns_execution_profile_row() {
     assert_eq!(
         row.get("operator_row_cap_enabled"),
         Some(&Value::Bool(false))
+    );
+}
+
+#[test]
+fn read_transaction_cypher_explain_analyze_uses_snapshot() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'mem-read-explain-1', kind: 'note'})")
+        .unwrap();
+    let mut read_tx = db.begin_read_transaction();
+    db.query("CREATE (:Memory {id: 'mem-read-explain-2', kind: 'note'})")
+        .unwrap();
+
+    let output = read_tx
+        .query(
+            "EXPLAIN ANALYZE MATCH (m:Memory) \
+             WHERE m.kind = 'note' RETURN m.id AS id",
+        )
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0].get("row_count"), Some(&Value::Int(1)));
+    assert_eq!(
+        output.rows[0].get("scan_pruning_report_count"),
+        Some(&Value::Int(1))
     );
 }
 

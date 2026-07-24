@@ -30180,6 +30180,11 @@ impl DatabaseTransaction<'_> {
                 "SET system variable is not allowed inside a transaction".to_string(),
             ));
         }
+        if matches!(body, cypher::Statement::Explain(_)) {
+            return Err(SkeinError::Execution(
+                "EXPLAIN is not allowed inside a transaction".to_string(),
+            ));
+        }
         query_work_request_for_statement(&self.db.system_variables, &statement)?;
         let (physical, _) = self
             .db
@@ -30310,6 +30315,14 @@ impl DatabaseSession<'_> {
                 reject_system_variable_parameters(parameters)?;
                 self.system_variables.apply_set_system_variable(set)
             }
+            cypher::Statement::Explain(_) if self.transaction_mutations.is_some() => {
+                Err(SkeinError::Execution(
+                    "EXPLAIN is not allowed inside an active transaction".to_string(),
+                ))
+            }
+            cypher::Statement::Explain(explain) => {
+                self.execute_explain_statement(cypher_text, explain, parameters)
+            }
             statement if self.transaction_mutations.is_some() => {
                 let mutation =
                     mutation_command_for_statement(self.db, cypher_text, statement, parameters)?
@@ -30330,6 +30343,51 @@ impl DatabaseSession<'_> {
                 self.db.query_with_params(cypher_text, parameters)
             }
         }
+    }
+
+    fn execute_explain_statement(
+        &mut self,
+        cypher_text: &str,
+        explain: &cypher::Explain,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<QueryOutput> {
+        let work_request =
+            query_work_request_for_statement(&self.system_variables, &explain.statement)?;
+        let (physical_plan, trace) =
+            self.db
+                .optimized_query_plan(cypher_text, &explain.statement, parameters)?;
+        let inner_statement_kind = statement_kind(statement_body(&explain.statement));
+        if explain.analyze {
+            if executor::is_mutation_plan(&physical_plan)? {
+                return Err(SkeinError::Execution(
+                    "EXPLAIN ANALYZE only supports read queries".to_string(),
+                ));
+            }
+            let profiled = executor::execute_with_row_limit_profile(
+                &physical_plan,
+                &mut self.db.catalog,
+                &mut self.db.store,
+                self.db.config.max_read_result_rows,
+            )?;
+            return Ok(QueryOutput {
+                rows: vec![explain_analyze_output_row(
+                    &physical_plan,
+                    &trace,
+                    work_request,
+                    inner_statement_kind,
+                    profiled.rows.len(),
+                    &profiled.profile,
+                )],
+            });
+        }
+        Ok(QueryOutput {
+            rows: vec![explain_output_row(
+                &physical_plan,
+                &trace,
+                work_request,
+                inner_statement_kind,
+            )],
+        })
     }
 }
 
@@ -30581,6 +30639,9 @@ impl DatabaseReadTransaction {
     ) -> Result<BoundedReadQueryOutput> {
         let statement = cypher::parse(cypher_text)?;
         let body = statement_body(&statement);
+        if let cypher::Statement::Explain(explain) = &statement {
+            return self.execute_explain_statement(cypher_text, explain, parameters, max_rows);
+        }
         if matches!(body, cypher::Statement::Checkpoint) {
             reject_transaction_control_parameters("CHECKPOINT", parameters)?;
             return Err(SkeinError::Execution(
@@ -30611,6 +30672,63 @@ impl DatabaseReadTransaction {
                 rows: profiled.rows,
             },
             execution_profile: profiled.profile,
+        })
+    }
+
+    fn execute_explain_statement(
+        &mut self,
+        cypher_text: &str,
+        explain: &cypher::Explain,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: Option<usize>,
+    ) -> Result<BoundedReadQueryOutput> {
+        let work_request =
+            query_work_request_for_statement(&QuerySystemVariables::default(), &explain.statement)?;
+        let (physical_plan, trace) =
+            self.optimized_query_plan(cypher_text, &explain.statement, parameters)?;
+        let inner_statement_kind = statement_kind(statement_body(&explain.statement));
+        if executor::is_mutation_plan(&physical_plan)? {
+            if explain.analyze {
+                return Err(SkeinError::Execution(
+                    "EXPLAIN ANALYZE only supports read queries".to_string(),
+                ));
+            }
+            return Err(SkeinError::Execution(
+                "read transaction query must not be a mutation".to_string(),
+            ));
+        }
+        if explain.analyze {
+            let profiled = executor::execute_with_row_limit_profile(
+                &physical_plan,
+                &mut self.catalog,
+                &mut self.store,
+                max_rows,
+            )?;
+            let row_count = profiled.rows.len();
+            return Ok(BoundedReadQueryOutput {
+                output: QueryOutput {
+                    rows: vec![explain_analyze_output_row(
+                        &physical_plan,
+                        &trace,
+                        work_request,
+                        inner_statement_kind,
+                        row_count,
+                        &profiled.profile,
+                    )],
+                },
+                execution_profile: profiled.profile,
+            });
+        }
+        Ok(BoundedReadQueryOutput {
+            output: QueryOutput {
+                rows: vec![explain_output_row(
+                    &physical_plan,
+                    &trace,
+                    work_request,
+                    inner_statement_kind,
+                )],
+            },
+            execution_profile: empty_read_execution_profile(),
         })
     }
 
