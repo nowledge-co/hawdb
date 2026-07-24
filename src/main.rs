@@ -638,6 +638,7 @@ fn main() -> Result<()> {
             let mut augmentation_state_parity_evidence_path = None;
             let mut pagerank_plan_parity_evidence_path = None;
             let mut overview_parity_evidence_path = None;
+            let mut graph_search_parity_evidence_path = None;
             let mut explore_parity_evidence_path = None;
             let mut expand_parity_evidence_path = None;
             let mut live_preview_parity_evidence_path = None;
@@ -723,6 +724,12 @@ fn main() -> Result<()> {
                     "--overview-parity-evidence-json" => {
                         args.next();
                         overview_parity_evidence_path = Some(args.next().ok_or_else(|| {
+                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                        })?);
+                    }
+                    "--graph-search-parity-evidence-json" => {
+                        args.next();
+                        graph_search_parity_evidence_path = Some(args.next().ok_or_else(|| {
                             SkeinError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
@@ -836,6 +843,7 @@ fn main() -> Result<()> {
                 augmentation_state_parity: augmentation_state_parity_evidence_path.as_deref(),
                 pagerank_plan_parity: pagerank_plan_parity_evidence_path.as_deref(),
                 overview_parity: overview_parity_evidence_path.as_deref(),
+                graph_search_parity: graph_search_parity_evidence_path.as_deref(),
                 explore_parity: explore_parity_evidence_path.as_deref(),
                 expand_parity: expand_parity_evidence_path.as_deref(),
                 live_preview_parity: live_preview_parity_evidence_path.as_deref(),
@@ -1568,6 +1576,7 @@ struct ReplacementSummaryEvidencePaths<'a> {
     augmentation_state_parity: Option<&'a str>,
     pagerank_plan_parity: Option<&'a str>,
     overview_parity: Option<&'a str>,
+    graph_search_parity: Option<&'a str>,
     explore_parity: Option<&'a str>,
     expand_parity: Option<&'a str>,
     live_preview_parity: Option<&'a str>,
@@ -1634,6 +1643,13 @@ fn merge_replacement_summary_evidence(
         insert_replacement_summary_artifact(
             bundle,
             "overview_parity_evidence",
+            read_json_file(Path::new(path))?,
+        )?;
+    }
+    if let Some(path) = paths.graph_search_parity {
+        insert_replacement_summary_artifact(
+            bundle,
+            "graph_search_parity_evidence",
             read_json_file(Path::new(path))?,
         )?;
     }
@@ -5390,6 +5406,7 @@ mod tests {
             augmentation_state_parity: Some(augmentation_state_path.to_str().unwrap()),
             pagerank_plan_parity: Some(pagerank_plan_path.to_str().unwrap()),
             overview_parity: Some(overview_path.to_str().unwrap()),
+            graph_search_parity: None,
             explore_parity: Some(explore_path.to_str().unwrap()),
             expand_parity: Some(expand_path.to_str().unwrap()),
             live_preview_parity: Some(live_preview_path.to_str().unwrap()),

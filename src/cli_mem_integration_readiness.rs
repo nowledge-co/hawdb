@@ -22,6 +22,7 @@ const NMEM_GRAPH_ROUTE_SHADOW_PARITY_EVIDENCE_PROTOCOL: &str =
     "nmem-graph-route-shadow-parity-evidence-v1";
 const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
     "/graph/overview",
+    "/graph/search",
     "/graph/explore",
     "/graph/expand/{node_id}",
     "/graph/live-preview",
@@ -1008,6 +1009,13 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                     "blocker_codes",
                 ][..]],
             ),
+        ),
+        graph_route_parity_check(
+            bundle,
+            "graph_route_graph_search_parity_evidence",
+            "graph_search",
+            "/graph/search",
+            replacement_summary_graph_search_parity_ready(bundle),
         ),
         check(
             "graph_route_explore_parity_evidence",
@@ -2273,6 +2281,21 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             ],
         ));
     }
+    if !replacement_summary_graph_search_parity_ready(bundle) {
+        actions.push(next_action(
+            "run_graph_search_route_shadow_compare",
+            "graph-search route parity evidence must be ready before Mem graph cutover",
+            [
+                "replacement_summary.graph_route_parity_evidence.graph_search.protocol",
+                "replacement_summary.graph_route_parity_evidence.graph_search.ready",
+                "replacement_summary.graph_route_parity_evidence.graph_search.route",
+                "replacement_summary.graph_route_parity_evidence.graph_search.matches",
+                "replacement_summary.graph_route_parity_evidence.graph_search.primary_ready",
+                "replacement_summary.graph_route_parity_evidence.graph_search.shadow_ready",
+                "replacement_summary.graph_route_parity_evidence.graph_search.blocker_codes",
+            ],
+        ));
+    }
     if !replacement_summary_explore_parity_ready(bundle) {
         actions.push(next_action(
             "run_explore_route_shadow_compare",
@@ -2968,6 +2991,10 @@ fn replacement_summary_pagerank_plan_parity_ready(bundle: &serde_json::Value) ->
 
 fn replacement_summary_overview_parity_ready(bundle: &serde_json::Value) -> bool {
     graph_route_parity_ready(bundle, "overview", "/graph/overview")
+}
+
+fn replacement_summary_graph_search_parity_ready(bundle: &serde_json::Value) -> bool {
+    graph_route_parity_ready(bundle, "graph_search", "/graph/search")
 }
 
 fn replacement_summary_explore_parity_ready(bundle: &serde_json::Value) -> bool {
@@ -5175,6 +5202,7 @@ mod tests {
                 "streaming": false,
                 "covered_routes": [
                     "/graph/overview",
+                    "/graph/search",
                     "/graph/explore",
                     "/graph/expand/{node_id}",
                     "/graph/live-preview",
@@ -5194,6 +5222,7 @@ mod tests {
                 "route_primary_ready": true,
                 "primary_ready_routes": [
                     "/graph/overview",
+                    "/graph/search",
                     "/graph/explore",
                     "/graph/expand/{node_id}",
                     "/graph/live-preview",
@@ -5294,6 +5323,7 @@ mod tests {
                     "streaming": false,
                     "covered_routes": [
                         "/graph/overview",
+                        "/graph/search",
                         "/graph/explore",
                         "/graph/expand/{node_id}",
                         "/graph/live-preview",
@@ -5314,6 +5344,7 @@ mod tests {
                     "route_primary_ready": true,
                     "primary_ready_routes": [
                         "/graph/overview",
+                        "/graph/search",
                         "/graph/explore",
                         "/graph/expand/{node_id}",
                         "/graph/live-preview",
@@ -5478,6 +5509,19 @@ mod tests {
                 "ready": true,
                 "reported_ready": true,
                 "route": "/graph/overview",
+                "matches": true,
+                "primary_engine": "kuzu",
+                "shadow_engine": "skein",
+                "primary_ready": true,
+                "shadow_ready": true,
+                "blocker_codes": []
+            },
+            "graph_search": {
+                "protocol": "nmem-graph-route-shadow-parity-evidence-v1",
+                "present": true,
+                "ready": true,
+                "reported_ready": true,
+                "route": "/graph/search",
                 "matches": true,
                 "primary_engine": "kuzu",
                 "shadow_engine": "skein",
