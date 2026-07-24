@@ -183,6 +183,29 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             "query_family_replacement_evidence",
             [
                 replacement_summary_required_query_families_present(bundle),
+                bool_path(bundle, &["query_family_evidence", "ready"]) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_query_family_alignment", "ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_query_family_alignment",
+                        "evidence_ready",
+                    ],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &["replacement_summary_query_family_alignment", "summary_ready"],
+                ) == Some(true),
+                bool_path(
+                    bundle,
+                    &[
+                        "replacement_summary_query_family_alignment",
+                        "family_readiness_matches",
+                    ],
+                ) == Some(true),
                 string_array_path(
                     bundle,
                     &[
@@ -212,6 +235,11 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
             ],
             [
                 "replacement_summary.replacement_readiness_family_summary.required_query_families",
+                "query_family_evidence.ready",
+                "replacement_summary_query_family_alignment.ready",
+                "replacement_summary_query_family_alignment.evidence_ready",
+                "replacement_summary_query_family_alignment.summary_ready",
+                "replacement_summary_query_family_alignment.family_readiness_matches",
                 "replacement_summary.replacement_readiness_family_summary.missing_required_query_families",
                 "replacement_summary.replacement_readiness_family_summary.blocked_query_families",
                 "replacement_summary.replacement_readiness_family_summary.min_replacement_readiness_per_million",
@@ -221,6 +249,8 @@ pub fn nowledge_mem_integration_readiness_json(bundle: &serde_json::Value) -> se
                 &[
                     &["replacement_summary", "blocking_categories"][..],
                     &["replacement_summary", "missing_evidence"][..],
+                    &["query_family_evidence", "blocker_codes"][..],
+                    &["replacement_summary_query_family_alignment", "blocker_codes"][..],
                 ],
             ),
         ),
@@ -1866,6 +1896,18 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
         ));
     }
     if !replacement_summary_required_query_families_present(bundle)
+        || bool_path(bundle, &["query_family_evidence", "ready"]) != Some(true)
+        || bool_path(
+            bundle,
+            &["replacement_summary_query_family_alignment", "ready"],
+        ) != Some(true)
+        || bool_path(
+            bundle,
+            &[
+                "replacement_summary_query_family_alignment",
+                "family_readiness_matches",
+            ],
+        ) != Some(true)
         || !string_array_path(
             bundle,
             &[
@@ -1898,6 +1940,9 @@ fn next_actions(bundle: &serde_json::Value, ready: bool) -> Vec<serde_json::Valu
             "Nowledge Mem cutover requires explicit readiness for every required query family",
             [
                 "replacement_summary.replacement_readiness_family_summary.required_query_families",
+                "query_family_evidence.ready",
+                "replacement_summary_query_family_alignment.ready",
+                "replacement_summary_query_family_alignment.family_readiness_matches",
                 "replacement_summary.replacement_readiness_family_summary.missing_required_query_families",
                 "replacement_summary.replacement_readiness_family_summary.blocked_query_families",
                 "replacement_summary.replacement_readiness_family_summary.min_replacement_readiness_per_million",
@@ -3684,6 +3729,43 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stale_query_family_alignment_even_if_summary_is_ready() {
+        let mut bundle = ready_bundle();
+        bundle["replacement_summary_query_family_alignment"]["ready"] = serde_json::json!(false);
+        bundle["replacement_summary_query_family_alignment"]["family_readiness_matches"] =
+            serde_json::json!(false);
+        bundle["replacement_summary_query_family_alignment"]["mismatched_families"] =
+            serde_json::json!(["graph_traversal"]);
+        bundle["replacement_summary_query_family_alignment"]["blocker_codes"] =
+            serde_json::json!(["replacement_summary_query_family_evidence_mismatch"]);
+
+        let report = nowledge_mem_integration_readiness_json(&bundle);
+
+        assert_eq!(report["ready"], false);
+        assert_eq!(
+            report["failed_checks"],
+            serde_json::json!(["query_family_replacement_evidence"])
+        );
+        assert_eq!(
+            report["blocker_codes"],
+            serde_json::json!(["replacement_summary_query_family_evidence_mismatch"])
+        );
+        let family_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "query_family_replacement_evidence")
+            .unwrap();
+        assert_eq!(
+            family_check["failed_evidence_fields"],
+            serde_json::json!([
+                "replacement_summary_query_family_alignment.ready",
+                "replacement_summary_query_family_alignment.family_readiness_matches"
+            ])
+        );
+    }
+
+    #[test]
     fn requires_bounded_read_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]["bounded_read_evidence"]["ready"] = serde_json::json!(false);
@@ -4719,6 +4801,28 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
+        let query_family_readiness = serde_json::json!([
+            {
+                "query_family": "memory_lookup",
+                "replacement_readiness_per_million": 1_000_000,
+                "blocker_codes": []
+            },
+            {
+                "query_family": "graph_traversal",
+                "replacement_readiness_per_million": 1_000_000,
+                "blocker_codes": []
+            },
+            {
+                "query_family": "projected_graph",
+                "replacement_readiness_per_million": 1_000_000,
+                "blocker_codes": []
+            },
+            {
+                "query_family": "search_projection",
+                "replacement_readiness_per_million": 1_000_000,
+                "blocker_codes": []
+            }
+        ]);
         let mut bundle = serde_json::json!({
             "protocol": "nowledge-mem-skein-integration-bundle",
             "submodule": {
@@ -4949,6 +5053,24 @@ mod tests {
             "route_primary_ready": true,
             "route_primary_blocker_codes": [],
             "routes": graph_route_readiness_routes
+        });
+        bundle["query_family_evidence"] = serde_json::json!({
+            "protocol": "skein-nowledge-query-family-evidence-v1",
+            "ready": true,
+            "replacement_readiness_by_query_family": query_family_readiness,
+            "blocker_codes": []
+        });
+        bundle["replacement_summary_query_family_alignment"] = serde_json::json!({
+            "ready": true,
+            "evidence_present": true,
+            "summary_present": true,
+            "evidence_ready": true,
+            "summary_ready": true,
+            "family_readiness_matches": true,
+            "required_families_present": true,
+            "summary_required_families_present": true,
+            "mismatched_families": [],
+            "blocker_codes": []
         });
         bundle["replacement_summary_graph_route_alignment"] = serde_json::json!({
             "ready": true,
