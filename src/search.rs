@@ -41,6 +41,20 @@ const SEARCH_COMPRESSION_LEVEL: i32 = 3;
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 128;
 #[cfg(test)]
 const SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS: usize = 2;
+const NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS: &[&str] = &[
+    "kind",
+    "external_id",
+    "source_id",
+    "space_id",
+    "unit_type",
+    "importance",
+    "confidence",
+    "created_at",
+    "updated_at",
+    "event_start",
+    "event_end",
+    "is_latest",
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchDocument {
@@ -2050,20 +2064,7 @@ fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> ser
         "numeric_min_max_ready": true,
         "persisted_segment_descriptor_ready": segment_descriptor_ready,
         "supported_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
-        "scan_filter_fields": [
-            "kind",
-            "external_id",
-            "source_id",
-            "space_id",
-            "unit_type",
-            "importance",
-            "confidence",
-            "created_at",
-            "updated_at",
-            "event_start",
-            "event_end",
-            "is_latest"
-        ],
+        "scan_filter_fields": NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS,
     })
 }
 
@@ -3113,6 +3114,11 @@ impl SearchSegmentDescriptorEntry {
             .map(|document| document.id.clone())
             .unwrap_or_default();
         let mut metadata = BTreeMap::<String, SearchSegmentFieldSummary>::new();
+        metadata.extend(
+            fields
+                .iter()
+                .map(|field| (field.clone(), SearchSegmentFieldSummary::default())),
+        );
         for document in documents {
             for field in fields {
                 let Some(value) = search_document_field_value(document, field) else {
@@ -3224,10 +3230,16 @@ impl SearchSegmentFieldSummary {
 fn search_segment_descriptor_fields(
     documents: &BTreeMap<String, SearchDocument>,
 ) -> BTreeSet<String> {
-    documents
-        .values()
-        .flat_map(|document| document.metadata.keys().cloned())
-        .collect()
+    let mut fields = NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
+        .iter()
+        .map(|field| (*field).to_string())
+        .collect::<BTreeSet<_>>();
+    fields.extend(
+        documents
+            .values()
+            .flat_map(|document| document.metadata.keys().cloned()),
+    );
+    fields
 }
 
 fn search_segment_descriptor_document_fingerprint(
@@ -7165,6 +7177,52 @@ mod tests {
                 value_summary_used: false,
             }]
         );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_segment_descriptor_includes_nowledge_scan_filter_fields() {
+        let path = unique_test_dir("search_segment_descriptor_nowledge_fields");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index
+                .upsert(SearchDocument {
+                    id: "memory:visible".to_string(),
+                    title: "Graph memory".to_string(),
+                    content: "segment descriptor nowledge fields".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([("source_id".to_string(), "thread_1".to_string())]),
+                })
+                .unwrap();
+            index.checkpoint().unwrap();
+        }
+
+        let descriptor =
+            std::fs::read_to_string(path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE)).unwrap();
+        let descriptor = decode_search_segment_descriptor_text(&descriptor).unwrap();
+        let segment = &descriptor.segments[0];
+
+        for field in NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS {
+            assert!(
+                segment.metadata.contains_key(*field),
+                "missing scan field {field}"
+            );
+        }
+        assert_eq!(
+            segment
+                .metadata
+                .get("unit_type")
+                .map(|summary| summary.present_count),
+            Some(0)
+        );
+        assert_eq!(
+            segment
+                .metadata
+                .get("source_id")
+                .map(|summary| summary.present_count),
+            Some(1)
+        );
+
         std::fs::remove_dir_all(path).unwrap();
     }
 
