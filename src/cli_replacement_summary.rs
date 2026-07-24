@@ -356,6 +356,8 @@ pub fn nowledge_replacement_summary_json_with_options(
             "shadow_scan_filter_pushdown_ready": search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready,
             "shadow_scan_field_pruning_ready": search_candidate_shadow_evidence.shadow_scan_field_pruning_ready,
             "shadow_scan_reduction_ready": search_candidate_shadow_evidence.shadow_scan_reduction_ready,
+            "shadow_scan_descriptor_bounded_ready": search_candidate_shadow_evidence.shadow_scan_descriptor_bounded_ready,
+            "shadow_scan_descriptor_field_count": search_candidate_shadow_evidence.shadow_scan_descriptor_field_count,
             "shadow_scan_field_summary_count": search_candidate_shadow_evidence.shadow_scan_field_summary_count,
             "shadow_scan_input_predicate_count": search_candidate_shadow_evidence.shadow_scan_input_predicate_count,
             "shadow_scan_pushed_predicate_count": search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count,
@@ -938,6 +940,8 @@ struct SearchCandidateShadowEvidenceSummary<'a> {
     shadow_scan_filter_pushdown_ready: bool,
     shadow_scan_field_pruning_ready: bool,
     shadow_scan_reduction_ready: bool,
+    shadow_scan_descriptor_bounded_ready: bool,
+    shadow_scan_descriptor_field_count: Option<u64>,
     shadow_scan_field_summary_count: Option<u64>,
     shadow_scan_input_predicate_count: Option<u64>,
     shadow_scan_pushed_predicate_count: Option<u64>,
@@ -1399,6 +1403,16 @@ fn search_candidate_shadow_evidence_summary(
         path,
         &nested_path(predicate_path, "unsatisfiable"),
     );
+    let shadow_scan_descriptor_bounded = json_get_bool_path_from_dynamic_nested(
+        bundle,
+        path,
+        &nested_path(predicate_path, "segment_descriptor_bounded"),
+    );
+    let shadow_scan_descriptor_field_count = json_get_u64_path_from_dynamic_nested(
+        bundle,
+        path,
+        &nested_path(predicate_path, "segment_descriptor_field_count"),
+    );
     let shadow_scan_field_summary_count = json_get_array_len_path_from_dynamic_nested(
         bundle,
         path,
@@ -1417,6 +1431,11 @@ fn search_candidate_shadow_evidence_summary(
     let shadow_scan_field_pruning_ready = match shadow_scan_pushed_predicate_count {
         Some(0) => true,
         Some(_) => shadow_scan_field_summary_count.is_some_and(|count| count > 0),
+        None => false,
+    };
+    let shadow_scan_descriptor_bounded_ready = match shadow_scan_pushed_predicate_count {
+        Some(0) => true,
+        Some(_) => shadow_scan_descriptor_bounded == Some(true),
         None => false,
     };
     let shadow_scan_reduction_ready = match shadow_scan_pushed_predicate_count {
@@ -1455,6 +1474,7 @@ fn search_candidate_shadow_evidence_summary(
         && fts_top_k_overlap_ready == Some(true)
         && shadow_scan_filter_pushdown_ready
         && shadow_scan_field_pruning_ready
+        && shadow_scan_descriptor_bounded_ready
         && shadow_scan_reduction_ready;
     let ready = primary_read_ready || shadow_parity_ready;
     let mut synthesized_blocker_codes = json_string_array(&blocker_codes)
@@ -1463,6 +1483,10 @@ fn search_candidate_shadow_evidence_summary(
     if present && !primary_read_ready && !shadow_scan_reduction_ready {
         synthesized_blocker_codes
             .insert("skein_search_scan_reduction_evidence_missing".to_string());
+    }
+    if present && !primary_read_ready && !shadow_scan_descriptor_bounded_ready {
+        synthesized_blocker_codes
+            .insert("skein_search_descriptor_bounds_evidence_missing".to_string());
     }
     let blocker_codes =
         serde_json::json!(synthesized_blocker_codes.into_iter().collect::<Vec<_>>());
@@ -1484,6 +1508,9 @@ fn search_candidate_shadow_evidence_summary(
         shadow_scan_filter_pushdown_ready,
         shadow_scan_field_pruning_ready: primary_read_ready || shadow_scan_field_pruning_ready,
         shadow_scan_reduction_ready: primary_read_ready || shadow_scan_reduction_ready,
+        shadow_scan_descriptor_bounded_ready: primary_read_ready
+            || shadow_scan_descriptor_bounded_ready,
+        shadow_scan_descriptor_field_count,
         shadow_scan_field_summary_count,
         shadow_scan_input_predicate_count,
         shadow_scan_pushed_predicate_count,
@@ -2195,6 +2222,8 @@ fn nowledge_replacement_next_actions(
                 "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
                 "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
                 "search_candidate_shadow_evidence.shadow_scan_reduction_ready",
+                "search_candidate_shadow_evidence.shadow_scan_descriptor_bounded_ready",
+                "search_candidate_shadow_evidence.shadow_scan_descriptor_field_count",
                 "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                 "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                 "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
@@ -4025,6 +4054,59 @@ mod tests {
     }
 
     #[test]
+    fn replacement_summary_requires_search_candidate_shadow_bounded_descriptor_evidence() {
+        let mut bundle = production_ready_bundle();
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["metadata_predicate_pushdown"]["segment_descriptor_bounded"] =
+            serde_json::json!(false);
+        bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
+            ["metadata_predicate_pushdown"]["segment_descriptor_field_count"] =
+            serde_json::json!(64);
+
+        let summary = nowledge_replacement_summary_json(&bundle);
+
+        assert_eq!(summary["production_cutover_ready"], false);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], false);
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
+            true
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_descriptor_bounded_ready"],
+            false
+        );
+        assert_eq!(
+            summary["search_candidate_shadow_evidence"]["shadow_scan_descriptor_field_count"],
+            64
+        );
+        assert!(summary["search_candidate_shadow_evidence"]["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "skein_search_descriptor_bounds_evidence_missing"));
+        assert!(summary["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "skein_search_descriptor_bounds_evidence_missing"));
+        assert!(summary["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["action"] == "run_search_candidate_shadow_compare"
+                    && action["evidence_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|field| {
+                            field
+                                == "search_candidate_shadow_evidence.shadow_scan_descriptor_bounded_ready"
+                        })
+            }));
+    }
+
+    #[test]
     fn replacement_summary_requires_search_candidate_shadow_evidence_protocol() {
         let mut bundle = production_ready_bundle();
         bundle["search_candidate_shadow_evidence"]["protocol"] = serde_json::json!("handwritten");
@@ -5275,6 +5357,8 @@ mod tests {
                         "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
                         "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
                         "search_candidate_shadow_evidence.shadow_scan_reduction_ready",
+                        "search_candidate_shadow_evidence.shadow_scan_descriptor_bounded_ready",
+                        "search_candidate_shadow_evidence.shadow_scan_descriptor_field_count",
                         "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
                         "search_candidate_shadow_evidence.shadow_scan_input_predicate_count",
                         "search_candidate_shadow_evidence.shadow_scan_pushed_predicate_count",
@@ -6033,6 +6117,8 @@ mod tests {
                         "pruned_segment_count": 1,
                         "scanned_segment_count": 2,
                         "persisted_segment_descriptor_used": true,
+                        "segment_descriptor_bounded": true,
+                        "segment_descriptor_field_count": 16,
                         "field_summaries": [
                             {
                                 "field": "unit_type",
