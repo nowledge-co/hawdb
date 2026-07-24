@@ -1899,6 +1899,8 @@ fn execute_bindings_with_limit(
                     property: property.clone(),
                 },
                 pruned: true,
+                exact_candidate_set: true,
+                residual_filter_applied: false,
                 exact_empty: nodes.is_empty(),
                 candidate_count_before_filter: nodes.len(),
                 output_count: nodes
@@ -1941,6 +1943,8 @@ fn execute_bindings_with_limit(
                     property: property.clone(),
                 },
                 pruned: true,
+                exact_candidate_set: true,
+                residual_filter_applied: false,
                 exact_empty: nodes.is_empty(),
                 candidate_count_before_filter: nodes.len(),
                 output_count: nodes
@@ -1999,6 +2003,8 @@ fn execute_bindings_with_limit(
                     property: property.clone(),
                 },
                 pruned: true,
+                exact_candidate_set: true,
+                residual_filter_applied: false,
                 exact_empty: nodes.is_empty(),
                 candidate_count_before_filter: nodes.len(),
                 output_count: nodes

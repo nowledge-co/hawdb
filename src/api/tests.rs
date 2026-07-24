@@ -25429,6 +25429,8 @@ fn explain_analyze_reports_storage_scan_pruning_profile() {
     assert_eq!(output.execution_profile.scan_pruning_reports.len(), 1);
     let scan = &output.execution_profile.scan_pruning_reports[0];
     assert!(scan.pruned);
+    assert!(scan.exact_candidate_set);
+    assert!(!scan.residual_filter_applied);
     assert_eq!(scan.candidate_count_before_filter, 2);
     assert_eq!(scan.output_count, 2);
 }
@@ -25487,6 +25489,14 @@ fn cypher_explain_analyze_returns_execution_profile_row() {
         panic!("expected scan pruning report map");
     };
     assert_eq!(scan_report.get("pruned"), Some(&Value::Bool(true)));
+    assert_eq!(
+        scan_report.get("exact_candidate_set"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        scan_report.get("residual_filter_applied"),
+        Some(&Value::Bool(false))
+    );
     assert_eq!(scan_report.get("output_count"), Some(&Value::Int(2)));
     let Some(Value::Map(strategy)) = scan_report.get("strategy") else {
         panic!("expected scan pruning strategy map");

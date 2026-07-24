@@ -4759,6 +4759,8 @@ fn scan_pruning_report_json(report: &skein::store::ScanPruningReport) -> serde_j
         "label_id": report.label_id.map(|label_id| label_id.0),
         "strategy": scan_pruning_strategy_json(&report.strategy),
         "pruned": report.pruned,
+        "exact_candidate_set": report.exact_candidate_set,
+        "residual_filter_applied": report.residual_filter_applied,
         "exact_empty": report.exact_empty,
         "candidate_count_before_filter": report.candidate_count_before_filter,
         "output_count": report.output_count,

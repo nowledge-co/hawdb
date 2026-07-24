@@ -31170,6 +31170,14 @@ fn scan_pruning_report_value(report: &ScanPruningReport) -> Value {
             scan_pruning_strategy_value(&report.strategy),
         ),
         ("pruned".to_string(), Value::Bool(report.pruned)),
+        (
+            "exact_candidate_set".to_string(),
+            Value::Bool(report.exact_candidate_set),
+        ),
+        (
+            "residual_filter_applied".to_string(),
+            Value::Bool(report.residual_filter_applied),
+        ),
         ("exact_empty".to_string(), Value::Bool(report.exact_empty)),
         (
             "candidate_count_before_filter".to_string(),

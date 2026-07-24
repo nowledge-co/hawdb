@@ -477,6 +477,8 @@ pub struct ScanPruningReport {
     pub label_id: Option<LabelId>,
     pub strategy: ScanPruningStrategy,
     pub pruned: bool,
+    pub exact_candidate_set: bool,
+    pub residual_filter_applied: bool,
     pub exact_empty: bool,
     pub candidate_count_before_filter: usize,
     pub output_count: usize,
@@ -4886,6 +4888,8 @@ impl GraphStore {
                     label_id,
                     strategy: ScanPruningStrategy::FullLabelScan,
                     pruned: false,
+                    exact_candidate_set: false,
+                    residual_filter_applied: filter.is_some(),
                     exact_empty: false,
                     candidate_count_before_filter,
                     output_count,
@@ -4913,6 +4917,8 @@ impl GraphStore {
                 label_id,
                 strategy: candidate.strategy,
                 pruned: true,
+                exact_candidate_set: true,
+                residual_filter_applied: filter.is_some(),
                 exact_empty: candidate.exact_empty,
                 candidate_count_before_filter,
                 output_count,
@@ -10420,6 +10426,8 @@ mod tests {
             }
         );
         assert!(scan.report.pruned);
+        assert!(scan.report.exact_candidate_set);
+        assert!(scan.report.residual_filter_applied);
         assert_eq!(scan.report.candidate_count_before_filter, 1);
         assert_eq!(scan.report.filtered_out_count, 0);
     }
@@ -10698,6 +10706,8 @@ mod tests {
         assert_eq!(scan.nodes.len(), 1);
         assert_eq!(scan.report.strategy, ScanPruningStrategy::FullLabelScan);
         assert!(!scan.report.pruned);
+        assert!(!scan.report.exact_candidate_set);
+        assert!(scan.report.residual_filter_applied);
         assert_eq!(scan.report.candidate_count_before_filter, 2);
         assert_eq!(scan.report.filtered_out_count, 1);
     }
