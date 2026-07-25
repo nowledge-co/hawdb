@@ -25437,6 +25437,47 @@ fn explain_analyze_reports_storage_scan_pruning_profile() {
 }
 
 #[test]
+fn explain_analyze_reports_property_presence_scan_pruning_profile() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'mem-presence-1', updated_at: '2026-07-24'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'mem-presence-2', updated_at: NULL})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'mem-presence-3'})").unwrap();
+
+    let output = db
+        .query(
+            "EXPLAIN ANALYZE MATCH (m:Memory) \
+             WHERE m.updated_at IS NOT NULL RETURN m.id AS id",
+        )
+        .unwrap();
+
+    let row = &output.rows[0];
+    assert_eq!(row.get("row_count"), Some(&Value::Int(1)));
+    let Some(Value::List(scan_reports)) = row.get("scan_pruning_reports") else {
+        panic!("expected scan pruning reports");
+    };
+    let Some(Value::Map(scan_report)) = scan_reports.first() else {
+        panic!("expected first scan pruning report");
+    };
+    let Some(Value::Map(strategy)) = scan_report.get("strategy") else {
+        panic!("expected scan pruning strategy map");
+    };
+    assert_eq!(
+        strategy.get("kind"),
+        Some(&Value::String("property_is_not_null".to_string()))
+    );
+    assert_eq!(
+        strategy.get("property"),
+        Some(&Value::String("updated_at".to_string()))
+    );
+    assert_eq!(
+        scan_report.get("candidate_count_before_filter"),
+        Some(&Value::Int(1))
+    );
+}
+
+#[test]
 fn cypher_explain_returns_structured_plan_row() {
     let mut db = Database::new();
 

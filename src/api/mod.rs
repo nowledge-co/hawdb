@@ -31285,6 +31285,12 @@ fn scan_pruning_strategy_value(strategy: &ScanPruningStrategy) -> Value {
         ScanPruningStrategy::PropertyIn { property } => {
             scan_pruning_property_strategy_value("property_in", property)
         }
+        ScanPruningStrategy::PropertyIsNull { property } => {
+            scan_pruning_property_strategy_value("property_is_null", property)
+        }
+        ScanPruningStrategy::PropertyIsNotNull { property } => {
+            scan_pruning_property_strategy_value("property_is_not_null", property)
+        }
         ScanPruningStrategy::PropertyRange { property } => {
             scan_pruning_property_strategy_value("property_range", property)
         }

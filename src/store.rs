@@ -468,6 +468,8 @@ pub enum ScanPruningStrategy {
     PropertyEq { property: String },
     PropertyNotEq { property: String },
     PropertyIn { property: String },
+    PropertyIsNull { property: String },
+    PropertyIsNotNull { property: String },
     PropertyRange { property: String },
     OrUnion,
 }
@@ -4987,9 +4989,19 @@ impl GraphStore {
                     std::slice::from_ref(value),
                 ),
             )),
-            PropertyFilter::IsNull { .. }
-            | PropertyFilter::IsNotNull { .. }
-            | PropertyFilter::ListContains { .. }
+            PropertyFilter::IsNull { property } => Some(ScanPruningCandidate::exact(
+                ScanPruningStrategy::PropertyIsNull {
+                    property: property.clone(),
+                },
+                self.node_ids_for_property_null(label_id, property),
+            )),
+            PropertyFilter::IsNotNull { property } => Some(ScanPruningCandidate::exact(
+                ScanPruningStrategy::PropertyIsNotNull {
+                    property: property.clone(),
+                },
+                self.node_ids_for_property_not_null(label_id, property),
+            )),
+            PropertyFilter::ListContains { .. }
             | PropertyFilter::Contains { .. }
             | PropertyFilter::StartsWith { .. }
             | PropertyFilter::EndsWith { .. }
@@ -5155,6 +5167,36 @@ impl GraphStore {
                     && !values.contains(value)
             })
             .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect()
+    }
+
+    fn node_ids_for_property_not_null(
+        &self,
+        label_id: Option<LabelId>,
+        property: &str,
+    ) -> BTreeSet<NodeId> {
+        self.property_index
+            .iter()
+            .filter(|((candidate_label_id, candidate_property, value), _)| {
+                label_id
+                    .map(|label_id| *candidate_label_id == label_id)
+                    .unwrap_or(true)
+                    && candidate_property == property
+                    && value != &Value::Null
+            })
+            .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect()
+    }
+
+    fn node_ids_for_property_null(
+        &self,
+        label_id: Option<LabelId>,
+        property: &str,
+    ) -> BTreeSet<NodeId> {
+        let non_null = self.node_ids_for_property_not_null(label_id, property);
+        self.scan_nodes(label_id)
+            .map(|node| node.id)
+            .filter(|node_id| !non_null.contains(node_id))
             .collect()
     }
 
@@ -10673,6 +10715,89 @@ mod tests {
             }
         );
         assert_eq!(date_scan.report.candidate_count_before_filter, 2);
+    }
+
+    #[test]
+    fn scan_pruning_uses_property_presence_for_null_predicates() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("id", Value::String("with-date".to_string())),
+                    ("updated_at", Value::String("2026-07-24".to_string())),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([
+                    ("id", Value::String("explicit-null".to_string())),
+                    ("updated_at", Value::Null),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("id", Value::String("missing-date".to_string()))]),
+            )
+            .unwrap();
+
+        let label = catalog.label_id("Memory").unwrap();
+        let not_null = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::IsNotNull {
+                property: "updated_at".to_string(),
+            }),
+        );
+        assert_eq!(not_null.nodes.len(), 1);
+        assert_eq!(
+            not_null.nodes[0].properties.get("id"),
+            Some(&Value::String("with-date".to_string()))
+        );
+        assert_eq!(
+            not_null.report.strategy,
+            ScanPruningStrategy::PropertyIsNotNull {
+                property: "updated_at".to_string()
+            }
+        );
+        assert!(not_null.report.pruned);
+        assert!(not_null.report.exact_candidate_set);
+        assert_eq!(not_null.report.candidate_count_before_filter, 1);
+
+        let null = store.scan_nodes_with_filter_pruning(
+            Some(label),
+            Some(&PropertyFilter::IsNull {
+                property: "updated_at".to_string(),
+            }),
+        );
+        let ids = null
+            .nodes
+            .iter()
+            .map(|node| node.properties.get("id").unwrap().clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                Value::String("explicit-null".to_string()),
+                Value::String("missing-date".to_string()),
+            ])
+        );
+        assert_eq!(
+            null.report.strategy,
+            ScanPruningStrategy::PropertyIsNull {
+                property: "updated_at".to_string()
+            }
+        );
+        assert!(null.report.pruned);
+        assert!(null.report.exact_candidate_set);
+        assert_eq!(null.report.candidate_count_before_filter, 2);
     }
 
     #[test]

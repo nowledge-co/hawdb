@@ -4802,6 +4802,12 @@ fn scan_pruning_strategy_json(strategy: &skein::store::ScanPruningStrategy) -> s
         skein::store::ScanPruningStrategy::PropertyIn { property } => {
             serde_json::json!({"kind": "property_in", "property": property})
         }
+        skein::store::ScanPruningStrategy::PropertyIsNull { property } => {
+            serde_json::json!({"kind": "property_is_null", "property": property})
+        }
+        skein::store::ScanPruningStrategy::PropertyIsNotNull { property } => {
+            serde_json::json!({"kind": "property_is_not_null", "property": property})
+        }
         skein::store::ScanPruningStrategy::PropertyRange { property } => {
             serde_json::json!({"kind": "property_range", "property": property})
         }
