@@ -25478,7 +25478,7 @@ fn explain_analyze_reports_property_presence_scan_pruning_profile() {
 }
 
 #[test]
-fn explain_analyze_reports_relationship_type_scan_pruning_profile() {
+fn explain_analyze_reports_relationship_property_scan_pruning_profile() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1})-[:MENTIONS {weight: 1}]->(:Entity {id: 'neo4j'})")
         .unwrap();
@@ -25514,15 +25514,19 @@ fn explain_analyze_reports_relationship_type_scan_pruning_profile() {
     };
     assert_eq!(
         strategy.get("kind"),
-        Some(&Value::String("relationship_type".to_string()))
+        Some(&Value::String("relationship_property".to_string()))
     );
     assert_eq!(
         strategy.get("rel_type"),
         Some(&Value::String("MENTIONS".to_string()))
     );
     assert_eq!(
+        strategy.get("property"),
+        Some(&Value::String("weight".to_string()))
+    );
+    assert_eq!(
         relationship_report.get("candidate_count_before_filter"),
-        Some(&Value::Int(2))
+        Some(&Value::Int(1))
     );
     assert_eq!(
         relationship_report.get("output_count"),

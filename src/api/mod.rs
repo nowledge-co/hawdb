@@ -31298,6 +31298,19 @@ fn scan_pruning_strategy_value(strategy: &ScanPruningStrategy) -> Value {
         ScanPruningStrategy::PropertyRange { property } => {
             scan_pruning_property_strategy_value("property_range", property)
         }
+        ScanPruningStrategy::RelationshipProperty {
+            rel_type,
+            property,
+            direction,
+        } => Value::Map(BTreeMap::from([
+            kind_value_pair("relationship_property"),
+            ("rel_type".to_string(), Value::String(rel_type.to_string())),
+            ("property".to_string(), Value::String(property.to_string())),
+            (
+                "direction".to_string(),
+                Value::String(direction.to_string()),
+            ),
+        ])),
         ScanPruningStrategy::RelationshipType {
             rel_type,
             direction,

@@ -108,6 +108,7 @@ pub struct AdjacencyGroupStats {
 type CompositePropertyKey = Vec<(String, Value)>;
 type CompositePropertyIndex = BTreeMap<(LabelId, CompositePropertyKey), BTreeSet<NodeId>>;
 type FullTextPropertyIndex = BTreeMap<(LabelId, String, String), BTreeSet<NodeId>>;
+type RelationshipPropertyIndex = BTreeMap<(RelTypeId, String, Value), BTreeSet<RelId>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectedNodesCreate {
@@ -471,13 +472,33 @@ pub enum ScanPruningStrategy {
     IdEq,
     IdIn,
     IdRange,
-    PropertyEq { property: String },
-    PropertyNotEq { property: String },
-    PropertyIn { property: String },
-    PropertyIsNull { property: String },
-    PropertyIsNotNull { property: String },
-    PropertyRange { property: String },
-    RelationshipType { rel_type: String, direction: String },
+    PropertyEq {
+        property: String,
+    },
+    PropertyNotEq {
+        property: String,
+    },
+    PropertyIn {
+        property: String,
+    },
+    PropertyIsNull {
+        property: String,
+    },
+    PropertyIsNotNull {
+        property: String,
+    },
+    PropertyRange {
+        property: String,
+    },
+    RelationshipProperty {
+        rel_type: String,
+        property: String,
+        direction: String,
+    },
+    RelationshipType {
+        rel_type: String,
+        direction: String,
+    },
     OrUnion,
 }
 
@@ -612,6 +633,7 @@ pub struct GraphStore {
     property_index: BTreeMap<(LabelId, String, Value), BTreeSet<NodeId>>,
     composite_property_index: CompositePropertyIndex,
     full_text_property_index: FullTextPropertyIndex,
+    relationship_property_index: RelationshipPropertyIndex,
     projected_graphs: BTreeMap<String, ProjectedGraphDefinition>,
     projected_graph_artifacts: BTreeMap<String, ProjectedGraphArtifact>,
     stable_id_mapping: StoreStableIdMapping,
@@ -753,6 +775,7 @@ impl GraphStore {
             property_index: BTreeMap::new(),
             composite_property_index: BTreeMap::new(),
             full_text_property_index: BTreeMap::new(),
+            relationship_property_index: BTreeMap::new(),
             projected_graphs: BTreeMap::new(),
             projected_graph_artifacts: BTreeMap::new(),
             stable_id_mapping: StoreStableIdMapping::default(),
@@ -4417,6 +4440,7 @@ impl GraphStore {
             property_index: self.property_index.clone(),
             composite_property_index: self.composite_property_index.clone(),
             full_text_property_index: self.full_text_property_index.clone(),
+            relationship_property_index: self.relationship_property_index.clone(),
             projected_graphs: self.projected_graphs.clone(),
             projected_graph_artifacts: self.projected_graph_artifacts.clone(),
             stable_id_mapping: self.stable_id_mapping.clone(),
@@ -4842,6 +4866,8 @@ impl GraphStore {
         self.next_rel_id = self.next_rel_id.max(id.0 + 1);
         if let Some(old_relationship) = self.relationships.remove(&id) {
             self.remove_relationship_from_basic_statistics(&old_relationship);
+            self.remove_relationship_from_property_index(&old_relationship);
+            self.remove_relationship_from_adjacency(&old_relationship);
         }
         self.relationships.insert(
             id,
@@ -4855,6 +4881,7 @@ impl GraphStore {
         );
         if let Some(relationship) = self.relationships.get(&id).cloned() {
             self.add_relationship_to_basic_statistics(&relationship);
+            self.add_relationship_to_property_index(&relationship);
         }
         self.outgoing
             .entry((source, rel_type))
@@ -4864,6 +4891,44 @@ impl GraphStore {
             .entry((target, rel_type))
             .or_default()
             .insert(id);
+    }
+
+    fn add_relationship_to_property_index(&mut self, relationship: &RelRecord) {
+        for (property, value) in &relationship.properties {
+            self.relationship_property_index
+                .entry((relationship.rel_type, property.clone(), value.clone()))
+                .or_default()
+                .insert(relationship.id);
+        }
+    }
+
+    fn remove_relationship_from_property_index(&mut self, relationship: &RelRecord) {
+        for (property, value) in &relationship.properties {
+            let key = (relationship.rel_type, property.clone(), value.clone());
+            if let Some(ids) = self.relationship_property_index.get_mut(&key) {
+                ids.remove(&relationship.id);
+                if ids.is_empty() {
+                    self.relationship_property_index.remove(&key);
+                }
+            }
+        }
+    }
+
+    fn remove_relationship_from_adjacency(&mut self, relationship: &RelRecord) {
+        let outgoing_key = (relationship.source, relationship.rel_type);
+        if let Some(ids) = self.outgoing.get_mut(&outgoing_key) {
+            ids.remove(&relationship.id);
+            if ids.is_empty() {
+                self.outgoing.remove(&outgoing_key);
+            }
+        }
+        let incoming_key = (relationship.target, relationship.rel_type);
+        if let Some(ids) = self.incoming.get_mut(&incoming_key) {
+            ids.remove(&relationship.id);
+            if ids.is_empty() {
+                self.incoming.remove(&incoming_key);
+            }
+        }
     }
 
     pub fn scan_nodes<'a>(
@@ -5452,6 +5517,43 @@ impl GraphStore {
         })
     }
 
+    pub fn relationship_property_candidate_ids(
+        &self,
+        rel_type: Option<RelTypeId>,
+        properties: &BTreeMap<String, Value>,
+    ) -> Option<BTreeSet<RelId>> {
+        if properties.is_empty() {
+            return None;
+        }
+
+        let mut best: Option<BTreeSet<RelId>> = None;
+        for (property, value) in properties {
+            let candidates = match rel_type {
+                Some(rel_type) => self
+                    .relationship_property_index
+                    .get(&(rel_type, property.clone(), value.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+                None => self
+                    .relationship_property_index
+                    .iter()
+                    .filter(|((_, candidate_property, candidate_value), _)| {
+                        candidate_property == property && candidate_value == value
+                    })
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+            };
+            best = Some(match best {
+                Some(best) => best.intersection(&candidates).copied().collect(),
+                None => candidates,
+            });
+            if best.as_ref().is_some_and(BTreeSet::is_empty) {
+                break;
+            }
+        }
+        best
+    }
+
     pub fn relationship(&self, id: RelId) -> Option<&RelRecord> {
         self.relationships.get(&id)
     }
@@ -5704,10 +5806,29 @@ impl GraphStore {
     }
 
     fn apply_set_relationship_property(&mut self, id: RelId, property: String, value: Value) {
+        let Some(old_relationship) = self.relationships.get(&id).cloned() else {
+            return;
+        };
+        let old_value = old_relationship.properties.get(&property).cloned();
+        if let Some(old_value) = old_value {
+            let key = (old_relationship.rel_type, property.clone(), old_value);
+            if let Some(ids) = self.relationship_property_index.get_mut(&key) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.relationship_property_index.remove(&key);
+                }
+            }
+        }
         let Some(relationship) = self.relationships.get_mut(&id) else {
             return;
         };
-        relationship.properties.insert(property, value);
+        relationship
+            .properties
+            .insert(property.clone(), value.clone());
+        self.relationship_property_index
+            .entry((relationship.rel_type, property, value))
+            .or_default()
+            .insert(id);
     }
 
     fn validate_constraints_for_ops(&self, catalog: &Catalog, ops: &[WalOp]) -> Result<()> {
@@ -5805,20 +5926,8 @@ impl GraphStore {
             return;
         };
         self.remove_relationship_from_basic_statistics(&relationship);
-        let outgoing_key = (relationship.source, relationship.rel_type);
-        if let Some(ids) = self.outgoing.get_mut(&outgoing_key) {
-            ids.remove(&id);
-            if ids.is_empty() {
-                self.outgoing.remove(&outgoing_key);
-            }
-        }
-        let incoming_key = (relationship.target, relationship.rel_type);
-        if let Some(ids) = self.incoming.get_mut(&incoming_key) {
-            ids.remove(&id);
-            if ids.is_empty() {
-                self.incoming.remove(&incoming_key);
-            }
-        }
+        self.remove_relationship_from_property_index(&relationship);
+        self.remove_relationship_from_adjacency(&relationship);
     }
 
     fn apply_delete_node(&mut self, catalog: &Catalog, id: NodeId) {
@@ -10808,6 +10917,59 @@ mod tests {
         assert!(null.report.pruned);
         assert!(null.report.exact_candidate_set);
         assert_eq!(null.report.candidate_count_before_filter, 2);
+    }
+
+    #[test]
+    fn relationship_property_index_tracks_create_update_and_delete() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        let (_, relationship_id, _) = store
+            .create_connected_nodes(
+                &mut catalog,
+                ConnectedNodesCreate {
+                    source_label: "Memory".to_string(),
+                    source_properties: properties([("id", Value::Int(1))]),
+                    rel_type: "MENTIONS".to_string(),
+                    rel_properties: properties([("weight", Value::Int(1))]),
+                    target_label: "Entity".to_string(),
+                    target_properties: properties([("id", Value::String("neo4j".to_string()))]),
+                },
+            )
+            .unwrap();
+        let rel_type_id = catalog.rel_type_id("MENTIONS").unwrap();
+
+        assert_eq!(
+            store.relationship_property_candidate_ids(
+                Some(rel_type_id),
+                &properties([("weight", Value::Int(1))])
+            ),
+            Some(BTreeSet::from([relationship_id]))
+        );
+
+        store.apply_set_relationship_property(relationship_id, "weight".to_string(), Value::Int(2));
+        assert_eq!(
+            store.relationship_property_candidate_ids(
+                Some(rel_type_id),
+                &properties([("weight", Value::Int(1))])
+            ),
+            Some(BTreeSet::new())
+        );
+        assert_eq!(
+            store.relationship_property_candidate_ids(
+                Some(rel_type_id),
+                &properties([("weight", Value::Int(2))])
+            ),
+            Some(BTreeSet::from([relationship_id]))
+        );
+
+        store.apply_delete_relationship(relationship_id);
+        assert_eq!(
+            store.relationship_property_candidate_ids(
+                Some(rel_type_id),
+                &properties([("weight", Value::Int(2))])
+            ),
+            Some(BTreeSet::new())
+        );
     }
 
     #[test]

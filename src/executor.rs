@@ -2071,6 +2071,8 @@ fn execute_bindings_with_limit(
                 Some(rel_type_id)
             };
             let target_label_ids = label_ids_for_pattern(catalog, target_label);
+            let rel_property_candidate_ids =
+                store.relationship_property_candidate_ids(rel_type_id, rel_properties);
             let mut output = Vec::new();
             let mut relationship_candidate_count = 0usize;
             let mut relationship_output_count = 0usize;
@@ -2091,6 +2093,7 @@ fn execute_bindings_with_limit(
                             store,
                             source.id,
                             rel_type_id,
+                            rel_property_candidate_ids.as_ref(),
                             *direction,
                         ),
                     );
@@ -2100,6 +2103,7 @@ fn execute_bindings_with_limit(
                         rel_type_id,
                         target_label_ids.as_deref(),
                         rel_properties,
+                        rel_property_candidate_ids.as_ref(),
                         *direction,
                     );
                     for (relationship, target) in relationships {
@@ -2167,16 +2171,26 @@ fn execute_bindings_with_limit(
                 record_scan_pruning_report(ScanPruningReport {
                     record_kind: ScanPruningRecordKind::Relationship,
                     label_id: None,
-                    strategy: rel_type
-                        .is_empty()
-                        .then_some(ScanPruningStrategy::FullLabelScan)
-                        .unwrap_or_else(|| ScanPruningStrategy::RelationshipType {
+                    strategy: rel_properties
+                        .keys()
+                        .next()
+                        .map(|property| ScanPruningStrategy::RelationshipProperty {
                             rel_type: rel_type.clone(),
+                            property: property.clone(),
                             direction: relationship_direction_name(*direction).to_string(),
-                        }),
-                    pruned: rel_type_id.is_some(),
+                        })
+                        .or_else(|| {
+                            (!rel_type.is_empty()).then_some(
+                                ScanPruningStrategy::RelationshipType {
+                                    rel_type: rel_type.clone(),
+                                    direction: relationship_direction_name(*direction).to_string(),
+                                },
+                            )
+                        })
+                        .unwrap_or(ScanPruningStrategy::FullLabelScan),
+                    pruned: rel_type_id.is_some() || rel_property_candidate_ids.is_some(),
                     exact_candidate_set: true,
-                    residual_filter_applied: !rel_properties.is_empty() || !target_label.is_empty(),
+                    residual_filter_applied: !target_label.is_empty(),
                     exact_empty: relationship_candidate_count == 0,
                     candidate_count_before_filter: relationship_candidate_count,
                     output_count: relationship_output_count,
@@ -2226,6 +2240,7 @@ fn execute_bindings_with_limit(
                         rel_type_id,
                         target_label_ids.as_deref(),
                         rel_properties,
+                        None,
                         *direction,
                     )
                     .into_iter()
@@ -3141,6 +3156,7 @@ fn all_shortest_paths(
             rel_type_id,
             None,
             &BTreeMap::new(),
+            None,
             direction,
         ) {
             if path.contains(&next.id) {
@@ -3196,6 +3212,7 @@ fn one_hop_relationships<'a>(
     rel_type_id: Option<crate::schema::RelTypeId>,
     target_label_ids: Option<&[crate::schema::LabelId]>,
     rel_properties: &BTreeMap<String, Value>,
+    rel_property_candidate_ids: Option<&BTreeSet<crate::store::RelId>>,
     direction: RelationshipDirection,
 ) -> Vec<(&'a RelRecord, &'a NodeRecord)> {
     let mut matches = Vec::new();
@@ -3210,6 +3227,7 @@ fn one_hop_relationships<'a>(
                 store,
                 target_label_ids,
                 rel_properties,
+                rel_property_candidate_ids,
                 &mut seen,
                 &mut matches,
             );
@@ -3223,6 +3241,7 @@ fn one_hop_relationships<'a>(
                 store,
                 target_label_ids,
                 rel_properties,
+                rel_property_candidate_ids,
                 &mut seen,
                 &mut matches,
             );
@@ -3242,6 +3261,7 @@ fn one_hop_relationships<'a>(
             store,
             target_label_ids,
             rel_properties,
+            rel_property_candidate_ids,
             |relationship| relationship.target,
             &mut seen,
             &mut matches,
@@ -3258,6 +3278,7 @@ fn one_hop_relationships<'a>(
             store,
             target_label_ids,
             rel_properties,
+            rel_property_candidate_ids,
             |relationship| relationship.source,
             &mut seen,
             &mut matches,
@@ -3271,6 +3292,7 @@ fn one_hop_relationship_candidate_count(
     store: &GraphStore,
     source: NodeId,
     rel_type_id: Option<RelTypeId>,
+    rel_property_candidate_ids: Option<&BTreeSet<crate::store::RelId>>,
     direction: RelationshipDirection,
 ) -> usize {
     let mut seen = BTreeSet::new();
@@ -3282,6 +3304,11 @@ fn one_hop_relationship_candidate_count(
             seen.extend(
                 store
                     .outgoing_relationships(source, rel_type_id)
+                    .filter(|relationship| {
+                        rel_property_candidate_ids
+                            .map(|ids| ids.contains(&relationship.id))
+                            .unwrap_or(true)
+                    })
                     .map(|relationship| relationship.id),
             );
         }
@@ -3292,6 +3319,11 @@ fn one_hop_relationship_candidate_count(
             seen.extend(
                 store
                     .incoming_relationships(source, rel_type_id)
+                    .filter(|relationship| {
+                        rel_property_candidate_ids
+                            .map(|ids| ids.contains(&relationship.id))
+                            .unwrap_or(true)
+                    })
                     .map(|relationship| relationship.id),
             );
         }
@@ -3306,6 +3338,11 @@ fn one_hop_relationship_candidate_count(
             store
                 .scan_relationships(None)
                 .filter(|relationship| relationship.source == source)
+                .filter(|relationship| {
+                    rel_property_candidate_ids
+                        .map(|ids| ids.contains(&relationship.id))
+                        .unwrap_or(true)
+                })
                 .map(|relationship| relationship.id),
         );
     }
@@ -3317,6 +3354,11 @@ fn one_hop_relationship_candidate_count(
             store
                 .scan_relationships(None)
                 .filter(|relationship| relationship.target == source)
+                .filter(|relationship| {
+                    rel_property_candidate_ids
+                        .map(|ids| ids.contains(&relationship.id))
+                        .unwrap_or(true)
+                })
                 .map(|relationship| relationship.id),
         );
     }
@@ -3351,6 +3393,7 @@ fn relationship_count_sum_leg(
         rel_type_id,
         None,
         &BTreeMap::new(),
+        None,
         leg.direction,
     )
     .into_iter()
@@ -3429,6 +3472,7 @@ fn thread_repair_stats_rows(
                         Some(rel_type_id),
                         message_label_ids.as_deref(),
                         &BTreeMap::new(),
+                        None,
                         RelationshipDirection::Outgoing,
                     )
                     .len()
@@ -3442,6 +3486,7 @@ fn thread_repair_stats_rows(
                         Some(rel_type_id),
                         memory_label_ids.as_deref(),
                         &BTreeMap::new(),
+                        None,
                         RelationshipDirection::Outgoing,
                     )
                     .len()
@@ -3494,11 +3539,18 @@ fn collect_ordered_one_hop_relationships<'a>(
     store: &'a GraphStore,
     target_label_ids: Option<&[crate::schema::LabelId]>,
     rel_properties: &BTreeMap<String, Value>,
+    rel_property_candidate_ids: Option<&BTreeSet<crate::store::RelId>>,
     seen: &mut std::collections::BTreeSet<crate::store::RelId>,
     matches: &mut Vec<(&'a RelRecord, &'a NodeRecord)>,
 ) {
     for entry in entries {
         if !seen.insert(entry.relationship_id) {
+            continue;
+        }
+        if rel_property_candidate_ids
+            .map(|ids| !ids.contains(&entry.relationship_id))
+            .unwrap_or(false)
+        {
             continue;
         }
         let Some(relationship) = store.relationship(entry.relationship_id) else {
@@ -3521,12 +3573,19 @@ fn collect_one_hop_relationships<'a>(
     store: &'a GraphStore,
     target_label_ids: Option<&[crate::schema::LabelId]>,
     rel_properties: &BTreeMap<String, Value>,
+    rel_property_candidate_ids: Option<&BTreeSet<crate::store::RelId>>,
     target_id: impl Fn(&RelRecord) -> NodeId,
     seen: &mut std::collections::BTreeSet<crate::store::RelId>,
     matches: &mut Vec<(&'a RelRecord, &'a NodeRecord)>,
 ) {
     for relationship in relationships {
         if !seen.insert(relationship.id) {
+            continue;
+        }
+        if rel_property_candidate_ids
+            .map(|ids| !ids.contains(&relationship.id))
+            .unwrap_or(false)
+        {
             continue;
         }
         if !relationship_properties_match(relationship, rel_properties) {
@@ -3968,6 +4027,7 @@ fn relationship_exists(
         rel_type_id,
         target_label_ids.as_deref(),
         &BTreeMap::new(),
+        None,
         direction,
     )
     .is_empty()

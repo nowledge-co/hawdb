@@ -972,6 +972,13 @@ fn scan_pruning_strategy_json(strategy: &ScanPruningStrategy) -> serde_json::Val
         ScanPruningStrategy::PropertyRange { property } => {
             serde_json::json!({"kind": "property_range", "property": property})
         }
+        ScanPruningStrategy::RelationshipProperty {
+            rel_type,
+            property,
+            direction,
+        } => {
+            serde_json::json!({"kind": "relationship_property", "rel_type": rel_type, "property": property, "direction": direction})
+        }
         ScanPruningStrategy::RelationshipType {
             rel_type,
             direction,
