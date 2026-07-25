@@ -2080,6 +2080,7 @@ fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> ser
         "segment_pruning_ready": true,
         "numeric_min_max_ready": true,
         "persisted_segment_descriptor_ready": segment_descriptor_ready,
+        "arbitrary_metadata_segment_pruning_ready": true,
         "supported_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
         "scan_filter_fields": NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS,
     })
@@ -3276,12 +3277,18 @@ impl SearchSegmentFieldSummary {
 }
 
 fn search_segment_descriptor_fields(
-    _documents: &BTreeMap<String, SearchDocument>,
+    documents: &BTreeMap<String, SearchDocument>,
 ) -> BTreeSet<String> {
-    NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
+    let mut fields = NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS
         .iter()
         .map(|field| (*field).to_string())
-        .collect::<BTreeSet<_>>()
+        .collect::<BTreeSet<_>>();
+    fields.extend(
+        documents
+            .values()
+            .flat_map(|document| document.metadata.keys().cloned()),
+    );
+    fields
 }
 
 fn search_segment_descriptor_document_fingerprint(
@@ -7633,8 +7640,8 @@ mod tests {
     }
 
     #[test]
-    fn persisted_segment_descriptor_omits_arbitrary_metadata_fields() {
-        let path = unique_test_dir("search_segment_descriptor_bounded_metadata_fields");
+    fn persisted_segment_descriptor_prunes_arbitrary_metadata_fields() {
+        let path = unique_test_dir("search_segment_descriptor_arbitrary_metadata_fields");
         {
             let mut index = SearchIndex::open(&path).unwrap();
             for (id, customer) in [
@@ -7661,9 +7668,13 @@ mod tests {
         assert!(descriptor
             .segments
             .iter()
-            .all(|segment| !segment.metadata.contains_key("customer")));
+            .all(|segment| segment.metadata.contains_key("customer")));
 
         let index = SearchIndex::open(&path).unwrap();
+        let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
+            active_embedding_model: None,
+            active_embedding_dimension: None,
+        });
         let result = index.search_with_options(
             "segment descriptor arbitrary metadata retrieval",
             None,
@@ -7690,28 +7701,28 @@ mod tests {
                 .candidate_set
                 .metadata_predicate_pushdown
                 .segment_descriptor_field_count,
-            Some(NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS.len())
+            Some(NOWLEDGE_SEARCH_SCAN_FILTER_FIELDS.len() + 1)
         );
         assert_eq!(
             result
                 .candidate_set
                 .metadata_predicate_pushdown
                 .segment_descriptor_bounded,
-            Some(true)
+            Some(false)
         );
         assert_eq!(
             result
                 .candidate_set
                 .metadata_predicate_pushdown
                 .pruned_segment_count,
-            0
+            1
         );
         assert_eq!(
             result
                 .candidate_set
                 .metadata_predicate_pushdown
                 .scanned_segment_count,
-            2
+            1
         );
         assert_eq!(
             result
@@ -7723,13 +7734,17 @@ mod tests {
                 value_kind: "numeric_or_string".to_string(),
                 operation_kinds: vec!["eq".to_string()],
                 segment_count: 2,
-                pruned_segment_count: 0,
-                scanned_segment_count: 2,
-                pruned_document_count: 0,
-                scanned_document_count: 3,
+                pruned_segment_count: 1,
+                scanned_segment_count: 1,
+                pruned_document_count: 1,
+                scanned_document_count: 2,
                 numeric_range_summary_used: false,
                 value_summary_used: true,
             }]
+        );
+        assert_eq!(
+            probe["predicate_pushdown"]["arbitrary_metadata_segment_pruning_ready"],
+            true
         );
 
         std::fs::remove_dir_all(path).unwrap();

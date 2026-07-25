@@ -1486,7 +1486,6 @@ fn search_candidate_shadow_evidence_summary(
         && fts_top_k_overlap_ready == Some(true)
         && shadow_scan_filter_pushdown_ready
         && shadow_scan_field_pruning_ready
-        && shadow_scan_descriptor_bounded_ready
         && shadow_scan_reduction_ready;
     let ready = primary_read_ready || shadow_parity_ready;
     let mut synthesized_blocker_codes = json_string_array(&blocker_codes)
@@ -1495,10 +1494,6 @@ fn search_candidate_shadow_evidence_summary(
     if present && !primary_read_ready && !shadow_scan_reduction_ready {
         synthesized_blocker_codes
             .insert("skein_search_scan_reduction_evidence_missing".to_string());
-    }
-    if present && !primary_read_ready && !shadow_scan_descriptor_bounded_ready {
-        synthesized_blocker_codes
-            .insert("skein_search_descriptor_bounds_evidence_missing".to_string());
     }
     let blocker_codes =
         serde_json::json!(synthesized_blocker_codes.into_iter().collect::<Vec<_>>());
@@ -4109,7 +4104,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_summary_requires_search_candidate_shadow_bounded_descriptor_evidence() {
+    fn replacement_summary_accepts_search_candidate_shadow_dynamic_descriptor() {
         let mut bundle = production_ready_bundle();
         bundle["search_candidate_shadow_evidence"]["filter_pushdown"]["shadow_scan"]
             ["metadata_predicate_pushdown"]["segment_descriptor_bounded"] =
@@ -4120,8 +4115,8 @@ mod tests {
 
         let summary = nowledge_replacement_summary_json(&bundle);
 
-        assert_eq!(summary["production_cutover_ready"], false);
-        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], false);
+        assert_eq!(summary["production_cutover_ready"], true);
+        assert_eq!(summary["search_candidate_shadow_evidence"]["ready"], true);
         assert_eq!(
             summary["search_candidate_shadow_evidence"]["shadow_scan_reduction_ready"],
             true
@@ -4138,27 +4133,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == "skein_search_descriptor_bounds_evidence_missing"));
+            .all(|code| code != "skein_search_descriptor_bounds_evidence_missing"));
         assert!(summary["blockers"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == "skein_search_descriptor_bounds_evidence_missing"));
-        assert!(summary["next_actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action["action"] == "run_search_candidate_shadow_compare"
-                    && action["evidence_fields"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|field| {
-                            field
-                                == "search_candidate_shadow_evidence.shadow_scan_descriptor_bounded_ready"
-                        })
-            }));
+            .all(|code| code != "skein_search_descriptor_bounds_evidence_missing"));
     }
 
     #[test]
