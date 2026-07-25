@@ -458,6 +458,12 @@ pub enum PropertyFilter {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanPruningRecordKind {
+    Node,
+    Relationship,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanPruningStrategy {
     FullLabelScan,
@@ -471,11 +477,13 @@ pub enum ScanPruningStrategy {
     PropertyIsNull { property: String },
     PropertyIsNotNull { property: String },
     PropertyRange { property: String },
+    RelationshipType { rel_type: String, direction: String },
     OrUnion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanPruningReport {
+    pub record_kind: ScanPruningRecordKind,
     pub label_id: Option<LabelId>,
     pub strategy: ScanPruningStrategy,
     pub pruned: bool,
@@ -4887,6 +4895,7 @@ impl GraphStore {
             return ScanPrunedNodeScan {
                 nodes,
                 report: ScanPruningReport {
+                    record_kind: ScanPruningRecordKind::Node,
                     label_id,
                     strategy: ScanPruningStrategy::FullLabelScan,
                     pruned: false,
@@ -4916,6 +4925,7 @@ impl GraphStore {
         ScanPrunedNodeScan {
             nodes,
             report: ScanPruningReport {
+                record_kind: ScanPruningRecordKind::Node,
                 label_id,
                 strategy: candidate.strategy,
                 pruned: true,

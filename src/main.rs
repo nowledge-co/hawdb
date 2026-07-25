@@ -4772,6 +4772,7 @@ fn read_execution_profile_json(
 
 fn scan_pruning_report_json(report: &skein::store::ScanPruningReport) -> serde_json::Value {
     serde_json::json!({
+        "record_kind": scan_pruning_record_kind_name(report.record_kind),
         "label_id": report.label_id.map(|label_id| label_id.0),
         "strategy": scan_pruning_strategy_json(&report.strategy),
         "pruned": report.pruned,
@@ -4811,7 +4812,20 @@ fn scan_pruning_strategy_json(strategy: &skein::store::ScanPruningStrategy) -> s
         skein::store::ScanPruningStrategy::PropertyRange { property } => {
             serde_json::json!({"kind": "property_range", "property": property})
         }
+        skein::store::ScanPruningStrategy::RelationshipType {
+            rel_type,
+            direction,
+        } => {
+            serde_json::json!({"kind": "relationship_type", "rel_type": rel_type, "direction": direction})
+        }
         skein::store::ScanPruningStrategy::OrUnion => serde_json::json!({"kind": "or_union"}),
+    }
+}
+
+fn scan_pruning_record_kind_name(kind: skein::store::ScanPruningRecordKind) -> &'static str {
+    match kind {
+        skein::store::ScanPruningRecordKind::Node => "node",
+        skein::store::ScanPruningRecordKind::Relationship => "relationship",
     }
 }
 

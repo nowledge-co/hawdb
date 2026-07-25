@@ -31235,6 +31235,10 @@ fn plan_cache_lookup_value(lookup: &PlanCacheLookupStatus) -> Value {
 fn scan_pruning_report_value(report: &ScanPruningReport) -> Value {
     Value::Map(BTreeMap::from([
         (
+            "record_kind".to_string(),
+            Value::String(scan_pruning_record_kind_name(report.record_kind).to_string()),
+        ),
+        (
             "label_id".to_string(),
             report
                 .label_id
@@ -31294,7 +31298,25 @@ fn scan_pruning_strategy_value(strategy: &ScanPruningStrategy) -> Value {
         ScanPruningStrategy::PropertyRange { property } => {
             scan_pruning_property_strategy_value("property_range", property)
         }
+        ScanPruningStrategy::RelationshipType {
+            rel_type,
+            direction,
+        } => Value::Map(BTreeMap::from([
+            kind_value_pair("relationship_type"),
+            ("rel_type".to_string(), Value::String(rel_type.to_string())),
+            (
+                "direction".to_string(),
+                Value::String(direction.to_string()),
+            ),
+        ])),
         ScanPruningStrategy::OrUnion => Value::Map(BTreeMap::from([kind_value_pair("or_union")])),
+    }
+}
+
+fn scan_pruning_record_kind_name(kind: crate::store::ScanPruningRecordKind) -> &'static str {
+    match kind {
+        crate::store::ScanPruningRecordKind::Node => "node",
+        crate::store::ScanPruningRecordKind::Relationship => "relationship",
     }
 }
 

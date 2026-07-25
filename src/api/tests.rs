@@ -25478,6 +25478,59 @@ fn explain_analyze_reports_property_presence_scan_pruning_profile() {
 }
 
 #[test]
+fn explain_analyze_reports_relationship_type_scan_pruning_profile() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1})-[:MENTIONS {weight: 1}]->(:Entity {id: 'neo4j'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 2})-[:MENTIONS {weight: 2}]->(:Entity {id: 'cypher'})")
+        .unwrap();
+
+    let output = db
+        .query(
+            "EXPLAIN ANALYZE MATCH (m:Memory)-[r:MENTIONS {weight: 2}]->(e:Entity) \
+             RETURN e.id AS entity",
+        )
+        .unwrap();
+
+    let row = &output.rows[0];
+    assert_eq!(row.get("row_count"), Some(&Value::Int(1)));
+    let Some(Value::List(scan_reports)) = row.get("scan_pruning_reports") else {
+        panic!("expected scan pruning reports");
+    };
+    let relationship_report = scan_reports
+        .iter()
+        .find_map(|report| match report {
+            Value::Map(report)
+                if report.get("record_kind")
+                    == Some(&Value::String("relationship".to_string())) =>
+            {
+                Some(report)
+            }
+            _ => None,
+        })
+        .expect("expected relationship scan pruning report");
+    let Some(Value::Map(strategy)) = relationship_report.get("strategy") else {
+        panic!("expected relationship scan pruning strategy map");
+    };
+    assert_eq!(
+        strategy.get("kind"),
+        Some(&Value::String("relationship_type".to_string()))
+    );
+    assert_eq!(
+        strategy.get("rel_type"),
+        Some(&Value::String("MENTIONS".to_string()))
+    );
+    assert_eq!(
+        relationship_report.get("candidate_count_before_filter"),
+        Some(&Value::Int(2))
+    );
+    assert_eq!(
+        relationship_report.get("output_count"),
+        Some(&Value::Int(1))
+    );
+}
+
+#[test]
 fn cypher_explain_returns_structured_plan_row() {
     let mut db = Database::new();
 

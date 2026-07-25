@@ -9,7 +9,7 @@ use crate::planner::{
     SchemaPropertyType, SchemaTableKind, SetNodePropertiesReturnMode, SetValue,
     ShortestPathProjection, ShortestPathProjectionExpression, SortDirection, SortItem, SortKey,
 };
-use crate::schema::{Catalog, PropertyType, TableKind};
+use crate::schema::{Catalog, PropertyType, RelTypeId, TableKind};
 use crate::store::{
     AdjacencyDirection, ConnectedNodesCreate, GraphMutation, GraphStore,
     MatchedRelationshipCopyMerge, MatchedRelationshipCreate, MatchedRelationshipMerge,
@@ -17,7 +17,7 @@ use crate::store::{
     NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, ProjectedGraphDefinition,
     PropertyFilter, RelRecord, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
     RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-    RelationshipTargetNodeDelete, ScanPruningReport, ScanPruningStrategy,
+    RelationshipTargetNodeDelete, ScanPruningRecordKind, ScanPruningReport, ScanPruningStrategy,
 };
 use crate::value::Value;
 use std::cell::RefCell;
@@ -1894,6 +1894,7 @@ fn execute_bindings_with_limit(
                 .seek_nodes_by_property(label_id, property, value)
                 .collect::<Vec<_>>();
             record_scan_pruning_report(ScanPruningReport {
+                record_kind: ScanPruningRecordKind::Node,
                 label_id: Some(label_id),
                 strategy: ScanPruningStrategy::PropertyEq {
                     property: property.clone(),
@@ -1938,6 +1939,7 @@ fn execute_bindings_with_limit(
                 }
             }
             record_scan_pruning_report(ScanPruningReport {
+                record_kind: ScanPruningRecordKind::Node,
                 label_id: Some(label_id),
                 strategy: ScanPruningStrategy::PropertyIn {
                     property: property.clone(),
@@ -1998,6 +2000,7 @@ fn execute_bindings_with_limit(
                 .into_iter()
                 .collect::<Vec<_>>();
             record_scan_pruning_report(ScanPruningReport {
+                record_kind: ScanPruningRecordKind::Node,
                 label_id: Some(label_id),
                 strategy: ScanPruningStrategy::PropertyRange {
                     property: property.clone(),
@@ -2069,6 +2072,8 @@ fn execute_bindings_with_limit(
             };
             let target_label_ids = label_ids_for_pattern(catalog, target_label);
             let mut output = Vec::new();
+            let mut relationship_candidate_count = 0usize;
+            let mut relationship_output_count = 0usize;
             for binding in input {
                 let source = binding.nodes.get(source_variable).ok_or_else(|| {
                     SkeinError::Execution(format!(
@@ -2081,17 +2086,27 @@ fn execute_bindings_with_limit(
                     || *direction != RelationshipDirection::Outgoing
                 {
                     let bound_target_id = binding.nodes.get(target_variable).map(|node| node.id);
-                    for (relationship, target) in one_hop_relationships(
+                    relationship_candidate_count = relationship_candidate_count.saturating_add(
+                        one_hop_relationship_candidate_count(
+                            store,
+                            source.id,
+                            rel_type_id,
+                            *direction,
+                        ),
+                    );
+                    let relationships = one_hop_relationships(
                         store,
                         source.id,
                         rel_type_id,
                         target_label_ids.as_deref(),
                         rel_properties,
                         *direction,
-                    ) {
+                    );
+                    for (relationship, target) in relationships {
                         if bound_target_id.is_some_and(|node_id| node_id != target.id) {
                             continue;
                         }
+                        relationship_output_count = relationship_output_count.saturating_add(1);
                         let mut nodes = binding.nodes.clone();
                         nodes.insert(target_variable.clone(), target.clone());
                         let mut relationships = binding.relationships.clone();
@@ -2144,6 +2159,30 @@ fn execute_bindings_with_limit(
                         return Ok(output);
                     }
                 }
+            }
+            if rel_variable.is_some()
+                || !rel_properties.is_empty()
+                || *direction != RelationshipDirection::Outgoing
+            {
+                record_scan_pruning_report(ScanPruningReport {
+                    record_kind: ScanPruningRecordKind::Relationship,
+                    label_id: None,
+                    strategy: rel_type
+                        .is_empty()
+                        .then_some(ScanPruningStrategy::FullLabelScan)
+                        .unwrap_or_else(|| ScanPruningStrategy::RelationshipType {
+                            rel_type: rel_type.clone(),
+                            direction: relationship_direction_name(*direction).to_string(),
+                        }),
+                    pruned: rel_type_id.is_some(),
+                    exact_candidate_set: true,
+                    residual_filter_applied: !rel_properties.is_empty() || !target_label.is_empty(),
+                    exact_empty: relationship_candidate_count == 0,
+                    candidate_count_before_filter: relationship_candidate_count,
+                    output_count: relationship_output_count,
+                    filtered_out_count: relationship_candidate_count
+                        .saturating_sub(relationship_output_count),
+                });
             }
             Ok(output)
         }
@@ -3226,6 +3265,70 @@ fn one_hop_relationships<'a>(
     }
     matches.sort_by_key(|(relationship, target)| (target.id, relationship.id));
     matches
+}
+
+fn one_hop_relationship_candidate_count(
+    store: &GraphStore,
+    source: NodeId,
+    rel_type_id: Option<RelTypeId>,
+    direction: RelationshipDirection,
+) -> usize {
+    let mut seen = BTreeSet::new();
+    if let Some(rel_type_id) = rel_type_id {
+        if matches!(
+            direction,
+            RelationshipDirection::Outgoing | RelationshipDirection::Undirected
+        ) {
+            seen.extend(
+                store
+                    .outgoing_relationships(source, rel_type_id)
+                    .map(|relationship| relationship.id),
+            );
+        }
+        if matches!(
+            direction,
+            RelationshipDirection::Incoming | RelationshipDirection::Undirected
+        ) {
+            seen.extend(
+                store
+                    .incoming_relationships(source, rel_type_id)
+                    .map(|relationship| relationship.id),
+            );
+        }
+        return seen.len();
+    }
+
+    if matches!(
+        direction,
+        RelationshipDirection::Outgoing | RelationshipDirection::Undirected
+    ) {
+        seen.extend(
+            store
+                .scan_relationships(None)
+                .filter(|relationship| relationship.source == source)
+                .map(|relationship| relationship.id),
+        );
+    }
+    if matches!(
+        direction,
+        RelationshipDirection::Incoming | RelationshipDirection::Undirected
+    ) {
+        seen.extend(
+            store
+                .scan_relationships(None)
+                .filter(|relationship| relationship.target == source)
+                .map(|relationship| relationship.id),
+        );
+    }
+    seen.len()
+}
+
+fn relationship_direction_name(direction: RelationshipDirection) -> &'static str {
+    match direction {
+        RelationshipDirection::Outgoing => "outgoing",
+        RelationshipDirection::Incoming => "incoming",
+        RelationshipDirection::Undirected => "undirected",
+    }
 }
 
 fn relationship_count_sum_leg(
