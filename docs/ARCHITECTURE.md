@@ -174,6 +174,54 @@ It resolves labels, relationship types, variable scopes, property references,
 and cardinality constraints. This keeps parser syntax compatibility separate
 from planning semantics.
 
+### Cloud semantic seam
+
+Neither the current Cloud adapter nor Skein Cloud runs the Skein embedded
+database. They reuse a narrower, storage-neutral contract:
+
+- a versioned semantic graph catalog for node kinds, relationship endpoint
+  types, direction, cardinality, readable properties, derived-field grain, and
+  authorization;
+- graph logical operators and semantic-preserving rewrite fixtures;
+- `skein-optimizer` memo/search/report primitives, with backend-specific
+  physical rules and cost inputs;
+- a storage-neutral deterministic analytics kernel over immutable CSR/CSC
+  snapshots.
+
+The local backend lowers logical operators to Skein scans, indexes, adjacency
+expansion, and the embedded executor. The current Nowledge Cloud adapter lowers
+the same logical operators to workspace-scoped PostgreSQL joins and bounded
+recursive CTEs. The target Skein Cloud backend lowers them to immutable
+graph-segment scans, topology expansion, distributed joins/path stages, and
+retryable exchanges over a pinned manifest. Physical plans and costs are
+deliberately different; logical rows, cardinality/null semantics,
+authorization, and completeness diagnostics must match.
+
+Skein Cloud stores canonical graph, value, delta, statistics, checkpoint, and
+projection objects in S3. Worker-local SSD/NVMe is a digest-verified cache for
+objects and decoded topology/column blocks, never durable database state. A
+write becomes visible only after its S3 objects are verified and metadata Raft
+publishes the manifest pointer. Eviction, worker restart, or complete cache-disk
+loss must preserve committed data and query semantics.
+
+For a Cloud-attached workspace, Skein is an eventually consistent partial
+mirror, not a second canonical writer. The current Cloud adapter is authoritative
+until migration; Skein Cloud becomes the permanent authority after cutover.
+Local query eligibility is therefore a semantic coverage check, not merely
+"does this node exist locally." Results must identify the subscription identity
+and epoch, filter digest, materialization scope, applied sequence, canonical
+head, and whether the requested query is complete within that scope. Standalone
+local workspaces remain locally authoritative.
+
+Graph analytics follows the same boundary. Local Skein and small Cloud jobs may
+feed immutable source-epoch snapshots into the shared in-process kernel.
+Distributed Skein Cloud execution shares the algorithm semantics, message
+algebra, fixtures, and output contract without sharing the embedded runtime.
+Analytics outputs are rebuildable, versioned projection generations; they
+never enter the local graph WAL or either Cloud canonical mutation log. This
+repository owns the shared semantic and execution contract; the hosting layer
+owns its publication, recovery, and partial-mirror protocols.
+
 The Cypher parser should stay systematic as the supported subset grows. The AST
 types define syntax data only; parser entry points dispatch by top-level
 statement family; reusable cursor helpers own keyword matching, token
