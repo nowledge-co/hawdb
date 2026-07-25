@@ -4644,6 +4644,7 @@ fn explain_output_json(
         parameters,
         &output.trace,
         &output.work_request,
+        &output.plan_cache_lookup,
         plan_cache_stats,
     )
 }
@@ -4660,6 +4661,7 @@ fn explain_analyze_output_json(
         parameters,
         &output.trace,
         &output.work_request,
+        &output.plan_cache_lookup,
         plan_cache_stats,
     );
     if let serde_json::Value::Object(object) = &mut json {
@@ -4681,6 +4683,7 @@ fn explain_diagnostics_json(
     parameters: &BTreeMap<String, Value>,
     trace: &skein::optimizer::OptimizerTrace,
     work_request: &skein::WorkRequest,
+    plan_cache_lookup: &skein::PlanCacheLookupStatus,
     plan_cache_stats: &skein::PlanCacheStats,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -4717,6 +4720,7 @@ fn explain_diagnostics_json(
             "class": work_request.class.as_str(),
             "estimated_operations": work_request.estimated_operations,
         },
+        "plan_cache_lookup": plan_cache_lookup_json(plan_cache_lookup),
         "plan_cache_stats": {
             "max_entries": plan_cache_stats.max_entries,
             "entries": plan_cache_stats.entries,
@@ -4734,6 +4738,18 @@ fn explain_diagnostics_json(
             .map(rule_event_json)
             .collect::<Vec<_>>(),
     })
+}
+
+fn plan_cache_lookup_json(lookup: &skein::PlanCacheLookupStatus) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "status": lookup.as_str(),
+        "cacheable": lookup.bypass_reason().is_none(),
+    });
+    if let (Some(reason), serde_json::Value::Object(object)) = (lookup.bypass_reason(), &mut value)
+    {
+        object.insert("reason".to_string(), serde_json::json!(reason));
+    }
+    value
 }
 
 fn read_execution_profile_json(
@@ -4949,7 +4965,8 @@ mod tests {
         CompatibilityCheckReport, CompatibilityShadowCheckReport, CompatibilityShadowReport,
         CompatibilityShadowStatus, Database, ExternalShadowReady, GraphLightningBootstrapManifest,
         GraphLightningGraphStreamValidation, LocalQosPolicy, NowledgeMemReadOptions,
-        PlanCacheStats, RecoveryMode, StorageRecoveryReport, Value, WorkClass, WorkRequest,
+        PlanCacheLookupStatus, PlanCacheStats, RecoveryMode, StorageRecoveryReport, Value,
+        WorkClass, WorkRequest,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -6468,6 +6485,7 @@ mod tests {
                 label: "Memory".to_string(),
             },
             work_request: WorkRequest::background(WorkClass::Analytics, 64),
+            plan_cache_lookup: PlanCacheLookupStatus::Hit,
             trace: OptimizerTrace {
                 groups: 1,
                 search_mode: skein::optimizer::SearchMode::Memo,
@@ -6540,6 +6558,8 @@ mod tests {
         assert_eq!(json["work_request"]["priority"], "background");
         assert_eq!(json["work_request"]["class"], "analytics");
         assert_eq!(json["work_request"]["estimated_operations"], 64);
+        assert_eq!(json["plan_cache_lookup"]["status"], "hit");
+        assert_eq!(json["plan_cache_lookup"]["cacheable"], true);
         assert_eq!(json["plan_cache_stats"]["max_entries"], 128);
         assert_eq!(json["plan_cache_stats"]["entries"], 1);
         assert_eq!(json["plan_cache_stats"]["hits"], 2);

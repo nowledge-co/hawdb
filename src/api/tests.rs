@@ -124,7 +124,7 @@ use crate::search::{
     SearchRebuildOptions, SearchTruncationReasonCode,
 };
 use crate::store::{NodeId, DENSE_ADJACENCY_DEGREE_THRESHOLD};
-use crate::Value;
+use crate::{PlanCacheLookupStatus, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Write};
 
@@ -25384,6 +25384,7 @@ fn explains_query_with_optimizer_trace() {
         output.work_request,
         WorkRequest::foreground(WorkClass::Query, 1)
     );
+    assert_eq!(output.plan_cache_lookup, PlanCacheLookupStatus::Miss);
     assert!(output
         .trace
         .selected_plan_fingerprint
@@ -25456,6 +25457,14 @@ fn cypher_explain_returns_structured_plan_row() {
         Some(Value::String(fingerprint)) if fingerprint.contains("Memory")
     ));
     assert!(row.contains_key("work_request"));
+    let Some(Value::Map(plan_cache_lookup)) = row.get("plan_cache_lookup") else {
+        panic!("expected plan cache lookup map");
+    };
+    assert_eq!(
+        plan_cache_lookup.get("status"),
+        Some(&Value::String("miss".to_string()))
+    );
+    assert_eq!(plan_cache_lookup.get("cacheable"), Some(&Value::Bool(true)));
 }
 
 #[test]
@@ -25567,6 +25576,8 @@ fn plan_cache_reuses_exact_parameterized_physical_plan() {
     let first = db.explain_query_with_params(query, &parameters).unwrap();
     let second = db.explain_query_with_params(query, &parameters).unwrap();
 
+    assert_eq!(first.plan_cache_lookup, PlanCacheLookupStatus::Miss);
+    assert_eq!(second.plan_cache_lookup, PlanCacheLookupStatus::Hit);
     assert!(
         first
             .trace
@@ -26003,6 +26014,12 @@ fn plan_cache_records_bypassed_mutation_explain_separately() {
         .explain_query("CREATE (:Memory {id: 1, title: 'Bypassed'})")
         .unwrap();
 
+    assert_eq!(
+        output.plan_cache_lookup,
+        PlanCacheLookupStatus::Bypass {
+            reason: "statement_not_cacheable".to_string(),
+        }
+    );
     assert!(output
         .trace
         .decisions
