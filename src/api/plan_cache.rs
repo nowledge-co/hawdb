@@ -86,6 +86,7 @@ pub(super) struct OptimizedQueryPlan {
     pub(super) physical_plan: PhysicalPlan,
     pub(super) trace: OptimizerTrace,
     pub(super) plan_cache_lookup: PlanCacheLookup,
+    pub(super) optimizer_environment: OptimizerEnvironmentKey,
     pub(super) configured_max_optimizer_groups: Option<usize>,
     pub(super) effective_max_optimizer_groups: usize,
 }
@@ -143,7 +144,7 @@ impl PlanCacheKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct OptimizerEnvironmentKey {
+pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
     statistics_epoch: u64,
 }
@@ -222,7 +223,10 @@ impl OptimizerPlanningCache {
         self.catalog = None;
     }
 
-    fn environment_hint(catalog: &Catalog, store: &GraphStore) -> OptimizerEnvironmentKey {
+    pub(super) fn environment_hint(
+        catalog: &Catalog,
+        store: &GraphStore,
+    ) -> OptimizerEnvironmentKey {
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             statistics_epoch: store.commit_epoch(),
@@ -360,6 +364,7 @@ pub(super) fn optimized_query_plan_for(
                 physical_plan,
                 trace,
                 plan_cache_lookup: PlanCacheLookup::Hit,
+                optimizer_environment: environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
                 effective_max_optimizer_groups,
             });
@@ -430,7 +435,7 @@ pub(super) fn optimized_query_plan_for(
     record_access_control_plan_decision(&mut trace, context.access_control);
     if cache_mode == PlanCacheMode::Use {
         let mut key = key.take().expect("cache key exists in use mode");
-        key.environment = catalog_access.environment;
+        key.environment = catalog_access.environment.clone();
         context.cache.borrow_mut().insert(
             key,
             CachedPlan {
@@ -446,6 +451,7 @@ pub(super) fn optimized_query_plan_for(
             physical_plan,
             trace,
             plan_cache_lookup: PlanCacheLookup::Miss,
+            optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
         });
@@ -458,6 +464,7 @@ pub(super) fn optimized_query_plan_for(
             physical_plan,
             trace,
             plan_cache_lookup: PlanCacheLookup::Bypass(reason),
+            optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
             effective_max_optimizer_groups,
         });

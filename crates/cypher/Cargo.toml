@@ -7,3 +7,10 @@ license.workspace = true
 
 [dependencies]
 skein-core = { path = "../core" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[[bench]]
+name = "cypher_parser"
+harness = false

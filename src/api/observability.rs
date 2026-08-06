@@ -47,6 +47,7 @@ impl Database {
                 statement_kind,
                 success: result.is_ok(),
                 elapsed_micros: elapsed_micros.min(u64::MAX as u128) as u64,
+                parse_nanos: context.parse_nanos,
                 row_count: result.map_or(0, |output| output.rows.len()),
                 intermediate_rows: pipeline.map_or(0, |report| report.intermediate_rows),
                 intermediate_payload_bytes: pipeline

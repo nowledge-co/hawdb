@@ -49,7 +49,7 @@ use canonical_snapshot::export_canonical_graph_snapshot_for;
 use explain::{empty_read_execution_profile, explain_analyze_output_row, explain_output_row};
 use plan_cache::{
     optimized_query_plan_for, statement_uses_plan_cache, OptimizedQueryPlan,
-    OptimizerPlanningCache, PlanCache, PlanCacheContext, PlanCacheMode,
+    OptimizerEnvironmentKey, OptimizerPlanningCache, PlanCache, PlanCacheContext, PlanCacheMode,
     DEFAULT_PLAN_CACHE_MAX_ENTRIES,
 };
 #[cfg(test)]
@@ -90,6 +90,7 @@ mod system_sql;
 mod system_variables;
 mod types;
 
+pub(crate) use query_runtime::PreparedRuntimeQuery;
 pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
@@ -408,6 +409,7 @@ pub struct SlowQueryLogRecordSummary {
 pub(super) struct StatementExecutionContext<'a> {
     execution_profile: Option<&'a executor::ReadExecutionProfile>,
     access_control: Option<&'a QueryAccessControlContext>,
+    parse_nanos: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20354,6 +20356,26 @@ impl DatabaseReadTransaction {
             .output)
     }
 
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    pub(crate) fn query_prepared_with_params_context(
+        &mut self,
+        prepared: PreparedRuntimeQuery,
+        parameters: &BTreeMap<String, Value>,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> Result<QueryOutput> {
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        Ok(self
+            .query_with_params_bounded_profile_prepared_internal(
+                &cypher_text,
+                prepared,
+                parameters,
+                self.config.max_read_result_rows,
+                None,
+                Some(task_context),
+            )?
+            .output)
+    }
+
     pub fn query_with_params_access_control(
         &mut self,
         cypher_text: &str,
@@ -20417,61 +20439,14 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
-        let max_rows = restrictive_query_limit(self.config.max_read_result_rows, options.max_rows);
-        let max_payload_bytes = restrictive_query_limit(
-            self.config.max_read_result_payload_bytes,
-            options.max_payload_bytes,
-        );
-        let statement = cypher::parse(cypher_text)?;
-        let body = statement_body(&statement);
-        if matches!(statement, cypher::Statement::Explain(_)) {
-            return Err(SkeinError::Execution(
-                "streaming query does not support EXPLAIN".to_string(),
-            ));
-        }
-        if matches!(body, cypher::Statement::Checkpoint) {
-            return Err(SkeinError::Execution(
-                "CHECKPOINT is not allowed inside a read transaction".to_string(),
-            ));
-        }
-        if matches!(body, cypher::Statement::SetSystemVariable(_)) {
-            return Err(SkeinError::Execution(
-                "SET system variable is not allowed inside a read transaction".to_string(),
-            ));
-        }
-        query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        self.query_with_params_streaming_prepared_internal(
             cypher_text,
-            &statement,
+            query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
+            options,
             None,
-        )?;
-        if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(SkeinError::Execution(
-                "read transaction query must not be a mutation".to_string(),
-            ));
-        }
-        let mut external = executor::NoExternalReadOperator;
-        let streamed = executor::execute_with_row_consumer_profile_and_external_and_memory(
-            &optimized.physical_plan,
-            &mut self.catalog,
-            &mut self.store,
-            parameters,
-            &mut external,
-            max_rows,
-            max_payload_bytes,
             &mut consumer,
-            &self.config.execution_memory,
-        );
-        self.store.poison_on_storage_error(&streamed);
-        let streamed = streamed?;
-        let pipeline = &streamed.profile.pipeline_memory_report;
-        Ok(QueryStreamReport {
-            fully_streamed: streamed.fully_streamed,
-            output_rows: pipeline.output_rows,
-            output_payload_bytes: pipeline.output_payload_bytes,
-            execution_profile: streamed.profile,
-        })
+        )
     }
 
     pub fn query_with_params_streaming_context(
@@ -20483,12 +20458,56 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
+        self.query_with_params_streaming_prepared_internal(
+            cypher_text,
+            query_runtime::parse_runtime_execution(cypher_text)?,
+            parameters,
+            options,
+            Some(task_context),
+            &mut consumer,
+        )
+    }
+
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    pub(crate) fn query_prepared_with_params_streaming_context(
+        &mut self,
+        prepared: PreparedRuntimeQuery,
+        parameters: &BTreeMap<String, Value>,
+        options: QueryStreamOptions,
+        task_context: &skein_core::RuntimeTaskContext,
+        mut consumer: impl FnMut(Row) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        self.query_with_params_streaming_prepared_internal(
+            &cypher_text,
+            prepared,
+            parameters,
+            options,
+            Some(task_context),
+            &mut consumer,
+        )
+    }
+
+    fn query_with_params_streaming_prepared_internal(
+        &mut self,
+        cypher_text: &str,
+        prepared: query_runtime::PreparedRuntimeExecution,
+        parameters: &BTreeMap<String, Value>,
+        options: QueryStreamOptions,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
+        consumer: &mut impl FnMut(Row) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        self.store.ensure_usable()?;
         let max_rows = restrictive_query_limit(self.config.max_read_result_rows, options.max_rows);
         let max_payload_bytes = restrictive_query_limit(
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let statement = cypher::parse(cypher_text)?;
+        let query_runtime::PreparedRuntimeExecution {
+            statement,
+            optimized: prepared_optimized,
+            ..
+        } = prepared;
         let body = statement_body(&statement);
         if matches!(statement, cypher::Statement::Explain(_)) {
             return Err(SkeinError::Execution(
@@ -20506,20 +20525,37 @@ impl DatabaseReadTransaction {
             ));
         }
         query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
-            cypher_text,
-            &statement,
-            parameters,
-            None,
-        )?;
+        let optimized = match prepared_optimized {
+            Some(optimized) => optimized,
+            None => self.optimized_query_plan_with_access_control(
+                cypher_text,
+                &statement,
+                parameters,
+                None,
+            )?,
+        };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
             return Err(SkeinError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
         let mut external = executor::NoExternalReadOperator;
-        let streamed =
-            executor::execute_with_row_consumer_profile_and_external_and_context_and_memory(
+        let streamed = match task_context {
+            Some(task_context) => {
+                executor::execute_with_row_consumer_profile_and_external_and_context_and_memory(
+                    &optimized.physical_plan,
+                    &mut self.catalog,
+                    &mut self.store,
+                    parameters,
+                    &mut external,
+                    max_rows,
+                    max_payload_bytes,
+                    consumer,
+                    task_context,
+                    &self.config.execution_memory,
+                )
+            }
+            None => executor::execute_with_row_consumer_profile_and_external_and_memory(
                 &optimized.physical_plan,
                 &mut self.catalog,
                 &mut self.store,
@@ -20527,10 +20563,10 @@ impl DatabaseReadTransaction {
                 &mut external,
                 max_rows,
                 max_payload_bytes,
-                &mut consumer,
-                task_context,
+                consumer,
                 &self.config.execution_memory,
-            );
+            ),
+        };
         self.store.poison_on_storage_error(&streamed);
         let streamed = streamed?;
         let pipeline = &streamed.profile.pipeline_memory_report;
@@ -20567,10 +20603,34 @@ impl DatabaseReadTransaction {
         task_context: Option<&skein_core::RuntimeTaskContext>,
     ) -> Result<BoundedReadQueryOutput> {
         self.store.ensure_usable()?;
+        self.query_with_params_bounded_profile_prepared_internal(
+            cypher_text,
+            query_runtime::parse_runtime_execution(cypher_text)?,
+            parameters,
+            max_rows,
+            access_control,
+            task_context,
+        )
+    }
+
+    fn query_with_params_bounded_profile_prepared_internal(
+        &mut self,
+        cypher_text: &str,
+        prepared: query_runtime::PreparedRuntimeExecution,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: Option<usize>,
+        access_control: Option<QueryAccessControlContext>,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
+    ) -> Result<BoundedReadQueryOutput> {
+        self.store.ensure_usable()?;
         query_runtime::query_runtime_checkpoint(task_context)?;
         let max_rows = restrictive_query_limit(self.config.max_read_result_rows, max_rows);
         let max_payload_bytes = self.config.max_read_result_payload_bytes;
-        let statement = cypher::parse(cypher_text)?;
+        let query_runtime::PreparedRuntimeExecution {
+            statement,
+            optimized: prepared_optimized,
+            ..
+        } = prepared;
         let body = statement_body(&statement);
         if let cypher::Statement::Explain(explain) = &statement {
             return self.execute_explain_statement(
@@ -20595,12 +20655,15 @@ impl DatabaseReadTransaction {
             ));
         }
         query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
-            cypher_text,
-            &statement,
-            parameters,
-            access_control.as_ref(),
-        )?;
+        let optimized = match prepared_optimized {
+            Some(optimized) if access_control.is_none() => optimized,
+            _ => self.optimized_query_plan_with_access_control(
+                cypher_text,
+                &statement,
+                parameters,
+                access_control.as_ref(),
+            )?,
+        };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
             return Err(SkeinError::Execution(
                 "read transaction query must not be a mutation".to_string(),

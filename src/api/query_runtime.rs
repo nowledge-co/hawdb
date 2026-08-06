@@ -12,10 +12,70 @@ pub(crate) struct RuntimeAdmissionPlan {
     pub morsel_parallelism: usize,
 }
 
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+pub(crate) struct PreparedRuntimeQuery {
+    cypher_text: String,
+    statement: cypher::Statement,
+    optimized: Option<OptimizedQueryPlan>,
+    optimizer_environment: Option<OptimizerEnvironmentKey>,
+    admission: RuntimeAdmissionPlan,
+    parse_metrics: skein_cypher::ParseMetrics,
+}
+
+pub(super) struct PreparedRuntimeExecution {
+    pub(super) statement: cypher::Statement,
+    pub(super) optimized: Option<OptimizedQueryPlan>,
+    pub(super) parse_metrics: skein_cypher::ParseMetrics,
+    pub(super) statement_started: Option<std::time::Instant>,
+}
+
+struct QueryExecutionOptions<'a> {
+    capture_trace: bool,
+    access_control: Option<QueryAccessControlContext>,
+    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+}
+
+pub(super) fn parse_runtime_execution(cypher_text: &str) -> Result<PreparedRuntimeExecution> {
+    let statement_started = std::time::Instant::now();
+    let parsed = skein_cypher::parse_profiled(cypher_text);
+    Ok(PreparedRuntimeExecution {
+        statement: parsed.result?,
+        optimized: None,
+        parse_metrics: parsed.metrics,
+        statement_started: Some(statement_started),
+    })
+}
+
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+impl PreparedRuntimeQuery {
+    pub(crate) fn admission(&self) -> &RuntimeAdmissionPlan {
+        &self.admission
+    }
+
+    pub(super) fn into_execution(
+        self,
+        catalog: &Catalog,
+        store: &GraphStore,
+    ) -> (String, PreparedRuntimeExecution) {
+        let environment_matches = self.optimizer_environment.as_ref().is_some_and(|prepared| {
+            prepared == &OptimizerPlanningCache::environment_hint(catalog, store)
+        });
+        (
+            self.cypher_text,
+            PreparedRuntimeExecution {
+                statement: self.statement,
+                optimized: environment_matches.then_some(self.optimized).flatten(),
+                parse_metrics: self.parse_metrics,
+                statement_started: None,
+            },
+        )
+    }
+}
+
 impl RuntimeAdmissionPlan {
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     pub(crate) fn runtime_work_request(
-        self,
+        &self,
         result_budget_bytes: u64,
         limits: skein_qos::RuntimeGovernorLimits,
     ) -> skein_qos::RuntimeWorkRequest {
@@ -28,7 +88,7 @@ impl RuntimeAdmissionPlan {
     }
 
     pub(crate) fn runtime_work_request_for_snapshot(
-        self,
+        &self,
         result_budget_bytes: u64,
         snapshot: skein_qos::RuntimeGovernorSnapshot,
     ) -> skein_qos::RuntimeWorkRequest {
@@ -49,7 +109,7 @@ impl RuntimeAdmissionPlan {
     }
 
     fn runtime_work_request_with_capacity(
-        self,
+        &self,
         result_budget_bytes: u64,
         limits: skein_qos::RuntimeGovernorLimits,
         available_cpu_slots: usize,
@@ -131,11 +191,46 @@ impl Database {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<RuntimeAdmissionPlan> {
+        let plan_cache = SharedState::new(PlanCache::new(self.config.max_plan_cache_entries));
+        let planning_cache = SharedState::new(self.optimizer_planning_cache.borrow().clone());
+        self.prepare_runtime_query_with_caches(
+            cypher_text.to_string(),
+            parameters,
+            &plan_cache,
+            &planning_cache,
+        )
+        .map(|prepared| prepared.admission)
+    }
+
+    pub(crate) fn prepare_runtime_query(
+        &self,
+        cypher_text: String,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<PreparedRuntimeQuery> {
+        self.prepare_runtime_query_with_caches(
+            cypher_text,
+            parameters,
+            &self.plan_cache,
+            &self.optimizer_planning_cache,
+        )
+    }
+
+    fn prepare_runtime_query_with_caches(
+        &self,
+        cypher_text: String,
+        parameters: &BTreeMap<String, Value>,
+        plan_cache: &SharedState<PlanCache>,
+        planning_cache: &SharedState<OptimizerPlanningCache>,
+    ) -> Result<PreparedRuntimeQuery> {
         self.store.ensure_usable()?;
-        let statement = cypher::parse(cypher_text)?;
+        let parsed = skein_cypher::parse_profiled(&cypher_text);
+        let parse_metrics = parsed.metrics;
+        let statement = parsed.result?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
         let body = statement_body(&statement);
         let streaming_eligible = !matches!(body, cypher::Statement::Explain(_));
+        let mut prepared_optimized = None;
+        let mut optimizer_environment = None;
         let (
             is_mutation,
             estimated_memory_bytes,
@@ -151,9 +246,11 @@ impl Database {
             | cypher::Statement::Rollback => (true, CONTROL_STATEMENT_MEMORY_BYTES, 0, false, 1),
             _ => {
                 let optimized = self.optimized_query_plan_for_runtime_admission(
-                    cypher_text,
+                    &cypher_text,
                     &statement,
                     parameters,
+                    plan_cache,
+                    planning_cache,
                 )?;
                 let is_mutation = executor::is_mutation_plan(&optimized.physical_plan)?;
                 let estimated_memory_bytes = if is_mutation {
@@ -190,6 +287,8 @@ impl Database {
                 } else {
                     1
                 };
+                optimizer_environment = Some(optimized.optimizer_environment.clone());
+                prepared_optimized = Some(optimized);
                 (
                     is_mutation,
                     estimated_memory_bytes,
@@ -199,14 +298,21 @@ impl Database {
                 )
             }
         };
-        Ok(RuntimeAdmissionPlan {
-            work_request,
-            is_mutation,
-            estimated_memory_bytes,
-            streaming_eligible,
-            required_io_slots,
-            parallel_morsel_eligible,
-            morsel_parallelism,
+        Ok(PreparedRuntimeQuery {
+            cypher_text,
+            statement,
+            optimized: prepared_optimized,
+            optimizer_environment,
+            admission: RuntimeAdmissionPlan {
+                work_request,
+                is_mutation,
+                estimated_memory_bytes,
+                streaming_eligible,
+                required_io_slots,
+                parallel_morsel_eligible,
+                morsel_parallelism,
+            },
+            parse_metrics,
         })
     }
 
@@ -215,6 +321,8 @@ impl Database {
         cypher_text: &str,
         statement: &cypher::Statement,
         parameters: &BTreeMap<String, Value>,
+        plan_cache: &SharedState<PlanCache>,
+        planning_cache: &SharedState<OptimizerPlanningCache>,
     ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
             query_statement_variables_for_statement(&self.system_variables, statement)?
@@ -226,8 +334,6 @@ impl Database {
         } else {
             PlanCacheMode::Bypass(plan_cache::PlanCacheBypassReason::StatementNotCacheable)
         };
-        let plan_cache = SharedState::new(PlanCache::new(self.config.max_plan_cache_entries));
-        let planning_cache = SharedState::new(self.optimizer_planning_cache.borrow().clone());
         optimized_query_plan_for(
             cypher_text,
             statement,
@@ -238,8 +344,8 @@ impl Database {
                 store: &self.store,
                 optimizer: &self.optimizer,
                 config: &self.config,
-                cache: &plan_cache,
-                planning_cache: &planning_cache,
+                cache: plan_cache,
+                planning_cache,
                 access_control: None,
                 optimizer_search,
             },
@@ -279,6 +385,29 @@ impl Database {
             false,
             None,
             Some(task_context),
+        )
+        .map(|(output, _)| output)
+    }
+
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    pub(crate) fn query_prepared_with_params_context(
+        &mut self,
+        prepared: PreparedRuntimeQuery,
+        parameters: &BTreeMap<String, Value>,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> Result<QueryOutput> {
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let mut external = executor::NoExternalReadOperator;
+        self.query_with_params_trace_and_external_prepared(
+            &cypher_text,
+            prepared,
+            parameters,
+            &mut external,
+            QueryExecutionOptions {
+                capture_trace: false,
+                access_control: None,
+                task_context: Some(task_context),
+            },
         )
         .map(|(output, _)| output)
     }
@@ -327,10 +456,43 @@ impl Database {
         access_control: Option<QueryAccessControlContext>,
         task_context: Option<&skein_core::RuntimeTaskContext>,
     ) -> Result<(QueryOutput, QueryExecutionTrace)> {
-        let started = std::time::Instant::now();
+        self.store.ensure_usable()?;
+        self.query_with_params_trace_and_external_prepared(
+            cypher_text,
+            parse_runtime_execution(cypher_text)?,
+            parameters,
+            external,
+            QueryExecutionOptions {
+                capture_trace,
+                access_control,
+                task_context,
+            },
+        )
+    }
+
+    fn query_with_params_trace_and_external_prepared(
+        &mut self,
+        cypher_text: &str,
+        prepared: PreparedRuntimeExecution,
+        parameters: &BTreeMap<String, Value>,
+        external: &mut dyn executor::ExternalReadOperator,
+        options: QueryExecutionOptions<'_>,
+    ) -> Result<(QueryOutput, QueryExecutionTrace)> {
+        let QueryExecutionOptions {
+            capture_trace,
+            access_control,
+            task_context,
+        } = options;
+        let execution_started = std::time::Instant::now();
         self.store.ensure_usable()?;
         query_runtime_checkpoint(task_context)?;
-        let statement = cypher::parse(cypher_text)?;
+        let PreparedRuntimeExecution {
+            statement,
+            optimized: prepared_optimized,
+            parse_metrics,
+            statement_started,
+        } = prepared;
+        let started = statement_started.unwrap_or(execution_started);
         let body = statement_body(&statement);
         let statement_kind_name = statement_kind(&statement);
         if let cypher::Statement::Explain(explain) = &statement {
@@ -357,6 +519,7 @@ impl Database {
                 statement_result,
                 StatementExecutionContext {
                     access_control: access_control.as_ref(),
+                    parse_nanos: parse_metrics.elapsed_nanos,
                     ..StatementExecutionContext::default()
                 },
             );
@@ -384,12 +547,15 @@ impl Database {
         let query_result = (|| {
             query_runtime_checkpoint(task_context)?;
             query_work_request_for_statement(&self.system_variables, &statement)?;
-            let optimized = self.optimized_query_plan_with_access_control(
-                cypher_text,
-                &statement,
-                parameters,
-                access_control.as_ref(),
-            )?;
+            let optimized = match prepared_optimized {
+                Some(optimized) if access_control.is_none() => optimized,
+                _ => self.optimized_query_plan_with_access_control(
+                    cypher_text,
+                    &statement,
+                    parameters,
+                    access_control.as_ref(),
+                )?,
+            };
             let is_mutation = executor::is_mutation_plan(&optimized.physical_plan)?;
             if is_mutation {
                 self.ensure_writable()?;
@@ -465,6 +631,7 @@ impl Database {
             StatementExecutionContext {
                 execution_profile,
                 access_control: access_control.as_ref(),
+                parse_nanos: parse_metrics.elapsed_nanos,
             },
         );
         query_result
@@ -632,5 +799,54 @@ mod tests {
         assert_eq!(memory_limited.cpu_slots, 1);
         assert_eq!(load_limited.cpu_slots, 2);
         assert_eq!(load_limited.memory_bytes, 2 * 1024);
+    }
+
+    #[test]
+    fn prepared_runtime_query_reuses_plan_only_for_the_same_environment() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'existing'})").unwrap();
+        let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.id AS id";
+        let parameters =
+            BTreeMap::from([("id".to_string(), Value::String("existing".to_string()))]);
+
+        let (_, reusable) = db
+            .prepare_runtime_query(query.to_string(), &parameters)
+            .unwrap()
+            .into_execution(&db.catalog, &db.store);
+        assert!(reusable.optimized.is_some());
+
+        let stale = db
+            .prepare_runtime_query(query.to_string(), &parameters)
+            .unwrap();
+        db.query("CREATE (:Memory {id: 'newer'})").unwrap();
+        let (_, stale) = stale.into_execution(&db.catalog, &db.store);
+        assert!(stale.optimized.is_none());
+    }
+
+    #[test]
+    fn prepared_runtime_query_executes_against_a_read_snapshot() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'prepared'})").unwrap();
+        let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.id AS id";
+        let parameters =
+            BTreeMap::from([("id".to_string(), Value::String("prepared".to_string()))]);
+        let prepared = db
+            .prepare_runtime_query(query.to_string(), &parameters)
+            .unwrap();
+        let mut read = db.begin_read_transaction();
+
+        let output = read
+            .query_prepared_with_params_context(
+                prepared,
+                &parameters,
+                &skein_core::RuntimeTaskContext::default(),
+            )
+            .unwrap();
+
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            output.rows[0].get("id"),
+            Some(&Value::String("prepared".to_string()))
+        );
     }
 }

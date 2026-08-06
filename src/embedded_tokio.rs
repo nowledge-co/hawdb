@@ -248,21 +248,22 @@ impl SkeinTokioEmbedded {
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
         let cypher_text = cypher_text.into();
-        let admission = self.with_embedded_mut(|embedded| {
+        let prepared = self.with_embedded_mut(|embedded| {
             embedded
                 .database_mut()
-                .runtime_admission_plan(&cypher_text, &parameters)
+                .prepare_runtime_query(cypher_text, &parameters)
         })?;
         let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
         let snapshot = self.with_embedded(|embedded| embedded.runtime_governor().snapshot());
-        let request = admission
-            .clone()
+        let request = prepared
+            .admission()
             .runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
+        let streaming_eligible = prepared.admission().streaming_eligible;
         self.execute_query_with_request(
-            cypher_text,
+            prepared,
             parameters,
             request,
-            admission.streaming_eligible,
+            streaming_eligible,
             task_context,
         )
         .await
@@ -276,11 +277,12 @@ impl SkeinTokioEmbedded {
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
         let cypher_text = cypher_text.into();
-        let admission = self.with_embedded_mut(|embedded| {
+        let prepared = self.with_embedded_mut(|embedded| {
             embedded
                 .database_mut()
-                .runtime_admission_plan(&cypher_text, &parameters)
+                .prepare_runtime_query(cypher_text, &parameters)
         })?;
+        let admission = prepared.admission();
         let request = if admission.is_mutation {
             request
                 .with_kind(RuntimeWorkKind::Mutation)
@@ -294,7 +296,7 @@ impl SkeinTokioEmbedded {
             request.with_memory_bytes(request.memory_bytes.max(admission.estimated_memory_bytes))
         };
         let limits = self.with_embedded(|embedded| embedded.runtime_governor().snapshot().limits);
-        let minimum_io_slots = admission.clone().runtime_work_request(0, limits).io_slots;
+        let minimum_io_slots = admission.runtime_work_request(0, limits).io_slots;
         let request = request.with_io_slots(request.io_slots.max(minimum_io_slots));
         let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
         let request = if admission.is_mutation {
@@ -304,11 +306,12 @@ impl SkeinTokioEmbedded {
         } else {
             request.with_result_bytes(result_budget_bytes)
         };
+        let streaming_eligible = admission.streaming_eligible;
         self.execute_query_with_request(
-            cypher_text,
+            prepared,
             parameters,
             request,
-            admission.streaming_eligible,
+            streaming_eligible,
             task_context,
         )
         .await
@@ -366,11 +369,12 @@ impl SkeinTokioEmbedded {
         task_context: RuntimeTaskContext,
     ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
         let cypher_text = cypher_text.into();
-        let admission = self.with_embedded_mut(|embedded| {
+        let prepared = self.with_embedded_mut(|embedded| {
             embedded
                 .database_mut()
-                .runtime_admission_plan(&cypher_text, &parameters)
+                .prepare_runtime_query(cypher_text, &parameters)
         })?;
+        let admission = prepared.admission();
         if admission.is_mutation {
             return Err(SkeinTokioEmbeddedError::StreamingMutation);
         }
@@ -413,8 +417,8 @@ impl SkeinTokioEmbedded {
                         lock_embedded(&embedded).database().begin_read_transaction();
                     let mut batch = Vec::with_capacity(batch_rows);
                     let mut batch_bytes = 0usize;
-                    let report = read_transaction.query_with_params_streaming_context(
-                        &cypher_text,
+                    let report = read_transaction.query_prepared_with_params_streaming_context(
+                        prepared,
                         &parameters,
                         QueryStreamOptions {
                             max_rows,
@@ -469,7 +473,7 @@ impl SkeinTokioEmbedded {
 
     async fn execute_query_with_request(
         &self,
-        cypher_text: String,
+        prepared: crate::api::PreparedRuntimeQuery,
         parameters: BTreeMap<String, Value>,
         request: RuntimeWorkRequest,
         streaming_eligible: bool,
@@ -484,7 +488,7 @@ impl SkeinTokioEmbedded {
                 .execute_blocking(request, task_context, move |task_context| {
                     lock_embedded(&embedded)
                         .database_mut()
-                        .query_with_params_context(&cypher_text, &parameters, task_context)
+                        .query_prepared_with_params_context(prepared, &parameters, task_context)
                 })
                 .await
                 .map_err(SkeinTokioEmbeddedError::Task)
@@ -497,15 +501,15 @@ impl SkeinTokioEmbedded {
                     let mut read_transaction =
                         lock_embedded(&embedded).database().begin_read_transaction();
                     if !streaming_eligible {
-                        return read_transaction.query_with_params_context(
-                            &cypher_text,
+                        return read_transaction.query_prepared_with_params_context(
+                            prepared,
                             &parameters,
                             task_context,
                         );
                     }
                     let mut rows = Vec::new();
-                    read_transaction.query_with_params_streaming_context(
-                        &cypher_text,
+                    read_transaction.query_prepared_with_params_streaming_context(
+                        prepared,
                         &parameters,
                         QueryStreamOptions {
                             max_rows,

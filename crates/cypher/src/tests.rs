@@ -1,9 +1,9 @@
 use super::{
-    parse, AlterPropertyState, AlterTableState, ComparisonOp, CreateCompositeIndex, CreateIndex,
-    CreateProperty, GraphAlgorithm, GraphAlgorithmKind, GraphAlgorithmOptions, OrderDirection,
-    OrderExpression, ProjectGraph, PropertyPredicate, RelationshipDirection, ReturnExpression,
-    ReturnValueExpression, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
-    SetValueExpression, Statement, ValueExpression, VectorSearch, WithAliasFilter,
+    parse, parse_profiled, AlterPropertyState, AlterTableState, ComparisonOp, CreateCompositeIndex,
+    CreateIndex, CreateProperty, GraphAlgorithm, GraphAlgorithmKind, GraphAlgorithmOptions,
+    OrderDirection, OrderExpression, ProjectGraph, PropertyPredicate, RelationshipDirection,
+    ReturnExpression, ReturnValueExpression, SchemaObjectState, SchemaPropertyType,
+    SchemaTableKind, SetValueExpression, Statement, ValueExpression, VectorSearch, WithAliasFilter,
     WithAliasFilterExpression, WithAliasFilterOp,
 };
 use skein_core::Value;
@@ -26,6 +26,19 @@ fn parser_accepts_keyword_case_and_spacing_variants() {
     };
     assert_eq!(query.variable, "m");
     assert_eq!(query.returns[0].alias.as_deref(), Some("title"));
+}
+
+#[test]
+fn profiled_parse_reports_input_size_for_success_and_failure() {
+    let query = "MATCH (m:Memory) RETURN m.id AS id";
+    let success = parse_profiled(query);
+    assert_eq!(success.metrics.input_bytes, query.len());
+    assert!(success.result.is_ok());
+
+    let invalid = "MATCH (";
+    let failure = parse_profiled(invalid);
+    assert_eq!(failure.metrics.input_bytes, invalid.len());
+    assert!(failure.result.is_err());
 }
 
 #[test]

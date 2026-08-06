@@ -1,0 +1,24 @@
+[package]
+name = "skein-cypher-yacc-experiment"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+cfgrammar = "0.15"
+lrlex = "0.15"
+lrpar = "0.15"
+serde_json = "1"
+skein-cypher = { path = "../../crates/cypher" }
+
+[build-dependencies]
+cfgrammar = "0.15"
+lrlex = "0.15"
+lrpar = "0.15"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"

@@ -11,6 +11,7 @@ pub struct QueryTelemetry<'a> {
     pub statement_kind: &'a str,
     pub success: bool,
     pub elapsed_micros: u64,
+    pub parse_nanos: u64,
     pub row_count: usize,
     pub intermediate_rows: usize,
     pub intermediate_payload_bytes: usize,
@@ -123,6 +124,7 @@ pub fn qos_telemetry_sink(telemetry: Arc<dyn TelemetrySink>) -> Arc<dyn QosTelem
 pub struct OpenTelemetryMetrics {
     query_count: opentelemetry::metrics::Counter<u64>,
     query_duration_micros: opentelemetry::metrics::Histogram<u64>,
+    query_parse_nanos: opentelemetry::metrics::Histogram<u64>,
     query_rows: opentelemetry::metrics::Histogram<u64>,
     query_intermediate_rows: opentelemetry::metrics::Histogram<u64>,
     query_intermediate_bytes: opentelemetry::metrics::Histogram<u64>,
@@ -147,6 +149,10 @@ impl OpenTelemetryMetrics {
             query_duration_micros: meter
                 .u64_histogram("skein.query.duration")
                 .with_unit("us")
+                .build(),
+            query_parse_nanos: meter
+                .u64_histogram("skein.query.parse.duration")
+                .with_unit("ns")
                 .build(),
             query_rows: meter.u64_histogram("skein.query.rows").build(),
             query_intermediate_rows: meter.u64_histogram("skein.query.intermediate.rows").build(),
@@ -188,6 +194,8 @@ impl TelemetrySink for OpenTelemetryMetrics {
         self.query_count.add(1, &attributes);
         self.query_duration_micros
             .record(event.elapsed_micros, &attributes);
+        self.query_parse_nanos
+            .record(event.parse_nanos, &attributes);
         self.query_rows.record(event.row_count as u64, &attributes);
         self.query_intermediate_rows
             .record(event.intermediate_rows as u64, &attributes);
@@ -288,6 +296,7 @@ mod tests {
             statement_kind: "read",
             success: true,
             elapsed_micros: 10,
+            parse_nanos: 500,
             row_count: 2,
             intermediate_rows: 3,
             intermediate_payload_bytes: 32,

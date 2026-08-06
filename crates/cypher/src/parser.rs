@@ -1,5 +1,6 @@
 use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
 use skein_core::Result;
+use std::time::Instant;
 
 mod cursor;
 mod ddl;
@@ -12,6 +13,34 @@ mod query;
 mod scalar;
 
 pub fn parse(input: &str) -> Result<Statement> {
+    parse_inner(input)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseMetrics {
+    pub input_bytes: usize,
+    pub elapsed_nanos: u64,
+}
+
+#[derive(Debug)]
+pub struct ParseMeasurement {
+    pub result: Result<Statement>,
+    pub metrics: ParseMetrics,
+}
+
+pub fn parse_profiled(input: &str) -> ParseMeasurement {
+    let started = Instant::now();
+    let result = parse_inner(input);
+    ParseMeasurement {
+        result,
+        metrics: ParseMetrics {
+            input_bytes: input.len(),
+            elapsed_nanos: started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        },
+    }
+}
+
+fn parse_inner(input: &str) -> Result<Statement> {
     let mut parser = Parser::new(input);
     let statement = parser.parse_statement()?;
     parser.consume_char(';');

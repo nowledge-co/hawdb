@@ -17,7 +17,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingSink {
-        events: Mutex<Vec<(bool, u64, usize)>>,
+        events: Mutex<Vec<(bool, u64, u64, usize)>>,
         kernel_events: Mutex<Vec<KernelTelemetry>>,
         qos_events: Mutex<Vec<QosTelemetryEvent>>,
     }
@@ -27,6 +27,7 @@ mod tests {
             self.events.lock().unwrap().push((
                 event.success,
                 event.elapsed_micros,
+                event.parse_nanos,
                 event.row_count,
             ));
         }
@@ -49,6 +50,7 @@ mod tests {
             statement_kind: "match_return",
             success: true,
             elapsed_micros: 12,
+            parse_nanos: 450,
             row_count: 3,
             intermediate_rows: 7,
             intermediate_payload_bytes: 128,
@@ -60,7 +62,7 @@ mod tests {
             major_page_faults: Some(1),
         });
 
-        assert_eq!(*sink.events.lock().unwrap(), vec![(true, 12, 3)]);
+        assert_eq!(*sink.events.lock().unwrap(), vec![(true, 12, 450, 3)]);
     }
 
     #[test]
@@ -186,6 +188,7 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].0);
+        assert!(events[0].2 > 0);
     }
 
     #[test]
