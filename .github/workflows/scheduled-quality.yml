@@ -26,8 +26,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: scheduled-quality-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   supply-chain:
