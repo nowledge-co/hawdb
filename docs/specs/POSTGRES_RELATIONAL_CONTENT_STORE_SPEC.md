@@ -106,6 +106,25 @@ checksum-invalid envelopes fail closed. Snapshot-pinned overflow segments MUST
 remain readable until their rows are no longer reachable from any pinned
 snapshot.
 
+Before the first durable checkpoint, newly externalized envelopes may remain
+inline in the unpublished COW state. Checkpoint publication writes every
+reachable envelope once into the checksummed relational generation artifact.
+Publication emits table metadata and rows in bounded chunks and copies one
+overflow envelope at a time while incrementally computing the payload digest;
+it does not build a second complete checkpoint `Vec` in memory. The manifest
+digest is computed by a bounded sequential pass over the temporary artifact
+before atomic publication.
+The newly published state replaces those resident byte arrays with immutable
+file-range descriptors carrying the envelope content digest. Reopen, backup,
+restore, and checkpoint rollover reconstruct the same descriptors; hydration
+performs a bounded range read and verifies the range digest before decoding the
+envelope. Generation reclamation is fenced by the existing read-transaction
+watermark, so a pinned relational snapshot retains the generation containing
+its ranges. The decoder rejects an oversized artifact from file metadata before
+reading payload bytes, then parses rows and validates the outer and per-overflow
+digests in one pass with a bounded 64 KiB transfer buffer. It never collects the
+checkpoint's overflow section into a resident validation buffer.
+
 ## Durability Boundary
 
 `GraphStore` owns relational state beside graph state. A mixed mutation stages
@@ -133,10 +152,12 @@ the relational state owned by `GraphStore`. Read transactions pin the same COW
 relational snapshot as graph state. This exposes statements rather than
 route-specific typed APIs.
 
-The current relational executor implements the frozen corpus semantics,
-including joins, aggregation, ordering, distinct, budgets, and late hydration.
-It remains a qualification implementation until those operators use the shared
-optimizer and batch pipeline.
+The relational executor implements the frozen corpus semantics, including
+joins, aggregation, ordering, distinct, budgets, and late hydration. Base scans,
+primary-key lookups, index-prefix visits, joins, residual filters, projection,
+offset, and limit run as a pull-through visitor pipeline. The pipeline checks
+the runtime cancellation token after every admitted batch and never constructs
+a complete intermediate `Vec` of qualified rows.
 
 The qualification access-path selector supports complete composite primary
 keys and the longest bound leading equality prefix of composite unique and
@@ -157,12 +178,23 @@ join. Predicates that cannot prove a safe right-side key fall back to a direct,
 non-collecting table scan.
 
 Relational aggregate groups retain incremental `COUNT`, `SUM`, `MAX`, and
-`COALESCE` state instead of a second copy of every qualified binding. DISTINCT
-aggregates retain only their value set. Group keys and dynamic aggregate state
-are charged to the shared executor blocking-operator tracker and fail closed
-when `blocking_operator_bytes` is exhausted. The qualification input buffer is
-still row-oriented until the relational plan is lowered into the shared batch
-pipeline; spill and cancellation are therefore not yet claimed here.
+`COALESCE` state instead of a second copy of every qualified binding. The
+executor sends typed binding batches through the shared `TopNExec`, `SortExec`,
+and `DistinctExec` implementations. High-cardinality statement `DISTINCT`,
+`COUNT(DISTINCT ...)`, ordering, and grouped aggregation therefore share the
+executor memory tracker, spill byte/run limits, cleanup rules, and cancellation
+checkpoints. Grouped aggregation externally sorts compact row locators and
+retains one group state at a time; non-grouped aggregation retains one admitted
+incremental state. Large payload hydration remains after the blocking locator
+selection unless exact statement `DISTINCT` requires the projected value.
+
+`EXPLAIN SELECT` plans without opening a scan and returns TiDB-style `id`,
+`estRows`, `task`, `access object`, and `operator info` columns through the SQL
+query path. `EXPLAIN ANALYZE SELECT` executes the same runtime path and adds
+`actRows`, `execution info`, `memory`, and `disk`, including intermediate rows,
+hydration bytes, blocking-operator peak/budget bytes, and measured spill runs,
+rows, and bytes. Unsupported EXPLAIN options fail during binding rather than
+changing semantics.
 
 This slice does not claim index range scans, sort elimination, covering
 projection, or access through equality hidden inside disjunctions. Those
@@ -171,11 +203,11 @@ Skyline pruning MUST NOT infer them from index shape alone. Base prefix lookup
 and cardinality probes remain bounded by the query intermediate-row admission
 limit.
 
-Production activation requires relational scan and index-access paths in the
-shared optimizer and batch executor, shared blocking-operator memory and spill
-tracking, cancellation, query reports, and `EXPLAIN ANALYZE`. Content routes
-MUST remain named parameterized SQL statements; Skein MUST NOT add one typed
-API per route.
+Content routes MUST remain named parameterized SQL statements; Skein MUST NOT
+add one typed API per route. Production activation still requires the
+identity-bound migration, differential, recovery, representative-load, and
+cross-platform evidence described below; implemented executor mechanics alone
+are not cutover evidence.
 
 ## Migration Boundary
 
@@ -198,7 +230,10 @@ The focused Rust tests cover:
 - canonical mixed graph/relational WAL replay, post-WAL apply poisoning,
   checkpoint/reopen, backup/restore, scrub, and corruption;
 - raw and Zstd overflow selection, integrity, budgets, snapshot pinning, and
-  reachability GC.
+  reachability GC;
+- file-backed overflow checkpoint/reopen/backup/restore and bounded hydration;
+- streaming scan/join/filter/projection, runtime cancellation, shared
+  sort/distinct/group spill, and SQL `EXPLAIN`/`EXPLAIN ANALYZE` reports.
 
 `cargo bench --bench relational_overflow` reports inline and overflow write and
 hydration P50/P95/P99 for repetitive, varied, and high-entropy payloads from

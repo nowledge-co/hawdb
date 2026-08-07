@@ -3,7 +3,9 @@ use super::{
     StatementExecutionContext,
 };
 use crate::error::{Result, SkeinError};
-use crate::relational_sql::{compile_relational_statement_sql, execute_relational_query_sql};
+use crate::relational_sql::{
+    compile_relational_statement_sql, execute_relational_query_sql_with_runtime,
+};
 use crate::telemetry::QueryTelemetry;
 use crate::value::Value;
 use std::io::Write;
@@ -146,12 +148,17 @@ impl Database {
             );
         }
 
-        if matches!(prepared.statement, crate::sql::SqlStatement::Select(_)) {
-            let output = execute_relational_query_sql(
+        if matches!(
+            prepared.statement,
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        ) {
+            let output = execute_relational_query_sql_with_runtime(
                 sql_text,
                 parameters,
                 self.store.relational_state(),
                 super::relational_query_limits(&self.config, max_rows),
+                &self.config.execution_memory,
+                None,
             )?;
             return Ok(QueryOutput { rows: output.rows });
         }

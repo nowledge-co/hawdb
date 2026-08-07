@@ -2,20 +2,29 @@ use super::{
     column_positions, rebuild_indexes, validate_foreign_keys, validate_row, validate_table_schema,
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction, RelationalError,
     RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-    RelationalOverflowRef, RelationalPredicate, RelationalReferentialAction, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalTableSegment,
-    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
-    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWrite,
+    RelationalOverflowRef, RelationalOverflowSegment, RelationalPredicate,
+    RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
+    RelationalTableSchema, RelationalTableSegment, RelationalTransaction,
+    RelationalUpdateAssignment, RelationalUpdateValue, RelationalUpsertAssignment,
+    RelationalUpsertValue, RelationalValue, RelationalWrite,
 };
-use crate::{DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES, DEFAULT_MAX_WAL_RECORD_BYTES};
-use skein_integrity::{integrity_digest, SHA256_BYTES};
+use crate::{
+    ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
+    DEFAULT_MAX_WAL_RECORD_BYTES,
+};
+use skein_integrity::{integrity_digest, IntegrityHasher, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU64;
+use std::path::Path;
 use std::sync::Arc;
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
 const CODEC_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 64;
+const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalDecodeLimits {
@@ -88,7 +97,7 @@ pub fn decode_relational_wal_batch(
     limits: RelationalDecodeLimits,
 ) -> Result<RelationalWalBatch, RelationalError> {
     let (epoch, payload) = decode_envelope(bytes, WAL_MAGIC, limits.max_record_bytes)?;
-    let mut decoder = Decoder::new(payload, limits);
+    let mut decoder = Decoder::from_slice(payload, limits, false);
     let write_count = decoder.count(limits.max_writes, "WAL writes")?;
     let mut writes = Vec::with_capacity(write_count);
     for _ in 0..write_count {
@@ -105,36 +114,168 @@ pub fn encode_relational_checkpoint(
     epoch: u64,
     state: &RelationalState,
 ) -> Result<Vec<u8>, RelationalError> {
-    let mut payload = Encoder::default();
-    payload.count(state.schemas.len(), "checkpoint tables")?;
+    let mut cursor = Cursor::new(Vec::new());
+    encode_relational_checkpoint_to_writer(
+        &mut cursor,
+        epoch,
+        state,
+        RelationalDecodeLimits::checkpoint().max_record_bytes,
+    )?;
+    Ok(cursor.into_inner())
+}
+
+pub fn encode_relational_checkpoint_to_writer<W: Write + Seek>(
+    writer: &mut W,
+    epoch: u64,
+    state: &RelationalState,
+    max_record_bytes: usize,
+) -> Result<u64, RelationalError> {
+    validate_checkpoint_overflow_reachability(state)?;
+    if max_record_bytes < HEADER_BYTES {
+        return Err(RelationalError::Admission(format!(
+            "relational checkpoint max_record_bytes {max_record_bytes} is smaller than its header"
+        )));
+    }
+    writer
+        .seek(SeekFrom::Start(HEADER_BYTES as u64))
+        .map_err(|error| {
+            RelationalError::Durability(format!(
+                "failed to reserve relational checkpoint header: {error}"
+            ))
+        })?;
+    let mut payload = CheckpointPayloadWriter::new(writer, max_record_bytes - HEADER_BYTES);
+
+    let mut tables = Encoder::default();
+    tables.count(state.schemas.len(), "checkpoint tables")?;
+    payload.write_all(&tables.finish())?;
     for (name, schema) in &state.schemas {
-        payload.string(name)?;
-        payload.table_schema(schema)?;
         let segment = state.segments.get(name).ok_or_else(|| {
             RelationalError::Corruption(format!("table {name} is missing its row segment"))
         })?;
-        payload.count(segment.rows.len(), "checkpoint rows")?;
+        let mut table = Encoder::default();
+        table.string(name)?;
+        table.table_schema(schema)?;
+        table.count(segment.rows.len(), "checkpoint rows")?;
+        payload.write_all(&table.finish())?;
         for row in segment.rows.values() {
-            payload.row(row)?;
+            let mut encoded_row = Encoder::default();
+            encoded_row.row(row)?;
+            payload.write_all(&encoded_row.finish())?;
         }
     }
-    payload.count(
+    let mut overflow_count = Encoder::default();
+    overflow_count.count(
         state.overflow_segments.len(),
         "checkpoint overflow segments",
     )?;
+    payload.write_all(&overflow_count.finish())?;
     for (digest, envelope) in &state.overflow_segments {
-        payload.string(digest)?;
-        payload.bytes(envelope)?;
+        let envelope = envelope.read()?;
+        if integrity_digest(envelope.as_ref()).sha256.to_string() != *digest {
+            return Err(RelationalError::Corruption(format!(
+                "relational checkpoint overflow segment {digest} has an invalid digest"
+            )));
+        }
+        let mut metadata = Encoder::default();
+        metadata.string(digest)?;
+        metadata.u64(u64::try_from(envelope.len()).map_err(|_| {
+            RelationalError::Admission("overflow envelope length does not fit u64".to_string())
+        })?);
+        payload.write_all(&metadata.finish())?;
+        payload.write_all(&envelope)?;
     }
-    encode_envelope(CHECKPOINT_MAGIC, epoch, payload.finish())
+    let (payload_len, digest, writer) = payload.finish();
+    let total_len = HEADER_BYTES
+        .checked_add(payload_len)
+        .ok_or_else(|| RelationalError::Admission("checkpoint size overflow".to_string()))?;
+    let mut header = Vec::with_capacity(HEADER_BYTES);
+    encode_envelope_header(
+        &mut header,
+        CHECKPOINT_MAGIC,
+        epoch,
+        payload_len as u64,
+        digest,
+    );
+    writer.seek(SeekFrom::Start(0)).map_err(|error| {
+        RelationalError::Durability(format!(
+            "failed to seek relational checkpoint header: {error}"
+        ))
+    })?;
+    writer.write_all(&header).map_err(|error| {
+        RelationalError::Durability(format!(
+            "failed to write relational checkpoint header: {error}"
+        ))
+    })?;
+    writer
+        .seek(SeekFrom::Start(total_len as u64))
+        .map_err(|error| {
+            RelationalError::Durability(format!("failed to finish relational checkpoint: {error}"))
+        })?;
+    Ok(total_len as u64)
 }
 
 pub fn decode_relational_checkpoint(
     bytes: &[u8],
     limits: RelationalDecodeLimits,
 ) -> Result<RelationalCheckpoint, RelationalError> {
+    decode_relational_checkpoint_with_storage(bytes, limits, OverflowDecodeStorage::Inline)
+}
+
+pub fn decode_relational_checkpoint_file(
+    path: &Path,
+    limits: RelationalDecodeLimits,
+) -> Result<RelationalCheckpoint, RelationalError> {
+    let encoded_len = std::fs::metadata(path)
+        .map_err(|error| {
+            RelationalError::Durability(format!(
+                "failed to inspect relational checkpoint {}: {error}",
+                path.display()
+            ))
+        })?
+        .len();
+    if encoded_len > limits.max_record_bytes as u64 {
+        return Err(RelationalError::Admission(format!(
+            "relational checkpoint {} contains {encoded_len} bytes, exceeding max_record_bytes {}",
+            path.display(),
+            limits.max_record_bytes
+        )));
+    }
+    let (epoch, input) = FileDecodeInput::open_checkpoint(path, encoded_len, limits)?;
+    let mut reader = FileSegmentRangeReader::new();
+    reader.register(RELATIONAL_CHECKPOINT_ARTIFACT_ID, path);
+    decode_relational_checkpoint_from_decoder(
+        epoch,
+        Decoder::new(input, limits, false),
+        limits,
+        OverflowDecodeStorage::File(Arc::new(reader)),
+    )
+}
+
+enum OverflowDecodeStorage {
+    Inline,
+    File(Arc<FileSegmentRangeReader>),
+}
+
+fn decode_relational_checkpoint_with_storage(
+    bytes: &[u8],
+    limits: RelationalDecodeLimits,
+    storage: OverflowDecodeStorage,
+) -> Result<RelationalCheckpoint, RelationalError> {
     let (epoch, payload) = decode_envelope(bytes, CHECKPOINT_MAGIC, limits.max_record_bytes)?;
-    let mut decoder = Decoder::new(payload, limits);
+    decode_relational_checkpoint_from_decoder(
+        epoch,
+        Decoder::from_slice(payload, limits, true),
+        limits,
+        storage,
+    )
+}
+
+fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
+    epoch: u64,
+    mut decoder: Decoder<I>,
+    limits: RelationalDecodeLimits,
+    storage: OverflowDecodeStorage,
+) -> Result<RelationalCheckpoint, RelationalError> {
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     let mut state = RelationalState::default();
     for _ in 0..table_count {
@@ -170,17 +311,56 @@ pub fn decode_relational_checkpoint(
     }
     let overflow_count =
         decoder.count(limits.max_overflow_segments, "checkpoint overflow segments")?;
-    for _ in 0..overflow_count {
+    for ordinal in 0..overflow_count {
         let digest = decoder.string()?;
-        let envelope = decoder.overflow_bytes()?;
-        if integrity_digest(&envelope).sha256.to_string() != digest {
+        let overflow = decoder.overflow_segment()?;
+        if overflow.digest.sha256.to_string() != digest {
             return Err(RelationalError::Corruption(format!(
                 "checkpoint overflow segment {digest} has an invalid digest"
             )));
         }
+        let segment = match &storage {
+            OverflowDecodeStorage::Inline => {
+                RelationalOverflowSegment::Inline(Arc::from(overflow.bytes.ok_or_else(|| {
+                    RelationalError::Corruption(
+                        "inline checkpoint decoder discarded overflow bytes".to_string(),
+                    )
+                })?))
+            }
+            OverflowDecodeStorage::File(reader) => {
+                let offset = HEADER_BYTES
+                    .checked_add(overflow.payload_offset)
+                    .ok_or_else(|| {
+                        RelationalError::Corruption(
+                            "checkpoint overflow file offset overflow".to_string(),
+                        )
+                    })?;
+                let length = NonZeroU64::new(u64::try_from(overflow.len).map_err(|_| {
+                    RelationalError::Corruption(
+                        "checkpoint overflow length does not fit u64".to_string(),
+                    )
+                })?)
+                .ok_or_else(|| {
+                    RelationalError::Corruption(
+                        "checkpoint contains an empty overflow segment".to_string(),
+                    )
+                })?;
+                let range = SegmentReadRange::new(
+                    RELATIONAL_CHECKPOINT_ARTIFACT_ID,
+                    ordinal as u64,
+                    offset as u64,
+                    length,
+                )
+                .with_content_digest(ContentDigest(overflow.digest.crc32c.as_u64()));
+                RelationalOverflowSegment::FileRange {
+                    reader: Arc::clone(reader),
+                    range,
+                }
+            }
+        };
         if state
             .overflow_segments
-            .insert(digest.clone(), Arc::from(envelope))
+            .insert(digest.clone(), segment)
             .is_some()
         {
             return Err(RelationalError::Corruption(format!(
@@ -226,6 +406,48 @@ fn validate_checkpoint_overflow_reachability(
     Ok(())
 }
 
+struct CheckpointPayloadWriter<'a, W> {
+    writer: &'a mut W,
+    max_payload_bytes: usize,
+    payload_bytes: usize,
+    hasher: IntegrityHasher,
+}
+
+impl<'a, W: Write> CheckpointPayloadWriter<'a, W> {
+    fn new(writer: &'a mut W, max_payload_bytes: usize) -> Self {
+        Self {
+            writer,
+            max_payload_bytes,
+            payload_bytes: 0,
+            hasher: IntegrityHasher::new(),
+        }
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> Result<(), RelationalError> {
+        let next = self.payload_bytes.checked_add(bytes.len()).ok_or_else(|| {
+            RelationalError::Admission("relational checkpoint size overflow".to_string())
+        })?;
+        if next > self.max_payload_bytes {
+            return Err(RelationalError::Admission(format!(
+                "relational checkpoint payload contains {next} bytes, exceeding limit {}",
+                self.max_payload_bytes
+            )));
+        }
+        self.writer.write_all(bytes).map_err(|error| {
+            RelationalError::Durability(format!(
+                "failed to stream relational checkpoint payload: {error}"
+            ))
+        })?;
+        self.hasher.update(bytes);
+        self.payload_bytes = next;
+        Ok(())
+    }
+
+    fn finish(self) -> (usize, skein_integrity::IntegrityDigest, &'a mut W) {
+        (self.payload_bytes, self.hasher.finish(), self.writer)
+    }
+}
+
 fn encode_envelope(
     magic: &[u8; 8],
     epoch: u64,
@@ -239,6 +461,18 @@ fn encode_envelope(
         RelationalError::Admission("relational durable record size overflow".to_string())
     })?;
     let mut output = Vec::with_capacity(total);
+    encode_envelope_header(&mut output, magic, epoch, payload_len, digest);
+    output.extend_from_slice(&payload);
+    Ok(output)
+}
+
+fn encode_envelope_header(
+    output: &mut Vec<u8>,
+    magic: &[u8; 8],
+    epoch: u64,
+    payload_len: u64,
+    digest: skein_integrity::IntegrityDigest,
+) {
     output.extend_from_slice(magic);
     output.extend_from_slice(&CODEC_VERSION.to_le_bytes());
     output.extend_from_slice(&0_u16.to_le_bytes());
@@ -246,8 +480,7 @@ fn encode_envelope(
     output.extend_from_slice(&payload_len.to_le_bytes());
     output.extend_from_slice(&digest.crc32c.get().to_le_bytes());
     output.extend_from_slice(digest.sha256.as_bytes());
-    output.extend_from_slice(&payload);
-    Ok(output)
+    debug_assert_eq!(output.len(), HEADER_BYTES);
 }
 
 fn decode_envelope<'a>(
@@ -625,65 +858,228 @@ impl Encoder {
     }
 }
 
-struct Decoder<'a> {
+trait DecodeInput {
+    fn len(&self) -> usize;
+    fn position(&self) -> usize;
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError>;
+    fn finish(self) -> Result<(), RelationalError>;
+}
+
+struct SliceDecodeInput<'a> {
     bytes: &'a [u8],
     offset: usize,
+}
+
+impl DecodeInput for SliceDecodeInput<'_> {
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn position(&self) -> usize {
+        self.offset
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError> {
+        let end = self.offset.checked_add(output.len()).ok_or_else(|| {
+            RelationalError::Corruption("durable decoder offset overflow".to_string())
+        })?;
+        let bytes = self.bytes.get(self.offset..end).ok_or_else(|| {
+            RelationalError::Corruption("truncated relational durable payload".to_string())
+        })?;
+        output.copy_from_slice(bytes);
+        self.offset = end;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RelationalError> {
+        Ok(())
+    }
+}
+
+struct FileDecodeInput {
+    file: File,
+    payload_len: usize,
+    offset: usize,
+    expected_crc32c: u32,
+    expected_sha256: [u8; SHA256_BYTES],
+    hasher: IntegrityHasher,
+}
+
+impl FileDecodeInput {
+    fn open_checkpoint(
+        path: &Path,
+        encoded_len: u64,
+        limits: RelationalDecodeLimits,
+    ) -> Result<(u64, Self), RelationalError> {
+        let mut file = File::open(path).map_err(|error| {
+            RelationalError::Durability(format!(
+                "failed to open relational checkpoint {}: {error}",
+                path.display()
+            ))
+        })?;
+        let mut header = [0_u8; HEADER_BYTES];
+        file.read_exact(&mut header).map_err(|error| {
+            RelationalError::Corruption(format!(
+                "failed to read relational checkpoint header {}: {error}",
+                path.display()
+            ))
+        })?;
+        if &header[..8] != CHECKPOINT_MAGIC {
+            return Err(RelationalError::Corruption(
+                "invalid relational durable record header".to_string(),
+            ));
+        }
+        let version = u16::from_le_bytes(header[8..10].try_into().expect("fixed header"));
+        let flags = u16::from_le_bytes(header[10..12].try_into().expect("fixed header"));
+        if version != CODEC_VERSION || flags != 0 {
+            return Err(RelationalError::Corruption(format!(
+                "unsupported relational durable codec version {version} or flags {flags}"
+            )));
+        }
+        let epoch = u64::from_le_bytes(header[12..20].try_into().expect("fixed header"));
+        let payload_len = usize::try_from(u64::from_le_bytes(
+            header[20..28].try_into().expect("fixed header"),
+        ))
+        .map_err(|_| {
+            RelationalError::Corruption("durable payload length overflows usize".into())
+        })?;
+        let expected_len = HEADER_BYTES
+            .checked_add(payload_len)
+            .ok_or_else(|| RelationalError::Corruption("durable record length overflow".into()))?;
+        if encoded_len != expected_len as u64 || expected_len > limits.max_record_bytes {
+            return Err(RelationalError::Corruption(format!(
+                "relational durable record length mismatch: expected {expected_len}, got {encoded_len}"
+            )));
+        }
+        let expected_crc32c = u32::from_le_bytes(header[28..32].try_into().expect("fixed header"));
+        let expected_sha256 = header[32..32 + SHA256_BYTES]
+            .try_into()
+            .expect("fixed SHA-256 digest");
+        Ok((
+            epoch,
+            Self {
+                file,
+                payload_len,
+                offset: 0,
+                expected_crc32c,
+                expected_sha256,
+                hasher: IntegrityHasher::new(),
+            },
+        ))
+    }
+}
+
+impl DecodeInput for FileDecodeInput {
+    fn len(&self) -> usize {
+        self.payload_len
+    }
+
+    fn position(&self) -> usize {
+        self.offset
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError> {
+        let end = self.offset.checked_add(output.len()).ok_or_else(|| {
+            RelationalError::Corruption("durable decoder offset overflow".to_string())
+        })?;
+        if end > self.payload_len {
+            return Err(RelationalError::Corruption(
+                "truncated relational durable payload".to_string(),
+            ));
+        }
+        self.file.read_exact(output).map_err(|error| {
+            RelationalError::Corruption(format!(
+                "failed to read relational durable payload: {error}"
+            ))
+        })?;
+        self.hasher.update(output);
+        self.offset = end;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RelationalError> {
+        let digest = self.hasher.finish();
+        if digest.crc32c.get() != self.expected_crc32c
+            || digest.sha256.as_bytes() != &self.expected_sha256
+        {
+            return Err(RelationalError::Corruption(
+                "relational durable record checksum mismatch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct DecodedOverflowSegment {
+    payload_offset: usize,
+    len: usize,
+    bytes: Option<Vec<u8>>,
+    digest: skein_integrity::IntegrityDigest,
+}
+
+struct Decoder<I> {
+    input: I,
     limits: RelationalDecodeLimits,
     rows: usize,
     values: usize,
     value_bytes: usize,
     overflow_bytes: usize,
+    retain_overflow_bytes: bool,
 }
 
-impl<'a> Decoder<'a> {
-    fn new(bytes: &'a [u8], limits: RelationalDecodeLimits) -> Self {
+impl<'a> Decoder<SliceDecodeInput<'a>> {
+    fn from_slice(
+        bytes: &'a [u8],
+        limits: RelationalDecodeLimits,
+        retain_overflow_bytes: bool,
+    ) -> Self {
+        Self::new(
+            SliceDecodeInput { bytes, offset: 0 },
+            limits,
+            retain_overflow_bytes,
+        )
+    }
+}
+
+impl<I: DecodeInput> Decoder<I> {
+    fn new(input: I, limits: RelationalDecodeLimits, retain_overflow_bytes: bool) -> Self {
         Self {
-            bytes,
-            offset: 0,
+            input,
             limits,
             rows: 0,
             values: 0,
             value_bytes: 0,
             overflow_bytes: 0,
+            retain_overflow_bytes,
         }
     }
 
-    fn finish(&self) -> Result<(), RelationalError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(RelationalError::Corruption(format!(
+    fn finish(self) -> Result<(), RelationalError> {
+        if self.input.position() != self.input.len() {
+            return Err(RelationalError::Corruption(format!(
                 "relational durable payload has {} trailing bytes",
-                self.bytes.len() - self.offset
-            )))
+                self.input.len() - self.input.position()
+            )));
         }
+        self.input.finish()
     }
 
-    fn take(&mut self, len: usize) -> Result<&'a [u8], RelationalError> {
-        let end = self.offset.checked_add(len).ok_or_else(|| {
-            RelationalError::Corruption("durable decoder offset overflow".to_string())
-        })?;
-        let value = self.bytes.get(self.offset..end).ok_or_else(|| {
-            RelationalError::Corruption("truncated relational durable payload".to_string())
-        })?;
-        self.offset = end;
-        Ok(value)
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], RelationalError> {
+        let mut bytes = [0_u8; N];
+        self.input.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     fn u8(&mut self) -> Result<u8, RelationalError> {
-        Ok(self.take(1)?[0])
+        Ok(self.fixed::<1>()?[0])
     }
 
     fn u32(&mut self) -> Result<u32, RelationalError> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("fixed integer"),
-        ))
+        Ok(u32::from_le_bytes(self.fixed()?))
     }
 
     fn u64(&mut self) -> Result<u64, RelationalError> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().expect("fixed integer"),
-        ))
+        Ok(u64::from_le_bytes(self.fixed()?))
     }
 
     fn count(&mut self, max: usize, context: &str) -> Result<usize, RelationalError> {
@@ -705,7 +1101,9 @@ impl<'a> Decoder<'a> {
                 "decoded {context} contains {len} bytes, exceeding limit {max}"
             )));
         }
-        Ok(self.take(len)?.to_vec())
+        let mut bytes = vec![0_u8; len];
+        self.input.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     fn string(&mut self) -> Result<String, RelationalError> {
@@ -723,14 +1121,42 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    fn overflow_bytes(&mut self) -> Result<Vec<u8>, RelationalError> {
+    fn overflow_segment(&mut self) -> Result<DecodedOverflowSegment, RelationalError> {
         let remaining = self
             .limits
             .max_overflow_bytes
             .saturating_sub(self.overflow_bytes);
-        let bytes = self.bounded_bytes(remaining, "overflow segment")?;
-        self.overflow_bytes += bytes.len();
-        Ok(bytes)
+        let len = usize::try_from(self.u64()?).map_err(|_| {
+            RelationalError::Corruption(
+                "decoded overflow segment length overflows usize".to_string(),
+            )
+        })?;
+        if len > remaining {
+            return Err(RelationalError::Admission(format!(
+                "decoded overflow segment contains {len} bytes, exceeding remaining overflow budget {remaining}"
+            )));
+        }
+        let payload_offset = self.input.position();
+        let mut bytes = self.retain_overflow_bytes.then(|| Vec::with_capacity(len));
+        let mut hasher = IntegrityHasher::new();
+        let mut remaining = len;
+        let mut chunk = [0_u8; 64 * 1024];
+        while remaining != 0 {
+            let chunk_len = remaining.min(chunk.len());
+            self.input.read_exact(&mut chunk[..chunk_len])?;
+            hasher.update(&chunk[..chunk_len]);
+            if let Some(bytes) = &mut bytes {
+                bytes.extend_from_slice(&chunk[..chunk_len]);
+            }
+            remaining -= chunk_len;
+        }
+        self.overflow_bytes += len;
+        Ok(DecodedOverflowSegment {
+            payload_offset,
+            len,
+            bytes,
+            digest: hasher.finish(),
+        })
     }
 
     fn string_list(&mut self) -> Result<Vec<String>, RelationalError> {
@@ -770,9 +1196,7 @@ impl<'a> Decoder<'a> {
                     "invalid boolean tag {tag}"
                 ))),
             },
-            2 => Ok(RelationalValue::BigInt(i64::from_le_bytes(
-                self.take(8)?.try_into().expect("fixed integer"),
-            ))),
+            2 => Ok(RelationalValue::BigInt(i64::from_le_bytes(self.fixed()?))),
             3 => Ok(RelationalValue::DoublePrecision(f64::from_bits(
                 self.u64()?,
             ))),

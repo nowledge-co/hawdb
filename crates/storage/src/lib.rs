@@ -79,7 +79,8 @@ pub use property_spill::{
     PropertySpillReader, PropertySpillWriter,
 };
 pub use relational::{
-    decode_relational_checkpoint, decode_relational_wal_batch, encode_relational_checkpoint,
+    decode_relational_checkpoint, decode_relational_checkpoint_file, decode_relational_wal_batch,
+    encode_relational_checkpoint, encode_relational_checkpoint_to_writer,
     encode_relational_wal_batch, RelationalCheckpoint, RelationalColumnSchema,
     RelationalComparisonOp, RelationalConflictAction, RelationalDecodeLimits, RelationalError,
     RelationalForeignKeySchema, RelationalHydrationBudget, RelationalIndexSchema,

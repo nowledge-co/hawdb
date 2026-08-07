@@ -1,4 +1,7 @@
-use crate::{SnapshotCommitError, SnapshotCoordinator, SnapshotReadGuard};
+use crate::{
+    FileSegmentRangeReader, SegmentRangeReader, SegmentReadRange, SnapshotCommitError,
+    SnapshotCoordinator, SnapshotReadGuard,
+};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -10,7 +13,8 @@ mod codec;
 mod overflow;
 
 pub use codec::{
-    decode_relational_checkpoint, decode_relational_wal_batch, encode_relational_checkpoint,
+    decode_relational_checkpoint, decode_relational_checkpoint_file, decode_relational_wal_batch,
+    encode_relational_checkpoint, encode_relational_checkpoint_to_writer,
     encode_relational_wal_batch, RelationalCheckpoint, RelationalDecodeLimits, RelationalWalBatch,
 };
 pub use overflow::{
@@ -628,7 +632,33 @@ impl<'a> RelationalIndexPosting<'a> {
 pub struct RelationalState {
     schemas: BTreeMap<String, Arc<RelationalTableSchema>>,
     segments: BTreeMap<String, Arc<RelationalTableSegment>>,
-    overflow_segments: BTreeMap<String, Arc<[u8]>>,
+    overflow_segments: BTreeMap<String, RelationalOverflowSegment>,
+}
+
+#[derive(Debug, Clone)]
+enum RelationalOverflowSegment {
+    Inline(Arc<[u8]>),
+    FileRange {
+        reader: Arc<FileSegmentRangeReader>,
+        range: SegmentReadRange,
+    },
+}
+
+impl RelationalOverflowSegment {
+    fn read(&self) -> Result<Arc<[u8]>, RelationalError> {
+        match self {
+            Self::Inline(bytes) => Ok(Arc::clone(bytes)),
+            Self::FileRange { reader, range } => reader.read_range(range).map_err(|error| {
+                RelationalError::Corruption(format!(
+                    "failed to read file-backed overflow segment: {error}"
+                ))
+            }),
+        }
+    }
+
+    fn is_file_backed(&self) -> bool {
+        matches!(self, Self::FileRange { .. })
+    }
 }
 
 impl RelationalState {
@@ -774,14 +804,31 @@ impl RelationalState {
         key: &RelationalKey,
         budget: &mut RelationalHydrationBudget,
     ) -> Result<Option<RelationalRow>, RelationalError> {
+        self.hydrate_row_with_context(table, key, budget, None)
+    }
+
+    pub fn hydrate_row_with_context(
+        &self,
+        table: &str,
+        key: &RelationalKey,
+        budget: &mut RelationalHydrationBudget,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
+    ) -> Result<Option<RelationalRow>, RelationalError> {
         let Some(row) = self.row(table, key) else {
             return Ok(None);
         };
-        overflow::hydrate_row(self, row, budget).map(Some)
+        overflow::hydrate_row(self, row, budget, task_context).map(Some)
     }
 
     pub fn overflow_segment_count(&self) -> usize {
         self.overflow_segments.len()
+    }
+
+    pub fn file_backed_overflow_segment_count(&self) -> usize {
+        self.overflow_segments
+            .values()
+            .filter(|segment| segment.is_file_backed())
+            .count()
     }
 }
 

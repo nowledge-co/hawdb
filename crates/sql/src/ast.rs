@@ -2,6 +2,7 @@ use skein_core::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlStatement {
+    Explain(SqlExplainStatement),
     Select(SelectStatement),
     Insert(InsertStatement),
     Update(UpdateStatement),
@@ -9,6 +10,12 @@ pub enum SqlStatement {
     CreateTable(CreateTableStatement),
     CreateIndex(CreateIndexStatement),
     AlterTableAddColumn(AlterTableAddColumnStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlExplainStatement {
+    pub analyze: bool,
+    pub statement: Box<SqlStatement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

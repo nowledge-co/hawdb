@@ -278,6 +278,44 @@ fn prepares_dense_repeated_postgres_parameters() {
 }
 
 #[test]
+fn parses_explain_and_preserves_inner_parameters() {
+    let prepared = prepare_postgres_sql(
+        "EXPLAIN ANALYZE SELECT id FROM content_documents WHERE id = $1 LIMIT $2",
+    )
+    .expect("supported EXPLAIN ANALYZE statement");
+    assert_eq!(
+        prepared
+            .parameters
+            .iter()
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let SqlStatement::Explain(explain) = prepared.statement else {
+        panic!("expected EXPLAIN statement");
+    };
+    assert!(explain.analyze);
+    assert!(matches!(*explain.statement, SqlStatement::Select(_)));
+}
+
+#[test]
+fn rejects_unsupported_explain_options_and_mutations() {
+    let verbose = parse_postgres_sql("EXPLAIN VERBOSE SELECT id FROM content_documents")
+        .expect_err("EXPLAIN VERBOSE must remain outside the supported contract");
+    assert!(verbose
+        .to_string()
+        .contains("unsupported PostgreSQL EXPLAIN option"));
+
+    let mutation = parse_postgres_sql(
+        "EXPLAIN UPDATE content_documents SET content = 'changed' WHERE id = 'doc-1'",
+    )
+    .expect_err("EXPLAIN only supports read statements");
+    assert!(mutation
+        .to_string()
+        .contains("EXPLAIN only supports relational SELECT"));
+}
+
+#[test]
 fn rejects_gapped_postgres_parameters() {
     let error =
         prepare_postgres_sql("SELECT * FROM thread_messages WHERE thread_storage_id = $1 LIMIT $3")

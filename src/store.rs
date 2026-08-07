@@ -29,8 +29,8 @@ pub use doctor::{
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
 use skein_storage::{
-    decode_relational_checkpoint, decode_relational_wal_batch, durable_replace_file,
-    encode_relational_checkpoint, encode_relational_wal_batch, sync_parent_directory,
+    decode_relational_checkpoint_file, decode_relational_wal_batch, durable_replace_file,
+    encode_relational_checkpoint_to_writer, encode_relational_wal_batch, sync_parent_directory,
     AdjacencyPostingList, CanonicalEndpointDirection, CanonicalNodeIterator,
     CanonicalRelationshipIterator, CanonicalSegmentError, DatabaseDirectoryLease,
     RelationalDecodeLimits, RelationalMutationLimits, RelationalOverflowConfig, RelationalState,
@@ -5919,6 +5919,7 @@ impl GraphStore {
             canonical_adjacency,
             persistent_property_projection,
             source_scan_manifest,
+            checkpoint_relational_state,
         ) = {
             let durable = self.durable.as_mut().expect("durable store must exist");
             match projected_graph_artifacts.as_deref() {
@@ -6025,16 +6026,32 @@ impl GraphStore {
                 })
                 .transpose()?
                 .flatten();
+            let checkpoint_relational_state = relational_checkpoint_artifact
+                .map(|_| {
+                    decode_relational_checkpoint_file(
+                        &durable
+                            .root_path()
+                            .join(relational_checkpoint_generation_file(generation)),
+                        RelationalDecodeLimits::checkpoint(),
+                    )
+                    .map(|checkpoint| checkpoint.state)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))
+                })
+                .transpose()?;
             (
                 durable.canonical_segments.clone(),
                 durable.canonical_adjacency.clone(),
                 durable.persistent_property_projection.clone(),
                 source_scan_manifest,
+                checkpoint_relational_state,
             )
         };
         self.projected_graph_artifacts = artifacts.into();
         self.source_scan_manifest = source_scan_manifest.into();
         self.checkpoint_statistics = checkpoint_statistics;
+        if let Some(relational_state) = checkpoint_relational_state {
+            self.relational_state = relational_state;
+        }
         if checkpoint_out_of_core {
             self.canonical_base = canonical_base;
             self.canonical_adjacency = canonical_adjacency;
@@ -10507,7 +10524,7 @@ impl GraphStore {
                 "relational checkpoint",
             )?;
             let checkpoint =
-                decode_relational_checkpoint(&bytes, RelationalDecodeLimits::checkpoint())
+                decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
                     .map_err(|error| SkeinError::Storage(error.to_string()))?;
             if checkpoint.epoch != self.commit_epoch {
                 return Err(SkeinError::Storage(format!(
@@ -11633,9 +11650,8 @@ impl DurableStore {
                 expected_sha256,
                 "relational checkpoint",
             )?;
-            let bytes = fs::read(path)?;
             let checkpoint =
-                decode_relational_checkpoint(&bytes, RelationalDecodeLimits::checkpoint())
+                decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
                     .map_err(|error| SkeinError::Storage(error.to_string()))?;
             if checkpoint.epoch != self.checkpoint_commit_epoch {
                 return Err(SkeinError::Storage(format!(
@@ -12209,22 +12225,20 @@ impl DurableStore {
             }
             return Ok(None);
         }
-        let bytes = encode_relational_checkpoint(commit_epoch, state)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
         let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
-        if bytes.len() > max_bytes {
-            return Err(SkeinError::Storage(format!(
-                "relational checkpoint contains {} bytes, exceeding max_record_bytes {max_bytes}",
-                bytes.len()
-            )));
-        }
-        let metadata = DurableArtifactMetadata::for_bytes(&bytes);
         let tmp_path = path.with_extension("skein.tmp");
         {
             let mut file = File::create(&tmp_path)?;
-            file.write_all(&bytes)?;
+            encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
+                .map_err(|error| SkeinError::Storage(error.to_string()))?;
             file.sync_all()?;
         }
+        let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len,
+            encoded_checksum,
+            encoded_sha256,
+        };
         durable_replace_file(&tmp_path, &path)?;
         Ok(Some(metadata))
     }
@@ -13905,8 +13919,8 @@ fn validate_backup_files(root: &Path, files: &[BackupFileEntry], generation: u64
                     relational.encoded_len
                 )));
             }
-            let relational_checkpoint = decode_relational_checkpoint(
-                &fs::read(root.join(&relational_name))?,
+            let relational_checkpoint = decode_relational_checkpoint_file(
+                &root.join(&relational_name),
                 RelationalDecodeLimits::checkpoint(),
             )
             .map_err(|error| SkeinError::Storage(error.to_string()))?;
@@ -18443,10 +18457,10 @@ mod tests {
     use skein_integrity::integrity_digest;
     use skein_storage::{
         DurabilityPolicy, GraphMutation, MutationLimits, RelationalColumnSchema,
-        RelationalInsertMode, RelationalRow, RelationalScalarType, RelationalTableSchema,
-        RelationalTransaction, RelationalValue, RelationalWrite, ScanPredicate,
-        ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest, StorageResidencyMode,
-        WalReplayConfig,
+        RelationalHydrationBudget, RelationalInsertMode, RelationalKey, RelationalRow,
+        RelationalScalarType, RelationalTableSchema, RelationalTransaction, RelationalValue,
+        RelationalWrite, ScanPredicate, ScanSegmentAccessPlan, ScanSegmentFallback,
+        ScanSegmentManifest, StorageResidencyMode, WalReplayConfig,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, OpenOptions};
@@ -18554,7 +18568,7 @@ mod tests {
                             table: "messages".to_string(),
                             rows: vec![RelationalRow::new(vec![
                                 RelationalValue::Text("message-1".to_string()),
-                                RelationalValue::Text("payload".to_string()),
+                                RelationalValue::Text("payload".repeat(1_024)),
                             ])],
                             mode: RelationalInsertMode::Error,
                         }],
@@ -18565,6 +18579,12 @@ mod tests {
             assert_eq!(store.commit_epoch(), 2);
             store.checkpoint(&catalog).expect("publish checkpoint");
             assert!(path.join("relational.1.skein").exists());
+            assert_eq!(
+                store
+                    .relational_state()
+                    .file_backed_overflow_segment_count(),
+                1
+            );
             store
                 .backup_to(&catalog, &backup)
                 .expect("back up relational checkpoint");
@@ -18577,6 +18597,25 @@ mod tests {
             assert_eq!(store.commit_epoch(), 2);
             assert_eq!(store.nodes.len(), 2);
             assert_eq!(store.relational_state().row_count("messages"), 1);
+            assert_eq!(
+                store
+                    .relational_state()
+                    .file_backed_overflow_segment_count(),
+                1
+            );
+            let hydrated = store
+                .relational_state()
+                .hydrate_row(
+                    "messages",
+                    &RelationalKey(vec![RelationalValue::Text("message-1".to_string())]),
+                    &mut RelationalHydrationBudget::default(),
+                )
+                .expect("hydrate file-backed row")
+                .expect("message row");
+            assert_eq!(
+                hydrated.values()[1],
+                RelationalValue::Text("payload".repeat(1_024))
+            );
         }
 
         restore_storage_backup(&backup, &restored).expect("restore unified backup");
@@ -18587,6 +18626,12 @@ mod tests {
             assert_eq!(store.commit_epoch(), 2);
             assert_eq!(store.nodes.len(), 2);
             assert_eq!(store.relational_state().row_count("messages"), 1);
+            assert_eq!(
+                store
+                    .relational_state()
+                    .file_backed_overflow_segment_count(),
+                1
+            );
         }
 
         fs::remove_dir_all(path).expect("remove test store");

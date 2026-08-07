@@ -31,6 +31,38 @@ pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
 
 fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
     match statement {
+        ParserStatement::Explain {
+            describe_alias,
+            analyze,
+            verbose,
+            query_plan,
+            estimate,
+            statement,
+            format,
+            options,
+        } => {
+            if !matches!(describe_alias, sqlparser::ast::DescribeAlias::Explain)
+                || *verbose
+                || *query_plan
+                || *estimate
+                || format.is_some()
+                || options.as_ref().is_some_and(|options| !options.is_empty())
+            {
+                return Err(SkeinError::Semantic(
+                    "unsupported PostgreSQL EXPLAIN option".to_string(),
+                ));
+            }
+            let statement = lower_statement(statement)?;
+            if !matches!(statement, SqlStatement::Select(_)) {
+                return Err(SkeinError::Semantic(
+                    "EXPLAIN only supports relational SELECT".to_string(),
+                ));
+            }
+            Ok(SqlStatement::Explain(SqlExplainStatement {
+                analyze: *analyze,
+                statement: Box::new(statement),
+            }))
+        }
         ParserStatement::Query(query) => lower_select_statement(query),
         ParserStatement::Insert(insert) => lower_insert_statement(insert),
         ParserStatement::Update(update) => lower_update_statement(update),

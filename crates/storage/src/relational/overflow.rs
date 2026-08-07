@@ -1,6 +1,6 @@
 use super::{
-    RelationalError, RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
-    RelationalValue,
+    RelationalError, RelationalOverflowSegment, RelationalRow, RelationalScalarType,
+    RelationalState, RelationalTableSchema, RelationalValue,
 };
 use skein_integrity::{crc32c, integrity_digest};
 use std::collections::BTreeSet;
@@ -110,7 +110,7 @@ pub(super) fn externalize_row(
         state
             .overflow_segments
             .entry(digest)
-            .or_insert_with(|| Arc::from(envelope));
+            .or_insert_with(|| RelationalOverflowSegment::Inline(Arc::from(envelope)));
         *value = RelationalValue::Overflow(reference);
     }
     Ok(())
@@ -120,7 +120,9 @@ pub(super) fn hydrate_row(
     state: &RelationalState,
     row: &RelationalRow,
     budget: &mut RelationalHydrationBudget,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<RelationalRow, RelationalError> {
+    runtime_checkpoint(task_context)?;
     let mut staged_budget = *budget;
     if staged_budget.hydrated_rows >= staged_budget.max_rows {
         return Err(RelationalError::Admission(format!(
@@ -134,7 +136,7 @@ pub(super) fn hydrate_row(
         let RelationalValue::Overflow(reference) = value else {
             continue;
         };
-        let envelope = state
+        let segment = state
             .overflow_segments
             .get(&reference.digest)
             .ok_or_else(|| {
@@ -143,7 +145,9 @@ pub(super) fn hydrate_row(
                     reference.digest
                 ))
             })?;
-        let hydrated = decode_envelope(reference, envelope, &mut staged_budget)?;
+        runtime_checkpoint(task_context)?;
+        let envelope = segment.read()?;
+        let hydrated = decode_envelope(reference, &envelope, &mut staged_budget, task_context)?;
         *value = match reference.scalar_type {
             RelationalScalarType::Text => {
                 RelationalValue::Text(String::from_utf8(hydrated).map_err(|error| {
@@ -162,6 +166,16 @@ pub(super) fn hydrate_row(
     }
     *budget = staged_budget;
     Ok(RelationalRow::new(values))
+}
+
+fn runtime_checkpoint(
+    task_context: Option<&skein_core::RuntimeTaskContext>,
+) -> Result<(), RelationalError> {
+    task_context.map_or(Ok(()), |context| {
+        context.checkpoint().map_err(|reason| {
+            RelationalError::Admission(format!("relational hydration stopped: {reason}"))
+        })
+    })
 }
 
 pub(super) fn prune_unreachable_segments(state: &mut RelationalState) {
@@ -263,7 +277,9 @@ fn decode_envelope(
     reference: &RelationalOverflowRef,
     envelope: &[u8],
     budget: &mut RelationalHydrationBudget,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<Vec<u8>, RelationalError> {
+    runtime_checkpoint(task_context)?;
     if envelope.len() < OVERFLOW_HEADER_BYTES || &envelope[..8] != OVERFLOW_MAGIC {
         return Err(RelationalError::Corruption(
             "invalid overflow envelope header".to_string(),
@@ -314,13 +330,19 @@ fn decode_envelope(
         let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
             RelationalError::Corruption(format!("failed to initialize overflow decoder: {error}"))
         })?;
+        let mut decoder = decoder.take(uncompressed_bytes.saturating_add(1) as u64);
         let mut decoded = Vec::with_capacity(uncompressed_bytes.min(1024 * 1024));
-        decoder
-            .take(uncompressed_bytes.saturating_add(1) as u64)
-            .read_to_end(&mut decoded)
-            .map_err(|error| {
+        let mut chunk = [0_u8; 64 * 1024];
+        loop {
+            runtime_checkpoint(task_context)?;
+            let read = decoder.read(&mut chunk).map_err(|error| {
                 RelationalError::Corruption(format!("failed to decode overflow value: {error}"))
             })?;
+            if read == 0 {
+                break;
+            }
+            decoded.extend_from_slice(&chunk[..read]);
+        }
         decoded
     };
     if decoded.len() != uncompressed_bytes || crc32c(&decoded).get() != checksum {
@@ -399,7 +421,7 @@ mod tests {
         };
         let mut budget = RelationalHydrationBudget::default();
         assert_eq!(
-            decode_envelope(&reference, &envelope, &mut budget).unwrap(),
+            decode_envelope(&reference, &envelope, &mut budget, None).unwrap(),
             raw
         );
         assert_eq!(budget.compressed_bytes, raw.len());

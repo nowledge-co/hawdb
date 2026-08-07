@@ -15,13 +15,11 @@ use skein_storage::{
     RelationalWrite,
 };
 
-#[allow(dead_code)]
 mod query;
 
-#[allow(unused_imports)]
-pub(crate) use query::{
-    execute_relational_query_sql, RelationalQueryLimits, RelationalQueryOutput,
-};
+#[cfg(test)]
+pub(crate) use query::execute_relational_query_sql;
+pub(crate) use query::{execute_relational_query_sql_with_runtime, RelationalQueryLimits};
 
 pub(crate) fn compile_schema_corpus(
     corpus: &ContentStoreSqlCorpus,
@@ -247,6 +245,7 @@ fn compile_relational_mutation(
             }
         }
         SqlStatement::Select(_)
+        | SqlStatement::Explain(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => {
@@ -677,6 +676,24 @@ mod tests {
             .expect("aggregate with one output row scans the configured intermediate budget");
         assert_eq!(count.rows[0]["message_count"], Value::Int(2));
 
+        let explain = database
+            .query_sql_with_params(
+                "EXPLAIN SELECT id FROM public.messages WHERE id = $1",
+                &[Value::String("message-1".to_string())],
+            )
+            .expect("plan relational SQL through the public query entrypoint");
+        assert!(explain.rows.iter().any(|row| {
+            matches!(
+                row.get("access object"),
+                Some(Value::String(access)) if access.contains("primary_key")
+            )
+        }));
+
+        let analyze = database
+            .query_sql("EXPLAIN ANALYZE SELECT id FROM public.messages ORDER BY id")
+            .expect("profile relational SQL through the public query entrypoint");
+        assert_eq!(analyze.rows[0]["actRows"], Value::Int(2));
+
         let snapshot = database.begin_read_transaction();
         let snapshot_output = snapshot
             .query_sql("SELECT id FROM public.messages ORDER BY id")
@@ -709,6 +726,10 @@ mod tests {
                 .query_sql("SELECT id FROM public.messages")
                 .expect("read staged relational row");
             assert_eq!(staged.rows.len(), 1);
+            let staged_plan = transaction
+                .query_sql("EXPLAIN SELECT id FROM public.messages")
+                .expect("plan against staged relational state");
+            assert!(!staged_plan.rows.is_empty());
             transaction.commit().expect("commit mixed transaction");
         }
 
@@ -835,6 +856,8 @@ mod tests {
                     max_output_rows: statement.max_rows,
                     max_output_payload_bytes: statement.max_payload_bytes,
                     max_intermediate_rows: 1_000_000,
+                    batch_rows: std::num::NonZeroUsize::new(256)
+                        .expect("non-zero batch row budget"),
                     blocking_operator_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024)
                         .expect("non-zero aggregate memory budget"),
                     hydration: skein_storage::RelationalHydrationBudget::default(),
@@ -1248,10 +1271,207 @@ mod tests {
             max_output_rows,
             max_output_payload_bytes,
             max_intermediate_rows: 10_000,
+            batch_rows: std::num::NonZeroUsize::new(256).expect("non-zero batch row budget"),
             blocking_operator_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024)
                 .expect("non-zero aggregate memory budget"),
             hydration: skein_storage::RelationalHydrationBudget::default(),
         }
+    }
+
+    #[test]
+    fn relational_sort_and_distinct_spill_and_pipeline_cancellation_are_bounded() {
+        let store = RelationalStore::default();
+        let rows = (0..256)
+            .rev()
+            .map(|value| {
+                RelationalRow::new(vec![
+                    RelationalValue::BigInt(value),
+                    RelationalValue::BigInt(value % 17),
+                ])
+            })
+            .collect();
+        store
+            .commit(
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "spill_rows".to_string(),
+                            columns: vec![
+                                RelationalColumnSchema {
+                                    name: "id".to_string(),
+                                    scalar_type: RelationalScalarType::BigInt,
+                                    nullable: false,
+                                    default: None,
+                                },
+                                RelationalColumnSchema {
+                                    name: "value".to_string(),
+                                    scalar_type: RelationalScalarType::BigInt,
+                                    nullable: false,
+                                    default: None,
+                                },
+                            ],
+                            primary_key: vec!["id".to_string()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        }),
+                        RelationalWrite::Insert {
+                            table: "spill_rows".to_string(),
+                            rows,
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+                |_, _| Ok(()),
+            )
+            .expect("materialize spill fixture");
+        let snapshot = store.snapshot().expect("spill fixture snapshot");
+        let mut limits = query_limits(256, 64 * 1024);
+        limits.batch_rows = std::num::NonZeroUsize::new(8).expect("non-zero batch rows");
+        limits.blocking_operator_bytes =
+            std::num::NonZeroUsize::new(16 * 1_024).expect("non-zero blocking memory");
+        let memory = skein_executor::ExecutionMemoryConfig {
+            batch_rows: limits.batch_rows,
+            blocking_operator_bytes: limits.blocking_operator_bytes,
+            min_spill_free_bytes: std::num::NonZeroU64::MIN,
+            spill_directory: std::env::temp_dir().join(format!(
+                "skein-relational-spill-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_nanos()
+            )),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
+
+        let sorted = execute_relational_query_sql_with_runtime(
+            "SELECT id FROM spill_rows ORDER BY value ASC, id ASC",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            None,
+        )
+        .expect("spill-backed relational sort");
+        assert_eq!(sorted.rows.len(), 256);
+        assert!(sorted
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "TopNExec" && report.spill_run_count > 0));
+
+        let distinct = execute_relational_query_sql_with_runtime(
+            "SELECT DISTINCT id FROM spill_rows ORDER BY id ASC",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            None,
+        )
+        .expect("spill-backed relational distinct");
+        assert_eq!(distinct.rows.len(), 256);
+        assert!(distinct
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "DistinctExec" && report.spill_run_count > 0));
+
+        let distinct_count = execute_relational_query_sql_with_runtime(
+            "SELECT COUNT(DISTINCT id) AS item_count FROM spill_rows",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            None,
+        )
+        .expect("spill-backed relational distinct aggregate");
+        assert_eq!(distinct_count.rows[0]["item_count"], Value::Int(256));
+        assert!(distinct_count
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "DistinctExec" && report.spill_run_count > 0));
+
+        let grouped = execute_relational_query_sql_with_runtime(
+            "SELECT value, COUNT(*) AS item_count FROM spill_rows GROUP BY value",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            None,
+        )
+        .expect("spill-backed grouped relational aggregate");
+        assert_eq!(grouped.rows.len(), 17);
+        assert_eq!(
+            grouped
+                .rows
+                .iter()
+                .map(|row| match row["item_count"] {
+                    Value::Int(value) => value,
+                    ref value => panic!("unexpected aggregate value {value:?}"),
+                })
+                .sum::<i64>(),
+            256
+        );
+        assert!(grouped
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "SortExec" && report.spill_run_count > 0));
+
+        let explain_cancellation = skein_core::RuntimeCancellationToken::new();
+        explain_cancellation.cancel();
+        let explain_context =
+            skein_core::RuntimeTaskContext::without_deadline(explain_cancellation);
+        let explained = execute_relational_query_sql_with_runtime(
+            "EXPLAIN SELECT id FROM spill_rows WHERE id = $1",
+            &[Value::Int(7)],
+            snapshot.value(),
+            limits,
+            &memory,
+            Some(&explain_context),
+        )
+        .expect("plain EXPLAIN must plan without executing the cancelled scan");
+        assert!(explained.rows.iter().any(|row| {
+            matches!(
+                row.get("access object"),
+                Some(Value::String(access)) if access.contains("primary_key")
+            )
+        }));
+        assert!(explained
+            .rows
+            .iter()
+            .all(|row| !row.contains_key("actRows")));
+
+        let analyzed = execute_relational_query_sql_with_runtime(
+            "EXPLAIN ANALYZE SELECT id FROM spill_rows ORDER BY value ASC, id ASC",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            None,
+        )
+        .expect("EXPLAIN ANALYZE must expose measured spill evidence");
+        assert_eq!(analyzed.rows[0]["actRows"], Value::Int(256));
+        assert!(analyzed.rows.iter().any(|row| {
+            matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec"))
+                && !matches!(row.get("disk"), None | Some(Value::Null))
+        }));
+
+        let cancellation = skein_core::RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+        let error = execute_relational_query_sql_with_runtime(
+            "SELECT id FROM spill_rows",
+            &[],
+            snapshot.value(),
+            limits,
+            &memory,
+            Some(&task_context),
+        )
+        .expect_err("cancelled relational scan must stop at a batch checkpoint");
+        assert!(error
+            .to_string()
+            .contains("runtime task stopped: cancelled"));
+
+        std::fs::remove_dir_all(&memory.spill_directory).expect("remove spill test directory");
     }
 
     fn text(value: &str) -> Value {

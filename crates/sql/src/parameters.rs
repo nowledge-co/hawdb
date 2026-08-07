@@ -51,6 +51,9 @@ pub fn prepare_postgres_sql(input: &str) -> Result<PreparedPostgresStatement> {
 
 fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeSet<usize>) {
     match statement {
+        SqlStatement::Explain(explain) => {
+            collect_statement_parameters(&explain.statement, positions)
+        }
         SqlStatement::Select(select) => collect_select_parameters(select, positions),
         SqlStatement::Insert(insert) => collect_insert_parameters(insert, positions),
         SqlStatement::Update(update) => collect_update_parameters(update, positions),

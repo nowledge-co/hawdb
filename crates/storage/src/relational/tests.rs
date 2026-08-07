@@ -628,11 +628,14 @@ fn overflow_digest_mismatch_fails_closed() {
         .expect("insert payload");
     let snapshot = store.snapshot().expect("snapshot");
     let mut corrupt = snapshot.value().clone();
-    let envelope = corrupt
+    let segment = corrupt
         .overflow_segments
         .values_mut()
         .next()
         .expect("overflow envelope");
+    let RelationalOverflowSegment::Inline(envelope) = segment else {
+        panic!("newly staged overflow must be inline");
+    };
     let bytes = Arc::make_mut(envelope);
     bytes[bytes.len() - 1] ^= 0xff;
     let key = RelationalKey(vec![RelationalValue::Text("message-1".to_string())]);
@@ -640,6 +643,16 @@ fn overflow_digest_mismatch_fails_closed() {
     let error = corrupt
         .hydrate_row("messages", &key, &mut RelationalHydrationBudget::default())
         .expect_err("corrupt overflow must fail closed");
+    assert!(matches!(error, RelationalError::Corruption(_)));
+
+    let mut checkpoint = std::io::Cursor::new(Vec::new());
+    let error = encode_relational_checkpoint_to_writer(
+        &mut checkpoint,
+        snapshot.epoch(),
+        &corrupt,
+        RelationalDecodeLimits::checkpoint().max_record_bytes,
+    )
+    .expect_err("checkpoint publication must reject a corrupt overflow segment");
     assert!(matches!(error, RelationalError::Corruption(_)));
 }
 
@@ -756,6 +769,82 @@ fn checkpoint_restores_catalog_rows_overflow_and_epoch() {
         hydrated.values()[1],
         RelationalValue::Text("payload".repeat(64))
     );
+}
+
+#[test]
+fn checkpoint_file_keeps_overflow_out_of_resident_state_and_checks_size_before_read() {
+    let overflow_config = RelationalOverflowConfig {
+        threshold_bytes: 1,
+        ..RelationalOverflowConfig::default()
+    };
+    let source =
+        RelationalStore::with_overflow_config(RelationalMutationLimits::default(), overflow_config);
+    source
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    source
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".to_string(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("message-1".to_string()),
+                        RelationalValue::Text("payload".repeat(64)),
+                    ])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("insert payload row");
+    let checkpoint = source.encode_checkpoint().expect("encode checkpoint");
+    let snapshot = source.snapshot().expect("checkpoint source snapshot");
+    let mut undersized_writer = std::io::Cursor::new(Vec::new());
+    let error = encode_relational_checkpoint_to_writer(
+        &mut undersized_writer,
+        snapshot.epoch(),
+        snapshot.value(),
+        checkpoint.len() - 1,
+    )
+    .expect_err("streaming checkpoint writer must enforce its byte admission");
+    assert!(matches!(error, RelationalError::Admission(_)));
+    let path = std::env::temp_dir().join(format!(
+        "skein-relational-checkpoint-{}-{}.skein",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    std::fs::write(&path, &checkpoint).expect("write checkpoint fixture");
+
+    let decoded = decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
+        .expect("decode file-backed checkpoint");
+    assert_eq!(decoded.state.file_backed_overflow_segment_count(), 1);
+    let key = RelationalKey(vec![RelationalValue::Text("message-1".to_string())]);
+    let hydrated = decoded
+        .state
+        .hydrate_row("messages", &key, &mut RelationalHydrationBudget::default())
+        .expect("hydrate file-backed overflow")
+        .expect("payload row");
+    assert_eq!(
+        hydrated.values()[1],
+        RelationalValue::Text("payload".repeat(64))
+    );
+
+    let mut limits = RelationalDecodeLimits::checkpoint();
+    limits.max_record_bytes = checkpoint.len() - 1;
+    let error = decode_relational_checkpoint_file(&path, limits)
+        .expect_err("oversized checkpoint must fail before allocation");
+    assert!(matches!(error, RelationalError::Admission(_)));
+
+    let mut corrupt = checkpoint;
+    *corrupt.last_mut().expect("checkpoint payload byte") ^= 0xff;
+    std::fs::write(&path, corrupt).expect("write corrupted checkpoint fixture");
+    let error = decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
+        .expect_err("streaming file decoder must reject corrupted payloads");
+    assert!(matches!(error, RelationalError::Corruption(_)));
+    std::fs::remove_file(path).expect("remove checkpoint fixture");
 }
 
 #[test]

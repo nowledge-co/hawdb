@@ -271,6 +271,7 @@ fn relational_query_limits(
         max_output_rows,
         max_output_payload_bytes,
         max_intermediate_rows,
+        batch_rows: config.execution_memory.batch_rows,
         blocking_operator_bytes: config.execution_memory.blocking_operator_bytes,
         hydration: skein_storage::RelationalHydrationBudget {
             max_rows: max_output_rows,
@@ -20121,12 +20122,17 @@ impl DatabaseTransaction<'_> {
         parameters: &[Value],
     ) -> Result<QueryOutput> {
         let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-        if matches!(prepared.statement, crate::sql::SqlStatement::Select(_)) {
-            let output = crate::relational_sql::execute_relational_query_sql(
+        if matches!(
+            prepared.statement,
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        ) {
+            let output = crate::relational_sql::execute_relational_query_sql_with_runtime(
                 sql_text,
                 parameters,
                 &self.relational_state,
                 relational_query_limits(&self.db.config, self.db.config.max_read_result_rows),
+                &self.db.config.execution_memory,
+                None,
             )?;
             return Ok(QueryOutput { rows: output.rows });
         }
@@ -20928,11 +20934,13 @@ impl DatabaseReadTransaction {
             );
         }
 
-        let output = crate::relational_sql::execute_relational_query_sql(
+        let output = crate::relational_sql::execute_relational_query_sql_with_runtime(
             sql_text,
             parameters,
             self.store.relational_state(),
             relational_query_limits(&self.config, max_rows),
+            &self.config.execution_memory,
+            None,
         )?;
         Ok(QueryOutput { rows: output.rows })
     }
