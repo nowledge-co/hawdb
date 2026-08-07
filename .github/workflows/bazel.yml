@@ -113,6 +113,7 @@ jobs:
             //crates/plan:skein_plan_tests \
             //crates/qos:skein_qos_tests \
             //crates/query:skein_query_tests \
+            //crates/qualification:skein_content_store_contract_tests \
             //crates/qualification:skein_qualification_tests \
             //crates/qualification:skein_soak_cli_tests \
             //crates/readiness:skein_readiness_tests \

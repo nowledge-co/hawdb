@@ -25,3 +25,7 @@ path = "src/main.rs"
 [[bin]]
 name = "skein-qualification-bundle"
 path = "src/bin/release_bundle.rs"
+
+[[bin]]
+name = "skein-content-store-contract"
+path = "src/bin/content_store_contract.rs"

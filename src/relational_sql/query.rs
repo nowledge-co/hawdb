@@ -48,23 +48,6 @@ pub(crate) struct RelationalQueryOutput {
     pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
 }
 
-#[cfg(test)]
-pub(crate) fn execute_relational_query_sql(
-    sql: &str,
-    parameters: &[Value],
-    state: &RelationalState,
-    limits: RelationalQueryLimits,
-) -> Result<RelationalQueryOutput> {
-    execute_relational_query_sql_with_runtime(
-        sql,
-        parameters,
-        state,
-        limits,
-        &skein_executor::ExecutionMemoryConfig::default(),
-        None,
-    )
-}
-
 pub(crate) fn execute_relational_query_sql_with_runtime(
     sql: &str,
     parameters: &[Value],

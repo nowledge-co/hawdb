@@ -1,5 +1,5 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -8,6 +8,7 @@ rust_library(
     crate_name = "skein_qualification",
     crate_root = "src/lib.rs",
     srcs = [
+        "src/content_store_sql_corpus.rs",
         "src/lib.rs",
         "src/production_blocking.rs",
         "src/production_graph.rs",
@@ -27,12 +28,27 @@ rust_library(
         "src/release_bundle/tests.rs",
         "src/release_bundle/vector.rs",
     ],
+    compile_data = [
+        "fixtures/nowledge_content_store/content_store_schema_v1.sql",
+        "fixtures/nowledge_content_store/postgres_statement_corpus_v1.json",
+    ],
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//:skein",
         "//crates/query:skein_query",
     ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_binary(
+    name = "skein_content_store_contract",
+    crate_name = "skein_content_store_contract",
+    crate_root = "src/bin/content_store_contract.rs",
+    srcs = ["src/bin/content_store_contract.rs"],
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":skein_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
@@ -49,6 +65,21 @@ rust_test(
     name = "skein_soak_cli_tests",
     crate_root = "src/main.rs",
     srcs = ["src/main.rs"],
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":skein_qualification"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_contract_tests",
+    crate_root = "src/bin/content_store_contract.rs",
+    srcs = ["src/bin/content_store_contract.rs"],
     edition = "2024",
     aliases = aliases(
         normal = True,

@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod content_store_sql_corpus;
 mod production_blocking;
 mod production_graph;
 mod production_morsel;
@@ -9,6 +10,7 @@ mod production_search;
 mod production_vector;
 mod release_bundle;
 
+pub use content_store_sql_corpus::*;
 pub use production_blocking::*;
 pub use production_graph::*;
 pub use production_morsel::*;

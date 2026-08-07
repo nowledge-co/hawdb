@@ -1,14 +1,18 @@
-use crate::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
-use skein_integrity::integrity_digest;
+use sha2::{Digest, Sha256};
+use skein::{Result, SkeinError};
 use std::collections::BTreeSet;
 
 pub const NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL: &str =
     "skein-nowledge-content-store-sql-corpus-v1";
 pub const NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION: &str = "nowledge-content-store-postgres-v1";
+pub const NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL: &str = "skein-nowledge-content-store-schema-v1";
+pub const NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION: &str = "nowledge-content-store-schema-v1";
 
 const CORPUS_JSON: &str =
     include_str!("../fixtures/nowledge_content_store/postgres_statement_corpus_v1.json");
+const SCHEMA_SQL: &str =
+    include_str!("../fixtures/nowledge_content_store/content_store_schema_v1.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "content_documents",
     "thread_messages",
@@ -22,7 +26,6 @@ const REQUIRED_TABLES: &[&str] = &[
 pub enum ContentStoreSqlStatementKind {
     Read,
     Mutation,
-    Schema,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +71,8 @@ pub struct ContentStoreSqlStatementSpec {
 pub struct ContentStoreSqlCorpus {
     pub protocol: String,
     pub revision: String,
+    pub schema_protocol: String,
+    pub schema_revision: String,
     pub source_engine: String,
     pub target_dialect: String,
     pub tables: Vec<String>,
@@ -80,6 +85,10 @@ pub struct ContentStoreSqlCorpusIdentity {
     pub protocol: String,
     pub revision: String,
     pub sha256: String,
+    pub schema_protocol: String,
+    pub schema_revision: String,
+    pub schema_sha256: String,
+    pub schema_statement_count: usize,
     pub statement_count: usize,
     pub required_statement_count: usize,
     pub rewritten_statement_count: usize,
@@ -90,13 +99,25 @@ pub struct ContentStoreSqlCorpusIdentity {
     pub retained_on_sqlite_caller_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContentStoreSchemaIdentity {
+    pub protocol: String,
+    pub revision: String,
+    pub sha256: String,
+    pub statement_count: usize,
+}
+
 impl ContentStoreSqlCorpus {
     pub fn identity(&self) -> ContentStoreSqlCorpusIdentity {
-        let digest = integrity_digest(CORPUS_JSON.as_bytes());
+        let schema_identity = nowledge_content_store_schema_identity();
         ContentStoreSqlCorpusIdentity {
             protocol: self.protocol.clone(),
             revision: self.revision.clone(),
-            sha256: digest.sha256.to_string(),
+            sha256: sha256_hex(CORPUS_JSON.as_bytes()),
+            schema_protocol: schema_identity.protocol,
+            schema_revision: schema_identity.revision,
+            schema_sha256: schema_identity.sha256,
+            schema_statement_count: schema_identity.statement_count,
             statement_count: self.statements.len(),
             required_statement_count: self
                 .statements
@@ -156,6 +177,18 @@ impl ContentStoreSqlCorpus {
             return Err(SkeinError::Semantic(format!(
                 "content-store SQL corpus revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION}, got {}",
                 self.revision
+            )));
+        }
+        if self.schema_protocol != NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL {
+            return Err(SkeinError::Semantic(format!(
+                "content-store schema protocol mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL}, got {}",
+                self.schema_protocol
+            )));
+        }
+        if self.schema_revision != NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION {
+            return Err(SkeinError::Semantic(format!(
+                "content-store schema revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION}, got {}",
+                self.schema_revision
             )));
         }
         if self.source_engine != "sqlite" || self.target_dialect != "postgresql" {
@@ -220,29 +253,59 @@ impl ContentStoreSqlCorpus {
         }
 
         for table in REQUIRED_TABLES {
-            let schema_owned = self.statements.iter().any(|statement| {
-                statement.kind == ContentStoreSqlStatementKind::Schema
-                    && contains_sql_identifier(&statement.sql, table)
-            });
-            let data_owned = self.statements.iter().any(|statement| {
-                statement.kind != ContentStoreSqlStatementKind::Schema
-                    && contains_sql_identifier(&statement.sql, table)
-            });
-            if !schema_owned || !data_owned {
+            let data_owned = self
+                .statements
+                .iter()
+                .any(|statement| contains_sql_identifier(&statement.sql, table));
+            if !data_owned {
                 return Err(SkeinError::Semantic(format!(
-                    "content-store SQL corpus does not own schema and data behavior for {table}"
+                    "content-store SQL corpus does not own data behavior for {table}"
                 )));
             }
         }
         Ok(())
     }
 
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
+    pub fn json(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({
             "identity": self.identity(),
+            "schema": {
+                "identity": nowledge_content_store_schema_identity(),
+                "statements": nowledge_content_store_schema_statements()?,
+            },
             "corpus": self,
-        })
+        }))
     }
+}
+
+pub fn nowledge_content_store_schema_identity() -> ContentStoreSchemaIdentity {
+    ContentStoreSchemaIdentity {
+        protocol: NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL.to_string(),
+        revision: NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION.to_string(),
+        sha256: sha256_hex(SCHEMA_SQL.as_bytes()),
+        statement_count: SCHEMA_SQL
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+    }
+}
+
+pub fn nowledge_content_store_schema_statements() -> Result<Vec<&'static str>> {
+    SCHEMA_SQL
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.trim()
+                .strip_suffix(';')
+                .filter(|statement| !statement.trim().is_empty())
+                .ok_or_else(|| {
+                    SkeinError::Parse(
+                        "content-store schema statements must be one non-empty semicolon-terminated line"
+                            .to_string(),
+                    )
+                })
+        })
+        .collect()
 }
 
 pub fn nowledge_content_store_sql_corpus() -> Result<ContentStoreSqlCorpus> {
@@ -252,12 +315,46 @@ pub fn nowledge_content_store_sql_corpus() -> Result<ContentStoreSqlCorpus> {
         ))
     })?;
     corpus.validate()?;
-    crate::relational_sql::compile_schema_corpus(&corpus)?;
+    validate_content_store_schema()?;
     Ok(corpus)
 }
 
 pub fn nowledge_content_store_sql_corpus_json() -> Result<serde_json::Value> {
-    Ok(nowledge_content_store_sql_corpus()?.json())
+    nowledge_content_store_sql_corpus()?.json()
+}
+
+fn validate_content_store_schema() -> Result<()> {
+    let statements = nowledge_content_store_schema_statements()?;
+    let mut tables = BTreeSet::new();
+    let mut database = skein::Database::new();
+    let mut transaction = database.begin_transaction();
+    for statement in statements {
+        let lowered = skein::sql::parse_postgres_sql(statement)?;
+        if let skein::sql::SqlStatement::CreateTable(create) = &lowered {
+            tables.insert(create.table.name.clone());
+        } else if !matches!(lowered, skein::sql::SqlStatement::CreateIndex(_)) {
+            return Err(SkeinError::Semantic(
+                "content-store schema may contain only CREATE TABLE and CREATE INDEX statements"
+                    .to_string(),
+            ));
+        }
+        transaction.query_sql(statement)?;
+    }
+    transaction.commit()?;
+    let required_tables = REQUIRED_TABLES
+        .iter()
+        .map(|table| (*table).to_string())
+        .collect::<BTreeSet<_>>();
+    if tables != required_tables {
+        return Err(SkeinError::Semantic(
+            "content-store schema table set does not match the v1 scope".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
@@ -288,7 +385,7 @@ fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
                 )));
             }
         }
-        ContentStoreSqlStatementKind::Mutation | ContentStoreSqlStatementKind::Schema => {
+        ContentStoreSqlStatementKind::Mutation => {
             if statement.transaction_group.is_none() {
                 return Err(SkeinError::Semantic(format!(
                     "content-store write statement {} must declare a transaction group",
@@ -393,6 +490,16 @@ mod tests {
         );
         assert_eq!(identity.statement_count, corpus.statements.len());
         assert_eq!(identity.sha256.len(), 64);
+        assert_eq!(
+            identity.schema_protocol,
+            NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL
+        );
+        assert_eq!(
+            identity.schema_revision,
+            NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION
+        );
+        assert_eq!(identity.schema_sha256.len(), 64);
+        assert_eq!(identity.schema_statement_count, 13);
         assert_eq!(identity.retained_on_sqlite_statement_count, 0);
         assert!(identity.required_statement_count > identity.rewritten_statement_count);
         assert_eq!(identity.caller_count, 25);
@@ -411,23 +518,18 @@ mod tests {
     fn embedded_content_store_sql_corpus_lowers_through_postgres_frontend() {
         let corpus = nowledge_content_store_sql_corpus().expect("valid embedded SQL corpus");
         for statement in &corpus.statements {
-            let lowered = crate::sql::parse_postgres_sql(&statement.sql)
+            let lowered = skein::sql::parse_postgres_sql(&statement.sql)
                 .unwrap_or_else(|error| panic!("{} failed to lower: {error}", statement.name));
             let kind_matches = matches!(
                 (&statement.kind, lowered),
                 (
                     ContentStoreSqlStatementKind::Read,
-                    crate::sql::SqlStatement::Select(_)
+                    skein::sql::SqlStatement::Select(_)
                 ) | (
                     ContentStoreSqlStatementKind::Mutation,
-                    crate::sql::SqlStatement::Insert(_)
-                        | crate::sql::SqlStatement::Update(_)
-                        | crate::sql::SqlStatement::Delete(_)
-                ) | (
-                    ContentStoreSqlStatementKind::Schema,
-                    crate::sql::SqlStatement::CreateTable(_)
-                        | crate::sql::SqlStatement::CreateIndex(_)
-                        | crate::sql::SqlStatement::AlterTableAddColumn(_)
+                    skein::sql::SqlStatement::Insert(_)
+                        | skein::sql::SqlStatement::Update(_)
+                        | skein::sql::SqlStatement::Delete(_)
                 )
             );
             assert!(
@@ -435,6 +537,65 @@ mod tests {
                 "{} lowered to the wrong statement kind",
                 statement.name
             );
+        }
+    }
+
+    #[test]
+    fn embedded_content_store_schema_is_executable_ddl() {
+        validate_content_store_schema().expect("valid content-store schema");
+        let identity = nowledge_content_store_schema_identity();
+
+        assert_eq!(identity.protocol, NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL);
+        assert_eq!(identity.revision, NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION);
+        assert_eq!(identity.sha256.len(), 64);
+        assert_eq!(identity.statement_count, 13);
+    }
+
+    #[test]
+    fn content_store_reads_execute_through_the_public_sql_path() {
+        let corpus = nowledge_content_store_sql_corpus().expect("valid content-store corpus");
+        let mut database = materialized_content_store();
+
+        for statement in corpus
+            .statements
+            .iter()
+            .filter(|statement| statement.kind == ContentStoreSqlStatementKind::Read)
+        {
+            let parameters = statement
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(position, data_type)| sample_parameter(data_type, position + 1))
+                .collect::<Vec<_>>();
+            database
+                .query_sql_with_params(&statement.sql, &parameters)
+                .unwrap_or_else(|error| panic!("{} did not execute: {error}", statement.name));
+        }
+    }
+
+    #[test]
+    fn content_store_mutations_stage_through_the_public_sql_path() {
+        let corpus = nowledge_content_store_sql_corpus().expect("valid content-store corpus");
+        let mut database = materialized_content_store();
+        seed_parent_documents(&mut database);
+
+        for statement in corpus
+            .statements
+            .iter()
+            .filter(|statement| statement.kind == ContentStoreSqlStatementKind::Mutation)
+        {
+            let parameters = statement
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(position, data_type)| {
+                    sample_mutation_parameter(&statement.name, data_type, position + 1)
+                })
+                .collect::<Vec<_>>();
+            let mut transaction = database.begin_transaction();
+            transaction
+                .query_sql_with_params(&statement.sql, &parameters)
+                .unwrap_or_else(|error| panic!("{} did not stage: {error}", statement.name));
         }
     }
 
@@ -455,5 +616,64 @@ mod tests {
         assert!(page.max_rows > 0);
         assert!(page.max_payload_bytes > 0);
         assert_eq!(page.ordering, ["order_index ASC", "content_message_id ASC"]);
+    }
+
+    fn materialized_content_store() -> skein::Database {
+        let mut database = skein::Database::new();
+        let mut transaction = database.begin_transaction();
+        for statement in
+            nowledge_content_store_schema_statements().expect("valid schema statements")
+        {
+            transaction
+                .query_sql(statement)
+                .unwrap_or_else(|error| panic!("schema statement did not stage: {error}"));
+        }
+        transaction
+            .commit()
+            .expect("materialized content-store schema");
+        database
+    }
+
+    fn seed_parent_documents(database: &mut skein::Database) {
+        for position in 1..=32 {
+            database
+                .query_sql_with_params(
+                    "INSERT INTO content_documents \
+                     (content_doc_id, owner_kind, owner_id, space_id, media_type, schema_version, created_at, updated_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    &[
+                        skein::Value::String(format!("value-{position}")),
+                        skein::Value::String("seed".to_string()),
+                        skein::Value::String(format!("seed-{position}")),
+                        skein::Value::String("default".to_string()),
+                        skein::Value::String("text/plain".to_string()),
+                        skein::Value::Int(1),
+                        skein::Value::String("t0".to_string()),
+                        skein::Value::String("t0".to_string()),
+                    ],
+                )
+                .expect("seed parent document");
+        }
+    }
+
+    fn sample_parameter(data_type: &str, position: usize) -> skein::Value {
+        match data_type {
+            "BOOLEAN" => skein::Value::Bool(false),
+            "BIGINT" => skein::Value::Int(position as i64),
+            "DOUBLE PRECISION" => skein::Value::Float(position as f64),
+            "TEXT" => skein::Value::String(format!("value-{position}")),
+            other => panic!("unsupported fixture parameter type {other}"),
+        }
+    }
+
+    fn sample_mutation_parameter(
+        statement_name: &str,
+        data_type: &str,
+        position: usize,
+    ) -> skein::Value {
+        if statement_name == "upsert_content_document" && data_type == "TEXT" {
+            return skein::Value::String(format!("new-value-{position}"));
+        }
+        sample_parameter(data_type, position)
     }
 }

@@ -19,19 +19,32 @@ External artifact and blob files remain outside this contract.
 
 ## Statement Corpus
 
-`fixtures/nowledge_content_store/postgres_statement_corpus_v1.json` is the
-versioned compatibility corpus. It records the source caller, normalized SQL,
-parameter types, result columns, deterministic ordering, row budget, payload
-budget, and transaction group.
+`crates/qualification/fixtures/nowledge_content_store/content_store_schema_v1.sql`
+is the authoritative initial DDL. It contains executable `CREATE TABLE` and
+`CREATE INDEX` statements and is versioned independently from the workload.
+Production schema initialization MUST execute this ordered DDL or an explicit
+append-only successor; it MUST NOT reconstruct schema from test metadata.
+
+`crates/qualification/fixtures/nowledge_content_store/postgres_statement_corpus_v1.json`
+is the versioned compatibility workload. It records the source caller,
+normalized read and mutation SQL, parameter types, result columns,
+deterministic ordering, row budget, payload budget, and transaction group. It
+does not own schema DDL.
 
 The corpus MUST use the actual Nowledge v3 schema. In particular,
 `content_anchors` contains `quote_hash` and `content_message_id`; it does not
 contain fabricated `content_hash` or `updated_at` columns.
 
-Every corpus revision has a protocol, revision, and SHA-256 identity. A cutover
-gate MUST compare all three values and MUST fail closed when any value differs
-from the qualified artifact. `covered` callers have a complete statement
-mapping. `partial` callers MUST NOT be treated as cutover-ready.
+The schema and corpus each have an independent protocol, revision, and SHA-256
+identity. A cutover gate MUST compare both identities and MUST fail closed when
+any value differs from the qualified artifact. `covered` callers have a
+complete statement mapping. `partial` callers MUST NOT be treated as
+cutover-ready.
+
+The schema and corpus belong to `skein-qualification`, not the default `skein`
+facade. `skein-content-store-contract` is a thin developer tool over the typed
+qualification API. The default embedded database build therefore does not
+carry Mem-specific workload fixtures.
 
 ## SQL Frontend
 
@@ -222,8 +235,8 @@ authorized decommissioning step.
 
 The focused Rust tests cover:
 
-- parser preparation and every statement in the embedded corpus;
-- materialization of the actual v3 schema;
+- parser preparation and every statement in the qualification corpus;
+- execution of the independently versioned v3 DDL through the public SQL path;
 - joins, aggregates, deterministic pages, and late hydration;
 - transaction-final primary, unique, and foreign-key behavior;
 - immutable row and posting COW pages;

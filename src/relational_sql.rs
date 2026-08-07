@@ -1,4 +1,3 @@
-use crate::content_store_sql_corpus::{ContentStoreSqlCorpus, ContentStoreSqlStatementKind};
 use crate::error::{Result, SkeinError};
 use crate::sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlAssignmentValue,
@@ -17,41 +16,7 @@ use skein_storage::{
 
 mod query;
 
-#[cfg(test)]
-pub(crate) use query::execute_relational_query_sql;
 pub(crate) use query::{execute_relational_query_sql_with_runtime, RelationalQueryLimits};
-
-pub(crate) fn compile_schema_corpus(
-    corpus: &ContentStoreSqlCorpus,
-) -> Result<RelationalTransaction> {
-    let mut writes = Vec::new();
-    for statement in corpus
-        .statements
-        .iter()
-        .filter(|statement| statement.kind == ContentStoreSqlStatementKind::Schema)
-    {
-        let lowered = skein_sql::prepare_postgres_sql(&statement.sql)?.statement;
-        writes.extend(compile_schema_statement(lowered)?);
-    }
-    Ok(RelationalTransaction { writes })
-}
-
-#[allow(dead_code)]
-pub(crate) fn compile_relational_mutation_sql(
-    sql: &str,
-    parameters: &[Value],
-    state: &RelationalState,
-) -> Result<RelationalTransaction> {
-    let prepared = skein_sql::prepare_postgres_sql(sql)?;
-    if prepared.parameters.len() != parameters.len() {
-        return Err(SkeinError::Semantic(format!(
-            "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
-            prepared.parameters.len(),
-            parameters.len()
-        )));
-    }
-    compile_relational_mutation(prepared.statement, parameters, state)
-}
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,
@@ -587,46 +552,8 @@ fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::Database;
-    use skein_storage::{RelationalKey, RelationalStore};
+    use skein_storage::RelationalStore;
     use std::collections::BTreeMap;
-
-    #[test]
-    fn materializes_embedded_content_store_schema_as_relational_tables() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
-        let transaction = compile_schema_corpus(&corpus).expect("compiled schema transaction");
-        let store = RelationalStore::default();
-        let snapshot = store
-            .commit(transaction, |_, _| Ok(()))
-            .expect("materialized relational schema");
-
-        assert_eq!(
-            snapshot
-                .value()
-                .table_schema("thread_messages")
-                .expect("thread_messages schema")
-                .primary_key,
-            ["content_message_id"]
-        );
-        assert!(snapshot
-            .value()
-            .table_schema("content_chunks")
-            .expect("content_chunks schema")
-            .unique_constraints
-            .contains(&vec![
-                "content_doc_id".to_string(),
-                "chunk_index".to_string()
-            ]));
-        let anchors = snapshot
-            .value()
-            .table_schema("content_anchors")
-            .expect("content_anchors schema");
-        assert_eq!(anchors.foreign_keys.len(), 1);
-        assert_eq!(anchors.indexes.len(), 3);
-        assert!(anchors.column_position("quote_hash").is_some());
-        assert!(anchors.column_position("content_message_id").is_some());
-        assert!(anchors.column_position("content_hash").is_none());
-        assert!(anchors.column_position("updated_at").is_none());
-    }
 
     #[test]
     fn database_sql_entrypoint_executes_relational_ddl_dml_and_select() {
@@ -798,469 +725,126 @@ mod tests {
     }
 
     #[test]
-    fn every_content_store_mutation_compiles_against_materialized_schema() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
+    fn relational_index_join_aggregate_and_late_hydration_are_bounded() {
         let store = RelationalStore::default();
-        store
-            .commit(
-                compile_schema_corpus(&corpus).expect("compiled schema"),
-                |_, _| Ok(()),
-            )
-            .expect("materialized schema");
-        let snapshot = store.snapshot().expect("schema snapshot");
-
-        for statement in corpus
-            .statements
-            .iter()
-            .filter(|statement| statement.kind == ContentStoreSqlStatementKind::Mutation)
-        {
-            let parameters = statement
-                .parameters
-                .iter()
-                .enumerate()
-                .map(|(position, data_type)| sample_parameter(data_type, position))
-                .collect::<Vec<_>>();
-            compile_relational_mutation_sql(&statement.sql, &parameters, snapshot.value())
-                .unwrap_or_else(|error| panic!("{} did not compile: {error}", statement.name));
-        }
-    }
-
-    #[test]
-    fn every_content_store_read_executes_against_materialized_schema() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
-        let store = RelationalStore::default();
-        store
-            .commit(
-                compile_schema_corpus(&corpus).expect("compiled schema"),
-                |_, _| Ok(()),
-            )
-            .expect("materialized schema");
-        let snapshot = store.snapshot().expect("schema snapshot");
-
-        for statement in corpus
-            .statements
-            .iter()
-            .filter(|statement| statement.kind == ContentStoreSqlStatementKind::Read)
-        {
-            let parameters = statement
-                .parameters
-                .iter()
-                .enumerate()
-                .map(|(position, data_type)| sample_parameter(data_type, position + 1))
-                .collect::<Vec<_>>();
-            execute_relational_query_sql(
-                &statement.sql,
-                &parameters,
-                snapshot.value(),
-                RelationalQueryLimits {
-                    max_output_rows: statement.max_rows,
-                    max_output_payload_bytes: statement.max_payload_bytes,
-                    max_intermediate_rows: 1_000_000,
-                    batch_rows: std::num::NonZeroUsize::new(256)
-                        .expect("non-zero batch row budget"),
-                    blocking_operator_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024)
-                        .expect("non-zero aggregate memory budget"),
-                    hydration: skein_storage::RelationalHydrationBudget::default(),
-                },
-            )
-            .unwrap_or_else(|error| panic!("{} did not execute: {error}", statement.name));
-        }
-    }
-
-    #[test]
-    fn content_document_upsert_uses_unique_owner_target_and_defaults() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
-        let store = RelationalStore::default();
-        store
-            .commit(
-                compile_schema_corpus(&corpus).expect("compiled schema"),
-                |_, _| Ok(()),
-            )
-            .expect("materialized schema");
-        let statement = corpus
-            .statements
-            .iter()
-            .find(|statement| statement.name == "upsert_content_document")
-            .expect("upsert statement");
-
-        for (document_id, media_type, updated_at) in [
-            ("doc-1", "text/plain", "2026-08-07T00:00:00Z"),
-            ("doc-2", "text/markdown", "2026-08-07T00:01:00Z"),
+        for ddl in [
+            "CREATE TABLE documents (id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, UNIQUE (owner_kind, owner_id))",
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), stream_id TEXT NOT NULL, order_index BIGINT NOT NULL, body TEXT NOT NULL, token_count BIGINT NOT NULL)",
+            "CREATE TABLE anchors (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), message_id TEXT NOT NULL)",
+            "CREATE INDEX idx_messages_order ON messages (stream_id, order_index, id)",
+            "CREATE INDEX idx_anchors_message ON anchors (document_id, message_id)",
         ] {
-            let parameters = vec![
-                Value::String(document_id.to_string()),
-                Value::String("thread".to_string()),
-                Value::String("thread-1".to_string()),
-                Value::String("default".to_string()),
-                Value::String(media_type.to_string()),
-                Value::Int(1),
-                Value::String("2026-08-07T00:00:00Z".to_string()),
-                Value::String(updated_at.to_string()),
-            ];
-            let snapshot = store.snapshot().expect("snapshot before upsert");
-            let transaction =
-                compile_relational_mutation_sql(&statement.sql, &parameters, snapshot.value())
-                    .expect("compiled upsert");
-            store
-                .commit(transaction, |_, _| Ok(()))
-                .expect("committed upsert");
+            commit_sql(&store, ddl, &[]);
         }
-
-        let snapshot = store.snapshot().expect("snapshot after upsert");
-        assert_eq!(snapshot.value().row_count("content_documents"), 1);
-        let key = RelationalKey(vec![RelationalValue::Text("doc-1".to_string())]);
-        let row = snapshot
-            .value()
-            .row("content_documents", &key)
-            .expect("original primary key is preserved");
-        assert_eq!(
-            row.values()[4],
-            RelationalValue::Text("text/markdown".to_string())
-        );
-        assert_eq!(row.values()[6], RelationalValue::Text(String::new()));
-        assert_eq!(row.values()[7], RelationalValue::BigInt(0));
-    }
-
-    #[test]
-    fn parameterized_update_uses_sql_snapshot_semantics() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
-        let store = RelationalStore::default();
-        store
-            .commit(
-                compile_schema_corpus(&corpus).expect("compiled schema"),
-                |_, _| Ok(()),
-            )
-            .expect("materialized schema");
-        let insert = compile_relational_mutation_sql(
-            "INSERT INTO content_migration_state (key, value, updated_at) VALUES ($1, $2, $3)",
-            &[
-                Value::String("revision".to_string()),
-                Value::String("pending".to_string()),
-                Value::String("t0".to_string()),
-            ],
-            store.snapshot().expect("schema snapshot").value(),
-        )
-        .expect("compiled insert");
-        store.commit(insert, |_, _| Ok(())).expect("inserted row");
-
-        let update = compile_relational_mutation_sql(
-            "UPDATE content_migration_state SET value = $1, updated_at = value WHERE key = $2",
-            &[
-                Value::String("qualified".to_string()),
-                Value::String("revision".to_string()),
-            ],
-            store.snapshot().expect("insert snapshot").value(),
-        )
-        .expect("compiled update");
-        store.commit(update, |_, _| Ok(())).expect("updated row");
-
-        let key = RelationalKey(vec![RelationalValue::Text("revision".to_string())]);
-        let snapshot = store.snapshot().expect("updated snapshot");
-        let row = snapshot
-            .value()
-            .row("content_migration_state", &key)
-            .expect("migration row");
-        assert_eq!(
-            row.values()[1],
-            RelationalValue::Text("qualified".to_string())
-        );
-        assert_eq!(
-            row.values()[2],
-            RelationalValue::Text("pending".to_string())
-        );
-    }
-
-    #[test]
-    fn relational_queries_join_aggregate_and_hydrate_after_limit() {
-        let corpus = crate::nowledge_content_store_sql_corpus().expect("valid corpus");
-        let store = RelationalStore::default();
-        store
-            .commit(
-                compile_schema_corpus(&corpus).expect("compiled schema"),
-                |_, _| Ok(()),
-            )
-            .expect("materialized schema");
-
-        commit_named_mutation(
+        commit_sql(
             &store,
-            &corpus,
-            "upsert_content_document",
-            vec![
-                text("doc-thread"),
-                text("thread"),
-                text("thread-1"),
-                text("default"),
-                text("text/plain"),
-                Value::Int(1),
-                text("t0"),
-                text("t0"),
-            ],
+            "INSERT INTO documents (id, owner_kind, owner_id) VALUES ($1, $2, $3)",
+            &[text("doc-1"), text("thread"), text("thread-1")],
         );
-        for (id, order) in [("content-message-1", 1), ("content-message-2", 2)] {
-            commit_named_mutation(
+        for (id, order) in [("message-1", 1), ("message-2", 2)] {
+            commit_sql(
                 &store,
-                &corpus,
-                "upsert_thread_message",
-                vec![
+                "INSERT INTO messages (id, document_id, stream_id, order_index, body, token_count) VALUES ($1, $2, $3, $4, $5, $6)",
+                &[
                     text(id),
-                    text(&format!("message-{order}")),
-                    text("thread-storage-1"),
-                    text("thread-1"),
-                    text("doc-thread"),
-                    text("default"),
+                    text("doc-1"),
+                    text("stream-1"),
                     Value::Int(order),
-                    text("user"),
                     text(&format!("body-{order}-{}", "x".repeat(8 * 1024))),
-                    Value::Null,
                     Value::Int(10),
-                    text("{}"),
-                    text(&format!("external-{order}")),
-                    Value::Bool(false),
-                    text(&format!("hash-{order}")),
-                    text("t0"),
-                    text("t0"),
                 ],
             );
         }
-        commit_named_mutation(
+        commit_sql(
             &store,
-            &corpus,
-            "upsert_memory_message_anchor",
-            vec![
-                text("anchor-1"),
-                text("memory-1"),
-                text("doc-thread"),
-                text("thread-storage-1"),
-                text("content-message-1"),
-                text("message-1"),
-                Value::Int(1),
-                text("hash-1"),
-                text("{}"),
-                text("t0"),
-            ],
-        );
-        commit_named_mutation(
-            &store,
-            &corpus,
-            "upsert_content_document",
-            vec![
-                text("doc-source"),
-                text("source"),
-                text("source-1"),
-                text("default"),
-                text("text/plain"),
-                Value::Int(1),
-                text("t0"),
-                text("t0"),
-            ],
-        );
-        commit_named_mutation(
-            &store,
-            &corpus,
-            "insert_source_chunk",
-            vec![
-                text("chunk-1"),
-                text("doc-source"),
-                Value::Int(0),
-                text("source body"),
-                Value::Int(0),
-                Value::Int(11),
-                Value::Int(2),
-                text("{}"),
-                text("chunk-hash"),
-                text("t0"),
-                text("t0"),
-            ],
-        );
-        commit_named_mutation(
-            &store,
-            &corpus,
-            "upsert_content_migration_state",
-            vec![text("revision"), text("qualified"), text("t0")],
+            "INSERT INTO anchors (id, document_id, message_id) VALUES ($1, $2, $3)",
+            &[text("anchor-1"), text("doc-1"), text("message-1")],
         );
 
-        let owner_lookup = execute_relational_query_sql(
-            "SELECT content_doc_id FROM content_documents \
-             WHERE owner_kind = 'thread' AND owner_id = $1",
+        let snapshot = store.snapshot().expect("query snapshot");
+        let owner = execute_relational_query_sql_with_runtime(
+            "SELECT id FROM documents WHERE owner_kind = 'thread' AND owner_id = $1",
             &[text("thread-1")],
-            store.snapshot().expect("owner lookup snapshot").value(),
-            query_limits(1, 4096),
+            snapshot.value(),
+            query_limits(1, 4 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
         )
-        .expect("composite owner lookup");
-        assert_eq!(owner_lookup.rows.len(), 1);
-        assert_eq!(owner_lookup.rows[0]["content_doc_id"], text("doc-thread"));
-        assert_eq!(owner_lookup.access_path.name, "__unique_0");
-        assert_eq!(owner_lookup.access_path.equality_prefix_len, 2);
-        assert!(owner_lookup.access_path.unique_point);
-        assert_eq!(owner_lookup.intermediate_rows, 1);
+        .expect("composite unique lookup");
+        assert_eq!(owner.rows[0]["id"], text("doc-1"));
+        assert_eq!(owner.access_path.name, "__unique_0");
+        assert_eq!(owner.access_path.equality_prefix_len, 2);
+        assert!(owner.access_path.unique_point);
 
-        let message_lookup = execute_relational_query_sql(
-            "SELECT content_message_id FROM thread_messages \
-             WHERE thread_storage_id = $1 AND order_index = $2",
-            &[text("thread-storage-1"), Value::Int(2)],
-            store.snapshot().expect("message lookup snapshot").value(),
-            query_limits(1, 4096),
-        )
-        .expect("composite message lookup");
-        assert_eq!(message_lookup.rows.len(), 1);
-        assert_eq!(
-            message_lookup.rows[0]["content_message_id"],
-            text("content-message-2")
-        );
-        assert_eq!(message_lookup.access_path.name, "idx_thread_messages_order");
-        assert_eq!(message_lookup.access_path.equality_prefix_len, 2);
-        assert_eq!(message_lookup.access_path.estimated_rows, 1);
-
-        let trailing_only = execute_relational_query_sql(
-            "SELECT content_message_id FROM thread_messages WHERE order_index = $1",
-            &[Value::Int(2)],
-            store.snapshot().expect("trailing lookup snapshot").value(),
-            query_limits(2, 4096),
-        )
-        .expect("trailing-column lookup");
-        assert_eq!(trailing_only.rows.len(), 1);
-        assert_eq!(trailing_only.access_path.name, "__full_scan");
-
-        let page = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_messages_page").sql,
-            &[text("thread-storage-1"), Value::Int(1), Value::Int(1)],
-            store.snapshot().expect("query snapshot").value(),
+        let page = execute_relational_query_sql_with_runtime(
+            "SELECT id, body FROM messages WHERE stream_id = $1 ORDER BY order_index ASC, id ASC LIMIT $2 OFFSET $3",
+            &[text("stream-1"), Value::Int(1), Value::Int(1)],
+            snapshot.value(),
             query_limits(1, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
         )
         .expect("bounded message page");
         assert_eq!(page.rows.len(), 1);
-        assert_eq!(page.rows[0]["order_index"], Value::Int(2));
+        assert_eq!(page.rows[0]["id"], text("message-2"));
+        assert_eq!(page.access_path.name, "idx_messages_order");
         assert_eq!(page.hydration.hydrated_rows, 1);
         assert!(page.hydration.decompressed_bytes > 8 * 1024);
 
-        let summary = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_message_summary").sql,
-            &[text("thread-storage-1")],
-            store.snapshot().expect("summary snapshot").value(),
-            query_limits(1, 4096),
+        let joined = execute_relational_query_sql_with_runtime(
+            "SELECT m.id FROM messages AS m INNER JOIN anchors AS a ON a.document_id = m.document_id AND a.message_id = m.id WHERE m.stream_id = $1",
+            &[text("stream-1")],
+            snapshot.value(),
+            query_limits(2, 4 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
         )
-        .expect("message summary");
+        .expect("indexed join");
+        assert_eq!(joined.rows.len(), 1);
+        assert_eq!(joined.join_access_paths[0].name, "idx_anchors_message");
+        assert_eq!(joined.join_access_paths[0].equality_prefix_len, 2);
+
+        let summary_sql =
+            "SELECT COUNT(*) AS message_count, SUM(token_count) AS token_count FROM messages WHERE stream_id = $1";
+        let summary = execute_relational_query_sql_with_runtime(
+            summary_sql,
+            &[text("stream-1")],
+            snapshot.value(),
+            query_limits(1, 4 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("bounded aggregate");
         assert_eq!(summary.rows[0]["message_count"], Value::Int(2));
         assert_eq!(summary.rows[0]["token_count"], Value::Int(20));
         assert_eq!(summary.hydration.hydrated_rows, 0);
 
-        let mut constrained_limits = query_limits(1, 4096);
-        constrained_limits.blocking_operator_bytes =
+        let mut constrained = query_limits(1, 4 * 1024);
+        constrained.blocking_operator_bytes =
             std::num::NonZeroUsize::new(1).expect("non-zero aggregate memory budget");
-        let error = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_message_summary").sql,
-            &[text("thread-storage-1")],
-            store.snapshot().expect("bounded summary snapshot").value(),
-            constrained_limits,
-        )
-        .expect_err("aggregate must honor the shared blocking memory budget");
-        assert!(error.to_string().contains("blocking_operator_bytes"));
-
-        let covered = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_covered_message_count").sql,
-            &[text("thread-storage-1")],
-            store.snapshot().expect("anchor snapshot").value(),
-            query_limits(1, 4096),
-        )
-        .expect("covered message count");
-        assert_eq!(covered.rows[0]["covered_messages"], Value::Int(1));
-        assert_eq!(covered.join_access_paths.len(), 1);
-        assert_eq!(
-            covered.join_access_paths[0].name,
-            "idx_content_anchors_content_message"
-        );
-        assert_eq!(covered.join_access_paths[0].equality_prefix_len, 1);
-
-        let source_page = execute_relational_query_sql(
-            &named_statement(&corpus, "source_chunks_page").sql,
-            &[Value::Int(10), Value::Int(0)],
-            store.snapshot().expect("source snapshot").value(),
-            query_limits(10, 4096),
-        )
-        .expect("source chunk page");
-        assert_eq!(source_page.rows.len(), 1);
-        assert_eq!(source_page.rows[0]["source_id"], text("source-1"));
-        assert_eq!(source_page.join_access_paths.len(), 1);
-        assert_eq!(
-            source_page.join_access_paths[0].kind,
-            skein_optimizer::RelationalAccessPathKind::PrimaryKey
-        );
-        assert!(source_page.join_access_paths[0].unique_point);
-
-        let source_specific = execute_relational_query_sql(
-            &named_statement(&corpus, "source_chunks_by_source").sql,
-            &[text("source-1"), Value::Int(10)],
-            store.snapshot().expect("source snapshot").value(),
-            query_limits(10, 4096),
-        )
-        .expect("source-specific chunk page");
-        assert_eq!(source_specific.rows.len(), 1);
-
-        let tail = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_tail_signature").sql,
-            &[text("thread-storage-1"), Value::Int(1), Value::Int(10)],
-            store.snapshot().expect("tail snapshot").value(),
-            query_limits(10, 4096),
-        )
-        .expect("thread tail signature");
-        assert_eq!(tail.rows.len(), 2);
-
-        let tail_anchors = execute_relational_query_sql(
-            &named_statement(&corpus, "thread_tail_anchor_count").sql,
-            &[text("thread-storage-1"), Value::Int(1)],
-            store.snapshot().expect("tail anchor snapshot").value(),
-            query_limits(1, 4096),
-        )
-        .expect("thread tail anchor count");
-        assert_eq!(tail_anchors.rows[0]["anchor_count"], Value::Int(1));
-
-        let migration = execute_relational_query_sql(
-            &named_statement(&corpus, "content_migration_state").sql,
-            &[],
-            store.snapshot().expect("migration snapshot").value(),
-            query_limits(10, 4096),
-        )
-        .expect("migration state query");
-        assert_eq!(migration.rows[0]["value"], text("qualified"));
-    }
-
-    fn sample_parameter(data_type: &str, position: usize) -> Value {
-        match data_type {
-            "BOOLEAN" => Value::Bool(false),
-            "BIGINT" => Value::Int(position as i64),
-            "DOUBLE PRECISION" => Value::Float(position as f64),
-            "TEXT" => Value::String(format!("value-{position}")),
-            other => panic!("unsupported fixture parameter type {other}"),
-        }
-    }
-
-    fn named_statement<'a>(
-        corpus: &'a ContentStoreSqlCorpus,
-        name: &str,
-    ) -> &'a crate::content_store_sql_corpus::ContentStoreSqlStatementSpec {
-        corpus
-            .statements
-            .iter()
-            .find(|statement| statement.name == name)
-            .unwrap_or_else(|| panic!("missing statement {name}"))
-    }
-
-    fn commit_named_mutation(
-        store: &RelationalStore,
-        corpus: &ContentStoreSqlCorpus,
-        name: &str,
-        parameters: Vec<Value>,
-    ) {
-        let snapshot = store.snapshot().expect("mutation snapshot");
-        let transaction = compile_relational_mutation_sql(
-            &named_statement(corpus, name).sql,
-            &parameters,
+        let error = execute_relational_query_sql_with_runtime(
+            summary_sql,
+            &[text("stream-1")],
             snapshot.value(),
+            constrained,
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
         )
-        .unwrap_or_else(|error| panic!("failed to compile {name}: {error}"));
+        .expect_err("aggregate must honor its memory budget");
+        assert!(error.to_string().contains("blocking_operator_bytes"));
+    }
+
+    fn commit_sql(store: &RelationalStore, sql: &str, parameters: &[Value]) {
+        let snapshot = store.snapshot().expect("SQL mutation snapshot");
+        let transaction = compile_relational_statement_sql(sql, parameters, snapshot.value())
+            .unwrap_or_else(|error| panic!("failed to compile SQL '{sql}': {error}"));
         store
             .commit(transaction, |_, _| Ok(()))
-            .unwrap_or_else(|error| panic!("failed to commit {name}: {error}"));
+            .unwrap_or_else(|error| panic!("failed to commit SQL '{sql}': {error}"));
+    }
+
+    fn text(value: &str) -> Value {
+        Value::String(value.to_string())
     }
 
     fn query_limits(
@@ -1472,9 +1056,5 @@ mod tests {
             .contains("runtime task stopped: cancelled"));
 
         std::fs::remove_dir_all(&memory.spill_directory).expect("remove spill test directory");
-    }
-
-    fn text(value: &str) -> Value {
-        Value::String(value.to_string())
     }
 }
