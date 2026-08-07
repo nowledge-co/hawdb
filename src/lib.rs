@@ -5,6 +5,7 @@ pub mod blackbox;
 pub mod bounded_read_evidence;
 pub mod compat;
 mod compiled_capabilities;
+pub mod content_store_sql_corpus;
 pub mod crash_recovery_evidence;
 pub mod cypher;
 pub mod embedded;
@@ -32,6 +33,7 @@ pub mod query {
 }
 pub mod query_family_evidence;
 pub mod query_runtime_preflight;
+mod relational_sql;
 pub mod replacement_summary;
 pub mod route_ownership;
 pub mod search;
@@ -178,6 +180,12 @@ pub use compat::{
     REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
 pub use compiled_capabilities::compiled_runtime_capabilities;
+pub use content_store_sql_corpus::{
+    nowledge_content_store_sql_corpus, nowledge_content_store_sql_corpus_json,
+    ContentStoreSqlCorpus, ContentStoreSqlCorpusIdentity, ContentStoreSqlStatementClassification,
+    ContentStoreSqlStatementKind, ContentStoreSqlStatementSpec,
+    NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL, NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION,
+};
 pub use crash_recovery_evidence::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
     STORAGE_CRASH_RECOVERY_EVIDENCE_PROTOCOL,

@@ -256,6 +256,32 @@ fn restrictive_query_limit(configured: Option<usize>, requested: Option<usize>) 
     }
 }
 
+fn relational_query_limits(
+    config: &DatabaseConfig,
+    max_rows: Option<usize>,
+) -> crate::relational_sql::RelationalQueryLimits {
+    let max_output_rows = max_rows.unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
+    let max_output_payload_bytes = config
+        .max_read_result_payload_bytes
+        .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
+    let max_intermediate_rows = config
+        .max_read_result_rows
+        .unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
+    crate::relational_sql::RelationalQueryLimits {
+        max_output_rows,
+        max_output_payload_bytes,
+        max_intermediate_rows,
+        blocking_operator_bytes: config.execution_memory.blocking_operator_bytes,
+        hydration: skein_storage::RelationalHydrationBudget {
+            max_rows: max_output_rows,
+            max_compressed_bytes: max_output_payload_bytes,
+            max_decompressed_bytes: max_output_payload_bytes,
+            max_memory_bytes: max_output_payload_bytes,
+            ..skein_storage::RelationalHydrationBudget::default()
+        },
+    }
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -443,6 +469,8 @@ pub struct NowledgeGraphTransactionOutput {
 pub struct DatabaseTransaction<'a> {
     db: &'a mut Database,
     mutations: Vec<GraphMutation>,
+    relational_transaction: skein_storage::RelationalTransaction,
+    relational_state: skein_storage::RelationalState,
     committed: bool,
 }
 
@@ -760,9 +788,12 @@ impl Database {
     }
 
     pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
+        let relational_state = self.store.relational_state().clone();
         DatabaseTransaction {
             db: self,
             mutations: Vec::new(),
+            relational_transaction: skein_storage::RelationalTransaction::default(),
+            relational_state,
             committed: false,
         }
     }
@@ -20080,19 +20111,71 @@ impl DatabaseTransaction<'_> {
         Ok(QueryOutput { rows: Vec::new() })
     }
 
+    pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
+        self.query_sql_with_params(sql_text, &[])
+    }
+
+    pub fn query_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if matches!(prepared.statement, crate::sql::SqlStatement::Select(_)) {
+            let output = crate::relational_sql::execute_relational_query_sql(
+                sql_text,
+                parameters,
+                &self.relational_state,
+                relational_query_limits(&self.db.config, self.db.config.max_read_result_rows),
+            )?;
+            return Ok(QueryOutput { rows: output.rows });
+        }
+
+        self.db.ensure_writable()?;
+        let transaction = crate::relational_sql::compile_relational_statement_sql(
+            sql_text,
+            parameters,
+            &self.relational_state,
+        )?;
+        self.relational_state = self
+            .relational_state
+            .stage_transaction(
+                transaction.clone(),
+                skein_storage::RelationalMutationLimits::default(),
+                skein_storage::RelationalOverflowConfig::default(),
+            )
+            .map_err(|error| SkeinError::Execution(error.to_string()))?;
+        self.relational_transaction
+            .writes
+            .extend(transaction.writes);
+        Ok(QueryOutput { rows: Vec::new() })
+    }
+
     pub fn commit(mut self) -> Result<QueryOutput> {
         self.db.ensure_writable()?;
-        let summary = self.db.store.commit_mutations_with_limits(
-            &mut self.db.catalog,
-            std::mem::take(&mut self.mutations),
-            self.db.config.mutation_limits,
-        )?;
+        let mutations = std::mem::take(&mut self.mutations);
+        let relational_transaction = std::mem::take(&mut self.relational_transaction);
+        let summary = if relational_transaction.writes.is_empty() {
+            self.db.store.commit_mutations_with_limits(
+                &mut self.db.catalog,
+                mutations,
+                self.db.config.mutation_limits,
+            )?
+        } else {
+            self.db.store.commit_mutations_and_relational(
+                &mut self.db.catalog,
+                mutations,
+                relational_transaction,
+                self.db.config.mutation_limits,
+            )?
+        };
         self.committed = true;
         Ok(QueryOutput { rows: summary.rows })
     }
 
     pub fn rollback(mut self) {
         self.mutations.clear();
+        self.relational_transaction.writes.clear();
         self.committed = true;
     }
 }
@@ -20801,24 +20884,57 @@ impl DatabaseReadTransaction {
         self.query_sql_bounded(sql_text, self.config.max_read_result_rows)
     }
 
+    pub fn query_sql_with_params(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        self.query_sql_with_params_bounded(sql_text, parameters, self.config.max_read_result_rows)
+    }
+
     pub fn query_sql_bounded(
         &self,
         sql_text: &str,
         max_rows: Option<usize>,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_bounded(sql_text, &[], max_rows)
+    }
+
+    pub fn query_sql_with_params_bounded(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+    ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
         let max_rows = restrictive_query_limit(self.config.max_read_result_rows, max_rows);
-        system_sql::query_sql(
+        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if matches!(
+            &prepared.statement,
+            crate::sql::SqlStatement::Select(select)
+                if select.from.schema.as_deref() == Some("system")
+        ) {
+            return system_sql::query_sql_with_params(
+                sql_text,
+                parameters,
+                max_rows,
+                self.config.max_read_result_payload_bytes,
+                &system_sql::SystemSqlContext {
+                    catalog: &self.catalog,
+                    plan_cache_stats: &self.plan_cache.borrow().stats(),
+                    slow_queries: &self.slow_query_snapshot,
+                    statement_summaries: &self.statement_summary_snapshot,
+                },
+            );
+        }
+
+        let output = crate::relational_sql::execute_relational_query_sql(
             sql_text,
-            max_rows,
-            self.config.max_read_result_payload_bytes,
-            &system_sql::SystemSqlContext {
-                catalog: &self.catalog,
-                plan_cache_stats: &self.plan_cache.borrow().stats(),
-                slow_queries: &self.slow_query_snapshot,
-                statement_summaries: &self.statement_summary_snapshot,
-            },
-        )
+            parameters,
+            self.store.relational_state(),
+            relational_query_limits(&self.config, max_rows),
+        )?;
+        Ok(QueryOutput { rows: output.rows })
     }
 
     pub fn explain_query(&self, cypher_text: &str) -> Result<ExplainOutput> {

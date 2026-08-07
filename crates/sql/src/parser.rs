@@ -1,90 +1,21 @@
+use crate::ast::*;
 use skein_core::{Result, SkeinError, Value};
 use sqlparser::ast::{
-    BinaryOperator, Expr, Ident, LimitClause, ObjectName, ObjectNamePart, OrderByKind,
-    SelectItem as ParserSelectItem, SetExpr, Statement as ParserStatement, TableFactor,
-    Value as ParserValue, ValueWithSpan,
+    BinaryOperator, Distinct, DuplicateTreatment, Expr, FunctionArg, FunctionArgExpr,
+    FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName,
+    ObjectNamePart, OrderByKind, SelectItem as ParserSelectItem, SetExpr,
+    Statement as ParserStatement, TableAlias, TableFactor, Value as ParserValue, ValueWithSpan,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlStatement {
-    Select(SelectStatement),
-}
+mod mutation;
+mod schema;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectStatement {
-    pub projection: Vec<SelectProjection>,
-    pub from: SqlTableName,
-    pub selection: Option<SqlPredicate>,
-    pub order_by: Vec<SqlOrderItem>,
-    pub limit: Option<u64>,
-    pub offset: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SqlTableName {
-    pub schema: Option<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SelectProjection {
-    Wildcard,
-    Column {
-        name: SqlColumnRef,
-        alias: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SqlColumnRef {
-    pub qualifier: Option<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlOrderItem {
-    pub column: SqlColumnRef,
-    pub direction: SqlOrderDirection,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlOrderDirection {
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlPredicate {
-    And(Box<SqlPredicate>, Box<SqlPredicate>),
-    Or(Box<SqlPredicate>, Box<SqlPredicate>),
-    Not(Box<SqlPredicate>),
-    Compare {
-        left: SqlColumnRef,
-        op: SqlComparisonOp,
-        right: Value,
-    },
-    InList {
-        left: SqlColumnRef,
-        values: Vec<Value>,
-        negated: bool,
-    },
-    IsNull {
-        column: SqlColumnRef,
-        negated: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlComparisonOp {
-    Eq,
-    NotEq,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-}
+use mutation::{lower_delete_statement, lower_insert_statement, lower_update_statement};
+use schema::{
+    lower_alter_table_statement, lower_create_index_statement, lower_create_table_statement,
+};
 
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     let dialect = PostgreSqlDialect {};
@@ -99,11 +30,21 @@ pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
 }
 
 fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
-    let ParserStatement::Query(query) = statement else {
-        return Err(SkeinError::Semantic(
-            "only PostgreSQL SELECT statements are supported".to_string(),
-        ));
-    };
+    match statement {
+        ParserStatement::Query(query) => lower_select_statement(query),
+        ParserStatement::Insert(insert) => lower_insert_statement(insert),
+        ParserStatement::Update(update) => lower_update_statement(update),
+        ParserStatement::Delete(delete) => lower_delete_statement(delete),
+        ParserStatement::CreateTable(create) => lower_create_table_statement(create),
+        ParserStatement::CreateIndex(create) => lower_create_index_statement(create),
+        ParserStatement::AlterTable(alter) => lower_alter_table_statement(alter),
+        _ => Err(SkeinError::Semantic(
+            "unsupported PostgreSQL statement kind".to_string(),
+        )),
+    }
+}
+
+fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement> {
     if query.with.is_some()
         || query.fetch.is_some()
         || !query.locks.is_empty()
@@ -121,8 +62,7 @@ fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
             "set operations and nested queries are not supported".to_string(),
         ));
     };
-    if select.distinct.is_some()
-        || select.top.is_some()
+    if select.top.is_some()
         || select.into.is_some()
         || select.prewhere.is_some()
         || !select.lateral_views.is_empty()
@@ -145,26 +85,16 @@ fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
         ));
     }
     let from = &select.from[0];
-    if !from.joins.is_empty() {
-        return Err(SkeinError::Semantic(
-            "PostgreSQL SELECT joins are not supported yet".to_string(),
-        ));
-    }
-    let TableFactor::Table { name, alias, .. } = &from.relation else {
-        return Err(SkeinError::Semantic(
-            "PostgreSQL SELECT currently supports base tables only".to_string(),
-        ));
-    };
-    if alias.is_some() {
-        return Err(SkeinError::Semantic(
-            "PostgreSQL SELECT table aliases are not supported yet".to_string(),
-        ));
-    }
+    let (from_name, from_alias) = lower_table_factor(&from.relation)?;
 
     Ok(SqlStatement::Select(SelectStatement {
         projection: lower_projection(&select.projection)?,
-        from: lower_table_name(name)?,
+        distinct: lower_distinct(select.distinct.as_ref())?,
+        from: from_name,
+        from_alias,
+        joins: from.joins.iter().map(lower_join).collect::<Result<_>>()?,
         selection: select.selection.as_ref().map(lower_predicate).transpose()?,
+        group_by: lower_group_by(&select.group_by)?,
         order_by: lower_order_by(query.order_by.as_ref())?,
         limit: lower_limit(query.limit_clause.as_ref())?,
         offset: lower_offset(query.limit_clause.as_ref())?,
@@ -176,19 +106,28 @@ fn lower_projection(items: &[ParserSelectItem]) -> Result<Vec<SelectProjection>>
         .iter()
         .map(|item| match item {
             ParserSelectItem::Wildcard(_) => Ok(SelectProjection::Wildcard),
-            ParserSelectItem::UnnamedExpr(expr) => Ok(SelectProjection::Column {
-                name: lower_column_expr(expr)?,
-                alias: None,
-            }),
-            ParserSelectItem::ExprWithAlias { expr, alias } => Ok(SelectProjection::Column {
-                name: lower_column_expr(expr)?,
-                alias: Some(normalize_ident(alias)),
-            }),
+            ParserSelectItem::UnnamedExpr(expr) => lower_projection_expression(expr, None),
+            ParserSelectItem::ExprWithAlias { expr, alias } => {
+                lower_projection_expression(expr, Some(normalize_ident(alias)))
+            }
             ParserSelectItem::QualifiedWildcard(_, _) => Err(SkeinError::Semantic(
-                "qualified wildcards are not supported yet".to_string(),
+                "qualified wildcards are not supported".to_string(),
             )),
         })
         .collect()
+}
+
+fn lower_projection_expression(expr: &Expr, alias: Option<String>) -> Result<SelectProjection> {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Ok(SelectProjection::Column {
+            name: lower_column_expr(expr)?,
+            alias,
+        }),
+        _ => Ok(SelectProjection::Expression {
+            expression: lower_sql_expression(expr)?,
+            alias,
+        }),
+    }
 }
 
 fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlOrderItem>> {
@@ -203,23 +142,23 @@ fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlO
     expressions
         .iter()
         .map(|item| {
-            if item.options.nulls_first.is_some() {
-                return Err(SkeinError::Semantic(
-                    "ORDER BY NULLS FIRST/LAST is not supported yet".to_string(),
-                ));
-            }
             Ok(SqlOrderItem {
                 column: lower_column_expr(&item.expr)?,
                 direction: match item.options.asc {
                     Some(false) => SqlOrderDirection::Desc,
                     Some(true) | None => SqlOrderDirection::Asc,
                 },
+                nulls: match item.options.nulls_first {
+                    Some(true) => SqlNullOrder::First,
+                    Some(false) => SqlNullOrder::Last,
+                    None => SqlNullOrder::DialectDefault,
+                },
             })
         })
         .collect()
 }
 
-fn lower_limit(limit_clause: Option<&LimitClause>) -> Result<Option<u64>> {
+fn lower_limit(limit_clause: Option<&LimitClause>) -> Result<Option<SqlBound>> {
     let Some(limit_clause) = limit_clause else {
         return Ok(None);
     };
@@ -234,7 +173,7 @@ fn lower_limit(limit_clause: Option<&LimitClause>) -> Result<Option<u64>> {
     }
 }
 
-fn lower_offset(limit_clause: Option<&LimitClause>) -> Result<Option<u64>> {
+fn lower_offset(limit_clause: Option<&LimitClause>) -> Result<Option<SqlBound>> {
     let Some(limit_clause) = limit_clause else {
         return Ok(None);
     };
@@ -249,7 +188,7 @@ fn lower_offset(limit_clause: Option<&LimitClause>) -> Result<Option<u64>> {
     }
 }
 
-fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
+pub(super) fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
     match expr {
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::And => Ok(SqlPredicate::And(
@@ -265,11 +204,24 @@ fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
             | BinaryOperator::Lt
             | BinaryOperator::LtEq
             | BinaryOperator::Gt
-            | BinaryOperator::GtEq => Ok(SqlPredicate::Compare {
-                left: lower_column_expr(left)?,
-                op: lower_comparison_op(op),
-                right: lower_literal_expr(right)?,
-            }),
+            | BinaryOperator::GtEq => {
+                let left = lower_column_expr(left)?;
+                let op = lower_comparison_op(op);
+                match right.as_ref() {
+                    Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
+                        Ok(SqlPredicate::CompareColumns {
+                            left,
+                            op,
+                            right: lower_column_expr(right)?,
+                        })
+                    }
+                    _ => Ok(SqlPredicate::Compare {
+                        left,
+                        op,
+                        right: lower_literal_expr(right)?,
+                    }),
+                }
+            }
             _ => Err(SkeinError::Semantic(format!(
                 "unsupported PostgreSQL predicate operator {op}"
             ))),
@@ -305,6 +257,150 @@ fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
     }
 }
 
+fn lower_distinct(distinct: Option<&Distinct>) -> Result<bool> {
+    match distinct {
+        None | Some(Distinct::All) => Ok(false),
+        Some(Distinct::Distinct) => Ok(true),
+        Some(Distinct::On(_)) => Err(SkeinError::Semantic(
+            "PostgreSQL DISTINCT ON is not supported".to_string(),
+        )),
+    }
+}
+
+fn lower_group_by(group_by: &GroupByExpr) -> Result<Vec<SqlColumnRef>> {
+    match group_by {
+        GroupByExpr::Expressions(expressions, modifiers) if modifiers.is_empty() => expressions
+            .iter()
+            .map(lower_column_expr)
+            .collect::<Result<Vec<_>>>(),
+        GroupByExpr::Expressions(_, _) | GroupByExpr::All(_) => Err(SkeinError::Semantic(
+            "PostgreSQL GROUP BY modifiers and GROUP BY ALL are not supported".to_string(),
+        )),
+    }
+}
+
+pub(super) fn lower_table_factor(table: &TableFactor) -> Result<(SqlTableName, Option<String>)> {
+    let TableFactor::Table { name, alias, .. } = table else {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL relational SQL supports base tables only".to_string(),
+        ));
+    };
+    Ok((lower_table_name(name)?, lower_table_alias(alias.as_ref())?))
+}
+
+fn lower_table_alias(alias: Option<&TableAlias>) -> Result<Option<String>> {
+    let Some(alias) = alias else {
+        return Ok(None);
+    };
+    if !alias.columns.is_empty() {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL table column aliases are not supported".to_string(),
+        ));
+    }
+    Ok(Some(normalize_ident(&alias.name)))
+}
+
+fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
+    let (table, alias) = lower_table_factor(&join.relation)?;
+    let (kind, constraint) = match &join.join_operator {
+        JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
+            (SqlJoinKind::Inner, constraint)
+        }
+        JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
+            (SqlJoinKind::Left, constraint)
+        }
+        other => {
+            return Err(SkeinError::Semantic(format!(
+                "unsupported PostgreSQL join operator {other:?}"
+            )));
+        }
+    };
+    let JoinConstraint::On(on) = constraint else {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL joins require an ON predicate".to_string(),
+        ));
+    };
+    Ok(SqlJoin {
+        kind,
+        table,
+        alias,
+        on: lower_predicate(on)?,
+    })
+}
+
+fn lower_sql_expression(expr: &Expr) -> Result<SqlExpression> {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
+            Ok(SqlExpression::Column(lower_column_expr(expr)?))
+        }
+        Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
+            Ok(SqlExpression::Value(lower_literal_expr(expr)?))
+        }
+        Expr::Function(function) => lower_function_expression(function),
+        _ => Err(SkeinError::Semantic(format!(
+            "unsupported PostgreSQL projection expression {expr}"
+        ))),
+    }
+}
+
+fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlExpression> {
+    if function.uses_odbc_syntax
+        || !matches!(function.parameters, FunctionArguments::None)
+        || function.filter.is_some()
+        || function.null_treatment.is_some()
+        || function.over.is_some()
+        || !function.within_group.is_empty()
+    {
+        return Err(SkeinError::Semantic(
+            "unsupported PostgreSQL function clause".to_string(),
+        ));
+    }
+    let name_parts = object_name_parts(&function.name)?;
+    let [name] = name_parts.as_slice() else {
+        return Err(SkeinError::Semantic(
+            "qualified PostgreSQL function names are not supported".to_string(),
+        ));
+    };
+    let FunctionArguments::List(arguments) = &function.args else {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL functions require an argument list".to_string(),
+        ));
+    };
+    if !arguments.clauses.is_empty() {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL function argument clauses are not supported".to_string(),
+        ));
+    }
+    let distinct = match arguments.duplicate_treatment {
+        None | Some(DuplicateTreatment::All) => false,
+        Some(DuplicateTreatment::Distinct) => true,
+    };
+    let arguments = arguments
+        .args
+        .iter()
+        .map(|argument| match argument {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
+                lower_sql_expression(expr).map(SqlFunctionArgument::Expression)
+            }
+            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => Ok(SqlFunctionArgument::Wildcard),
+            _ => Err(SkeinError::Semantic(
+                "named and qualified-wildcard PostgreSQL function arguments are not supported"
+                    .to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    match name.as_str() {
+        "count" | "sum" | "max" | "coalesce" | "octet_length" => Ok(SqlExpression::Function {
+            name: name.clone(),
+            arguments,
+            distinct,
+        }),
+        _ => Err(SkeinError::Semantic(format!(
+            "unsupported PostgreSQL function {name}"
+        ))),
+    }
+}
+
 fn lower_comparison_op(op: &BinaryOperator) -> SqlComparisonOp {
     match op {
         BinaryOperator::Eq => SqlComparisonOp::Eq,
@@ -317,7 +413,7 @@ fn lower_comparison_op(op: &BinaryOperator) -> SqlComparisonOp {
     }
 }
 
-fn lower_table_name(name: &ObjectName) -> Result<SqlTableName> {
+pub(super) fn lower_table_name(name: &ObjectName) -> Result<SqlTableName> {
     let parts = object_name_parts(name)?;
     match parts.as_slice() {
         [name] => Ok(SqlTableName {
@@ -334,7 +430,7 @@ fn lower_table_name(name: &ObjectName) -> Result<SqlTableName> {
     }
 }
 
-fn lower_column_expr(expr: &Expr) -> Result<SqlColumnRef> {
+pub(super) fn lower_column_expr(expr: &Expr) -> Result<SqlColumnRef> {
     match expr {
         Expr::Identifier(ident) => Ok(SqlColumnRef {
             qualifier: None,
@@ -355,7 +451,7 @@ fn lower_column_expr(expr: &Expr) -> Result<SqlColumnRef> {
     }
 }
 
-fn lower_literal_expr(expr: &Expr) -> Result<Value> {
+pub(super) fn lower_literal_expr(expr: &Expr) -> Result<SqlValue> {
     match expr {
         Expr::Value(value) => lower_value(value),
         Expr::Nested(inner) => lower_literal_expr(inner),
@@ -363,8 +459,8 @@ fn lower_literal_expr(expr: &Expr) -> Result<Value> {
             op: sqlparser::ast::UnaryOperator::Minus,
             expr,
         } => match lower_literal_expr(expr)? {
-            Value::Int(value) => Ok(Value::Int(-value)),
-            Value::Float(value) => Ok(Value::Float(-value)),
+            SqlValue::Literal(Value::Int(value)) => Ok(SqlValue::Literal(Value::Int(-value))),
+            SqlValue::Literal(Value::Float(value)) => Ok(SqlValue::Literal(Value::Float(-value))),
             value => Err(SkeinError::Semantic(format!(
                 "cannot negate literal value {value}"
             ))),
@@ -375,17 +471,20 @@ fn lower_literal_expr(expr: &Expr) -> Result<Value> {
     }
 }
 
-fn lower_value(value: &ValueWithSpan) -> Result<Value> {
+fn lower_value(value: &ValueWithSpan) -> Result<SqlValue> {
     match &value.value {
-        ParserValue::Boolean(value) => Ok(Value::Bool(*value)),
-        ParserValue::Null => Ok(Value::Null),
-        ParserValue::Number(raw, _) => lower_number(raw),
+        ParserValue::Boolean(value) => Ok(SqlValue::Literal(Value::Bool(*value))),
+        ParserValue::Null => Ok(SqlValue::Literal(Value::Null)),
+        ParserValue::Number(raw, _) => lower_number(raw).map(SqlValue::Literal),
         ParserValue::SingleQuotedString(value)
         | ParserValue::DoubleQuotedString(value)
         | ParserValue::TripleSingleQuotedString(value)
         | ParserValue::TripleDoubleQuotedString(value)
         | ParserValue::EscapedStringLiteral(value)
-        | ParserValue::UnicodeStringLiteral(value) => Ok(Value::String(value.clone())),
+        | ParserValue::UnicodeStringLiteral(value) => {
+            Ok(SqlValue::Literal(Value::String(value.clone())))
+        }
+        ParserValue::Placeholder(raw) => Ok(SqlValue::Parameter(postgres_parameter_position(raw)?)),
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL literal {value}"
         ))),
@@ -404,17 +503,35 @@ fn lower_number(raw: &str) -> Result<Value> {
     }
 }
 
-fn lower_nonnegative_integer_expr(expr: &Expr) -> Result<u64> {
+fn lower_nonnegative_integer_expr(expr: &Expr) -> Result<SqlBound> {
     let value = lower_literal_expr(expr)?;
     match value {
-        Value::Int(value) if value >= 0 => Ok(value as u64),
+        SqlValue::Literal(Value::Int(value)) if value >= 0 => Ok(SqlBound::Literal(value as u64)),
+        SqlValue::Parameter(position) => Ok(SqlBound::Parameter(position)),
         _ => Err(SkeinError::Semantic(
-            "LIMIT/OFFSET must be non-negative integer literals".to_string(),
+            "LIMIT/OFFSET must be non-negative integers or PostgreSQL parameters".to_string(),
         )),
     }
 }
 
-fn object_name_parts(name: &ObjectName) -> Result<Vec<String>> {
+fn postgres_parameter_position(raw: &str) -> Result<usize> {
+    let Some(raw) = raw.strip_prefix('$') else {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL parameters must use one-based $n syntax".to_string(),
+        ));
+    };
+    let position = raw.parse::<usize>().map_err(|_| {
+        SkeinError::Semantic("PostgreSQL parameters must use one-based $n syntax".to_string())
+    })?;
+    if position == 0 {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL parameters are one-based".to_string(),
+        ));
+    }
+    Ok(position)
+}
+
+pub(super) fn object_name_parts(name: &ObjectName) -> Result<Vec<String>> {
     name.0
         .iter()
         .map(|part| match part {
@@ -426,7 +543,7 @@ fn object_name_parts(name: &ObjectName) -> Result<Vec<String>> {
         .collect()
 }
 
-fn normalize_ident(ident: &Ident) -> String {
+pub(super) fn normalize_ident(ident: &Ident) -> String {
     if ident.quote_style.is_some() {
         ident.value.clone()
     } else {

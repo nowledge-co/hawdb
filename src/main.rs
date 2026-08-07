@@ -29,6 +29,7 @@ use skein::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
 use skein::{
     background_maintenance_evidence_health_from_bundle, external_shadow_ready_missing_capabilities,
     external_shadow_trace_health_from_bundle, external_shadow_trace_report_json,
+    nowledge_content_store_sql_corpus_json,
     replacement_readiness_family_evidence_health_from_bundle,
     scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
     scan_nowledge_query_inventory_cypher_coverage_to_json,
@@ -77,6 +78,16 @@ fn main() -> Result<()> {
         if command == "scan-nowledge-cypher-coverage-detail" {
             let root = args.next().unwrap_or_else(|| ".".to_string());
             let json = scan_nowledge_query_inventory_cypher_coverage_detail_to_json(root)?;
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            return Ok(());
+        }
+        if command == "nowledge-content-store-sql-corpus" {
+            if args.next().is_some() {
+                return Err(SkeinError::Semantic(
+                    "nowledge-content-store-sql-corpus does not accept arguments".to_string(),
+                ));
+            }
+            let json = nowledge_content_store_sql_corpus_json()?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             return Ok(());
         }

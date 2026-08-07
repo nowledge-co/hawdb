@@ -3,7 +3,9 @@ use super::{
     StatementExecutionContext,
 };
 use crate::error::{Result, SkeinError};
+use crate::relational_sql::{compile_relational_statement_sql, execute_relational_query_sql};
 use crate::telemetry::QueryTelemetry;
+use crate::value::Value;
 use std::io::Write;
 use std::path::Path;
 
@@ -93,30 +95,74 @@ impl Database {
             ));
     }
 
-    pub fn query_sql(&self, sql_text: &str) -> Result<QueryOutput> {
+    pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
         self.query_sql_bounded(sql_text, self.config.max_read_result_rows)
     }
 
+    pub fn query_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        self.query_sql_with_params_bounded(sql_text, parameters, self.config.max_read_result_rows)
+    }
+
     pub fn query_sql_bounded(
-        &self,
+        &mut self,
         sql_text: &str,
         max_rows: Option<usize>,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_bounded(sql_text, &[], max_rows)
+    }
+
+    pub fn query_sql_with_params_bounded(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+    ) -> Result<QueryOutput> {
+        self.store.ensure_usable()?;
         let max_rows = super::restrictive_query_limit(self.config.max_read_result_rows, max_rows);
-        let plan_cache_stats = self.plan_cache.borrow().stats();
-        let slow_queries = self.slow_query_log.borrow().snapshot();
-        let statement_summaries = self.statement_summary.borrow().snapshot();
-        system_sql::query_sql(
-            sql_text,
-            max_rows,
-            self.config.max_read_result_payload_bytes,
-            &system_sql::SystemSqlContext {
-                catalog: &self.catalog,
-                plan_cache_stats: &plan_cache_stats,
-                slow_queries: &slow_queries,
-                statement_summaries: &statement_summaries,
-            },
-        )
+        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if matches!(
+            &prepared.statement,
+            crate::sql::SqlStatement::Select(select)
+                if select.from.schema.as_deref() == Some("system")
+        ) {
+            let plan_cache_stats = self.plan_cache.borrow().stats();
+            let slow_queries = self.slow_query_log.borrow().snapshot();
+            let statement_summaries = self.statement_summary.borrow().snapshot();
+            return system_sql::query_sql_with_params(
+                sql_text,
+                parameters,
+                max_rows,
+                self.config.max_read_result_payload_bytes,
+                &system_sql::SystemSqlContext {
+                    catalog: &self.catalog,
+                    plan_cache_stats: &plan_cache_stats,
+                    slow_queries: &slow_queries,
+                    statement_summaries: &statement_summaries,
+                },
+            );
+        }
+
+        if matches!(prepared.statement, crate::sql::SqlStatement::Select(_)) {
+            let output = execute_relational_query_sql(
+                sql_text,
+                parameters,
+                self.store.relational_state(),
+                super::relational_query_limits(&self.config, max_rows),
+            )?;
+            return Ok(QueryOutput { rows: output.rows });
+        }
+
+        self.ensure_writable()?;
+        let transaction =
+            compile_relational_statement_sql(sql_text, parameters, self.store.relational_state())?;
+        let summary = self
+            .store
+            .commit_relational_transaction(&mut self.catalog, transaction)?;
+        Ok(QueryOutput { rows: summary.rows })
     }
 
     pub fn slow_query_log_jsonl(&self) -> Result<String> {

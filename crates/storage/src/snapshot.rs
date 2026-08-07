@@ -27,8 +27,12 @@ pub enum SnapshotCommitError<E> {
 
 impl<T> SnapshotCoordinator<T> {
     pub fn new(value: T) -> Self {
+        Self::new_at_epoch(value, 0)
+    }
+
+    pub fn new_at_epoch(value: T, epoch: u64) -> Self {
         Self {
-            published: RwLock::new(Arc::new(VersionedSnapshot { epoch: 0, value })),
+            published: RwLock::new(Arc::new(VersionedSnapshot { epoch, value })),
             writer: Mutex::new(()),
         }
     }

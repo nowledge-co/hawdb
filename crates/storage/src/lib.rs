@@ -11,6 +11,7 @@ mod ownership;
 pub mod projection;
 pub mod property_projection;
 pub mod property_spill;
+pub mod relational;
 pub mod scan;
 pub mod snapshot;
 
@@ -76,6 +77,19 @@ pub use property_projection::{
 pub use property_spill::{
     PropertySpillBlockDescriptor, PropertySpillConfig, PropertySpillError, PropertySpillManifest,
     PropertySpillReader, PropertySpillWriter,
+};
+pub use relational::{
+    decode_relational_checkpoint, decode_relational_wal_batch, encode_relational_checkpoint,
+    encode_relational_wal_batch, RelationalCheckpoint, RelationalColumnSchema,
+    RelationalComparisonOp, RelationalConflictAction, RelationalDecodeLimits, RelationalError,
+    RelationalForeignKeySchema, RelationalHydrationBudget, RelationalIndexSchema,
+    RelationalInsertMode, RelationalKey, RelationalMutationLimits, RelationalOverflowConfig,
+    RelationalOverflowRef, RelationalPredicate, RelationalReferentialAction, RelationalRow,
+    RelationalScalarType, RelationalState, RelationalStore, RelationalTableSchema,
+    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
+    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWalBatch,
+    RelationalWrite, DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES, DEFAULT_MAX_RELATIONAL_MUTATION_BYTES,
+    DEFAULT_MAX_RELATIONAL_MUTATION_ROWS, DEFAULT_RELATIONAL_OVERFLOW_THRESHOLD_BYTES,
 };
 pub use scan::{
     CandidateCursor, DateTimeMinMax, EnumDictionaryStats, FieldSummary, FileSegmentRangeReader,

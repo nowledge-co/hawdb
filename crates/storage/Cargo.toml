@@ -11,3 +11,4 @@ rayon = "1.11"
 roaring = "0.10"
 skein-core = { path = "../core" }
 skein-integrity = { path = "../integrity" }
+zstd = "0.13"

@@ -161,3 +161,11 @@ harness = false
 [[bench]]
 name = "aggregate_partial_spill"
 harness = false
+
+[[bench]]
+name = "relational_overflow"
+harness = false
+
+[[bench]]
+name = "relational_index_access"
+harness = false

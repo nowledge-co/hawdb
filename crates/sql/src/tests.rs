@@ -1,6 +1,7 @@
 use super::{
-    parse_postgres_sql, SelectProjection, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
-    SqlPredicate, SqlStatement, SqlTableName,
+    parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlBound, SqlColumnRef,
+    SqlComparisonOp, SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument,
+    SqlJoinKind, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableName, SqlValue,
 };
 use skein_core::Value;
 
@@ -13,7 +14,9 @@ fn parses_postgres_select_subset() {
     )
     .expect("valid PostgreSQL select");
 
-    let SqlStatement::Select(select) = statement;
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT statement");
+    };
     assert_eq!(
         select.from,
         SqlTableName {
@@ -40,8 +43,8 @@ fn parses_postgres_select_subset() {
             },
         ]
     );
-    assert_eq!(select.limit, Some(20));
-    assert_eq!(select.offset, Some(5));
+    assert_eq!(select.limit, Some(SqlBound::Literal(20)));
+    assert_eq!(select.offset, Some(SqlBound::Literal(5)));
     assert_eq!(select.order_by[0].direction, SqlOrderDirection::Desc);
 
     let Some(SqlPredicate::And(left, right)) = select.selection else {
@@ -55,7 +58,7 @@ fn parses_postgres_select_subset() {
                 name: "start_time".to_string(),
             },
             op: SqlComparisonOp::Gte,
-            right: Value::String("2026-07-23T00:00:00Z".to_string()),
+            right: SqlValue::Literal(Value::String("2026-07-23T00:00:00Z".to_string())),
         }
     );
     assert_eq!(
@@ -66,12 +69,52 @@ fn parses_postgres_select_subset() {
                 name: "work_class".to_string(),
             },
             values: vec![
-                Value::String("query".to_string()),
-                Value::String("shadow".to_string()),
+                SqlValue::Literal(Value::String("query".to_string())),
+                SqlValue::Literal(Value::String("shadow".to_string())),
             ],
             negated: false,
         }
     );
+}
+
+#[test]
+fn parses_postgres_parameters_in_predicates_and_bounds() {
+    let statement = parse_postgres_sql(
+        "SELECT * FROM system.slow_queries \
+         WHERE work_class = $1 AND elapsed_micros >= $2 \
+         ORDER BY elapsed_micros DESC LIMIT $3 OFFSET $4",
+    )
+    .expect("valid parameterized PostgreSQL select");
+
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT statement");
+    };
+    assert_eq!(select.limit, Some(SqlBound::Parameter(3)));
+    assert_eq!(select.offset, Some(SqlBound::Parameter(4)));
+    let Some(SqlPredicate::And(left, right)) = select.selection else {
+        panic!("expected conjunctive predicate");
+    };
+    assert!(matches!(
+        *left,
+        SqlPredicate::Compare {
+            right: SqlValue::Parameter(1),
+            ..
+        }
+    ));
+    assert!(matches!(
+        *right,
+        SqlPredicate::Compare {
+            right: SqlValue::Parameter(2),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_zero_based_postgres_parameter() {
+    let error = parse_postgres_sql("SELECT * FROM system.slow_queries WHERE query = $0")
+        .expect_err("PostgreSQL parameters are one-based");
+    assert!(error.to_string().contains("one-based"));
 }
 
 #[test]
@@ -81,7 +124,9 @@ fn normalizes_unquoted_identifiers_with_postgres_rules() {
     )
     .expect("valid PostgreSQL select");
 
-    let SqlStatement::Select(select) = statement;
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT statement");
+    };
     assert_eq!(
         select.from,
         SqlTableName {
@@ -112,19 +157,148 @@ fn normalizes_unquoted_identifiers_with_postgres_rules() {
 }
 
 #[test]
-fn rejects_non_select_statements() {
-    let error = parse_postgres_sql("DELETE FROM system.slow_queries")
-        .expect_err("mutating SQL is intentionally unsupported");
-    assert!(error
-        .to_string()
-        .contains("only PostgreSQL SELECT statements are supported"));
+fn parses_delete_statement() {
+    let statement = parse_postgres_sql("DELETE FROM thread_messages WHERE thread_storage_id = $1")
+        .expect("supported DELETE statement");
+    let SqlStatement::Delete(delete) = statement else {
+        panic!("expected DELETE statement");
+    };
+    assert_eq!(delete.table.name, "thread_messages");
+    assert!(matches!(
+        delete.selection,
+        Some(SqlPredicate::Compare {
+            right: SqlValue::Parameter(1),
+            ..
+        })
+    ));
 }
 
 #[test]
-fn rejects_joins_until_execution_model_exists() {
-    let error = parse_postgres_sql(
+fn parses_inner_join_with_aliases() {
+    let statement = parse_postgres_sql(
         "SELECT * FROM system.slow_queries q JOIN system.plan_cache p ON q.digest = p.digest",
     )
-    .expect_err("joins are not part of the first SQL subset");
-    assert!(error.to_string().contains("joins are not supported yet"));
+    .expect("supported inner join shape");
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT statement");
+    };
+    assert_eq!(select.from_alias.as_deref(), Some("q"));
+    assert_eq!(select.joins.len(), 1);
+    assert_eq!(select.joins[0].kind, SqlJoinKind::Inner);
+    assert_eq!(select.joins[0].alias.as_deref(), Some("p"));
+    assert!(matches!(
+        select.joins[0].on,
+        SqlPredicate::CompareColumns { .. }
+    ));
+}
+
+#[test]
+fn parses_aggregate_projection_and_distinct_argument() {
+    let statement = parse_postgres_sql(
+        "SELECT COUNT(DISTINCT tm.content_message_id) AS covered_messages \
+         FROM thread_messages AS tm GROUP BY tm.thread_storage_id",
+    )
+    .expect("supported aggregate SELECT");
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT statement");
+    };
+    assert_eq!(select.group_by.len(), 1);
+    assert!(matches!(
+        &select.projection[0],
+        SelectProjection::Expression {
+            expression: SqlExpression::Function {
+                name,
+                arguments,
+                distinct: true,
+            },
+            alias: Some(alias),
+        } if name == "count"
+            && alias == "covered_messages"
+            && matches!(arguments.as_slice(), [SqlFunctionArgument::Expression(_)])
+    ));
+}
+
+#[test]
+fn parses_content_table_schema() {
+    let statement = parse_postgres_sql(
+        "CREATE TABLE content_chunks (\
+           chunk_id TEXT PRIMARY KEY, \
+           content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), \
+           chunk_index BIGINT NOT NULL, \
+           text TEXT NOT NULL, \
+           UNIQUE (content_doc_id, chunk_index)\
+         )",
+    )
+    .expect("supported CREATE TABLE statement");
+    let SqlStatement::CreateTable(create) = statement else {
+        panic!("expected CREATE TABLE statement");
+    };
+    assert_eq!(create.table.name, "content_chunks");
+    assert_eq!(create.columns[0].data_type, SqlDataType::Text);
+    assert!(create.columns[0].primary_key);
+    assert!(!create.columns[1].nullable);
+    assert!(create.columns[1].references.is_some());
+    assert_eq!(create.constraints.len(), 1);
+}
+
+#[test]
+fn parses_insert_on_conflict_update() {
+    let statement = parse_postgres_sql(
+        "INSERT INTO content_migration_state (key, value, updated_at) \
+         VALUES ($1, $2, $3), ($4, $5, $6) \
+         ON CONFLICT (key) DO UPDATE \
+         SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+    )
+    .expect("supported upsert statement");
+    let SqlStatement::Insert(insert) = statement else {
+        panic!("expected INSERT statement");
+    };
+    assert_eq!(insert.rows.len(), 2);
+    assert!(matches!(
+        insert.on_conflict.map(|conflict| conflict.action),
+        Some(SqlConflictAction::DoUpdate(assignments)) if assignments.len() == 2
+    ));
+}
+
+#[test]
+fn prepares_dense_repeated_postgres_parameters() {
+    let prepared = prepare_postgres_sql(
+        "SELECT * FROM thread_messages \
+         WHERE thread_storage_id = $1 OR message_id = $1 LIMIT $2",
+    )
+    .expect("dense parameter contract");
+    assert_eq!(
+        prepared
+            .parameters
+            .iter()
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
+fn rejects_gapped_postgres_parameters() {
+    let error =
+        prepare_postgres_sql("SELECT * FROM thread_messages WHERE thread_storage_id = $1 LIMIT $3")
+            .expect_err("gapped parameter positions must fail");
+    assert!(error.to_string().contains("must be dense"));
+}
+
+#[test]
+fn parses_nested_octet_length_aggregate() {
+    let statement = parse_postgres_sql(
+        "SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0) AS payload_bytes FROM thread_messages",
+    )
+    .unwrap();
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT");
+    };
+    assert!(matches!(
+        &select.projection[0],
+        SelectProjection::Expression {
+            expression: SqlExpression::Function { name, .. },
+            alias: Some(alias),
+        } if name == "coalesce" && alias == "payload_bytes"
+    ));
 }

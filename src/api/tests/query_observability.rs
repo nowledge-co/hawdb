@@ -1059,7 +1059,7 @@ fn order_by_limit_uses_top_n_and_preserves_stable_order() {
 
 #[test]
 fn sql_reads_plan_cache_virtual_table() {
-    let db = Database::new_with_config(DatabaseConfig {
+    let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
     });
@@ -1111,7 +1111,7 @@ fn sql_reads_plan_cache_virtual_table() {
 
 #[test]
 fn sql_system_table_queries_do_not_use_plan_cache() {
-    let db = Database::new_with_config(DatabaseConfig {
+    let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
     });

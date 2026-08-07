@@ -6,8 +6,8 @@ use crate::schema::{
     TableKind,
 };
 use crate::sql::{
-    parse_postgres_sql, SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp,
-    SqlOrderDirection, SqlPredicate, SqlStatement,
+    SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
+    SqlPredicate, SqlStatement, SqlValue,
 };
 use crate::value::Value;
 use skein_query::QueryIdentity;
@@ -428,13 +428,24 @@ impl StatementSummaryRecord {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn query_sql(
     sql_text: &str,
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
     context: &SystemSqlContext<'_>,
 ) -> Result<QueryOutput> {
-    let logical = plan_sql(sql_text)?;
+    query_sql_with_params(sql_text, &[], max_rows, max_payload_bytes, context)
+}
+
+pub(crate) fn query_sql_with_params(
+    sql_text: &str,
+    parameters: &[Value],
+    max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
+    context: &SystemSqlContext<'_>,
+) -> Result<QueryOutput> {
+    let logical = plan_sql(sql_text, parameters)?;
     let physical = optimize_sql(logical);
     let rows = execute_sql(physical, context, max_rows)?;
     let payload_bytes = rows.iter().fold(0usize, |total, row| {
@@ -449,8 +460,21 @@ pub(crate) fn query_sql(
     Ok(QueryOutput { rows })
 }
 
-fn plan_sql(sql_text: &str) -> Result<SqlLogicalPlan> {
-    let SqlStatement::Select(select) = parse_postgres_sql(sql_text)?;
+fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
+    let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+    if prepared.parameters.len() != parameters.len() {
+        return Err(SkeinError::Semantic(format!(
+            "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
+            prepared.parameters.len(),
+            parameters.len()
+        )));
+    }
+    let SqlStatement::Select(select) = prepared.statement else {
+        return Err(SkeinError::Semantic(
+            "system SQL only supports SELECT statements".to_string(),
+        ));
+    };
+    validate_system_select_shape(&select)?;
     let table = system_table(&select)?;
     validate_projection(table, &select.projection)?;
     validate_predicate_columns(table, select.selection.as_ref())?;
@@ -458,11 +482,103 @@ fn plan_sql(sql_text: &str) -> Result<SqlLogicalPlan> {
     Ok(SqlLogicalPlan::SystemTableScan(SystemTableScan {
         table,
         projection: select.projection,
-        predicate: select.selection,
+        predicate: select
+            .selection
+            .map(|predicate| bind_predicate(predicate, parameters))
+            .transpose()?,
         order_by: select.order_by,
-        offset: select.offset,
-        limit: select.limit,
+        offset: select
+            .offset
+            .map(|bound| bind_bound(bound, parameters, "OFFSET"))
+            .transpose()?,
+        limit: select
+            .limit
+            .map(|bound| bind_bound(bound, parameters, "LIMIT"))
+            .transpose()?,
     }))
+}
+
+fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
+    if select.distinct
+        || select.from_alias.is_some()
+        || !select.joins.is_empty()
+        || !select.group_by.is_empty()
+    {
+        return Err(SkeinError::Semantic(
+            "system SQL does not support DISTINCT, table aliases, joins, or GROUP BY".to_string(),
+        ));
+    }
+    if select
+        .order_by
+        .iter()
+        .any(|item| item.nulls != crate::sql::SqlNullOrder::DialectDefault)
+    {
+        return Err(SkeinError::Semantic(
+            "system SQL does not support explicit NULLS FIRST/LAST".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn bind_predicate(predicate: SqlPredicate, parameters: &[Value]) -> Result<SqlPredicate> {
+    Ok(match predicate {
+        SqlPredicate::And(left, right) => SqlPredicate::And(
+            Box::new(bind_predicate(*left, parameters)?),
+            Box::new(bind_predicate(*right, parameters)?),
+        ),
+        SqlPredicate::Or(left, right) => SqlPredicate::Or(
+            Box::new(bind_predicate(*left, parameters)?),
+            Box::new(bind_predicate(*right, parameters)?),
+        ),
+        SqlPredicate::Not(inner) => {
+            SqlPredicate::Not(Box::new(bind_predicate(*inner, parameters)?))
+        }
+        SqlPredicate::Compare { left, op, right } => SqlPredicate::Compare {
+            left,
+            op,
+            right: SqlValue::Literal(bind_value(right, parameters)?),
+        },
+        SqlPredicate::CompareColumns { left, op, right } => {
+            SqlPredicate::CompareColumns { left, op, right }
+        }
+        SqlPredicate::InList {
+            left,
+            values,
+            negated,
+        } => SqlPredicate::InList {
+            left,
+            values: values
+                .into_iter()
+                .map(|value| bind_value(value, parameters).map(SqlValue::Literal))
+                .collect::<Result<Vec<_>>>()?,
+            negated,
+        },
+        SqlPredicate::IsNull { column, negated } => SqlPredicate::IsNull { column, negated },
+    })
+}
+
+fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
+    match value {
+        SqlValue::Literal(value) => Ok(value),
+        SqlValue::Parameter(position) => parameters.get(position - 1).cloned().ok_or_else(|| {
+            SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+        }),
+    }
+}
+
+fn bind_bound(bound: SqlBound, parameters: &[Value], name: &str) -> Result<u64> {
+    match bound {
+        SqlBound::Literal(value) => Ok(value),
+        SqlBound::Parameter(position) => match parameters.get(position - 1) {
+            Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
+            Some(_) => Err(SkeinError::Semantic(format!(
+                "PostgreSQL {name} parameter ${position} must be a non-negative integer"
+            ))),
+            None => Err(SkeinError::Semantic(format!(
+                "missing PostgreSQL parameter ${position}"
+            ))),
+        },
+    }
 }
 
 fn optimize_sql(logical: SqlLogicalPlan) -> SqlPhysicalPlan {
@@ -942,17 +1058,27 @@ fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
             predicate_matches(left, row) || predicate_matches(right, row)
         }
         SqlPredicate::Not(inner) => !predicate_matches(inner, row),
-        SqlPredicate::Compare { left, op, right } => row
+        SqlPredicate::Compare { left, op, right } => {
+            row.get(&left.name).is_some_and(|left_value| match right {
+                SqlValue::Literal(right) => compare_values(left_value, *op, right),
+                SqlValue::Parameter(_) => false,
+            })
+        }
+        SqlPredicate::CompareColumns { left, op, right } => row
             .get(&left.name)
-            .is_some_and(|left_value| compare_values(left_value, *op, right)),
+            .zip(row.get(&right.name))
+            .is_some_and(|(left_value, right_value)| compare_values(left_value, *op, right_value)),
         SqlPredicate::InList {
             left,
             values,
             negated,
         } => {
-            let matched = row
-                .get(&left.name)
-                .is_some_and(|left_value| values.iter().any(|value| left_value == value));
+            let matched = row.get(&left.name).is_some_and(|left_value| {
+                values.iter().any(|value| match value {
+                    SqlValue::Literal(value) => left_value == value,
+                    SqlValue::Parameter(_) => false,
+                })
+            });
             if *negated {
                 !matched
             } else {
@@ -1027,6 +1153,11 @@ fn validate_projection(table: SystemTable, projection: &[SelectProjection]) -> R
         match projection {
             SelectProjection::Wildcard => {}
             SelectProjection::Column { name, .. } => validate_column(table, name)?,
+            SelectProjection::Expression { .. } => {
+                return Err(SkeinError::Semantic(
+                    "system SQL aggregate expressions are not supported".to_string(),
+                ));
+            }
         }
     }
     Ok(())
@@ -1045,6 +1176,10 @@ fn validate_predicate_columns(table: SystemTable, predicate: Option<&SqlPredicat
         SqlPredicate::Compare { left, .. }
         | SqlPredicate::InList { left, .. }
         | SqlPredicate::IsNull { column: left, .. } => validate_column(table, left),
+        SqlPredicate::CompareColumns { left, right, .. } => {
+            validate_column(table, left)?;
+            validate_column(table, right)
+        }
     }
 }
 
@@ -1239,6 +1374,95 @@ mod tests {
             output.rows,
             vec![BTreeMap::from([("value".to_string(), Value::Int(5))])]
         );
+    }
+
+    #[test]
+    fn query_system_table_with_postgres_parameters() {
+        let catalog = Catalog::default();
+        let stats = PlanCacheStats {
+            max_entries: Some(128),
+            entries: 3,
+            hits: 5,
+            misses: 7,
+            admissions: 4,
+            disabled_misses: 0,
+            bypasses: 2,
+            evictions: 1,
+            memory_pressure_events: 1,
+        };
+        let context = SystemSqlContext {
+            catalog: &catalog,
+            plan_cache_stats: &stats,
+            slow_queries: &[],
+            statement_summaries: &[],
+        };
+
+        let output = query_sql_with_params(
+            "SELECT metric, value FROM system.plan_cache \
+             WHERE metric IN ($1, $2) ORDER BY metric ASC LIMIT $3 OFFSET $4",
+            &[
+                Value::String("hits".to_string()),
+                Value::String("misses".to_string()),
+                Value::Int(1),
+                Value::Int(1),
+            ],
+            None,
+            None,
+            &context,
+        )
+        .expect("parameterized system table query");
+
+        assert_eq!(
+            output.rows,
+            vec![BTreeMap::from([
+                ("metric".to_string(), Value::String("misses".to_string())),
+                ("value".to_string(), Value::Int(7)),
+            ])]
+        );
+    }
+
+    #[test]
+    fn query_system_table_rejects_parameter_contract_mismatch() {
+        let catalog = Catalog::default();
+        let stats = PlanCacheStats {
+            max_entries: None,
+            entries: 0,
+            hits: 0,
+            misses: 0,
+            admissions: 0,
+            disabled_misses: 0,
+            bypasses: 0,
+            evictions: 0,
+            memory_pressure_events: 0,
+        };
+        let context = SystemSqlContext {
+            catalog: &catalog,
+            plan_cache_stats: &stats,
+            slow_queries: &[],
+            statement_summaries: &[],
+        };
+
+        let missing = query_sql_with_params(
+            "SELECT * FROM system.plan_cache WHERE metric = $1",
+            &[],
+            None,
+            None,
+            &context,
+        )
+        .expect_err("missing parameter must fail");
+        assert!(missing.to_string().contains("requires 1 parameters"));
+
+        let invalid_bound = query_sql_with_params(
+            "SELECT * FROM system.plan_cache LIMIT $1",
+            &[Value::String("one".to_string())],
+            None,
+            None,
+            &context,
+        )
+        .expect_err("non-integer LIMIT must fail");
+        assert!(invalid_bound
+            .to_string()
+            .contains("must be a non-negative integer"));
     }
 
     #[test]

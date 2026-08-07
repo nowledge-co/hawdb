@@ -29,9 +29,12 @@ pub use doctor::{
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
 use skein_storage::{
-    durable_replace_file, sync_parent_directory, AdjacencyPostingList, CanonicalEndpointDirection,
-    CanonicalNodeIterator, CanonicalRelationshipIterator, CanonicalSegmentError,
-    DatabaseDirectoryLease,
+    decode_relational_checkpoint, decode_relational_wal_batch, durable_replace_file,
+    encode_relational_checkpoint, encode_relational_wal_batch, sync_parent_directory,
+    AdjacencyPostingList, CanonicalEndpointDirection, CanonicalNodeIterator,
+    CanonicalRelationshipIterator, CanonicalSegmentError, DatabaseDirectoryLease,
+    RelationalDecodeLimits, RelationalMutationLimits, RelationalOverflowConfig, RelationalState,
+    RelationalTransaction,
 };
 pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
@@ -77,6 +80,7 @@ const STORAGE_VERSION: &str = "skein-storage-v1";
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
+const RELATIONAL_CHECKPOINT_FILE_PREFIX: &str = "relational";
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
 const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
 const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
@@ -182,6 +186,10 @@ pub(crate) fn set_wal_apply_failpoint(operations_before_failure: Option<usize>) 
 
 fn checkpoint_generation_file(generation: u64) -> String {
     format!("checkpoint.{generation}.skein")
+}
+
+fn relational_checkpoint_generation_file(generation: u64) -> String {
+    format!("{RELATIONAL_CHECKPOINT_FILE_PREFIX}.{generation}.skein")
 }
 
 fn wal_generation_file(generation: u64) -> String {
@@ -1204,6 +1212,9 @@ pub struct GraphStore {
     max_out_of_core_delta_bytes: Option<u64>,
     post_wal_apply_poisoned: bool,
     integrity_poisoned: Arc<AtomicBool>,
+    relational_state: RelationalState,
+    relational_mutation_limits: RelationalMutationLimits,
+    relational_overflow_config: RelationalOverflowConfig,
     durable: Option<DurableStore>,
 }
 
@@ -1653,6 +1664,9 @@ impl GraphStore {
             max_out_of_core_delta_bytes: replay_config.max_out_of_core_delta_bytes,
             post_wal_apply_poisoned: false,
             integrity_poisoned: Arc::new(AtomicBool::new(false)),
+            relational_state: RelationalState::default(),
+            relational_mutation_limits: RelationalMutationLimits::default(),
+            relational_overflow_config: RelationalOverflowConfig::default(),
             durable: Some(durable),
         };
         store.load_checkpoint(catalog, replay_config)?;
@@ -4071,7 +4085,7 @@ impl GraphStore {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.commit_mutations_internal(catalog, vec![mutation], limits, true)
+        self.commit_mutations_internal(catalog, vec![mutation], None, limits, true)
     }
 
     pub fn commit_mutations_with_limits(
@@ -4080,13 +4094,41 @@ impl GraphStore {
         mutations: Vec<GraphMutation>,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.commit_mutations_internal(catalog, mutations, limits, false)
+        self.commit_mutations_internal(catalog, mutations, None, limits, false)
+    }
+
+    pub(crate) fn relational_state(&self) -> &RelationalState {
+        &self.relational_state
+    }
+
+    pub(crate) fn commit_relational_transaction(
+        &mut self,
+        catalog: &mut Catalog,
+        transaction: RelationalTransaction,
+    ) -> Result<MutationSummary> {
+        self.commit_mutations_and_relational(
+            catalog,
+            Vec::new(),
+            transaction,
+            MutationLimits::default(),
+        )
+    }
+
+    pub(crate) fn commit_mutations_and_relational(
+        &mut self,
+        catalog: &mut Catalog,
+        mutations: Vec<GraphMutation>,
+        transaction: RelationalTransaction,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.commit_mutations_internal(catalog, mutations, Some(transaction), limits, false)
     }
 
     fn commit_mutations_internal(
         &mut self,
         catalog: &mut Catalog,
         mutations: Vec<GraphMutation>,
+        relational_transaction: Option<RelationalTransaction>,
         limits: MutationLimits,
         preserve_single_create_wal: bool,
     ) -> Result<MutationSummary> {
@@ -5629,6 +5671,23 @@ impl GraphStore {
         }
 
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
+        let mut staged_relational_state = None;
+        if let Some(transaction) = relational_transaction.filter(|value| !value.writes.is_empty()) {
+            staged_relational_state = Some(
+                self.relational_state
+                    .stage_transaction(
+                        transaction.clone(),
+                        self.relational_mutation_limits,
+                        self.relational_overflow_config,
+                    )
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            );
+            let record = encode_relational_wal_batch(self.commit_epoch + 1, &transaction)
+                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            ops.push(WalOp::Relational {
+                record: Arc::from(record),
+            });
+        }
         if ops.is_empty() {
             return Ok(MutationSummary { rows });
         }
@@ -5649,7 +5708,13 @@ impl GraphStore {
         *catalog = working_catalog;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
-            self.apply_wal_op(catalog, op)?;
+            if matches!(op, WalOp::Relational { .. }) {
+                self.relational_state = staged_relational_state
+                    .take()
+                    .expect("relational WAL operation must have staged state");
+            } else {
+                self.apply_wal_op(catalog, op)?;
+            }
         }
         self.commit_epoch += 1;
         Ok(MutationSummary { rows })
@@ -5910,6 +5975,11 @@ impl GraphStore {
                     build_config.property_projection,
                 )?,
             };
+            let relational_checkpoint_artifact = durable.write_relational_checkpoint(
+                &self.relational_state,
+                commit_epoch,
+                generation,
+            )?;
             let checkpoint_artifact = durable.write_checkpoint(
                 CheckpointImage {
                     catalog,
@@ -5924,6 +5994,7 @@ impl GraphStore {
                     initial_import_source_fingerprint: self
                         .initial_import_source_fingerprint
                         .as_deref(),
+                    relational_checkpoint: relational_checkpoint_artifact,
                 },
                 generation,
             )?;
@@ -5934,6 +6005,7 @@ impl GraphStore {
                 generation,
                 CheckpointManifestArtifacts {
                     checkpoint: checkpoint_artifact,
+                    relational_checkpoint: relational_checkpoint_artifact,
                     canonical_manifest: canonical_manifest_artifact,
                     canonical_adjacency_manifest: canonical_adjacency_manifest_artifact,
                     property_spill_manifest: property_spill_manifest_artifact,
@@ -6671,6 +6743,9 @@ impl GraphStore {
             max_out_of_core_delta_bytes: self.max_out_of_core_delta_bytes,
             post_wal_apply_poisoned: self.post_wal_apply_poisoned,
             integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+            relational_state: self.relational_state.clone(),
+            relational_mutation_limits: self.relational_mutation_limits,
+            relational_overflow_config: self.relational_overflow_config,
             durable: None,
         }
     }
@@ -6857,7 +6932,8 @@ impl GraphStore {
                 | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
                 | WalOp::SetRelationshipProperty { .. }
                 | WalOp::ProjectGraph { .. }
-                | WalOp::MarkInitialImportSource { .. } => {}
+                | WalOp::MarkInitialImportSource { .. }
+                | WalOp::Relational { .. } => {}
             }
         }
     }
@@ -9577,7 +9653,8 @@ impl GraphStore {
                 | WalOp::CreateRelationshipUniqueConstraint { .. }
                 | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
                 | WalOp::ProjectGraph { .. }
-                | WalOp::MarkInitialImportSource { .. } => {}
+                | WalOp::MarkInitialImportSource { .. }
+                | WalOp::Relational { .. } => {}
             }
         }
         Ok(bytes)
@@ -9956,6 +10033,7 @@ impl GraphStore {
         }
         let expected_generation = durable.checkpoint_epoch;
         let expected_commit_epoch = durable.checkpoint_commit_epoch;
+        let durable_root_path = durable.root_path.clone();
         let text = durable.read_checkpoint_text(config)?;
         let (body, checksum) = split_checkpoint_checksum(&text)?;
         let actual = checksum_bytes(body.as_bytes());
@@ -9964,6 +10042,7 @@ impl GraphStore {
                 "checkpoint checksum mismatch: expected {checksum}, got {actual}"
             )));
         }
+        let relational_checkpoint = relational_checkpoint_metadata(body)?;
         let mut loaded_search_projection_change_log_start_epoch = None;
         let mut loaded_generation = None;
         let mut loaded_commit_epoch = None;
@@ -10005,6 +10084,9 @@ impl GraphStore {
                     self.commit_epoch = parse_u64(raw, "commit_epoch")?;
                     loaded_commit_epoch = Some(self.commit_epoch);
                 }
+                ["relational_checkpoint_encoded_len", _]
+                | ["relational_checkpoint_encoded_checksum", _]
+                | ["relational_checkpoint_encoded_sha256", _] => {}
                 ["search_projection_change_log_start_epoch", raw] => {
                     if loaded_search_projection_change_log_start_epoch.is_some() {
                         return Err(SkeinError::Storage(
@@ -10406,6 +10488,35 @@ impl GraphStore {
                 loaded_commit_epoch
             )));
         }
+        if let Some(metadata) = relational_checkpoint {
+            let path =
+                durable_root_path.join(relational_checkpoint_generation_file(expected_generation));
+            let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
+            let file_len = fs::metadata(&path)?.len();
+            if file_len > max_bytes as u64 {
+                return Err(SkeinError::Storage(format!(
+                    "relational checkpoint contains {file_len} bytes, exceeding max_record_bytes {max_bytes}"
+                )));
+            }
+            let bytes = fs::read(&path)?;
+            verify_integrity(
+                &bytes,
+                metadata.encoded_len,
+                metadata.encoded_checksum,
+                metadata.encoded_sha256,
+                "relational checkpoint",
+            )?;
+            let checkpoint =
+                decode_relational_checkpoint(&bytes, RelationalDecodeLimits::checkpoint())
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            if checkpoint.epoch != self.commit_epoch {
+                return Err(SkeinError::Storage(format!(
+                    "relational checkpoint epoch {} does not match graph commit epoch {}",
+                    checkpoint.epoch, self.commit_epoch
+                )));
+            }
+            self.relational_state = checkpoint.state;
+        }
         match loaded_search_projection_change_log_start_epoch {
             Some(start_epoch) => {
                 validate_search_projection_checkpoint_changes(
@@ -10482,6 +10593,14 @@ impl GraphStore {
                     .and_then(|durable| durable.persistent_property_projection.clone());
                 self.canonical_base_out_of_core = true;
             }
+        }
+        if let Some(durable) = &mut self.durable {
+            durable.relational_checkpoint_encoded_len =
+                relational_checkpoint.map(|metadata| metadata.encoded_len);
+            durable.relational_checkpoint_encoded_checksum =
+                relational_checkpoint.map(|metadata| metadata.encoded_checksum);
+            durable.relational_checkpoint_encoded_sha256 =
+                relational_checkpoint.map(|metadata| metadata.encoded_sha256);
         }
         Ok(())
     }
@@ -10948,6 +11067,25 @@ impl GraphStore {
             WalOp::MarkInitialImportSource { source_fingerprint } => {
                 self.initial_import_source_fingerprint = Some(source_fingerprint);
             }
+            WalOp::Relational { record } => {
+                let batch = decode_relational_wal_batch(&record, RelationalDecodeLimits::wal())
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                let expected_epoch = self.commit_epoch.saturating_add(1);
+                if batch.epoch != expected_epoch {
+                    return Err(SkeinError::Storage(format!(
+                        "relational WAL epoch mismatch: expected {expected_epoch}, got {}",
+                        batch.epoch
+                    )));
+                }
+                self.relational_state = self
+                    .relational_state
+                    .stage_transaction(
+                        batch.transaction,
+                        self.relational_mutation_limits,
+                        self.relational_overflow_config,
+                    )
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            }
             WalOp::Batch(ops) => {
                 for op in ops {
                     self.apply_wal_op(catalog, op)?;
@@ -10970,6 +11108,9 @@ struct DurableStore {
     checkpoint_encoded_len: Option<u64>,
     checkpoint_encoded_checksum: Option<u64>,
     checkpoint_encoded_sha256: Option<Sha256Digest>,
+    relational_checkpoint_encoded_len: Option<u64>,
+    relational_checkpoint_encoded_checksum: Option<u64>,
+    relational_checkpoint_encoded_sha256: Option<Sha256Digest>,
     canonical_manifest_encoded_len: Option<u64>,
     canonical_manifest_encoded_checksum: Option<u64>,
     canonical_manifest_encoded_sha256: Option<Sha256Digest>,
@@ -11014,6 +11155,7 @@ struct CheckpointImage<'a> {
     statistics: &'a GraphStatistics,
     projected_graphs: &'a BTreeMap<String, ProjectedGraphDefinition>,
     initial_import_source_fingerprint: Option<&'a str>,
+    relational_checkpoint: Option<DurableArtifactMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -11053,6 +11195,7 @@ impl DurableArtifactMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CheckpointManifestArtifacts {
     checkpoint: DurableArtifactMetadata,
+    relational_checkpoint: Option<DurableArtifactMetadata>,
     canonical_manifest: DurableArtifactMetadata,
     canonical_adjacency_manifest: DurableArtifactMetadata,
     property_spill_manifest: DurableArtifactMetadata,
@@ -11260,6 +11403,9 @@ impl DurableStore {
             checkpoint_encoded_len: manifest.checkpoint_encoded_len,
             checkpoint_encoded_checksum: manifest.checkpoint_encoded_checksum,
             checkpoint_encoded_sha256: manifest.checkpoint_encoded_sha256,
+            relational_checkpoint_encoded_len: None,
+            relational_checkpoint_encoded_checksum: None,
+            relational_checkpoint_encoded_sha256: None,
             canonical_manifest_encoded_len: manifest.canonical_manifest_encoded_len,
             canonical_manifest_encoded_checksum: manifest.canonical_manifest_encoded_checksum,
             canonical_manifest_encoded_sha256: manifest.canonical_manifest_encoded_sha256,
@@ -11325,6 +11471,11 @@ impl DurableStore {
                 ),
                 (wal_generation_file(generation), self.wal_path.clone()),
             ];
+            let relational_checkpoint_name = relational_checkpoint_generation_file(generation);
+            let relational_checkpoint_path = self.root_path.join(&relational_checkpoint_name);
+            if self.relational_checkpoint_encoded_len.is_some() {
+                sources.push((relational_checkpoint_name, relational_checkpoint_path));
+            }
             if self.canonical_manifest_encoded_len.is_some() {
                 sources.push((
                     canonical_artifact_generation_file(generation),
@@ -11465,6 +11616,33 @@ impl DurableStore {
                 expected_sha256,
                 "checkpoint",
             )?;
+        }
+
+        if let (Some(expected_len), Some(expected_checksum), Some(expected_sha256)) = (
+            self.relational_checkpoint_encoded_len,
+            self.relational_checkpoint_encoded_checksum,
+            self.relational_checkpoint_encoded_sha256,
+        ) {
+            let path = self
+                .root_path
+                .join(relational_checkpoint_generation_file(self.checkpoint_epoch));
+            verify_path(
+                &path,
+                expected_len,
+                expected_checksum,
+                expected_sha256,
+                "relational checkpoint",
+            )?;
+            let bytes = fs::read(path)?;
+            let checkpoint =
+                decode_relational_checkpoint(&bytes, RelationalDecodeLimits::checkpoint())
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            if checkpoint.epoch != self.checkpoint_commit_epoch {
+                return Err(SkeinError::Storage(format!(
+                    "relational checkpoint epoch {} does not match manifest checkpoint commit epoch {}",
+                    checkpoint.epoch, self.checkpoint_commit_epoch
+                )));
+            }
         }
 
         if let (Some(expected_len), Some(expected_checksum), Some(expected_sha256)) = (
@@ -12014,6 +12192,43 @@ impl DurableStore {
         Ok(metadata)
     }
 
+    fn write_relational_checkpoint(
+        &self,
+        state: &RelationalState,
+        commit_epoch: u64,
+        generation: u64,
+    ) -> Result<Option<DurableArtifactMetadata>> {
+        let path = self
+            .root_path
+            .join(relational_checkpoint_generation_file(generation));
+        if state.is_empty() {
+            match fs::remove_file(&path) {
+                Ok(()) => sync_parent_dir(&path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(None);
+        }
+        let bytes = encode_relational_checkpoint(commit_epoch, state)
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
+        if bytes.len() > max_bytes {
+            return Err(SkeinError::Storage(format!(
+                "relational checkpoint contains {} bytes, exceeding max_record_bytes {max_bytes}",
+                bytes.len()
+            )));
+        }
+        let metadata = DurableArtifactMetadata::for_bytes(&bytes);
+        let tmp_path = path.with_extension("skein.tmp");
+        {
+            let mut file = File::create(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        durable_replace_file(&tmp_path, &path)?;
+        Ok(Some(metadata))
+    }
+
     fn write_checkpoint(
         &self,
         image: CheckpointImage<'_>,
@@ -12029,6 +12244,20 @@ impl DurableStore {
         body.push_str(&format!("version\t{STORAGE_VERSION}\n"));
         body.push_str(&format!("generation\t{generation}\n"));
         body.push_str(&format!("commit_epoch\t{}\n", image.commit_epoch));
+        if let Some(relational) = image.relational_checkpoint {
+            body.push_str(&format!(
+                "relational_checkpoint_encoded_len\t{}\n",
+                relational.encoded_len
+            ));
+            body.push_str(&format!(
+                "relational_checkpoint_encoded_checksum\t{}\n",
+                relational.encoded_checksum
+            ));
+            body.push_str(&format!(
+                "relational_checkpoint_encoded_sha256\t{}\n",
+                relational.encoded_sha256
+            ));
+        }
         body.push_str(&format!("next_node_id\t{}\n", image.next_node_id));
         body.push_str(&format!("next_rel_id\t{}\n", image.next_rel_id));
         body.push_str("canonical_records\ttrue\n");
@@ -12414,6 +12643,7 @@ impl DurableStore {
             source_scan_publication.map(|value| value.descriptor_checksum());
         let CheckpointManifestArtifacts {
             checkpoint,
+            relational_checkpoint,
             canonical_manifest,
             canonical_adjacency_manifest,
             property_spill_manifest,
@@ -12469,6 +12699,12 @@ impl DurableStore {
         self.checkpoint_encoded_len = manifest.checkpoint_encoded_len;
         self.checkpoint_encoded_checksum = manifest.checkpoint_encoded_checksum;
         self.checkpoint_encoded_sha256 = manifest.checkpoint_encoded_sha256;
+        self.relational_checkpoint_encoded_len =
+            relational_checkpoint.map(|artifact| artifact.encoded_len);
+        self.relational_checkpoint_encoded_checksum =
+            relational_checkpoint.map(|artifact| artifact.encoded_checksum);
+        self.relational_checkpoint_encoded_sha256 =
+            relational_checkpoint.map(|artifact| artifact.encoded_sha256);
         self.canonical_manifest_encoded_len = manifest.canonical_manifest_encoded_len;
         self.canonical_manifest_encoded_checksum = manifest.canonical_manifest_encoded_checksum;
         self.canonical_manifest_encoded_sha256 = manifest.canonical_manifest_encoded_sha256;
@@ -12549,6 +12785,7 @@ impl DurableStore {
             };
             let generation = parse_generation_file(name, "checkpoint.")
                 .or_else(|| parse_generation_file(name, "wal."))
+                .or_else(|| parse_generation_file(name, "relational."))
                 .or_else(|| parse_generation_file(name, "canonical."))
                 .or_else(|| parse_canonical_manifest_generation_file(name))
                 .or_else(|| parse_generation_file(name, "adjacency."))
@@ -13486,6 +13723,7 @@ fn validate_backup_file_name(name: &str) -> Result<()> {
         || name == STABLE_ID_MAPPING_FILE
         || parse_generation_file(name, "checkpoint.").is_some()
         || parse_generation_file(name, "wal.").is_some()
+        || parse_generation_file(name, "relational.").is_some()
         || parse_generation_file(name, "canonical.").is_some()
         || parse_canonical_manifest_generation_file(name).is_some()
         || parse_generation_file(name, "adjacency.").is_some()
@@ -13628,6 +13866,63 @@ fn validate_backup_files(root: &Path, files: &[BackupFileEntry], generation: u64
         return Err(SkeinError::Storage(
             "backup checkpoint metadata does not match the durable manifest".to_string(),
         ));
+    }
+    let checkpoint_text = read_durable_text_bytes_with_limit(
+        &fs::read(root.join(&checkpoint_name))?,
+        "checkpoint",
+        Some(skein_storage::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
+    )?;
+    let (checkpoint_body, checkpoint_checksum) = split_checkpoint_checksum(&checkpoint_text)?;
+    if checkpoint_checksum != checksum_bytes(checkpoint_body.as_bytes()) {
+        return Err(SkeinError::Storage(
+            "backup checkpoint logical checksum mismatch".to_string(),
+        ));
+    }
+    let relational_name = relational_checkpoint_generation_file(generation);
+    match relational_checkpoint_metadata(checkpoint_body)? {
+        Some(metadata) => {
+            let relational = files
+                .iter()
+                .find(|file| file.name == relational_name)
+                .ok_or_else(|| {
+                    SkeinError::Storage(format!(
+                        "backup is missing required relational checkpoint: {relational_name}"
+                    ))
+                })?;
+            if relational.encoded_len != metadata.encoded_len
+                || relational.encoded_checksum != metadata.encoded_checksum
+                || relational.sha256 != metadata.encoded_sha256
+            {
+                return Err(SkeinError::Storage(
+                    "backup relational checkpoint metadata does not match the generation checkpoint"
+                        .to_string(),
+                ));
+            }
+            let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
+            if relational.encoded_len > max_bytes as u64 {
+                return Err(SkeinError::Storage(format!(
+                    "backup relational checkpoint contains {} bytes, exceeding max_record_bytes {max_bytes}",
+                    relational.encoded_len
+                )));
+            }
+            let relational_checkpoint = decode_relational_checkpoint(
+                &fs::read(root.join(&relational_name))?,
+                RelationalDecodeLimits::checkpoint(),
+            )
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            if relational_checkpoint.epoch != manifest.checkpoint_commit_epoch {
+                return Err(SkeinError::Storage(format!(
+                    "backup relational checkpoint epoch {} does not match checkpoint commit epoch {}",
+                    relational_checkpoint.epoch, manifest.checkpoint_commit_epoch
+                )));
+            }
+        }
+        None if names.contains(relational_name.as_str()) => {
+            return Err(SkeinError::Storage(
+                "backup contains an unreferenced relational checkpoint".to_string(),
+            ));
+        }
+        None => {}
     }
     if let (Some(expected_len), Some(expected_checksum)) = (
         manifest.canonical_manifest_encoded_len,
@@ -14157,6 +14452,9 @@ enum WalOp {
     MarkInitialImportSource {
         source_fingerprint: String,
     },
+    Relational {
+        record: Arc<[u8]>,
+    },
     Batch(Vec<WalOp>),
 }
 
@@ -14330,6 +14628,9 @@ impl WalEntry {
                 "mark_initial_import_source\t{}",
                 encode_string(source_fingerprint)
             ),
+            WalOp::Relational { record } => {
+                format!("relational\t{}", encode_bytes_base64(record))
+            }
             WalOp::Batch(ops) => format!(
                 "batch\t{}",
                 ops.iter()
@@ -14582,6 +14883,12 @@ impl WalEntry {
                     },
                 }))
             }
+            [raw_lsn, "relational", raw_record] => Ok(WalDecodeResult::Entry(WalEntry {
+                lsn: parse_u64(raw_lsn, "wal lsn")?,
+                op: WalOp::Relational {
+                    record: Arc::from(decode_bytes_base64(raw_record)?),
+                },
+            })),
             [raw_lsn, "batch", raw_ops] => Ok(WalDecodeResult::Entry(WalEntry {
                 lsn: parse_u64(raw_lsn, "wal lsn")?,
                 op: WalOp::Batch(decode_wal_batch(raw_ops)?),
@@ -14778,6 +15085,9 @@ fn encode_wal_op_for_batch(op: &WalOp) -> String {
             "mark_initial_import_source,{}",
             encode_string(source_fingerprint)
         ),
+        WalOp::Relational { record } => {
+            format!("relational,{}", encode_bytes_base64(record))
+        }
         WalOp::Batch(_) => unreachable!("nested wal batches are not encoded"),
     }
 }
@@ -14919,6 +15229,9 @@ fn decode_wal_op_from_batch(input: &str) -> Result<WalOp> {
                 source_fingerprint: decode_string(raw_source_fingerprint)?,
             })
         }
+        ["relational", raw_record] => Ok(WalOp::Relational {
+            record: Arc::from(decode_bytes_base64(raw_record)?),
+        }),
         _ => Err(SkeinError::Storage(format!(
             "invalid batch wal op: {input}"
         ))),
@@ -15190,7 +15503,8 @@ fn apply_wal_op_to_snapshot(
         | WalOp::CreateRelationshipUniqueConstraint { .. }
         | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
         | WalOp::ProjectGraph { .. }
-        | WalOp::MarkInitialImportSource { .. } => {}
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Relational { .. } => {}
     }
 }
 
@@ -17187,6 +17501,48 @@ fn split_checkpoint_checksum(text: &str) -> Result<(&str, u64)> {
     Ok((body, checksum))
 }
 
+fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifactMetadata>> {
+    let mut encoded_len = None;
+    let mut encoded_checksum = None;
+    let mut encoded_sha256 = None;
+    for line in body.lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        match fields.as_slice() {
+            ["relational_checkpoint_encoded_len", raw] if encoded_len.is_none() => {
+                encoded_len = Some(parse_u64(raw, "relational checkpoint encoded length")?);
+            }
+            ["relational_checkpoint_encoded_checksum", raw] if encoded_checksum.is_none() => {
+                encoded_checksum = Some(parse_u64(raw, "relational checkpoint encoded checksum")?);
+            }
+            ["relational_checkpoint_encoded_sha256", raw] if encoded_sha256.is_none() => {
+                encoded_sha256 = Some(raw.parse().map_err(|error| {
+                    SkeinError::Storage(format!(
+                        "invalid relational checkpoint encoded SHA-256: {error}"
+                    ))
+                })?);
+            }
+            ["relational_checkpoint_encoded_len", _]
+            | ["relational_checkpoint_encoded_checksum", _]
+            | ["relational_checkpoint_encoded_sha256", _] => {
+                return Err(SkeinError::Storage(
+                    "checkpoint contains duplicate relational artifact metadata".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if !artifact_metadata_presence_consistent(encoded_len, encoded_checksum, encoded_sha256) {
+        return Err(SkeinError::Storage(
+            "checkpoint relational artifact metadata is incomplete".to_string(),
+        ));
+    }
+    Ok(encoded_len.map(|encoded_len| DurableArtifactMetadata {
+        encoded_len,
+        encoded_checksum: encoded_checksum.expect("validated relational checksum"),
+        encoded_sha256: encoded_sha256.expect("validated relational SHA-256"),
+    }))
+}
+
 fn split_manifest_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
         return Err(SkeinError::Storage(
@@ -17821,6 +18177,90 @@ pub(crate) fn decode_string(input: &str) -> Result<String> {
     String::from_utf8(bytes).map_err(|error| SkeinError::Storage(error.to_string()))
 }
 
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode_bytes_base64(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3).saturating_mul(4));
+    for chunk in input.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(BASE64_ALPHABET[(first >> 2) as usize] as char);
+        output.push(BASE64_ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(BASE64_ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(BASE64_ALPHABET[(third & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn decode_bytes_base64(input: &str) -> Result<Vec<u8>> {
+    if !input.len().is_multiple_of(4) {
+        return Err(SkeinError::Storage(
+            "invalid base64 byte string length".to_string(),
+        ));
+    }
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let chunks = input.as_bytes().chunks_exact(4);
+    let chunk_count = chunks.len();
+    for (index, chunk) in chunks.enumerate() {
+        let last = index + 1 == chunk_count;
+        let a = decode_base64_digit(chunk[0])?;
+        let b = decode_base64_digit(chunk[1])?;
+        let c_padding = chunk[2] == b'=';
+        let d_padding = chunk[3] == b'=';
+        if !last && (c_padding || d_padding) || c_padding && !d_padding {
+            return Err(SkeinError::Storage(
+                "invalid base64 byte string padding".to_string(),
+            ));
+        }
+        let c = if c_padding {
+            0
+        } else {
+            decode_base64_digit(chunk[2])?
+        };
+        let d = if d_padding {
+            0
+        } else {
+            decode_base64_digit(chunk[3])?
+        };
+        if c_padding && b & 0x0f != 0 || d_padding && !c_padding && c & 0x03 != 0 {
+            return Err(SkeinError::Storage(
+                "non-canonical base64 byte string padding".to_string(),
+            ));
+        }
+        output.push((a << 2) | (b >> 4));
+        if !c_padding {
+            output.push((b << 4) | (c >> 2));
+        }
+        if !d_padding {
+            output.push((c << 6) | d);
+        }
+    }
+    Ok(output)
+}
+
+fn decode_base64_digit(value: u8) -> Result<u8> {
+    match value {
+        b'A'..=b'Z' => Ok(value - b'A'),
+        b'a'..=b'z' => Ok(value - b'a' + 26),
+        b'0'..=b'9' => Ok(value - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(SkeinError::Storage(
+            "invalid base64 byte string digit".to_string(),
+        )),
+    }
+}
+
 pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
@@ -17987,23 +18427,26 @@ mod tests {
         canonical_adjacency_artifact_generation_file, canonical_adjacency_manifest_generation_file,
         checksum_bytes, compute_statistics, encode_durable_text,
         property_projection_artifact_generation_file, property_spill_artifact_generation_file,
-        read_durable_text, restore_storage_backup, set_checkpoint_failpoint, source_scan,
-        AdjacencyConsolidationPlan, AdjacencyDirection, AdjacencyGroupStats, AdjacencyLayout,
-        CheckpointPublishStage, ConnectedNodesCreate, CowSegmentedMap, DatabaseDoctor,
-        DegreeStatisticsEntry, DegreeStatisticsKey, DurableCompression, GraphScanControl,
-        GraphStore, NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry,
-        ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord, RelTypeId,
-        RelationshipDeleteRequest, ScanPruningStrategy, ScanPruningTargetKind,
-        SearchProjectionGraphChange, SourceScanCandidateRead, WalDoctorOptions,
-        COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD, DURABLE_COMPRESSION_HEADER,
-        MANIFEST_FILE,
+        read_durable_text, restore_storage_backup, set_checkpoint_failpoint,
+        set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan, AdjacencyDirection,
+        AdjacencyGroupStats, AdjacencyLayout, CheckpointPublishStage, ConnectedNodesCreate,
+        CowSegmentedMap, DatabaseDoctor, DegreeStatisticsEntry, DegreeStatisticsKey,
+        DurableCompression, GraphScanControl, GraphStore, NodeId, NodeRecord, NodeSetAssignment,
+        NodeSetValue, OrderedAdjacencyEntry, ProjectedGraphDefinition, PropertyFilter, RelId,
+        RelRecord, RelTypeId, RelationshipDeleteRequest, ScanPruningStrategy,
+        ScanPruningTargetKind, SearchProjectionGraphChange, SourceScanCandidateRead,
+        WalDoctorOptions, COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD,
+        DURABLE_COMPRESSION_HEADER, MANIFEST_FILE,
     };
     use crate::schema::{Catalog, LabelId};
     use crate::value::Value;
     use skein_integrity::integrity_digest;
     use skein_storage::{
-        DurabilityPolicy, ScanPredicate, ScanSegmentAccessPlan, ScanSegmentFallback,
-        ScanSegmentManifest, StorageResidencyMode, WalReplayConfig,
+        DurabilityPolicy, GraphMutation, MutationLimits, RelationalColumnSchema,
+        RelationalInsertMode, RelationalRow, RelationalScalarType, RelationalTableSchema,
+        RelationalTransaction, RelationalValue, RelationalWrite, ScanPredicate,
+        ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest, StorageResidencyMode,
+        WalReplayConfig,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, OpenOptions};
@@ -18042,6 +18485,209 @@ mod tests {
         assert!(store
             .relationships
             .shares_storage_with(&snapshot.relationships));
+    }
+
+    #[test]
+    fn graph_and_relational_state_share_wal_epoch_and_checkpoint_publication() {
+        let path = unique_test_dir("unified_relational_commit");
+        let backup = unique_test_dir("unified_relational_backup");
+        let restored = unique_test_dir("unified_relational_restored");
+        let table = RelationalTableSchema {
+            name: "messages".to_string(),
+            columns: vec![
+                RelationalColumnSchema {
+                    name: "id".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "body".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: None,
+                },
+            ],
+            primary_key: vec!["id".to_string()],
+            unique_constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+        };
+
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).expect("open durable store");
+            store
+                .commit_mutations_and_relational(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Marker".to_string(),
+                        properties: properties([("id", Value::String("graph-1".to_string()))]),
+                    }],
+                    RelationalTransaction {
+                        writes: vec![RelationalWrite::CreateTable(table)],
+                    },
+                    MutationLimits::default(),
+                )
+                .expect("commit graph and relational schema");
+            assert_eq!(store.commit_epoch(), 1);
+            assert_eq!(store.nodes.len(), 1);
+            assert!(store.relational_state().table_schema("messages").is_some());
+        }
+
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).expect("replay unified WAL");
+            assert_eq!(store.commit_epoch(), 1);
+            assert_eq!(store.nodes.len(), 1);
+            assert!(store.relational_state().table_schema("messages").is_some());
+
+            store
+                .commit_mutations_and_relational(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Marker".to_string(),
+                        properties: properties([("id", Value::String("graph-2".to_string()))]),
+                    }],
+                    RelationalTransaction {
+                        writes: vec![RelationalWrite::Insert {
+                            table: "messages".to_string(),
+                            rows: vec![RelationalRow::new(vec![
+                                RelationalValue::Text("message-1".to_string()),
+                                RelationalValue::Text("payload".to_string()),
+                            ])],
+                            mode: RelationalInsertMode::Error,
+                        }],
+                    },
+                    MutationLimits::default(),
+                )
+                .expect("commit graph and relational row");
+            assert_eq!(store.commit_epoch(), 2);
+            store.checkpoint(&catalog).expect("publish checkpoint");
+            assert!(path.join("relational.1.skein").exists());
+            store
+                .backup_to(&catalog, &backup)
+                .expect("back up relational checkpoint");
+            assert!(backup.join("relational.2.skein").exists());
+        }
+
+        {
+            let mut catalog = Catalog::default();
+            let store = GraphStore::open(&path, &mut catalog).expect("load unified checkpoint");
+            assert_eq!(store.commit_epoch(), 2);
+            assert_eq!(store.nodes.len(), 2);
+            assert_eq!(store.relational_state().row_count("messages"), 1);
+        }
+
+        restore_storage_backup(&backup, &restored).expect("restore unified backup");
+        {
+            let mut catalog = Catalog::default();
+            let store =
+                GraphStore::open(&restored, &mut catalog).expect("open restored checkpoint");
+            assert_eq!(store.commit_epoch(), 2);
+            assert_eq!(store.nodes.len(), 2);
+            assert_eq!(store.relational_state().row_count("messages"), 1);
+        }
+
+        fs::remove_dir_all(path).expect("remove test store");
+        fs::remove_dir_all(backup).expect("remove backup");
+        fs::remove_dir_all(restored).expect("remove restored store");
+    }
+
+    #[test]
+    fn mixed_commit_recovers_both_states_after_post_wal_apply_failure() {
+        let path = unique_test_dir("unified_relational_apply_failure");
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).expect("open durable store");
+            set_wal_apply_failpoint(Some(0));
+            let error = store
+                .commit_mutations_and_relational(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Marker".to_string(),
+                        properties: properties([("id", Value::String("graph-1".to_string()))]),
+                    }],
+                    RelationalTransaction {
+                        writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "messages".to_string(),
+                            columns: vec![RelationalColumnSchema {
+                                name: "id".to_string(),
+                                scalar_type: RelationalScalarType::Text,
+                                nullable: false,
+                                default: None,
+                            }],
+                            primary_key: vec!["id".to_string()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        })],
+                    },
+                    MutationLimits::default(),
+                )
+                .expect_err("injected apply failure must poison the handle");
+            set_wal_apply_failpoint(None);
+            assert!(error.to_string().contains("injected failure"));
+            assert!(store.post_wal_apply_poisoned());
+            assert_eq!(store.nodes.len(), 0);
+            assert!(store.relational_state().is_empty());
+        }
+
+        {
+            let mut catalog = Catalog::default();
+            let store = GraphStore::open(&path, &mut catalog).expect("recover canonical WAL batch");
+            assert_eq!(store.commit_epoch(), 1);
+            assert_eq!(store.nodes.len(), 1);
+            assert!(store.relational_state().table_schema("messages").is_some());
+        }
+
+        fs::remove_dir_all(path).expect("remove test store");
+    }
+
+    #[test]
+    fn relational_checkpoint_corruption_fails_scrub_and_reopen() {
+        let path = unique_test_dir("relational_checkpoint_corruption");
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).expect("open durable store");
+            store
+                .commit_relational_transaction(
+                    &mut catalog,
+                    RelationalTransaction {
+                        writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "messages".to_string(),
+                            columns: vec![RelationalColumnSchema {
+                                name: "id".to_string(),
+                                scalar_type: RelationalScalarType::Text,
+                                nullable: false,
+                                default: None,
+                            }],
+                            primary_key: vec!["id".to_string()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        })],
+                    },
+                )
+                .expect("create relational table");
+            store.checkpoint(&catalog).expect("publish checkpoint");
+
+            let relational_path = path.join("relational.1.skein");
+            let mut bytes = fs::read(&relational_path).expect("read relational checkpoint");
+            *bytes.last_mut().expect("relational checkpoint payload") ^= 0xff;
+            fs::write(&relational_path, bytes).expect("corrupt relational checkpoint");
+
+            let error = store
+                .scrub_storage()
+                .expect_err("scrub must reject relational corruption");
+            assert!(error.to_string().contains("relational checkpoint"));
+        }
+
+        let mut catalog = Catalog::default();
+        let error = GraphStore::open(&path, &mut catalog)
+            .expect_err("reopen must reject relational corruption");
+        assert!(error.to_string().contains("relational checkpoint"));
+        fs::remove_dir_all(path).expect("remove test store");
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod memo;
 pub mod operator;
 pub mod predicate;
 pub mod properties;
+pub mod relational;
 pub mod rule;
 pub mod search;
 pub mod stage;
@@ -32,6 +33,10 @@ pub use predicate::{
 pub use properties::{
     Distribution, MemoryBudgetClass, PhysicalProperties, RequiredProperties, ScanPruningSupport,
     VectorPrecision,
+};
+pub use relational::{
+    select_relational_access_path, skyline_prune_relational_access_paths,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind,
 };
 pub use rule::{
     apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,
