@@ -130,6 +130,10 @@ fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
         DataType::DoublePrecision | DataType::Float8 => Ok(SqlDataType::DoublePrecision),
         DataType::Text => Ok(SqlDataType::Text),
         DataType::Bytea => Ok(SqlDataType::Bytea),
+        DataType::JSON => Ok(SqlDataType::Json),
+        DataType::JSONB => Err(SkeinError::Semantic(
+            "JSONB is not supported; use JSON".to_string(),
+        )),
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL data type {data_type}"
         ))),

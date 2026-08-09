@@ -242,6 +242,22 @@ fn parses_content_table_schema() {
 }
 
 #[test]
+fn parses_native_json_and_rejects_jsonb() {
+    let statement =
+        parse_postgres_sql("CREATE TABLE documents (id TEXT PRIMARY KEY, payload JSON NOT NULL)")
+            .expect("supported JSON column");
+    let SqlStatement::CreateTable(create) = statement else {
+        panic!("expected CREATE TABLE statement");
+    };
+    assert_eq!(create.columns[1].data_type, SqlDataType::Json);
+
+    let error =
+        parse_postgres_sql("CREATE TABLE documents (id TEXT PRIMARY KEY, payload JSONB NOT NULL)")
+            .expect_err("JSONB must not silently alias JSON");
+    assert!(error.to_string().contains("JSONB is not supported"));
+}
+
+#[test]
 fn parses_insert_on_conflict_update() {
     let statement = parse_postgres_sql(
         "INSERT INTO content_migration_state (key, value, updated_at) \

@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 regex = "1"
+serde_json = "1"

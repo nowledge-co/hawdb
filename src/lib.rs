@@ -55,6 +55,7 @@ pub mod schema {
 
 pub mod value {
     pub use skein_core::value::*;
+    pub use skein_core::JsonDocument;
 }
 
 pub mod sql {

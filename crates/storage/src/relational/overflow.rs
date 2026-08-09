@@ -2,6 +2,7 @@ use super::{
     RelationalError, RelationalOverflowSegment, RelationalRow, RelationalScalarType,
     RelationalState, RelationalTableSchema, RelationalValue,
 };
+use skein_core::JsonDocument;
 use skein_integrity::{crc32c, integrity_digest};
 use std::collections::BTreeSet;
 use std::io::{Cursor, Read};
@@ -90,6 +91,10 @@ pub(super) fn externalize_row(
             RelationalValue::Bytea(bytes) if bytes.len() >= config.threshold_bytes => {
                 (RelationalScalarType::Bytea, bytes.clone())
             }
+            RelationalValue::Json(json) if json.len() >= config.threshold_bytes => (
+                RelationalScalarType::Json,
+                json.as_str().as_bytes().to_vec(),
+            ),
             _ => continue,
         };
         if raw.len() > config.max_value_bytes {
@@ -157,6 +162,16 @@ pub(super) fn hydrate_row(
                 })?)
             }
             RelationalScalarType::Bytea => RelationalValue::Bytea(hydrated),
+            RelationalScalarType::Json => {
+                let hydrated = String::from_utf8(hydrated).map_err(|error| {
+                    RelationalError::Corruption(format!(
+                        "overflow JSON is not valid UTF-8: {error}"
+                    ))
+                })?;
+                RelationalValue::Json(JsonDocument::parse(&hydrated).map_err(|error| {
+                    RelationalError::Corruption(format!("overflow JSON failed validation: {error}"))
+                })?)
+            }
             _ => {
                 return Err(RelationalError::Corruption(
                     "overflow segment has a non-payload scalar type".to_string(),
@@ -247,9 +262,10 @@ fn encode_envelope(
     envelope.push(match scalar_type {
         RelationalScalarType::Text => 1,
         RelationalScalarType::Bytea => 2,
+        RelationalScalarType::Json => 3,
         _ => {
             return Err(RelationalError::Schema(
-                "only TEXT and BYTEA can use overflow storage".to_string(),
+                "only TEXT, BYTEA, and JSON can use overflow storage".to_string(),
             ));
         }
     });
@@ -299,6 +315,7 @@ fn decode_envelope(
     let scalar_type = match envelope[9] {
         1 => RelationalScalarType::Text,
         2 => RelationalScalarType::Bytea,
+        3 => RelationalScalarType::Json,
         _ => {
             return Err(RelationalError::Corruption(
                 "invalid overflow scalar type".to_string(),

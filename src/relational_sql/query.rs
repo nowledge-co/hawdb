@@ -5,7 +5,7 @@ use crate::sql::{
     SqlFunctionArgument, SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
     SqlValue,
 };
-use crate::value::Value;
+use crate::value::{JsonDocument, Value};
 use skein_core::Catalog;
 use skein_executor::binding::Binding as ExecutorBinding;
 use skein_executor::blocking::{
@@ -27,6 +27,10 @@ use skein_storage::{
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+
+mod json;
+
+use json::{evaluate_projection_expression, validate_json_query_semantics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RelationalQueryLimits {
@@ -237,6 +241,13 @@ fn execute_select(
             access: join_access.access,
         });
     }
+    validate_json_query_semantics(
+        select,
+        base_schema,
+        &select.from.name,
+        &base_qualifier,
+        &planned_joins,
+    )?;
 
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let has_blocking_operator = has_aggregate
@@ -626,7 +637,13 @@ fn choose_base_access(
         let Some(position) = schema.column_position(&column.name) else {
             continue;
         };
-        let value = value_to_relational(bind_sql_value(value, parameters)?)?;
+        if schema.columns[position].scalar_type == RelationalScalarType::Json {
+            continue;
+        }
+        let value = value_to_relational_as(
+            bind_sql_value(value, parameters)?,
+            Some(schema.columns[position].scalar_type),
+        )?;
         if matches!(value, RelationalValue::Null) {
             continue;
         }
@@ -1444,6 +1461,7 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_, '_> {
                 let projected = project_bound_row(
                     &row,
                     &self.select.projection,
+                    self.parameters,
                     self.state,
                     self.hydration,
                     self.task_context,
@@ -1670,6 +1688,7 @@ fn execute_blocking_projection<'a>(
                 consume_locator_batch(
                     batch,
                     select,
+                    parameters,
                     state,
                     &mut hydration,
                     task_context,
@@ -1709,6 +1728,7 @@ fn consume_projected_batch(
 fn consume_locator_batch(
     batch: BindingBatch,
     select: &SelectStatement,
+    parameters: &[Value],
     state: &RelationalState,
     hydration: &mut RelationalHydrationBudget,
     task_context: Option<&skein_core::RuntimeTaskContext>,
@@ -1728,7 +1748,7 @@ fn consume_locator_batch(
             .ok_or_else(|| {
                 SkeinError::Execution("relational spill row is missing its locator".to_string())
             })?;
-        let row = project_locator(&locator, select, state, hydration, task_context)?;
+        let row = project_locator(&locator, select, parameters, state, hydration, task_context)?;
         push_relational_output(row, output, payload_bytes, limits)?;
     }
     Ok(BatchControl::Continue)
@@ -1842,6 +1862,9 @@ fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::String(format!("bytea:{}", hex_encode(value)))),
+        RelationalValue::Json(_) => Err(SkeinError::Semantic(
+            "ORDER BY does not support JSON values".to_string(),
+        )),
         RelationalValue::Overflow(_) => Err(SkeinError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),
@@ -1931,6 +1954,7 @@ fn encode_locator_value(value: &RelationalValue) -> Value {
         RelationalValue::DoublePrecision(value) => ("float", Value::Float(*value)),
         RelationalValue::Text(value) => ("text", Value::String(value.clone())),
         RelationalValue::Bytea(value) => ("bytea", Value::String(hex_encode(value))),
+        RelationalValue::Json(value) => ("json", Value::String(value.as_str().to_string())),
         RelationalValue::Overflow(reference) => (
             "overflow",
             Value::Map(BTreeMap::from([
@@ -1944,6 +1968,7 @@ fn encode_locator_value(value: &RelationalValue) -> Value {
                         match reference.scalar_type {
                             RelationalScalarType::Text => "text",
                             RelationalScalarType::Bytea => "bytea",
+                            RelationalScalarType::Json => "json",
                             RelationalScalarType::Boolean
                             | RelationalScalarType::BigInt
                             | RelationalScalarType::DoublePrecision => "invalid",
@@ -1977,12 +2002,20 @@ struct OwnedLocatorBinding {
 fn project_locator(
     locator: &Value,
     select: &SelectStatement,
+    parameters: &[Value],
     state: &RelationalState,
     hydration: &mut RelationalHydrationBudget,
     task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<Row> {
     with_locator_bound_row(locator, state, |bound| {
-        project_bound_row(bound, &select.projection, state, hydration, task_context)
+        project_bound_row(
+            bound,
+            &select.projection,
+            parameters,
+            state,
+            hydration,
+            task_context,
+        )
     })
 }
 
@@ -2090,6 +2123,9 @@ fn decode_locator_value(value: &Value) -> Result<RelationalValue> {
         ("float", Value::Float(value)) => Ok(RelationalValue::DoublePrecision(*value)),
         ("text", Value::String(value)) => Ok(RelationalValue::Text(value.clone())),
         ("bytea", Value::String(value)) => Ok(RelationalValue::Bytea(hex_decode(value)?)),
+        ("json", Value::String(value)) => JsonDocument::parse(value)
+            .map(RelationalValue::Json)
+            .map_err(|error| SkeinError::Execution(error.to_string())),
         _ => Err(SkeinError::Execution(format!(
             "relational spill key has unsupported value kind {kind}"
         ))),
@@ -2186,6 +2222,7 @@ fn execute_streaming_projection<'a>(
                 let projected = project_bound_row(
                     &row,
                     &select.projection,
+                    parameters,
                     state,
                     &mut hydration,
                     task_context,
@@ -3144,11 +3181,14 @@ fn evaluate_row_expression(
                 RelationalValue::Bytea(value) => Ok(RelationalValue::BigInt(
                     i64::try_from(value.len()).unwrap_or(i64::MAX),
                 )),
+                RelationalValue::Json(value) => Ok(RelationalValue::BigInt(
+                    i64::try_from(value.len()).unwrap_or(i64::MAX),
+                )),
                 RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
                     i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
                 )),
                 _ => Err(SkeinError::Semantic(
-                    "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
+                    "OCTET_LENGTH requires TEXT, BYTEA, or JSON input".to_string(),
                 )),
             }
         }
@@ -3183,11 +3223,14 @@ fn predicate_truth(
         SqlPredicate::Not(predicate) => {
             Ok(predicate_truth(predicate, row, parameters)?.map(|value| !value))
         }
-        SqlPredicate::Compare { left, op, right } => compare_values(
-            resolve_column(row, left)?,
-            &value_to_relational(bind_sql_value(right, parameters)?)?,
-            *op,
-        ),
+        SqlPredicate::Compare { left, op, right } => {
+            let left = resolve_column(row, left)?;
+            compare_values(
+                left,
+                &value_to_relational_as(bind_sql_value(right, parameters)?, left.scalar_type())?,
+                *op,
+            )
+        }
         SqlPredicate::CompareColumns { left, op, right } => {
             compare_values(resolve_column(row, left)?, resolve_column(row, right)?, *op)
         }
@@ -3202,7 +3245,10 @@ fn predicate_truth(
             for value in values {
                 match compare_values(
                     left,
-                    &value_to_relational(bind_sql_value(value, parameters)?)?,
+                    &value_to_relational_as(
+                        bind_sql_value(value, parameters)?,
+                        left.scalar_type(),
+                    )?,
                     SqlComparisonOp::Eq,
                 )? {
                     Some(true) => matched = true,
@@ -3239,6 +3285,11 @@ fn compare_values(
     }
     if matches!(left, RelationalValue::Null) || matches!(right, RelationalValue::Null) {
         return Ok(None);
+    }
+    if matches!(left, RelationalValue::Json(_)) || matches!(right, RelationalValue::Json(_)) {
+        return Err(SkeinError::Semantic(
+            "JSON values do not support comparisons".to_string(),
+        ));
     }
     if left.scalar_type() != right.scalar_type() {
         return Err(SkeinError::Semantic(
@@ -3282,6 +3333,7 @@ fn resolve_column<'a>(row: &'a BoundRow<'a>, column: &SqlColumnRef) -> Result<&'
 fn project_bound_row(
     row: &BoundRow<'_>,
     projection: &[SelectProjection],
+    parameters: &[Value],
     state: &RelationalState,
     hydration: &mut RelationalHydrationBudget,
     task_context: Option<&skein_core::RuntimeTaskContext>,
@@ -3323,10 +3375,21 @@ fn project_bound_row(
                     value,
                 )?;
             }
-            SelectProjection::Expression { .. } => {
-                return Err(SkeinError::Semantic(
-                    "non-aggregate relational projection expressions are not supported".to_string(),
-                ));
+            SelectProjection::Expression { expression, alias } => {
+                let (value, _) = evaluate_projection_expression(
+                    expression,
+                    row,
+                    parameters,
+                    state,
+                    hydration,
+                    &mut hydrated,
+                    task_context,
+                )?;
+                insert_output(
+                    &mut output,
+                    alias.clone().unwrap_or_else(|| expression_name(expression)),
+                    value,
+                )?;
             }
         }
     }
@@ -3371,12 +3434,34 @@ fn projected_value(
     hydrated: &mut BTreeMap<usize, RelationalRow>,
     task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<Value> {
+    let value = projected_relational_value(
+        binding_index,
+        position,
+        binding,
+        state,
+        hydration,
+        hydrated,
+        task_context,
+    )?;
+    relational_to_value(&value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn projected_relational_value(
+    binding_index: usize,
+    position: usize,
+    binding: &Binding<'_>,
+    state: &RelationalState,
+    hydration: &mut RelationalHydrationBudget,
+    hydrated: &mut BTreeMap<usize, RelationalRow>,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
+) -> Result<RelationalValue> {
     let Some(row) = binding.row else {
-        return Ok(Value::Null);
+        return Ok(RelationalValue::Null);
     };
     let value = &row.values()[position];
     if !matches!(value, RelationalValue::Overflow(_)) {
-        return relational_to_value(value);
+        return Ok(value.clone());
     }
     if let std::collections::btree_map::Entry::Vacant(entry) = hydrated.entry(binding_index) {
         let key = binding.key.expect("present row has a primary key");
@@ -3391,7 +3476,7 @@ fn projected_value(
             })?;
         entry.insert(row);
     }
-    relational_to_value(&hydrated[&binding_index].values()[position])
+    Ok(hydrated[&binding_index].values()[position].clone())
 }
 
 fn insert_output(output: &mut Row, name: String, value: Value) -> Result<()> {
@@ -3445,6 +3530,20 @@ fn value_to_relational(value: Value) -> Result<RelationalValue> {
     }
 }
 
+fn value_to_relational_as(
+    value: Value,
+    expected: Option<RelationalScalarType>,
+) -> Result<RelationalValue> {
+    if expected == Some(RelationalScalarType::Json) {
+        return match value {
+            Value::Null => Ok(RelationalValue::Null),
+            Value::String(value) => JsonDocument::parse(&value).map(RelationalValue::Json),
+            value => JsonDocument::from_value(&value).map(RelationalValue::Json),
+        };
+    }
+    value_to_relational(value)
+}
+
 fn relational_to_value(value: &RelationalValue) -> Result<Value> {
     match value {
         RelationalValue::Null => Ok(Value::Null),
@@ -3452,6 +3551,7 @@ fn relational_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
+        RelationalValue::Json(value) => value.to_value(),
         RelationalValue::Bytea(_) => Err(SkeinError::Semantic(
             "BYTEA result conversion requires a binary Value variant".to_string(),
         )),

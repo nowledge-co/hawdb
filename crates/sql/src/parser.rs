@@ -422,11 +422,13 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlE
         })
         .collect::<Result<Vec<_>>>()?;
     match name.as_str() {
-        "count" | "sum" | "max" | "coalesce" | "octet_length" => Ok(SqlExpression::Function {
-            name: name.clone(),
-            arguments,
-            distinct,
-        }),
+        "count" | "sum" | "max" | "coalesce" | "octet_length" | "json_valid" | "json_extract" => {
+            Ok(SqlExpression::Function {
+                name: name.clone(),
+                arguments,
+                distinct,
+            })
+        }
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL function {name}"
         ))),

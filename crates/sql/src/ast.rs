@@ -105,6 +105,7 @@ pub enum SqlDataType {
     DoublePrecision,
     Text,
     Bytea,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,6 +3,7 @@ pub mod capability;
 pub mod error;
 pub mod graph;
 pub mod graph_rag;
+pub mod json;
 pub mod regex;
 pub mod schema;
 pub mod value;
@@ -23,6 +24,7 @@ pub use graph_rag::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
+pub use json::JsonDocument;
 pub use regex::ValidatedRegex;
 pub use schema::{
     BasicGraphStatistics, Catalog, CompositeIndexDescriptor, ConstraintDescriptor, ConstraintId,

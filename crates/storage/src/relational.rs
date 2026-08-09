@@ -9,6 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use skein_core::JsonDocument;
+
 mod codec;
 mod overflow;
 
@@ -49,6 +51,7 @@ pub enum RelationalScalarType {
     DoublePrecision,
     Text,
     Bytea,
+    Json,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ pub enum RelationalValue {
     DoublePrecision(f64),
     Text(String),
     Bytea(Vec<u8>),
+    Json(JsonDocument),
     Overflow(RelationalOverflowRef),
 }
 
@@ -71,6 +75,7 @@ impl RelationalValue {
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
+            Self::Json(_) => Some(RelationalScalarType::Json),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -82,6 +87,7 @@ impl RelationalValue {
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
+            Self::Json(value) => value.len(),
             Self::Overflow(_) => std::mem::size_of::<RelationalOverflowRef>(),
         }
     }
@@ -94,7 +100,8 @@ impl RelationalValue {
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
-            Self::Overflow(_) => 6,
+            Self::Json(_) => 6,
+            Self::Overflow(_) => 7,
         }
     }
 }
@@ -126,6 +133,7 @@ impl Ord for RelationalValue {
                 }
                 (Self::Text(left), Self::Text(right)) => left.cmp(right),
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
+                (Self::Json(left), Self::Json(right)) => left.cmp(right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(right),
                 _ => Ordering::Equal,
             })
@@ -142,6 +150,7 @@ impl Hash for RelationalValue {
             Self::DoublePrecision(value) => value.to_bits().hash(state),
             Self::Text(value) => value.hash(state),
             Self::Bytea(value) => value.hash(state),
+            Self::Json(value) => value.hash(state),
             Self::Overflow(reference) => reference.hash(state),
         }
     }
@@ -1260,6 +1269,7 @@ fn apply_transaction(
                     .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
                 let schema = Arc::make_mut(schema);
                 validate_column_list(schema, &index.columns, "index")?;
+                reject_json_key_columns(schema, &index.columns, "index")?;
                 if index.columns.is_empty()
                     || schema.indexes.iter().any(|item| item.name == index.name)
                 {
@@ -1687,6 +1697,11 @@ fn validate_predicate(
             let position = schema.column_position(column).ok_or_else(|| {
                 RelationalError::Schema(format!("predicate references unknown column {column}"))
             })?;
+            if schema.columns[position].scalar_type == RelationalScalarType::Json {
+                return Err(RelationalError::Schema(format!(
+                    "JSON column {column} does not support comparisons"
+                )));
+            }
             if !matches!(value, RelationalValue::Null)
                 && value.scalar_type() != Some(schema.columns[position].scalar_type)
             {
@@ -1792,6 +1807,7 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
         }
     }
     validate_column_list(schema, &schema.primary_key, "primary key")?;
+    reject_json_key_columns(schema, &schema.primary_key, "primary key")?;
     for column in &schema.primary_key {
         let position = schema.column_position(column).expect("validated column");
         if schema.columns[position].nullable {
@@ -1802,9 +1818,11 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
     }
     for unique in &schema.unique_constraints {
         validate_column_list(schema, unique, "unique constraint")?;
+        reject_json_key_columns(schema, unique, "unique constraint")?;
     }
     for foreign_key in &schema.foreign_keys {
         validate_column_list(schema, &foreign_key.columns, "foreign key")?;
+        reject_json_key_columns(schema, &foreign_key.columns, "foreign key")?;
         if foreign_key.columns.len() != foreign_key.referenced_columns.len()
             || foreign_key.columns.is_empty()
         {
@@ -1815,6 +1833,23 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
     }
     for index in &schema.indexes {
         validate_column_list(schema, &index.columns, "index")?;
+        reject_json_key_columns(schema, &index.columns, "index")?;
+    }
+    Ok(())
+}
+
+fn reject_json_key_columns(
+    schema: &RelationalTableSchema,
+    columns: &[String],
+    kind: &str,
+) -> Result<(), RelationalError> {
+    for column in columns {
+        let position = schema.column_position(column).expect("validated column");
+        if schema.columns[position].scalar_type == RelationalScalarType::Json {
+            return Err(RelationalError::Schema(format!(
+                "JSON column {column} cannot participate in a {kind}"
+            )));
+        }
     }
     Ok(())
 }

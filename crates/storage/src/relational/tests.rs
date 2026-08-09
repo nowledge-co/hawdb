@@ -823,6 +823,87 @@ fn checkpoint_restores_catalog_rows_overflow_and_epoch() {
 }
 
 #[test]
+fn checkpoint_restores_overflow_json_as_a_native_value() {
+    let overflow_config = RelationalOverflowConfig {
+        threshold_bytes: 16,
+        ..RelationalOverflowConfig::default()
+    };
+    let source =
+        RelationalStore::with_overflow_config(RelationalMutationLimits::default(), overflow_config);
+    source
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    name: "json_documents".to_string(),
+                    columns: vec![
+                        text_column("id", false),
+                        RelationalColumnSchema {
+                            name: "payload".to_string(),
+                            scalar_type: RelationalScalarType::Json,
+                            nullable: false,
+                            default: None,
+                        },
+                    ],
+                    primary_key: vec!["id".to_string()],
+                    unique_constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                })],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("create JSON table");
+    let document = JsonDocument::parse(&format!(
+        "{{\"kind\":\"fixture\",\"payload\":\"{}\"}}",
+        "x".repeat(256)
+    ))
+    .expect("valid JSON fixture");
+    source
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "json_documents".to_string(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("doc-1".to_string()),
+                        RelationalValue::Json(document.clone()),
+                    ])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("insert JSON row");
+    let checkpoint = source.encode_checkpoint().expect("encode JSON checkpoint");
+    let restored = RelationalStore::from_checkpoint(
+        &checkpoint,
+        RelationalDecodeLimits::checkpoint(),
+        RelationalMutationLimits::default(),
+        overflow_config,
+    )
+    .expect("restore JSON checkpoint");
+    let snapshot = restored.snapshot().expect("restored JSON snapshot");
+    let key = RelationalKey(vec![RelationalValue::Text("doc-1".to_string())]);
+    assert!(matches!(
+        snapshot
+            .value()
+            .row("json_documents", &key)
+            .expect("stored JSON row")
+            .values()[1],
+        RelationalValue::Overflow(_)
+    ));
+    let hydrated = snapshot
+        .value()
+        .hydrate_row(
+            "json_documents",
+            &key,
+            &mut RelationalHydrationBudget::default(),
+        )
+        .expect("hydrate restored JSON")
+        .expect("restored JSON row");
+    assert_eq!(hydrated.values()[1], RelationalValue::Json(document));
+}
+
+#[test]
 fn checkpoint_file_keeps_overflow_out_of_resident_state_and_checks_size_before_read() {
     let overflow_config = RelationalOverflowConfig {
         threshold_bytes: 1,
@@ -1031,6 +1112,45 @@ fn wal_codec_preserves_upsert_and_delete_predicates() {
     let decoded =
         decode_relational_wal_batch(&encoded, RelationalDecodeLimits::wal()).expect("decoded WAL");
     assert_eq!(decoded.epoch, 9);
+    assert_eq!(decoded.transaction, transaction);
+}
+
+#[test]
+fn wal_codec_preserves_native_json_schema_and_values() {
+    let document =
+        JsonDocument::parse(r#"{"kind":"wal","items":[1,2]}"#).expect("valid JSON fixture");
+    let transaction = RelationalTransaction {
+        writes: vec![
+            RelationalWrite::CreateTable(RelationalTableSchema {
+                name: "json_documents".to_string(),
+                columns: vec![
+                    text_column("id", false),
+                    RelationalColumnSchema {
+                        name: "payload".to_string(),
+                        scalar_type: RelationalScalarType::Json,
+                        nullable: false,
+                        default: None,
+                    },
+                ],
+                primary_key: vec!["id".to_string()],
+                unique_constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }),
+            RelationalWrite::Insert {
+                table: "json_documents".to_string(),
+                rows: vec![RelationalRow::new(vec![
+                    RelationalValue::Text("doc-1".to_string()),
+                    RelationalValue::Json(document),
+                ])],
+                mode: RelationalInsertMode::Error,
+            },
+        ],
+    };
+
+    let encoded = encode_relational_wal_batch(1, &transaction).expect("encode JSON WAL");
+    let decoded = decode_relational_wal_batch(&encoded, RelationalDecodeLimits::wal())
+        .expect("decode JSON WAL");
     assert_eq!(decoded.transaction, transaction);
 }
 

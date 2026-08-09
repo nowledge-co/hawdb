@@ -12,6 +12,7 @@ use crate::{
     ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
     DEFAULT_MAX_WAL_RECORD_BYTES,
 };
+use skein_core::JsonDocument;
 use skein_integrity::{integrity_digest, IntegrityHasher, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -591,6 +592,7 @@ impl Encoder {
             RelationalScalarType::DoublePrecision => 3,
             RelationalScalarType::Text => 4,
             RelationalScalarType::Bytea => 5,
+            RelationalScalarType::Json => 6,
         });
     }
 
@@ -616,6 +618,10 @@ impl Encoder {
             RelationalValue::Bytea(value) => {
                 self.u8(5);
                 self.bytes(value)?;
+            }
+            RelationalValue::Json(value) => {
+                self.u8(7);
+                self.string(value.as_str())?;
             }
             RelationalValue::Overflow(reference) => {
                 self.u8(6);
@@ -1182,6 +1188,7 @@ impl<I: DecodeInput> Decoder<I> {
             3 => Ok(RelationalScalarType::DoublePrecision),
             4 => Ok(RelationalScalarType::Text),
             5 => Ok(RelationalScalarType::Bytea),
+            6 => Ok(RelationalScalarType::Json),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid relational scalar type tag {tag}"
             ))),
@@ -1242,6 +1249,16 @@ impl<I: DecodeInput> Decoder<I> {
                     compressed_bytes,
                     uncompressed_bytes,
                 }))
+            }
+            7 => {
+                let value = self.string()?;
+                JsonDocument::parse(&value)
+                    .map(RelationalValue::Json)
+                    .map_err(|error| {
+                        RelationalError::Corruption(format!(
+                            "durable JSON failed validation: {error}"
+                        ))
+                    })
             }
             tag => Err(RelationalError::Corruption(format!(
                 "invalid relational value tag {tag}"

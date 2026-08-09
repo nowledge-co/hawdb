@@ -4,7 +4,7 @@ use crate::sql::{
     SqlColumnDefinition, SqlComparisonOp, SqlConflictAction, SqlDataType, SqlPredicate,
     SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlValue,
 };
-use crate::value::Value;
+use crate::value::{JsonDocument, Value};
 use skein_storage::{
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
     RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,
@@ -98,12 +98,16 @@ fn compile_relational_mutation(
                     for ((position, value), column_name) in
                         positions.iter().zip(values).zip(insert.columns.iter())
                     {
-                        row[*position] =
-                            bind_relational_value(value, parameters).map_err(|error| {
-                                SkeinError::Semantic(format!(
-                                    "failed to bind INSERT column {column_name}: {error}"
-                                ))
-                            })?;
+                        row[*position] = bind_relational_value(
+                            value,
+                            parameters,
+                            schema.columns[*position].scalar_type,
+                        )
+                        .map_err(|error| {
+                            SkeinError::Semantic(format!(
+                                "failed to bind INSERT column {column_name}: {error}"
+                            ))
+                        })?;
                     }
                     Ok(RelationalRow::new(row))
                 })
@@ -115,6 +119,14 @@ fn compile_relational_mutation(
                         assignments
                             .into_iter()
                             .map(|assignment| {
+                                let position = schema
+                                    .column_position(&assignment.column)
+                                    .ok_or_else(|| {
+                                        SkeinError::Semantic(format!(
+                                            "table {} has no column {}",
+                                            schema.name, assignment.column
+                                        ))
+                                    })?;
                                 let value = match assignment.value {
                                     SqlAssignmentValue::Column(column)
                                         if column.qualifier.as_deref() == Some("excluded") =>
@@ -129,7 +141,9 @@ fn compile_relational_mutation(
                                     }
                                     SqlAssignmentValue::Value(value) => {
                                         RelationalUpsertValue::Value(bind_relational_value(
-                                            value, parameters,
+                                            value,
+                                            parameters,
+                                            schema.columns[position].scalar_type,
                                         )?)
                                     }
                                 };
@@ -192,12 +206,12 @@ fn compile_relational_mutation(
                 .assignments
                 .into_iter()
                 .map(|assignment| {
-                    if schema.column_position(&assignment.column).is_none() {
-                        return Err(SkeinError::Semantic(format!(
+                    let position = schema.column_position(&assignment.column).ok_or_else(|| {
+                        SkeinError::Semantic(format!(
                             "table {} has no column {}",
                             schema.name, assignment.column
-                        )));
-                    }
+                        ))
+                    })?;
                     let value = match assignment.value {
                         SqlAssignmentValue::Column(column) => {
                             validate_mutation_column(
@@ -209,7 +223,11 @@ fn compile_relational_mutation(
                             RelationalUpdateValue::Column(column.name)
                         }
                         SqlAssignmentValue::Value(value) => {
-                            RelationalUpdateValue::Value(bind_relational_value(value, parameters)?)
+                            RelationalUpdateValue::Value(bind_relational_value(
+                                value,
+                                parameters,
+                                schema.columns[position].scalar_type,
+                            )?)
                         }
                     };
                     Ok(RelationalUpdateAssignment {
@@ -264,10 +282,17 @@ fn compile_mutation_predicate(
         SqlPredicate::Not(predicate) => RelationalPredicate::Not(Box::new(compile(*predicate)?)),
         SqlPredicate::Compare { left, op, right } => {
             validate_mutation_column(&left, schema, alias, table)?;
+            let position = schema
+                .column_position(&left.name)
+                .expect("mutation column was validated");
             RelationalPredicate::Compare {
                 column: left.name,
                 op: compile_comparison_op(op),
-                value: bind_relational_value(right, parameters)?,
+                value: bind_relational_value(
+                    right,
+                    parameters,
+                    schema.columns[position].scalar_type,
+                )?,
             }
         }
         SqlPredicate::CompareColumns { .. } => {
@@ -282,6 +307,9 @@ fn compile_mutation_predicate(
             negated,
         } => {
             validate_mutation_column(&left, schema, alias, table)?;
+            let position = schema
+                .column_position(&left.name)
+                .expect("mutation column was validated");
             let mut predicates = values
                 .into_iter()
                 .map(|value| {
@@ -292,7 +320,11 @@ fn compile_mutation_predicate(
                         } else {
                             RelationalComparisonOp::Eq
                         },
-                        value: bind_relational_value(value, parameters)?,
+                        value: bind_relational_value(
+                            value,
+                            parameters,
+                            schema.columns[position].scalar_type,
+                        )?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -354,7 +386,11 @@ fn compile_comparison_op(op: SqlComparisonOp) -> RelationalComparisonOp {
     }
 }
 
-fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<RelationalValue> {
+fn bind_relational_value(
+    value: SqlValue,
+    parameters: &[Value],
+    expected: RelationalScalarType,
+) -> Result<RelationalValue> {
     let value = match value {
         SqlValue::Literal(value) => value,
         SqlValue::Parameter(position) => parameters
@@ -364,15 +400,30 @@ fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Relati
                 SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
             })?,
     };
+    convert_relational_value(value, expected, "relational SQL parameters")
+}
+
+fn convert_relational_value(
+    value: Value,
+    expected: RelationalScalarType,
+    context: &str,
+) -> Result<RelationalValue> {
+    if expected == RelationalScalarType::Json {
+        return match value {
+            Value::Null => Ok(RelationalValue::Null),
+            Value::String(value) => JsonDocument::parse(&value).map(RelationalValue::Json),
+            value => JsonDocument::from_value(&value).map(RelationalValue::Json),
+        };
+    }
     match value {
         Value::Null => Ok(RelationalValue::Null),
         Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
         Value::Int(value) => Ok(RelationalValue::BigInt(value)),
         Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
         Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
-            "relational SQL parameters must be scalar".to_string(),
-        )),
+        Value::List(_) | Value::Map(_) => {
+            Err(SkeinError::Semantic(format!("{context} must be scalar")))
+        }
     }
 }
 
@@ -485,11 +536,15 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
 }
 
 fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSchema> {
+    let scalar_type = compile_data_type(column.data_type);
     Ok(RelationalColumnSchema {
         name: column.name,
-        scalar_type: compile_data_type(column.data_type),
+        scalar_type,
         nullable: column.nullable,
-        default: column.default.map(compile_schema_value).transpose()?,
+        default: column
+            .default
+            .map(|value| compile_schema_value(value, scalar_type))
+            .transpose()?,
     })
 }
 
@@ -500,25 +555,20 @@ fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
         SqlDataType::DoublePrecision => RelationalScalarType::DoublePrecision,
         SqlDataType::Text => RelationalScalarType::Text,
         SqlDataType::Bytea => RelationalScalarType::Bytea,
+        SqlDataType::Json => RelationalScalarType::Json,
     }
 }
 
-fn compile_schema_value(value: SqlValue) -> Result<RelationalValue> {
+fn compile_schema_value(
+    value: SqlValue,
+    expected: RelationalScalarType,
+) -> Result<RelationalValue> {
     let SqlValue::Literal(value) = value else {
         return Err(SkeinError::Semantic(
             "schema defaults cannot contain parameters".to_string(),
         ));
     };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
-            "relational schema defaults must be scalar".to_string(),
-        )),
-    }
+    convert_relational_value(value, expected, "relational schema defaults")
 }
 
 fn compile_referential_action(action: SqlReferentialAction) -> Result<RelationalReferentialAction> {
@@ -673,6 +723,127 @@ mod tests {
             )
             .expect_err("the statement payload budget must fail closed");
         assert!(payload_error.to_string().contains("payload"));
+    }
+
+    #[test]
+    fn native_json_is_structured_validated_and_not_orderable() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE documents (id TEXT PRIMARY KEY, payload JSON NOT NULL)")
+            .expect("create JSON table");
+        let payload = Value::Map(BTreeMap::from([
+            ("active".to_string(), Value::Bool(true)),
+            (
+                "tags".to_string(),
+                Value::List(vec![
+                    Value::String("database".to_string()),
+                    Value::String("skein".to_string()),
+                ]),
+            ),
+        ]));
+        database
+            .query_sql_with_params(
+                "INSERT INTO documents (id, payload) VALUES ($1, $2)",
+                &[Value::String("doc-1".to_string()), payload.clone()],
+            )
+            .expect("insert structured JSON parameter");
+
+        let output = database
+            .query_sql(
+                "SELECT payload, json_valid(payload) AS valid, \
+                 json_valid('{') AS invalid, \
+                 json_extract(payload, '$.tags[1]') AS tag, \
+                 json_extract(payload, '$.missing') AS missing FROM documents",
+            )
+            .expect("query native JSON");
+        assert_eq!(output.rows[0]["payload"], payload);
+        assert_eq!(output.rows[0]["valid"], Value::Bool(true));
+        assert_eq!(output.rows[0]["invalid"], Value::Bool(false));
+        assert_eq!(output.rows[0]["tag"], Value::String("skein".to_string()));
+        assert_eq!(output.rows[0]["missing"], Value::Null);
+
+        database
+            .query_sql_with_params(
+                "UPDATE documents SET payload = $2 WHERE id = $1",
+                &[
+                    Value::String("doc-1".to_string()),
+                    Value::Map(BTreeMap::from([("version".to_string(), Value::Int(1))])),
+                ],
+            )
+            .expect("update native JSON");
+        database
+            .query_sql_with_params(
+                "INSERT INTO documents (id, payload) VALUES ($1, $2) \
+                 ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                &[
+                    Value::String("doc-1".to_string()),
+                    Value::Map(BTreeMap::from([("version".to_string(), Value::Int(2))])),
+                ],
+            )
+            .expect("upsert native JSON");
+        assert_eq!(
+            database
+                .query_sql("SELECT json_extract(payload, '$.version') AS version FROM documents")
+                .expect("read upserted JSON")
+                .rows[0]["version"],
+            Value::Int(2)
+        );
+
+        let error = database
+            .query_sql_with_params(
+                "INSERT INTO documents (id, payload) VALUES ($1, $2)",
+                &[
+                    Value::String("doc-2".to_string()),
+                    Value::String("{".to_string()),
+                ],
+            )
+            .expect_err("invalid JSON must fail before commit");
+        assert!(error.to_string().contains("invalid JSON"));
+        assert_eq!(
+            database
+                .query_sql("SELECT COUNT(*) AS count FROM documents")
+                .expect("count committed JSON rows")
+                .rows[0]["count"],
+            Value::Int(1)
+        );
+
+        for sql in [
+            "SELECT id FROM documents WHERE payload = '{}'",
+            "SELECT id FROM documents ORDER BY payload",
+            "SELECT DISTINCT payload FROM documents",
+            "SELECT payload, COUNT(*) FROM documents GROUP BY payload",
+            "SELECT MAX(payload) FROM documents",
+        ] {
+            let error = database
+                .query_sql(sql)
+                .expect_err("JSON key semantics must be explicit");
+            assert!(error.to_string().contains("does not support JSON"));
+        }
+        let error = database
+            .query_sql("CREATE INDEX idx_documents_payload ON documents (payload)")
+            .expect_err("JSON indexes require defined operator semantics");
+        assert!(error.to_string().contains("JSON column payload"));
+
+        let error = database
+            .query_sql("CREATE TABLE invalid_json_key (payload JSON PRIMARY KEY)")
+            .expect_err("JSON primary keys require defined equality semantics");
+        assert!(error.to_string().contains("JSON column payload"));
+
+        database
+            .query_sql(
+                "CREATE TABLE defaults (id TEXT PRIMARY KEY, payload JSON NOT NULL DEFAULT '{}')",
+            )
+            .expect("create JSON default");
+        database
+            .query_sql("INSERT INTO defaults (id) VALUES ('default-1')")
+            .expect("insert JSON default");
+        assert_eq!(
+            database
+                .query_sql("SELECT payload FROM defaults")
+                .expect("read JSON default")
+                .rows[0]["payload"],
+            Value::Map(BTreeMap::new())
+        );
     }
 
     #[test]
