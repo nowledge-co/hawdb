@@ -286,7 +286,7 @@ fn aggregate_input(item: &Aggregation, catalog: &Catalog, binding: &Binding) -> 
                     AggregateInput::Identity(kind, id)
                 }),
             AggregateFunction::Count => {
-                if binding_has_variable(binding, variable) {
+                if binding_has_countable_variable(binding, variable) {
                     AggregateInput::Present
                 } else {
                     AggregateInput::Missing

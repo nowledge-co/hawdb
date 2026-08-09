@@ -803,11 +803,12 @@ pub fn plan_with_params(
                 if query.optional_with.is_none()
                     && !returns_are_count_only(&query.returns)
                     && optional_direct_count_alias(query, optional)?.is_none()
+                    && !optional_direct_multi_count_projection(query, optional)
                     && optional_direct_collect_alias(query, optional)?.is_none()
                     && !optional_direct_row_projection(query, optional)
                 {
                     return Err(SkeinError::Semantic(
-                        "OPTIONAL MATCH is currently supported only for COUNT returns, source projections plus one COUNT, source projections plus one COLLECT, or non-aggregate row projections".to_string(),
+                        "OPTIONAL MATCH is currently supported only for COUNT returns, source projections plus COUNT aggregates, source projections plus one COLLECT, or non-aggregate row projections".to_string(),
                     ));
                 }
                 if !optional.expand.properties.is_empty()
@@ -1184,6 +1185,7 @@ pub fn plan_with_params(
             }
             if let Some(optional) = &query.optional_expand {
                 let optional_row_projection = optional_direct_row_projection(query, optional);
+                let optional_multi_count = optional_direct_multi_count_projection(query, optional);
                 input = LogicalPlan::Expand {
                     source_variable: optional.source_variable.clone(),
                     source_label: optional.source_label.clone(),
@@ -1196,6 +1198,7 @@ pub fn plan_with_params(
                     min_hops: 1,
                     max_hops: 1,
                     optional: optional_row_projection
+                        || optional_multi_count
                         || optional_direct_collect_alias(query, optional)?.is_some(),
                     input: Box::new(input),
                 };

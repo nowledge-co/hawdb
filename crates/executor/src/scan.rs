@@ -670,6 +670,10 @@ pub fn null_lookup_node() -> NodeRecord {
     }
 }
 
+pub fn is_null_lookup_node(node: &NodeRecord) -> bool {
+    node.id.0 == 0 && node.labels.is_empty() && node.properties.is_empty()
+}
+
 fn node_binding(variable: &str, node: NodeRecord) -> Binding {
     Binding {
         values: BTreeMap::new(),

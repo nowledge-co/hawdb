@@ -859,6 +859,29 @@ pub(super) fn optional_direct_count_alias(
     Ok(if has_projection { count_alias } else { None })
 }
 
+pub(super) fn optional_direct_multi_count_projection(
+    query: &MatchReturn,
+    optional: &skein_cypher::OptionalRelationshipExpand,
+) -> bool {
+    let mut count_items = 0usize;
+    let mut has_source_projection = false;
+    for item in &query.returns {
+        match &item.expression {
+            ReturnExpression::CountVariable { variable, .. }
+                if variable == &optional.expand.target_variable
+                    || optional.expand.variable.as_deref() == Some(variable.as_str()) =>
+            {
+                count_items = count_items.saturating_add(1);
+            }
+            ReturnExpression::Variable(variable) if variable == &optional.source_variable => {
+                has_source_projection = true;
+            }
+            _ => return false,
+        }
+    }
+    has_source_projection && count_items >= 2
+}
+
 pub(super) fn optional_direct_collect_alias(
     query: &MatchReturn,
     optional: &skein_cypher::OptionalRelationshipExpand,

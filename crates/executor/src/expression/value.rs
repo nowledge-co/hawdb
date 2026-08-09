@@ -496,6 +496,14 @@ pub fn binding_has_variable(binding: &Binding, variable: &str) -> bool {
     binding.nodes.contains_key(variable) || binding.relationships.contains_key(variable)
 }
 
+pub fn binding_has_countable_variable(binding: &Binding, variable: &str) -> bool {
+    binding
+        .nodes
+        .get(variable)
+        .is_some_and(|node| !is_null_lookup_node(node))
+        || binding.relationships.contains_key(variable)
+}
+
 pub fn binding_property<'a>(
     binding: &'a Binding,
     variable: &str,
@@ -517,7 +525,13 @@ pub fn binding_value(binding: &Binding, catalog: &Catalog, variable: &str) -> Op
     binding
         .nodes
         .get(variable)
-        .map(|node| node_value(node, catalog))
+        .map(|node| {
+            if is_null_lookup_node(node) {
+                Value::Null
+            } else {
+                node_value(node, catalog)
+            }
+        })
         .or_else(|| {
             binding
                 .relationships
@@ -567,7 +581,13 @@ pub(super) fn binding_id(binding: &Binding, variable: &str) -> Option<Value> {
     binding
         .nodes
         .get(variable)
-        .map(|node| Value::Int(node.id.0 as i64))
+        .map(|node| {
+            if is_null_lookup_node(node) {
+                Value::Null
+            } else {
+                Value::Int(node.id.0 as i64)
+            }
+        })
         .or_else(|| {
             binding
                 .relationships
@@ -598,7 +618,7 @@ fn count_aggregate(target: &AggregateTarget, distinct: bool, input: &[Binding]) 
         AggregateTarget::All => input.len(),
         AggregateTarget::Variable(variable) => input
             .iter()
-            .filter(|binding| binding_has_variable(binding, variable))
+            .filter(|binding| binding_has_countable_variable(binding, variable))
             .count(),
         AggregateTarget::Property { variable, property } => input
             .iter()
@@ -715,6 +735,7 @@ pub fn binding_identity_key(binding: &Binding, variable: &str) -> Option<(u8, u6
     binding
         .nodes
         .get(variable)
+        .filter(|node| !is_null_lookup_node(node))
         .map(|node| (0, node.id.0))
         .or_else(|| {
             binding

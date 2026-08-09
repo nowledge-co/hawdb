@@ -146,3 +146,72 @@ fn optional_match_with_target_count_projection_covers_label_usage() {
     );
     assert_eq!(output.rows[1].get("usage_count"), Some(&Value::Int(0)));
 }
+
+#[test]
+fn optional_match_projects_source_with_distinct_target_and_relationship_counts() {
+    let mut db = Database::new();
+    db.query("CREATE (:Entity {id: 'source', name: 'Source'})")
+        .unwrap();
+    db.query("CREATE (:Entity {id: 'target', name: 'Target'})")
+        .unwrap();
+    db.query("CREATE (:Entity {id: 'isolated', name: 'Isolated'})")
+        .unwrap();
+    db.query(
+        "MATCH (source:Entity {id: 'source'}), (target:Entity {id: 'target'}) \
+         CREATE (source)-[:FIRST]->(target)",
+    )
+    .unwrap();
+    db.query(
+        "MATCH (source:Entity {id: 'source'}), (target:Entity {id: 'target'}) \
+         CREATE (source)-[:SECOND]->(target)",
+    )
+    .unwrap();
+
+    let output = db
+        .query(
+            "MATCH (n:Entity {id: 'source'}) OPTIONAL MATCH (n)-[r]-(neighbor) \
+             RETURN n AS entity, COUNT(DISTINCT neighbor) AS neighbor_count, \
+                    COUNT(neighbor) AS neighbor_occurrence_count, \
+                    COUNT(r) AS relationship_count",
+        )
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert!(matches!(output.rows[0].get("entity"), Some(Value::Map(_))));
+    assert_eq!(output.rows[0].get("neighbor_count"), Some(&Value::Int(1)));
+    assert_eq!(
+        output.rows[0].get("neighbor_occurrence_count"),
+        Some(&Value::Int(2))
+    );
+    assert_eq!(
+        output.rows[0].get("relationship_count"),
+        Some(&Value::Int(2))
+    );
+
+    let isolated = db
+        .query(
+            "MATCH (n:Entity {id: 'isolated'}) OPTIONAL MATCH (n)-[r]-(neighbor) \
+             RETURN n AS entity, COUNT(DISTINCT neighbor) AS neighbor_count, \
+                    COUNT(neighbor) AS neighbor_occurrence_count, \
+                    COUNT(r) AS relationship_count",
+        )
+        .unwrap();
+    assert_eq!(isolated.rows.len(), 1);
+    assert_eq!(isolated.rows[0].get("neighbor_count"), Some(&Value::Int(0)));
+    assert_eq!(
+        isolated.rows[0].get("neighbor_occurrence_count"),
+        Some(&Value::Int(0))
+    );
+    assert_eq!(
+        isolated.rows[0].get("relationship_count"),
+        Some(&Value::Int(0))
+    );
+
+    let optional_row = db
+        .query(
+            "MATCH (n:Entity {id: 'isolated'}) OPTIONAL MATCH (n)-[r]-(neighbor) \
+             RETURN neighbor, id(neighbor) AS neighbor_id",
+        )
+        .unwrap();
+    assert_eq!(optional_row.rows[0].get("neighbor"), Some(&Value::Null));
+    assert_eq!(optional_row.rows[0].get("neighbor_id"), Some(&Value::Null));
+}
