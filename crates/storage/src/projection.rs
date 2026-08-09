@@ -132,6 +132,23 @@ pub struct SearchProjectionChangefeedReadiness {
 }
 
 impl SearchProjectionChangefeedStatus {
+    pub const fn required_projection_commit_epoch(self) -> u64 {
+        let newest_retained_epoch = match self.newest_retained_mutation_id {
+            Some(mutation_id) => mutation_id.commit_epoch(),
+            None => 0,
+        };
+        if newest_retained_epoch > self.resume_floor_commit_epoch {
+            newest_retained_epoch
+        } else {
+            self.resume_floor_commit_epoch
+        }
+    }
+
+    pub const fn projection_commit_lag_after(self, projection_commit_epoch: u64) -> u64 {
+        self.required_projection_commit_epoch()
+            .saturating_sub(projection_commit_epoch)
+    }
+
     pub const fn can_resume_after(self, source_graph_commit_epoch: u64) -> bool {
         source_graph_commit_epoch >= self.resume_floor_commit_epoch
             && source_graph_commit_epoch <= self.graph_commit_epoch

@@ -18,7 +18,7 @@ fn transaction_merge_deduplicates_pending_nodes_in_one_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 1);
     {
         let mut db = Database::open(&path).unwrap();
@@ -52,7 +52,7 @@ fn transaction_merge_on_create_set_deduplicates_pending_nodes_by_match_key() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 1);
     {
         let mut db = Database::open(&path).unwrap();
@@ -89,7 +89,7 @@ fn transaction_merge_node_on_match_set_updates_pending_create() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 1);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     {
@@ -132,7 +132,7 @@ fn transaction_merge_node_post_set_updates_pending_create() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 1);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     {
@@ -216,7 +216,7 @@ fn transaction_merge_relationship_deduplicates_pending_pattern() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 1);
     {
@@ -297,7 +297,7 @@ fn transaction_set_updates_pending_node_before_relationship_match() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    assert_eq!(wal.lines().count(), 3);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     assert_eq!(wal.matches("create_rel").count(), 1);
@@ -568,7 +568,7 @@ fn transaction_retarget_to_matched_pending_target_sees_pending_old_relationship(
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 3);
     assert_eq!(wal.matches("create_rel").count(), 2);
 
@@ -611,7 +611,7 @@ fn transaction_retarget_from_pending_source_sees_pending_old_relationship() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 3);
     assert_eq!(wal.matches("create_rel").count(), 2);
 
@@ -656,7 +656,7 @@ fn transaction_copy_merge_sees_pending_matched_relationship_properties() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 2);
 

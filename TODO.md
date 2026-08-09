@@ -109,10 +109,7 @@ qualification justifies moving them.
     when the corpus protocol, revision, or digest differs from the qualified
     Skein artifact.
 
-- [ ] Materialize the scoped Content Store schema and behavior in Skein.
-  - Define PostgreSQL-dialect migrations for `content_documents`,
-    `thread_messages`, `content_chunks`, `content_anchors`, and the durable
-    migration ledger without editing an already-applied migration.
+- [ ] Complete the scoped Content Store behavior on the registered schema.
   - Preserve occurrence identity, stable ordering, content hashes,
     distillation exclusions, metadata text, source-chunk ownership, and legacy
     anchor matching semantics.
@@ -126,16 +123,13 @@ qualification justifies moving them.
     source-chunk replacement, ownership move, anchor creation, and projection
     rebuild all have exact behavior fixtures.
 
-- [ ] Add an idempotent, resumable SQLite-to-Skein migration coordinator in
-  Mem.
+- [ ] Complete the live cutover protocol around the bounded, resumable
+  SQLite-to-Skein importer in Mem.
   - Keep `rusqlite` and SQLite snapshot handling in the Mem adapter; Skein must
     not acquire SQLite as a production dependency.
   - Acquire an explicit legacy write fence or run a durable dual-write
     obligation protocol before copying. Record database identity, schema
     checksums, source snapshot identity, import id, and source high watermark.
-  - Copy by stable keyset pages with bounded payload bytes, persist the cursor
-    after each committed Skein batch, and make replay idempotent by primary key
-    and content hash.
   - Verify per-table counts, ordered identities, payload hashes, aggregate
     totals, anchor reachability, and representative query results before
     generating cutover evidence.

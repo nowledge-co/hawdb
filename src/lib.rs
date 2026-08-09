@@ -132,9 +132,10 @@ pub use api::{
     QuerySystemVariables, RankedBackgroundMaintenance, ScheduledSearchProjectionCatchUpReport,
     SearchProjectionCatchUpReport, SearchProjectionCatchUpStopReason,
     SearchProjectionGraphDeltaRequest, SlowQueryLogExportOptions, SlowQueryLogRecordSummary,
-    StorageResourceProfileLimits, StorageResourceProfileReport,
-    DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES, DEFAULT_MAX_READ_RESULT_ROWS,
-    GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION, GRAPH_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
+    StorageResourceProfileLimits, StorageResourceProfileReport, SystemSchemaMigration,
+    SystemSchemaRegistry, SystemSchemaUpgradeReport, DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES,
+    DEFAULT_MAX_READ_RESULT_ROWS, GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    GRAPH_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
     GRAPH_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL, SLOW_QUERY_LOG_EVENT_PROTOCOL,
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };

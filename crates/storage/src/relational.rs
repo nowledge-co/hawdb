@@ -897,6 +897,10 @@ pub enum RelationalConflictAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalWrite {
     CreateTable(RelationalTableSchema),
+    AddColumn {
+        table: String,
+        column: RelationalColumnSchema,
+    },
     CreateIndex {
         table: String,
         index: RelationalIndexSchema,
@@ -941,6 +945,7 @@ impl RelationalTransaction {
                 RelationalWrite::Upsert { rows, .. } => rows.len(),
                 RelationalWrite::DeleteByPrimaryKey { keys, .. } => keys.len(),
                 RelationalWrite::CreateTable(_)
+                | RelationalWrite::AddColumn { .. }
                 | RelationalWrite::CreateIndex { .. }
                 | RelationalWrite::DeleteWhere { .. }
                 | RelationalWrite::UpdateWhere { .. } => 0,
@@ -966,6 +971,7 @@ impl RelationalTransaction {
                     .map(RelationalValue::estimated_payload_bytes)
                     .sum(),
                 RelationalWrite::CreateTable(_)
+                | RelationalWrite::AddColumn { .. }
                 | RelationalWrite::CreateIndex { .. }
                 | RelationalWrite::DeleteWhere { .. }
                 | RelationalWrite::UpdateWhere { .. } => 0,
@@ -1170,6 +1176,82 @@ fn apply_transaction(
                     Arc::new(RelationalTableSegment::default()),
                 );
                 next.schemas.insert(schema.name.clone(), Arc::new(schema));
+            }
+            RelationalWrite::AddColumn { table, column } => {
+                let mut schema = next
+                    .schemas
+                    .get(&table)
+                    .map(|schema| schema.as_ref().clone())
+                    .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
+                if schema.column_position(&column.name).is_some() {
+                    return Err(RelationalError::Schema(format!(
+                        "table {table} already has column {}",
+                        column.name
+                    )));
+                }
+                let row_count = next
+                    .segments
+                    .get(&table)
+                    .map_or(0, |segment| segment.rows.len());
+                if row_count > limits.max_rows.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "ALTER TABLE {table} rewrites {row_count} rows, exceeding max_rows {}",
+                        limits.max_rows
+                    )));
+                }
+                let fill = column.default.clone().unwrap_or(RelationalValue::Null);
+                if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
+                    return Err(RelationalError::Constraint(format!(
+                        "ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table",
+                        column.name
+                    )));
+                }
+                let rewrite_bytes = next
+                    .segments
+                    .get(&table)
+                    .expect("validated relational table has a segment")
+                    .rows
+                    .iter()
+                    .map(|(key, row)| {
+                        relational_row_entry_bytes(key, row)
+                            .saturating_add(fill.estimated_payload_bytes())
+                    })
+                    .fold(0usize, usize::saturating_add);
+                if rewrite_bytes > limits.max_payload_bytes.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "ALTER TABLE {table} rewrites {rewrite_bytes} resident bytes, exceeding max_payload_bytes {}",
+                        limits.max_payload_bytes
+                    )));
+                }
+                schema.columns.push(column);
+                validate_table_schema(&schema)?;
+                let existing_rows = next
+                    .segments
+                    .get(&table)
+                    .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?
+                    .rows
+                    .iter()
+                    .map(|(key, row)| (key.clone(), row.clone()))
+                    .collect::<Vec<_>>();
+                let mut rewritten_rows = Vec::with_capacity(existing_rows.len());
+                for (key, row) in existing_rows {
+                    let mut values = row.values().to_vec();
+                    values.push(fill.clone());
+                    let mut row = RelationalRow::new(values);
+                    overflow::externalize_row(&mut next, &schema, &mut row, overflow_config)?;
+                    rewritten_rows.push((key, row));
+                }
+                let segment = next
+                    .segments
+                    .get_mut(&table)
+                    .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
+                let segment = Arc::make_mut(segment);
+                for (key, row) in rewritten_rows {
+                    segment.rows.insert(key, row);
+                }
+                next.schemas.insert(table.clone(), Arc::new(schema));
+                full_index_rebuild.insert(table.clone());
+                touched.insert(table);
             }
             RelationalWrite::CreateIndex { table, index } => {
                 let schema = next

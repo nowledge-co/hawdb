@@ -284,6 +284,57 @@ fn large_payload_is_externalized_and_hydrated_with_explicit_budgets() {
 }
 
 #[test]
+fn add_column_rewrite_is_admitted_by_existing_resident_bytes() {
+    let store = RelationalStore::new(RelationalMutationLimits {
+        max_rows: NonZeroUsize::new(10).unwrap(),
+        max_payload_bytes: NonZeroUsize::new(128).unwrap(),
+    });
+    store
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".to_string(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("m1".to_string()),
+                        RelationalValue::Text("payload".repeat(16)),
+                    ])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("insert admitted payload");
+
+    let error = store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::AddColumn {
+                    table: "messages".to_string(),
+                    column: text_column("kind", true),
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect_err("resident rewrite must honor the mutation byte budget");
+    assert!(matches!(
+        error,
+        SnapshotCommitError::Stage(RelationalError::Admission(message))
+            if message.contains("resident bytes")
+    ));
+    assert!(store
+        .snapshot()
+        .unwrap()
+        .value()
+        .table_schema("messages")
+        .unwrap()
+        .column_position("kind")
+        .is_none());
+}
+
+#[test]
 fn row_mutation_clones_only_the_affected_cow_page() {
     let store = RelationalStore::default();
     store
@@ -964,6 +1015,15 @@ fn wal_codec_preserves_upsert_and_delete_predicates() {
                         negated: true,
                     }),
                 ),
+            },
+            RelationalWrite::AddColumn {
+                table: "documents".to_string(),
+                column: RelationalColumnSchema {
+                    name: "kind".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: Some(RelationalValue::Text("text".to_string())),
+                },
             },
         ],
     };

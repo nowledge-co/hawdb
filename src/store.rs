@@ -6781,6 +6781,9 @@ impl GraphStore {
             &mut upsert_node_ids,
             &mut delete_document_ids,
         );
+        if upsert_node_ids.is_empty() && delete_document_ids.is_empty() {
+            return;
+        }
         self.search_projection_graph_changes
             .push(SearchProjectionGraphChange {
                 commit_epoch,

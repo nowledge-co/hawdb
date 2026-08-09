@@ -401,7 +401,7 @@ fn search_projection_changefeed_keeps_source_ingest_composite_commit_atomic() {
 }
 
 #[test]
-fn search_projection_changefeed_can_emit_watermark_only_delta_request() {
+fn search_projection_changefeed_does_not_schedule_irrelevant_watermark_only_work() {
     let mut db = Database::new();
     db.query(
         "CREATE (:Memory {id: 'm1', title: 'Memory'})-[:MENTIONS]->(:Entity {id: 'e1', name: 'Entity'})",
@@ -430,17 +430,13 @@ fn search_projection_changefeed_can_emit_watermark_only_delta_request() {
         Some(db.store.commit_epoch())
     );
 
-    let plan = db
+    assert!(db
         .search_projection_graph_delta_freshness_background_work_plan(
             &search_index,
             &request,
             BackgroundWorkHint::default(),
         )
-        .unwrap();
-    assert_eq!(plan.request.class, WorkClass::Projection);
-    assert_eq!(plan.request.estimated_operations, 1);
-    assert_eq!(plan.hint.recent_delta_operations, 1);
-    assert_eq!(plan.hint.source_graph_commit_lag, 1);
+        .is_none());
 }
 
 #[test]
@@ -622,7 +618,7 @@ fn search_projection_changefeed_replays_wal_only_mutations_after_restart() {
             search_index
                 .projection_freshness()
                 .durable_source_graph_commit_epoch,
-            Some(1)
+            Some(2)
         );
 
         db.query("CREATE (:Memory {id: 'm2', title: 'WAL only'})")
@@ -631,13 +627,13 @@ fn search_projection_changefeed_replays_wal_only_mutations_after_restart() {
 
     let db = Database::open(&graph_path).unwrap();
     let status = db.search_projection_changefeed_status();
-    assert_eq!(status.graph_commit_epoch, 2);
+    assert_eq!(status.graph_commit_epoch, 3);
     assert!(status.restart_recoverable);
     assert_eq!(
         status
             .newest_retained_mutation_id
             .map(|id| id.commit_epoch()),
-        Some(2)
+        Some(3)
     );
 
     let mut search_index = SearchIndex::open(&search_path).unwrap();
@@ -645,8 +641,8 @@ fn search_projection_changefeed_replays_wal_only_mutations_after_restart() {
         .catch_up_search_projection(&mut search_index, 4, 1)
         .unwrap();
     assert!(report.complete);
-    assert_eq!(report.start_durable_epoch, Some(1));
-    assert_eq!(report.end_durable_epoch, Some(2));
+    assert_eq!(report.start_durable_epoch, Some(2));
+    assert_eq!(report.end_durable_epoch, Some(3));
     assert!(search_index.document("memory:m1").is_some());
     assert!(search_index.document("memory:m2").is_some());
 

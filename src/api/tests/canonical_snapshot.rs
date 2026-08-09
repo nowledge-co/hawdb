@@ -417,7 +417,7 @@ fn graph_lightning_bootstrap_manifest_reports_ready_physical_export() {
             manifest.protocol_version,
             GRAPH_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION
         );
-        assert_eq!(manifest.graph_commit_epoch, 1);
+        assert_eq!(manifest.graph_commit_epoch, 2);
         assert_eq!(manifest.logical_checksum, export.snapshot.logical_checksum);
         assert_eq!(
             manifest.graph_stream_checksum,
@@ -2518,7 +2518,7 @@ fn graph_lightning_initial_import_apply_imports_graph_state_into_empty_target() 
             report.relationship_count,
             export.manifest.relationship_count
         );
-        assert_eq!(report.graph_commit_epoch, 1);
+        assert_eq!(report.graph_commit_epoch, 2);
         assert!(report.blocker_codes.is_empty());
 
         let imported = target

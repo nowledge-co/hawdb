@@ -75,6 +75,7 @@ mod resource_profile;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod source_candidates;
+mod system_schema;
 mod system_sql;
 mod system_variables;
 mod types;
@@ -149,6 +150,7 @@ pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
 };
+pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 pub use system_variables::QuerySystemVariables;
 
 fn graph_lightning_initial_import_source_fingerprint_key(
@@ -248,11 +250,12 @@ fn restrictive_query_limit(configured: Option<usize>, requested: Option<usize>) 
 fn relational_query_limits(
     config: &DatabaseConfig,
     max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
 ) -> crate::relational_sql::RelationalQueryLimits {
     let max_output_rows = max_rows.unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
-    let max_output_payload_bytes = config
-        .max_read_result_payload_bytes
-        .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
+    let max_output_payload_bytes =
+        restrictive_query_limit(config.max_read_result_payload_bytes, max_payload_bytes)
+            .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
     let max_intermediate_rows = config
         .max_read_result_rows
         .unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
@@ -643,7 +646,7 @@ impl Database {
         store.set_max_search_projection_change_log_entries(
             config.max_search_projection_change_log_entries,
         );
-        Ok(Self {
+        let mut database = Self {
             catalog,
             store,
             optimizer: CascadesOptimizer::new(optimizer_config_from_database_config(&config)),
@@ -661,7 +664,9 @@ impl Database {
             next_derived_artifact_job_id: 1,
             derived_artifact_jobs: Vec::new(),
             telemetry: None,
-        })
+        };
+        database.apply_engine_system_schema()?;
+        Ok(database)
     }
 
     pub fn config(&self) -> &DatabaseConfig {
@@ -2108,8 +2113,12 @@ impl Database {
             hint.recent_delta_operations = request.operation_count();
         }
         if hint.source_graph_commit_lag == 0 {
-            hint.source_graph_commit_lag =
-                search_projection_commit_lag(search_index, self.store.commit_epoch());
+            hint.source_graph_commit_lag = search_projection_commit_lag(
+                search_index,
+                self.store
+                    .search_projection_changefeed_status()
+                    .required_projection_commit_epoch(),
+            );
         }
         if request.operation_count() == 0
             && hint.source_graph_commit_lag > 0
@@ -2132,8 +2141,12 @@ impl Database {
         search_index: &SearchIndex,
         mut hint: BackgroundWorkHint,
     ) -> Option<BackgroundWorkPlan> {
-        let source_graph_commit_lag =
-            search_projection_commit_lag(search_index, self.store.commit_epoch());
+        let source_graph_commit_lag = search_projection_commit_lag(
+            search_index,
+            self.store
+                .search_projection_changefeed_status()
+                .required_projection_commit_epoch(),
+        );
         if source_graph_commit_lag == 0 {
             return None;
         }
@@ -2170,12 +2183,11 @@ impl Database {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
         let mut complete_through_graph_commit_epoch = source_graph_commit_epoch;
-        let mut saw_change = false;
+        let mut truncated_by_budget = false;
         for change in self
             .store
             .search_projection_graph_changes_after(source_graph_commit_epoch)
         {
-            saw_change = true;
             let additional_operation_count = change
                 .upsert_node_ids
                 .iter()
@@ -2201,13 +2213,14 @@ impl Database {
                         change.commit_epoch
                     )));
                 }
+                truncated_by_budget = true;
                 break;
             }
             upsert_node_ids.extend(change.upsert_node_ids);
             delete_document_ids.extend(change.delete_document_ids);
             complete_through_graph_commit_epoch = change.commit_epoch;
         }
-        if !saw_change {
+        if !truncated_by_budget {
             complete_through_graph_commit_epoch = current_epoch;
         }
 
@@ -2319,8 +2332,12 @@ impl Database {
             if options.include_search_projection_rebuild {
                 let mut hint = options.hint.clone();
                 if hint.source_graph_commit_lag == 0 {
-                    hint.source_graph_commit_lag =
-                        search_projection_commit_lag(search_index, self.store.commit_epoch());
+                    hint.source_graph_commit_lag = search_projection_commit_lag(
+                        search_index,
+                        self.store
+                            .search_projection_changefeed_status()
+                            .required_projection_commit_epoch(),
+                    );
                 }
                 if let Some(plan) =
                     self.search_projection_rebuild_background_work_plan(search_index, hint)
@@ -3170,6 +3187,10 @@ impl KnowledgeRetrievalGraphContext<'_> {
         )?;
         let evidence = self.knowledge_evidence_for_search(&search, &graph_context_search.paths)?;
         let graph_commit_epoch = self.store.commit_epoch();
+        let required_projection_commit_epoch = self
+            .store
+            .search_projection_changefeed_status()
+            .required_projection_commit_epoch();
         let retrievers = knowledge_retriever_reports(
             &search,
             &evidence,
@@ -3204,6 +3225,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
             request,
             &projection_freshness,
             graph_commit_epoch,
+            required_projection_commit_epoch,
             KnowledgeRetrievalDiagnosticsInput {
                 graph_seed_input_candidate_set: knowledge_graph_seed_input_candidate_set_report(
                     graph_seed_search.input_candidate_count,
@@ -3987,6 +4009,7 @@ fn knowledge_retrieval_diagnostics(
     request: &KnowledgeRetrievalRequest,
     projection_freshness: &SearchProjectionFreshness,
     graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
     input: KnowledgeRetrievalDiagnosticsInput,
 ) -> KnowledgeRetrievalDiagnostics {
     let mut empty_reasons = Vec::new();
@@ -4041,9 +4064,12 @@ fn knowledge_retrieval_diagnostics(
         projection_source_graph_commit_epoch: projection_freshness.source_graph_commit_epoch,
         projection_commit_lag: search_projection_freshness_commit_lag(
             projection_freshness,
-            graph_commit_epoch,
+            required_projection_commit_epoch,
         ),
-        projection_stale: search_projection_is_stale(projection_freshness, graph_commit_epoch),
+        projection_stale: search_projection_is_stale(
+            projection_freshness,
+            required_projection_commit_epoch,
+        ),
         projection_full_reindex_needed: projection_freshness.full_reindex_needed,
         projection_full_reindex_reasons: projection_freshness.full_reindex_reasons.clone(),
         projection_metadata_repair_needed: projection_freshness.metadata_repair_needed,
@@ -4091,7 +4117,10 @@ fn knowledge_retrieval_diagnostics(
         candidate_truncated: !candidate_truncation_reasons.is_empty(),
         candidate_truncation_reason_codes,
         candidate_truncation_reasons,
-        warnings: knowledge_retrieval_warnings(projection_freshness, graph_commit_epoch),
+        warnings: knowledge_retrieval_warnings(
+            projection_freshness,
+            required_projection_commit_epoch,
+        ),
         empty_reason_codes,
         empty_reasons,
     }
@@ -4165,10 +4194,10 @@ fn knowledge_graph_context_truncation_reason_codes(
 
 fn knowledge_retrieval_warnings(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-    if search_projection_is_stale(projection_freshness, graph_commit_epoch) {
+    if search_projection_is_stale(projection_freshness, required_projection_commit_epoch) {
         warnings.push("search projection is older than graph snapshot".to_string());
     }
     if projection_freshness.full_reindex_needed {
@@ -4194,19 +4223,20 @@ fn knowledge_retrieval_warnings(
 
 fn search_projection_is_stale(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> bool {
     projection_freshness
         .source_graph_commit_epoch
-        .map(|projection_epoch| projection_epoch < graph_commit_epoch)
+        .map(|projection_epoch| projection_epoch < required_projection_commit_epoch)
         .unwrap_or(false)
 }
 
 fn search_projection_freshness_commit_lag(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> u64 {
-    graph_commit_epoch.saturating_sub(projection_freshness.source_graph_commit_epoch.unwrap_or(0))
+    required_projection_commit_epoch
+        .saturating_sub(projection_freshness.source_graph_commit_epoch.unwrap_or(0))
 }
 
 fn graph_seed_candidate_id(seed: &KnowledgeGraphSeed) -> String {
@@ -17053,8 +17083,14 @@ fn search_projection_graph_delta_for(
     })
 }
 
-fn search_projection_commit_lag(search_index: &SearchIndex, graph_commit_epoch: u64) -> u64 {
-    search_projection_freshness_commit_lag(&search_index.projection_freshness(), graph_commit_epoch)
+fn search_projection_commit_lag(
+    search_index: &SearchIndex,
+    required_projection_commit_epoch: u64,
+) -> u64 {
+    search_projection_freshness_commit_lag(
+        &search_index.projection_freshness(),
+        required_projection_commit_epoch,
+    )
 }
 
 fn knowledge_entity_from_node(catalog: &Catalog, node: &NodeRecord) -> KnowledgeEntity {
@@ -17684,7 +17720,7 @@ impl DatabaseTransaction<'_> {
     }
 
     pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
-        self.query_sql_with_params(sql_text, &[])
+        self.query_sql_with_params_inner(sql_text, &[], false)
     }
 
     pub fn query_sql_with_params(
@@ -17692,7 +17728,68 @@ impl DatabaseTransaction<'_> {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_inner(sql_text, parameters, false)
+    }
+
+    /// Reads the transaction's staged relational state with statement-local
+    /// row and payload limits. This preserves read-your-own-writes while
+    /// preventing multi-statement mutations from creating an unbounded host
+    /// intermediate.
+    pub fn query_sql_read_with_params_bounded_limits(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+    ) -> Result<QueryOutput> {
         let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if !matches!(prepared.statement, crate::sql::SqlStatement::Select(_)) {
+            return Err(SkeinError::Semantic(
+                "bounded transaction SQL reads require SELECT".to_string(),
+            ));
+        }
+        let max_rows = restrictive_query_limit(self.db.config.max_read_result_rows, max_rows);
+        let max_payload_bytes = restrictive_query_limit(
+            self.db.config.max_read_result_payload_bytes,
+            max_payload_bytes,
+        );
+        let output = crate::relational_sql::execute_relational_query_sql_with_runtime(
+            sql_text,
+            parameters,
+            &self.relational_state,
+            relational_query_limits(&self.db.config, max_rows, max_payload_bytes),
+            &self.db.config.execution_memory,
+            None,
+        )?;
+        Ok(QueryOutput { rows: output.rows })
+    }
+
+    pub(super) fn query_system_schema_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
+        self.query_sql_with_params_inner(sql_text, &[], true)
+    }
+
+    pub(super) fn query_system_schema_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        self.query_sql_with_params_inner(sql_text, parameters, true)
+    }
+
+    fn query_sql_with_params_inner(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+        allow_system_schema_registry_write: bool,
+    ) -> Result<QueryOutput> {
+        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if !allow_system_schema_registry_write
+            && crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement)
+        {
+            return Err(SkeinError::Semantic(
+                "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
+            ));
+        }
         if matches!(
             prepared.statement,
             crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
@@ -17701,7 +17798,11 @@ impl DatabaseTransaction<'_> {
                 sql_text,
                 parameters,
                 &self.relational_state,
-                relational_query_limits(&self.db.config, self.db.config.max_read_result_rows),
+                relational_query_limits(
+                    &self.db.config,
+                    self.db.config.max_read_result_rows,
+                    self.db.config.max_read_result_payload_bytes,
+                ),
                 &self.db.config.execution_memory,
                 None,
             )?;
@@ -18483,8 +18584,27 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         max_rows: Option<usize>,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_bounded_limits(
+            sql_text,
+            parameters,
+            max_rows,
+            self.config.max_read_result_payload_bytes,
+        )
+    }
+
+    /// Executes one PostgreSQL-dialect read with explicit output row and
+    /// payload limits, restricted further by the database-wide limits.
+    pub fn query_sql_with_params_bounded_limits(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+    ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
         let max_rows = restrictive_query_limit(self.config.max_read_result_rows, max_rows);
+        let max_payload_bytes =
+            restrictive_query_limit(self.config.max_read_result_payload_bytes, max_payload_bytes);
         let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
         if matches!(
             &prepared.statement,
@@ -18495,7 +18615,7 @@ impl DatabaseReadTransaction {
                 sql_text,
                 parameters,
                 max_rows,
-                self.config.max_read_result_payload_bytes,
+                max_payload_bytes,
                 &system_sql::SystemSqlContext {
                     catalog: &self.catalog,
                     store: &self.store,
@@ -18511,7 +18631,7 @@ impl DatabaseReadTransaction {
             sql_text,
             parameters,
             self.store.relational_state(),
-            relational_query_limits(&self.config, max_rows),
+            relational_query_limits(&self.config, max_rows, max_payload_bytes),
             &self.config.execution_memory,
             None,
         )?;

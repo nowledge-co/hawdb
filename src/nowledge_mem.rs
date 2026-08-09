@@ -29,8 +29,8 @@ use crate::{
     SearchProjectionChangefeedStatus, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionMutationId,
     SearchProjectionProbeOptions, SearchResultSet, SkeinError, SlowQueryLogRecordSummary,
-    StorageResourceProfileLimits, StorageResourceProfileReport, TelemetrySink, Value,
-    STORAGE_RESOURCE_PROFILE_PROTOCOL,
+    StorageBackupReport, StorageResourceProfileLimits, StorageResourceProfileReport, TelemetrySink,
+    Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 use crate::{
     graph_route_readiness::NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
@@ -198,6 +198,7 @@ pub struct NowledgeMemOpenOptions {
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
     pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
     pub search_range_read_config: Option<SearchRangeReadConfig>,
+    pub system_schema_registries: Vec<crate::SystemSchemaRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +258,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -276,6 +278,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -297,6 +300,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -309,6 +313,13 @@ impl NowledgeMemOpenOptions {
     /// and vector-backend settings.
     pub fn with_database_config(mut self, config: DatabaseConfig) -> Self {
         self.database_config = Some(config);
+        self
+    }
+
+    /// Registers application-owned system schemas that must be current before
+    /// the embedded store is returned to its host.
+    pub fn with_system_schema_registry(mut self, registry: crate::SystemSchemaRegistry) -> Self {
+        self.system_schema_registries.push(registry);
         self
     }
 
@@ -374,6 +385,15 @@ impl NowledgeMemOpenOptions {
                 "search_range_read_config requires search_projection_path".to_string(),
             ));
         }
+        let mut schema_owners = BTreeSet::new();
+        for registry in &self.system_schema_registries {
+            if !schema_owners.insert(registry.owner()) {
+                return Err(SkeinError::Semantic(format!(
+                    "system schema owner {} is registered more than once",
+                    registry.owner()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -403,6 +423,7 @@ impl NowledgeMemOpenOptions {
             graph_opened: false,
             search_projection_opened: false,
             search_production_qualification_bound: false,
+            system_schema_upgrades: Vec::new(),
         }
     }
 
@@ -453,6 +474,7 @@ pub struct NowledgeMemOpenReport {
     pub graph_opened: bool,
     pub search_projection_opened: bool,
     pub search_production_qualification_bound: bool,
+    pub system_schema_upgrades: Vec<crate::SystemSchemaUpgradeReport>,
 }
 
 impl NowledgeMemOpenReport {
@@ -475,6 +497,14 @@ impl NowledgeMemOpenReport {
             "graph_opened": self.graph_opened,
             "search_projection_opened": self.search_projection_opened,
             "search_production_qualification_bound": self.search_production_qualification_bound,
+            "system_schema_upgrades": self.system_schema_upgrades.iter().map(|upgrade| serde_json::json!({
+                "owner": upgrade.owner,
+                "previous_version": upgrade.previous_version,
+                "current_version": upgrade.current_version,
+                "applied_versions": upgrade.applied_versions,
+                "commit_epoch_before": upgrade.commit_epoch_before,
+                "commit_epoch_after": upgrade.commit_epoch_after,
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -489,7 +519,7 @@ pub struct NowledgeMemRuntimeStatus {
 
 impl NowledgeMemRuntimeStatus {
     pub fn projection_commit_lag(&self) -> u64 {
-        self.graph_commit_epoch.saturating_sub(
+        self.changefeed.projection_commit_lag_after(
             self.projection_freshness
                 .as_ref()
                 .and_then(|freshness| freshness.durable_source_graph_commit_epoch)
@@ -7927,6 +7957,16 @@ impl NowledgeMemEmbeddedStoreHandle {
         self.write_store()?.graph_mut().database_mut().checkpoint()
     }
 
+    /// Publishes a verified, immutable backup of the unified graph and
+    /// relational generation through the admitted embedded maintenance path.
+    pub fn backup_to(&self, destination: impl AsRef<Path>) -> Result<StorageBackupReport> {
+        let _permit = self.admit_typed_maintenance(0, 1)?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .backup_to(destination)
+    }
+
     pub fn query_with_report(&self, cypher: &str) -> Result<NowledgeMemQueryOutput> {
         self.write_store()?.query_with_report(cypher)
     }
@@ -8751,20 +8791,19 @@ impl NowledgeMemEmbeddedStoreHandle {
             }
             if admission.is_mutation {
                 kind = RuntimeWorkKind::Mutation;
+            } else {
+                let statement_result_bytes =
+                    config.max_read_result_payload_bytes.ok_or_else(|| {
+                        SkeinError::Execution(
+                            "admitted transaction requires max_read_result_payload_bytes"
+                                .to_string(),
+                        )
+                    })?;
+                result_bytes = result_bytes
+                    .saturating_add(u64::try_from(statement_result_bytes).unwrap_or(u64::MAX));
             }
             estimated_memory_bytes = estimated_memory_bytes.max(admission.estimated_memory_bytes);
             io_slots = io_slots.max(admission.required_io_slots);
-            let statement_result_bytes = if admission.is_mutation {
-                config.mutation_limits.max_result_payload_bytes.get()
-            } else {
-                config.max_read_result_payload_bytes.ok_or_else(|| {
-                    SkeinError::Execution(
-                        "admitted transaction requires max_read_result_payload_bytes".to_string(),
-                    )
-                })?
-            };
-            result_bytes = result_bytes
-                .saturating_add(u64::try_from(statement_result_bytes).unwrap_or(u64::MAX));
         }
         let request = RuntimeWorkRequest::new(priority, kind)
             .with_cpu_slots(1)
@@ -8884,11 +8923,18 @@ impl NowledgeMemEmbeddedStore {
         options.validate()?;
         let mut report = options.sanitized_report();
         let graph_config = options.effective_database_config();
-        let graph = NowledgeMemGraph::open_with_config_and_runtime_governor(
+        let mut graph = NowledgeMemGraph::open_with_config_and_runtime_governor(
             &options.graph_path,
             graph_config,
             runtime_governor,
         )?;
+        for registry in &options.system_schema_registries {
+            report.system_schema_upgrades.push(
+                graph
+                    .database_mut()
+                    .apply_system_schema_registry(registry)?,
+            );
+        }
         report.graph_opened = true;
         let default_search_range_read_config = SearchRangeReadConfig {
             io_depth: graph.runtime_governor_snapshot().limits.foreground_io_depth,
@@ -14612,6 +14658,49 @@ mod tests {
     }
 
     #[test]
+    fn embedded_handle_mutation_transaction_does_not_reserve_result_payload_budget() {
+        let governor = skein_qos::RuntimeGovernor::detect(
+            skein_qos::RuntimeGovernorConfig {
+                memory_budget_bytes: Some(256 * 1024 * 1024),
+                result_budget_bytes: 1,
+                ..skein_qos::RuntimeGovernorConfig::default()
+            },
+            skein_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+            Database::new(),
+            NowledgeMemGraphMode::WritableCutover,
+            governor,
+        );
+        let handle =
+            NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None));
+
+        let output = handle
+            .transaction(&[
+                NowledgeGraphStatement {
+                    cypher: "CREATE (:Memory {id: 'transaction-first'})".to_string(),
+                    parameters: BTreeMap::new(),
+                },
+                NowledgeGraphStatement {
+                    cypher: "CREATE (:Memory {id: 'transaction-second'})".to_string(),
+                    parameters: BTreeMap::new(),
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(output.statement_outputs.len(), 2);
+        assert!(output
+            .statement_outputs
+            .iter()
+            .all(|statement| statement.rows.is_empty()));
+        let snapshot = handle.runtime_governor_snapshot().unwrap();
+        assert_eq!(snapshot.admissions, 1);
+        assert_eq!(snapshot.completions, 1);
+        assert_eq!(snapshot.active_foreground_tasks, 0);
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+    }
+
+    #[test]
     fn embedded_handle_query_transaction_commits_graph_and_relational_state_once() {
         let graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
@@ -17448,7 +17537,7 @@ mod tests {
         let stale = store.production_status(Some(&route_ownership));
         assert!(stale.graph_skein_cutover_effective);
         assert!(stale.search_projection_open);
-        assert_eq!(stale.search_projection_commit_lag, 1);
+        assert_eq!(stale.search_projection_commit_lag, 2);
         assert!(stale.search_projection_stale);
         assert!(!stale.search_skein_cutover_effective);
         assert!(stale
@@ -17947,8 +18036,8 @@ mod tests {
             let report = store.catch_up_search_projection(16, 1).unwrap();
 
             assert!(report.complete);
-            assert_eq!(report.start_durable_epoch, Some(1));
-            assert_eq!(report.end_durable_epoch, Some(2));
+            assert_eq!(report.start_durable_epoch, Some(2));
+            assert_eq!(report.end_durable_epoch, Some(3));
             assert!(store
                 .search_projection()
                 .unwrap()

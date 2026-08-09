@@ -313,7 +313,7 @@ fn typed_knowledge_relationship_batch_create_persists_as_one_wal_batch_and_repla
     }
     let wal = read_test_wal(&path).unwrap();
     assert!(wal.contains("create_rel"));
-    assert_eq!(wal.matches("\tbatch\t").count(), 1);
+    assert_eq!(wal.matches("\tbatch\t").count(), 2);
     {
         let db = Database::open(&path).unwrap();
         let output = db

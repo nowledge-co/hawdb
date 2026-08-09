@@ -85,13 +85,13 @@ fn basic_statistics_are_incremental_across_deletes_and_replay() {
             .unwrap();
 
         let basic_statistics = db.basic_statistics();
-        assert_eq!(basic_statistics.computed_at_commit_epoch, 4);
+        assert_eq!(basic_statistics.computed_at_commit_epoch, 5);
         assert_eq!(basic_statistics.node_count, 2);
         assert_eq!(basic_statistics.relationship_count, 0);
         assert_eq!(basic_statistics.label_counts.values().sum::<u64>(), 2);
         assert_eq!(basic_statistics.rel_type_counts.values().sum::<u64>(), 0);
 
-        assert_eq!(read_tx.basic_statistics().computed_at_commit_epoch, 2);
+        assert_eq!(read_tx.basic_statistics().computed_at_commit_epoch, 3);
         assert_eq!(read_tx.basic_statistics().node_count, 3);
         assert_eq!(read_tx.basic_statistics().relationship_count, 1);
     }
@@ -99,7 +99,7 @@ fn basic_statistics_are_incremental_across_deletes_and_replay() {
     {
         let db = Database::open(&path).unwrap();
         let basic_statistics = db.basic_statistics();
-        assert_eq!(basic_statistics.computed_at_commit_epoch, 4);
+        assert_eq!(basic_statistics.computed_at_commit_epoch, 5);
         assert_eq!(basic_statistics.node_count, 2);
         assert_eq!(basic_statistics.relationship_count, 0);
         assert_eq!(db.statistics().node_count, basic_statistics.node_count);
@@ -157,7 +157,7 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
 
     let checkpoint = read_test_durable_text(&active_checkpoint_path(&path)).unwrap();
     assert!(checkpoint.contains("property_index"));
-    assert!(checkpoint.contains("stat_commit_epoch\t2\n"));
+    assert!(checkpoint.contains("stat_commit_epoch\t3\n"));
     assert!(checkpoint.contains("stat_advanced_complete\ttrue\n"));
     assert!(checkpoint.contains("stat_histogram_sample_limit\t512\n"));
     assert!(checkpoint.contains("stat_node_count\t3\n"));
@@ -181,7 +181,7 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
             .property_indexes()
             .iter()
             .any(|index| index.property == "kind"));
-        assert_eq!(db.statistics().computed_at_commit_epoch, 2);
+        assert_eq!(db.statistics().computed_at_commit_epoch, 3);
         assert!(db.statistics().advanced_statistics_complete);
         assert_eq!(db.statistics().histogram_sample_limit, 512);
         assert_eq!(db.statistics().node_count, 3);

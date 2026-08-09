@@ -696,6 +696,17 @@ impl Encoder {
                 self.u8(1);
                 self.table_schema(schema)?;
             }
+            RelationalWrite::AddColumn { table, column } => {
+                self.u8(8);
+                self.string(table)?;
+                self.string(&column.name)?;
+                self.scalar_type(column.scalar_type);
+                self.u8(u8::from(column.nullable));
+                self.u8(u8::from(column.default.is_some()));
+                if let Some(value) = &column.default {
+                    self.logical_value(value)?;
+                }
+            }
             RelationalWrite::CreateIndex { table, index } => {
                 self.u8(2);
                 self.string(table)?;
@@ -1441,6 +1452,25 @@ impl<I: DecodeInput> Decoder<I> {
                     table,
                     assignments,
                     predicate: self.predicate()?,
+                })
+            }
+            8 => {
+                let table = self.string()?;
+                let name = self.string()?;
+                let scalar_type = self.scalar_type()?;
+                let nullable = self.boolean("column nullable")?;
+                let default = self
+                    .boolean("column default present")?
+                    .then(|| self.logical_value())
+                    .transpose()?;
+                Ok(RelationalWrite::AddColumn {
+                    table,
+                    column: RelationalColumnSchema {
+                        name,
+                        scalar_type,
+                        nullable,
+                        default,
+                    },
                 })
             }
             tag => Err(RelationalError::Corruption(format!(

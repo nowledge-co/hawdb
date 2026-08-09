@@ -126,6 +126,11 @@ impl Database {
         self.store.ensure_usable()?;
         let max_rows = super::restrictive_query_limit(self.config.max_read_result_rows, max_rows);
         let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        if crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement) {
+            return Err(SkeinError::Semantic(
+                "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
+            ));
+        }
         if matches!(
             &prepared.statement,
             crate::sql::SqlStatement::Select(select)
@@ -158,7 +163,11 @@ impl Database {
                 sql_text,
                 parameters,
                 self.store.relational_state(),
-                super::relational_query_limits(&self.config, max_rows),
+                super::relational_query_limits(
+                    &self.config,
+                    max_rows,
+                    self.config.max_read_result_payload_bytes,
+                ),
                 &self.config.execution_memory,
                 None,
             )?;
