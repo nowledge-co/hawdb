@@ -335,6 +335,81 @@ fn add_column_rewrite_is_admitted_by_existing_resident_bytes() {
 }
 
 #[test]
+fn add_column_rewrites_rows_pagewise_and_preserves_indexes() {
+    let store = RelationalStore::default();
+    store
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateIndex {
+                    table: "messages".to_string(),
+                    index: RelationalIndexSchema {
+                        name: "idx_messages_payload".to_string(),
+                        columns: vec!["payload".to_string()],
+                        unique: false,
+                    },
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("create payload index");
+    let rows = (0..768)
+        .map(|index| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(format!("message-{index:04}")),
+                RelationalValue::Text(format!("payload-{index:04}")),
+            ])
+        })
+        .collect();
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".to_string(),
+                    rows,
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("seed indexed rows");
+    let pinned = store.snapshot().expect("pin pre-alter snapshot");
+
+    let current = store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::AddColumn {
+                    table: "messages".to_string(),
+                    column: RelationalColumnSchema {
+                        name: "kind".to_string(),
+                        scalar_type: RelationalScalarType::Text,
+                        nullable: false,
+                        default: Some(RelationalValue::Text("note".to_string())),
+                    },
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("add defaulted column");
+
+    let old_segment = &pinned.value().segments["messages"];
+    let new_segment = &current.value().segments["messages"];
+    assert_eq!(old_segment.rows.len(), 768);
+    assert_eq!(new_segment.rows.len(), 768);
+    assert_eq!(old_segment.rows.shared_page_count(&new_segment.rows), 0);
+    assert!(new_segment.rows.values().all(|row| {
+        row.values().len() == 3 && row.values()[2] == RelationalValue::Text("note".to_string())
+    }));
+
+    let old_index = &old_segment.indexes["idx_messages_payload"];
+    let new_index = &new_segment.indexes["idx_messages_payload"];
+    assert!(old_index.pages.len() >= 3);
+    assert!(Arc::ptr_eq(&old_index.pages, &new_index.pages));
+}
+
+#[test]
 fn row_mutation_clones_only_the_affected_cow_page() {
     let store = RelationalStore::default();
     store

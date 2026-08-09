@@ -250,29 +250,22 @@ struct RelationalRowPages {
 
 impl RelationalRowPages {
     fn from_map(rows: BTreeMap<RelationalKey, RelationalRow>) -> Self {
-        let len = rows.len();
-        let mut pages = Vec::new();
-        let mut page = BTreeMap::new();
-        let mut page_bytes = 0usize;
+        let mut builder = RelationalRowPagesBuilder::default();
         for (key, row) in rows {
-            let entry_bytes = relational_row_entry_bytes(&key, &row);
-            if !page.is_empty()
-                && (page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                    || page_bytes.saturating_add(entry_bytes) > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-            {
-                pages.push(Arc::new(std::mem::take(&mut page)));
-                page_bytes = 0;
-            }
-            page_bytes = page_bytes.saturating_add(entry_bytes);
-            page.insert(key, row);
+            builder.push(key, row);
         }
-        if !page.is_empty() {
-            pages.push(Arc::new(page));
+        builder.finish()
+    }
+
+    fn try_rewrite_rows<E>(
+        &self,
+        mut rewrite: impl FnMut(&RelationalRow) -> Result<RelationalRow, E>,
+    ) -> Result<Self, E> {
+        let mut builder = RelationalRowPagesBuilder::with_page_capacity(self.pages.len());
+        for (key, row) in self.iter() {
+            builder.push(key.clone(), rewrite(row)?);
         }
-        Self {
-            pages: Arc::new(pages),
-            len,
-        }
+        Ok(builder.finish())
     }
 
     fn len(&self) -> usize {
@@ -357,6 +350,52 @@ impl RelationalRowPages {
             .iter()
             .filter(|left| other.pages.iter().any(|right| Arc::ptr_eq(left, right)))
             .count()
+    }
+}
+
+#[derive(Debug, Default)]
+struct RelationalRowPagesBuilder {
+    pages: Vec<Arc<BTreeMap<RelationalKey, RelationalRow>>>,
+    page: BTreeMap<RelationalKey, RelationalRow>,
+    page_bytes: usize,
+    len: usize,
+}
+
+impl RelationalRowPagesBuilder {
+    fn with_page_capacity(capacity: usize) -> Self {
+        Self {
+            pages: Vec::with_capacity(capacity),
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, key: RelationalKey, row: RelationalRow) {
+        let entry_bytes = relational_row_entry_bytes(&key, &row);
+        if !self.page.is_empty()
+            && (self.page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
+                || self.page_bytes.saturating_add(entry_bytes) > RELATIONAL_ROW_PAGE_TARGET_BYTES)
+        {
+            self.flush_page();
+        }
+        self.page_bytes = self.page_bytes.saturating_add(entry_bytes);
+        self.page.insert(key, row);
+        self.len = self.len.saturating_add(1);
+    }
+
+    fn finish(mut self) -> RelationalRowPages {
+        self.flush_page();
+        RelationalRowPages {
+            pages: Arc::new(self.pages),
+            len: self.len,
+        }
+    }
+
+    fn flush_page(&mut self) {
+        if self.page.is_empty() {
+            return;
+        }
+        self.pages.push(Arc::new(std::mem::take(&mut self.page)));
+        self.page_bytes = 0;
     }
 }
 
@@ -1208,7 +1247,7 @@ fn apply_transaction(
                         limits.max_rows
                     )));
                 }
-                let fill = column.default.clone().unwrap_or(RelationalValue::Null);
+                let mut fill = column.default.clone().unwrap_or(RelationalValue::Null);
                 if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
                     return Err(RelationalError::Constraint(format!(
                         "ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table",
@@ -1234,33 +1273,27 @@ fn apply_transaction(
                 }
                 schema.columns.push(column);
                 validate_table_schema(&schema)?;
+                if row_count != 0 {
+                    overflow::externalize_value(&mut next, &mut fill, overflow_config)?;
+                }
                 let existing_rows = next
                     .segments
                     .get(&table)
                     .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?
                     .rows
-                    .iter()
-                    .map(|(key, row)| (key.clone(), row.clone()))
-                    .collect::<Vec<_>>();
-                let mut rewritten_rows = Vec::with_capacity(existing_rows.len());
-                for (key, row) in existing_rows {
+                    .clone();
+                let rewritten_rows = existing_rows.try_rewrite_rows(|row| {
                     let mut values = row.values().to_vec();
                     values.push(fill.clone());
-                    let mut row = RelationalRow::new(values);
-                    overflow::externalize_row(&mut next, &schema, &mut row, overflow_config)?;
-                    rewritten_rows.push((key, row));
-                }
+                    Ok::<_, RelationalError>(RelationalRow::new(values))
+                })?;
                 let segment = next
                     .segments
                     .get_mut(&table)
                     .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
                 let segment = Arc::make_mut(segment);
-                for (key, row) in rewritten_rows {
-                    segment.rows.insert(key, row);
-                }
+                segment.rows = rewritten_rows;
                 next.schemas.insert(table.clone(), Arc::new(schema));
-                full_index_rebuild.insert(table.clone());
-                touched.insert(table);
             }
             RelationalWrite::CreateIndex { table, index } => {
                 let schema = next

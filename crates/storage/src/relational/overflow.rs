@@ -84,40 +84,49 @@ pub(super) fn externalize_row(
         if protected.contains(&position) {
             continue;
         }
-        let (scalar_type, raw) = match value {
-            RelationalValue::Text(text) if text.len() >= config.threshold_bytes => {
-                (RelationalScalarType::Text, text.as_bytes().to_vec())
-            }
-            RelationalValue::Bytea(bytes) if bytes.len() >= config.threshold_bytes => {
-                (RelationalScalarType::Bytea, bytes.clone())
-            }
-            RelationalValue::Json(json) if json.len() >= config.threshold_bytes => (
-                RelationalScalarType::Json,
-                json.as_str().as_bytes().to_vec(),
-            ),
-            _ => continue,
-        };
-        if raw.len() > config.max_value_bytes {
-            return Err(RelationalError::Admission(format!(
-                "overflow value contains {} bytes, exceeding max_value_bytes {}",
-                raw.len(),
-                config.max_value_bytes
-            )));
-        }
-        let envelope = encode_envelope(scalar_type, &raw, config.compression_level)?;
-        let digest = integrity_digest(&envelope).sha256.to_string();
-        let reference = RelationalOverflowRef {
-            digest: digest.clone(),
-            scalar_type,
-            compressed_bytes: envelope.len() - OVERFLOW_HEADER_BYTES,
-            uncompressed_bytes: raw.len(),
-        };
-        state
-            .overflow_segments
-            .entry(digest)
-            .or_insert_with(|| RelationalOverflowSegment::Inline(Arc::from(envelope)));
-        *value = RelationalValue::Overflow(reference);
+        externalize_value(state, value, config)?;
     }
+    Ok(())
+}
+
+pub(super) fn externalize_value(
+    state: &mut RelationalState,
+    value: &mut RelationalValue,
+    config: RelationalOverflowConfig,
+) -> Result<(), RelationalError> {
+    let (scalar_type, raw) = match value {
+        RelationalValue::Text(text) if text.len() >= config.threshold_bytes => {
+            (RelationalScalarType::Text, text.as_bytes().to_vec())
+        }
+        RelationalValue::Bytea(bytes) if bytes.len() >= config.threshold_bytes => {
+            (RelationalScalarType::Bytea, bytes.clone())
+        }
+        RelationalValue::Json(json) if json.len() >= config.threshold_bytes => (
+            RelationalScalarType::Json,
+            json.as_str().as_bytes().to_vec(),
+        ),
+        _ => return Ok(()),
+    };
+    if raw.len() > config.max_value_bytes {
+        return Err(RelationalError::Admission(format!(
+            "overflow value contains {} bytes, exceeding max_value_bytes {}",
+            raw.len(),
+            config.max_value_bytes
+        )));
+    }
+    let envelope = encode_envelope(scalar_type, &raw, config.compression_level)?;
+    let digest = integrity_digest(&envelope).sha256.to_string();
+    let reference = RelationalOverflowRef {
+        digest: digest.clone(),
+        scalar_type,
+        compressed_bytes: envelope.len() - OVERFLOW_HEADER_BYTES,
+        uncompressed_bytes: raw.len(),
+    };
+    state
+        .overflow_segments
+        .entry(digest)
+        .or_insert_with(|| RelationalOverflowSegment::Inline(Arc::from(envelope)));
+    *value = RelationalValue::Overflow(reference);
     Ok(())
 }
 
