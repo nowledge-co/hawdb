@@ -11,7 +11,7 @@ use crate::telemetry::{
 use crate::value::Value;
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
-use simsimd::SpatialSimilarity;
+use numkong::Dot;
 use skein_integrity::checksum_u64;
 use skein_optimizer::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,

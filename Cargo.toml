@@ -10,7 +10,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 jieba-rs = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-simsimd = "6.5"
+numkong = "7.8"
 skein-core = { path = "crates/core" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }

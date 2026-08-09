@@ -1019,6 +1019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "numkong"
+version = "7.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81601dc994296baed2968db046b01589be7898837c31f2b073704c6e65ff8f04"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1574,15 +1583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "simsimd"
-version = "6.5.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4fb3bc3cdce07a7d7d4caa4c54f8aa967f6be41690482b54b24100a2253fa70"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,9 +1595,9 @@ dependencies = [
  "chrono",
  "jieba-rs",
  "loom",
+ "numkong",
  "serde",
  "serde_json",
- "simsimd",
  "skein-core",
  "skein-cypher",
  "skein-ddl",
