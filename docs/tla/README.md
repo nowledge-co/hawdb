@@ -15,7 +15,7 @@ a Java 11 or newer runtime. Without `TLA2TOOLS_JAR`, the script downloads TLA+
 Tools 1.7.4 and verifies its SHA-256 digest before execution.
 
 Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain a release artifact.
-The artifact contains the exact seven `.tla` and `.cfg` inputs, one complete TLC
+The artifact contains the exact eight `.tla` and `.cfg` inputs, one complete TLC
 log per model, the Java version, and a revision- and tool-bound manifest. CI
 validates the downloaded artifact with:
 
@@ -158,6 +158,42 @@ never selectable: open-time validation discards it when writable, and every read
 falls back to the authoritative graph. A reader selects the sidecar only when
 the pinned graph epoch, published manifest epoch, live artifact epoch, and
 durably built identity all agree.
+
+## CRDT Replication Between Skein Nodes
+
+`SkeinCrdtReplication.tla` models the delta-state CRDT contract in
+[`../specs/SKEIN_CRDT_REPLICATION_SPEC.md`](../specs/SKEIN_CRDT_REPLICATION_SPEC.md).
+Node and relationship occurrences are ORSWOT observed-remove sets keyed by a
+durable dot `<<ReplicaId, counter>>`; the causal context is a version vector;
+properties are per-occurrence LWW registers ordered by `<<hlc, ReplicaId>>`.
+Anti-entropy is modeled as the state join that per-origin gap-free delta
+segments refine, which is also why crash-and-retry re-delivery is safe.
+
+The model checks that replicas with equal causal contexts hold identical
+state, that fair anti-entropy converges both replicas, that every live record
+and observed timestamp is causally covered, that a replicated edge never
+references an occurrence outside the receiver's context, that observed-removed
+dots never resurrect, and that occurrence dots stay unique and never exceed
+minted operations. Visible-graph referential integrity holds by construction
+of `VisibleEdges`: a `DETACH DELETE` concurrent with an incident edge create
+leaves the edge masked rather than dangling.
+
+The checked-in instance is two replicas, two keys, two values, and two
+operations per replica (about 25k distinct states). It was chosen by mutation
+testing rather than by size: with the causal clock merge deleted from `Sync`,
+this instance still reports `LiveRecordsAreCovered`, and with the edge join
+replaced by a naive union it still reports `RemovedDotsStayRemoved`. A deeper
+instance with three operations per replica (about 4.8M distinct states, two
+minutes on eighteen workers) was also checked with no error; it is not the CI
+default because it costs two orders of magnitude more for no additional
+defect-detection power on the mutations above.
+
+Checking this model found a real design defect: with a plain per-replica
+commit counter as the LWW timestamp, a replica can overwrite a register it
+has already observed with a smaller timestamp, and the stale value wins the
+next join. The specification now requires the hybrid logical clock to merge
+past every observed timestamp on delta apply, which the model represents as
+a Lamport clock merged on each sync round.
 
 ## Proof Boundary
 
