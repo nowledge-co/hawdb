@@ -178,15 +178,37 @@ minted operations. Visible-graph referential integrity holds by construction
 of `VisibleEdges`: a `DETACH DELETE` concurrent with an incident edge create
 leaves the edge masked rather than dangling.
 
-The checked-in instance is two replicas, two keys, two values, and two
-operations per replica (about 25k distinct states). It was chosen by mutation
-testing rather than by size: with the causal clock merge deleted from `Sync`,
-this instance still reports `LiveRecordsAreCovered`, and with the edge join
-replaced by a naive union it still reports `RemovedDotsStayRemoved`. A deeper
-instance with three operations per replica (about 4.8M distinct states, two
-minutes on eighteen workers) was also checked with no error; it is not the CI
-default because it costs two orders of magnitude more for no additional
-defect-detection power on the mutations above.
+A receiver acknowledges a joined batch only after it is durable, and the
+sender records that acknowledged context. `AcknowledgedContextNeverExceedsPeer`
+checks that a replica never believes a peer has applied more than it has,
+which is what makes acknowledged contexts safe to gate retention on. `Crash`
+drops an owed acknowledgement while durable state survives, so the ambiguous
+apply-then-crash case is retried; the join is idempotent, so re-applying the
+same batch changes nothing.
+
+The checked-in instance is two replicas, one key, two values, and two
+operations per replica (about 112k distinct states, three seconds). It was
+chosen by mutation testing rather than by size, and it still reports a
+violation for each seeded defect: deleting the causal clock merge from `Sync`
+reports `LiveRecordsAreCovered`, replacing the edge join with a naive union
+reports `ConvergedWhenContextsEqual` and `RemovedDotsStayRemoved`, and making
+`Ack` record the sender's context instead of the receiver's applied one
+reports `AcknowledgedContextNeverExceedsPeer`. Masked edges remain reachable
+at this size. A two-key instance (about 1.8M distinct states, forty-six
+seconds on eighteen workers) was also checked with no error; it is not the CI
+default because it costs sixteen times more for no additional
+defect-detection power on the seeded defects above.
+
+Two limits are worth stating plainly. Three-replica instances do not
+terminate at this shape — tracking each replica's view of every peer's
+acknowledged context adds a version vector per ordered pair, and the smallest
+configuration exceeded seven million distinct states without finishing — so
+transitive delivery is argued from the join's algebra rather than checked.
+And masked-edge reclamation is deliberately absent: under a state-join
+abstraction a premature drop is indistinguishable from an ordinary
+observed-remove, so a GC action would pass with or without its stability
+guard. That guard protects against a hazard that only exists once delta
+segments are modeled as segments, which needs its own model.
 
 Checking this model found a real design defect: with a plain per-replica
 commit counter as the LWW timestamp, a replica can overwrite a register it

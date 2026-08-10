@@ -28,13 +28,15 @@ ASSUME MaxOpsPerReplica \in Nat \ {0}
 
 VARIABLES
     opCount,  \* [Replicas -> Nat]: dots minted locally, contiguous from 1
+    acked,    \* [Replicas -> [Replicas -> vector]]: peer contexts acknowledged as durable
+    owedAck,  \* [Replicas -> [Replicas -> BOOLEAN]]: applied batches not yet acknowledged
     clock,    \* [Replicas -> Nat]: Lamport clock for LWW timestamps
     context,  \* [Replicas -> [Replicas -> Nat]]: causal context vector
     nodes,    \* [Replicas -> set of node occurrence records]
     edges,    \* [Replicas -> set of edge occurrence records]
     removed   \* ghost history: dots ever observed-removed at each replica
 
-vars == <<opCount, clock, context, nodes, edges, removed>>
+vars == <<opCount, clock, acked, owedAck, context, nodes, edges, removed>>
 
 ClockBound == Cardinality(Replicas) * MaxOpsPerReplica
 Dots == Replicas \X (1..MaxOpsPerReplica)
@@ -58,6 +60,8 @@ VisibleEdges(r) ==
 Init ==
     /\ opCount = [r \in Replicas |-> 0]
     /\ clock = [r \in Replicas |-> 0]
+    /\ acked = [r \in Replicas |-> [s \in Replicas |-> [t \in Replicas |-> 0]]]
+    /\ owedAck = [r \in Replicas |-> [s \in Replicas |-> FALSE]]
     /\ context = [r \in Replicas |-> [s \in Replicas |-> 0]]
     /\ nodes = [r \in Replicas |-> {}]
     /\ edges = [r \in Replicas |-> {}]
@@ -87,7 +91,7 @@ CreateNode(r, k, v) ==
     /\ Advance(r)
     /\ nodes' = [nodes EXCEPT ![r] = @ \cup
            {[key |-> k, dot |-> MintedDot(r), val |-> v, ts |-> MintedTs(r)]}]
-    /\ UNCHANGED <<edges, removed>>
+    /\ UNCHANGED <<edges, removed, acked, owedAck>>
 
 \* SET on a matched logical entity writes the LWW register of every
 \* locally live occurrence of the key with one fresh timestamp.
@@ -98,7 +102,7 @@ SetProperty(r, k, v) ==
     /\ nodes' = [nodes EXCEPT ![r] =
            {IF n.key = k THEN [n EXCEPT !.val = v, !.ts = MintedTs(r)] ELSE n
               : n \in @}]
-    /\ UNCHANGED <<edges, removed>>
+    /\ UNCHANGED <<edges, removed, acked, owedAck>>
 
 \* DETACH DELETE: observed-remove of the locally live occurrences of the
 \* key and of every locally live incident edge dot, in one delta.
@@ -112,6 +116,7 @@ DetachDeleteNode(r, k) ==
           /\ edges' = [edges EXCEPT ![r] = @ \ deadEdges]
           /\ removed' = [removed EXCEPT ![r] =
                  @ \cup victims \cup {e.dot : e \in deadEdges}]
+    /\ UNCHANGED <<acked, owedAck>>
 
 CreateEdge(r) ==
     /\ CanMint(r)
@@ -121,7 +126,7 @@ CreateEdge(r) ==
         /\ Advance(r)
         /\ edges' = [edges EXCEPT ![r] = @ \cup
                {[dot |-> MintedDot(r), src |-> s.dot, dst |-> t.dot]}]
-    /\ UNCHANGED <<nodes, removed>>
+    /\ UNCHANGED <<nodes, removed, acked, owedAck>>
 
 DeleteEdge(r) ==
     /\ CanMint(r)
@@ -129,7 +134,7 @@ DeleteEdge(r) ==
         /\ Advance(r)
         /\ edges' = [edges EXCEPT ![r] = @ \ {e}]
         /\ removed' = [removed EXCEPT ![r] = @ \cup {e.dot}]
-    /\ UNCHANGED nodes
+    /\ UNCHANGED <<nodes, acked, owedAck>>
 
 \* ORSWOT join for node occurrences. A record present on one side only
 \* survives iff the other side's context has not covered (removed) it.
@@ -165,7 +170,27 @@ Sync(a, b) ==
                  [s \in Replicas |-> Max(context[b][s], context[a][s])]]
           /\ clock' = [clock EXCEPT ![b] = Max(@, clock[a])]
           /\ removed' = [removed EXCEPT ![b] = @ \cup dropped]
-    /\ UNCHANGED opCount
+          /\ owedAck' = [owedAck EXCEPT ![b][a] = TRUE]
+    /\ UNCHANGED <<opCount, acked>>
+
+\* A receiver acknowledges only after its joined batch is durable, so the
+\* sender's view of a peer never runs ahead of what that peer has applied.
+\* Retention and masked-edge reclamation may read acknowledged contexts;
+\* they must never read an unacknowledged one.
+Ack(b, a) ==
+    /\ a # b
+    /\ owedAck[b][a]
+    /\ acked' = [acked EXCEPT ![a][b] = context[b]]
+    /\ owedAck' = [owedAck EXCEPT ![b][a] = FALSE]
+    /\ UNCHANGED <<opCount, clock, context, nodes, edges, removed>>
+
+\* A crash between a durable apply and its acknowledgement loses only the
+\* acknowledgement. Durable CRDT state survives, and the round is retried.
+\* The join is idempotent, so re-applying the same batch changes nothing.
+Crash(r) ==
+    /\ \E s \in Replicas : owedAck[r][s]
+    /\ owedAck' = [owedAck EXCEPT ![r] = [s \in Replicas |-> FALSE]]
+    /\ UNCHANGED <<opCount, clock, acked, context, nodes, edges, removed>>
 
 Next ==
     \/ \E r \in Replicas, k \in Keys, v \in Values : CreateNode(r, k, v)
@@ -174,18 +199,24 @@ Next ==
     \/ \E r \in Replicas : CreateEdge(r)
     \/ \E r \in Replicas : DeleteEdge(r)
     \/ \E a \in Replicas, b \in Replicas : Sync(a, b)
+    \/ \E a \in Replicas, b \in Replicas : Ack(b, a)
+    \/ \E r \in Replicas : Crash(r)
 
 Spec == Init /\ [][Next]_vars
 
 \* Anti-entropy rounds keep running; local mutations stay optional.
 FairSpec ==
-    Spec /\ \A a \in Replicas, b \in Replicas : WF_vars(Sync(a, b))
+    Spec
+    /\ \A a \in Replicas, b \in Replicas : WF_vars(Sync(a, b))
+    /\ \A p \in Replicas, q \in Replicas : WF_vars(Ack(q, p))
 
 -----------------------------------------------------------------------------
 
 TypeOK ==
     /\ opCount \in [Replicas -> 0..MaxOpsPerReplica]
     /\ clock \in [Replicas -> 0..ClockBound]
+    /\ acked \in [Replicas -> [Replicas -> [Replicas -> 0..MaxOpsPerReplica]]]
+    /\ owedAck \in [Replicas -> [Replicas -> BOOLEAN]]
     /\ context \in [Replicas -> [Replicas -> 0..MaxOpsPerReplica]]
     /\ \A r \in Replicas :
         /\ nodes[r] \subseteq NodeRecords
@@ -228,6 +259,14 @@ EdgeEndpointsCovered ==
 RemovedDotsStayRemoved ==
     \A r \in Replicas :
         removed[r] \cap (NodeDots(r) \cup EdgeDots(r)) = {}
+
+\* An acknowledged context is always a prefix of what its owner has really
+\* applied. Retention and masked-edge reclamation are gated on these values,
+\* so believing a peer is further ahead than it is would discard state the
+\* peer still needs.
+AcknowledgedContextNeverExceedsPeer ==
+    \A r \in Replicas, s \in Replicas :
+        \A t \in Replicas : acked[r][s][t] <= context[s][t]
 
 \* Strong eventual consistency, safety half: replicas whose contexts are
 \* equal have applied the same deltas and hold identical CRDT state.

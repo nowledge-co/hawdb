@@ -318,9 +318,9 @@ configuration and results MUST be part of the release CI artifact set, not only
 documented as a local command.
 The revision-bound `tla-model-check-<revision>` artifact MUST contain successful
 TLC logs and exact `.tla` and `.cfg` inputs for `SkeinStorageDurability`,
-`SkeinGenerationReclamation`, `SkeinConcurrentSnapshots`,
-`SkeinTransactionConcurrency`, `SkeinSourceSegmentPublication`, and
-`SkeinCrdtReplication`, together
+`SkeinWalGroupCommit`, `SkeinWalDoctor`, `SkeinGenerationReclamation`,
+`SkeinConcurrentSnapshots`, `SkeinTransactionConcurrency`,
+`SkeinSourceSegmentPublication`, and `SkeinCrdtReplication`, together
 with the Java version and the pinned TLA+ Tools version and SHA-256 digest. A
 downstream CI job MUST download and verify the complete artifact before the
 model-check gate succeeds.

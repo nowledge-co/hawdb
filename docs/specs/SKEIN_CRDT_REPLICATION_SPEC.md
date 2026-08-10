@@ -227,10 +227,53 @@ delta segments as state joins (their semantic foundation) and checks:
 | Observed-removed dots never resurrect | `RemovedDotsStayRemoved` |
 | Occurrence dots are unique and contexts never exceed minted ops | `DotsAreUnique`, `ContextBoundsMintedDots` |
 | Visible-graph referential integrity | By construction via `VisibleEdges`; masking is exercised by the `DETACH DELETE` vs concurrent edge-create interleavings |
+| An acknowledged peer context never runs ahead of what that peer applied | `AcknowledgedContextNeverExceedsPeer` |
+| A crash between a durable apply and its acknowledgement is safe to retry | `Crash` drops only the owed acknowledgement; the idempotent join keeps `ConvergedWhenContextsEqual` |
 
 The model abstracts the hybrid logical clock as a Lamport clock that ticks
 on every mint and merges on every sync round, which is exactly the
 causality obligation stated above; physical-time quality is outside the
-model. It also does not check transport security, delta-segment encoding,
-masked-edge GC stability timing, or the WAL durability boundary; the last
-is covered by `SkeinStorageDurability.tla`.
+model. It does not check transport security, delta-segment encoding, or
+the WAL durability boundary; the last is covered by
+`SkeinStorageDurability.tla`.
+
+### Why Masked-Edge Reclamation Is Not Verified Here
+
+Masked-edge GC is deliberately absent from the model rather than merely
+unchecked, because adding it at this abstraction would produce false
+confidence.
+
+The model represents anti-entropy as a **state join**: every round carries
+the sender's full state and context. Under that abstraction, physically
+dropping a masked edge is indistinguishable from an ordinary
+observed-remove — the receiver sees a dot covered by the sender's context
+with no accompanying record and removes it, so convergence holds whether
+or not the drop waited for peer acknowledgment. A GC action added here
+would therefore pass with the stability guard *and* without it, proving
+nothing about the guard.
+
+The hazard the guard exists for lives one level down, in the delta-segment
+refinement. A real delta segment carries only the per-origin counter
+ranges the peer has not seen. A replica that forgets a masked edge without
+retaining a removal the segment can carry has no way to tell a lagging
+peer that the edge is gone, and that peer keeps it live. Verifying the
+guard therefore requires modeling segments as segments, with their own
+retention state — a separate model, not an action bolted onto this one.
+
+Until that model exists, the `MUST NOT` in *Masked-Edge Reclamation* rests
+on review and implementation tests, not on machine checking.
+
+### Instance Bound
+
+The checked instance is two replicas, one key, two values, and two
+operations per replica, sized by mutation testing rather than by state
+count. Three-replica instances were
+attempted and are not exhaustively checkable at this shape: tracking each
+replica's view of every peer's acknowledged context adds a version vector
+per ordered pair, and the smallest three-replica configuration still
+exceeded seven million distinct states without terminating. Transitive
+delivery — where a fault would show as `a` and `c` diverging while each
+agrees with `b` — is consequently argued from the join's commutativity and
+associativity, not machine-checked. The spec's claim that the rules extend
+to N replicas without a format change is a design claim, not a verified
+one.
