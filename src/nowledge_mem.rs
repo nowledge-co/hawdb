@@ -67,6 +67,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
+#[cfg(test)]
+#[path = "nowledge_mem_app_read_snapshot_tests.rs"]
+mod app_read_snapshot_tests;
 mod serving_path;
 pub use serving_path::{
     NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
@@ -7877,6 +7880,155 @@ pub struct NowledgeMemEmbeddedStoreHandle {
     inner: Arc<RwLock<NowledgeMemEmbeddedStore>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowledgeMemReadSnapshotBudget {
+    pub max_rows: usize,
+    pub max_payload_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowledgeMemReadSnapshotReport {
+    pub commit_epoch: u64,
+    pub search_projection_present: bool,
+    pub search_projection_source_graph_commit_epoch: Option<u64>,
+    pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
+    pub output_rows: usize,
+    pub output_payload_bytes: usize,
+    pub remaining_rows: usize,
+    pub remaining_payload_bytes: usize,
+}
+
+pub struct NowledgeMemReadSnapshot<'a> {
+    transaction: crate::DatabaseReadTransaction,
+    external: SearchProjectionExternalReadOperator<'a>,
+    search_projection_source_graph_commit_epoch: Option<u64>,
+    search_projection_durable_source_graph_commit_epoch: Option<u64>,
+    budget: NowledgeMemReadSnapshotBudget,
+    output_rows: usize,
+    output_payload_bytes: usize,
+}
+
+impl NowledgeMemReadSnapshot<'_> {
+    pub fn commit_epoch(&self) -> u64 {
+        self.transaction.commit_epoch()
+    }
+
+    pub fn query_cypher(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        let max_rows = self.statement_row_budget(max_rows)?;
+        let max_payload_bytes = self.remaining_payload_bytes()?;
+        let mut rows = Vec::new();
+        let report = self.transaction.query_with_params_streaming_external(
+            cypher,
+            parameters,
+            QueryStreamOptions {
+                max_rows: Some(max_rows),
+                max_payload_bytes: Some(max_payload_bytes),
+            },
+            &mut self.external,
+            |row| {
+                rows.push(row);
+                Ok(())
+            },
+        )?;
+        self.consume(report.output_rows, report.output_payload_bytes)?;
+        Ok(QueryOutput { rows })
+    }
+
+    pub fn query_sql(
+        &mut self,
+        sql: &str,
+        parameters: &[Value],
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        let max_rows = self.statement_row_budget(max_rows)?;
+        let max_payload_bytes = self.remaining_payload_bytes()?;
+        let output = self.transaction.query_sql_with_params_options(
+            sql,
+            parameters,
+            QueryStreamOptions {
+                max_rows: Some(max_rows),
+                max_payload_bytes: Some(max_payload_bytes),
+            },
+        )?;
+        let output_rows = output.rows.len();
+        let output_payload_bytes = estimate_query_output_payload_bytes(&output);
+        self.consume(output_rows, output_payload_bytes)?;
+        Ok(output)
+    }
+
+    pub fn report(&self) -> NowledgeMemReadSnapshotReport {
+        NowledgeMemReadSnapshotReport {
+            commit_epoch: self.commit_epoch(),
+            search_projection_present: self.external.projection.is_some()
+                || self.external.out_of_core_projection.is_some(),
+            search_projection_source_graph_commit_epoch: self
+                .search_projection_source_graph_commit_epoch,
+            search_projection_durable_source_graph_commit_epoch: self
+                .search_projection_durable_source_graph_commit_epoch,
+            output_rows: self.output_rows,
+            output_payload_bytes: self.output_payload_bytes,
+            remaining_rows: self.budget.max_rows.saturating_sub(self.output_rows),
+            remaining_payload_bytes: self
+                .budget
+                .max_payload_bytes
+                .saturating_sub(self.output_payload_bytes),
+        }
+    }
+
+    fn statement_row_budget(&self, requested: usize) -> Result<usize> {
+        if requested == 0 {
+            return Err(SkeinError::Execution(
+                "bounded read statement requires max_rows greater than zero".to_string(),
+            ));
+        }
+        let remaining = self.budget.max_rows.saturating_sub(self.output_rows);
+        if remaining == 0 {
+            return Err(SkeinError::Execution(
+                "bounded read snapshot exhausted max_rows".to_string(),
+            ));
+        }
+        Ok(requested.min(remaining))
+    }
+
+    fn remaining_payload_bytes(&self) -> Result<usize> {
+        let remaining = self
+            .budget
+            .max_payload_bytes
+            .saturating_sub(self.output_payload_bytes);
+        if remaining == 0 {
+            return Err(SkeinError::Execution(
+                "bounded read snapshot exhausted max_payload_bytes".to_string(),
+            ));
+        }
+        Ok(remaining)
+    }
+
+    fn consume(&mut self, rows: usize, payload_bytes: usize) -> Result<()> {
+        let output_rows = self.output_rows.saturating_add(rows);
+        let output_payload_bytes = self.output_payload_bytes.saturating_add(payload_bytes);
+        if output_rows > self.budget.max_rows {
+            return Err(SkeinError::Execution(format!(
+                "bounded read snapshot produced {output_rows} rows, exceeding max_rows {}",
+                self.budget.max_rows
+            )));
+        }
+        if output_payload_bytes > self.budget.max_payload_bytes {
+            return Err(SkeinError::Execution(format!(
+                "bounded read snapshot produced {output_payload_bytes} payload bytes, exceeding max_payload_bytes {}",
+                self.budget.max_payload_bytes
+            )));
+        }
+        self.output_rows = output_rows;
+        self.output_payload_bytes = output_payload_bytes;
+        Ok(())
+    }
+}
+
 impl NowledgeMemEmbeddedStoreHandle {
     pub fn new(store: NowledgeMemEmbeddedStore) -> Self {
         Self {
@@ -8126,6 +8278,71 @@ impl NowledgeMemEmbeddedStoreHandle {
         let store = self.read_store()?;
         let mut transaction = store.graph().database().begin_read_transaction();
         operation(&mut transaction)
+    }
+
+    /// Executes App-owned Cypher and PostgreSQL reads against one immutable
+    /// graph/relational snapshot while the search projection is pinned.
+    /// Budgets are cumulative across every statement in the callback.
+    pub fn with_bounded_read_snapshot<T>(
+        &self,
+        budget: NowledgeMemReadSnapshotBudget,
+        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        if budget.max_rows == 0 {
+            return Err(SkeinError::Execution(
+                "bounded read snapshot requires max_rows greater than zero".to_string(),
+            ));
+        }
+        if budget.max_payload_bytes == 0 {
+            return Err(SkeinError::Execution(
+                "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
+            ));
+        }
+        let _permit = self.admit_typed_read(budget.max_payload_bytes)?;
+        let store = self.read_store()?;
+        let configured_rows = store
+            .graph
+            .database()
+            .config()
+            .max_read_result_rows
+            .ok_or_else(|| {
+                SkeinError::Execution(
+                    "bounded read snapshot requires max_read_result_rows".to_string(),
+                )
+            })?;
+        if budget.max_rows > configured_rows {
+            return Err(SkeinError::Execution(format!(
+                "bounded read snapshot row budget {} exceeds configured limit {configured_rows}",
+                budget.max_rows
+            )));
+        }
+        let transaction = store.graph.database().begin_read_transaction();
+        let projection_freshness = match (
+            store.search_projection.as_ref(),
+            store.out_of_core_search_projection.as_ref(),
+        ) {
+            (Some(projection), None) => Some(projection.freshness()),
+            (None, Some(projection)) => Some(projection.freshness()),
+            (None, None) | (Some(_), Some(_)) => None,
+        };
+        let external = SearchProjectionExternalReadOperator {
+            projection: store.search_projection.as_ref(),
+            out_of_core_projection: store.out_of_core_search_projection.as_ref(),
+        };
+        let mut snapshot = NowledgeMemReadSnapshot {
+            transaction,
+            external,
+            search_projection_source_graph_commit_epoch: projection_freshness
+                .as_ref()
+                .and_then(|freshness| freshness.source_graph_commit_epoch),
+            search_projection_durable_source_graph_commit_epoch: projection_freshness
+                .as_ref()
+                .and_then(|freshness| freshness.durable_source_graph_commit_epoch),
+            budget,
+            output_rows: 0,
+            output_payload_bytes: 0,
+        };
+        operation(&mut snapshot)
     }
 
     pub fn skein_lightning_initial_import_apply_with_document_identities(

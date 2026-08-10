@@ -280,10 +280,18 @@ fn relational_query_limits(
     config: &DatabaseConfig,
     max_rows: Option<usize>,
 ) -> crate::relational_sql::RelationalQueryLimits {
+    relational_query_limits_with_payload(config, max_rows, config.max_read_result_payload_bytes)
+}
+
+fn relational_query_limits_with_payload(
+    config: &DatabaseConfig,
+    max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
+) -> crate::relational_sql::RelationalQueryLimits {
     let max_output_rows = max_rows.unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
-    let max_output_payload_bytes = config
-        .max_read_result_payload_bytes
-        .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
+    let max_output_payload_bytes =
+        restrictive_query_limit(config.max_read_result_payload_bytes, max_payload_bytes)
+            .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
     let max_intermediate_rows = config
         .max_read_result_rows
         .unwrap_or(DEFAULT_MAX_READ_RESULT_ROWS);
@@ -529,6 +537,11 @@ pub struct DatabaseReadTransaction {
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
     _pin: ReaderPin,
+}
+
+struct ReadStreamingExecutionContext<'a> {
+    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    external: &'a mut dyn executor::ExternalReadOperator,
 }
 
 #[derive(Debug)]
@@ -18565,6 +18578,28 @@ impl DatabaseReadTransaction {
         )
     }
 
+    pub(crate) fn query_with_params_streaming_external(
+        &mut self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: QueryStreamOptions,
+        external: &mut dyn executor::ExternalReadOperator,
+        mut consumer: impl FnMut(Row) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        self.store.ensure_usable()?;
+        self.query_with_params_streaming_prepared_external_internal(
+            cypher_text,
+            query_runtime::parse_runtime_execution(cypher_text)?,
+            parameters,
+            options,
+            ReadStreamingExecutionContext {
+                task_context: None,
+                external,
+            },
+            &mut consumer,
+        )
+    }
+
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     pub(crate) fn query_prepared_with_params_streaming_context(
         &mut self,
@@ -18592,6 +18627,29 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         options: QueryStreamOptions,
         task_context: Option<&skein_core::RuntimeTaskContext>,
+        consumer: &mut impl FnMut(Row) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        let mut external = executor::NoExternalReadOperator;
+        self.query_with_params_streaming_prepared_external_internal(
+            cypher_text,
+            prepared,
+            parameters,
+            options,
+            ReadStreamingExecutionContext {
+                task_context,
+                external: &mut external,
+            },
+            consumer,
+        )
+    }
+
+    fn query_with_params_streaming_prepared_external_internal(
+        &mut self,
+        cypher_text: &str,
+        prepared: query_runtime::PreparedRuntimeExecution,
+        parameters: &BTreeMap<String, Value>,
+        options: QueryStreamOptions,
+        context: ReadStreamingExecutionContext<'_>,
         consumer: &mut impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
@@ -18636,15 +18694,14 @@ impl DatabaseReadTransaction {
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
-        let mut external = executor::NoExternalReadOperator;
-        let streamed = match task_context {
+        let streamed = match context.task_context {
             Some(task_context) => {
                 executor::execute_with_row_consumer_profile_and_external_and_context_and_memory(
                     &optimized.physical_plan,
                     &mut self.catalog,
                     &mut self.store,
                     parameters,
-                    &mut external,
+                    context.external,
                     max_rows,
                     max_payload_bytes,
                     consumer,
@@ -18657,7 +18714,7 @@ impl DatabaseReadTransaction {
                 &mut self.catalog,
                 &mut self.store,
                 parameters,
-                &mut external,
+                context.external,
                 max_rows,
                 max_payload_bytes,
                 consumer,
@@ -18920,8 +18977,28 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         max_rows: Option<usize>,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_options(
+            sql_text,
+            parameters,
+            QueryStreamOptions {
+                max_rows,
+                max_payload_bytes: self.config.max_read_result_payload_bytes,
+            },
+        )
+    }
+
+    pub(crate) fn query_sql_with_params_options(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        options: QueryStreamOptions,
+    ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
-        let max_rows = restrictive_query_limit(self.config.max_read_result_rows, max_rows);
+        let max_rows = restrictive_query_limit(self.config.max_read_result_rows, options.max_rows);
+        let max_payload_bytes = restrictive_query_limit(
+            self.config.max_read_result_payload_bytes,
+            options.max_payload_bytes,
+        );
         let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
         if matches!(
             &prepared.statement,
@@ -18932,7 +19009,7 @@ impl DatabaseReadTransaction {
                 sql_text,
                 parameters,
                 max_rows,
-                self.config.max_read_result_payload_bytes,
+                max_payload_bytes,
                 &system_sql::SystemSqlContext {
                     catalog: &self.catalog,
                     store: &self.store,
@@ -18949,7 +19026,7 @@ impl DatabaseReadTransaction {
             sql_text,
             parameters,
             self.store.relational_state(),
-            relational_query_limits(&self.config, max_rows),
+            relational_query_limits_with_payload(&self.config, max_rows, max_payload_bytes),
             &self.config.execution_memory,
             None,
         )?;
