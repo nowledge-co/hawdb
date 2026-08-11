@@ -7,5 +7,5 @@ license.workspace = true
 
 [dependencies]
 crc32c = "0.6.8"
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["asm"] }
 
