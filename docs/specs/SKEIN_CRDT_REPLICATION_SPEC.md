@@ -11,23 +11,23 @@ it is the layer the deferred replica-assisted repair task depends on.
 
 ## Scope
 
-This specification defines the convergent replication contract that lets two
-Skein nodes synchronize the canonical property graph without a coordinator.
+This specification defines the convergent replication contract that lets a
+set of Skein nodes synchronize the canonical property graph.
 The design is a delta-state CRDT layered above the existing single-node
 transactional engine: local transactions keep their existing semantics, and
 replication ships the committed effects of those transactions.
 
-Two delivery topologies are supported over one CRDT: **server-mediated**,
-where replicas synchronize through a rendezvous that also knows the
-membership, and **gossip**, where replicas synchronize directly with peers
-drawn from a partial view. A deployment MAY run both at once.
+A deployment is one **master** and any number of **slaves**. Every replica
+mints operations locally, including slaves that cannot currently reach the
+master. Two link types carry deltas: a session between each slave and the
+master, and gossip directly between slaves.
 
 The split that makes this work is that only delivery differs. The replicated
-state, the dot identity, the join, and the conflict matrix are
-topology-independent, and both topologies MUST produce the same convergent
-value for the same set of operations. Topology changes three things and
-nothing else: how fast deltas propagate, how much metadata a replica holds,
-and whether reclamation can be proven safe.
+state, the dot identity, the join, and the conflict matrix are the same on
+every link, so an operation learned through gossip and the same operation
+learned from the master converge to the same value. What the master adds is
+authority — over membership, and therefore over reclamation — not a
+different merge rule and not a linearization of writes.
 
 Every normative clause is written so that the same state and join rules
 extend to N replicas without a format change. That extension is a design
@@ -180,36 +180,43 @@ Delivery obligations:
 - **No epoch skew.** Both replicas MUST run the same schema fingerprint; a
   delta batch carries the fingerprint and MUST fail closed on mismatch.
 
-## Delivery Topologies
+## Roles and Delivery
 
-### Server-Mediated Delivery
+A deployment is one **master** and any number of **slaves**. Every replica,
+master and slave alike, mints operations locally; a slave that loses its
+master keeps accepting writes. That is what makes this a CRDT rather than
+replication: the conflict matrix above only earns its keep when more than
+one replica writes.
 
-Replicas synchronize with a rendezvous rather than with each other. The
-rendezvous MAY hold a replica of its own or act as a pure relay; either way
-it is the **membership authority**, and it publishes a membership epoch
-naming the current replica set.
+The master is **not** a linearizer. Its operations carry dots like any
+other replica's, and the join is commutative, associative, and idempotent,
+so a slave that learns an operation through gossip and a slave that learns
+the same operation from the master reach the same value. What distinguishes
+the master is authority over membership and reclamation, plus being the
+durable hub that any two slaves can always reach each other through.
 
-Because the peer set is known, a stable watermark is computable: the
-pointwise minimum of the acknowledged contexts of every member of the
-current membership epoch. Retention and reclamation are gated on that
-watermark.
+Two link types carry the exchange defined above, and they differ only in
+who talks to whom:
 
-### Gossip Delivery
+- **Master session.** Each slave runs the digest, delta, join, acknowledge
+  exchange with the master. The master records each slave's acknowledged
+  context.
+- **Slave gossip.** Slaves run the same exchange directly with each other,
+  selecting up to `fanout` peers from a partial view each round, in
+  push-pull form.
 
-Each replica keeps a partial view of peers and runs periodic rounds. A round
-selects up to `fanout` peers from the view and performs the same digest,
-delta, join, acknowledge exchange with each, in push-pull form so that both
-directions settle in one round trip.
+The master does not gossip. It has a session with every slave, so gossiping
+would add paths without adding reachability, and keeping it out of the mesh
+keeps its acknowledged-context bookkeeping the single authoritative view.
 
 Gossip changes three properties of delivery, and each has a consequence
-below: a delta reaches a replica by more than one path, so **duplicates** are
-normal; paths have different lengths, so segments for one origin arrive
-**out of order**; and the view is partial, so **no replica knows the full
-membership**.
+below: an operation reaches a slave by more than one path, so **duplicates**
+are normal; paths have different lengths, so segments for one origin arrive
+**out of order**; and a partial view means **no slave knows the membership**.
 
 Duplicates are already handled: the join is idempotent, so a redelivered
-delta changes nothing. Digest-before-delta keeps the cost of a duplicate at
-one round trip rather than one payload.
+delta changes nothing, and digest-before-delta keeps the cost of a duplicate
+at one round trip rather than one payload.
 
 ### Causal Prefix Under Out-of-Order Arrival
 
@@ -246,42 +253,54 @@ This design keeps the compact context and pays with a bounded buffer.
 ### Stability and Membership
 
 Retention and masked-edge reclamation both require knowing that an operation
-is stable — that every replica has it. Under a membership authority this is
-the pointwise minimum described above. **Under gossip alone it is not
-computable**: a partial view cannot distinguish "no other replica exists"
-from "a replica I have never heard of exists", and the second case is what a
-premature reclamation corrupts.
+is stable — that every replica has it. The master answers that question and
+nothing else does: it holds a session with every slave, records each slave's
+acknowledged context, and publishes a membership epoch naming the current
+replica set. The **stable watermark** is the pointwise minimum of the
+acknowledged contexts of every member of the current epoch.
 
-Therefore:
+A slave MUST NOT derive stability from gossip. A partial view cannot
+distinguish "no other slave exists" from "a slave I have never heard of
+exists", and the second case is exactly what a premature reclamation
+corrupts. Concretely:
 
-- A replica MUST NOT reclaim on the basis of a stability value it derived
-  from its partial view.
-- A replica MAY reclaim only against a stable watermark that carries a
-  membership epoch from an authority, and only while that epoch is current.
-- A pure-gossip deployment with no authority therefore does not reclaim. It
-  retains masked edges and delta history, trading space for the absence of
-  an authority.
+- A replica MAY reclaim only against a stable watermark carrying a current
+  membership epoch from the master.
+- A replica MUST NOT reclaim on the basis of contexts it observed through
+  gossip, however many peers agreed.
 
-This is a real limit, not a temporary gap: safe reclamation under open
-membership needs membership knowledge, and gossip does not supply it. A
-deployment that needs reclamation runs an authority, which is exactly what
-the server-mediated topology provides. Mixed deployments get both: gossip
-for propagation speed, the server for the membership epoch that authorizes
+### Losing the Master
+
+A slave that cannot reach the master keeps working, and the degradation is
+deliberately asymmetric:
+
+- It **keeps accepting local writes**, minting dots as usual.
+- It **keeps converging with other slaves** over gossip, so a partitioned
+  group of slaves still agrees among itself.
+- It **stops reclaiming**, because the watermark it would need is stale.
+  Masked edges and delta history accumulate until the master returns.
+
+Space is therefore the only thing a master outage costs, and it is bounded
+by the outage. Nothing about correctness depends on the master being
+reachable, which is what keeps a cloud outage from making local writes
+unsafe. Promoting a slave to master is a membership decision and MUST
+publish a new membership epoch; a replica MUST reject a watermark whose
+epoch it knows to be superseded, so a demoted master cannot authorize
 reclamation.
 
 ### Metadata Growth
 
 A version vector carries one entry per replica that has ever minted an
-operation, so its size grows with cumulative membership rather than with
-live membership. Retiring an entry requires knowing that its replica will
-never mint again, which is once more a membership question and MUST use an
-authority's epoch. Absent an authority, entries are retained.
+operation, so its size grows with cumulative membership rather than live
+membership. Retiring an entry requires knowing that its replica will never
+mint again, which is a membership decision and therefore the master's;
+absent a current epoch, entries are retained.
 
 ### Masked-Edge Reclamation
 
 A live-but-masked edge occurrence (endpoint removed) MAY be physically
-dropped once the removing operation's dot is covered by the stable watermark
-defined in *Stability and Membership*, and MUST NOT be dropped before then.
+dropped once the removing operation's dot is covered by the master's stable
+watermark, and MUST NOT be dropped before then.
 Dropping it earlier could resurrect the edge as visible if a replica
 independently re-delivered it alongside a surviving endpoint — which gossip
 makes more likely, since redelivery by an alternate path is its normal mode
@@ -356,7 +375,8 @@ delta segments as state joins (their semantic foundation) and checks:
 | An acknowledged peer context never runs ahead of what that peer applied | `AcknowledgedContextNeverExceedsPeer` |
 | A delta is never applied across a per-origin hole | `AppliedPrefixWasReceived` in `SkeinGossipDelivery.tla` |
 | The reorder buffer stays above the frontier, bounded, and disjoint from the applied prefix | `BufferIsAboveFrontier`, `BufferRespectsBound`, `BufferAndPrefixAreDisjoint` |
-| Fair gossip rounds deliver every operation to every replica | `EventualDelivery` |
+| Fair rounds deliver every operation to every replica | `EventualDelivery` |
+| Slaves converge with each other while the master is unreachable | `SlavesAgreeWithoutMaster` under `SlaveFairSpec` |
 | A crash between a durable apply and its acknowledgement is safe to retry | `Crash` drops only the owed acknowledgement; the idempotent join keeps `ConvergedWhenContextsEqual` |
 
 The model abstracts the hybrid logical clock as a Lamport clock that ticks

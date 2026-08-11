@@ -19,8 +19,9 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Naturals
 
-CONSTANTS Nodes, Origins, MaxOps, BufferBound
+CONSTANTS Nodes, Master, Origins, MaxOps, BufferBound
 
+ASSUME Master \in Nodes
 ASSUME Origins \subseteq Nodes /\ Origins # {}
 ASSUME MaxOps \in Nat \ {0}
 ASSUME BufferBound \in Nat
@@ -34,6 +35,16 @@ VARIABLES
 vars == <<minted, applied, buffer, received>>
 
 Counters == 1..MaxOps
+Slaves == Nodes \ {Master}
+
+\* The master holds a session with every slave; slaves gossip with each
+\* other. The master does not gossip: it already reaches every slave, so
+\* adding it to the mesh would add paths without adding reachability.
+Linked(a, b) == a # b /\ (a = Master \/ b = Master \/ {a, b} \subseteq Slaves)
+
+\* A partitioned master is unreachable in both directions while slaves keep
+\* gossiping among themselves.
+SlaveLinked(a, b) == a \in Slaves /\ b \in Slaves /\ a # b
 
 Init ==
     /\ minted = [o \in Origins |-> 0]
@@ -57,7 +68,7 @@ Holds(n, o) == (1..applied[n][o]) \cup buffer[n][o]
 \* partial views that make delivery order unpredictable; redelivery of an
 \* already-applied counter models the duplicates gossip produces normally.
 Deliver(a, b, o, c) ==
-    /\ a # b
+    /\ Linked(a, b)
     /\ c \in Holds(a, o)
     /\ IF c <= applied[b][o] + 1
          THEN \* At or below the frontier: applying is idempotent, and a
@@ -86,7 +97,7 @@ Drain(n, o) ==
 \* The escape hatch a bounded buffer needs: rather than apply across a hole,
 \* the node takes the sender's whole contiguous prefix for that origin.
 StateTransfer(a, b, o) ==
-    /\ a # b
+    /\ Linked(a, b)
     /\ applied[a][o] > applied[b][o]
     /\ applied' = [applied EXCEPT ![b][o] = applied[a][o]]
     /\ buffer' = [buffer EXCEPT ![b][o] = {c \in @ : c > applied[a][o]}]
@@ -153,10 +164,29 @@ AppliedPrefixWasReceived ==
     \A n \in Nodes, o \in Origins :
         (1..applied[n][o]) \subseteq received[n][o]
 
-\* Liveness: fair gossip drives every node to the full minted prefix, with
+\* Liveness: fair rounds drive every node to the full minted prefix, with
 \* nothing stranded in a buffer.
 EventualDelivery ==
     <>[](\A n \in Nodes, o \in Origins :
             applied[n][o] = minted[o] /\ buffer[n][o] = {})
+
+\* What a master outage must not break: slaves still agree with each other.
+\* Checked against `SlaveFairSpec`, where only slave-to-slave links are fair,
+\* so the master may stall forever. Slaves converge on everything that
+\* reached the slave set; operations stranded on the master are out of reach
+\* by construction and are excluded.
+SlavesAgreeWithoutMaster ==
+    <>[](\A a \in Slaves, b \in Slaves, o \in Origins :
+            applied[a][o] = applied[b][o])
+
+\* Only slave-to-slave rounds are fair here: the master may stall forever,
+\* which is the partition case.
+SlaveFairSpec ==
+    Spec
+    /\ \A g \in Nodes, h \in Nodes, w \in Origins :
+        SlaveLinked(g, h) => WF_vars(StateTransfer(g, h, w))
+    /\ \A x \in Nodes, y \in Nodes, z \in Origins, j \in Counters :
+        SlaveLinked(x, y) => WF_vars(Deliver(x, y, z, j))
+    /\ \A m \in Nodes, e \in Origins : WF_vars(Drain(m, e))
 
 =============================================================================
