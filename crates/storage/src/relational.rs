@@ -1229,10 +1229,12 @@ fn apply_transaction(
                         column.name
                     )));
                 }
-                let row_count = next
-                    .segments
-                    .get(&table)
-                    .map_or(0, |segment| segment.rows.len());
+                let segment = next.segments.get(&table).ok_or_else(|| {
+                    RelationalError::Schema(format!(
+                        "table {table} is missing its relational row segment"
+                    ))
+                })?;
+                let row_count = segment.rows.len();
                 if row_count > limits.max_rows.get() {
                     return Err(RelationalError::Admission(format!(
                         "ALTER TABLE {table} rewrites {row_count} rows, exceeding max_rows {}",
@@ -1246,10 +1248,7 @@ fn apply_transaction(
                         column.name
                     )));
                 }
-                let rewrite_bytes = next
-                    .segments
-                    .get(&table)
-                    .expect("validated relational table has a segment")
+                let rewrite_bytes = segment
                     .rows
                     .iter()
                     .map(|(key, row)| {

@@ -30,6 +30,103 @@ fn registry_v2() -> SystemSchemaRegistry {
     )
 }
 
+const SYSTEM_SCHEMA_CRASH_CHILD_ENV: &str = "SKEIN_TEST_SYSTEM_SCHEMA_CRASH_CHILD";
+const SYSTEM_SCHEMA_CRASH_PATH_ENV: &str = "SKEIN_TEST_SYSTEM_SCHEMA_CRASH_PATH";
+
+#[test]
+fn system_schema_upgrade_crash_child() {
+    if std::env::var_os(SYSTEM_SCHEMA_CRASH_CHILD_ENV).is_none() {
+        return;
+    }
+    let path = std::path::PathBuf::from(
+        std::env::var_os(SYSTEM_SCHEMA_CRASH_PATH_ENV)
+            .expect("system schema crash test database path"),
+    );
+    let point =
+        std::env::var("SKEIN_TEST_PROCESS_CRASH_POINT").expect("system schema crash test point");
+    let mut db = Database::open(&path).unwrap();
+    db.apply_system_schema_registry(&registry_v2()).unwrap();
+    panic!("system schema crash failpoint {point} did not terminate the child process");
+}
+
+#[test]
+fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_schema() {
+    let stages = [
+        ("before_wal_append", Some(1)),
+        ("after_wal_append", None),
+        ("after_wal_sync", Some(2)),
+    ];
+
+    for (stage, required_version) in stages {
+        let path = unique_test_dir(&format!("system_schema_upgrade_crash_{stage}"));
+        {
+            let mut db = Database::open(&path).unwrap();
+            db.apply_system_schema_registry(&registry_v1()).unwrap();
+            db.query_sql("INSERT INTO content_documents (id, body) VALUES ('doc-1', 'body')")
+                .unwrap();
+            db.checkpoint().unwrap();
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("api::tests::system_schema_registry::system_schema_upgrade_crash_child")
+            .arg("--nocapture")
+            .env(SYSTEM_SCHEMA_CRASH_CHILD_ENV, "1")
+            .env(SYSTEM_SCHEMA_CRASH_PATH_ENV, &path)
+            .env("SKEIN_TEST_PROCESS_CRASH_POINT", stage)
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(86),
+            "child did not terminate at {stage}"
+        );
+
+        let mut reopened = Database::open(&path).unwrap();
+        let mut versions = reopened
+            .query_sql(
+                "SELECT version FROM skein_schema_migrations WHERE owner = 'nowledge.content_store'",
+            )
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|row| match row.get("version") {
+                Some(Value::Int(version)) => *version,
+                value => panic!("expected migration version after {stage}, got {value:?}"),
+            })
+            .collect::<Vec<_>>();
+        versions.sort_unstable();
+        let current_version = versions.last().copied().expect("application migration");
+        if let Some(required_version) = required_version {
+            assert_eq!(current_version, required_version, "recovery at {stage}");
+        }
+
+        let kind = reopened
+            .query_sql("SELECT kind FROM content_documents WHERE id = 'doc-1'")
+            .map(|output| output.rows[0]["kind"].clone());
+        let registry = match current_version {
+            1 => {
+                assert_eq!(versions, vec![1]);
+                assert!(kind.is_err(), "version 1 exposed the version 2 column");
+                registry_v1()
+            }
+            2 => {
+                assert_eq!(versions, vec![1, 2]);
+                assert_eq!(kind.unwrap(), Value::String("text".to_string()));
+                registry_v2()
+            }
+            version => panic!("unexpected recovered schema version {version} after {stage}"),
+        };
+        let epoch_before_validation = reopened.commit_epoch();
+        let validation = reopened.apply_system_schema_registry(&registry).unwrap();
+        assert!(validation.applied_versions.is_empty());
+        assert_eq!(reopened.commit_epoch(), epoch_before_validation);
+
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
 #[test]
 fn engine_system_schema_bootstraps_during_persistent_open() {
     let path = unique_test_dir("engine_system_schema_bootstrap");
