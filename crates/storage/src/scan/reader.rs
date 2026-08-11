@@ -572,6 +572,68 @@ mod tests {
         }
     }
 
+    /// Panics for one nominated segment and serves every other range, so a
+    /// test can tell a contained panic apart from a wave that gave up.
+    struct PanickingReader {
+        panic_on_segment: u64,
+    }
+
+    impl SegmentRangeReader for PanickingReader {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+            assert_ne!(
+                range.segment_ids.first().copied(),
+                Some(self.panic_on_segment),
+                "injected range reader panic"
+            );
+            Ok(Arc::from(vec![0; range.length.get() as usize]))
+        }
+    }
+
+    #[test]
+    fn panicking_range_read_fails_only_its_own_range() {
+        let reader = PanickingReader {
+            panic_on_segment: 2,
+        };
+        let ranges = (0..4)
+            .map(|segment_id| SegmentReadRange::new(1, segment_id, segment_id, NonZeroU64::MIN))
+            .collect::<Vec<_>>();
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(4).unwrap(), NonZeroU64::MIN)
+            .schedule(ranges);
+        let pool = SegmentReadPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
+
+        let mut served = Vec::new();
+        let error = SegmentReadExecutor::with_pool(NonZeroU64::new(4).unwrap(), pool)
+            .execute(&reader, &schedule, |payload| {
+                served.push(payload.range.segment_ids.first().copied());
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .expect_err("a panicking range read must surface as an error");
+
+        // The panic becomes a typed error naming the artifact, not a process
+        // abort and not a silently dropped range.
+        assert!(
+            matches!(
+                error,
+                SegmentReadExecutionError::Read(SegmentReadError::WorkerPanicked {
+                    artifact_id: 1
+                })
+            ),
+            "unexpected error: {error}"
+        );
+        // The message stays free of anything the caller did not already know,
+        // matching `file_reader_errors_do_not_expose_registered_paths`.
+        assert_eq!(
+            error.to_string(),
+            "segment artifact 1 range reader panicked"
+        );
+        // Ranges scheduled before the panicking one still reached the sink, so
+        // one bad segment does not discard the wave's completed work.
+        assert!(
+            served.iter().all(|segment| *segment != Some(2)),
+            "the panicking range must not be delivered: {served:?}"
+        );
+    }
+
     #[test]
     fn shared_pool_bounds_parallel_range_reads() {
         let reader = ConcurrencyTrackingReader::default();
