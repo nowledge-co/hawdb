@@ -75,15 +75,88 @@ is:
 - `edges`: a set of live **edge occurrences**
   `[dot, type, src: node dot, dst: node dot, props]`.
 - `props`: per occurrence, a map from property name to an LWW register
-  `(value, ts)` where `ts = (hlc, ReplicaId)` and `hlc` is a hybrid logical
-  clock timestamp maintained per replica. The clock MUST tick on every local
-  commit and MUST merge past every timestamp observed in an applied delta
-  batch (receive-max), so that a causally-later write always carries a
-  greater `ts` than any register it overwrites. A raw per-replica commit
-  counter is **not** a valid `hlc`: it lets a replica overwrite a register
-  it has already seen with a smaller timestamp, and the stale value then
-  wins the join (this failure is reproduced by the TLA+ model when the
-  clock merge is removed).
+  `(value, ts)` where `ts = (hlc, ReplicaId)`. The clock is specified in
+  *Hybrid Logical Clock* below. A raw per-replica commit counter is **not**
+  a valid `hlc`: it lets a replica overwrite a register it has already seen
+  with a smaller timestamp, and the stale value then wins the join (this
+  failure is reproduced by the TLA+ model when the clock merge is removed).
+
+
+### Hybrid Logical Clock
+
+Nothing about causality uses time. Dots and `context` are contiguous
+per-replica counters, and they alone decide what a replica has seen, which
+deltas may be applied, and what an observed-remove removes. The clock exists
+for one purpose: deciding which of two **concurrent** writes to the same
+property wins. A design that confuses the two ends up with convergence that
+depends on clock quality, which this one does not.
+
+`hlc` is a 64-bit value, 48 bits of milliseconds since the Unix epoch
+followed by a 16-bit logical counter:
+
+```text
+hlc = (physical_millis << 16) | logical
+```
+
+Write `pt` for the replica's physical clock in milliseconds and `(l, c)` for
+the current components. Two transitions maintain it:
+
+- **Local commit.** `l' = max(l, pt)`. If `l' = l` then `c' = c + 1`,
+  otherwise `c' = 0`.
+- **Applying a delta batch.** For the greatest observed `(lm, cm)` in the
+  batch, `l' = max(l, lm, pt)`, and then `c'` is `max(c, cm) + 1` when
+  `l' = l = lm`, `c + 1` when `l' = l`, `cm + 1` when `l' = lm`, and `0`
+  otherwise.
+
+Registers compare lexicographically on `(physical_millis, logical,
+ReplicaId)`. The `ReplicaId` tail makes the order total, so no two writes
+tie.
+
+Three consequences are normative rather than incidental:
+
+- **Backward physical jumps are absorbed, not obeyed.** `l` never decreases,
+  because every transition takes a maximum. A clock that steps backward
+  simply leaves the replica incrementing `logical` until physical time
+  catches up. Correctness does not depend on a monotonic host clock.
+- **The clock is durable state.** A replica MUST persist its `hlc` alongside
+  `context` and `ReplicaId` in the checkpoint manifest, and on open MUST
+  resume from `max(persisted, pt)`. Reseeding from `pt` alone would let a
+  restart after a backward jump re-issue timestamps the replica had already
+  emitted, and a value written before the restart would then beat one
+  written after it.
+- **Logical overflow spills upward.** If `logical` would exceed its 16-bit
+  range within one millisecond, `physical_millis` increments and `logical`
+  resets, which keeps the value monotone at the cost of running ahead of
+  real time. Sixty-five thousand commits inside one millisecond is not
+  reachable while each commit crosses a durability barrier, so this is a
+  bound rather than an expected path.
+
+#### Bounded Forward Drift
+
+Receive-max is what makes the clock causal, and it is also the design's one
+real exposure to a bad clock. A replica whose physical clock reads years in
+the future drags every replica that merges its timestamps to that value, and
+because `l` never decreases, **the damage is permanent**: there is no way to
+walk a hybrid logical clock back. Every subsequent write on every replica
+carries the inflated timestamp, and LWW between two honest replicas stops
+tracking real time entirely.
+
+Gossip makes this materially worse than a hub topology would. One
+misconfigured slave has to reach only a single peer for the value to spread
+through the mesh by ordinary anti-entropy.
+
+Therefore a replica MUST reject a delta batch whose greatest observed
+`physical_millis` exceeds its own `pt` by more than a configured
+`max_clock_offset`, and MUST NOT merge any timestamp from it. Per
+*Fail-Closed Conditions* this isolates the session and drops the peer from
+the partial view; local state stays usable, because the batch was refused
+before it touched the clock. The bound is a policy value: too tight and
+ordinary skew between healthy replicas severs sessions, too loose and it
+admits the drift it exists to prevent.
+
+The bound does not reach a replica whose clock is wrong by less than
+`max_clock_offset`. That case stays a matter of which concurrent write wins,
+never of whether replicas converge.
 
 Removal is represented **without tombstones** (ORSWOT style): a dot that is
 covered by `context` but absent from `nodes`/`edges` is removed. Storage for
@@ -311,8 +384,9 @@ rather than a retry.
 - Remote deltas are ordinary WAL batches: they receive contiguous local
   LSNs, participate in group commit, and obey the whole-batch-or-nothing
   replay rule of the storage durability contract.
-- The replica's own `context`, the peer's last acknowledged `context`, and
-  the `ReplicaId` are persisted in the checkpoint manifest and recovered
+- The replica's own `context`, its `hlc`, the peer's last acknowledged
+  `context`, and the `ReplicaId` are persisted in the checkpoint manifest
+  and recovered
   before the first post-restart round.
 - Recovery replays WAL, reconstructs `context`, and resumes anti-entropy
   from persisted state. An ambiguous crash between apply and acknowledgment
@@ -332,7 +406,10 @@ error, when it observes:
 - a reorder buffer that would exceed its bound without the peer offering the
   state-transfer form;
 - a stable watermark presented without a membership epoch, or carrying an
-  epoch the replica knows to be superseded.
+  epoch the replica knows to be superseded;
+- a delta batch whose greatest observed `physical_millis` exceeds local
+  physical time by more than `max_clock_offset` (refused before the clock
+  merges anything from it).
 
 Under gossip these failures MUST isolate the offending **session** and leave
 local state usable. A replica that poisoned itself on a bad peer would let
@@ -381,8 +458,11 @@ delta segments as state joins (their semantic foundation) and checks:
 
 The model abstracts the hybrid logical clock as a Lamport clock that ticks
 on every mint and merges on every sync round, which is exactly the
-causality obligation stated above; physical-time quality is outside the
-model. It does not check transport security, delta-segment encoding, or
+causality obligation stated above. The encoding, the durability of the
+clock across restarts, and the `max_clock_offset` bound are outside the
+model: the first two are representation, and the third is a quantitative
+drift property that a state-machine model expresses poorly. They rest on
+review and implementation tests. It does not check transport security, delta-segment encoding, or
 the WAL durability boundary; the last is covered by
 `SkeinStorageDurability.tla`.
 
