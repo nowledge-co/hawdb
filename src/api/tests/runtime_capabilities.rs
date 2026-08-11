@@ -373,6 +373,7 @@ fn cypher_access_control_filters_node_scans_before_payload_projection() {
             .with(RuntimeCapability::AccessControl, true),
         ..DatabaseConfig::default()
     });
+    db.query("CREATE INDEX ON :Memory(space_id)").unwrap();
     db.query("CREATE (:Memory {id: 'allowed', title: 'Allowed', space_id: 'allowed'})")
         .unwrap();
     db.query("CREATE (:Memory {id: 'denied', title: 'Denied', space_id: 'denied'})")

@@ -1,6 +1,6 @@
 //! Storage-neutral graph read contract used by execution operators.
 
-use skein_core::{LabelId, RelTypeId, Result};
+use skein_core::{Catalog, LabelId, RelTypeId, Result};
 use skein_storage::{
     AdjacencyDirection, NodeId, NodeRecord, PropertyFilter, RelRecord, ScanPruningReport,
 };
@@ -65,6 +65,7 @@ pub trait GraphExecutionRead {
 
     fn scan_nodes_with_filter_pruning<'a>(
         &'a self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> Result<PrunedNodeScan<'a>>;

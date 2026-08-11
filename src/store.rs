@@ -2009,7 +2009,6 @@ impl GraphStore {
             durable.append_create_node(id, label, &properties)?;
         }
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
-        register_property_index_descriptors(catalog, [label_id], &properties);
         self.apply_create_node(catalog, id, label_id, properties);
         self.commit_epoch += 1;
         Ok(id)
@@ -2597,6 +2596,7 @@ impl GraphStore {
             }])?;
         }
         let id = catalog.get_or_create_property_index(label_id, property);
+        self.backfill_property_index(label_id, property);
         self.commit_epoch += 1;
         Ok(id)
     }
@@ -2923,7 +2923,6 @@ impl GraphStore {
             durable.append_create_node(id, label, &properties)?;
         }
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
-        register_property_index_descriptors(catalog, [label_id], &properties);
         self.apply_create_node(catalog, id, label_id, properties);
         self.commit_epoch += 1;
         Ok((id, true))
@@ -3205,8 +3204,10 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let sources = self.matching_node_ids(source_label_id, request.source_filter.as_ref())?;
-        let targets = self.matching_node_ids(target_label_id, request.target_filter.as_ref())?;
+        let sources =
+            self.matching_node_ids(catalog, source_label_id, request.source_filter.as_ref())?;
+        let targets =
+            self.matching_node_ids(catalog, target_label_id, request.target_filter.as_ref())?;
         if sources.is_empty() || targets.is_empty() {
             return Ok(Vec::new());
         }
@@ -3262,8 +3263,10 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let sources = self.matching_node_ids(source_label_id, request.source_filter.as_ref())?;
-        let targets = self.matching_node_ids(target_label_id, request.target_filter.as_ref())?;
+        let sources =
+            self.matching_node_ids(catalog, source_label_id, request.source_filter.as_ref())?;
+        let targets =
+            self.matching_node_ids(catalog, target_label_id, request.target_filter.as_ref())?;
         if sources.is_empty() || targets.is_empty() {
             return Ok(Vec::new());
         }
@@ -3498,6 +3501,7 @@ impl GraphStore {
             return Ok(Vec::new());
         }
         let target_ids = self.matching_node_ids(
+            catalog,
             Some(new_target_label_id),
             request.new_target_filter.as_ref(),
         )?;
@@ -3607,8 +3611,11 @@ impl GraphStore {
         if target_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let source_ids =
-            self.matching_node_ids(new_source_label_id, request.new_source_filter.as_ref())?;
+        let source_ids = self.matching_node_ids(
+            catalog,
+            new_source_label_id,
+            request.new_source_filter.as_ref(),
+        )?;
         let mut next_rel_id = self.next_rel_id;
         let mut rows = Vec::new();
         let mut ops = Vec::new();
@@ -3671,7 +3678,7 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let ids = self.matching_node_ids(label_id, filter)?;
+        let ids = self.matching_node_ids(catalog, label_id, filter)?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3711,7 +3718,7 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let ids = self.matching_node_ids(label_id, filter)?;
+        let ids = self.matching_node_ids(catalog, label_id, filter)?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3774,7 +3781,7 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let ids = self.matching_node_ids(label_id, filter)?;
+        let ids = self.matching_node_ids(catalog, label_id, filter)?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3869,7 +3876,7 @@ impl GraphStore {
             };
             Some(label_id)
         };
-        let ids = self.matching_node_ids(label_id, filter)?;
+        let ids = self.matching_node_ids(catalog, label_id, filter)?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3934,7 +3941,7 @@ impl GraphStore {
             return Ok(Vec::new());
         };
         let source_ids = self
-            .matching_node_ids(Some(source_label_id), request.filter.as_ref())?
+            .matching_node_ids(catalog, Some(source_label_id), request.filter.as_ref())?
             .into_iter()
             .collect::<BTreeSet<_>>();
         if source_ids.is_empty() {
@@ -3944,7 +3951,7 @@ impl GraphStore {
             .target_filter
             .as_ref()
             .map(|filter| {
-                self.matching_node_ids(Some(target_label_id), Some(filter))
+                self.matching_node_ids(catalog, Some(target_label_id), Some(filter))
                     .map(|ids| ids.into_iter().collect::<BTreeSet<_>>())
             })
             .transpose()?;
@@ -4220,7 +4227,7 @@ impl GraphStore {
             return Ok(Vec::new());
         };
         let source_ids = self
-            .matching_node_ids(Some(source_label_id), update.filter.as_ref())?
+            .matching_node_ids(catalog, Some(source_label_id), update.filter.as_ref())?
             .into_iter()
             .collect::<BTreeSet<_>>();
         if source_ids.is_empty() {
@@ -4305,8 +4312,6 @@ impl GraphStore {
         if let Some(durable) = &mut self.durable {
             durable.append_batch(ops)?;
         }
-        register_property_index_descriptors(catalog, [source_label_id], &request.source_properties);
-        register_property_index_descriptors(catalog, [target_label_id], &request.target_properties);
         self.apply_create_node(catalog, source, source_label_id, request.source_properties);
         self.apply_create_node(catalog, target, target_label_id, request.target_properties);
         self.apply_create_relationship(
@@ -7282,12 +7287,23 @@ impl GraphStore {
 
     pub fn distinct_value_statistics_consistency_report(
         &self,
+        catalog: &Catalog,
     ) -> DistinctValueStatisticsConsistencyReport {
         let recomputed = compute_statistics(&self.nodes, &self.relationships, self.commit_epoch);
+        // The index-derived side can only speak for declared properties, so
+        // the recomputed side is narrowed to the same keys. Comparing against
+        // every property would flag the undeclared ones forever.
+        let recomputed_property_distinct_counts = recomputed
+            .property_distinct_counts
+            .into_iter()
+            .filter(|((label_id, property), _)| {
+                catalog.property_index_id(*label_id, property).is_some()
+            })
+            .collect();
         DistinctValueStatisticsConsistencyReport::new(
             self.commit_epoch,
             compute_node_property_distinct_counts_from_index(&self.property_index),
-            recomputed.property_distinct_counts,
+            recomputed_property_distinct_counts,
             compute_relationship_property_distinct_counts_from_index(
                 &self.relationship_property_index,
             ),
@@ -7295,8 +7311,11 @@ impl GraphStore {
         )
     }
 
-    pub fn property_index_consistency_report(&self) -> PropertyIndexConsistencyReport {
-        let recomputed_node_index = recompute_node_property_index(&self.nodes);
+    pub fn property_index_consistency_report(
+        &self,
+        catalog: &Catalog,
+    ) -> PropertyIndexConsistencyReport {
+        let recomputed_node_index = recompute_node_property_index(&self.nodes, catalog);
         let recomputed_relationship_index =
             recompute_relationship_property_index(&self.relationships);
         PropertyIndexConsistencyReport::new(
@@ -7662,6 +7681,9 @@ impl GraphStore {
             self.add_node_to_basic_statistics(&node);
             for label_id in &node.labels {
                 for (property, value) in &node.properties {
+                    if catalog.property_index_id(*label_id, property).is_none() {
+                        continue;
+                    }
                     self.property_index
                         .entry_or_default((*label_id, property.clone(), value.clone()))
                         .insert(id);
@@ -7705,6 +7727,44 @@ impl GraphStore {
                     self.composite_property_index.remove(&map_key);
                 }
             }
+        }
+    }
+
+    /// Indexes the nodes that already carry `property` under `label_id`.
+    ///
+    /// Only declared properties are indexed on write, so a newly declared
+    /// index starts empty and would be missing exactly the nodes written
+    /// before the declaration. The pruner treats a declared index as
+    /// complete, so an unbackfilled one makes queries omit rows rather than
+    /// run slowly.
+    fn backfill_property_index(&mut self, label_id: LabelId, property: &str) {
+        let nodes = self.nodes.values().cloned().collect::<Vec<_>>();
+        let mut distinct = BTreeSet::new();
+        for node in nodes {
+            if !node.labels.contains(&label_id) {
+                continue;
+            }
+            let Some(value) = node.properties.get(property) else {
+                continue;
+            };
+            distinct.insert(value.clone());
+            self.property_index
+                .entry_or_default((label_id, property.to_string(), value.clone()))
+                .insert(node.id);
+        }
+        // The backfill already walked every node, so the distinct count costs
+        // nothing extra here. Deferring it to the next checkpoint would leave
+        // the optimizer on its no-statistics fallback for a property the user
+        // just asked to index, which is the case where a good estimate is
+        // most likely to be wanted.
+        if distinct.is_empty() {
+            self.checkpoint_statistics
+                .property_distinct_counts
+                .remove(&(label_id, property.to_string()));
+        } else {
+            self.checkpoint_statistics
+                .property_distinct_counts
+                .insert((label_id, property.to_string()), distinct.len() as u64);
         }
     }
 
@@ -7913,10 +7973,12 @@ impl GraphStore {
 
     pub fn scan_nodes_with_filter_pruning<'a>(
         &'a self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> ScanPrunedNodeScan<'a> {
-        let candidate = filter.and_then(|filter| self.prune_node_candidates(label_id, filter));
+        let candidate =
+            filter.and_then(|filter| self.prune_node_candidates(catalog, label_id, filter));
         let Some(candidate) = candidate else {
             let candidate_count_before_filter = self.node_count_for_label(label_id);
             let nodes = self
@@ -7996,14 +8058,42 @@ impl GraphStore {
             .unwrap_or(true)
     }
 
+    /// Whether an equality index is declared for `property`, considering the
+    /// label the scan is restricted to.
+    ///
+    /// An unlabelled scan would have to consult every label's index, so it
+    /// only prunes when every label that declares the property agrees. The
+    /// conservative answer is to decline, which costs a scan rather than a
+    /// wrong result.
+    fn indexes_property(
+        &self,
+        catalog: &Catalog,
+        label_id: Option<LabelId>,
+        property: &str,
+    ) -> bool {
+        match label_id {
+            Some(label_id) => catalog.property_index_id(label_id, property).is_some(),
+            None => false,
+        }
+    }
+
     fn prune_node_candidates(
         &self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: &PropertyFilter,
     ) -> Option<ScanPruningCandidate> {
+        // Every branch below that reads `property_index` first passes through
+        // `indexes_property`. The index only holds declared properties, so a
+        // candidate set built from an undeclared one would be empty rather
+        // than complete, and the caller treats candidates as exact.
         match filter {
-            PropertyFilter::And(filters) => self.prune_and_node_candidates(label_id, filters),
-            PropertyFilter::Or(filters) => self.prune_or_node_candidates(label_id, filters),
+            PropertyFilter::And(filters) => {
+                self.prune_and_node_candidates(catalog, label_id, filters)
+            }
+            PropertyFilter::Or(filters) => {
+                self.prune_or_node_candidates(catalog, label_id, filters)
+            }
             PropertyFilter::Not(_) => None,
             PropertyFilter::IdEq { value } => Some(ScanPruningCandidate::exact(
                 ScanPruningStrategy::IdEq,
@@ -8027,34 +8117,54 @@ impl GraphStore {
                 },
                 self.node_ids_for_id_values(label_id, values),
             )),
-            PropertyFilter::Eq { property, value } => Some(ScanPruningCandidate::exact(
-                ScanPruningStrategy::PropertyEq {
-                    property: property.clone(),
-                },
-                self.node_ids_for_property_values(label_id, property, std::slice::from_ref(value)),
-            )),
-            PropertyFilter::NotEq { property, value } => Some(ScanPruningCandidate::exact(
-                ScanPruningStrategy::PropertyNotEq {
-                    property: property.clone(),
-                },
-                self.node_ids_for_property_not_in_values(
-                    label_id,
-                    property,
-                    std::slice::from_ref(value),
-                ),
-            )),
-            PropertyFilter::IsNull { property } => Some(ScanPruningCandidate::exact(
-                ScanPruningStrategy::PropertyMissingOrNull {
-                    property: property.clone(),
-                },
-                self.node_ids_for_property_missing_or_null(label_id, property),
-            )),
-            PropertyFilter::IsNotNull { property } => Some(ScanPruningCandidate::exact(
-                ScanPruningStrategy::PropertyExists {
-                    property: property.clone(),
-                },
-                self.node_ids_for_property_exists(label_id, property),
-            )),
+            PropertyFilter::Eq { property, value } => {
+                self.indexes_property(catalog, label_id, property).then(|| {
+                    ScanPruningCandidate::exact(
+                        ScanPruningStrategy::PropertyEq {
+                            property: property.clone(),
+                        },
+                        self.node_ids_for_property_values(
+                            label_id,
+                            property,
+                            std::slice::from_ref(value),
+                        ),
+                    )
+                })
+            }
+            PropertyFilter::NotEq { property, value } => {
+                self.indexes_property(catalog, label_id, property).then(|| {
+                    ScanPruningCandidate::exact(
+                        ScanPruningStrategy::PropertyNotEq {
+                            property: property.clone(),
+                        },
+                        self.node_ids_for_property_not_in_values(
+                            label_id,
+                            property,
+                            std::slice::from_ref(value),
+                        ),
+                    )
+                })
+            }
+            PropertyFilter::IsNull { property } => {
+                self.indexes_property(catalog, label_id, property).then(|| {
+                    ScanPruningCandidate::exact(
+                        ScanPruningStrategy::PropertyMissingOrNull {
+                            property: property.clone(),
+                        },
+                        self.node_ids_for_property_missing_or_null(label_id, property),
+                    )
+                })
+            }
+            PropertyFilter::IsNotNull { property } => {
+                self.indexes_property(catalog, label_id, property).then(|| {
+                    ScanPruningCandidate::exact(
+                        ScanPruningStrategy::PropertyExists {
+                            property: property.clone(),
+                        },
+                        self.node_ids_for_property_exists(label_id, property),
+                    )
+                })
+            }
             PropertyFilter::ListContains { .. }
             | PropertyFilter::ListContainsLower { .. }
             | PropertyFilter::Contains { .. }
@@ -8068,6 +8178,9 @@ impl GraphStore {
                 value,
                 negated,
             } => {
+                if !self.indexes_property(catalog, label_id, property) {
+                    return None;
+                }
                 let strategy = if *negated {
                     ScanPruningStrategy::PropertyDefaultIfNullNotEq {
                         property: property.clone(),
@@ -8086,22 +8199,29 @@ impl GraphStore {
                 };
                 Some(ScanPruningCandidate::exact(strategy, node_ids))
             }
-            PropertyFilter::In { property, values } => Some(ScanPruningCandidate::exact(
-                if values.is_empty() {
-                    ScanPruningStrategy::Empty
-                } else {
-                    ScanPruningStrategy::PropertyIn {
-                        property: property.clone(),
-                    }
-                },
-                self.node_ids_for_property_values(label_id, property, values),
-            )),
+            PropertyFilter::In { property, values } => {
+                self.indexes_property(catalog, label_id, property).then(|| {
+                    ScanPruningCandidate::exact(
+                        if values.is_empty() {
+                            ScanPruningStrategy::Empty
+                        } else {
+                            ScanPruningStrategy::PropertyIn {
+                                property: property.clone(),
+                            }
+                        },
+                        self.node_ids_for_property_values(label_id, property, values),
+                    )
+                })
+            }
             PropertyFilter::Range {
                 property,
                 lower,
                 upper,
             } => {
                 if lower.is_none() && upper.is_none() {
+                    return None;
+                }
+                if !self.indexes_property(catalog, label_id, property) {
                     return None;
                 }
                 Some(ScanPruningCandidate::exact(
@@ -8121,12 +8241,13 @@ impl GraphStore {
 
     fn prune_and_node_candidates(
         &self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filters: &[PropertyFilter],
     ) -> Option<ScanPruningCandidate> {
         let mut best: Option<ScanPruningCandidate> = None;
         for filter in filters {
-            let Some(candidate) = self.prune_node_candidates(label_id, filter) else {
+            let Some(candidate) = self.prune_node_candidates(catalog, label_id, filter) else {
                 continue;
             };
             if candidate.exact_empty {
@@ -8145,6 +8266,7 @@ impl GraphStore {
 
     fn prune_or_node_candidates(
         &self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filters: &[PropertyFilter],
     ) -> Option<ScanPruningCandidate> {
@@ -8158,7 +8280,7 @@ impl GraphStore {
 
         let mut node_ids = BTreeSet::new();
         for filter in filters {
-            let candidate = self.prune_node_candidates(label_id, filter)?;
+            let candidate = self.prune_node_candidates(catalog, label_id, filter)?;
             node_ids.extend(candidate.node_ids);
         }
         Some(ScanPruningCandidate::exact(
@@ -9967,12 +10089,13 @@ impl GraphStore {
 
     fn matching_node_ids(
         &self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> Result<Vec<NodeId>> {
         if !self.canonical_base_out_of_core {
             return Ok(self
-                .scan_nodes_with_filter_pruning(label_id, filter)
+                .scan_nodes_with_filter_pruning(catalog, label_id, filter)
                 .nodes
                 .into_iter()
                 .map(|node| node.id)
@@ -10081,9 +10204,11 @@ impl GraphStore {
                     }
                 }
             }
-            self.property_index
-                .entry_or_default((label_id, property.clone(), value.clone()))
-                .insert(id);
+            if catalog.property_index_id(label_id, &property).is_some() {
+                self.property_index
+                    .entry_or_default((label_id, property.clone(), value.clone()))
+                    .insert(id);
+            }
         }
         if let Some(node) = self.nodes.get(&id).cloned() {
             self.add_node_to_composite_property_indexes(catalog, &node);
@@ -11070,11 +11195,6 @@ impl GraphStore {
                     let id = NodeId(parse_u64(raw_id, "node id")?);
                     let labels = parse_label_set(raw_labels)?;
                     let properties = decode_properties(raw_properties)?;
-                    register_property_index_descriptors(
-                        catalog,
-                        labels.iter().copied(),
-                        &properties,
-                    );
                     self.apply_create_node_with_labels(catalog, id, labels, properties);
                 }
                 ["rel", raw_id, raw_source, raw_target, raw_type, raw_properties] => {
@@ -11180,11 +11300,6 @@ impl GraphStore {
                 self.basic_statistics = BasicGraphStatistics::default();
                 reader
                     .scan_nodes(|node| {
-                        register_property_index_descriptors(
-                            catalog,
-                            node.labels.iter().copied(),
-                            &node.properties,
-                        );
                         self.apply_create_node_with_labels(
                             catalog,
                             node.id,
@@ -11567,6 +11682,11 @@ impl GraphStore {
             WalOp::CreateIndex { label, property } => {
                 let label_id = catalog.get_or_create_label(&label);
                 catalog.get_or_create_property_index(label_id, &property);
+                // Replay order decides whether anything is here to backfill:
+                // an index declared before its nodes finds none, and one
+                // declared after them finds exactly the nodes that were
+                // written while the property was unindexed.
+                self.backfill_property_index(label_id, &property);
             }
             WalOp::CreateCompositeIndex { label, properties } => {
                 let label_id = catalog.get_or_create_label(&label);
@@ -11613,7 +11733,6 @@ impl GraphStore {
                 properties,
             } => {
                 let label_id = catalog.get_or_create_label(&label);
-                register_property_index_descriptors(catalog, [label_id], &properties);
                 self.apply_create_node(catalog, id, label_id, properties);
             }
             WalOp::CreateRelationship {
@@ -11632,14 +11751,6 @@ impl GraphStore {
                 value,
             } => {
                 self.materialize_node_for_write(id)?;
-                if let Some(node) = self.nodes.get(&id) {
-                    let properties = BTreeMap::from([(property.clone(), value.clone())]);
-                    register_property_index_descriptors(
-                        catalog,
-                        node.labels.iter().copied(),
-                        &properties,
-                    );
-                }
                 self.apply_set_node_property(catalog, id, property, value);
             }
             WalOp::SetRelationshipProperty {
@@ -16099,18 +16210,6 @@ fn decode_wal_op_from_batch(input: &str) -> Result<WalOp> {
     }
 }
 
-fn register_property_index_descriptors(
-    catalog: &mut Catalog,
-    label_ids: impl IntoIterator<Item = LabelId>,
-    properties: &BTreeMap<String, Value>,
-) {
-    for label_id in label_ids {
-        for property in properties.keys() {
-            catalog.get_or_create_property_index(label_id, property);
-        }
-    }
-}
-
 fn composite_property_index_key(
     node: &NodeRecord,
     properties: &[String],
@@ -17317,11 +17416,20 @@ fn compute_relationship_property_distinct_counts_from_index(
     counts
 }
 
-fn recompute_node_property_index(nodes: &CowSegmentedMap<NodeId, NodeRecord>) -> NodePropertyIndex {
+/// Recomputes the node property index the way the write path maintains it:
+/// declared properties only. Recomputing every property would report the
+/// undeclared ones as permanently missing, which is the design, not a defect.
+fn recompute_node_property_index(
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    catalog: &Catalog,
+) -> NodePropertyIndex {
     let mut index = NodePropertyIndex::default();
     for node in nodes.values() {
         for label_id in &node.labels {
             for (property, value) in &node.properties {
+                if catalog.property_index_id(*label_id, property).is_none() {
+                    continue;
+                }
                 index
                     .entry_or_default((*label_id, property.clone(), value.clone()))
                     .insert(node.id);
@@ -19775,6 +19883,9 @@ mod tests {
         let mut catalog = Catalog::default();
         let mut store = GraphStore::in_memory();
         store
+            .create_property_index(&mut catalog, "Memory", "topic")
+            .unwrap();
+        store
             .create_node(
                 &mut catalog,
                 "Memory",
@@ -21661,6 +21772,9 @@ mod tests {
             let mut catalog = Catalog::default();
             let mut store = GraphStore::open(&path, &mut catalog).unwrap();
             store
+                .create_property_index(&mut catalog, "Memory", "id")
+                .unwrap();
+            store
                 .create_node(
                     &mut catalog,
                     "Memory",
@@ -21702,6 +21816,11 @@ mod tests {
                         ("title", Value::String("Graph foundations".to_string())),
                     ]),
                 )
+                .unwrap();
+            // Declared after the write, so the checkpoint has to carry the
+            // backfilled content and not just the descriptor.
+            store
+                .create_property_index(&mut catalog, "Memory", "title")
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
@@ -21747,8 +21866,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "stable_id")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::Eq {
                 property: "stable_id".to_string(),
@@ -21791,8 +21914,12 @@ mod tests {
                 .unwrap();
         }
 
+        store
+            .create_property_index(&mut catalog, "Memory", "state")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::In {
                 property: "state".to_string(),
@@ -21848,8 +21975,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "confidence")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::IsNotNull {
                 property: "confidence".to_string(),
@@ -21893,8 +22024,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "latest_at")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::IsNull {
                 property: "latest_at".to_string(),
@@ -21945,8 +22080,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Thread", "space_id")
+            .unwrap();
         let label = catalog.label_id("Thread").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::DefaultIfNullOrEq {
                 property: "space_id".to_string(),
@@ -22000,8 +22139,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Thread", "space_id")
+            .unwrap();
         let label = catalog.label_id("Thread").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::DefaultIfNullOrEq {
                 property: "space_id".to_string(),
@@ -22061,8 +22204,15 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "state")
+            .unwrap();
+        store
+            .create_property_index(&mut catalog, "Memory", "stable_id")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::And(vec![
                 PropertyFilter::In {
@@ -22105,8 +22255,12 @@ mod tests {
                 .unwrap();
         }
 
+        store
+            .create_property_index(&mut catalog, "Memory", "state")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::Or(vec![
                 PropertyFilter::Eq {
@@ -22140,8 +22294,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "state")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::In {
                 property: "state".to_string(),
@@ -22192,8 +22350,15 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "importance")
+            .unwrap();
+        store
+            .create_property_index(&mut catalog, "Memory", "updated_at")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let numeric_scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::Range {
                 property: "importance".to_string(),
@@ -22213,6 +22378,7 @@ mod tests {
         assert_eq!(numeric_scan.report.pruned_candidate_count, 2);
 
         let date_scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::Range {
                 property: "updated_at".to_string(),
@@ -22402,8 +22568,12 @@ mod tests {
             )
             .unwrap();
 
+        store
+            .create_property_index(&mut catalog, "Memory", "title")
+            .unwrap();
         let label = catalog.label_id("Memory").unwrap();
         let scan = store.scan_nodes_with_filter_pruning(
+            &catalog,
             Some(label),
             Some(&PropertyFilter::Contains {
                 property: "title".to_string(),
@@ -23167,6 +23337,12 @@ mod tests {
     fn distinct_value_statistics_consistency_report_matches_index_after_mutations() {
         let mut catalog = Catalog::default();
         let mut store = GraphStore::in_memory();
+        store
+            .create_property_index(&mut catalog, "Memory", "unit_type")
+            .unwrap();
+        store
+            .create_property_index(&mut catalog, "Memory", "importance")
+            .unwrap();
         let source = store
             .create_node(
                 &mut catalog,
@@ -23215,7 +23391,7 @@ mod tests {
             )
             .unwrap();
 
-        let report = store.distinct_value_statistics_consistency_report();
+        let report = store.distinct_value_statistics_consistency_report(&catalog);
         let memory_label = catalog.label_id("Memory").unwrap();
         let rel_type = catalog.rel_type_id("MENTIONS").unwrap();
         assert!(report.ready);
@@ -23252,7 +23428,7 @@ mod tests {
             .unwrap();
         store.apply_set_relationship_property(weak, "confidence".to_string(), Value::Float(0.7));
 
-        let report = store.distinct_value_statistics_consistency_report();
+        let report = store.distinct_value_statistics_consistency_report(&catalog);
         assert!(report.ready);
         assert!(report.mismatched_property_keys.is_empty());
         assert!(report.mismatched_rel_property_keys.is_empty());
@@ -23278,7 +23454,7 @@ mod tests {
         );
 
         store.apply_delete_relationship(weak);
-        let report = store.distinct_value_statistics_consistency_report();
+        let report = store.distinct_value_statistics_consistency_report(&catalog);
         assert!(report.ready);
         assert_eq!(
             report
@@ -23338,7 +23514,7 @@ mod tests {
             )
             .unwrap();
 
-        let report = store.property_index_consistency_report();
+        let report = store.property_index_consistency_report(&catalog);
         assert!(report.ready);
         assert_eq!(
             report.node_index_entry_count,
@@ -23380,7 +23556,7 @@ mod tests {
         store.apply_set_relationship_property(weak, "confidence".to_string(), Value::Float(0.7));
         store.apply_delete_relationship(weak);
 
-        let report = store.property_index_consistency_report();
+        let report = store.property_index_consistency_report(&catalog);
         assert!(report.ready);
         assert_eq!(
             report.node_index_entry_count,

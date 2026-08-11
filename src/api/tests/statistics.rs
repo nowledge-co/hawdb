@@ -3,6 +3,9 @@ use super::*;
 #[test]
 fn exposes_property_index_descriptors_and_statistics() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
+    db.query("CREATE INDEX ON :Memory(kind)").unwrap();
+    db.query("CREATE INDEX ON :Entity(id)").unwrap();
     db.query("CREATE (:Memory {id: 1, kind: 'note'})").unwrap();
     db.query("CREATE (:Memory {id: 2, kind: 'note'})").unwrap();
     db.query(
@@ -24,7 +27,8 @@ fn exposes_property_index_descriptors_and_statistics() {
     assert_eq!(statistics.relationship_count, 1);
     assert_eq!(statistics.label_counts.values().sum::<u64>(), 4);
     assert_eq!(statistics.rel_type_counts.values().sum::<u64>(), 1);
-    assert_eq!(basic_statistics.computed_at_commit_epoch, 3);
+    // Three CREATE INDEX statements commit ahead of the three writes.
+    assert_eq!(basic_statistics.computed_at_commit_epoch, 6);
     assert_eq!(basic_statistics.node_count, statistics.node_count);
     assert_eq!(
         basic_statistics.relationship_count,
@@ -66,7 +70,7 @@ fn exposes_property_index_descriptors_and_statistics() {
     assert_eq!(read_tx.basic_statistics().node_count, 4);
     assert_eq!(db.statistics().node_count, 5);
     assert_eq!(db.basic_statistics().node_count, 5);
-    assert_eq!(db.basic_statistics().computed_at_commit_epoch, 4);
+    assert_eq!(db.basic_statistics().computed_at_commit_epoch, 7);
 }
 
 #[test]
@@ -149,6 +153,8 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
     let path = unique_test_dir("catalog_stats_checkpoint");
     {
         let mut db = Database::open(&path).unwrap();
+        db.query("CREATE INDEX ON :Memory(id)").unwrap();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE (:Memory {id: 1, kind: 'note'})").unwrap();
         db.query("CREATE (:Memory {id: 2, kind: 'decision'})-[:MENTIONS {weight: 4}]->(:Entity {id: 10, name: 'Rust'})")
                 .unwrap();
@@ -157,7 +163,7 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
 
     let checkpoint = read_test_durable_text(&active_checkpoint_path(&path)).unwrap();
     assert!(checkpoint.contains("property_index"));
-    assert!(checkpoint.contains("stat_commit_epoch\t3\n"));
+    assert!(checkpoint.contains("stat_commit_epoch\t5\n"));
     assert!(checkpoint.contains("stat_advanced_complete\ttrue\n"));
     assert!(checkpoint.contains("stat_histogram_sample_limit\t512\n"));
     assert!(checkpoint.contains("stat_node_count\t3\n"));
@@ -181,7 +187,7 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
             .property_indexes()
             .iter()
             .any(|index| index.property == "kind"));
-        assert_eq!(db.statistics().computed_at_commit_epoch, 3);
+        assert_eq!(db.statistics().computed_at_commit_epoch, 5);
         assert!(db.statistics().advanced_statistics_complete);
         assert_eq!(db.statistics().histogram_sample_limit, 512);
         assert_eq!(db.statistics().node_count, 3);

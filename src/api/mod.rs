@@ -1842,11 +1842,12 @@ impl Database {
     pub fn distinct_value_statistics_consistency_report(
         &self,
     ) -> DistinctValueStatisticsConsistencyReport {
-        self.store.distinct_value_statistics_consistency_report()
+        self.store
+            .distinct_value_statistics_consistency_report(&self.catalog)
     }
 
     pub fn property_index_consistency_report(&self) -> PropertyIndexConsistencyReport {
-        self.store.property_index_consistency_report()
+        self.store.property_index_consistency_report(&self.catalog)
     }
 
     #[cfg(test)]

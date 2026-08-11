@@ -512,6 +512,26 @@ The implementation currently persists:
 - outgoing adjacency index
 - incoming adjacency index
 
+Property indexes cover declared properties only. A write populates the
+single-property index for a `(label, property)` pair when a matching equality
+descriptor exists in the catalog, and skips it otherwise, so the index cost of
+a write is proportional to the properties the schema asked to index rather than
+to the properties the record happens to carry. `CREATE INDEX ON :Label(prop)`
+declares the pair, backfills the nodes written before the declaration, and
+refreshes that pair's distinct-value statistic; without the declaration the
+property is simply absent from the index.
+
+Scan pruning is therefore conditional. The pruner offers an index-backed
+candidate set only for a declared property and declines for every other one,
+which leaves the caller with a full label scan. Declining is what keeps the
+optimization sound: an index that covers only part of the data is safe to
+consult only where its coverage is known to be complete. Results never depend
+on the choice — a query answered from an index returns exactly what the full
+scan would. `docs/tla/SkeinPropertyIndexPruning.tla` models both evaluations
+side by side and checks them for equality, so a pruning path that read an
+incomplete index would surface as a violated invariant rather than as a
+silently short answer.
+
 The implementation also maintains rebuildable in-memory property indexes. The
 single-property index is keyed by `(label_id, property, value)`, the composite
 equality index is keyed by `(label_id, [(property, value), ...])`, and the

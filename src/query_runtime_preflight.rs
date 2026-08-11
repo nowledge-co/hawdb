@@ -404,6 +404,7 @@ mod tests {
         let probe_path = root.join("probes.json");
         std::fs::create_dir_all(&root).unwrap();
         let mut db = Database::open(&graph_path).unwrap();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-b', kind: 'task', title: 'B'})")
@@ -527,6 +528,7 @@ mod tests {
         let probe_path = root.join("graph-route-queries.json");
         std::fs::create_dir_all(&root).unwrap();
         let mut db = Database::open(&graph_path).unwrap();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-b', kind: 'task', title: 'B'})")
@@ -686,6 +688,7 @@ mod tests {
         let probe_path = root.join("probes.json");
         std::fs::create_dir_all(&root).unwrap();
         let mut db = Database::open(&graph_path).unwrap();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         drop(db);

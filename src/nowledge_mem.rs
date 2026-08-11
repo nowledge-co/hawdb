@@ -14185,7 +14185,8 @@ mod tests {
 
     #[test]
     fn graph_query_with_report_exposes_storage_scan_pruning() {
-        let db = Database::new();
+        let mut db = Database::new();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Memory {id: 'mem-prune-1', kind: 'note', title: 'Keep'})")
@@ -14217,7 +14218,8 @@ mod tests {
 
     #[test]
     fn graph_query_report_exposes_normalized_default_scan_pruning() {
-        let db = Database::new();
+        let mut db = Database::new();
+        db.query("CREATE INDEX ON :Thread(space_id)").unwrap();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Thread {thread_id: 'thread-missing', title: 'Missing space'})")
@@ -14588,6 +14590,9 @@ mod tests {
         });
         let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+        store
+            .query_with_report("CREATE INDEX ON :Memory(id)")
+            .unwrap();
         store
             .query_with_report("CREATE (:Memory {id: 'preflight-1', title: 'Preflight'})")
             .unwrap();

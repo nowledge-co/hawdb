@@ -210,9 +210,11 @@ pub fn stream_node_scan_batches(
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
             <= context.memory_budget.get()
     {
-        let scan = context
-            .store
-            .scan_nodes_with_filter_pruning(label_id, spec.property_filter)?;
+        let scan = context.store.scan_nodes_with_filter_pruning(
+            context.catalog,
+            label_id,
+            spec.property_filter,
+        )?;
         observer.record_scan_pruning_report(scan.report.clone());
         let mut batch = Vec::with_capacity(context.batch_rows);
         let mut emitted = 0usize;
@@ -329,9 +331,11 @@ pub fn execute_node_scan(
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
             <= context.memory_budget.get()
     {
-        let scan = context
-            .store
-            .scan_nodes_with_filter_pruning(label_id, spec.property_filter)?;
+        let scan = context.store.scan_nodes_with_filter_pruning(
+            context.catalog,
+            label_id,
+            spec.property_filter,
+        )?;
         observer.record_scan_pruning_report(scan.report.clone());
         let mut output = Vec::new();
         let mut tracker = OperatorMemoryTracker::new(context.memory_budget);

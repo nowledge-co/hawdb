@@ -1191,6 +1191,7 @@ mod tests {
     #[test]
     fn route_evidence_runs_queries_through_nowledge_runtime() {
         let mut db = Database::new();
+        db.query("CREATE INDEX ON :Memory(id)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")
@@ -1834,6 +1835,7 @@ mod tests {
     #[test]
     fn route_evidence_requires_complete_required_route_coverage() {
         let mut db = Database::new();
+        db.query("CREATE INDEX ON :Memory(id)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-route', title: 'Route Evidence'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-other', title: 'Other Evidence'})")

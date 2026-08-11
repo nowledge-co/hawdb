@@ -21,6 +21,7 @@ fn numeric_scan_filter_project_is_default_morsel_eligible() {
 #[test]
 fn parameterized_create_and_index_seek_execute_end_to_end() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
     db.query_with_params(
         "CREATE (:Memory {id: $id, title: $title})",
         &BTreeMap::from([

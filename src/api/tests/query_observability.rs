@@ -5,6 +5,7 @@ use crate::{QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 #[test]
 fn explains_query_with_optimizer_trace() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
     db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
         .unwrap();
     for id in 2..=16 {
@@ -60,6 +61,7 @@ fn explain_query_reports_effective_resource_hints() {
 #[test]
 fn explain_analyze_reports_storage_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(kind)").unwrap();
     db.query("CREATE (:Memory {id: 'mem-analyze-1', kind: 'note', title: 'Analyze'})")
         .unwrap();
     db.query("CREATE (:Memory {id: 'mem-analyze-2', kind: 'note', title: 'Profile'})")
@@ -118,6 +120,7 @@ fn explain_analyze_reports_durable_source_segment_pruning() {
 #[test]
 fn explain_analyze_reports_property_exists_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(confidence)").unwrap();
     db.query("CREATE (:Memory {id: 'mem-confidence-1', confidence: 0.9})")
         .unwrap();
     db.query("CREATE (:Memory {id: 'mem-confidence-2'})")
@@ -148,6 +151,7 @@ fn explain_analyze_reports_property_exists_scan_pruning_profile() {
 #[test]
 fn explain_analyze_reports_property_missing_or_null_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(latest_at)").unwrap();
     db.query("CREATE (:Memory {id: 'mem-latest-1', latest_at: 10})")
         .unwrap();
     db.query("CREATE (:Memory {id: 'mem-latest-2'})").unwrap();
@@ -177,6 +181,7 @@ fn explain_analyze_reports_property_missing_or_null_scan_pruning_profile() {
 #[test]
 fn explain_analyze_reports_default_if_null_eq_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Thread(space_id)").unwrap();
     db.query("CREATE (:Thread {id: 'thread-missing', thread_id: 'logical-1'})")
         .unwrap();
     db.query("CREATE (:Thread {id: 'thread-empty', thread_id: 'logical-2', space_id: ''})")
@@ -216,6 +221,7 @@ fn explain_analyze_reports_default_if_null_eq_scan_pruning_profile() {
 #[test]
 fn explain_analyze_reports_parameterized_default_if_null_eq_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Thread(space_id)").unwrap();
     db.query("CREATE (:Thread {id: 'thread-missing', thread_id: 'logical-1'})")
         .unwrap();
     db.query("CREATE (:Thread {id: 'thread-empty', thread_id: 'logical-2', space_id: ''})")
@@ -259,6 +265,7 @@ fn explain_analyze_reports_parameterized_default_if_null_eq_scan_pruning_profile
 #[test]
 fn explain_analyze_reports_parameterized_default_if_null_not_eq_scan_pruning_profile() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Thread(space_id)").unwrap();
     db.query("CREATE (:Thread {id: 'thread-missing', thread_id: 'logical-1'})")
         .unwrap();
     db.query("CREATE (:Thread {id: 'thread-empty', thread_id: 'logical-2', space_id: ''})")
@@ -530,6 +537,8 @@ fn explain_analyze_pushes_nowledge_status_timestamp_relationship_filter_to_scan_
 #[test]
 fn explain_analyze_pushes_nowledge_timestamp_node_delta_filter_to_scan_pruning() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(created_at)").unwrap();
+    db.query("CREATE INDEX ON :Memory(updated_at)").unwrap();
     for (id, created_at, updated_at) in [
         ("stale", 1, 1),
         ("created", 10, 1),
@@ -586,6 +595,7 @@ fn explain_analyze_pushes_nowledge_timestamp_node_delta_filter_to_scan_pruning()
 #[test]
 fn cypher_explain_returns_structured_plan_row() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
     db.query("CREATE (:Memory {id: 1, title: 'Explain row'})")
         .unwrap();
     for id in 2..=16 {
@@ -722,6 +732,7 @@ fn cypher_explain_returns_structured_plan_row() {
 #[test]
 fn cypher_explain_analyze_returns_execution_profile_row() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(kind)").unwrap();
     db.query("CREATE (:Memory {id: 'mem-cypher-analyze-1', kind: 'note', title: 'Analyze'})")
         .unwrap();
     db.query("CREATE (:Memory {id: 'mem-cypher-analyze-2', kind: 'note', title: 'Profile'})")

@@ -156,6 +156,7 @@ fn transaction_reads_own_writes_and_commits_exact_staged_operations() {
 #[test]
 fn transaction_commit_updates_property_index() {
     let mut db = Database::new();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
     {
         let mut tx = db.begin_transaction();
         tx.query("CREATE (:Memory {id: 42, title: 'Indexed memory'})")

@@ -1,6 +1,7 @@
 //! Root storage adapter for executor-owned graph read contracts.
 
 use crate::error::Result;
+use crate::schema::Catalog;
 use crate::store::{GraphScanControl, GraphStore};
 use skein_core::{LabelId, RelTypeId};
 use skein_executor::store::{
@@ -105,10 +106,11 @@ impl GraphExecutionRead for GraphStore {
 
     fn scan_nodes_with_filter_pruning<'a>(
         &'a self,
+        catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> Result<PrunedNodeScan<'a>> {
-        let scan = GraphStore::scan_nodes_with_filter_pruning(self, label_id, filter);
+        let scan = GraphStore::scan_nodes_with_filter_pruning(self, catalog, label_id, filter);
         Ok(PrunedNodeScan {
             nodes: Box::new(scan.nodes.into_iter().cloned()),
             report: scan.report,

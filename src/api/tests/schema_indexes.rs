@@ -2269,3 +2269,66 @@ fn failed_transaction_does_not_publish_property_schema_or_wal() {
     }
     std::fs::remove_dir_all(path).unwrap();
 }
+
+/// Only declared properties are indexed, so a query filtering on an
+/// undeclared one has to reach every matching node through a scan. Before
+/// the pruner learned to decline, it would have consulted an index that
+/// never received those nodes and returned nothing.
+#[test]
+fn undeclared_property_filters_still_return_every_match() {
+    let mut db = Database::new();
+    db.query("CREATE NODE LABEL Memory").unwrap();
+    db.query("CREATE INDEX ON :Memory(id)").unwrap();
+    db.query("CREATE (:Memory {id: 1, kind: 'note'})").unwrap();
+    db.query("CREATE (:Memory {id: 2, kind: 'note'})").unwrap();
+    db.query("CREATE (:Memory {id: 3, kind: 'decision'})")
+        .unwrap();
+
+    // `kind` has no declared index; the rows must still be found.
+    let notes = db
+        .query("MATCH (m:Memory) WHERE m.kind = 'note' RETURN m.id AS id ORDER BY id")
+        .unwrap();
+    assert_eq!(notes.rows.len(), 2);
+    assert_eq!(notes.rows[0].get("id"), Some(&Value::Int(1)));
+    assert_eq!(notes.rows[1].get("id"), Some(&Value::Int(2)));
+
+    // The negative and null-shaped filters take separate pruning branches,
+    // and each one would have read the same empty index.
+    let others = db
+        .query("MATCH (m:Memory) WHERE m.kind <> 'note' RETURN m.id AS id")
+        .unwrap();
+    assert_eq!(others.rows.len(), 1);
+    let present = db
+        .query("MATCH (m:Memory) WHERE m.kind IS NOT NULL RETURN m.id AS id")
+        .unwrap();
+    assert_eq!(present.rows.len(), 3);
+
+    // The declared property keeps its index path and its result.
+    let by_id = db
+        .query("MATCH (m:Memory) WHERE m.id = 2 RETURN m.id AS id")
+        .unwrap();
+    assert_eq!(by_id.rows.len(), 1);
+}
+
+/// Declaring an index after the rows exist must backfill them. The pruner
+/// treats a declared index as complete, so an unbackfilled one makes the
+/// query omit rows rather than run slowly.
+#[test]
+fn index_declared_after_writes_backfills_existing_nodes() {
+    let mut db = Database::new();
+    db.query("CREATE NODE LABEL Memory").unwrap();
+    db.query("CREATE (:Memory {id: 1, kind: 'note'})").unwrap();
+    db.query("CREATE (:Memory {id: 2, kind: 'note'})").unwrap();
+
+    db.query("CREATE INDEX ON :Memory(kind)").unwrap();
+    db.query("CREATE (:Memory {id: 3, kind: 'note'})").unwrap();
+
+    let notes = db
+        .query("MATCH (m:Memory) WHERE m.kind = 'note' RETURN m.id AS id ORDER BY id")
+        .unwrap();
+    assert_eq!(
+        notes.rows.len(),
+        3,
+        "nodes written before the index was declared must be backfilled"
+    );
+}

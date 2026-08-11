@@ -6703,6 +6703,7 @@ mod tests {
     fn renders_explain_analyze_output_json_with_scan_pruning_reports() {
         let db_path = unique_main_test_dir("explain-analyze-json");
         let mut db = Database::open(&db_path).unwrap();
+        db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         db.query("CREATE (:Memory {id: 'mem-b', kind: 'task', title: 'B'})")

@@ -18,6 +18,7 @@ readonly specifications=(
   SkeinCrdtReplication
   SkeinGossipDelivery
   SkeinSystemSchemaUpgrade
+  SkeinPropertyIndexPruning
 )
 
 manifest_json() {
