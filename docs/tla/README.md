@@ -15,7 +15,7 @@ a Java 11 or newer runtime. Without `TLA2TOOLS_JAR`, the script downloads TLA+
 Tools 1.7.4 and verifies its SHA-256 digest before execution.
 
 Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain a release artifact.
-The artifact contains the exact eight `.tla` and `.cfg` inputs, one complete TLC
+The artifact contains the exact nine `.tla` and `.cfg` inputs, one complete TLC
 log per model, the Java version, and a revision- and tool-bound manifest. CI
 validates the downloaded artifact with:
 
@@ -216,6 +216,50 @@ has already observed with a smaller timestamp, and the stale value wins the
 next join. The specification now requires the hybrid logical clock to merge
 past every observed timestamp on delta apply, which the model represents as
 a Lamport clock merged on each sync round.
+
+## Gossip Delivery
+
+`SkeinGossipDelivery.tla` models the delivery layer of the dual-topology CRDT
+contract. It is deliberately separate from `SkeinCrdtReplication.tla`: that
+model checks what the join computes once a batch arrives, this one checks what
+arrives. The split is what makes three or more replicas checkable, because the
+payload abstracts to per-origin counters and nodes, edges, properties, and
+clocks are absent.
+
+Under gossip a delta reaches a replica by more than one path, so arrival is
+duplicated and out of order. The model represents the applied contiguous
+per-origin prefix, which is exactly what a version-vector context can express,
+plus a bounded reorder buffer for anything above that frontier, plus a state
+transfer that a buffer overflow must fall back to. A ghost `received` variable
+records what was actually delivered so that applying across a hole is
+observable rather than implicit.
+
+The model checks that a replica never claims a prefix its origin has not
+minted, that the buffer holds only counters above the frontier, that the
+buffer bound is hard, that buffered and applied work stay disjoint, that
+delivery never invents an operation, and that an applied prefix contains only
+operations the replica actually received. Under fair rounds it also checks
+that every replica reaches the full minted prefix with nothing stranded.
+
+Checking this model found a real requirement that the first draft of the
+specification left implicit: advancing the frontier must evict the buffered
+counters the advance swallowed. Without that, a counter applied in order while
+also sitting in the buffer is applied a second time when the buffer drains,
+which duplicate delivery makes reachable rather than theoretical.
+
+The checked-in instance is three nodes, two origins, three operations per
+origin, and a buffer bound of one (about 12k distinct states, thirty seconds).
+It was sized by mutation testing: dropping the bound check reports
+`BufferRespectsBound`, applying whatever arrives instead of buffering reports
+`AppliedPrefixWasReceived`, and failing to evict on either the delivery or the
+state-transfer path reports `BufferIsAboveFrontier`. Two operations per origin
+was rejected as too small — the buffer cannot exceed its bound at that size, so
+the bound mutation survived.
+
+What this model does not cover is the composition itself. That fair delivery
+plus a convergent join yields a convergent system is argued from the join's
+commutativity, associativity, and idempotence, not machine-checked, because
+the composed model is the three-replica instance that does not terminate.
 
 ## Proof Boundary
 

@@ -16,6 +16,7 @@ readonly specifications=(
   SkeinTransactionConcurrency
   SkeinSourceSegmentPublication
   SkeinCrdtReplication
+  SkeinGossipDelivery
 )
 
 manifest_json() {

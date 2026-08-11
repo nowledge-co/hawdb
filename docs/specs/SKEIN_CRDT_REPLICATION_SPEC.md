@@ -17,9 +17,21 @@ The design is a delta-state CRDT layered above the existing single-node
 transactional engine: local transactions keep their existing semantics, and
 replication ships the committed effects of those transactions.
 
-The pairwise (two-node) deployment is the first supported topology. Every
-normative clause is written so that the same state, join, and delivery rules
-extend to N replicas without a format change.
+Two delivery topologies are supported over one CRDT: **server-mediated**,
+where replicas synchronize through a rendezvous that also knows the
+membership, and **gossip**, where replicas synchronize directly with peers
+drawn from a partial view. A deployment MAY run both at once.
+
+The split that makes this work is that only delivery differs. The replicated
+state, the dot identity, the join, and the conflict matrix are
+topology-independent, and both topologies MUST produce the same convergent
+value for the same set of operations. Topology changes three things and
+nothing else: how fast deltas propagate, how much metadata a replica holds,
+and whether reclamation can be proven safe.
+
+Every normative clause is written so that the same state and join rules
+extend to N replicas without a format change. That extension is a design
+claim, not a verified one; see *Instance Bound*.
 
 ### Non-Goals
 
@@ -131,8 +143,9 @@ resurrect through recreation.
 
 ## Anti-Entropy Synchronization Protocol
 
-Synchronization is pull-based, symmetric, and runs over an authenticated
-transport session between the two replicas.
+Synchronization runs over an authenticated transport session. The exchange
+below is the topology-independent core; *Delivery Topologies* then defines
+who talks to whom and how often.
 
 1. **Digest.** The requester sends its persisted `context`.
 2. **Delta response.** The responder replies with its own `context` plus, for
@@ -167,13 +180,112 @@ Delivery obligations:
 - **No epoch skew.** Both replicas MUST run the same schema fingerprint; a
   delta batch carries the fingerprint and MUST fail closed on mismatch.
 
+## Delivery Topologies
+
+### Server-Mediated Delivery
+
+Replicas synchronize with a rendezvous rather than with each other. The
+rendezvous MAY hold a replica of its own or act as a pure relay; either way
+it is the **membership authority**, and it publishes a membership epoch
+naming the current replica set.
+
+Because the peer set is known, a stable watermark is computable: the
+pointwise minimum of the acknowledged contexts of every member of the
+current membership epoch. Retention and reclamation are gated on that
+watermark.
+
+### Gossip Delivery
+
+Each replica keeps a partial view of peers and runs periodic rounds. A round
+selects up to `fanout` peers from the view and performs the same digest,
+delta, join, acknowledge exchange with each, in push-pull form so that both
+directions settle in one round trip.
+
+Gossip changes three properties of delivery, and each has a consequence
+below: a delta reaches a replica by more than one path, so **duplicates** are
+normal; paths have different lengths, so segments for one origin arrive
+**out of order**; and the view is partial, so **no replica knows the full
+membership**.
+
+Duplicates are already handled: the join is idempotent, so a redelivered
+delta changes nothing. Digest-before-delta keeps the cost of a duplicate at
+one round trip rather than one payload.
+
+### Causal Prefix Under Out-of-Order Arrival
+
+`context` remains a version vector, and a version vector can only express a
+contiguous per-origin prefix. Under gossip a replica may hold origin `R`'s
+counters 1..5 from one path and 8..10 from another; the vector cannot say
+that.
+
+A replica MUST NOT apply a delta whose counter exceeds its context entry for
+that origin by more than one. Deltas above the contiguous frontier are held
+in a bounded per-origin **reorder buffer** and are not applied, not counted
+in `context`, and not visible to reads. When the gap fills, the buffer
+drains in counter order.
+
+Advancing the contiguous frontier MUST evict every buffered counter the
+advance swallowed, whether the frontier moved by draining or by an ordinary
+delta arriving. A counter that remains buffered after being applied would be
+applied a second time when the buffer next drains. Duplicate delivery makes
+this reachable rather than theoretical: the same counter routinely arrives
+both as a held out-of-order delta and, later, as an in-order one.
+
+If the reorder buffer for an origin would exceed its bound, the replica MUST
+NOT apply with a gap. It requests the state-transfer form of the exchange
+for that origin, which is the degenerate case already defined above. That
+keeps three properties the compact context depends on: `context` always
+denotes an applied contiguous prefix, causal delivery still holds because an
+edge's endpoints precede it on its origin, and an overflow fails toward a
+more expensive exchange rather than toward a silent hole.
+
+Dot clouds or interval sets would remove the buffer, at the cost of an
+unbounded context and a join that no longer reduces to pointwise maximum.
+This design keeps the compact context and pays with a bounded buffer.
+
+### Stability and Membership
+
+Retention and masked-edge reclamation both require knowing that an operation
+is stable — that every replica has it. Under a membership authority this is
+the pointwise minimum described above. **Under gossip alone it is not
+computable**: a partial view cannot distinguish "no other replica exists"
+from "a replica I have never heard of exists", and the second case is what a
+premature reclamation corrupts.
+
+Therefore:
+
+- A replica MUST NOT reclaim on the basis of a stability value it derived
+  from its partial view.
+- A replica MAY reclaim only against a stable watermark that carries a
+  membership epoch from an authority, and only while that epoch is current.
+- A pure-gossip deployment with no authority therefore does not reclaim. It
+  retains masked edges and delta history, trading space for the absence of
+  an authority.
+
+This is a real limit, not a temporary gap: safe reclamation under open
+membership needs membership knowledge, and gossip does not supply it. A
+deployment that needs reclamation runs an authority, which is exactly what
+the server-mediated topology provides. Mixed deployments get both: gossip
+for propagation speed, the server for the membership epoch that authorizes
+reclamation.
+
+### Metadata Growth
+
+A version vector carries one entry per replica that has ever minted an
+operation, so its size grows with cumulative membership rather than with
+live membership. Retiring an entry requires knowing that its replica will
+never mint again, which is once more a membership question and MUST use an
+authority's epoch. Absent an authority, entries are retained.
+
 ### Masked-Edge Reclamation
 
 A live-but-masked edge occurrence (endpoint removed) MAY be physically
-dropped once the removing operation's dot is covered by every peer's
-**acknowledged** context (the removal is stable), and MUST NOT be dropped
-before then. Dropping it earlier could resurrect the edge as visible if the
-peer independently re-delivered it alongside a surviving endpoint.
+dropped once the removing operation's dot is covered by the stable watermark
+defined in *Stability and Membership*, and MUST NOT be dropped before then.
+Dropping it earlier could resurrect the edge as visible if a replica
+independently re-delivered it alongside a surviving endpoint — which gossip
+makes more likely, since redelivery by an alternate path is its normal mode
+rather than a retry.
 
 ## Durability and Recovery Integration
 
@@ -197,7 +309,21 @@ error, when it observes:
 - a delta segment with a per-origin gap that the responder did not declare
   as a state transfer;
 - a schema fingerprint mismatch;
-- a checksum failure in a delta frame (quarantine per the storage spec).
+- a checksum failure in a delta frame (quarantine per the storage spec);
+- a reorder buffer that would exceed its bound without the peer offering the
+  state-transfer form;
+- a stable watermark presented without a membership epoch, or carrying an
+  epoch the replica knows to be superseded.
+
+Under gossip these failures MUST isolate the offending **session** and leave
+local state usable. A replica that poisoned itself on a bad peer would let
+one misconfigured node take down every replica that happened to gossip with
+it, which in a mesh is eventually all of them. The isolation is per-peer:
+the session terminates, the peer is dropped from the partial view, and other
+sessions continue. This is a deliberate departure from the single-session
+case, where terminating the session and failing closed are the same act.
+Conditions that indicate damaged local state, such as a checksum failure in
+an already-applied frame, still fail the replica closed.
 
 ## Consistency Boundary
 
@@ -228,6 +354,9 @@ delta segments as state joins (their semantic foundation) and checks:
 | Occurrence dots are unique and contexts never exceed minted ops | `DotsAreUnique`, `ContextBoundsMintedDots` |
 | Visible-graph referential integrity | By construction via `VisibleEdges`; masking is exercised by the `DETACH DELETE` vs concurrent edge-create interleavings |
 | An acknowledged peer context never runs ahead of what that peer applied | `AcknowledgedContextNeverExceedsPeer` |
+| A delta is never applied across a per-origin hole | `AppliedPrefixWasReceived` in `SkeinGossipDelivery.tla` |
+| The reorder buffer stays above the frontier, bounded, and disjoint from the applied prefix | `BufferIsAboveFrontier`, `BufferRespectsBound`, `BufferAndPrefixAreDisjoint` |
+| Fair gossip rounds deliver every operation to every replica | `EventualDelivery` |
 | A crash between a durable apply and its acknowledgement is safe to retry | `Crash` drops only the owed acknowledgement; the idempotent join keeps `ConvergedWhenContextsEqual` |
 
 The model abstracts the hybrid logical clock as a Lamport clock that ticks
@@ -262,6 +391,20 @@ retention state — a separate model, not an action bolted onto this one.
 
 Until that model exists, the `MUST NOT` in *Masked-Edge Reclamation* rests
 on review and implementation tests, not on machine checking.
+
+### Why Verification Is Layered
+
+Two models cover this contract because one cannot. `SkeinCrdtReplication.tla`
+checks what the join computes once a batch arrives and is bounded to two
+replicas. `SkeinGossipDelivery.tla` checks what arrives, and by abstracting
+the payload to per-origin counters it reaches three nodes and two origins.
+
+Their composition — that fair delivery of causally-ordered prefixes into a
+convergent join yields a convergent system — is argued from the join's
+commutativity, associativity, and idempotence. It is **not** machine-checked,
+because the composed model is exactly the three-replica instance that does
+not terminate. A reader should treat gossip convergence as resting on that
+argument plus two separately checked halves, not on one end-to-end proof.
 
 ### Instance Bound
 
