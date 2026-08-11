@@ -217,57 +217,48 @@ next join. The specification now requires the hybrid logical clock to merge
 past every observed timestamp on delta apply, which the model represents as
 a Lamport clock merged on each sync round.
 
-## Gossip Delivery Between Slaves
+## Confirmed-Log Delivery Between Slaves
 
 `SkeinGossipDelivery.tla` models the delivery layer of the master-slave CRDT
 contract. It is deliberately separate from `SkeinCrdtReplication.tla`: that
 model checks what the join computes once a batch arrives, this one checks
-what arrives. The split is what makes three or more replicas checkable,
-because the payload abstracts to per-origin counters and nodes, edges,
-properties, and clocks are absent.
+what arrives and what is allowed to. The split is what makes three replicas
+checkable.
 
-Roles are explicit. The master holds a session with every slave and does not
-gossip, since it already reaches every slave; slaves gossip with each other.
-Every replica mints, including slaves, which is what makes the conflict
-matrix in the specification load-bearing.
+The rule it exists for is that a slave's local operation stays pending until
+the master confirms it, and that gossip carries confirmed operations only.
+Pending work reaches the master over the session and nowhere else, so the
+master has seen everything that exists anywhere in the deployment.
 
-Under gossip an operation reaches a slave by more than one path, so arrival
-is duplicated and out of order. The model represents the applied contiguous
-per-origin prefix, which is exactly what a version-vector context can
-express, plus a bounded reorder buffer for anything above that frontier, plus
-the state transfer a buffer overflow must fall back to. A ghost `received`
-variable records what was actually delivered, so applying across a hole is
-observable rather than implicit.
+That rule is what collapses the delivery problem. Gossip carries one totally
+ordered confirmation log, so a digest is a single integer and a response is
+a contiguous run above it — no version vector on the wire, and no reorder
+buffer, because a responder shipping from the position the requester
+declared cannot leave a hole. `held` is explicit state rather than derived,
+so an action that shipped pending work is expressible and therefore
+catchable.
 
-The model checks that a replica never claims a prefix its origin has not
-minted, that the buffer holds only counters above the frontier, that the
-bound is hard, that buffered and applied work stay disjoint, that delivery
-never invents an operation, and that an applied prefix contains only
-operations the replica actually received. Under fair rounds it also checks
-that every replica reaches the full minted prefix with nothing stranded.
+The model checks that a replica holds only confirmed work and its own, that
+no replica claims a position beyond the log, that positions are contiguous
+and unique, and that a position implies possession of its whole prefix.
+Under fair sessions and rounds it also checks that every operation is
+confirmed and reaches every replica.
 
-Checking this model found a real requirement that the first draft of the
-specification left implicit: advancing the frontier must evict the buffered
-counters the advance swallowed. Without that, a counter applied in order
-while also sitting in the buffer is applied a second time when the buffer
-drains, which duplicate delivery makes reachable rather than theoretical.
-
-The checked-in instance is three nodes with `n1` as master, two origins,
-three operations per origin, and a buffer bound of one (about 12k distinct
-states, thirty seconds). It was sized by mutation testing: dropping the bound
-check reports `BufferRespectsBound`, applying whatever arrives instead of
-buffering reports `AppliedPrefixWasReceived`, and failing to evict on either
-the delivery or the state-transfer path reports `BufferIsAboveFrontier`. Two
-operations per origin was rejected as too small, because the buffer cannot
-exceed its bound at that size and the bound mutation survived.
+The checked-in instance is three nodes with `n1` as master and two
+operations per replica (about 47k distinct states, three seconds). Mutation
+testing sizes it: leaking the peer's pending work into a gossip response
+reports `HeldIsConfirmedOrOwn`, advancing a position past what was actually
+pulled reports `PositionImpliesPrefix`, and reusing a confirmation position
+instead of appending reports `LogIsContiguousAndUnique`.
 
 ### Losing the Master
 
-`SlaveFairSpec` and `SlavesAgreeWithoutMaster` cover the partition case: only
-slave-to-slave rounds are fair, so the master may stall forever, and the
-property is that slaves still converge with each other. Because TLC takes one
-specification per configuration, this is checked out of band rather than in
-the committed `.cfg`:
+`SlaveFairSpec` and `SlavesAgreeWithoutMaster` cover the partition case:
+only gossip is fair, so the master may stall forever, and the property is
+that slaves still agree on the confirmed prefix. They do not converge on
+each other's pending work — that is the stated cost of the confirmation
+rule, not a defect. Because TLC takes one specification per configuration,
+this is checked out of band:
 
 ```bash
 sed -e 's/^SPECIFICATION FairSpec/SPECIFICATION SlaveFairSpec/' \
@@ -275,12 +266,11 @@ sed -e 's/^SPECIFICATION FairSpec/SPECIFICATION SlaveFairSpec/' \
     docs/tla/SkeinGossipDelivery.cfg > /tmp/partition.cfg
 ```
 
-It passes over the same 12k states, and it has teeth: removing the
-slave-to-slave link so that everything must route through the master makes it
-fail.
+It passes, and it has teeth: disabling slave-to-slave gossip so everything
+must route through the master makes it fail.
 
-What neither model covers is the composition itself. That fair delivery plus
-a convergent join yields a convergent system is argued from the join's
+What neither model covers is the composition itself. That fair delivery
+plus a convergent join yields a convergent system is argued from the join's
 commutativity, associativity, and idempotence, not machine-checked, because
 the composed model is the three-replica instance that does not terminate.
 

@@ -1,192 +1,170 @@
 --------------------------- MODULE SkeinGossipDelivery ---------------------------
 (***************************************************************************)
-(* Gossip delivery of CRDT deltas, per the Delivery Topologies section of  *)
-(* docs/specs/SKEIN_CRDT_REPLICATION_SPEC.md.                              *)
+(* Delivery for the master-slave CRDT contract, per the Roles and Delivery *)
+(* section of docs/specs/SKEIN_CRDT_REPLICATION_SPEC.md.                   *)
 (*                                                                         *)
-(* This model is deliberately layered against SkeinCrdtReplication.tla     *)
-(* rather than merged into it. That model checks what the join computes    *)
-(* once a batch arrives; this one checks what arrives. Keeping them apart  *)
-(* is what makes three or more replicas checkable: the payload is          *)
-(* abstracted to per-origin counters, so nodes, edges, properties, and     *)
-(* clocks are all absent here.                                            *)
+(* Layered against SkeinCrdtReplication.tla rather than merged into it.    *)
+(* That model checks what the join computes once a batch arrives; this one *)
+(* checks what arrives, and what is allowed to. Keeping them apart is what *)
+(* makes three or more replicas checkable.                                 *)
 (*                                                                         *)
-(* Under gossip a delta reaches a node by more than one path, so arrival   *)
-(* is duplicated and out of order. `applied` is the contiguous per-origin  *)
-(* prefix a node has applied, which is exactly what a version-vector       *)
-(* context can express. Anything above that frontier waits in a bounded    *)
-(* reorder buffer. An overflow must fall back to state transfer rather     *)
-(* than apply across a hole.                                              *)
+(* The rule this model exists to check is that a slave's local operation   *)
+(* stays pending until the master confirms it, and that gossip carries     *)
+(* confirmed operations only. Pending work reaches the master over the     *)
+(* session and nowhere else, so the master has seen everything that exists *)
+(* anywhere in the deployment.                                             *)
+(*                                                                         *)
+(* Because gossip then carries one totally ordered log, a digest is a      *)
+(* single integer and a response is a contiguous run, which is why no      *)
+(* reorder buffer appears here. `held` is explicit state rather than       *)
+(* derived, so that an action shipping pending work is expressible and     *)
+(* therefore catchable.                                                    *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Naturals
 
-CONSTANTS Nodes, Master, Origins, MaxOps, BufferBound
+CONSTANTS Nodes, Master, MaxOps
 
 ASSUME Master \in Nodes
-ASSUME Origins \subseteq Nodes /\ Origins # {}
 ASSUME MaxOps \in Nat \ {0}
-ASSUME BufferBound \in Nat
 
 VARIABLES
-    minted,   \* [Origins -> Nat]: operations an origin has minted
-    applied,  \* [Nodes -> [Origins -> Nat]]: contiguous applied prefix
-    buffer,   \* [Nodes -> [Origins -> SUBSET counters]]: held above the frontier
-    received  \* ghost: counters actually delivered to a node, applied or not
+    minted,     \* [Nodes -> Nat]: operations a replica has minted
+    logPos,     \* [Ops -> Nat]: confirmation position, 0 while unconfirmed
+    logLen,     \* Nat: length of the master's confirmation log
+    confirmed,  \* [Nodes -> Nat]: confirmation position a replica has applied
+    held        \* [Nodes -> SUBSET Ops]: operations a replica actually has
 
-vars == <<minted, applied, buffer, received>>
+vars == <<minted, logPos, logLen, confirmed, held>>
 
-Counters == 1..MaxOps
 Slaves == Nodes \ {Master}
+Ops == Nodes \X (1..MaxOps)
+MintedBy(n) == {op \in Ops : op[1] = n /\ op[2] <= minted[n]}
+ConfirmedOps == {op \in Ops : logPos[op] > 0}
+PrefixAt(position) == {op \in Ops : logPos[op] > 0 /\ logPos[op] <= position}
 
-\* The master holds a session with every slave; slaves gossip with each
-\* other. The master does not gossip: it already reaches every slave, so
-\* adding it to the mesh would add paths without adding reachability.
-Linked(a, b) == a # b /\ (a = Master \/ b = Master \/ {a, b} \subseteq Slaves)
-
-\* A partitioned master is unreachable in both directions while slaves keep
-\* gossiping among themselves.
-SlaveLinked(a, b) == a \in Slaves /\ b \in Slaves /\ a # b
+\* A replica's own operation that the master has not yet confirmed.
+Pending(n) == MintedBy(n) \ ConfirmedOps
 
 Init ==
-    /\ minted = [o \in Origins |-> 0]
-    /\ applied = [n \in Nodes |-> [o \in Origins |-> 0]]
-    /\ buffer = [n \in Nodes |-> [o \in Origins |-> {}]]
-    /\ received = [n \in Nodes |-> [o \in Origins |-> {}]]
+    /\ minted = [n \in Nodes |-> 0]
+    /\ logPos = [op \in Ops |-> 0]
+    /\ logLen = 0
+    /\ confirmed = [n \in Nodes |-> 0]
+    /\ held = [n \in Nodes |-> {}]
 
-\* An origin mints locally and has applied its own operation by construction.
-Mint(o) ==
-    /\ minted[o] < MaxOps
-    /\ minted' = [minted EXCEPT ![o] = @ + 1]
-    /\ applied' = [applied EXCEPT ![o][o] = @ + 1]
-    /\ received' = [received EXCEPT ![o][o] = @ \cup {minted[o] + 1}]
-    /\ UNCHANGED buffer
+\* A slave writes locally. The operation is pending: held here and nowhere
+\* else until the master confirms it.
+MintSlave(s) ==
+    /\ s \in Slaves
+    /\ minted[s] < MaxOps
+    /\ minted' = [minted EXCEPT ![s] = @ + 1]
+    /\ held' = [held EXCEPT ![s] = @ \cup {<<s, minted[s] + 1>>}]
+    /\ UNCHANGED <<logPos, logLen, confirmed>>
 
-\* Everything a node can pass on: its applied prefix plus what it is holding.
-Holds(n, o) == (1..applied[n][o]) \cup buffer[n][o]
+\* The master writes, which confirms in the same step because it appends to
+\* its own log.
+MintMaster ==
+    /\ minted[Master] < MaxOps
+    /\ minted' = [minted EXCEPT ![Master] = @ + 1]
+    /\ logPos' = [logPos EXCEPT ![<<Master, minted[Master] + 1>>] = logLen + 1]
+    /\ logLen' = logLen + 1
+    /\ confirmed' = [confirmed EXCEPT ![Master] = logLen + 1]
+    /\ held' = [held EXCEPT ![Master] = @ \cup {<<Master, minted[Master] + 1>>}]
 
-\* One gossip delivery of a single counter from a to b. Selecting an
-\* arbitrary held counter models both alternate-path reordering and the
-\* partial views that make delivery order unpredictable; redelivery of an
-\* already-applied counter models the duplicates gossip produces normally.
-Deliver(a, b, o, c) ==
-    /\ Linked(a, b)
-    /\ c \in Holds(a, o)
-    /\ IF c <= applied[b][o] + 1
-         THEN \* At or below the frontier: applying is idempotent, and a
-              \* counter exactly at the frontier extends it. Advancing the
-              \* frontier must also evict what it swallowed, or the same
-              \* counter would sit in both the prefix and the buffer.
-              LET frontier == IF c = applied[b][o] + 1
-                                THEN applied[b][o] + 1
-                                ELSE applied[b][o]
-              IN /\ applied' = [applied EXCEPT ![b][o] = frontier]
-                 /\ buffer' = [buffer EXCEPT ![b][o] = {d \in @ : d > frontier}]
-         ELSE \* Above the frontier: hold it, but never beyond the bound.
-              /\ Cardinality(buffer[b][o] \cup {c}) <= BufferBound
-              /\ buffer' = [buffer EXCEPT ![b][o] = @ \cup {c}]
-              /\ UNCHANGED applied
-    /\ received' = [received EXCEPT ![b][o] = @ \cup {c}]
+\* The session: a slave pushes one pending operation and the master appends
+\* it. This is the only way pending work leaves the replica that minted it.
+Confirm(s, op) ==
+    /\ s \in Slaves
+    /\ op \in Pending(s)
+    /\ op \in held[s]
+    /\ logPos' = [logPos EXCEPT ![op] = logLen + 1]
+    /\ logLen' = logLen + 1
+    /\ confirmed' = [confirmed EXCEPT ![Master] = logLen + 1]
+    /\ held' = [held EXCEPT ![Master] = @ \cup {op}]
     /\ UNCHANGED minted
 
-\* The gap filled, so the buffer drains in counter order.
-Drain(n, o) ==
-    /\ (applied[n][o] + 1) \in buffer[n][o]
-    /\ applied' = [applied EXCEPT ![n][o] = @ + 1]
-    /\ buffer' = [buffer EXCEPT ![n][o] = {d \in @ : d > applied[n][o] + 1}]
-    /\ UNCHANGED <<minted, received>>
+\* The session, other direction: a slave pulls the confirmed run above its
+\* position.
+PullFromMaster(s) ==
+    /\ s \in Slaves
+    /\ confirmed[Master] > confirmed[s]
+    /\ confirmed' = [confirmed EXCEPT ![s] = confirmed[Master]]
+    /\ held' = [held EXCEPT ![s] = @ \cup PrefixAt(confirmed[Master])]
+    /\ UNCHANGED <<minted, logPos, logLen>>
 
-\* The escape hatch a bounded buffer needs: rather than apply across a hole,
-\* the node takes the sender's whole contiguous prefix for that origin.
-StateTransfer(a, b, o) ==
-    /\ Linked(a, b)
-    /\ applied[a][o] > applied[b][o]
-    /\ applied' = [applied EXCEPT ![b][o] = applied[a][o]]
-    /\ buffer' = [buffer EXCEPT ![b][o] = {c \in @ : c > applied[a][o]}]
-    /\ received' = [received EXCEPT ![b][o] = @ \cup (1..applied[a][o])]
-    /\ UNCHANGED minted
+\* Gossip: one slave catches another up on the confirmation log and on
+\* nothing else. The digest is a single position and the response is the
+\* contiguous run above it, so a hole cannot appear.
+Gossip(a, b) ==
+    /\ a \in Slaves /\ b \in Slaves /\ a # b
+    /\ confirmed[a] > confirmed[b]
+    /\ confirmed' = [confirmed EXCEPT ![b] = confirmed[a]]
+    /\ held' = [held EXCEPT ![b] = @ \cup PrefixAt(confirmed[a])]
+    /\ UNCHANGED <<minted, logPos, logLen>>
 
 Next ==
-    \/ \E o \in Origins : Mint(o)
-    \/ \E a \in Nodes, b \in Nodes, o \in Origins, c \in Counters : Deliver(a, b, o, c)
-    \/ \E n \in Nodes, o \in Origins : Drain(n, o)
-    \/ \E a \in Nodes, b \in Nodes, o \in Origins : StateTransfer(a, b, o)
+    \/ \E s \in Nodes : MintSlave(s)
+    \/ MintMaster
+    \/ \E s \in Nodes, op \in Ops : Confirm(s, op)
+    \/ \E s \in Nodes : PullFromMaster(s)
+    \/ \E a \in Nodes, b \in Nodes : Gossip(a, b)
 
 Spec == Init /\ [][Next]_vars
 
-\* Rounds keep happening between every ordered pair, and a node that can
-\* drain eventually does. Minting stays optional.
+\* Sessions and gossip rounds keep happening, and pending work keeps being
+\* offered for confirmation. Minting stays optional.
 FairSpec ==
     Spec
-    /\ \A s \in Nodes, t \in Nodes, p \in Origins :
-        WF_vars(StateTransfer(s, t, p))
-    /\ \A u \in Nodes, v \in Nodes, q \in Origins, k \in Counters :
-        WF_vars(Deliver(u, v, q, k))
-    /\ \A n \in Nodes, r \in Origins : WF_vars(Drain(n, r))
+    /\ \A s \in Nodes, op \in Ops : WF_vars(Confirm(s, op))
+    /\ \A t \in Nodes : WF_vars(PullFromMaster(t))
+    /\ \A a \in Nodes, b \in Nodes : WF_vars(Gossip(a, b))
+
+\* Only gossip is fair here: the master may stall forever, which is the
+\* partition case.
+SlaveFairSpec ==
+    Spec
+    /\ \A g \in Nodes, h \in Nodes : WF_vars(Gossip(g, h))
 
 -----------------------------------------------------------------------------
 
 TypeOK ==
-    /\ minted \in [Origins -> 0..MaxOps]
-    /\ applied \in [Nodes -> [Origins -> 0..MaxOps]]
-    /\ \A n \in Nodes, o \in Origins : buffer[n][o] \subseteq Counters
-    /\ \A n \in Nodes, o \in Origins : received[n][o] \subseteq Counters
+    /\ minted \in [Nodes -> 0..MaxOps]
+    /\ logLen \in 0..(Cardinality(Nodes) * MaxOps)
+    /\ \A n \in Nodes : held[n] \subseteq Ops
 
-\* A node never claims a prefix its origin has not minted.
-AppliedWithinMinted ==
-    \A n \in Nodes, o \in Origins : applied[n][o] <= minted[o]
+\* The claim this model exists for: a replica holds only confirmed work and
+\* its own. A gossip action shipping pending operations would break it.
+HeldIsConfirmedOrOwn ==
+    \A n \in Nodes : held[n] \subseteq (PrefixAt(confirmed[n]) \cup MintedBy(n))
 
-\* The reorder buffer holds only counters strictly above the frontier, so
-\* the applied prefix stays contiguous and a version vector can express it.
-BufferIsAboveFrontier ==
-    \A n \in Nodes, o \in Origins :
-        \A c \in buffer[n][o] : c > applied[n][o]
+\* A replica never claims a position beyond the log, and the master's own
+\* position is the log itself.
+ConfirmedWithinLog ==
+    /\ \A n \in Nodes : confirmed[n] <= logLen
+    /\ confirmed[Master] = logLen
 
-\* The bound is a hard one: an overflow must become a state transfer, never
-\* an apply across a hole.
-BufferRespectsBound ==
-    \A n \in Nodes, o \in Origins : Cardinality(buffer[n][o]) <= BufferBound
+\* Positions are assigned contiguously and uniquely, which is what lets a
+\* digest be one integer.
+LogIsContiguousAndUnique ==
+    /\ \A op \in Ops : logPos[op] <= logLen
+    /\ \A m \in Ops, n \in Ops :
+        (logPos[m] > 0 /\ logPos[m] = logPos[n]) => m = n
+    /\ \A i \in 1..logLen : \E op \in Ops : logPos[op] = i
 
-\* Buffered work is invisible until applied, so a held counter is never
-\* counted twice once the gap closes.
-BufferAndPrefixAreDisjoint ==
-    \A n \in Nodes, o \in Origins :
-        buffer[n][o] \cap (1..applied[n][o]) = {}
+\* Catching up by position loses nothing: a replica holds the whole prefix
+\* its position names.
+PositionImpliesPrefix ==
+    \A n \in Nodes : PrefixAt(confirmed[n]) \subseteq held[n]
 
-\* Delivery never invents an operation: anything a node holds, applied or
-\* buffered, was minted by its origin.
-HeldWorkWasMinted ==
-    \A n \in Nodes, o \in Origins :
-        \A c \in Holds(n, o) : c <= minted[o]
-
-\* The claim the reorder buffer exists to make: a node's applied prefix
-\* contains only operations it actually received, so no delta was ever
-\* applied across a hole on the strength of a later one arriving first.
-AppliedPrefixWasReceived ==
-    \A n \in Nodes, o \in Origins :
-        (1..applied[n][o]) \subseteq received[n][o]
-
-\* Liveness: fair rounds drive every node to the full minted prefix, with
-\* nothing stranded in a buffer.
+\* Liveness: fair sessions and rounds confirm every operation and carry it
+\* to every replica.
 EventualDelivery ==
-    <>[](\A n \in Nodes, o \in Origins :
-            applied[n][o] = minted[o] /\ buffer[n][o] = {})
+    <>[](\A n \in Nodes : confirmed[n] = logLen /\ Pending(n) = {})
 
-\* What a master outage must not break: slaves still agree with each other.
-\* Checked against `SlaveFairSpec`, where only slave-to-slave links are fair,
-\* so the master may stall forever. Slaves converge on everything that
-\* reached the slave set; operations stranded on the master are out of reach
-\* by construction and are excluded.
+\* A master outage leaves slaves agreeing on the confirmed prefix. They do
+\* not converge on each other's pending work, which is the stated cost of
+\* the confirmation rule rather than a defect.
 SlavesAgreeWithoutMaster ==
-    <>[](\A a \in Slaves, b \in Slaves, o \in Origins :
-            applied[a][o] = applied[b][o])
-
-\* Only slave-to-slave rounds are fair here: the master may stall forever,
-\* which is the partition case.
-SlaveFairSpec ==
-    Spec
-    /\ \A g \in Nodes, h \in Nodes, w \in Origins :
-        SlaveLinked(g, h) => WF_vars(StateTransfer(g, h, w))
-    /\ \A x \in Nodes, y \in Nodes, z \in Origins, j \in Counters :
-        SlaveLinked(x, y) => WF_vars(Deliver(x, y, z, j))
-    /\ \A m \in Nodes, e \in Origins : WF_vars(Drain(m, e))
+    <>[](\A a \in Slaves, b \in Slaves : confirmed[a] = confirmed[b])
 
 =============================================================================

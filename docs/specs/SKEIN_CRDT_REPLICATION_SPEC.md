@@ -19,15 +19,21 @@ replication ships the committed effects of those transactions.
 
 A deployment is one **master** and any number of **slaves**. Every replica
 mints operations locally, including slaves that cannot currently reach the
-master. Two link types carry deltas: a session between each slave and the
+master. Two link types carry them: a session between each slave and the
 master, and gossip directly between slaves.
 
-The split that makes this work is that only delivery differs. The replicated
-state, the dot identity, the join, and the conflict matrix are the same on
-every link, so an operation learned through gossip and the same operation
-learned from the master converge to the same value. What the master adds is
-authority — over membership, and therefore over reclamation — not a
-different merge rule and not a linearization of writes.
+The two links do not carry the same thing. A slave's local operation is
+**pending** until the master confirms it, and **gossip carries confirmed
+operations only**. Pending work travels one way, to the master, over the
+session. This is the constraint the rest of the design is built around: it
+means the master has seen every operation that exists anywhere in the mesh,
+so the mesh can never hold state the master must later reconcile.
+
+The join, the dot identity, and the conflict matrix are the same on every
+link, so an operation learned through gossip and the same operation learned
+from the master converge to the same value. The master is not a linearizer:
+it assigns confirmation order for distribution, and because the join is
+commutative that order changes nothing about the result.
 
 Every normative clause is written so that the same state and join rules
 extend to N replicas without a format change. That extension is a design
@@ -53,10 +59,17 @@ claim, not a verified one; see *Instance Bound*.
 - Every replicated committed operation mints a **dot** `(ReplicaId, counter)`.
   Counters are contiguous per replica starting at 1 and are assigned at commit
   publication, in commit order, alongside the WAL LSN.
-- A **causal context** is a version vector `VV: ReplicaId -> counter`. Because
-  per-replica counters are contiguous and deltas are delivered as per-origin
-  gap-free prefixes, the context stays a compact vector; no dot cloud is
-  required.
+- The master appends every operation it confirms to a **confirmation log**
+  and assigns it a contiguous position. The log is a distribution order, not
+  a semantic one; the join is commutative, so applying entries in a
+  different order reaches the same value.
+- A replica's **causal context** is therefore two integers, not a vector:
+  the confirmation position `P` it has applied, and the count `k` of its own
+  operations. Every dot a replica has seen is either in the log prefix `P`
+  or one of its own first `k` dots, because those are the only two ways a
+  dot can reach it. Cumulative membership does not enter the context, so a
+  replaced device or a restored backup costs nothing in metadata and no
+  entry-retirement mechanism is needed.
 - **Occurrence identity.** A `CREATE`/first-`MERGE` mints a fresh occurrence
   dot for the created node or relationship. Occurrence identity MUST NOT be
   derived from a payload hash or from the logical key. A delete, recreate,
@@ -69,7 +82,7 @@ claim, not a verified one; see *Instance Bound*.
 The replicated object is the canonical graph only. Its CRDT state per replica
 is:
 
-- `context`: the replica's causal context (a version vector).
+- `context`: the replica's causal context, the pair `(P, k)` above.
 - `nodes`: a set of live **node occurrences**
   `[key: (label, primary key), dot, props]` with at most one record per dot.
 - `edges`: a set of live **edge occurrences**
@@ -220,13 +233,13 @@ Synchronization runs over an authenticated transport session. The exchange
 below is the topology-independent core; *Delivery Topologies* then defines
 who talks to whom and how often.
 
-1. **Digest.** The requester sends its persisted `context`.
-2. **Delta response.** The responder replies with its own `context` plus, for
-   each origin replica, the gap-free segment of op deltas whose counters lie
-   above the requester's context entry, in counter order. The responder MUST
-   NOT ship a segment with holes; if requested history has been compacted
-   away it MUST ship its full joined state for the affected origin instead
-   (state transfer degenerate case).
+1. **Digest.** The requester sends its confirmation position, and on a
+   master session its pending count as well.
+2. **Delta response.** The responder replies with the contiguous run of
+   confirmation-log entries above the requester's position. The responder
+   MUST NOT ship a run with holes; if the requested entries have been
+   compacted away it MUST ship its full joined state instead (state transfer
+   degenerate case).
 3. **Join.** The receiver applies the batch as one local transaction through
    the normal WAL and group-commit path, using the join rules:
    - A local live record whose dot is covered by the sender's context and
@@ -235,7 +248,7 @@ who talks to whom and how often.
      locally absent is discarded (it was removed here).
    - A record present on both sides merges property registers per-key by
      greatest `ts`.
-   - `context := pointwise-max(context, sender context)`.
+   - the confirmation position advances to the end of the applied run.
 4. **Acknowledgment.** Only after the WAL sync boundary makes the joined
    batch durable does the receiver acknowledge its new `context` to the peer.
    The responder MAY use acknowledged peer contexts for delta retention and
@@ -243,10 +256,12 @@ who talks to whom and how often.
 
 Delivery obligations:
 
-- **Per-origin FIFO prefixes.** Together with join closure this guarantees
+- **Contiguous log prefixes.** A responder ships from the position the
+  requester declared, in order. Together with join closure this guarantees
   causal delivery: a shipped edge occurrence's endpoint dots are always
-  covered by the receiver's context once the batch is applied. A batch that
-  would violate this MUST be rejected before apply.
+  covered once the batch is applied, because the master confirmed those
+  endpoints at earlier positions. A batch that would leave a hole MUST be
+  rejected before apply.
 - **Idempotent retry.** The join is idempotent, commutative, and
   associative. After a crash, a lost acknowledgment, or a duplicated
   response, the receiver simply re-runs a round from its persisted context.
@@ -255,119 +270,83 @@ Delivery obligations:
 
 ## Roles and Delivery
 
-A deployment is one **master** and any number of **slaves**. Every replica,
-master and slave alike, mints operations locally; a slave that loses its
-master keeps accepting writes. That is what makes this a CRDT rather than
-replication: the conflict matrix above only earns its keep when more than
-one replica writes.
+Two link types carry operations, and they differ in what they may carry.
 
-The master is **not** a linearizer. Its operations carry dots like any
-other replica's, and the join is commutative, associative, and idempotent,
-so a slave that learns an operation through gossip and a slave that learns
-the same operation from the master reach the same value. What distinguishes
-the master is authority over membership and reclamation, plus being the
-durable hub that any two slaves can always reach each other through.
+**Master session.** A slave pushes its pending operations for confirmation
+and pulls the confirmation log above its position. The master appends each
+accepted operation to the log, joins it into its own state, and records the
+slave's new position. A pending operation becomes visible to the rest of the
+deployment at exactly this point and not before.
 
-Two link types carry the exchange defined above, and they differ only in
-who talks to whom:
-
-- **Master session.** Each slave runs the digest, delta, join, acknowledge
-  exchange with the master. The master records each slave's acknowledged
-  context.
-- **Slave gossip.** Slaves run the same exchange directly with each other,
-  selecting up to `fanout` peers from a partial view each round, in
-  push-pull form.
+**Slave gossip.** A slave exchanges the confirmation log with another slave
+and nothing else. It MUST NOT ship pending operations, its own or anyone
+else's, and MUST NOT accept them.
 
 The master does not gossip. It has a session with every slave, so gossiping
-would add paths without adding reachability, and keeping it out of the mesh
-keeps its acknowledged-context bookkeeping the single authoritative view.
+would add paths without adding reachability.
 
-Gossip changes three properties of delivery, and each has a consequence
-below: an operation reaches a slave by more than one path, so **duplicates**
-are normal; paths have different lengths, so segments for one origin arrive
-**out of order**; and a partial view means **no slave knows the membership**.
+### Confirmed-Log Catch-Up
 
-Duplicates are already handled: the join is idempotent, so a redelivered
-delta changes nothing, and digest-before-delta keeps the cost of a duplicate
-at one round trip rather than one payload.
+Because gossip carries only the confirmation log, everything on that path
+comes from one source and is totally ordered. A gossip digest is therefore a
+single integer — the requester's confirmation position — and the response is
+the contiguous run of entries above it.
 
-### Causal Prefix Under Out-of-Order Arrival
+This is why no reorder buffer exists in this design. A responder ships from
+the position the requester declared, in order, so a hole cannot appear. Two
+concurrent gossip rounds can only overlap, never gap, and overlap is
+absorbed by the idempotent join. The one case that cannot be served
+contiguously is a requester so far behind that the responder has compacted
+the entries it needs, which falls back to the state-transfer form already
+defined above.
 
-`context` remains a version vector, and a version vector can only express a
-contiguous per-origin prefix. Under gossip a replica may hold origin `R`'s
-counters 1..5 from one path and 8..10 from another; the vector cannot say
-that.
-
-A replica MUST NOT apply a delta whose counter exceeds its context entry for
-that origin by more than one. Deltas above the contiguous frontier are held
-in a bounded per-origin **reorder buffer** and are not applied, not counted
-in `context`, and not visible to reads. When the gap fills, the buffer
-drains in counter order.
-
-Advancing the contiguous frontier MUST evict every buffered counter the
-advance swallowed, whether the frontier moved by draining or by an ordinary
-delta arriving. A counter that remains buffered after being applied would be
-applied a second time when the buffer next drains. Duplicate delivery makes
-this reachable rather than theoretical: the same counter routinely arrives
-both as a held out-of-order delta and, later, as an in-order one.
-
-If the reorder buffer for an origin would exceed its bound, the replica MUST
-NOT apply with a gap. It requests the state-transfer form of the exchange
-for that origin, which is the degenerate case already defined above. That
-keeps three properties the compact context depends on: `context` always
-denotes an applied contiguous prefix, causal delivery still holds because an
-edge's endpoints precede it on its origin, and an overflow fails toward a
-more expensive exchange rather than toward a silent hole.
-
-Dot clouds or interval sets would remove the buffer, at the cost of an
-unbounded context and a join that no longer reduces to pointwise maximum.
-This design keeps the compact context and pays with a bounded buffer.
+Duplicates remain normal — a slave hears the same entries from several peers
+— and remain free, because the join is idempotent and digest-before-delta
+keeps the cost at one round trip rather than one payload.
 
 ### Stability and Membership
 
-Retention and masked-edge reclamation both require knowing that an operation
-is stable — that every replica has it. The master answers that question and
-nothing else does: it holds a session with every slave, records each slave's
-acknowledged context, and publishes a membership epoch naming the current
-replica set. The **stable watermark** is the pointwise minimum of the
-acknowledged contexts of every member of the current epoch.
+Retention and masked-edge reclamation need to know an operation is stable.
+The master answers this and nothing else does: it records each slave's
+confirmed position, so the **stable position** is the minimum across the
+members of the current membership epoch. An operation at or below it is on
+every replica.
 
 A slave MUST NOT derive stability from gossip. A partial view cannot
 distinguish "no other slave exists" from "a slave I have never heard of
-exists", and the second case is exactly what a premature reclamation
-corrupts. Concretely:
-
-- A replica MAY reclaim only against a stable watermark carrying a current
-  membership epoch from the master.
-- A replica MUST NOT reclaim on the basis of contexts it observed through
-  gossip, however many peers agreed.
+exists", and the second case is what a premature reclamation corrupts.
+Reclamation MAY proceed only against a stable position carrying a current
+membership epoch from the master.
 
 ### Losing the Master
 
-A slave that cannot reach the master keeps working, and the degradation is
-deliberately asymmetric:
+A slave that cannot reach the master keeps working, with a deliberate
+asymmetry:
 
-- It **keeps accepting local writes**, minting dots as usual.
-- It **keeps converging with other slaves** over gossip, so a partitioned
-  group of slaves still agrees among itself.
-- It **stops reclaiming**, because the watermark it would need is stale.
-  Masked edges and delta history accumulate until the master returns.
+- It **keeps accepting local writes**, which accumulate as pending.
+- It **keeps catching up on the confirmation log** from other slaves, so a
+  partitioned group still converges on everything the master had confirmed
+  before the partition.
+- Its **new writes stay invisible to its peers**, because gossip carries
+  only confirmed work. Two partitioned slaves converge on the past, not on
+  each other's present.
+- It **stops reclaiming**, because the stable position it would need is
+  stale.
 
-Space is therefore the only thing a master outage costs, and it is bounded
-by the outage. Nothing about correctness depends on the master being
-reachable, which is what keeps a cloud outage from making local writes
-unsafe. Promoting a slave to master is a membership decision and MUST
-publish a new membership epoch; a replica MUST reject a watermark whose
-epoch it knows to be superseded, so a demoted master cannot authorize
-reclamation.
+The third point is the price of the confirmation rule, and it is worth
+stating plainly rather than discovering later: a group of slaves on the same
+network cannot exchange new writes while the master is unreachable, however
+well connected they are to each other. What gossip buys is faster
+distribution of confirmed work and relief from the master's fan-out
+bandwidth — not collaboration during a master outage. A deployment that
+needs the latter would have to let gossip carry pending operations, which
+would give up the property that the master has seen everything that exists.
 
-### Metadata Growth
-
-A version vector carries one entry per replica that has ever minted an
-operation, so its size grows with cumulative membership rather than live
-membership. Retiring an entry requires knowing that its replica will never
-mint again, which is a membership decision and therefore the master's;
-absent a current epoch, entries are retained.
+Nothing about correctness depends on the master being reachable. A partition
+costs pending-write latency and unreclaimed space, both bounded by its
+duration. Promoting a slave to master is a membership decision and MUST
+publish a new epoch; a replica MUST reject a stable position whose epoch it
+knows to be superseded, so a demoted master cannot authorize reclamation.
 
 ### Masked-Edge Reclamation
 
@@ -403,8 +382,8 @@ error, when it observes:
   as a state transfer;
 - a schema fingerprint mismatch;
 - a checksum failure in a delta frame (quarantine per the storage spec);
-- a reorder buffer that would exceed its bound without the peer offering the
-  state-transfer form;
+- a gossip peer offering pending, unconfirmed operations, or requesting
+  them;
 - a stable watermark presented without a membership epoch, or carrying an
   epoch the replica knows to be superseded;
 - a delta batch whose greatest observed `physical_millis` exceeds local
@@ -450,10 +429,10 @@ delta segments as state joins (their semantic foundation) and checks:
 | Occurrence dots are unique and contexts never exceed minted ops | `DotsAreUnique`, `ContextBoundsMintedDots` |
 | Visible-graph referential integrity | By construction via `VisibleEdges`; masking is exercised by the `DETACH DELETE` vs concurrent edge-create interleavings |
 | An acknowledged peer context never runs ahead of what that peer applied | `AcknowledgedContextNeverExceedsPeer` |
-| A delta is never applied across a per-origin hole | `AppliedPrefixWasReceived` in `SkeinGossipDelivery.tla` |
-| The reorder buffer stays above the frontier, bounded, and disjoint from the applied prefix | `BufferIsAboveFrontier`, `BufferRespectsBound`, `BufferAndPrefixAreDisjoint` |
-| Fair rounds deliver every operation to every replica | `EventualDelivery` |
-| Slaves converge with each other while the master is unreachable | `SlavesAgreeWithoutMaster` under `SlaveFairSpec` |
+| A replica's confirmation position never runs past the log | `ConfirmedWithinLog` in `SkeinGossipDelivery.tla` |
+| Gossip never carries pending, unconfirmed work | `HeldIsConfirmedOrOwn` |
+| Fair rounds deliver every confirmed operation to every slave | `EventualDelivery` |
+| Slaves converge on the confirmed prefix while the master is unreachable | `SlavesAgreeWithoutMaster` under `SlaveFairSpec` |
 | A crash between a durable apply and its acknowledgement is safe to retry | `Crash` drops only the owed acknowledgement; the idempotent join keeps `ConvergedWhenContextsEqual` |
 
 The model abstracts the hybrid logical clock as a Lamport clock that ticks
@@ -514,7 +493,9 @@ count. Three-replica instances were
 attempted and are not exhaustively checkable at this shape: tracking each
 replica's view of every peer's acknowledged context adds a version vector
 per ordered pair, and the smallest three-replica configuration still
-exceeded seven million distinct states without terminating. Transitive
+exceeded seven million distinct states without terminating. That bound
+applies to the join model; the delivery model reaches three nodes because it
+abstracts the payload away. Transitive
 delivery — where a fault would show as `a` and `c` diverging while each
 agrees with `b` — is consequently argued from the join's commutativity and
 associativity, not machine-checked. The spec's claim that the rules extend
