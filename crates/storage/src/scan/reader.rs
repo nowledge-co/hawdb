@@ -590,15 +590,16 @@ mod tests {
     }
 
     #[test]
-    fn panicking_range_read_fails_only_its_own_range() {
+    fn panicking_range_read_preserves_completed_waves_and_returns_typed_error() {
         let reader = PanickingReader {
             panic_on_segment: 2,
         };
         let ranges = (0..4)
             .map(|segment_id| SegmentReadRange::new(1, segment_id, segment_id, NonZeroU64::MIN))
             .collect::<Vec<_>>();
-        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(4).unwrap(), NonZeroU64::MIN)
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
             .schedule(ranges);
+        assert_eq!(schedule.wave_count(), 2);
         let pool = SegmentReadPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
 
         let mut served = Vec::new();
@@ -626,12 +627,9 @@ mod tests {
             error.to_string(),
             "segment artifact 1 range reader panicked"
         );
-        // Ranges scheduled before the panicking one still reached the sink, so
-        // one bad segment does not discard the wave's completed work.
-        assert!(
-            served.iter().all(|segment| *segment != Some(2)),
-            "the panicking range must not be delivered: {served:?}"
-        );
+        // The first wave reached the sink before the second wave failed. The
+        // failing wave remains atomic, so none of its payloads are delivered.
+        assert_eq!(served, vec![Some(0), Some(1)]);
     }
 
     #[test]
