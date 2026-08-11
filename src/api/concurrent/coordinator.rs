@@ -19,6 +19,10 @@ const ADAPTIVE_FSYNC_MIN_COMPLETED_SAMPLES: u64 = 8;
 const ADAPTIVE_FSYNC_FRACTION_PER_MILLION: u64 = 75_000;
 // Delays below this policy floor add scheduler jitter without useful batching.
 const MIN_USEFUL_COALESCING_DELAY: Duration = Duration::from_micros(50);
+// A follower is woken by the leader, so this interval is not a latency budget.
+// It only decides how soon a follower notices that nobody is going to wake it,
+// which is a broken invariant rather than a slow commit.
+const GROUP_COMMIT_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct CommitSequencer {
     database: Mutex<Database>,
@@ -73,11 +77,15 @@ impl CommitSequencer {
                 self.run_group_commit()?;
                 continue;
             }
-            state = self
+            let waited = self
                 .group_commit
                 .available
-                .wait(state)
+                .wait_timeout(state, GROUP_COMMIT_LIVENESS_CHECK_INTERVAL)
                 .map_err(|_| group_commit_coordinator_poisoned_error())?;
+            state = waited.0;
+            if waited.1.timed_out() {
+                state.assert_commit_is_still_owned(&request)?;
+            }
             drop(state);
         }
     }
@@ -449,6 +457,26 @@ impl GroupCommitState {
         estimate
     }
 
+    /// A follower only ever waits for a leader to complete it. It is either
+    /// still queued, or a leader is holding it, and one of the two must be
+    /// true for the wait to be able to end.
+    ///
+    /// The leader releases leadership through an RAII guard and completes every
+    /// request it dequeued, so neither is expected to be false. If both are,
+    /// no wakeup can arrive and waiting again would hang the caller forever,
+    /// which is the failure this check exists to convert into an error.
+    fn assert_commit_is_still_owned(&self, request: &Arc<QueuedCommit>) -> Result<()> {
+        if self.leader_active || self.queue.iter().any(|queued| Arc::ptr_eq(queued, request)) {
+            return Ok(());
+        }
+        Err(SkeinError::Execution(
+            "WAL group commit request was dequeued without being completed; \
+             the commit sequencer is inconsistent and the database must be \
+             closed and reopened"
+                .to_string(),
+        ))
+    }
+
     fn record_wait_decision(&mut self, decision: WalGroupCommitWaitDecision, delay: Duration) {
         let delay_micros = duration_micros(delay);
         self.metrics.last_wait_decision = decision;
@@ -740,6 +768,36 @@ mod group_commit_tests {
 
     fn successful_task() -> CommitTask {
         Box::new(|_| Ok(QueryOutput { rows: Vec::new() }))
+    }
+
+    #[test]
+    fn dequeued_but_uncompleted_request_fails_instead_of_waiting_forever() {
+        let sequencer = CommitSequencer::new(Database::new(), test_config(2));
+        let request = Arc::new(QueuedCommit::new(successful_task()));
+
+        // Reproduce the state a leader would leave behind if it dequeued a
+        // request and returned without completing it: no leader holds the
+        // pipeline, and the request is in nobody's queue. Before this check
+        // existed such a follower waited on the condvar forever, because the
+        // only thread that could have woken it was already gone.
+        let state = sequencer.group_commit.lock_state().unwrap();
+        let error = state
+            .assert_commit_is_still_owned(&request)
+            .expect_err("an unowned request must not be left waiting");
+        assert!(
+            error.to_string().contains("without being completed"),
+            "unexpected error: {error}"
+        );
+        drop(state);
+
+        // A request still queued, or one held by an active leader, is owned by
+        // someone who will wake it, so waiting again is correct.
+        let mut state = sequencer.group_commit.lock_state().unwrap();
+        state.queue.push_back(Arc::clone(&request));
+        assert!(state.assert_commit_is_still_owned(&request).is_ok());
+        state.queue.clear();
+        state.leader_active = true;
+        assert!(state.assert_commit_is_still_owned(&request).is_ok());
     }
 
     #[test]
