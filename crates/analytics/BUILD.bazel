@@ -1,0 +1,23 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "skein_analytics",
+    crate_name = "skein_analytics",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = [
+        "//crates/core:skein_core",
+        "//crates/storage:skein_storage",
+    ],
+)
+
+rust_test(
+    name = "skein_analytics_tests",
+    crate = ":skein_analytics",
+    edition = "2024",
+)

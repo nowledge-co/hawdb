@@ -20,6 +20,7 @@ use crate::store::{
     RelationshipTargetNodeDelete, ScanPruningReport, SourceScanCandidateRead,
 };
 use crate::value::Value;
+use skein_analytics::ProjectedGraphExecution;
 use skein_core::RuntimeTaskContext;
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
 use skein_executor::ExecutionLimit;

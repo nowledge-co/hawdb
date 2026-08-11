@@ -1,0 +1,10 @@
+[package]
+name = "skein-analytics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+skein-core = { path = "../core" }
+skein-storage = { path = "../storage" }

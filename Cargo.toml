@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 simsimd = "6.5"
 skein-core = { path = "crates/core" }
+skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
 skein-executor = { path = "crates/executor" }
@@ -52,6 +53,7 @@ tokio-runtime = ["dep:skein-runtime-tokio"]
 
 [workspace]
 members = [
+  "crates/analytics",
   "crates/core",
   "crates/cypher",
   "crates/ddl",

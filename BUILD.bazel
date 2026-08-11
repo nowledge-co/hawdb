@@ -12,6 +12,7 @@ _SKEIN_SRCS = glob(
 )
 
 _SKEIN_BASE_DEPS = all_crate_deps(normal = True) + [
+    "//crates/analytics:skein_analytics",
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
     "//crates/ddl:skein_ddl",
