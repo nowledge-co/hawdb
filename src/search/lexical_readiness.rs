@@ -1,4 +1,5 @@
 use crate::error::{Result, SkeinError};
+use crate::production_evidence::production_evidence_blocker_codes;
 
 pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL: &str =
     "skein-search-lexical-production-qualification";
@@ -393,7 +394,7 @@ impl SearchLexicalProductionQualificationReport {
         }
         match (&self.evidence_binding, &self.expected_identity) {
             (Some(binding), Some(expected)) => {
-                blockers.extend(binding.blocker_codes_for(expected));
+                blockers.extend(production_evidence_blocker_codes(binding, expected));
                 if self.projection_identity.source_graph_commit_epoch
                     != Some(expected.canonical_graph_commit_epoch)
                 {
@@ -508,7 +509,10 @@ impl SearchLexicalProductionQualificationReport {
             blockers.push("current_release_identity_mismatch".to_string());
         }
         match &self.evidence_binding {
-            Some(binding) => blockers.extend(binding.blocker_codes_for(expected_identity)),
+            Some(binding) => blockers.extend(production_evidence_blocker_codes(
+                binding,
+                expected_identity,
+            )),
             None => blockers.push("production_evidence_binding_missing".to_string()),
         }
         if projection_identity.source_graph_commit_epoch

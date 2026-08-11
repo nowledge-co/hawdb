@@ -16,6 +16,7 @@ _SKEIN_BASE_DEPS = all_crate_deps(normal = True) + [
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
     "//crates/ddl:skein_ddl",
+    "//crates/evidence:skein_evidence",
     "//crates/executor:skein_executor",
     "//crates/expression:skein_expression",
     "//crates/integrity:skein_integrity",

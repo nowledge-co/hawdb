@@ -67,12 +67,14 @@ local resource classes, background admission, and expected-value ranking,
 fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
 lowering logic. `skein-analytics` owns the storage-neutral immutable CSR/CSC
-kernel and deterministic PageRank/Louvain implementations.
+kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
+owns release identity validation and storage crash-recovery evidence contracts.
 
 ```text
 crates/
   core/                errors, values, ids, catalog names, schema descriptors
   analytics/           immutable CSR/CSC projections and graph algorithms
+  evidence/            release identity and crash-recovery evidence contracts
   plan/                logical/physical IR, phase roots, explain, fingerprints
   qos/                 work classes, local admission, background ranking
   optimizer/           Cascades memo/rules/search plus graph cost and lowering
@@ -97,6 +99,13 @@ depends inward on `skein-core` and storage record types, but never on the root
 database, WAL, query executor, or embedded runtime. This keeps projection scan
 and recovery ownership in the embedding layer while making the algorithm
 kernel reusable over immutable snapshots.
+
+`src/production_evidence.rs` and `src/crash_recovery_evidence.rs` remain public
+compatibility facades over `skein-evidence`. The evidence crate depends only on
+`skein-core` plus serialization, so qualification and recovery tools can share
+one fail-closed protocol model without depending on the root database runtime.
+Blocker-code calculation stays inside that contract instead of becoming a
+second public readiness implementation in the facade.
 
 `src/qos.rs` is also a compatibility re-export facade over `skein-qos`. The
 QoS crate owns local foreground/background work classes, admission decisions,

@@ -1,4 +1,5 @@
 use super::{SearchRetrieverReport, TURBOQUANT_CANDIDATE_BACKEND};
+use crate::production_evidence::production_evidence_blocker_codes;
 use crate::{Result, SkeinError};
 use std::collections::BTreeSet;
 
@@ -307,7 +308,10 @@ impl VectorRecallProductionQualificationReport {
         if self.expected_identity != *expected_identity {
             blockers.push("current_release_identity_mismatch".to_string());
         }
-        blockers.extend(self.evidence_binding.blocker_codes_for(expected_identity));
+        blockers.extend(production_evidence_blocker_codes(
+            &self.evidence_binding,
+            expected_identity,
+        ));
         if projection_identity.source_graph_commit_epoch
             != Some(expected_identity.canonical_graph_commit_epoch)
         {

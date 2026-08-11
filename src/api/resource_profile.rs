@@ -1,4 +1,5 @@
 use super::*;
+use crate::production_evidence::production_evidence_blocker_codes;
 
 pub const STORAGE_RESOURCE_PROFILE_PROTOCOL: &str = "skein-storage-resource-profile-v2";
 
@@ -76,7 +77,9 @@ impl StorageResourceProfileReport {
             .evidence_binding
             .as_ref()
             .zip(self.expected_identity.as_ref())
-            .is_some_and(|(binding, expected)| binding.blocker_codes_for(expected).is_empty());
+            .is_some_and(|(binding, expected)| {
+                production_evidence_blocker_codes(binding, expected).is_empty()
+            });
         let blocking_operator_memory_reports = self
             .query
             .execution_profile
@@ -192,7 +195,7 @@ impl StorageResourceProfileReport {
         let mut blockers = self.blocker_codes.clone();
         match (&self.evidence_binding, &self.expected_identity) {
             (Some(binding), Some(expected)) => {
-                blockers.extend(binding.blocker_codes_for(expected));
+                blockers.extend(production_evidence_blocker_codes(binding, expected));
                 if binding.identity.canonical_graph_commit_epoch
                     != self.canonical_graph_commit_epoch
                 {

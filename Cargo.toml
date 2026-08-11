@@ -15,6 +15,7 @@ skein-core = { path = "crates/core" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
+skein-evidence = { path = "crates/evidence" }
 skein-executor = { path = "crates/executor" }
 skein-expression = { path = "crates/expression" }
 skein-integrity = { path = "crates/integrity" }
@@ -57,6 +58,7 @@ members = [
   "crates/core",
   "crates/cypher",
   "crates/ddl",
+  "crates/evidence",
   "crates/executor",
   "crates/expression",
   "crates/fuzz",
