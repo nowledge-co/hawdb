@@ -6,4 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+sha2 = { version = "0.10", default-features = false }
+
+# The aarch64 hardware SHA-256 backend is only reachable through this feature;
+# x86 already detects SHA-NI at runtime and needs nothing here. `sha2-asm`
+# ships GNU-syntax `.S` sources, which MSVC cannot assemble, so the activation
+# excludes that environment rather than the whole platform.
+[target.'cfg(all(target_arch = "aarch64", not(target_env = "msvc")))'.dependencies]
 sha2 = { version = "0.10", default-features = false, features = ["asm"] }
