@@ -221,7 +221,7 @@ fn typed_knowledge_property_batch_update_persists_as_one_wal_batch_and_replays()
     }
     let wal = read_test_wal(&path).unwrap();
     assert!(wal.contains("set_node_property"));
-    assert_eq!(wal.matches("\tbatch\t").count(), 1);
+    assert_eq!(wal.matches("\tbatch\t").count(), 2);
     {
         let db = Database::open(&path).unwrap();
         let output = db

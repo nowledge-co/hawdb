@@ -486,7 +486,7 @@ fn schema_maintenance_advances_backfill_and_validation_in_batch_wal() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.matches("\tbatch\t").count(), 5);
+    assert_eq!(wal.matches("\tbatch\t").count(), 6);
     assert!(wal.contains("alter_property_state,node,4d656d6f7279,6964,validating"));
     assert!(wal.contains("alter_property_state,node,4d656d6f7279,6964,public"));
     {

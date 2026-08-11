@@ -35,7 +35,7 @@ use crate::store::{
     GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, NodeId, NodeRecord,
     PreparedCheckpoint, PropertyIndexConsistencyReport, PropertyIndexProjectionRebuildAction,
     PublishedReadView, RecoveryMode, RelId, RelRecord, SchemaMaintenanceAction,
-    SegmentCacheSnapshot, StorageBackupReport, StoragePressureSnapshot,
+    SegmentCacheSnapshot, SkeinSnapshotRowsImport, StorageBackupReport, StoragePressureSnapshot,
     StorageReclamationWatermark, StorageRecoveryReport, StorageRestoreReport, StorageScrubReport,
     StoreStableIdMapping, WalReplayConfig,
 };
@@ -77,6 +77,7 @@ mod resource_profile;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod source_candidates;
+mod system_schema;
 mod system_sql;
 mod system_variables;
 mod transaction_locks;
@@ -164,6 +165,7 @@ pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
 };
+pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 pub use system_variables::QuerySystemVariables;
 
 fn skein_lightning_initial_import_source_fingerprint_key(
@@ -723,7 +725,7 @@ impl Database {
         store.set_max_search_projection_change_log_entries(
             config.max_search_projection_change_log_entries,
         );
-        Ok(Self {
+        let mut database = Self {
             catalog,
             store,
             optimizer: CascadesOptimizer::new(optimizer_config_from_database_config(&config)),
@@ -741,7 +743,9 @@ impl Database {
             next_derived_artifact_job_id: 1,
             derived_artifact_jobs: Vec::new(),
             telemetry: None,
-        })
+        };
+        database.apply_engine_system_schema()?;
+        Ok(database)
     }
 
     pub fn config(&self) -> &DatabaseConfig {
@@ -1194,9 +1198,10 @@ impl Database {
         &mut self,
     ) -> Result<SkeinLightningBootstrapExport> {
         let snapshot = self.export_canonical_graph_snapshot_with_persisted_stable_ids()?;
+        let relational_state = self.skein_lightning_relational_state()?;
         let relational_stream = SkeinLightningRelationalStream::from_state(
             self.store.commit_epoch(),
-            self.store.relational_state(),
+            &relational_state,
         )?;
         let manifest = snapshot.skein_lightning_bootstrap_manifest(&relational_stream);
         let graph_stream = snapshot.skein_lightning_graph_stream();
@@ -1395,9 +1400,12 @@ impl Database {
             }
         }
         let statistics = self.store.basic_statistics();
+        let target_has_only_engine_bootstrap = self.has_only_engine_system_schema_bootstrap()?;
+        let relational_target_empty =
+            self.store.relational_state().is_empty() || target_has_only_engine_bootstrap;
         let target_empty = statistics.node_count == 0
             && statistics.relationship_count == 0
-            && self.store.relational_state().is_empty()
+            && relational_target_empty
             && self.catalog.is_empty();
         if !target_empty {
             blocker_codes.insert("skein_lightning_initial_import_target_not_empty".to_string());
@@ -1450,6 +1458,7 @@ impl Database {
         let snapshot = snapshot.expect("snapshot should be available without import blockers");
         let relational_state =
             relational_state.expect("relational state should be available without import blockers");
+        Self::validate_skein_lightning_system_schema(&relational_state)?;
         let stable_id_mapping = StoreStableIdMapping {
             node_stable_ids: snapshot
                 .nodes
@@ -1498,11 +1507,14 @@ impl Database {
         self.store
             .import_skein_snapshot_rows_with_source_fingerprint(
                 &mut self.catalog,
-                stable_id_mapping,
-                source_fingerprint,
-                node_rows,
-                relationship_rows,
-                relational_state,
+                SkeinSnapshotRowsImport {
+                    stable_id_mapping,
+                    source_fingerprint,
+                    nodes: node_rows,
+                    relationships: relationship_rows,
+                    relational_state,
+                    target_has_only_engine_bootstrap,
+                },
             )?;
         let updated_plan = skein_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
@@ -2335,8 +2347,12 @@ impl Database {
             hint.recent_delta_operations = request.operation_count();
         }
         if hint.source_graph_commit_lag == 0 {
-            hint.source_graph_commit_lag =
-                search_projection_commit_lag(search_index, self.store.commit_epoch());
+            hint.source_graph_commit_lag = search_projection_commit_lag(
+                search_index,
+                self.store
+                    .search_projection_changefeed_status()
+                    .required_projection_commit_epoch(),
+            );
         }
         if request.operation_count() == 0
             && hint.source_graph_commit_lag > 0
@@ -2359,8 +2375,12 @@ impl Database {
         search_index: &SearchIndex,
         mut hint: BackgroundWorkHint,
     ) -> Option<BackgroundWorkPlan> {
-        let source_graph_commit_lag =
-            search_projection_commit_lag(search_index, self.store.commit_epoch());
+        let source_graph_commit_lag = search_projection_commit_lag(
+            search_index,
+            self.store
+                .search_projection_changefeed_status()
+                .required_projection_commit_epoch(),
+        );
         if source_graph_commit_lag == 0 {
             return None;
         }
@@ -2397,12 +2417,11 @@ impl Database {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
         let mut complete_through_graph_commit_epoch = source_graph_commit_epoch;
-        let mut saw_change = false;
+        let mut truncated_by_budget = false;
         for change in self
             .store
             .search_projection_graph_changes_after(source_graph_commit_epoch)
         {
-            saw_change = true;
             let additional_operation_count = change
                 .upsert_node_ids
                 .iter()
@@ -2428,13 +2447,14 @@ impl Database {
                         change.commit_epoch
                     )));
                 }
+                truncated_by_budget = true;
                 break;
             }
             upsert_node_ids.extend(change.upsert_node_ids);
             delete_document_ids.extend(change.delete_document_ids);
             complete_through_graph_commit_epoch = change.commit_epoch;
         }
-        if !saw_change {
+        if !truncated_by_budget {
             complete_through_graph_commit_epoch = current_epoch;
         }
 
@@ -2555,8 +2575,12 @@ impl Database {
             if options.include_search_projection_rebuild {
                 let mut hint = options.hint.clone();
                 if hint.source_graph_commit_lag == 0 {
-                    hint.source_graph_commit_lag =
-                        search_projection_commit_lag(search_index, self.store.commit_epoch());
+                    hint.source_graph_commit_lag = search_projection_commit_lag(
+                        search_index,
+                        self.store
+                            .search_projection_changefeed_status()
+                            .required_projection_commit_epoch(),
+                    );
                 }
                 if let Some(plan) =
                     self.search_projection_rebuild_background_work_plan(search_index, hint)
@@ -3406,6 +3430,10 @@ impl KnowledgeRetrievalGraphContext<'_> {
         )?;
         let evidence = self.knowledge_evidence_for_search(&search, &graph_context_search.paths)?;
         let graph_commit_epoch = self.store.commit_epoch();
+        let required_projection_commit_epoch = self
+            .store
+            .search_projection_changefeed_status()
+            .required_projection_commit_epoch();
         let retrievers = knowledge_retriever_reports(
             &search,
             &evidence,
@@ -3440,6 +3468,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
             request,
             &projection_freshness,
             graph_commit_epoch,
+            required_projection_commit_epoch,
             KnowledgeRetrievalDiagnosticsInput {
                 graph_seed_input_candidate_set: knowledge_graph_seed_input_candidate_set_report(
                     graph_seed_search.input_candidate_count,
@@ -4223,6 +4252,7 @@ fn knowledge_retrieval_diagnostics(
     request: &KnowledgeRetrievalRequest,
     projection_freshness: &SearchProjectionFreshness,
     graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
     input: KnowledgeRetrievalDiagnosticsInput,
 ) -> KnowledgeRetrievalDiagnostics {
     let mut empty_reasons = Vec::new();
@@ -4277,9 +4307,12 @@ fn knowledge_retrieval_diagnostics(
         projection_source_graph_commit_epoch: projection_freshness.source_graph_commit_epoch,
         projection_commit_lag: search_projection_freshness_commit_lag(
             projection_freshness,
-            graph_commit_epoch,
+            required_projection_commit_epoch,
         ),
-        projection_stale: search_projection_is_stale(projection_freshness, graph_commit_epoch),
+        projection_stale: search_projection_is_stale(
+            projection_freshness,
+            required_projection_commit_epoch,
+        ),
         projection_full_reindex_needed: projection_freshness.full_reindex_needed,
         projection_full_reindex_reasons: projection_freshness.full_reindex_reasons.clone(),
         projection_metadata_repair_needed: projection_freshness.metadata_repair_needed,
@@ -4327,7 +4360,10 @@ fn knowledge_retrieval_diagnostics(
         candidate_truncated: !candidate_truncation_reasons.is_empty(),
         candidate_truncation_reason_codes,
         candidate_truncation_reasons,
-        warnings: knowledge_retrieval_warnings(projection_freshness, graph_commit_epoch),
+        warnings: knowledge_retrieval_warnings(
+            projection_freshness,
+            required_projection_commit_epoch,
+        ),
         empty_reason_codes,
         empty_reasons,
     }
@@ -4401,10 +4437,10 @@ fn knowledge_graph_context_truncation_reason_codes(
 
 fn knowledge_retrieval_warnings(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-    if search_projection_is_stale(projection_freshness, graph_commit_epoch) {
+    if search_projection_is_stale(projection_freshness, required_projection_commit_epoch) {
         warnings.push("search projection is older than graph snapshot".to_string());
     }
     if projection_freshness.full_reindex_needed {
@@ -4430,19 +4466,20 @@ fn knowledge_retrieval_warnings(
 
 fn search_projection_is_stale(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> bool {
     projection_freshness
         .source_graph_commit_epoch
-        .map(|projection_epoch| projection_epoch < graph_commit_epoch)
+        .map(|projection_epoch| projection_epoch < required_projection_commit_epoch)
         .unwrap_or(false)
 }
 
 fn search_projection_freshness_commit_lag(
     projection_freshness: &SearchProjectionFreshness,
-    graph_commit_epoch: u64,
+    required_projection_commit_epoch: u64,
 ) -> u64 {
-    graph_commit_epoch.saturating_sub(projection_freshness.source_graph_commit_epoch.unwrap_or(0))
+    required_projection_commit_epoch
+        .saturating_sub(projection_freshness.source_graph_commit_epoch.unwrap_or(0))
 }
 
 fn graph_seed_candidate_id(seed: &KnowledgeGraphSeed) -> String {
@@ -17289,8 +17326,14 @@ fn search_projection_graph_delta_for(
     })
 }
 
-fn search_projection_commit_lag(search_index: &SearchIndex, graph_commit_epoch: u64) -> u64 {
-    search_projection_freshness_commit_lag(&search_index.projection_freshness(), graph_commit_epoch)
+fn search_projection_commit_lag(
+    search_index: &SearchIndex,
+    required_projection_commit_epoch: u64,
+) -> u64 {
+    search_projection_freshness_commit_lag(
+        &search_index.projection_freshness(),
+        required_projection_commit_epoch,
+    )
 }
 
 fn knowledge_entity_from_node(catalog: &Catalog, node: &NodeRecord) -> KnowledgeEntity {
@@ -18084,8 +18127,16 @@ fn execute_database_transaction_sql(
     state: &mut DatabaseTransactionState,
     sql_text: &str,
     parameters: &[Value],
+    allow_system_schema_registry_write: bool,
 ) -> Result<QueryOutput> {
     let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+    if !allow_system_schema_registry_write
+        && crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement)
+    {
+        return Err(SkeinError::Semantic(
+            "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
+        ));
+    }
     if matches!(
         &prepared.statement,
         crate::sql::SqlStatement::Select(select)
@@ -18206,7 +18257,25 @@ impl DatabaseTransaction<'_> {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
-        execute_database_transaction_sql(&self.runtime, &mut self.state, sql_text, parameters)
+        execute_database_transaction_sql(
+            &self.runtime,
+            &mut self.state,
+            sql_text,
+            parameters,
+            false,
+        )
+    }
+
+    pub(super) fn query_system_schema_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
+        self.query_system_schema_sql_with_params(sql_text, &[])
+    }
+
+    pub(super) fn query_system_schema_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        execute_database_transaction_sql(&self.runtime, &mut self.state, sql_text, parameters, true)
     }
 
     pub fn commit(mut self) -> Result<QueryOutput> {

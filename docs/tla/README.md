@@ -15,7 +15,7 @@ a Java 11 or newer runtime. Without `TLA2TOOLS_JAR`, the script downloads TLA+
 Tools 1.7.4 and verifies its SHA-256 digest before execution.
 
 Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain a release artifact.
-The artifact contains the exact nine `.tla` and `.cfg` inputs, one complete TLC
+The artifact contains the exact ten `.tla` and `.cfg` inputs, one complete TLC
 log per model, the Java version, and a revision- and tool-bound manifest. CI
 validates the downloaded artifact with:
 
@@ -120,6 +120,8 @@ They are implementation evidence, not a machine-checked refinement proof.
 | Stale optimistic commits fail before publication and fine-grained locks preserve compatibility | `commit_mutation_transaction_and_relational`, `LockTable` | `optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer`, `disjoint_primary_key_point_locks_allow_both_pessimistic_writers_to_commit`, `shared_primary_key_range_blocks_phantoms_but_not_the_excluded_boundary` |
 | A deadlock-closing multi-owner wait edge selects one victim and releases its dependencies | `WaitForGraph::register`, `ConcurrentDatabaseTransaction::abort_after_lock_failure` | `point_lock_upgrade_cycle_selects_one_deadlock_victim`, `wait_for_graph_detects_a_cycle_with_multiple_blockers` |
 | A stale, mixed, missing, or corrupt Source scan sidecar falls back to the canonical graph | `source_scan::load`, `ScanSegmentManifest::plan_scan` | `checkpoint_publishes_source_scan_and_wal_mutation_invalidates_it`, `corrupted_source_scan_artifact_never_blocks_canonical_graph_recovery` |
+| System schema objects and migration identities publish atomically; invalid, future, read-only, and failed-DDL states never return a usable upgraded handle | `Database::apply_system_schema_registry`, `execute_database_transaction_sql`, `GraphStore::commit_mutation_transaction_and_relational` | `application_system_schema_upgrades_and_reopens_idempotently`, `application_system_schema_rejects_changed_applied_migration`, `application_system_schema_rejects_a_database_from_a_newer_binary`, `failed_application_system_schema_upgrade_does_not_publish_version`, `read_only_database_rejects_pending_application_system_schema_upgrade` |
+| Skein Lightning derives a registry-complete export without advancing an in-memory source epoch and imports only a valid stream into an empty or verified engine-only target | `Database::skein_lightning_relational_state`, `Database::skein_lightning_initial_import_apply_internal`, `GraphStore::import_skein_snapshot_rows_with_source_fingerprint` | `skein_lightning_initial_import_apply_imports_database_state_into_empty_target`, `skein_lightning_initial_import_rejects_stream_without_engine_registry` |
 
 ## In-memory Snapshot Publication
 
@@ -158,6 +160,27 @@ never selectable: open-time validation discards it when writable, and every read
 falls back to the authoritative graph. A reader selects the sidecar only when
 the pinned graph epoch, published manifest epoch, live artifact epoch, and
 durably built identity all agree.
+
+## Ordered System Schema Upgrade and Import
+
+`SkeinSystemSchemaUpgrade.tla` models startup validation, ordered migration
+staging, the shared WAL durability decision, handle publication, DDL failure,
+read-only rejection, crash recovery, and the Skein Lightning registry boundary.
+Schema objects and migration records are separate modeled variables so TLC can
+detect any publication step that advances one without the other. A usable
+handle is absent until the durable pair is current and validated.
+
+The import sub-protocol accepts only a registry-valid stream and an empty or
+verified engine-only target. Import visibility follows durability, including
+recovery from a crash after sync. The export action records the source epoch
+without changing it and always derives a valid engine registry, matching the
+non-mutating in-memory export path.
+
+The checked-in instance has two migration versions and explores 10,944
+distinct states. Mutation testing confirms that leaving the registry version
+unchanged while the schema version reaches the sync boundary violates
+`DurableSchemaAndRegistryAreAtomic` after four transitions. This validates that
+the model distinguishes atomic publication from schema-only durability.
 
 ## CRDT Replication Between Skein Nodes
 

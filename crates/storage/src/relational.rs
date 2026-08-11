@@ -303,6 +303,17 @@ impl RelationalRowPages {
         self.iter().map(|(_, row)| row)
     }
 
+    fn append_value_to_all(&mut self, value: &RelationalValue) {
+        let pages = Arc::make_mut(&mut self.pages);
+        for page in pages {
+            for row in Arc::make_mut(page).values_mut() {
+                let mut values = row.values().to_vec();
+                values.push(value.clone());
+                *row = RelationalRow::new(values);
+            }
+        }
+    }
+
     fn insert(&mut self, key: RelationalKey, row: RelationalRow) -> Option<RelationalRow> {
         if self.pages.is_empty() {
             self.pages = Arc::new(vec![Arc::new(BTreeMap::from([(key, row)]))]);
@@ -926,6 +937,10 @@ pub enum RelationalConflictAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalWrite {
     CreateTable(RelationalTableSchema),
+    AddColumn {
+        table: String,
+        column: RelationalColumnSchema,
+    },
     CreateIndex {
         table: String,
         index: RelationalIndexSchema,
@@ -970,6 +985,7 @@ impl RelationalTransaction {
                 RelationalWrite::Upsert { rows, .. } => rows.len(),
                 RelationalWrite::DeleteByPrimaryKey { keys, .. } => keys.len(),
                 RelationalWrite::CreateTable(_)
+                | RelationalWrite::AddColumn { .. }
                 | RelationalWrite::CreateIndex { .. }
                 | RelationalWrite::DeleteWhere { .. }
                 | RelationalWrite::UpdateWhere { .. } => 0,
@@ -995,6 +1011,7 @@ impl RelationalTransaction {
                     .map(RelationalValue::estimated_payload_bytes)
                     .sum(),
                 RelationalWrite::CreateTable(_)
+                | RelationalWrite::AddColumn { .. }
                 | RelationalWrite::CreateIndex { .. }
                 | RelationalWrite::DeleteWhere { .. }
                 | RelationalWrite::UpdateWhere { .. } => 0,
@@ -1199,6 +1216,72 @@ fn apply_transaction(
                     Arc::new(RelationalTableSegment::default()),
                 );
                 next.schemas.insert(schema.name.clone(), Arc::new(schema));
+            }
+            RelationalWrite::AddColumn { table, column } => {
+                let mut schema = next
+                    .schemas
+                    .get(&table)
+                    .map(|schema| schema.as_ref().clone())
+                    .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
+                if schema.column_position(&column.name).is_some() {
+                    return Err(RelationalError::Schema(format!(
+                        "table {table} already has column {}",
+                        column.name
+                    )));
+                }
+                let row_count = next
+                    .segments
+                    .get(&table)
+                    .map_or(0, |segment| segment.rows.len());
+                if row_count > limits.max_rows.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "ALTER TABLE {table} rewrites {row_count} rows, exceeding max_rows {}",
+                        limits.max_rows
+                    )));
+                }
+                let fill = column.default.clone().unwrap_or(RelationalValue::Null);
+                if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
+                    return Err(RelationalError::Constraint(format!(
+                        "ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table",
+                        column.name
+                    )));
+                }
+                let rewrite_bytes = next
+                    .segments
+                    .get(&table)
+                    .expect("validated relational table has a segment")
+                    .rows
+                    .iter()
+                    .map(|(key, row)| {
+                        relational_row_entry_bytes(key, row)
+                            .saturating_add(fill.estimated_payload_bytes())
+                    })
+                    .fold(0usize, usize::saturating_add);
+                if rewrite_bytes > limits.max_payload_bytes.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "ALTER TABLE {table} rewrites {rewrite_bytes} resident bytes, exceeding max_payload_bytes {}",
+                        limits.max_payload_bytes
+                    )));
+                }
+                schema.columns.push(column);
+                validate_table_schema(&schema)?;
+                let mut fill_values = vec![RelationalValue::Null; schema.columns.len() - 1];
+                fill_values.push(fill);
+                let mut fill_row = RelationalRow::new(fill_values);
+                overflow::externalize_row(&mut next, &schema, &mut fill_row, overflow_config)?;
+                let fill = fill_row
+                    .values()
+                    .last()
+                    .cloned()
+                    .expect("validated relational schema contains the added column");
+                let segment = next
+                    .segments
+                    .get_mut(&table)
+                    .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
+                Arc::make_mut(segment).rows.append_value_to_all(&fill);
+                next.schemas.insert(table.clone(), Arc::new(schema));
+                full_index_rebuild.insert(table.clone());
+                touched.insert(table);
             }
             RelationalWrite::CreateIndex { table, index } => {
                 let schema = next

@@ -89,7 +89,7 @@ fn wal_pressure_rejects_before_append_and_leaves_no_partial_mutation() {
     assert!(error
         .to_string()
         .contains("WAL append rejected by storage pressure"));
-    assert_eq!(db.store.commit_epoch(), 0);
+    assert_eq!(db.store.commit_epoch(), 1);
     drop(db);
 
     let mut reopened = Database::open(&path).unwrap();
@@ -1214,14 +1214,14 @@ fn storage_recovery_report_tracks_wal_replay_boundary() {
     assert_eq!(report.recovery_mode, RecoveryMode::Strict);
     assert_eq!(report.max_wal_replay_entries, Some(8));
     assert_eq!(report.checkpoint_epoch, Some(1));
-    assert_eq!(report.checkpoint_commit_epoch, Some(1));
+    assert_eq!(report.checkpoint_commit_epoch, Some(2));
     assert!(report.wal_present);
-    assert_eq!(report.wal_replay_start_lsn, Some(2));
-    assert_eq!(report.next_lsn_after_replay, Some(3));
+    assert_eq!(report.wal_replay_start_lsn, Some(3));
+    assert_eq!(report.next_lsn_after_replay, Some(4));
     assert_eq!(report.replayed_wal_entries, 1);
     assert!(!report.torn_tail_ignored);
     assert_eq!(report.torn_tail_reason, None);
-    assert_eq!(report.recovered_commit_epoch, 2);
+    assert_eq!(report.recovered_commit_epoch, 3);
 
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1280,10 +1280,10 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
 
         let recovery = db.storage_recovery_report();
         assert_eq!(recovery.checkpoint_epoch, Some(1));
-        assert_eq!(recovery.checkpoint_commit_epoch, Some(3));
+        assert_eq!(recovery.checkpoint_commit_epoch, Some(4));
         assert_eq!(recovery.replayed_wal_entries, 1);
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
-        assert_eq!(recovery.recovered_commit_epoch, 4);
+        assert_eq!(recovery.recovered_commit_epoch, 5);
 
         let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
@@ -1362,10 +1362,10 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
 
         let recovery = db.storage_recovery_report();
         assert_eq!(recovery.checkpoint_epoch, Some(1));
-        assert_eq!(recovery.checkpoint_commit_epoch, Some(3));
+        assert_eq!(recovery.checkpoint_commit_epoch, Some(4));
         assert_eq!(recovery.replayed_wal_entries, 1);
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
-        assert_eq!(recovery.recovered_commit_epoch, 4);
+        assert_eq!(recovery.recovered_commit_epoch, 5);
         assert!(!recovery.torn_tail_ignored);
         assert!(!recovery.torn_tail_repaired);
         assert_eq!(recovery.discarded_wal_tail_bytes, 0);

@@ -201,6 +201,7 @@ pub struct NowledgeMemOpenOptions {
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
     pub retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor,
     pub search_range_read_config: Option<SearchRangeReadConfig>,
+    pub system_schema_registries: Vec<crate::SystemSchemaRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +261,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -279,6 +281,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -300,6 +303,7 @@ impl NowledgeMemOpenOptions {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
+            system_schema_registries: Vec::new(),
         }
     }
 
@@ -312,6 +316,13 @@ impl NowledgeMemOpenOptions {
     /// and vector-backend settings.
     pub fn with_database_config(mut self, config: DatabaseConfig) -> Self {
         self.database_config = Some(config);
+        self
+    }
+
+    /// Registers application-owned system schemas that must be current before
+    /// the embedded store is returned to its host.
+    pub fn with_system_schema_registry(mut self, registry: crate::SystemSchemaRegistry) -> Self {
+        self.system_schema_registries.push(registry);
         self
     }
 
@@ -377,6 +388,15 @@ impl NowledgeMemOpenOptions {
                 "search_range_read_config requires search_projection_path".to_string(),
             ));
         }
+        let mut schema_owners = BTreeSet::new();
+        for registry in &self.system_schema_registries {
+            if !schema_owners.insert(registry.owner()) {
+                return Err(SkeinError::Semantic(format!(
+                    "system schema owner {} is registered more than once",
+                    registry.owner()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -406,6 +426,7 @@ impl NowledgeMemOpenOptions {
             graph_opened: false,
             search_projection_opened: false,
             search_production_qualification_bound: false,
+            system_schema_upgrades: Vec::new(),
         }
     }
 
@@ -456,6 +477,7 @@ pub struct NowledgeMemOpenReport {
     pub graph_opened: bool,
     pub search_projection_opened: bool,
     pub search_production_qualification_bound: bool,
+    pub system_schema_upgrades: Vec<crate::SystemSchemaUpgradeReport>,
 }
 
 impl NowledgeMemOpenReport {
@@ -478,6 +500,14 @@ impl NowledgeMemOpenReport {
             "graph_opened": self.graph_opened,
             "search_projection_opened": self.search_projection_opened,
             "search_production_qualification_bound": self.search_production_qualification_bound,
+            "system_schema_upgrades": self.system_schema_upgrades.iter().map(|upgrade| serde_json::json!({
+                "owner": upgrade.owner,
+                "previous_version": upgrade.previous_version,
+                "current_version": upgrade.current_version,
+                "applied_versions": upgrade.applied_versions,
+                "commit_epoch_before": upgrade.commit_epoch_before,
+                "commit_epoch_after": upgrade.commit_epoch_after,
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -492,7 +522,7 @@ pub struct NowledgeMemRuntimeStatus {
 
 impl NowledgeMemRuntimeStatus {
     pub fn projection_commit_lag(&self) -> u64 {
-        self.graph_commit_epoch.saturating_sub(
+        self.changefeed.projection_commit_lag_after(
             self.projection_freshness
                 .as_ref()
                 .and_then(|freshness| freshness.durable_source_graph_commit_epoch)
@@ -9106,11 +9136,18 @@ impl NowledgeMemEmbeddedStore {
         options.validate()?;
         let mut report = options.sanitized_report();
         let graph_config = options.effective_database_config();
-        let graph = NowledgeMemGraph::open_with_config_and_runtime_governor(
+        let mut graph = NowledgeMemGraph::open_with_config_and_runtime_governor(
             &options.graph_path,
             graph_config,
             runtime_governor,
         )?;
+        for registry in &options.system_schema_registries {
+            report.system_schema_upgrades.push(
+                graph
+                    .database_mut()
+                    .apply_system_schema_registry(registry)?,
+            );
+        }
         report.graph_opened = true;
         let default_search_range_read_config = SearchRangeReadConfig {
             io_depth: graph.runtime_governor_snapshot().limits.foreground_io_depth,
@@ -17671,7 +17708,7 @@ mod tests {
         let stale = store.production_status(Some(&route_ownership));
         assert!(stale.graph_skein_cutover_effective);
         assert!(stale.search_projection_open);
-        assert_eq!(stale.search_projection_commit_lag, 1);
+        assert_eq!(stale.search_projection_commit_lag, 2);
         assert!(stale.search_projection_stale);
         assert!(!stale.search_skein_cutover_effective);
         assert!(stale
@@ -18177,8 +18214,8 @@ mod tests {
             let report = store.catch_up_search_projection(16, 1).unwrap();
 
             assert!(report.complete);
-            assert_eq!(report.start_durable_epoch, Some(1));
-            assert_eq!(report.end_durable_epoch, Some(2));
+            assert_eq!(report.start_durable_epoch, Some(2));
+            assert_eq!(report.end_durable_epoch, Some(3));
             assert!(store
                 .search_projection()
                 .unwrap()

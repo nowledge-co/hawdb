@@ -214,7 +214,7 @@ fn checkpoint_writes_projected_graph_artifacts() {
     assert!(artifact.contains("SKEIN_PROJECTED_GRAPHS_V1\n"));
     assert!(artifact.contains("artifact_version\t1\n"));
     assert!(artifact.contains("projection_epoch\t1\n"));
-    assert!(artifact.contains("commit_epoch\t3\n"));
+    assert!(artifact.contains("commit_epoch\t4\n"));
     assert!(artifact.contains("graph\t456e746974794f6e6c794772617068"));
     assert!(artifact.contains("nodes\t1,2\n"));
     assert!(artifact.contains("csr_offsets\t0,1,1\n"));

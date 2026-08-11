@@ -297,8 +297,13 @@ impl ConcurrentDatabaseTransaction {
             let requests = sql_lock_requests(sql_text, parameters, &self.state.relational_state)?;
             self.acquire_locks(&requests)?;
         }
-        let result =
-            execute_database_transaction_sql(&self.runtime, &mut self.state, sql_text, parameters);
+        let result = execute_database_transaction_sql(
+            &self.runtime,
+            &mut self.state,
+            sql_text,
+            parameters,
+            false,
+        );
         if result.is_ok() {
             self.successful_statements = self.successful_statements.saturating_add(1);
         }

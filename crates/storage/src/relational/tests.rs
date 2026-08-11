@@ -284,6 +284,123 @@ fn large_payload_is_externalized_and_hydrated_with_explicit_budgets() {
 }
 
 #[test]
+fn add_column_rewrite_is_admitted_by_existing_resident_bytes() {
+    let store = RelationalStore::new(RelationalMutationLimits {
+        max_rows: NonZeroUsize::new(10).unwrap(),
+        max_payload_bytes: NonZeroUsize::new(128).unwrap(),
+    });
+    store
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".to_string(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("m1".to_string()),
+                        RelationalValue::Text("payload".repeat(16)),
+                    ])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("insert admitted payload");
+
+    let error = store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::AddColumn {
+                    table: "messages".to_string(),
+                    column: text_column("kind", true),
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect_err("resident rewrite must honor the mutation byte budget");
+    assert!(matches!(
+        error,
+        SnapshotCommitError::Stage(RelationalError::Admission(message))
+            if message.contains("resident bytes")
+    ));
+    assert!(store
+        .snapshot()
+        .unwrap()
+        .value()
+        .table_schema("messages")
+        .unwrap()
+        .column_position("kind")
+        .is_none());
+}
+
+#[test]
+fn add_column_externalizes_one_shared_default_for_all_rewritten_rows() {
+    let store = RelationalStore::with_overflow_config(
+        RelationalMutationLimits::default(),
+        RelationalOverflowConfig {
+            threshold_bytes: 16,
+            compression_level: 3,
+            max_value_bytes: 1024 * 1024,
+        },
+    );
+    store
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".to_string(),
+                    rows: vec![
+                        RelationalRow::new(vec![
+                            RelationalValue::Text("m1".to_string()),
+                            RelationalValue::Text("first".to_string()),
+                        ]),
+                        RelationalRow::new(vec![
+                            RelationalValue::Text("m2".to_string()),
+                            RelationalValue::Text("second".to_string()),
+                        ]),
+                    ],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("insert rows");
+
+    let default = "shared-default-".repeat(128);
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::AddColumn {
+                    table: "messages".to_string(),
+                    column: RelationalColumnSchema {
+                        name: "kind".to_string(),
+                        scalar_type: RelationalScalarType::Text,
+                        nullable: false,
+                        default: Some(RelationalValue::Text(default.clone())),
+                    },
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("add column");
+
+    let snapshot = store.snapshot().expect("snapshot");
+    assert_eq!(snapshot.value().overflow_segment_count(), 1);
+    for id in ["m1", "m2"] {
+        let key = RelationalKey(vec![RelationalValue::Text(id.to_string())]);
+        let row = snapshot
+            .value()
+            .hydrate_row("messages", &key, &mut RelationalHydrationBudget::default())
+            .expect("hydrate rewritten row")
+            .expect("rewritten row");
+        assert_eq!(row.values()[2], RelationalValue::Text(default.clone()));
+    }
+}
+
+#[test]
 fn row_mutation_clones_only_the_affected_cow_page() {
     let store = RelationalStore::default();
     store
@@ -964,6 +1081,15 @@ fn wal_codec_preserves_upsert_and_delete_predicates() {
                         negated: true,
                     }),
                 ),
+            },
+            RelationalWrite::AddColumn {
+                table: "documents".to_string(),
+                column: RelationalColumnSchema {
+                    name: "kind".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: Some(RelationalValue::Text("text".to_string())),
+                },
             },
         ],
     };

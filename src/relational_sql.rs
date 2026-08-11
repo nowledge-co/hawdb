@@ -41,6 +41,27 @@ pub(crate) fn compile_relational_statement_sql(
     }
 }
 
+pub(crate) fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool {
+    const REGISTRY_TABLE: &str = "skein_schema_migrations";
+
+    let table = match statement {
+        SqlStatement::Insert(statement) => Some(&statement.table),
+        SqlStatement::Update(statement) => Some(&statement.table),
+        SqlStatement::Delete(statement) => Some(&statement.table),
+        SqlStatement::CreateTable(statement) => Some(&statement.table),
+        SqlStatement::CreateIndex(statement) => Some(&statement.table),
+        SqlStatement::AlterTableAddColumn(statement) => Some(&statement.table),
+        SqlStatement::Select(_) | SqlStatement::Explain(_) => None,
+    };
+    table.is_some_and(|table| {
+        table.name == REGISTRY_TABLE
+            && table
+                .schema
+                .as_deref()
+                .is_none_or(|schema| schema == "public")
+    })
+}
+
 fn compile_relational_mutation(
     statement: SqlStatement,
     parameters: &[Value],
@@ -536,10 +557,22 @@ fn compile_create_index(create: CreateIndexStatement) -> Result<RelationalWrite>
 
 fn compile_add_column(alter: AlterTableAddColumnStatement) -> Result<Vec<RelationalWrite>> {
     reject_non_public_schema(alter.table.schema.as_deref())?;
-    let _ = alter;
-    Err(SkeinError::Semantic(
-        "ALTER TABLE ADD COLUMN requires durable catalog-version publication".to_string(),
-    ))
+    if alter.if_not_exists {
+        return Err(SkeinError::Semantic(
+            "system schema migrations must not hide ADD COLUMN drift with IF NOT EXISTS"
+                .to_string(),
+        ));
+    }
+    if alter.column.primary_key || alter.column.unique || alter.column.references.is_some() {
+        return Err(SkeinError::Semantic(
+            "ALTER TABLE ADD COLUMN does not support inline key, unique, or foreign-key constraints"
+                .to_string(),
+        ));
+    }
+    Ok(vec![RelationalWrite::AddColumn {
+        table: alter.table.name,
+        column: compile_column(alter.column)?,
+    }])
 }
 
 fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
@@ -638,6 +671,39 @@ mod tests {
         assert_eq!(
             snapshot_output.rows[0]["id"],
             Value::String("message-1".to_string())
+        );
+    }
+
+    #[test]
+    fn alter_table_add_column_materializes_defaults_and_rejects_unsafe_not_null() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE documents (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+            .unwrap();
+        database
+            .query_sql("INSERT INTO documents (id, body) VALUES ('doc-1', 'body')")
+            .unwrap();
+        database
+            .query_sql("ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
+            .unwrap();
+        let row = database
+            .query_sql("SELECT id, kind FROM documents")
+            .unwrap();
+        assert_eq!(row.rows[0]["kind"], Value::String("text".to_string()));
+
+        let error = database
+            .query_sql("ALTER TABLE documents ADD COLUMN required TEXT NOT NULL")
+            .unwrap_err();
+        assert!(error.to_string().contains("without a default"));
+        database
+            .query_sql("ALTER TABLE documents ADD COLUMN required TEXT")
+            .unwrap();
+        assert_eq!(
+            database
+                .query_sql("SELECT required FROM documents")
+                .unwrap()
+                .rows[0]["required"],
+            Value::Null
         );
     }
 

@@ -40,7 +40,7 @@ fn published_read_view_separates_logical_visibility_from_physical_generation() {
     let mut db = Database::open(&path).unwrap();
 
     let empty = db.published_read_view();
-    assert_eq!(empty.visible_commit_epoch(), 0);
+    assert_eq!(empty.visible_commit_epoch(), 1);
     assert_eq!(empty.checkpoint_commit_epoch(), None);
     assert_eq!(empty.physical_generation(), None);
 
@@ -48,8 +48,8 @@ fn published_read_view_separates_logical_visibility_from_physical_generation() {
         .unwrap();
     db.checkpoint().unwrap();
     let checkpointed = db.published_read_view();
-    assert_eq!(checkpointed.visible_commit_epoch(), 1);
-    assert_eq!(checkpointed.checkpoint_commit_epoch(), Some(1));
+    assert_eq!(checkpointed.visible_commit_epoch(), 2);
+    assert_eq!(checkpointed.checkpoint_commit_epoch(), Some(2));
     assert_eq!(
         checkpointed.physical_generation(),
         Some(ManifestGeneration(1))
@@ -61,16 +61,16 @@ fn published_read_view_separates_logical_visibility_from_physical_generation() {
         .unwrap();
     let reader = db.begin_read_transaction();
     let pinned = reader.published_read_view();
-    assert_eq!(pinned.visible_commit_epoch(), 2);
-    assert_eq!(pinned.checkpoint_commit_epoch(), Some(1));
+    assert_eq!(pinned.visible_commit_epoch(), 3);
+    assert_eq!(pinned.checkpoint_commit_epoch(), Some(2));
     assert_eq!(pinned.physical_generation(), Some(ManifestGeneration(1)));
     assert!(!pinned.physical_base_is_current());
     assert!(pinned.has_delta_after_physical_generation());
 
     db.checkpoint().unwrap();
     let current = db.published_read_view();
-    assert_eq!(current.visible_commit_epoch(), 2);
-    assert_eq!(current.checkpoint_commit_epoch(), Some(2));
+    assert_eq!(current.visible_commit_epoch(), 3);
+    assert_eq!(current.checkpoint_commit_epoch(), Some(3));
     assert_eq!(current.physical_generation(), Some(ManifestGeneration(2)));
     assert!(current.physical_base_is_current());
     assert_eq!(reader.published_read_view(), pinned);
@@ -444,29 +444,29 @@ fn read_transaction_pins_checkpoint_manifest_until_drop() {
                 .unwrap();
             db.checkpoint().unwrap();
             let manifest = std::fs::read_to_string(path.join("manifest.skein")).unwrap();
-            assert!(manifest.contains("checkpoint_commit_epoch\t2\n"));
-            assert!(manifest.contains("oldest_reader_commit_epoch\t1\n"));
-            assert!(manifest.contains("safe_reclaim_commit_epoch\t0\n"));
+            assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
+            assert!(manifest.contains("oldest_reader_commit_epoch\t2\n"));
+            assert!(manifest.contains("safe_reclaim_commit_epoch\t1\n"));
             let watermark = db.storage_reclamation_watermark();
-            assert_eq!(watermark.current_commit_epoch, 2);
+            assert_eq!(watermark.current_commit_epoch, 3);
             assert_eq!(watermark.checkpoint_epoch, Some(1));
-            assert_eq!(watermark.checkpoint_commit_epoch, Some(2));
-            assert_eq!(watermark.oldest_reader_commit_epoch, Some(1));
-            assert_eq!(watermark.safe_reclaim_commit_epoch, 0);
+            assert_eq!(watermark.checkpoint_commit_epoch, Some(3));
+            assert_eq!(watermark.oldest_reader_commit_epoch, Some(2));
+            assert_eq!(watermark.safe_reclaim_commit_epoch, 1);
             assert!(watermark.durable);
         }
 
         db.checkpoint().unwrap();
         let manifest = std::fs::read_to_string(path.join("manifest.skein")).unwrap();
-        assert!(manifest.contains("checkpoint_commit_epoch\t2\n"));
+        assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
         assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
-        assert!(manifest.contains("safe_reclaim_commit_epoch\t2\n"));
+        assert!(manifest.contains("safe_reclaim_commit_epoch\t3\n"));
         let watermark = db.storage_reclamation_watermark();
-        assert_eq!(watermark.current_commit_epoch, 2);
+        assert_eq!(watermark.current_commit_epoch, 3);
         assert_eq!(watermark.checkpoint_epoch, Some(2));
-        assert_eq!(watermark.checkpoint_commit_epoch, Some(2));
+        assert_eq!(watermark.checkpoint_commit_epoch, Some(3));
         assert_eq!(watermark.oldest_reader_commit_epoch, None);
-        assert_eq!(watermark.safe_reclaim_commit_epoch, 2);
+        assert_eq!(watermark.safe_reclaim_commit_epoch, 3);
         assert!(watermark.durable);
     }
     std::fs::remove_dir_all(path).unwrap();
@@ -486,8 +486,8 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
 
     let mut reader = db.begin_read_transaction();
     let pinned_view = reader.published_read_view();
-    assert_eq!(pinned_view.visible_commit_epoch(), 1);
-    assert_eq!(pinned_view.checkpoint_commit_epoch(), Some(1));
+    assert_eq!(pinned_view.visible_commit_epoch(), 2);
+    assert_eq!(pinned_view.checkpoint_commit_epoch(), Some(2));
     assert_eq!(
         pinned_view.physical_generation(),
         Some(ManifestGeneration(1))
@@ -551,9 +551,9 @@ fn overlapping_pinned_reads_survive_serialized_durable_commit() {
         .unwrap();
     db.checkpoint().unwrap();
     let watermark = db.storage_reclamation_watermark();
-    assert_eq!(watermark.current_commit_epoch, 2);
-    assert_eq!(watermark.oldest_reader_commit_epoch, Some(1));
-    assert_eq!(watermark.safe_reclaim_commit_epoch, 0);
+    assert_eq!(watermark.current_commit_epoch, 3);
+    assert_eq!(watermark.oldest_reader_commit_epoch, Some(2));
+    assert_eq!(watermark.safe_reclaim_commit_epoch, 1);
     assert!(watermark.durable);
 
     readers_release.wait();

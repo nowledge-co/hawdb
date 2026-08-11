@@ -375,6 +375,15 @@ type PendingRelationship = (RelId, NodeId, NodeId, RelTypeId, BTreeMap<String, V
 pub type GraphSnapshotNodeImport = (NodeId, String, BTreeMap<String, Value>);
 pub type GraphSnapshotRelationshipImport = (RelId, NodeId, NodeId, String, BTreeMap<String, Value>);
 
+pub(crate) struct SkeinSnapshotRowsImport {
+    pub stable_id_mapping: StoreStableIdMapping,
+    pub source_fingerprint: String,
+    pub nodes: Vec<GraphSnapshotNodeImport>,
+    pub relationships: Vec<GraphSnapshotRelationshipImport>,
+    pub relational_state: RelationalState,
+    pub target_has_only_engine_bootstrap: bool,
+}
+
 #[derive(Debug, Clone)]
 struct RelationshipCandidate {
     source: NodeId,
@@ -3059,19 +3068,23 @@ impl GraphStore {
         Ok(())
     }
 
-    pub fn import_skein_snapshot_rows_with_source_fingerprint(
+    pub(crate) fn import_skein_snapshot_rows_with_source_fingerprint(
         &mut self,
         catalog: &mut Catalog,
-        stable_id_mapping: StoreStableIdMapping,
-        source_fingerprint: String,
-        nodes: Vec<GraphSnapshotNodeImport>,
-        relationships: Vec<GraphSnapshotRelationshipImport>,
-        relational_state: RelationalState,
+        import: SkeinSnapshotRowsImport,
     ) -> Result<()> {
+        let SkeinSnapshotRowsImport {
+            stable_id_mapping,
+            source_fingerprint,
+            nodes,
+            relationships,
+            relational_state,
+            target_has_only_engine_bootstrap,
+        } = import;
         if self.initial_import_source_fingerprint.is_some()
             || !self.nodes.is_empty()
             || !self.relationships.is_empty()
-            || !self.relational_state.is_empty()
+            || (!self.relational_state.is_empty() && !target_has_only_engine_bootstrap)
             || !catalog.is_empty()
         {
             return Err(SkeinError::Storage(
@@ -7351,6 +7364,9 @@ impl GraphStore {
             &mut upsert_node_ids,
             &mut delete_document_ids,
         );
+        if upsert_node_ids.is_empty() && delete_document_ids.is_empty() {
+            return;
+        }
         self.search_projection_graph_changes
             .push(SearchProjectionGraphChange {
                 commit_epoch,

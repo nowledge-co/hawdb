@@ -420,8 +420,8 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
             manifest.protocol_version,
             SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION
         );
-        assert_eq!(manifest.graph_commit_epoch, 1);
-        assert_eq!(manifest.database_commit_epoch, 1);
+        assert_eq!(manifest.graph_commit_epoch, 2);
+        assert_eq!(manifest.database_commit_epoch, 2);
         assert_eq!(manifest.logical_checksum, export.snapshot.logical_checksum);
         assert_eq!(
             manifest.graph_stream_checksum,
@@ -436,8 +436,8 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
             manifest.relational_stream_byte_len,
             export.relational_stream.byte_len
         );
-        assert_eq!(manifest.relational_table_count, 0);
-        assert_eq!(manifest.relational_row_count, 0);
+        assert_eq!(manifest.relational_table_count, 1);
+        assert_eq!(manifest.relational_row_count, 1);
         assert_eq!(manifest.node_count, 2);
         assert_eq!(manifest.relationship_count, 1);
         assert_eq!(manifest.label_count, 2);
@@ -2566,8 +2566,8 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
         )
         .unwrap();
     let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
-    assert_eq!(export.manifest.relational_table_count, 1);
-    assert_eq!(export.manifest.relational_row_count, 1);
+    assert_eq!(export.manifest.relational_table_count, 2);
+    assert_eq!(export.manifest.relational_row_count, 2);
     assert_eq!(export.manifest.relational_overflow_segment_count, 1);
     let path = unique_test_dir("skein_lightning_initial_import_apply");
     {
@@ -2589,9 +2589,9 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
             report.relationship_count,
             export.manifest.relationship_count
         );
-        assert_eq!(report.database_commit_epoch, 1);
-        assert_eq!(report.relational_table_count, 1);
-        assert_eq!(report.relational_row_count, 1);
+        assert_eq!(report.database_commit_epoch, 2);
+        assert_eq!(report.relational_table_count, 2);
+        assert_eq!(report.relational_row_count, 2);
         assert!(report.blocker_codes.is_empty());
 
         let imported = target
@@ -2726,6 +2726,36 @@ fn skein_lightning_initial_import_rejects_corrupt_relational_stream_atomically()
         .plan
         .blocker_codes
         .contains(&"skein_lightning_relational_stream_invalid".to_string()));
+    assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
+    assert!(target.store.relational_state().is_empty());
+}
+
+#[test]
+fn skein_lightning_initial_import_rejects_stream_without_engine_registry() {
+    let mut source = Database::new();
+    source.query("CREATE (:Memory {id: 'root'})").unwrap();
+    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let relational_stream = SkeinLightningRelationalStream::from_state(
+        export.manifest.database_commit_epoch,
+        &skein_storage::RelationalState::default(),
+    )
+    .unwrap();
+    let manifest = export
+        .snapshot
+        .skein_lightning_bootstrap_manifest(&relational_stream);
+    let mut target = Database::new();
+
+    let error = target
+        .skein_lightning_initial_import_apply(
+            &export.graph_stream.encoded,
+            &relational_stream.encoded,
+            &manifest,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("registry table"));
     assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
     assert!(target.store.relational_state().is_empty());
 }
@@ -2976,10 +3006,10 @@ fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget(
         db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
             .unwrap();
         let mut class_limits = [None; crate::WORK_CLASS_COUNT];
-        class_limits[WorkClass::Import.as_index()] = Some(3);
+        class_limits[WorkClass::Import.as_index()] = Some(5);
         let policy = LocalQosPolicy {
-            max_background_operations: Some(3),
-            max_total_background_operations: Some(3),
+            max_background_operations: Some(5),
+            max_total_background_operations: Some(5),
             max_background_operations_by_class: class_limits,
             ..LocalQosPolicy::default()
         };

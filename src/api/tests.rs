@@ -183,6 +183,7 @@ mod statistics;
 mod storage_recovery;
 mod synthesized_source_reads;
 mod system_introspection;
+mod system_schema_registry;
 mod system_variables;
 mod thread_compaction_reads;
 mod thread_distillation_reads;

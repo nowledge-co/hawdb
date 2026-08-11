@@ -66,7 +66,7 @@ fn transaction_commit_replays_as_one_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert!(wal.contains("\tbatch\t"));
     {
         let mut db = Database::open(&path).unwrap();

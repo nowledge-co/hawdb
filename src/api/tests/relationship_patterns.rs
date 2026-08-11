@@ -245,7 +245,7 @@ fn relationship_pattern_create_uses_single_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert!(wal.contains("\tbatch\t"));
     assert!(wal.contains("create_node"));
     assert!(wal.contains("create_rel"));

@@ -15,7 +15,7 @@ fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
     let db = Database::open(&path).unwrap().into_concurrent();
     db.query("CREATE (:Memory {id: 1})").unwrap();
     db.checkpoint().unwrap();
-    assert_eq!(db.commit_epoch().unwrap(), 1);
+    assert_eq!(db.commit_epoch().unwrap(), 2);
     drop(db);
 
     let mut reopened = Database::open(&path).unwrap();
@@ -694,7 +694,7 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
     assert_eq!(snapshot.shared_sync_count, 1);
     assert_eq!(snapshot.grouped_wal_entries, WRITERS as u64);
     assert_eq!(snapshot.max_observed_group_entries, WRITERS);
-    assert_eq!(db.commit_epoch().unwrap(), WRITERS as u64 + 1);
+    assert_eq!(db.commit_epoch().unwrap(), WRITERS as u64 + 2);
     drop(db);
 
     let wal = super::read_test_wal(&path).unwrap();
@@ -702,14 +702,14 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
         .lines()
         .map(|line| line.split('\t').next().unwrap().parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(lsns, (1..=WRITERS as u64 + 1).collect::<Vec<_>>());
+    assert_eq!(lsns, (1..=WRITERS as u64 + 2).collect::<Vec<_>>());
 
     let mut reopened = Database::open(&path).unwrap();
     let rows = reopened
         .query_sql("SELECT id FROM public.messages ORDER BY id")
         .unwrap();
     assert_eq!(rows.rows.len(), WRITERS);
-    assert_eq!(reopened.commit_epoch(), WRITERS as u64 + 1);
+    assert_eq!(reopened.commit_epoch(), WRITERS as u64 + 2);
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1009,11 +1009,11 @@ fn concurrent_transaction_publishes_graph_and_relational_writes_in_one_wal_epoch
         )
         .unwrap();
         tx.commit().unwrap();
-        assert_eq!(db.commit_epoch().unwrap(), 1);
+        assert_eq!(db.commit_epoch().unwrap(), 2);
     }
 
     let wal = super::read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 1);
+    assert_eq!(wal.lines().count(), 2);
     assert!(wal.contains("\tbatch\t"));
     {
         let db = crate::ConcurrentDatabase::open(&path).unwrap();

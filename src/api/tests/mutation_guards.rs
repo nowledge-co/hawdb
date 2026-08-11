@@ -289,6 +289,10 @@ fn wal_batch_limit_rejects_transaction_before_append() {
 #[test]
 fn wal_record_byte_limit_rejects_mutation_before_append() {
     let path = unique_test_dir("wal_record_byte_limit_rejects_mutation_before_append");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.checkpoint().unwrap();
+    }
     let config = DatabaseConfig {
         max_wal_record_bytes: Some(256),
         ..DatabaseConfig::default()
