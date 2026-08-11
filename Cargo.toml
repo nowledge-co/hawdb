@@ -153,6 +153,10 @@ name = "search_generation"
 harness = false
 
 [[bench]]
+name = "canonical_point_lookup"
+harness = false
+
+[[bench]]
 name = "storage_segment_read"
 harness = false
 

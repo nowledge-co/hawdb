@@ -200,16 +200,26 @@ pub struct CanonicalSegmentManifest {
 }
 
 impl CanonicalSegmentManifest {
+    /// The segments of one kind, as a slice.
+    ///
+    /// Segments are grouped by kind and ordered by record id within a kind —
+    /// both checked by `validate` — which is what lets a lookup binary search
+    /// instead of walking every descriptor.
+    pub fn segments_of_kind(&self, kind: CanonicalSegmentKind) -> &[CanonicalSegmentDescriptor] {
+        let start = self.segments.partition_point(|segment| segment.kind < kind);
+        let end = self
+            .segments
+            .partition_point(|segment| segment.kind <= kind);
+        &self.segments[start..end]
+    }
+
     pub fn node_segments(&self) -> impl Iterator<Item = &CanonicalSegmentDescriptor> {
-        self.segments
-            .iter()
-            .filter(|segment| segment.kind == CanonicalSegmentKind::Nodes)
+        self.segments_of_kind(CanonicalSegmentKind::Nodes).iter()
     }
 
     pub fn relationship_segments(&self) -> impl Iterator<Item = &CanonicalSegmentDescriptor> {
-        self.segments
+        self.segments_of_kind(CanonicalSegmentKind::Relationships)
             .iter()
-            .filter(|segment| segment.kind == CanonicalSegmentKind::Relationships)
     }
 
     pub fn validate(&self) -> Result<(), CanonicalSegmentError> {
@@ -222,7 +232,17 @@ impl CanonicalSegmentManifest {
         let mut previous_id = None;
         let mut node_count = 0u64;
         let mut relationship_count = 0u64;
+        let mut previous_node_max: Option<u64> = None;
+        let mut previous_relationship_max: Option<u64> = None;
+        let mut previous_kind: Option<CanonicalSegmentKind> = None;
         for segment in &self.segments {
+            // Grouped by kind, so `segments_of_kind` can slice rather than filter.
+            if previous_kind.is_some_and(|previous| segment.kind < previous) {
+                return Err(CanonicalSegmentError::Corrupt(
+                    "canonical segments are not grouped by kind".to_string(),
+                ));
+            }
+            previous_kind = Some(segment.kind);
             if segment.offset < previous_end {
                 return Err(CanonicalSegmentError::Corrupt(
                     "canonical segment ranges overlap or are out of order".to_string(),
@@ -248,15 +268,27 @@ impl CanonicalSegmentManifest {
                     )
                 })?;
             previous_id = Some(segment.segment_id);
-            match segment.kind {
+            let previous_max = match segment.kind {
                 CanonicalSegmentKind::Nodes => {
                     node_count = node_count.saturating_add(u64::from(segment.record_count));
+                    &mut previous_node_max
                 }
                 CanonicalSegmentKind::Relationships => {
                     relationship_count =
                         relationship_count.saturating_add(u64::from(segment.record_count));
+                    &mut previous_relationship_max
                 }
+            };
+            // A kind's segments own disjoint record ranges in ascending order.
+            // Lookups binary search on that, so it is checked here rather than
+            // left as a property the writer happens to have.
+            if previous_max.is_some_and(|previous| segment.min_record_id <= previous) {
+                return Err(CanonicalSegmentError::Corrupt(format!(
+                    "canonical segment {} record ranges overlap or are out of order",
+                    segment.segment_id
+                )));
             }
+            *previous_max = Some(segment.max_record_id);
         }
         if previous_end != self.artifact_len
             || node_count != self.node_count
@@ -983,7 +1015,10 @@ impl CanonicalSegmentReader {
     }
 
     pub fn get_node(&self, id: NodeId) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
-        let Some(segment) = find_segment(self.manifest.node_segments(), id.0) else {
+        let Some(segment) = find_segment(
+            self.manifest.segments_of_kind(CanonicalSegmentKind::Nodes),
+            id.0,
+        ) else {
             return Ok(None);
         };
         let bytes = self.read_segment(segment)?;
@@ -997,7 +1032,11 @@ impl CanonicalSegmentReader {
     }
 
     pub fn get_relationship(&self, id: RelId) -> Result<Option<RelRecord>, CanonicalSegmentError> {
-        let Some(segment) = find_segment(self.manifest.relationship_segments(), id.0) else {
+        let Some(segment) = find_segment(
+            self.manifest
+                .segments_of_kind(CanonicalSegmentKind::Relationships),
+            id.0,
+        ) else {
             return Ok(None);
         };
         let bytes = self.read_segment(segment)?;
@@ -1038,22 +1077,18 @@ impl CanonicalSegmentReader {
             report.segments_considered = report.segments_considered.saturating_add(1);
             let bytes = self.read_segment(descriptor)?;
             update_report_for_segment(&mut report, bytes.len());
-            let mut control = CanonicalScanControl::Continue;
-            decode_segment_records(
+            let control = decode_segment_records_control(
                 &bytes,
                 self.manifest.generation,
                 descriptor,
                 |id, payload| {
-                    if control == CanonicalScanControl::Stop {
-                        return Ok(());
-                    }
-                    control = consumer(decode_node_with_property_spills(
+                    let control = consumer(decode_node_with_property_spills(
                         id,
                         payload,
                         self.property_spills.as_ref(),
                     )?)?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
-                    Ok(())
+                    Ok(control)
                 },
             )?;
             if control == CanonicalScanControl::Stop {
@@ -1083,22 +1118,18 @@ impl CanonicalSegmentReader {
             report.segments_considered = report.segments_considered.saturating_add(1);
             let bytes = self.read_segment(descriptor)?;
             update_report_for_segment(&mut report, bytes.len());
-            let mut control = CanonicalScanControl::Continue;
-            decode_segment_records(
+            let control = decode_segment_records_control(
                 &bytes,
                 self.manifest.generation,
                 descriptor,
                 |id, payload| {
-                    if control == CanonicalScanControl::Stop {
-                        return Ok(());
-                    }
-                    control = consumer(decode_relationship_with_property_spills(
+                    let control = consumer(decode_relationship_with_property_spills(
                         id,
                         payload,
                         self.property_spills.as_ref(),
                     )?)?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
-                    Ok(())
+                    Ok(control)
                 },
             )?;
             if control == CanonicalScanControl::Stop {
@@ -1376,11 +1407,19 @@ impl Iterator for CanonicalRelationshipIterator {
     }
 }
 
-fn find_segment<'a>(
-    mut segments: impl Iterator<Item = &'a CanonicalSegmentDescriptor>,
+/// Locates the segment whose record range covers `id`, or `None` when no
+/// segment does — including when `id` falls in a gap left by deleted records.
+///
+/// The ranges are disjoint and ascending, so the first segment whose
+/// `max_record_id` reaches `id` is the only candidate.
+fn find_segment(
+    segments: &[CanonicalSegmentDescriptor],
     id: u64,
-) -> Option<&'a CanonicalSegmentDescriptor> {
-    segments.find(|segment| segment.min_record_id <= id && id <= segment.max_record_id)
+) -> Option<&CanonicalSegmentDescriptor> {
+    let position = segments.partition_point(|segment| segment.max_record_id < id);
+    segments
+        .get(position)
+        .filter(|segment| segment.min_record_id <= id)
 }
 
 fn endpoint_bloom_hash(id: u64, seed: u64) -> u64 {
@@ -1416,7 +1455,13 @@ fn decode_node_by_id(
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
     let mut found = None;
-    decode_segment_records(bytes, generation, descriptor, |record_id, payload| {
+    decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
+        // Record ids strictly increase, so the first id at or past the target
+        // settles the question either way and the rest of the segment does not
+        // need to be walked.
+        if record_id < id {
+            return Ok(CanonicalScanControl::Continue);
+        }
         if record_id == id {
             found = Some(decode_node_with_property_spills(
                 record_id,
@@ -1424,7 +1469,7 @@ fn decode_node_by_id(
                 property_spills,
             )?);
         }
-        Ok(())
+        Ok(CanonicalScanControl::Stop)
     })?;
     Ok(found)
 }
@@ -1437,7 +1482,10 @@ fn decode_relationship_by_id(
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<Option<RelRecord>, CanonicalSegmentError> {
     let mut found = None;
-    decode_segment_records(bytes, generation, descriptor, |record_id, payload| {
+    decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
+        if record_id < id {
+            return Ok(CanonicalScanControl::Continue);
+        }
         if record_id == id {
             found = Some(decode_relationship_with_property_spills(
                 record_id,
@@ -1445,7 +1493,7 @@ fn decode_relationship_by_id(
                 property_spills,
             )?);
         }
-        Ok(())
+        Ok(CanonicalScanControl::Stop)
     })?;
     Ok(found)
 }
@@ -1456,6 +1504,31 @@ fn decode_segment_records(
     descriptor: &CanonicalSegmentDescriptor,
     mut consumer: impl FnMut(u64, &[u8]) -> Result<(), CanonicalSegmentError>,
 ) -> Result<(), CanonicalSegmentError> {
+    decode_segment_records_control(bytes, expected_generation, descriptor, |id, payload| {
+        consumer(id, payload)?;
+        Ok(CanonicalScanControl::Continue)
+    })
+    .map(|_| ())
+}
+
+/// Walks a segment's records, letting the consumer stop early.
+///
+/// A consumer that runs to the end also validates the segment's framing: ids
+/// strictly increase, the last one matches the descriptor, and no bytes are
+/// left over. Stopping early necessarily skips the part of that check it never
+/// reached. Callers that answer a question — a point lookup, a scan that has
+/// filled its limit — can afford that, because the bytes arrive
+/// content-verified: `read_range` checks the segment digest on every miss and
+/// `SegmentCache::insert` checks it again before caching. The framing walk is
+/// a second opinion about data already proven intact rather than the thing
+/// standing between a bit flip and a decoded record. Callers whose purpose is
+/// to validate keep using `decode_segment_records` and pay for the full walk.
+fn decode_segment_records_control(
+    bytes: &[u8],
+    expected_generation: ManifestGeneration,
+    descriptor: &CanonicalSegmentDescriptor,
+    mut consumer: impl FnMut(u64, &[u8]) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+) -> Result<CanonicalScanControl, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(bytes);
     if cursor.read_exact(8)? != SEGMENT_HEADER {
         return Err(CanonicalSegmentError::Corrupt(format!(
@@ -1488,8 +1561,11 @@ fn decode_segment_records(
         }
         let payload_len = cursor.read_u32()? as usize;
         let payload = cursor.read_exact(payload_len)?;
-        consumer(id, payload)?;
+        let control = consumer(id, payload)?;
         previous_id = Some(id);
+        if control == CanonicalScanControl::Stop {
+            return Ok(CanonicalScanControl::Stop);
+        }
     }
     if !cursor.is_empty() || previous_id.is_none() || previous_id != Some(descriptor.max_record_id)
     {
@@ -1498,7 +1574,7 @@ fn decode_segment_records(
             descriptor.segment_id
         )));
     }
-    Ok(())
+    Ok(CanonicalScanControl::Continue)
 }
 
 fn encode_node_with_property_spills(
@@ -2235,6 +2311,185 @@ mod tests {
         let cache_snapshot = cache.snapshot();
         assert!(cache_snapshot.resident_bytes <= cache_budget);
         assert!(cache_snapshot.eviction_count > 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn point_lookups_resolve_sparse_ids_across_many_segments() {
+        // Ids leave gaps the way deletes do, so a lookup lands between two
+        // segments as often as inside one. Both answers have to be right: the
+        // binary search settles on a candidate by `max_record_id` and then has
+        // to reject it when the id sits below that segment's `min_record_id`.
+        let path = unique_path("sparse_point_lookup");
+        let nodes = (0..400)
+            .map(|index| NodeRecord {
+                id: NodeId(1_000 + index * 10),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([("body".to_string(), Value::String("x".repeat(64)))]),
+            })
+            .collect::<Vec<_>>();
+        let config = CanonicalSegmentConfig {
+            target_segment_bytes: NonZeroU64::new(1024).unwrap(),
+            max_record_bytes: NonZeroU64::new(2048).unwrap(),
+        };
+        let manifest = CanonicalSegmentWriter::new(config)
+            .write(
+                &path,
+                ManifestGeneration(3),
+                &nodes,
+                Vec::<RelRecord>::new(),
+            )
+            .unwrap();
+        assert!(manifest.segments.len() > 8);
+        let segments = manifest.segments.clone();
+        // Ids that fall between two segments, plus one below the first segment
+        // and one past the last. None of these is inside any range, so the
+        // range bounds alone settle them.
+        let mut unreadable_probes = vec![segments[0].min_record_id - 1, u64::MAX];
+        unreadable_probes.extend(
+            segments
+                .windows(2)
+                .filter(|pair| pair[0].max_record_id + 1 < pair[1].min_record_id)
+                .map(|pair| pair[0].max_record_id + 1),
+        );
+        assert!(unreadable_probes.len() > 4);
+
+        // A cold cache per probe, so a segment read would have to show up as an
+        // insertion. The decoder reaches the same `None` after reading, which is
+        // why this asserts on the read avoided rather than on the answer.
+        for probe in unreadable_probes {
+            let cache = Arc::new(SegmentCache::new(1024 * 1024));
+            let reader = CanonicalSegmentReader::open(
+                &path,
+                manifest.clone(),
+                Arc::clone(&cache),
+                StoreId(23),
+                NonZeroU64::new(4096).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(reader.get_node(NodeId(probe)).unwrap(), None);
+            assert_eq!(cache.snapshot().insertion_count, 0, "probe {probe}");
+        }
+
+        let reader = CanonicalSegmentReader::open(
+            &path,
+            manifest,
+            Arc::new(SegmentCache::new(1024 * 1024)),
+            StoreId(23),
+            NonZeroU64::new(4096).unwrap(),
+        )
+        .unwrap();
+        for node in &nodes {
+            assert_eq!(reader.get_node(node.id).unwrap().as_ref(), Some(node));
+        }
+        // Ids inside a segment's range but between two of its records still
+        // resolve to nothing, which is the early exit's boundary: it stops at
+        // the first id at or past the target instead of running to the end.
+        for index in 0..400u64 {
+            assert_eq!(
+                reader.get_node(NodeId(1_000 + index * 10 + 1)).unwrap(),
+                None
+            );
+            assert_eq!(
+                reader.get_node(NodeId(1_000 + index * 10 - 1)).unwrap(),
+                None
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_segments_that_are_not_grouped_by_kind() {
+        // `segments_of_kind` slices on the assumption that a kind occupies one
+        // contiguous run. Interleaving would silently truncate a lookup's search
+        // space, so the manifest refuses to describe it.
+        let path = unique_path("interleaved_kinds");
+        let nodes = (0..32)
+            .map(|id| NodeRecord {
+                id: NodeId(id),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([("body".to_string(), Value::String("x".repeat(64)))]),
+            })
+            .collect::<Vec<_>>();
+        let relationships = (0..32)
+            .map(|id| RelRecord {
+                id: RelId(id),
+                source: NodeId(id),
+                target: NodeId(id + 1),
+                rel_type: RelTypeId(1),
+                properties: BTreeMap::from([("body".to_string(), Value::String("x".repeat(64)))]),
+            })
+            .collect::<Vec<_>>();
+        let config = CanonicalSegmentConfig {
+            target_segment_bytes: NonZeroU64::new(512).unwrap(),
+            max_record_bytes: NonZeroU64::new(2048).unwrap(),
+        };
+        let mut manifest = CanonicalSegmentWriter::new(config)
+            .write(&path, ManifestGeneration(11), &nodes, &relationships)
+            .unwrap();
+        manifest.validate().unwrap();
+        let mut node_segments = manifest
+            .segments_of_kind(CanonicalSegmentKind::Nodes)
+            .to_vec();
+        let mut relationship_segments = manifest
+            .segments_of_kind(CanonicalSegmentKind::Relationships)
+            .to_vec();
+        assert!(node_segments.len() > 1 && relationship_segments.len() > 1);
+
+        // Interleave the two kinds while keeping every other invariant intact:
+        // relative order within a kind is preserved, so the per-kind ranges stay
+        // ascending and disjoint, and reassigning ids and offsets keeps the
+        // layout contiguous and the counts unchanged. Only the grouping is
+        // violated, so only the grouping check can reject it.
+        let mut interleaved = Vec::new();
+        while !node_segments.is_empty() || !relationship_segments.is_empty() {
+            if !node_segments.is_empty() {
+                interleaved.push(node_segments.remove(0));
+            }
+            if !relationship_segments.is_empty() {
+                interleaved.push(relationship_segments.remove(0));
+            }
+        }
+        let mut offset = ARTIFACT_HEADER.len() as u64 + 8;
+        for (index, segment) in interleaved.iter_mut().enumerate() {
+            segment.segment_id = index as u64;
+            segment.offset = offset;
+            offset += segment.length.get();
+        }
+        assert_eq!(offset, manifest.artifact_len);
+        manifest.segments = interleaved;
+        assert!(manifest.validate().is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_segments_whose_record_ranges_overlap() {
+        let path = unique_path("overlapping_ranges");
+        let nodes = (0..64)
+            .map(|id| NodeRecord {
+                id: NodeId(id),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([("body".to_string(), Value::String("x".repeat(64)))]),
+            })
+            .collect::<Vec<_>>();
+        let config = CanonicalSegmentConfig {
+            target_segment_bytes: NonZeroU64::new(512).unwrap(),
+            max_record_bytes: NonZeroU64::new(2048).unwrap(),
+        };
+        let mut manifest = CanonicalSegmentWriter::new(config)
+            .write(
+                &path,
+                ManifestGeneration(5),
+                &nodes,
+                Vec::<RelRecord>::new(),
+            )
+            .unwrap();
+        assert!(manifest.segments.len() > 2);
+        manifest.validate().unwrap();
+        // Reach the previous segment's range back over this one. A lookup that
+        // binary searches would silently miss records; validation must refuse.
+        manifest.segments[0].max_record_id = manifest.segments[1].max_record_id;
+        assert!(manifest.validate().is_err());
         std::fs::remove_file(path).unwrap();
     }
 
