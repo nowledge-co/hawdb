@@ -42,6 +42,7 @@ const DIRECTORY_HEADER_BYTES: usize = 88;
 const COLUMN_ENTRY_STRIDE: usize = 32 + ZONE_MAP_RECORD_BYTES;
 const FOOTER_BYTES: usize = 8 + 4 + COLUMN_GROUP_MAGIC.len();
 const HEADER_BYTES: u64 = COLUMN_GROUP_MAGIC.len() as u64;
+const MAX_GROUP_DIRECTORY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Configuration of the group writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +453,12 @@ impl ColumnGroupWriter {
             columns: descriptors,
         };
         let directory_bytes = directory.encode()?;
+        if directory_bytes.len() as u64 > MAX_GROUP_DIRECTORY_BYTES {
+            return Err(unsupported(format!(
+                "group directory holds {} bytes, exceeding {MAX_GROUP_DIRECTORY_BYTES}",
+                directory_bytes.len()
+            )));
+        }
         file.write_all(&directory_bytes)?;
         file.write_all(&(directory_bytes.len() as u64).to_le_bytes())?;
         file.write_all(&crc32c(&directory_bytes).get().to_le_bytes())?;
@@ -630,6 +637,11 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
             ));
         }
         let directory_len = u64::from_le_bytes(footer[..8].try_into().expect("8B"));
+        if directory_len > MAX_GROUP_DIRECTORY_BYTES {
+            return Err(corrupt(format!(
+                "group directory length {directory_len} exceeds {MAX_GROUP_DIRECTORY_BYTES}"
+            )));
+        }
         let stored_crc = u32::from_le_bytes(footer[8..12].try_into().expect("4B"));
         let directory_end = len - FOOTER_BYTES as u64;
         let directory_start = directory_end

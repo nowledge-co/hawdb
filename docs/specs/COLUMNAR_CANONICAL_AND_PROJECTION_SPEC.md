@@ -234,6 +234,45 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
       visibility fence. The manifest, not directory discovery, selects the
       DV artifact for a pinned snapshot (§3.3.2).
 
+### 3.6 Column-group manifest publication and recovery
+
+1. `column-groups.manifest.skein` is the sole active publication point for
+   the column-group catalog. It records `generation`, `parent_generation`,
+   `source_commit_epoch`, and one immutable directory reference per table.
+   Each reference is bound to `(table kind, table id, directory generation,
+   byte length, SHA-256 digest, safe basename)`.
+2. A per-table directory records its table identity, publication generation,
+   ordered non-overlapping record-id ranges, row/deletion cardinalities, and
+   the exact immutable group and optional cumulative DV selected for every
+   range. Group and DV references include byte length and SHA-256 identity;
+   their embedded footer checksums and generation bindings remain mandatory.
+3. Publication MUST hold the column-group publish lease and compare the
+   candidate's `parent_generation` with the active manifest generation before
+   replacement. A mismatch is a stale checkpoint/compaction result and MUST
+   fail without changing the active manifest. Publishing byte-identical
+   metadata for the already-active generation MUST be idempotent.
+4. A candidate MUST be made durable before the active manifest is replaced:
+   immutable group/DV artifacts -> changed immutable table directories ->
+   active manifest. Every file publication follows temp file -> fsync ->
+   atomic rename -> parent directory sync. A crash before the final replace
+   leaves the previous complete catalog selected; orphan candidates and
+   unreferenced immutable artifacts are not visible.
+5. A changed or newly added table MUST reference a directory whose publication
+   generation equals the candidate manifest generation. Untouched tables MUST
+   reuse their existing directory identity without copying bytes. Manifest
+   generations are contiguous and source commit epochs never decrease.
+6. Normal reopen MUST be bounded by manifest, table-directory, and artifact
+   footer size; it MUST NOT hash or materialize all column chunks. It validates
+   metadata CRC32C/SHA-256 identities, artifact length, embedded identity, and
+   checksummed footers. Full group/DV SHA-256 verification belongs to an
+   explicit scrub/doctor operation. Corrupt published metadata or a referenced
+   artifact mismatch fails closed; it MUST NOT fall back to directory discovery.
+7. The atomic selection and stale-publisher obligations are modeled by
+   `SkeinColumnGroupManifest.tla`. The Rust refinement boundary is
+   `ColumnGroupTableDirectory::write_immutable`,
+   `ColumnGroupManifest::{publish, open}`, and
+   `PublishedColumnGroupCatalog::scrub_artifacts`.
+
 ## 4. Declared indexes
 
 1. Only declared indexes exist (`CREATE INDEX ...`); the write path MUST NOT

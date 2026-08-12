@@ -792,6 +792,10 @@ impl<'a> Cursor<'a> {
         }
         Ok(())
     }
+
+    pub(super) const fn remaining_len(&self) -> usize {
+        self.bytes.len() - self.position
+    }
 }
 
 #[cfg(test)]

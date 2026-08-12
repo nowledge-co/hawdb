@@ -5,12 +5,14 @@
 //! chunk encodings over the logical `Value` types, an id-ordered node-group
 //! artifact with a fixed-layout directory and checksummed footer, per-chunk
 //! zone maps reusing the `FieldSummary` machinery, and a generation-bound
-//! deletion vector sidecar. This is a pure format layer: nothing here is
-//! wired into `GraphStore`, checkpointing, or recovery.
+//! deletion vector sidecar, and a standalone layered manifest publication
+//! protocol. These types are not yet wired into `GraphStore` checkpointing;
+//! their durable reopen contract is exercised independently first.
 
 pub mod deletion;
 pub mod encoding;
 pub mod group;
+pub mod manifest;
 pub mod zone;
 
 use skein_core::PropertyId;
@@ -103,6 +105,12 @@ pub enum ColumnGroupError {
         snapshot_generation: u64,
         publication_generation: u64,
     },
+    /// A manifest candidate was prepared from a generation that is no longer
+    /// current. The caller must rebuild from the newly published generation.
+    StaleManifestGeneration {
+        expected_parent: Option<u64>,
+        actual_parent: Option<u64>,
+    },
     /// A requested property has no column chunk in the group.
     PropertyMissing(PropertyId),
     /// A requested row index is outside the group's row count.
@@ -135,6 +143,14 @@ impl Display for ColumnGroupError {
                 formatter,
                 "deletion vector published in generation {publication_generation} cannot be \
                  read from snapshot generation {snapshot_generation}"
+            ),
+            Self::StaleManifestGeneration {
+                expected_parent,
+                actual_parent,
+            } => write!(
+                formatter,
+                "column-group manifest was prepared from generation {expected_parent:?}, but the \
+                 active parent is {actual_parent:?}"
             ),
             Self::PropertyMissing(property) => {
                 write!(

@@ -48,6 +48,11 @@ pub use column_group::{
         ColumnGroupPruneDecision, ColumnGroupPruneReason, ColumnGroupReader, ColumnGroupWriter,
         ColumnPredicate, FileByteSource, IdChunkDescriptor, DEFAULT_GROUP_ROW_CAPACITY,
     },
+    manifest::{
+        ColumnGroupArtifactDescriptor, ColumnGroupManifest, ColumnGroupTableDirectory,
+        ColumnGroupTableDirectoryRef, ColumnGroupTableKey, ColumnGroupTableKind,
+        PublishedColumnGroupCatalog, COLUMN_GROUP_MANIFEST_FILE,
+    },
     zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, DeletionVectorBinding, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
 };

@@ -29,6 +29,10 @@ use std::path::Path;
 const DELETION_VECTOR_VERSION: u32 = 1;
 const FOOTER_BYTES: usize = 8 + 4 + DELETION_VECTOR_MAGIC.len();
 
+pub(super) fn encoded_file_len(row_count: u32) -> u64 {
+    (DELETION_VECTOR_MAGIC.len() + FOOTER_BYTES + 40 + word_count(row_count) * 8) as u64
+}
+
 /// A generation-scoped bitmap of deleted rows in one node group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletionVector {

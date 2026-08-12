@@ -21,6 +21,7 @@ readonly specifications=(
   SkeinPropertyIndexPruning
   SkeinProjectionDurability
   SkeinCompactionVisibility
+  SkeinColumnGroupManifest
 )
 
 manifest_json() {
