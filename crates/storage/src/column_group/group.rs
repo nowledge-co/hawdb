@@ -15,6 +15,7 @@
 //! by interned `PropertyId` (§3.5.3(c)); key strings never appear in the
 //! artifact.
 
+use super::deletion::DeletionVector;
 use super::encoding::{
     bits_for, decode_chunk, encode_chunk_auto, pack_values, unpack_values, ChunkEncoding, Cursor,
 };
@@ -649,6 +650,33 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
             .collect()
     }
 
+    /// The rows of this group still visible under a deletion vector,
+    /// ascending. The vector must be bound to this group and its publishing
+    /// generation (§3.5.3(d)); any other binding is rejected.
+    pub fn visible_rows<'a>(
+        &self,
+        deletion_vector: &'a DeletionVector,
+    ) -> Result<impl Iterator<Item = u32> + 'a, ColumnGroupError> {
+        if deletion_vector.group_id() != self.directory.group_id
+            || deletion_vector.generation() != self.directory.generation
+        {
+            return Err(ColumnGroupError::DeletionVectorMismatch {
+                expected_group: self.directory.group_id,
+                actual_group: deletion_vector.group_id(),
+                expected_generation: self.directory.generation.0,
+                actual_generation: deletion_vector.generation().0,
+            });
+        }
+        if deletion_vector.row_count() != self.directory.row_count {
+            return Err(corrupt(format!(
+                "deletion vector covers {} rows of a {} row group",
+                deletion_vector.row_count(),
+                self.directory.row_count
+            )));
+        }
+        Ok(deletion_vector.visible_rows())
+    }
+
     /// Point read: reconstructs the requested properties of one row,
     /// touching only the chunks of requested columns (§3.2.3). A property
     /// the group does not store reads as `Value::Null`.
@@ -930,6 +958,43 @@ mod tests {
         let error = ColumnGroupReader::open_path(&path).unwrap_err();
         assert!(matches!(error, ColumnGroupError::Corrupt(_)));
         assert!(error.to_string().contains("extent"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn deletion_vectors_bind_to_group_and_generation() {
+        let path = unique_path("dv_binding");
+        let ids = (0..40u64).collect::<Vec<_>>();
+        let columns = sample_columns(ids.len());
+        ColumnGroupWriter::default()
+            .write(&path, 7, ManifestGeneration(9), &ids, &columns)
+            .unwrap();
+        let reader = ColumnGroupReader::open_path(&path).unwrap();
+        let mut vector = DeletionVector::new(7, ManifestGeneration(9), 40);
+        vector.mark_deleted(0).unwrap();
+        vector.mark_deleted(39).unwrap();
+        let visible = reader.visible_rows(&vector).unwrap().collect::<Vec<_>>();
+        assert_eq!(visible.len(), 38);
+        assert_eq!(visible.first(), Some(&1));
+        assert_eq!(visible.last(), Some(&38));
+        // Wrong generation.
+        let stale = DeletionVector::new(7, ManifestGeneration(8), 40);
+        assert!(matches!(
+            reader.visible_rows(&stale).map(|_| ()),
+            Err(ColumnGroupError::DeletionVectorMismatch { .. })
+        ));
+        // Wrong group.
+        let foreign = DeletionVector::new(6, ManifestGeneration(9), 40);
+        assert!(matches!(
+            reader.visible_rows(&foreign).map(|_| ()),
+            Err(ColumnGroupError::DeletionVectorMismatch { .. })
+        ));
+        // Wrong row count.
+        let short = DeletionVector::new(7, ManifestGeneration(9), 39);
+        assert!(matches!(
+            reader.visible_rows(&short).map(|_| ()),
+            Err(ColumnGroupError::Corrupt(_))
+        ));
         fs::remove_file(path).unwrap();
     }
 

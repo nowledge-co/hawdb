@@ -8,6 +8,7 @@
 //! deletion vector sidecar. This is a pure format layer: nothing here is
 //! wired into `GraphStore`, checkpointing, or recovery.
 
+pub mod deletion;
 pub mod encoding;
 pub mod group;
 pub mod zone;

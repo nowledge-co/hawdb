@@ -41,6 +41,7 @@ pub use canonical_adjacency::{
     CanonicalAdjacencyWriter,
 };
 pub use column_group::{
+    deletion::DeletionVector,
     encoding::{ChunkEncoding, EncodedChunk},
     group::{
         ColumnChunkDescriptor, ColumnGroupByteSource, ColumnGroupConfig, ColumnGroupDirectory,
