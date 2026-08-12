@@ -1023,19 +1023,48 @@ fn remove_orphaned_candidates(root: &Path) {
     }
 }
 
+const REPLACE_RETRY_LIMIT: u32 = 32;
+const REPLACE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
 fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), ColumnGroupError> {
     let candidate = candidate_path(path);
     let result = (|| {
         let mut file = File::create(&candidate)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        durable_replace_file(&candidate, path)?;
+        replace_published_file(&candidate, path)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&candidate);
     }
     result
+}
+
+/// Windows denies replacing a destination while a concurrent reader holds it
+/// open; readers hold metadata files only for one bounded read, so a bounded
+/// retry converts that transient sharing violation into the same
+/// atomic-replace outcome POSIX rename provides. Elsewhere the first attempt
+/// is the only attempt.
+fn replace_published_file(candidate: &Path, path: &Path) -> Result<(), ColumnGroupError> {
+    let mut attempt = 0;
+    loop {
+        match durable_replace_file(candidate, path) {
+            Err(error)
+                if attempt < REPLACE_RETRY_LIMIT
+                    && is_transient_windows_sharing_violation(&error) =>
+            {
+                attempt += 1;
+                std::thread::sleep(REPLACE_RETRY_DELAY);
+            }
+            result => return result.map_err(ColumnGroupError::from),
+        }
+    }
+}
+
+fn is_transient_windows_sharing_violation(error: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED (5) and ERROR_SHARING_VIOLATION (32).
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5) | Some(32))
 }
 
 fn candidate_path(path: &Path) -> PathBuf {
