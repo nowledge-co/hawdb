@@ -1,5 +1,7 @@
 //! Encoding, decoding, and framing of write-ahead-log records.
 
+#[path = "wal_codec/binary.rs"]
+pub(crate) mod binary;
 #[path = "wal_codec/frame.rs"]
 pub(crate) mod frame;
 #[path = "wal_codec/wire.rs"]
