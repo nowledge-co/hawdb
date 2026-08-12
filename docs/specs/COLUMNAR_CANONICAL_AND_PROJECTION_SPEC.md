@@ -162,12 +162,58 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
 ### 3.4 WAL unification
 
 1. The engine MUST use a single binary WAL for graph and relational
-   mutations, with explicit length-framed records, per-record checksums, and
-   the torn-tail semantics currently modeled in
-   `SkeinStorageDurability.tla` / `SkeinWalDoctor.tla`. Those models MUST be
-   updated from newline framing to length framing in the same change.
-2. Group commit semantics (`WalSyncGroupState`, bounded follower wait) are
-   unchanged. The relational store MUST NOT retain a private WAL.
+   mutations, framed in the RocksDB/LevelDB log style: the file is divided
+   into fixed-size blocks (32 KiB); a record is written as one or more
+   fragments, each with header `crc32c (4B) | length (2B) | type (1B)`
+   where type is FULL/FIRST/MIDDLE/LAST, and a block tail shorter than one
+   header is zero-filled. The checksum covers type + payload, MUST be
+   masked by fragment type, and MUST be bound to the WAL generation
+   (recyclable-log discipline: a fragment carrying a stale generation
+   reads as end of log). Large records fragment across blocks, so framing
+   safety requires no bound on record size.
+2. Recovery policy is deliberately stricter than RocksDB's defaults and
+   unchanged from the current contract: block-aligned resynchronization
+   locates damage but MUST NOT skip it. A checksum-invalid or
+   sequence-invalid complete fragment chain inside the durable prefix
+   fails closed; only an incomplete fragment chain at end of file (torn
+   tail) is repairable, and only through the explicit doctor protocol.
+   `SkeinStorageDurability.tla` and `SkeinWalDoctor.tla` MUST be reframed
+   from newline framing to fragment-chain completeness in the same change.
+3. Batch payload: `commit_epoch (8B LE) | op_count (4B LE) | ops`, one
+   batch per commit epoch. Group commit semantics (`WalSyncGroupState`,
+   bounded follower wait, `SkeinWalGroupCommit.tla`) are unchanged. The
+   relational store MUST NOT retain a private WAL.
+
+### 3.5 Encoding principles
+
+1. **Record-level payloads** (WAL ops, residual column rows, spilled
+   values) use field-tagged varint encoding in the protobuf style: each
+   field is a `(field_id << 3) | wire_type` varint tag followed by a
+   varint, fixed-width, or length-delimited body. Readers MUST skip
+   unknown field ids by wire type, giving forward compatibility within a
+   storage version. The codec is hand-rolled; code-generation dependencies
+   MUST NOT enter the supply chain.
+2. **Open-path structures** (segment footers, column-chunk directories,
+   node-group directories) use fixed-layout offset tables in the
+   FlatBuffers style — scalars at fixed offsets, arrays as offset+length
+   pairs — so opening an artifact reads the checksummed footer and
+   addresses chunks directly without materializing a parsed object graph.
+3. **Metadata layering** follows Iceberg's discipline:
+   a. Manifests MUST be layered and immutable: a small, atomically
+      replaced generation manifest points to per-table group directories,
+      and a checkpoint rewrites only the directories of tables it
+      touched, so manifest write cost is proportional to change volume
+      like data (§3.3.5).
+   b. Pruning statistics (zone maps, null counts, deletion-vector
+      cardinality) live in the group directory beside the chunk extents
+      they describe; scan planning reads directories, never chunks.
+   c. Column identity is the interned `PropertyId` under field-id
+      discipline: ids are assigned once and never reused, renames are
+      catalog-metadata-only, and a dropped column's id is retired
+      forever.
+   d. A deletion vector is bound to `(node group, publishing generation)`
+      the way an Iceberg delete file is bound by sequence number: it
+      applies to exactly the base rows visible at that generation (§5.2).
 
 ## 4. Declared indexes
 
@@ -460,7 +506,7 @@ its spec amendments, tests, and the §10 evidence relevant to it.
 | Phase | Content | Acceptance |
 | --- | --- | --- |
 | 0 | Property-key interning in canonical encodings | space amplification reduced; full regression suite green |
-| 1 | Columnar node groups + zone maps + DV/delta groups; reader merge path; scans through `scan/` pruning | scan gates; point-lookup gate; write-amplification gate |
+| 1 | Columnar node groups + zone maps + DV/delta groups; reader merge path; scans through `scan/` pruning; binary WAL reframe (§3.4) with the §3.5 encodings; TLA reframe of the durability/doctor models | scan gates; point-lookup gate; write-amplification gate; crash-recovery matrix on the new framing |
 | 2 | Durable equality/composite index projections | index-restart gate |
 | 3 | Generic projection framework; vector + lexical BM25 migrate; changefeed generalization; reclamation coupling | search-restart, incremental-projection gates; kill -9 restart serves without rebuild, results equal full rebuild |
 | 4 | Relational unification (single WAL, shared groups, OLTP path) | OLTP-mix gate; cross-model transaction tests |
