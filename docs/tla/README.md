@@ -99,6 +99,16 @@ lone-request delay. Fsync sampling and evidence admission affect scheduling
 only; they do not change WAL ordering, durability, visibility, failure, or
 acknowledgement transitions represented by the model.
 
+One write-side transition deliberately over-approximates the implementation:
+the model's `BeginCommit` clears an exposed stale-generation tail, as a
+recycling writer would overwrite it. The implementation's WAL files are
+generation-scoped and never recycled, so that exposure is unreachable from
+its own lifecycle; the writer appends at physical end of file. If a stale
+region were induced externally and then appended after, the remnant would
+surface as a doctor-repairable torn tail where the model recovers without
+repair — an availability-only divergence in an externally induced state.
+Implementation behavior remains a strict subset of the modeled transitions.
+
 `SkeinWalDoctor.tla` models the destructive repair protocol separately from
 ordinary recovery. The torn state it repairs is a record whose fragment chain
 is incomplete at end of file; a checksum- or sequence-invalid complete chain

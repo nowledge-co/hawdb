@@ -181,13 +181,16 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
 1. The engine MUST use a single binary WAL for graph and relational
    mutations, framed in the RocksDB/LevelDB log style: the file is divided
    into fixed-size blocks (32 KiB); a record is written as one or more
-   fragments, each with header `crc32c (4B) | length (2B) | type (1B)`
-   where type is FULL/FIRST/MIDDLE/LAST, and a block tail shorter than one
-   header is zero-filled. The checksum covers type + payload, MUST be
-   masked by fragment type, and MUST be bound to the WAL generation
-   (recyclable-log discipline: a fragment carrying a stale generation
-   reads as end of log). Large records fragment across blocks, so framing
-   safety requires no bound on record size.
+   fragments, each with header
+   `crc32c (4B LE) | length (2B LE) | type (1B) | generation (8B LE)`
+   where type is FULL=1/FIRST=2/MIDDLE=3/LAST=4 (0 is reserved so a
+   zero-filled region never aliases a fragment), and a block tail shorter
+   than one header (15 bytes) is zero-filled. The checksum covers
+   type + generation + payload and MUST be masked by fragment type; the
+   explicit generation field is the recyclable-log discipline: a
+   well-formed fragment carrying a stale generation reads as end of log,
+   distinguishable from corruption. Large records fragment across blocks,
+   so framing safety requires no bound on record size.
 2. Recovery policy is deliberately stricter than RocksDB's defaults and
    unchanged from the current contract: block-aligned resynchronization
    locates damage but MUST NOT skip it. A checksum-invalid or
