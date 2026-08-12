@@ -1,5 +1,8 @@
 //! Encoding, decoding, and framing of write-ahead-log records.
 
+#[path = "wal_codec/wire.rs"]
+pub(crate) mod wire;
+
 use super::{
     checksum_bytes, decode_bytes_base64, decode_nullable, decode_properties, decode_property_type,
     decode_schema_object_state, decode_string, decode_string_vec, decode_table_kind, decode_value,
