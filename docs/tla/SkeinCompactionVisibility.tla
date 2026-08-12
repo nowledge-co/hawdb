@@ -11,6 +11,11 @@ EXTENDS Integers, Naturals, FiniteSets
 (* are immutable; readers pin one generation and must observe the same     *)
 (* durable view for the lifetime of the pin.                               *)
 (*                                                                         *)
+(* Compaction is split into prepare and publish. Preparation binds its     *)
+(* output to one source generation. Publication is a generation-guarded   *)
+(* compare-and-swap: if a flush advanced the current generation, the stale *)
+(* output is discarded rather than losing newly published deletes.        *)
+(*                                                                         *)
 (* Records carry per-key version numbers, and the scan is modeled as the   *)
 (* set of emitted versions per key. This makes the deletion vector's real  *)
 (* obligation checkable: a flush that adds a superseding delta row but     *)
@@ -50,7 +55,9 @@ VARIABLES
     available,
     currentGeneration,
     readerGeneration,
-    readerView
+    readerView,
+    compactionSourceGeneration,
+    compactionOutput
 
 vars == <<
     minted,
@@ -60,7 +67,9 @@ vars == <<
     available,
     currentGeneration,
     readerGeneration,
-    readerView
+    readerView,
+    compactionSourceGeneration,
+    compactionOutput
 >>
 
 (***************************************************************************)
@@ -68,15 +77,17 @@ vars == <<
 (* unless the deletion vector masks it, plus the delta row if present.     *)
 (* A correct layered merge emits at most one version per key.              *)
 (***************************************************************************)
-EmittedVersions(generation, key) ==
-    LET group == groups[generation]
-        baseVersions ==
+EmittedVersionsFromGroup(group, key) ==
+    LET baseVersions ==
             IF group.base[key] # 0 /\ key \notin group.dv
             THEN {group.base[key]}
             ELSE {}
         deltaVersions ==
             IF group.delta[key] # 0 THEN {group.delta[key]} ELSE {}
     IN baseVersions \cup deltaVersions
+
+EmittedVersions(generation, key) ==
+    EmittedVersionsFromGroup(groups[generation], key)
 
 DurableView(generation) ==
     [key \in Keys |-> EmittedVersions(generation, key)]
@@ -106,6 +117,8 @@ Init ==
     /\ currentGeneration = 0
     /\ readerGeneration = [reader \in Readers |-> -1]
     /\ readerView = [reader \in Readers |-> [key \in Keys |-> {}]]
+    /\ compactionSourceGeneration = -1
+    /\ compactionOutput = EmptyGroup
 
 CommitPut(key) ==
     /\ minted[key] < MaxVersion
@@ -117,7 +130,9 @@ CommitPut(key) ==
         available,
         currentGeneration,
         readerGeneration,
-        readerView
+        readerView,
+        compactionSourceGeneration,
+        compactionOutput
         >>
 
 CommitDelete(key) ==
@@ -129,7 +144,9 @@ CommitDelete(key) ==
         available,
         currentGeneration,
         readerGeneration,
-        readerView
+        readerView,
+        compactionSourceGeneration,
+        compactionOutput
         >>
 
 (***************************************************************************)
@@ -158,14 +175,21 @@ Flush ==
     /\ available' = available \cup {currentGeneration + 1}
     /\ currentGeneration' = currentGeneration + 1
     /\ mem' = [key \in Keys |-> "none"]
-    /\ UNCHANGED <<minted, present, readerGeneration, readerView>>
+    /\ UNCHANGED <<
+        minted,
+        present,
+        readerGeneration,
+        readerView,
+        compactionSourceGeneration,
+        compactionOutput
+        >>
 
 (***************************************************************************)
-(* Compaction publishes a new generation whose representation is merged    *)
-(* (deletion vectors applied, delta rows folded into base) while the       *)
-(* visible state is unchanged: an identity transform on emitted versions.  *)
+(* Preparation materializes a merged representation and records the exact  *)
+(* source generation whose row ordinals and deletion vector it consumed.   *)
 (***************************************************************************)
-Compact ==
+PrepareCompaction ==
+    /\ compactionSourceGeneration = -1
     /\ currentGeneration < MaxGeneration
     /\ LET current == groups[currentGeneration]
            merged ==
@@ -175,15 +199,53 @@ Compact ==
                    ELSE IF key \notin current.dv
                    THEN current.base[key]
                    ELSE 0]
-       IN groups' =
-           [groups EXCEPT ![currentGeneration + 1] =
-               [base |-> merged, dv |-> {}, delta |-> EmptyColumn]]
-    /\ available' = available \cup {currentGeneration + 1}
-    /\ currentGeneration' = currentGeneration + 1
+       IN compactionOutput' =
+           [base |-> merged, dv |-> {}, delta |-> EmptyColumn]
+    /\ compactionSourceGeneration' = currentGeneration
     /\ UNCHANGED <<
         minted,
         present,
         mem,
+        groups,
+        available,
+        currentGeneration,
+        readerGeneration,
+        readerView
+        >>
+
+(***************************************************************************)
+(* Publication is a manifest compare-and-swap. If a flush or another       *)
+(* publication advanced the source, the prepared output cannot publish.    *)
+(***************************************************************************)
+PublishCompaction ==
+    /\ compactionSourceGeneration = currentGeneration
+    /\ currentGeneration < MaxGeneration
+    /\ groups' =
+        [groups EXCEPT ![currentGeneration + 1] = compactionOutput]
+    /\ available' = available \cup {currentGeneration + 1}
+    /\ currentGeneration' = currentGeneration + 1
+    /\ compactionSourceGeneration' = -1
+    /\ compactionOutput' = EmptyGroup
+    /\ UNCHANGED <<
+        minted,
+        present,
+        mem,
+        readerGeneration,
+        readerView
+        >>
+
+DiscardStaleCompaction ==
+    /\ compactionSourceGeneration # -1
+    /\ compactionSourceGeneration # currentGeneration
+    /\ compactionSourceGeneration' = -1
+    /\ compactionOutput' = EmptyGroup
+    /\ UNCHANGED <<
+        minted,
+        present,
+        mem,
+        groups,
+        available,
+        currentGeneration,
         readerGeneration,
         readerView
         >>
@@ -200,7 +262,9 @@ BeginRead(reader) ==
         mem,
         groups,
         available,
-        currentGeneration
+        currentGeneration,
+        compactionSourceGeneration,
+        compactionOutput
         >>
 
 EndRead(reader) ==
@@ -214,7 +278,9 @@ EndRead(reader) ==
         mem,
         groups,
         available,
-        currentGeneration
+        currentGeneration,
+        compactionSourceGeneration,
+        compactionOutput
         >>
 
 (***************************************************************************)
@@ -234,7 +300,9 @@ Reclaim ==
         groups,
         currentGeneration,
         readerGeneration,
-        readerView
+        readerView,
+        compactionSourceGeneration,
+        compactionOutput
         >>
 
 (***************************************************************************)
@@ -244,6 +312,8 @@ Reclaim ==
 CrashAndRecover ==
     /\ readerGeneration' = [reader \in Readers |-> -1]
     /\ readerView' = [reader \in Readers |-> [key \in Keys |-> {}]]
+    /\ compactionSourceGeneration' = -1
+    /\ compactionOutput' = EmptyGroup
     /\ UNCHANGED <<
         minted,
         present,
@@ -257,7 +327,9 @@ Next ==
     \/ \E key \in Keys: CommitPut(key)
     \/ \E key \in Keys: CommitDelete(key)
     \/ Flush
-    \/ Compact
+    \/ PrepareCompaction
+    \/ PublishCompaction
+    \/ DiscardStaleCompaction
     \/ \E reader \in Readers: BeginRead(reader)
     \/ \E reader \in Readers: EndRead(reader)
     \/ Reclaim
@@ -272,6 +344,8 @@ TypeOK ==
     /\ currentGeneration \in Generations
     /\ readerGeneration \in [Readers -> ReaderGenerations]
     /\ readerView \in [Readers -> [Keys -> SUBSET Versions]]
+    /\ compactionSourceGeneration \in ReaderGenerations
+    /\ compactionOutput \in Group
 
 (***************************************************************************)
 (* The layered read at the current generation overlaid with the memtable   *)
@@ -314,6 +388,21 @@ DeletionVectorsCoverBaseOnly ==
     \A generation \in available:
         \A key \in groups[generation].dv:
             groups[generation].base[key] # 0
+
+(***************************************************************************)
+(* The prepared output is an identity transform of the exact source        *)
+(* generation it names. Publication can succeed only while that source is  *)
+(* still current, so a stale output cannot erase a newer deletion vector.  *)
+(***************************************************************************)
+PreparedCompactionIsIdentity ==
+    compactionSourceGeneration = -1 \/
+        \A key \in Keys:
+            EmittedVersionsFromGroup(compactionOutput, key) =
+                EmittedVersions(compactionSourceGeneration, key)
+
+CompactionSourceNeverLeadsCurrent ==
+    compactionSourceGeneration = -1 \/
+        compactionSourceGeneration <= currentGeneration
 
 Spec == Init /\ [][Next]_vars
 

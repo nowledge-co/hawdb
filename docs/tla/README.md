@@ -167,6 +167,15 @@ representation that must not change the visible state; readers pin one
 immutable generation under the coarse reclamation policy of
 `SkeinGenerationReclamation.tla`.
 
+Compaction is modeled as separate preparation and publication actions.
+Preparation records the source manifest generation whose immutable group
+row ordinals and cumulative deletion vector it consumed. Publication is a
+generation-guarded compare-and-swap: if a flush advanced the current
+generation while compaction was running, the prepared output is discarded
+instead of publishing over the newer deletion frontier. This is the embedded
+single-publisher counterpart of the row-id conversion and concurrent delete
+bitmap reconciliation required by distributed merge-on-write engines.
+
 Records carry per-key version numbers and the scan is modeled as the set of
 emitted versions per key. That choice is what gives the deletion vector's
 obligation teeth: under a key-presence abstraction, a flush that appends a
@@ -179,8 +188,9 @@ never a stale duplicate) across every interleaving of commits, flush,
 compaction, crash, and reclamation; that a pinned reader observes its
 recorded durable view for the lifetime of the pin; that pinned and current
 generations remain available; that a scan emits at most one version per
-key; and that deletion vectors only mark rows that exist in the base
-column.
+key; that deletion vectors only mark rows that exist in the base column;
+and that every prepared compaction is an identity transform of the exact
+source generation it names.
 
 Mutation testing sizes the instance (two keys, two readers,
 `MaxVersion = 2`, `MaxGeneration = 3`, about 176k distinct states): a flush
@@ -188,7 +198,42 @@ that marks deletion-vector entries only for deletes but not for
 superseding puts reports `LayeredReadEqualsLogicalState`, a compaction that
 drops delta rows reports `LayeredReadEqualsLogicalState`, and a flush that
 rewrites the published current generation in place instead of publishing
-the next one reports `PinnedViewIsImmutable`.
+the next one reports `PinnedViewIsImmutable`. Removing the compaction
+publication generation guard permits `PrepareCompaction -> Flush ->
+PublishCompaction` and reports `LayeredReadEqualsLogicalState`: the stale
+output loses the flush's newer deletion vector and delta rows.
+
+## Layered Column-Group Manifest Publication
+
+`SkeinColumnGroupManifest.tla` models the publication protocol in
+[`../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md`](../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md)
+§3.6. Newly changed immutable artifacts become durable before their per-table
+directories; directories become durable before a single active manifest
+atomically selects the complete catalog. Untouched tables keep referencing an
+older immutable directory, so checkpoint metadata writes scale with changed
+tables rather than total tables.
+
+Each candidate carries the active generation from which it was prepared.
+Publication compares that parent with the current manifest while holding the
+filesystem publish lease. A candidate made stale by another publication cannot
+replace the active manifest. Crashes discard only volatile preparation and
+readers; orphan durable artifacts and directories remain unreachable because
+recovery opens the active manifest rather than discovering files by directory
+scan.
+
+The model checks that the active manifest and every table reference name
+durable metadata generations, table-directory generations never lead the
+active manifest, one generation never acquires two catalog identities,
+prepared directories follow durable artifacts, reader-pinned catalog views
+remain immutable, and stale candidates cannot publish.
+
+Mutation testing removes the parent-generation equality from
+`PublishCandidate`. TLC then reports `StaleCandidateCannotPublish` after
+`BeginCandidate -> MakeArtifactsDurable -> MakeDirectoriesDurable ->
+PublishRacingManifest`: the stale candidate remains enabled to overwrite the
+generation already selected by the racing publisher. This demonstrates that
+the model distinguishes a serialized publish lease from the required
+generation compare-and-swap.
 
 ## Implementation Refinement Evidence
 
@@ -209,6 +254,7 @@ They are implementation evidence, not a machine-checked refinement proof.
 | Stale optimistic commits fail before publication and fine-grained locks preserve compatibility | `commit_mutation_transaction_and_relational`, `LockTable` | `optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer`, `disjoint_primary_key_point_locks_allow_both_pessimistic_writers_to_commit`, `shared_primary_key_range_blocks_phantoms_but_not_the_excluded_boundary` |
 | A deadlock-closing multi-owner wait edge selects one victim and releases its dependencies | `WaitForGraph::register`, `ConcurrentDatabaseTransaction::abort_after_lock_failure` | `point_lock_upgrade_cycle_selects_one_deadlock_victim`, `wait_for_graph_detects_a_cycle_with_multiple_blockers` |
 | A stale, mixed, missing, or corrupt Source scan sidecar falls back to the canonical graph | `source_scan::load`, `ScanSegmentManifest::plan_scan` | `checkpoint_publishes_source_scan_and_wal_mutation_invalidates_it`, `corrupted_source_scan_artifact_never_blocks_canonical_graph_recovery` |
+| A column-group catalog publishes artifacts and changed table directories before one generation-CAS manifest; reopen ignores orphan candidates and fails closed on referenced corruption | `ColumnGroupTableDirectory::write_immutable`, `ColumnGroupManifest::{publish,open}`, `PublishedColumnGroupCatalog::scrub_artifacts` | `publishes_reopens_and_reuses_untouched_table_directory`, `stale_publishers_are_serialized_and_one_fails_closed`, `orphan_candidate_is_ignored_and_corrupt_published_metadata_fails_closed`, `deep_scrub_detects_payload_corruption_not_read_by_reopen` |
 | System schema objects and migration identities publish atomically; invalid, future, read-only, failed-DDL, and crash-recovered states never return a usable partially upgraded handle | `Database::apply_system_schema_registry`, `execute_database_transaction_sql`, `GraphStore::commit_mutation_transaction_and_relational` | `application_system_schema_upgrades_and_reopens_idempotently`, `application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_schema`, `application_system_schema_rejects_changed_applied_migration`, `application_system_schema_rejects_a_database_from_a_newer_binary`, `failed_application_system_schema_upgrade_does_not_publish_version`, `read_only_database_rejects_pending_application_system_schema_upgrade` |
 | Skein Lightning derives a registry-complete export without advancing an in-memory source epoch and imports only a valid stream into an empty or verified engine-only target | `Database::skein_lightning_relational_state`, `Database::skein_lightning_initial_import_apply_internal`, `GraphStore::import_skein_snapshot_rows_with_source_fingerprint` | `skein_lightning_initial_import_apply_imports_database_state_into_empty_target`, `skein_lightning_initial_import_rejects_stream_without_engine_registry` |
 

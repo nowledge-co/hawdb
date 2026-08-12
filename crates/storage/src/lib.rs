@@ -3,6 +3,7 @@ pub mod backup;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
+pub mod column_group;
 pub mod config;
 pub mod durability;
 pub mod ids;
@@ -38,6 +39,22 @@ pub use canonical_adjacency::{
     CanonicalAdjacencyEntry, CanonicalAdjacencyError, CanonicalAdjacencyManifest,
     CanonicalAdjacencyReadReport, CanonicalAdjacencyReader, CanonicalAdjacencyWriteOutput,
     CanonicalAdjacencyWriter,
+};
+pub use column_group::{
+    deletion::DeletionVector,
+    encoding::{ChunkEncoding, EncodedChunk},
+    group::{
+        ColumnChunkDescriptor, ColumnGroupByteSource, ColumnGroupConfig, ColumnGroupDirectory,
+        ColumnGroupPruneDecision, ColumnGroupPruneReason, ColumnGroupReader, ColumnGroupWriter,
+        ColumnPredicate, FileByteSource, IdChunkDescriptor, DEFAULT_GROUP_ROW_CAPACITY,
+    },
+    manifest::{
+        ColumnGroupArtifactDescriptor, ColumnGroupManifest, ColumnGroupTableDirectory,
+        ColumnGroupTableDirectoryRef, ColumnGroupTableKey, ColumnGroupTableKind,
+        PublishedColumnGroupCatalog, COLUMN_GROUP_MANIFEST_FILE,
+    },
+    zone::{ChunkZoneMap, StringPrefixMinMax},
+    ColumnGroupError, DeletionVectorBinding, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
 };
 pub use config::{
     DurabilityPolicy, DurableCompression, RecoveryMode, StorageResidencyMode, WalReplayConfig,
