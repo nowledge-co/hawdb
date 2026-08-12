@@ -232,6 +232,96 @@ fn wal_apply_failpoint() -> Result<()> {
     Ok(())
 }
 
+/// Test support: renders a WAL file (either format) as its canonical V1
+/// text record lines, one encoded record per line, header excluded. A torn
+/// tail ends the rendering; corruption renders a terminal marker line so
+/// identity comparisons on damaged files stay deterministic.
+#[cfg(test)]
+pub(crate) fn decode_wal_records_as_v1_text(path: &Path) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let invalid = |reason: String| Error::new(ErrorKind::InvalidData, reason);
+    let mut cursor = match WalRecordCursor::open(path, None)
+        .map_err(|error| invalid(error.to_string()))?
+    {
+        WalOpenOutcome::Cursor(cursor) => cursor,
+        WalOpenOutcome::MissingHeader => {
+            return Err(invalid("WAL is missing its header".to_string()));
+        }
+        WalOpenOutcome::HeaderTorn { reason } | WalOpenOutcome::HeaderCorrupt { reason } => {
+            return Err(invalid(reason));
+        }
+    };
+    let mut out = String::new();
+    loop {
+        match cursor.next().map_err(|error| invalid(error.to_string()))? {
+            WalCursorEvent::Entry { entry, .. } => {
+                out.push_str(&entry.encode());
+                out.push('\n');
+            }
+            WalCursorEvent::Corrupt { offset, reason } => {
+                out.push_str(&format!("<corrupt at {offset}: {reason}>\n"));
+                break;
+            }
+            WalCursorEvent::TornTail { .. } | WalCursorEvent::Eof => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Test support: rewrites a cleanly decodable WAL file into the V1 text
+/// encoding with the same generation header and records. Exercises the
+/// text-to-binary upgrade path that real databases cross at checkpoint.
+#[cfg(test)]
+pub(crate) fn rewrite_wal_as_v1_text(path: &Path) -> Result<()> {
+    let mut cursor = match WalRecordCursor::open(path, None)? {
+        WalOpenOutcome::Cursor(cursor) => cursor,
+        _ => {
+            return Err(SkeinError::Storage(
+                "cannot rewrite a WAL without a valid header".to_string(),
+            ));
+        }
+    };
+    let mut text = encode_wal_header(cursor.generation(), cursor.start_lsn());
+    text.push('\n');
+    loop {
+        match cursor.next()? {
+            WalCursorEvent::Entry { entry, .. } => {
+                text.push_str(&entry.encode());
+                text.push('\n');
+            }
+            WalCursorEvent::Eof => break,
+            WalCursorEvent::TornTail { .. } | WalCursorEvent::Corrupt { .. } => {
+                return Err(SkeinError::Storage(
+                    "cannot rewrite a damaged WAL as V1 text".to_string(),
+                ));
+            }
+        }
+    }
+    fs::write(path, text)?;
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+/// Test support: appends one well-formed framed record carrying a stale
+/// WAL generation, emulating a recycled-log region past the logical tail.
+/// Recovery must read it as clean end of log.
+#[cfg(test)]
+pub(crate) fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
+    let bytes = fs::read(path)?;
+    let (generation, _) = wal_codec::frame::decode_binary_wal_header(&bytes)?;
+    let position = bytes.len() as u64 - WAL_BINARY_FILE_HEADER_BYTES as u64;
+    let stale_generation = generation.wrapping_sub(1);
+    let framed = frame_binary_wal_record(
+        stale_generation,
+        b"recycled-region-record-from-a-previous-generation",
+        position,
+    );
+    let mut file = OpenOptions::new().append(true).open(path)?;
+    file.write_all(&framed)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn set_wal_apply_failpoint(operations_before_failure: Option<usize>) {
     WAL_APPLY_FAILPOINT_REMAINING.with(|remaining| remaining.set(operations_before_failure));
@@ -17863,9 +17953,7 @@ mod tests {
                 .unwrap();
         }
         let wal_path = active_wal_path(&path);
-        let wal = std::fs::read_to_string(&wal_path).unwrap();
-        let torn = wal.rsplit_once('\t').unwrap().0;
-        std::fs::write(&wal_path, torn).unwrap();
+        truncate_test_wal_tail(&wal_path, 8);
 
         let plan =
             DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap();
@@ -17883,6 +17971,18 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    /// Cuts `cut` bytes off the WAL tail, leaving the final record's
+    /// fragment chain physically incomplete (a binary torn tail).
+    fn truncate_test_wal_tail(wal_path: &std::path::Path, cut: u64) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(wal_path)
+            .unwrap();
+        let len = file.metadata().unwrap().len();
+        file.set_len(len - cut).unwrap();
+        file.sync_all().unwrap();
+    }
+
     #[test]
     fn rejects_and_quarantines_checksum_corruption_before_valid_wal_suffix() {
         let path = unique_test_dir("wal_middle_corruption");
@@ -17897,11 +17997,13 @@ mod tests {
                 .unwrap();
         }
         let wal_path = active_wal_path(&path);
-        let wal = std::fs::read_to_string(&wal_path).unwrap();
-        let mut lines = wal.lines().map(str::to_string).collect::<Vec<_>>();
-        let first_record = lines[1].rsplit_once('\t').unwrap().0;
-        lines[1] = format!("{first_record}\t0");
-        std::fs::write(&wal_path, format!("{}\n", lines.join("\n"))).unwrap();
+        // Flip one payload byte of the first record: mid-log corruption
+        // ahead of a valid suffix must fail closed.
+        let mut wal = std::fs::read(&wal_path).unwrap();
+        let first_payload_offset =
+            super::WAL_BINARY_FILE_HEADER_BYTES + super::wal_codec::frame::WAL_FRAGMENT_HEADER_BYTES;
+        wal[first_payload_offset] ^= 0xff;
+        std::fs::write(&wal_path, &wal).unwrap();
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
@@ -17925,20 +18027,18 @@ mod tests {
                 .unwrap();
         }
         let wal_path = active_wal_path(&path);
-        let wal = std::fs::read_to_string(&wal_path).unwrap();
-        let mut lines = wal.lines().map(str::to_string).collect::<Vec<_>>();
-        let (body, raw_checksum) = lines.last().unwrap().rsplit_once('\t').unwrap();
-        let body = body.to_string();
-        let corrupt_checksum = raw_checksum.parse::<u64>().unwrap().wrapping_add(1);
-        *lines.last_mut().unwrap() = format!("{body}\t{corrupt_checksum}");
-        let corrupt_wal = format!("{}\n", lines.join("\n"));
+        // Flip the stored checksum of the final complete fragment chain:
+        // a complete chain failing its checksum is corruption, never a
+        // repairable torn tail.
+        let mut corrupt_wal = std::fs::read(&wal_path).unwrap();
+        corrupt_wal[super::WAL_BINARY_FILE_HEADER_BYTES] ^= 0xff;
         std::fs::write(&wal_path, &corrupt_wal).unwrap();
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
         assert!(error.to_string().contains("WAL corruption at byte offset"));
         assert!(error.to_string().contains("checksum mismatch"));
-        assert_eq!(std::fs::read_to_string(&wal_path).unwrap(), corrupt_wal);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), corrupt_wal);
         assert_eq!(
             std::fs::read_dir(path.join("quarantine")).unwrap().count(),
             1
@@ -17960,16 +18060,32 @@ mod tests {
                 .unwrap();
         }
         let wal_path = active_wal_path(&path);
-        let wal = std::fs::read_to_string(&wal_path).unwrap();
-        let mut lines = wal.lines().map(str::to_string).collect::<Vec<_>>();
-        let (body, _) = lines[2].rsplit_once('\t').unwrap();
-        let (_, payload) = body.split_once('\t').unwrap();
-        let rewritten_body = format!("3\t{payload}");
-        lines[2] = format!(
-            "{rewritten_body}\t{}",
-            checksum_bytes(rewritten_body.as_bytes())
-        );
-        std::fs::write(&wal_path, format!("{}\n", lines.join("\n"))).unwrap();
+        // Rebuild the WAL with well-formed framing but a gap in the LSN
+        // sequence: the second record claims LSN 3 instead of 2.
+        let mut cursor = match super::WalRecordCursor::open(&wal_path, None).unwrap() {
+            super::WalOpenOutcome::Cursor(cursor) => cursor,
+            _ => panic!("test WAL is missing its header"),
+        };
+        let generation = cursor.generation();
+        let start_lsn = cursor.start_lsn();
+        let mut entries = Vec::new();
+        loop {
+            match cursor.next().unwrap() {
+                super::WalCursorEvent::Entry { entry, .. } => entries.push(entry),
+                super::WalCursorEvent::Eof => break,
+                _ => panic!("test WAL is damaged"),
+            }
+        }
+        entries.last_mut().unwrap().lsn += 1;
+        let mut rewritten = super::encode_binary_wal_header(generation, start_lsn);
+        for (index, entry) in entries.iter().enumerate() {
+            let payload = super::encode_binary_wal_record(entry, index as u64 + 1);
+            let position = rewritten.len() as u64 - super::WAL_BINARY_FILE_HEADER_BYTES as u64;
+            rewritten.extend_from_slice(&super::frame_binary_wal_record(
+                generation, &payload, position,
+            ));
+        }
+        std::fs::write(&wal_path, rewritten).unwrap();
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
@@ -18092,9 +18208,7 @@ mod tests {
         }
 
         let wal_path = active_wal_path(&path);
-        let wal = std::fs::read_to_string(&wal_path).unwrap();
-        let torn = wal.rsplit_once('\t').unwrap().0;
-        std::fs::write(&wal_path, torn).unwrap();
+        truncate_test_wal_tail(&wal_path, 8);
 
         let plan =
             DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap();
@@ -18859,16 +18973,7 @@ mod tests {
     }
 
     fn read_test_wal(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
-        let wal = std::fs::read_to_string(active_wal_path(path))?;
-        if !wal.starts_with("SKEIN_WAL_V1\t") {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "WAL is missing the V1 header",
-            ));
-        }
-        Ok(wal
-            .split_once('\n')
-            .map_or_else(String::new, |(_, records)| records.to_string()))
+        super::decode_wal_records_as_v1_text(&active_wal_path(path))
     }
 
     fn active_generation_path(

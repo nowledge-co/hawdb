@@ -1011,6 +1011,102 @@ fn out_of_core_delta_budget_also_bounds_wal_replay() {
 }
 
 #[test]
+fn v1_text_wal_replays_and_upgrades_to_binary_at_next_checkpoint() {
+    let path = unique_test_dir("v1_text_wal_compat");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
+            .unwrap();
+    }
+    // Rewrite the WAL into the V1 text encoding (same generation header,
+    // same records), emulating a database written before the binary WAL.
+    let binary_record_count = read_test_wal(&path).unwrap().lines().count();
+    crate::store::rewrite_wal_as_v1_text(&active_wal_path(&path)).unwrap();
+    assert!(std::fs::read(active_wal_path(&path))
+        .unwrap()
+        .starts_with(b"SKEIN_WAL_V1\t"));
+    assert_eq!(
+        read_test_wal(&path).unwrap().lines().count(),
+        binary_record_count
+    );
+    {
+        let mut db = Database::open(&path).unwrap();
+        let output = db
+            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+            .unwrap();
+        assert_eq!(
+            output.rows[0].get("title"),
+            Some(&Value::String("Graph foundations".to_string()))
+        );
+        // Appends to an existing text generation stay text.
+        db.query("CREATE (:Memory {id: 2, title: 'Still text'})")
+            .unwrap();
+        assert!(std::fs::read(active_wal_path(&path))
+            .unwrap()
+            .starts_with(b"SKEIN_WAL_V1\t"));
+        assert_eq!(
+            read_test_wal(&path).unwrap().lines().count(),
+            binary_record_count + 1
+        );
+        // The next checkpoint rotates the WAL to a new generation, which
+        // is always binary.
+        db.checkpoint().unwrap();
+        assert!(std::fs::read(active_wal_path(&path))
+            .unwrap()
+            .starts_with(b"SKWALB01"));
+        assert_eq!(read_test_wal(&path).unwrap(), "");
+        db.query("CREATE (:Memory {id: 3, title: 'Now binary'})")
+            .unwrap();
+        assert_eq!(read_test_wal(&path).unwrap().lines().count(), 1);
+    }
+    {
+        let mut db = Database::open(&path).unwrap();
+        let output = db
+            .query("MATCH (m:Memory) RETURN count(m) AS count")
+            .unwrap();
+        assert_eq!(output.rows[0].get("count"), Some(&Value::Int(3)));
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn stale_generation_wal_fragment_reads_as_clean_end_of_log() {
+    let path = unique_test_dir("stale_generation_wal_tail");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
+            .unwrap();
+    }
+    // A well-formed fragment carrying a stale WAL generation past the
+    // logical tail must read as clean end of log (recyclable-log
+    // discipline), not as a torn tail and not as corruption.
+    crate::store::append_stale_generation_wal_fragment(&active_wal_path(&path)).unwrap();
+    {
+        let mut db = Database::open(&path).unwrap();
+        let output = db
+            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+            .unwrap();
+        assert_eq!(
+            output.rows[0].get("title"),
+            Some(&Value::String("Graph foundations".to_string()))
+        );
+        let recovery = db.storage_recovery_report();
+        assert!(recovery.replayed_wal_entries >= 1);
+        assert!(!recovery.torn_tail_ignored);
+        assert!(!recovery.torn_tail_repaired);
+        assert_eq!(recovery.discarded_wal_tail_bytes, 0);
+        assert!(recovery.torn_tail_reason.is_none());
+    }
+    // The stale fragment is not doctor-repairable damage either.
+    let error =
+        DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("no repairable incomplete final record"));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn persists_nodes_across_reopen_with_wal_replay() {
     let path = unique_test_dir("wal_replay");
     {
@@ -1109,11 +1205,11 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
     assert!(!read_test_wal(&path)
         .unwrap()
         .contains("torn-entry-without-checksum"));
-    assert!(
-        std::fs::read_to_string(path.join("doctor/quarantine").join(repair.quarantine_file))
-            .unwrap()
-            .contains("torn-entry-without-checksum")
-    );
+    let quarantined =
+        std::fs::read(path.join("doctor/quarantine").join(repair.quarantine_file)).unwrap();
+    assert!(quarantined
+        .windows(b"torn-entry-without-checksum".len())
+        .any(|window| window == b"torn-entry-without-checksum"));
     std::fs::remove_dir_all(path).unwrap();
 }
 

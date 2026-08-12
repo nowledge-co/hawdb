@@ -8816,16 +8816,7 @@ fn active_checkpoint_path(path: impl AsRef<std::path::Path>) -> std::path::PathB
 }
 
 fn read_test_wal(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
-    let wal = std::fs::read_to_string(active_wal_path(path))?;
-    if !wal.starts_with("SKEIN_WAL_V1\t") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "WAL is missing the V1 header",
-        ));
-    }
-    Ok(wal
-        .split_once('\n')
-        .map_or_else(String::new, |(_, records)| records.to_string()))
+    crate::store::decode_wal_records_as_v1_text(&active_wal_path(path))
 }
 
 fn read_test_plan_cache_metric(read: &DatabaseReadTransaction, metric: &str) -> i64 {
