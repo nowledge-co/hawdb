@@ -4,7 +4,14 @@ use skein_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
 use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_DOCUMENTS: usize = 20_000;
+// Debug-assertion builds are the smoke execution CI drives through
+// `cargo test --benches`; numbers are only meaningful from `cargo bench`.
+// The environment variable overrides either tier.
+const DEFAULT_DOCUMENTS: usize = if cfg!(debug_assertions) {
+    1_000
+} else {
+    20_000
+};
 const CONTENT_BYTES: usize = 1024;
 
 fn main() {

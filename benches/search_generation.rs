@@ -7,7 +7,15 @@ use skein_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
 use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_DOCUMENTS: usize = 100_000;
+// Debug-assertion builds are the smoke execution CI drives through
+// `cargo test --benches`; a 100k-document generation build at opt-level 0
+// dominates that job. Numbers are only meaningful from `cargo bench`, and
+// the environment variable still overrides either tier.
+const DEFAULT_DOCUMENTS: usize = if cfg!(debug_assertions) {
+    2_000
+} else {
+    100_000
+};
 const CONTENT_BYTES: usize = 512;
 const EMBEDDING_DIMENSION: usize = 16;
 const MODE_ENV: &str = "SKEIN_SEARCH_GENERATION_BENCH_MODE";

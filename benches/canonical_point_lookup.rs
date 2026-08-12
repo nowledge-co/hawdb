@@ -17,10 +17,20 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const NODE_COUNT: u64 = 120_000;
+// Debug-assertion builds are the smoke execution CI drives through
+// `cargo test --benches`; numbers are only meaningful from `cargo bench`.
+const NODE_COUNT: u64 = if cfg!(debug_assertions) {
+    4_000
+} else {
+    120_000
+};
 const BODY_BYTES: usize = 320;
-const LOOKUPS: u64 = 20_000;
-const SAMPLES: usize = 5;
+const LOOKUPS: u64 = if cfg!(debug_assertions) {
+    1_000
+} else {
+    20_000
+};
+const SAMPLES: usize = if cfg!(debug_assertions) { 2 } else { 5 };
 const SHAPES: [(&str, u64); 2] = [
     ("large_segments", 4 * 1024 * 1024),
     ("small_segments", 32 * 1024),
