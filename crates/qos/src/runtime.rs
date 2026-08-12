@@ -10,6 +10,14 @@ const DESKTOP_MEMORY_FRACTION_PER_MILLION: u32 = 750_000;
 const MOBILE_MEMORY_FRACTION_PER_MILLION: u32 = 500_000;
 const DESKTOP_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 const MOBILE_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+/// Floor for the budget term derived from sensed available memory. On
+/// tmpfs-backed environments (Cloud Run and similar) file writes count
+/// against cgroup memory.current, so sensed availability legitimately
+/// approaches zero while the bytes are the workload's own reclaimable
+/// files. Sensing may throttle the engine to this floor; it must never
+/// zero the budget and reject all work. Explicit configuration and the
+/// container's hard limit remain authoritative below the floor.
+const SENSED_MEMORY_BUDGET_FLOOR_BYTES: u64 = 64 * 1024 * 1024;
 const DESKTOP_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -660,10 +668,11 @@ fn derived_memory_budget(
         .memory
         .effective_limit_bytes
         .map(|bytes| scale_memory(bytes, fraction));
-    let headroom_budget = resources
-        .memory
-        .effective_available_bytes
-        .map(|bytes| scale_memory(bytes, fraction).saturating_add(admitted_memory_bytes));
+    let headroom_budget = resources.memory.effective_available_bytes.map(|bytes| {
+        scale_memory(bytes, fraction)
+            .saturating_add(admitted_memory_bytes)
+            .max(SENSED_MEMORY_BUDGET_FLOOR_BYTES)
+    });
     [
         config.memory_budget_bytes,
         total_budget,
@@ -1045,5 +1054,62 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Completed));
+    }
+
+    #[test]
+    fn sensed_zero_availability_floors_the_budget_instead_of_rejecting_everything() {
+        let governor = governor(2, 0);
+        assert_eq!(
+            governor.snapshot().limits.memory_budget_bytes,
+            SENSED_MEMORY_BUDGET_FLOOR_BYTES
+        );
+        let admitted = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                48 * 1024 * 1024,
+            ))
+            .unwrap();
+        drop(admitted);
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                128 * 1024 * 1024,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+    }
+
+    #[test]
+    fn container_hard_limit_stays_authoritative_below_the_floor() {
+        let limit = 32 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(0),
+                    Some(limit),
+                    None,
+                    Some(limit),
+                ),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        assert!(governor.snapshot().limits.memory_budget_bytes <= limit);
+    }
+
+    #[test]
+    fn explicit_zero_budget_configuration_stays_authoritative() {
+        let config = RuntimeGovernorConfig {
+            memory_budget_bytes: Some(0),
+            ..RuntimeGovernorConfig::desktop_bound()
+        };
+        let governor = RuntimeGovernor::new(
+            config,
+            resources(2, 4 * 1024 * 1024 * 1024),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        assert_eq!(governor.snapshot().limits.memory_budget_bytes, 0);
     }
 }

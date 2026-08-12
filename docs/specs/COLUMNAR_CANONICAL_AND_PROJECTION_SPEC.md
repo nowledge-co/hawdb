@@ -484,7 +484,13 @@ projections/<kind>/
 3. Pressure ladder, in order: shrink chunk cache → force memtable flush →
    write admission throttling (`StorageDebtController`). Each step MUST be
    observable. Memory pressure MUST degrade latency, never correctness or
-   durability.
+   durability. Budgets derived from sensed availability MUST be floored:
+   on tmpfs-backed environments file writes count against cgroup
+   `memory.current`, so sensed availability legitimately reaches zero
+   while the bytes are the workload's own files — sensing may throttle
+   the engine to the floor but MUST NOT zero its budget and reject all
+   work. Explicit configuration and the container's hard limit remain
+   authoritative below the floor.
 4. The engine MUST NOT rely on OS swap for correctness; cold structures are
    explicitly spilled. Operation under OS memory pressure (cgroup signal)
    MUST tighten the budget proactively.
