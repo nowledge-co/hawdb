@@ -28,7 +28,10 @@ Files:
   persistent property projection. The property spill artifact remains part of
   canonical checkpoint input and is not eligible for derived repair.
 - `wal.<generation>.skein`: append-only committed mutation records beginning at
-  the replay LSN published by the manifest.
+  the replay LSN published by the manifest. New generations use the binary
+  fragment framing (`SKWALB01` file header); generations written by earlier
+  releases use the `SKEIN_WAL_V1` text encoding and stay readable until their
+  next checkpoint rotates them away.
 - `projected_graphs.skein`: checksummed, checkpoint-generated CSR/CSC
   projection artifacts derived from persisted projected graph definitions,
   written through the default zstd compression envelope.
@@ -66,11 +69,22 @@ checkpoint persistence and old-WAL reclamation from replaying checkpointed
 mutations twice. Checkpoint, manifest, and projected graph artifact publication write a
 temporary file, sync the file contents, atomically rename it into place, and
 sync the parent directory. Checkpoint and projected graph artifact payloads use
-zstd inside the required V1 checksummed binary envelope. Manifest and WAL files remain plain text so boot
-metadata and append-only mutation records stay inspectable and avoid compression
-work on every mutation. This keeps publication durable while avoiding
-per-mutation directory syncs, manifest writes, or WAL compression write
-amplification.
+zstd inside the required V1 checksummed binary envelope. Manifest files remain
+plain text so boot metadata stays inspectable. The WAL is binary for every new
+generation: records are framed RocksDB-style into 32 KiB blocks as fragment
+chains (FULL, or FIRST..MIDDLE*..LAST), each fragment carrying a
+`crc32c (4B LE) | length (2B LE) | type (1B) | generation (8B LE)` header whose
+masked checksum covers the type byte, the WAL generation, and the payload; a
+block tail shorter than one header is zero-filled. Binding the generation into
+every checksummed fragment gives recyclable-log discipline: a well-formed
+fragment carrying a stale generation reads as end of log. Record payloads keep
+the LSN as a fixed envelope field ahead of the batch payload
+(`commit_epoch (8B LE) | op_count (4B LE) | ops`), and each op uses hand-rolled
+field-tagged varint encoding with append-only op codes and field ids, so
+readers skip unknown fields by wire type. WAL records are uncompressed either
+way, avoiding per-mutation directory syncs, manifest writes, and WAL
+compression write amplification. The V1 text reader, encoder, and repair path
+stay in the codebase for generations written before the binary format.
 Stable-ID mapping publication uses the same synced temp-file rename and parent
 directory sync boundary as checkpointed artifacts. It is intentionally outside
 the graph WAL: first physical export may create mapping entries, but that action
@@ -126,11 +140,16 @@ The relationship pattern create path uses a single batch record for source node,
 target node, and relationship creation. Recovery only applies a batch after its
 whole record passes checksum validation, so a torn tail cannot leave behind a
 half-created path.
-Doctor torn-tail repair applies only to the final physical record when it is not
-newline-terminated. A newline-terminated record is a complete frame: malformed
-UTF-8, a missing or invalid checksum, or a checksum mismatch is corruption even
-at the end of the WAL, so recovery fails closed instead of truncating a
-potentially acknowledged commit. Doctor is a separate typed operation, not a
+Doctor torn-tail repair applies only to physically missing data at end of file:
+in the binary framing, a truncated fragment header, a payload cut short by EOF,
+or a fragment chain still awaiting its MIDDLE/LAST fragments (for V1 text
+generations, a final record that is not newline-terminated). The repair
+truncates back to the first byte of the incomplete chain. A structurally
+complete fragment chain that fails its checksum, a sequence-invalid fragment,
+or a non-zero block trailer is corruption even at the end of the WAL, so
+recovery fails closed instead of truncating a potentially acknowledged commit.
+Block-aligned resynchronization locates damage but never skips it: valid
+current-generation fragments found past an end-of-log marker fail closed. Doctor is a separate typed operation, not a
 database-open mode. Planning holds the exclusive database lease, validates the
 manifest identity, WAL generation, framing, checksums, LSN continuity, and
 configured scan bounds, and reports the exact retained LSN plus discarded byte
