@@ -1,6 +1,17 @@
 -------------------------- MODULE SkeinWalDoctor ---------------------------
 EXTENDS Integers, Naturals
 
+(***************************************************************************)
+(* This model covers the destructive doctor repair of a torn WAL tail: a   *)
+(* record whose fragment chain (FULL, or FIRST..MIDDLE*..LAST) is          *)
+(* incomplete at end of file. walState "torn" is exactly that state, the   *)
+(* only doctor-repairable one; "retained" means every remaining record is  *)
+(* a complete, checksum-valid fragment chain. A checksum- or               *)
+(* sequence-invalid complete chain fails closed outside this protocol,     *)
+(* and a fragment carrying a stale WAL generation reads as end of log      *)
+(* (clean EOF), so neither ever enters planning.                           *)
+(***************************************************************************)
+
 CONSTANT MaxIdentity
 
 ASSUME MaxIdentity \in Nat \ {0}

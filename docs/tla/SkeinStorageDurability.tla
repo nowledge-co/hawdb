@@ -6,6 +6,17 @@ EXTENDS Integers, Naturals, FiniteSets
 (* One logical WAL record represents one atomic mutation batch.             *)
 (* A durable WAL decision may be recovered even when the caller did not     *)
 (* observe its acknowledgement.                                             *)
+(*                                                                          *)
+(* The binary WAL frames each record as a fragment chain (FULL, or          *)
+(* FIRST..MIDDLE*..LAST) inside fixed-size blocks; every fragment carries   *)
+(* a type-masked, generation-bound checksum. The durable tail is one of:    *)
+(* tornTail, an incomplete fragment chain at end of file and the only       *)
+(* doctor-repairable state; diskStatus "corrupt", a checksum- or            *)
+(* sequence-invalid complete chain that fails closed wherever it sits;      *)
+(* or staleTail, a fragment carrying a stale WAL generation past the        *)
+(* logical tail, which recyclable-log discipline reads as end of log,       *)
+(* equivalent to clean EOF. Block-aligned resynchronization locates         *)
+(* damage but never skips it.                                               *)
 (***************************************************************************)
 
 CONSTANT Owners, MaxCommit, MaxGeneration
@@ -35,6 +46,7 @@ VARIABLES
     walStartByGeneration,
     walRecords,
     tornTail,
+    staleTail,
     diskStatus,
     pendingPhase,
     pendingEpoch,
@@ -55,6 +67,7 @@ vars == <<
     walStartByGeneration,
     walRecords,
     tornTail,
+    staleTail,
     diskStatus,
     pendingPhase,
     pendingEpoch,
@@ -84,6 +97,7 @@ Init ==
         [generation \in Generations |-> IF generation = 0 THEN 1 ELSE -1]
     /\ walRecords = {}
     /\ tornTail = {}
+    /\ staleTail = FALSE
     /\ diskStatus = "valid"
     /\ pendingPhase = "none"
     /\ pendingEpoch = 0
@@ -109,6 +123,7 @@ Open(owner) ==
         checkpointByGeneration,
         walStartByGeneration,
         walRecords,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -134,6 +149,7 @@ Close ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -150,6 +166,7 @@ BeginCommit ==
     /\ pendingPhase' = "appended"
     /\ pendingEpoch' = volatileEpoch + 1
     /\ tornTail' = {WalRecord(activeGeneration, volatileEpoch + 1)}
+    /\ staleTail' = FALSE
     /\ UNCHANGED <<
         mode,
         leases,
@@ -187,6 +204,7 @@ SyncWal ==
         manifestReplayLsn,
         checkpointByGeneration,
         walStartByGeneration,
+        staleTail,
         diskStatus,
         pendingEpoch,
         checkpointPhase,
@@ -212,6 +230,7 @@ ApplyWal ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingEpoch,
         checkpointPhase,
@@ -237,6 +256,7 @@ ApplyWalFails ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         checkpointPhase,
         buildGeneration,
@@ -261,6 +281,7 @@ AcknowledgeCommit ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         checkpointPhase,
         buildGeneration,
@@ -288,6 +309,7 @@ BeginCheckpoint ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch
@@ -311,6 +333,7 @@ PersistCheckpoint ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -337,6 +360,7 @@ PrepareWalGeneration ==
         checkpointByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -365,6 +389,7 @@ PublishManifest ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch
@@ -390,6 +415,7 @@ Crash ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         diskStatus
         >>
 
@@ -411,6 +437,7 @@ Recover(owner) ==
         checkpointByGeneration,
         walStartByGeneration,
         walRecords,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -437,6 +464,7 @@ DoctorRepairTornTail ==
         checkpointByGeneration,
         walStartByGeneration,
         walRecords,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -445,7 +473,35 @@ DoctorRepairTornTail ==
         buildEpoch
         >>
 
-InjectCompleteRecordCorruption ==
+ExposeStaleGenerationFragment ==
+    /\ mode \in {"closed", "crashed"}
+    /\ diskStatus = "valid"
+    /\ tornTail = {}
+    /\ ~staleTail
+    /\ activeGeneration > 0
+    /\ staleTail' = TRUE
+    /\ UNCHANGED <<
+        mode,
+        leases,
+        volatileEpoch,
+        durableEpoch,
+        acknowledgedEpoch,
+        activeGeneration,
+        manifestCheckpointEpoch,
+        manifestReplayLsn,
+        checkpointByGeneration,
+        walStartByGeneration,
+        walRecords,
+        tornTail,
+        diskStatus,
+        pendingPhase,
+        pendingEpoch,
+        checkpointPhase,
+        buildGeneration,
+        buildEpoch
+        >>
+
+InjectCompleteChainCorruption ==
     /\ mode \in {"closed", "crashed"}
     /\ diskStatus = "valid"
     /\ durableEpoch > manifestCheckpointEpoch
@@ -463,6 +519,7 @@ InjectCompleteRecordCorruption ==
         walStartByGeneration,
         walRecords,
         tornTail,
+        staleTail,
         pendingPhase,
         pendingEpoch,
         checkpointPhase,
@@ -487,6 +544,7 @@ RejectCorruptOpen ==
         checkpointByGeneration,
         walStartByGeneration,
         walRecords,
+        staleTail,
         diskStatus,
         pendingPhase,
         pendingEpoch,
@@ -510,7 +568,8 @@ Next ==
     \/ Crash
     \/ \E owner \in Owners: Recover(owner)
     \/ DoctorRepairTornTail
-    \/ InjectCompleteRecordCorruption
+    \/ ExposeStaleGenerationFragment
+    \/ InjectCompleteChainCorruption
     \/ RejectCorruptOpen
 
 TypeOK ==
@@ -527,6 +586,7 @@ TypeOK ==
     /\ walRecords \subseteq WalRecords
     /\ tornTail \subseteq WalRecords
     /\ Cardinality(tornTail) <= 1
+    /\ staleTail \in BOOLEAN
     /\ diskStatus \in {"valid", "corrupt"}
     /\ pendingPhase \in PendingPhases
     /\ pendingEpoch \in Epochs
@@ -570,6 +630,18 @@ PoisonedHandleRequiresReopen ==
 CorruptionFailsClosed ==
     mode = "failed" => /\ leases = {}
                        /\ volatileEpoch = 0
+
+TornTailIsUnsyncedActiveAppend ==
+    \A record \in tornTail:
+        /\ record.generation = activeGeneration
+        /\ record.epoch = durableEpoch + 1
+        /\ record \notin walRecords
+
+StaleFragmentReadsAsEndOfLog ==
+    staleTail => tornTail = {}
+
+CorruptCompleteChainNeverServes ==
+    diskStatus = "corrupt" => mode \in {"closed", "crashed", "failed"}
 
 Spec == Init /\ [][Next]_vars
 

@@ -32,9 +32,14 @@ batch makes it visible, and returning from the mutation acknowledges it. A crash
 between sync and acknowledgement may therefore recover a committed batch whose
 acknowledgement was not observed, which is the standard ambiguous-commit case.
 The model uses strict recovery for ordinary startup. One model epoch represents
-one logical batch and its contiguous WAL LSN. A non-newline-terminated final
-frame fails startup and can only be discarded through the explicit writable
-doctor repair mode; corruption in a complete frame always fails closed.
+one logical batch and its contiguous WAL LSN. Each WAL record is framed as a
+fragment chain (FULL, or FIRST..MIDDLE*..LAST) inside fixed-size blocks, every
+fragment carrying a type-masked, generation-bound checksum. A record whose
+fragment chain is incomplete at end of file (torn tail) fails startup and can
+only be discarded through the explicit writable doctor repair mode; a
+checksum- or sequence-invalid complete chain always fails closed, and a
+fragment carrying a stale WAL generation reads as end of log
+(recyclable-log discipline), equivalent to clean EOF.
 
 The model checks:
 
@@ -45,8 +50,12 @@ The model checks:
 - every durable commit is reachable from the published checkpoint plus WAL;
 - a manifest references only a durable checkpoint and prepared WAL generation;
 - a failed in-memory apply poisons the handle until crash and reopen;
-- complete-record corruption fails closed instead of exposing partial recovered
-  state, including corruption in the final WAL record.
+- complete-chain corruption fails closed instead of exposing partial recovered
+  state, including corruption in the final WAL record;
+- a torn tail is only ever the unsynced tail append of the active generation,
+  which makes it the only doctor-repairable state;
+- a stale-generation fragment past the logical tail reads as end of log: it
+  never blocks recovery and never becomes doctor-repairable.
 
 The checkpoint actions map directly to `GraphStore::checkpoint_with_reader_epoch`
 and `DurableStore::{write_checkpoint,prepare_wal_generation,
@@ -59,6 +68,15 @@ the filesystem adapter that performs the shared sync. The model treats each
 logical batch as a separate commit; the grouped implementation refines that
 boundary only when every member is acknowledged after the shared sync and the
 handle is poisoned if the barrier fails.
+
+Mutation testing sizes the instance (`MaxCommit = 3`, `MaxGeneration = 2`,
+7,383 distinct states): a doctor repair that accepts a checksum-invalid
+complete chain at the tail as torn-tail-repairable and discards it reports
+`ActiveWalIsContiguous`, a recovery that classifies a stale-generation
+fragment as a torn tail eligible for doctor repair reports
+`TornTailIsUnsyncedActiveAppend`, and a doctor repair that discards an
+incomplete chain located mid-log rather than at end of file reports
+`ActiveWalIsContiguous`.
 
 `SkeinWalGroupCommit.tla` models the bounded request queue and the leader-owned
 shared durability barrier directly. Entry count is a hard group bound; the byte
@@ -82,7 +100,11 @@ only; they do not change WAL ordering, durability, visibility, failure, or
 acknowledgement transitions represented by the model.
 
 `SkeinWalDoctor.tla` models the destructive repair protocol separately from
-ordinary recovery. Planning and applying each hold the exclusive database
+ordinary recovery. The torn state it repairs is a record whose fragment chain
+is incomplete at end of file; a checksum- or sequence-invalid complete chain
+never enters the protocol because strict recovery fails closed on it, and a
+stale-generation fragment never does because it reads as end of log.
+Planning and applying each hold the exclusive database
 directory lease. A repair can mutate the WAL only after an exact source-identity
 plan has been acknowledged, a quarantine copy is durable, and a `Prepared` audit
 record has been published. The retained WAL is published before the `Applied`
@@ -377,8 +399,10 @@ rely on these environmental assumptions:
 - durable file replacement is atomic and the parent-directory sync preserves
   the selected name on supported filesystems;
 - the OS file lock provides exclusive ownership for a canonical directory;
-- checksums detect malformed complete records, and doctor repair may discard
-  only a non-newline-terminated frame at the non-synced WAL tail;
+- type-masked, generation-bound fragment checksums detect malformed complete
+  chains, a fragment carrying a stale WAL generation reads as end of log, and
+  doctor repair may discard only an incomplete fragment chain at the
+  non-synced WAL tail;
 - validated WAL batches replay deterministically, or recovery fails without
   publishing a database handle;
 - the model's checkpoint artifact represents the checkpoint, canonical graph,
