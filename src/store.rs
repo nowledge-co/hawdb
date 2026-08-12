@@ -296,6 +296,9 @@ pub(crate) fn rewrite_wal_as_v1_text(path: &Path) -> Result<()> {
             }
         }
     }
+    // Windows denies truncating a file that still has an open handle, and the
+    // cursor holds one on this exact path.
+    drop(cursor);
     fs::write(path, text)?;
     File::open(path)?.sync_all()?;
     Ok(())
