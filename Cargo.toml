@@ -181,5 +181,9 @@ name = "relational_index_access"
 harness = false
 
 [[bench]]
+name = "relational_oltp_mix"
+harness = false
+
+[[bench]]
 name = "wal_group_commit"
 harness = false
