@@ -17,10 +17,65 @@ use skein_core::PropertyId;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use crate::ManifestGeneration;
+
 /// Magic bytes framing a column group artifact (header and footer).
 pub const COLUMN_GROUP_MAGIC: &[u8; 9] = b"SKNCOLG01";
 /// Magic bytes framing a deletion vector sidecar (header and footer).
 pub const DELETION_VECTOR_MAGIC: &[u8; 9] = b"SKNCOLDV1";
+
+/// Stable identity carried by one deletion-vector artifact.
+///
+/// `group_generation` identifies the immutable physical group whose row
+/// ordinals the bitmap addresses. `publication_generation` identifies the
+/// first manifest generation that published this cumulative bitmap. The two
+/// generations deliberately differ when a checkpoint publishes new deletes
+/// against an older group without rewriting its bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletionVectorBinding {
+    group_id: u64,
+    group_generation: ManifestGeneration,
+    publication_generation: ManifestGeneration,
+    row_count: u32,
+}
+
+impl DeletionVectorBinding {
+    pub fn new(
+        group_id: u64,
+        group_generation: ManifestGeneration,
+        publication_generation: ManifestGeneration,
+        row_count: u32,
+    ) -> Result<Self, ColumnGroupError> {
+        if publication_generation.0 < group_generation.0 {
+            return Err(ColumnGroupError::Unsupported(format!(
+                "deletion vector publication generation {} precedes physical group generation {}",
+                publication_generation.0, group_generation.0
+            )));
+        }
+        Ok(Self {
+            group_id,
+            group_generation,
+            publication_generation,
+            row_count,
+        })
+    }
+
+    pub const fn group_id(self) -> u64 {
+        self.group_id
+    }
+
+    pub const fn group_generation(self) -> ManifestGeneration {
+        self.group_generation
+    }
+
+    pub const fn publication_generation(self) -> ManifestGeneration {
+        self.publication_generation
+    }
+
+    pub const fn row_count(self) -> u32 {
+        self.row_count
+    }
+}
 
 /// Errors surfaced by the column group format layer.
 ///
@@ -36,11 +91,17 @@ pub enum ColumnGroupError {
     Corrupt(String),
     /// A deletion vector was presented against a group or generation it is
     /// not bound to (§3.5.3(d)).
-    DeletionVectorMismatch {
+    DeletionVectorGroupMismatch {
         expected_group: u64,
         actual_group: u64,
-        expected_generation: u64,
-        actual_generation: u64,
+        expected_group_generation: u64,
+        actual_group_generation: u64,
+    },
+    /// A reader pinned to an older manifest was handed a deletion vector
+    /// first published by a newer manifest.
+    DeletionVectorFromFuture {
+        snapshot_generation: u64,
+        publication_generation: u64,
     },
     /// A requested property has no column chunk in the group.
     PropertyMissing(PropertyId),
@@ -56,16 +117,24 @@ impl Display for ColumnGroupError {
         match self {
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Unsupported(message) | Self::Corrupt(message) => formatter.write_str(message),
-            Self::DeletionVectorMismatch {
+            Self::DeletionVectorGroupMismatch {
                 expected_group,
                 actual_group,
-                expected_generation,
-                actual_generation,
+                expected_group_generation,
+                actual_group_generation,
             } => write!(
                 formatter,
-                "deletion vector is bound to group {actual_group} generation \
-                 {actual_generation}, not group {expected_group} generation \
-                 {expected_generation}"
+                "deletion vector addresses group {actual_group} created in generation \
+                 {actual_group_generation}, not group {expected_group} created in generation \
+                 {expected_group_generation}"
+            ),
+            Self::DeletionVectorFromFuture {
+                snapshot_generation,
+                publication_generation,
+            } => write!(
+                formatter,
+                "deletion vector published in generation {publication_generation} cannot be \
+                 read from snapshot generation {snapshot_generation}"
             ),
             Self::PropertyMissing(property) => {
                 write!(

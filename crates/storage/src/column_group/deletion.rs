@@ -2,9 +2,12 @@
 //!
 //! A deletion vector marks rows of one published node group as deleted or
 //! superseded without rewriting the group. It is bound to
-//! `(group id, publishing generation)`: a reader pinned to generation G
-//! observes exactly G's vectors, so presenting a vector against any other
-//! group or generation is rejected.
+//! `(group id, group generation, publication generation)`. The group
+//! generation fixes the row-ordinal space; the publication generation fixes
+//! when the cumulative bitmap first became visible. A newer checkpoint may
+//! therefore publish deletes against an older immutable group without
+//! rewriting that group's bytes, while an older snapshot rejects a bitmap
+//! published in its future.
 //!
 //! Representation: a plain fixed bitmap, one bit per row. Groups hold at
 //! most 65,536 rows by default, so the bitmap tops out at 8 KiB — smaller
@@ -16,7 +19,7 @@
 //! SKNCOLDV1`, published with the temp-file, fsync, rename protocol.
 
 use super::encoding::Cursor;
-use super::{corrupt, ColumnGroupError, DELETION_VECTOR_MAGIC};
+use super::{corrupt, unsupported, ColumnGroupError, DeletionVectorBinding, DELETION_VECTOR_MAGIC};
 use crate::durability::durable_replace_file;
 use crate::ManifestGeneration;
 use std::fs::{self, File};
@@ -29,35 +32,40 @@ const FOOTER_BYTES: usize = 8 + 4 + DELETION_VECTOR_MAGIC.len();
 /// A generation-scoped bitmap of deleted rows in one node group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletionVector {
-    group_id: u64,
-    generation: ManifestGeneration,
-    row_count: u32,
+    binding: DeletionVectorBinding,
     deleted_count: u32,
     words: Vec<u64>,
 }
 
 impl DeletionVector {
-    /// An empty vector bound to one group and publishing generation.
-    pub fn new(group_id: u64, generation: ManifestGeneration, row_count: u32) -> Self {
+    /// An empty cumulative vector bound to one immutable group and one
+    /// publication generation.
+    pub fn new(binding: DeletionVectorBinding) -> Self {
         Self {
-            group_id,
-            generation,
-            row_count,
+            binding,
             deleted_count: 0,
-            words: vec![0; word_count(row_count)],
+            words: vec![0; word_count(binding.row_count)],
         }
     }
 
-    pub fn group_id(&self) -> u64 {
-        self.group_id
+    pub fn binding(&self) -> DeletionVectorBinding {
+        self.binding
     }
 
-    pub fn generation(&self) -> ManifestGeneration {
-        self.generation
+    pub fn group_id(&self) -> u64 {
+        self.binding.group_id
+    }
+
+    pub fn group_generation(&self) -> ManifestGeneration {
+        self.binding.group_generation
+    }
+
+    pub fn publication_generation(&self) -> ManifestGeneration {
+        self.binding.publication_generation
     }
 
     pub fn row_count(&self) -> u32 {
-        self.row_count
+        self.binding.row_count
     }
 
     pub fn deleted_count(&self) -> u32 {
@@ -67,15 +75,32 @@ impl DeletionVector {
     /// Live rows remaining, answering cardinality questions from metadata
     /// alone (§3.2.4).
     pub fn visible_count(&self) -> u32 {
-        self.row_count - self.deleted_count
+        self.binding.row_count - self.deleted_count
+    }
+
+    /// Carries a cumulative bitmap into a later manifest generation without
+    /// changing the physical group or row ordinals it addresses.
+    pub fn fork_for_publication(
+        &self,
+        publication_generation: ManifestGeneration,
+    ) -> Result<Self, ColumnGroupError> {
+        if publication_generation.0 <= self.binding.publication_generation.0 {
+            return Err(unsupported(format!(
+                "deletion vector publication generation {} must advance beyond {}",
+                publication_generation.0, self.binding.publication_generation.0
+            )));
+        }
+        let mut next = self.clone();
+        next.binding.publication_generation = publication_generation;
+        Ok(next)
     }
 
     /// Marks a row deleted; returns whether the row was newly marked.
     pub fn mark_deleted(&mut self, row_index: u32) -> Result<bool, ColumnGroupError> {
-        if row_index >= self.row_count {
+        if row_index >= self.binding.row_count {
             return Err(ColumnGroupError::RowOutOfRange {
                 row_index,
-                row_count: self.row_count,
+                row_count: self.binding.row_count,
             });
         }
         let word = &mut self.words[row_index as usize / 64];
@@ -89,18 +114,18 @@ impl DeletionVector {
     }
 
     pub fn is_deleted(&self, row_index: u32) -> bool {
-        row_index < self.row_count
+        row_index < self.binding.row_count
             && self.words[row_index as usize / 64] & (1u64 << (row_index % 64)) != 0
     }
 
     /// Row indices still visible under this vector, ascending.
     pub fn visible_rows(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..self.row_count).filter(|row| !self.is_deleted(*row))
+        (0..self.binding.row_count).filter(|row| !self.is_deleted(*row))
     }
 
     /// Row indices marked deleted, ascending.
     pub fn deleted_rows(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..self.row_count).filter(|row| self.is_deleted(*row))
+        (0..self.binding.row_count).filter(|row| self.is_deleted(*row))
     }
 
     /// Serializes and publishes the sidecar with temp file, fsync, rename.
@@ -128,11 +153,12 @@ impl DeletionVector {
     }
 
     fn encode_body(&self) -> Vec<u8> {
-        let mut body = Vec::with_capacity(28 + self.words.len() * 8);
+        let mut body = Vec::with_capacity(40 + self.words.len() * 8);
         body.extend(DELETION_VECTOR_VERSION.to_le_bytes());
-        body.extend(self.row_count.to_le_bytes());
-        body.extend(self.group_id.to_le_bytes());
-        body.extend(self.generation.0.to_le_bytes());
+        body.extend(self.binding.row_count.to_le_bytes());
+        body.extend(self.binding.group_id.to_le_bytes());
+        body.extend(self.binding.group_generation.0.to_le_bytes());
+        body.extend(self.binding.publication_generation.0.to_le_bytes());
         body.extend(self.deleted_count.to_le_bytes());
         body.extend((self.words.len() as u32).to_le_bytes());
         for word in &self.words {
@@ -191,7 +217,10 @@ impl DeletionVector {
         }
         let row_count = cursor.read_u32("deletion vector row count")?;
         let group_id = cursor.read_u64("deletion vector group id")?;
-        let generation = ManifestGeneration(cursor.read_u64("deletion vector generation")?);
+        let group_generation =
+            ManifestGeneration(cursor.read_u64("deletion vector group generation")?);
+        let publication_generation =
+            ManifestGeneration(cursor.read_u64("deletion vector publication generation")?);
         let deleted_count = cursor.read_u32("deletion vector deleted count")?;
         let stored_words = cursor.read_u32("deletion vector word count")?;
         if stored_words as usize != word_count(row_count) {
@@ -219,9 +248,13 @@ impl DeletionVector {
             )));
         }
         Ok(Self {
-            group_id,
-            generation,
-            row_count,
+            binding: DeletionVectorBinding::new(
+                group_id,
+                group_generation,
+                publication_generation,
+                row_count,
+            )
+            .map_err(|error| corrupt(error.to_string()))?,
             deleted_count,
             words,
         })
@@ -245,10 +278,25 @@ mod tests {
         std::env::temp_dir().join(format!("skein-column-dv-{name}-{nonce}.skein"))
     }
 
+    fn binding(
+        group_id: u64,
+        group_generation: u64,
+        publication_generation: u64,
+        row_count: u32,
+    ) -> DeletionVectorBinding {
+        DeletionVectorBinding::new(
+            group_id,
+            ManifestGeneration(group_generation),
+            ManifestGeneration(publication_generation),
+            row_count,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn deletion_vector_round_trips_and_merges_visibility() {
         let path = unique_path("round_trip");
-        let mut vector = DeletionVector::new(9, ManifestGeneration(4), 130);
+        let mut vector = DeletionVector::new(binding(9, 2, 4, 130));
         for row in [0, 1, 63, 64, 129] {
             assert!(vector.mark_deleted(row).unwrap());
             assert!(!vector.mark_deleted(row).unwrap());
@@ -273,7 +321,7 @@ mod tests {
     #[test]
     fn all_deleted_and_none_deleted_vectors_merge_correctly() {
         let path = unique_path("extremes");
-        let mut all = DeletionVector::new(1, ManifestGeneration(1), 64);
+        let mut all = DeletionVector::new(binding(1, 1, 1, 64));
         for row in 0..64 {
             all.mark_deleted(row).unwrap();
         }
@@ -281,12 +329,12 @@ mod tests {
         let all = DeletionVector::open(&path).unwrap();
         assert_eq!(all.visible_rows().count(), 0);
         assert_eq!(all.visible_count(), 0);
-        let none = DeletionVector::new(1, ManifestGeneration(1), 64);
+        let none = DeletionVector::new(binding(1, 1, 1, 64));
         none.write(&path).unwrap();
         let none = DeletionVector::open(&path).unwrap();
         assert_eq!(none.visible_rows().count(), 64);
         assert_eq!(none.deleted_rows().count(), 0);
-        let empty_group = DeletionVector::new(1, ManifestGeneration(1), 0);
+        let empty_group = DeletionVector::new(binding(1, 1, 1, 0));
         empty_group.write(&path).unwrap();
         let empty_group = DeletionVector::open(&path).unwrap();
         assert_eq!(empty_group.visible_rows().count(), 0);
@@ -295,7 +343,7 @@ mod tests {
 
     #[test]
     fn out_of_range_marks_are_rejected() {
-        let mut vector = DeletionVector::new(1, ManifestGeneration(1), 10);
+        let mut vector = DeletionVector::new(binding(1, 1, 1, 10));
         assert!(matches!(
             vector.mark_deleted(10),
             Err(ColumnGroupError::RowOutOfRange { .. })
@@ -306,7 +354,7 @@ mod tests {
     #[test]
     fn corrupt_sidecars_are_rejected() {
         let path = unique_path("corrupt");
-        let mut vector = DeletionVector::new(7, ManifestGeneration(2), 100);
+        let mut vector = DeletionVector::new(binding(7, 1, 2, 100));
         vector.mark_deleted(42).unwrap();
         vector.write(&path).unwrap();
         let bytes = fs::read(&path).unwrap();
@@ -331,12 +379,37 @@ mod tests {
         let body_start = DELETION_VECTOR_MAGIC.len();
         let footer_start = bytes.len() - FOOTER_BYTES;
         let mut tampered = bytes.clone();
-        tampered[body_start + 24..body_start + 28].copy_from_slice(&9u32.to_le_bytes());
+        tampered[body_start + 32..body_start + 36].copy_from_slice(&9u32.to_le_bytes());
         let crc = skein_integrity::crc32c(&tampered[body_start..footer_start]).get();
         tampered[footer_start + 8..footer_start + 12].copy_from_slice(&crc.to_le_bytes());
         fs::write(&path, &tampered).unwrap();
         let error = DeletionVector::open(&path).unwrap_err();
         assert!(error.to_string().contains("declares"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn publication_fork_preserves_group_ordinals_and_cumulative_deletes() {
+        let mut original = DeletionVector::new(binding(7, 2, 4, 100));
+        original.mark_deleted(3).unwrap();
+        let mut next = original
+            .fork_for_publication(ManifestGeneration(5))
+            .unwrap();
+        next.mark_deleted(90).unwrap();
+
+        assert_eq!(next.group_id(), 7);
+        assert_eq!(next.group_generation(), ManifestGeneration(2));
+        assert_eq!(next.publication_generation(), ManifestGeneration(5));
+        assert_eq!(next.deleted_rows().collect::<Vec<_>>(), vec![3, 90]);
+        assert_eq!(original.deleted_rows().collect::<Vec<_>>(), vec![3]);
+        assert!(next.fork_for_publication(ManifestGeneration(5)).is_err());
+    }
+
+    #[test]
+    fn binding_rejects_publication_before_physical_group_creation() {
+        assert!(matches!(
+            DeletionVectorBinding::new(7, ManifestGeneration(3), ManifestGeneration(2), 100,),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
     }
 }

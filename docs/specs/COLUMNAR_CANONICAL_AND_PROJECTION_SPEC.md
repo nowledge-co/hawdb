@@ -62,8 +62,10 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
   relational table), ordered by record id, stored column-wise.
 - **Column chunk**: the encoded values of one declared property for one node
   group, plus validity bitmap and zone map.
-- **Deletion vector (DV)**: per-node-group bitmap marking rows deleted or
-  superseded after the group was written. Generation-scoped copy-on-write.
+- **Deletion vector (DV)**: cumulative per-node-group bitmap marking rows
+  deleted or superseded after the group was written. It addresses the row
+  ordinals of one immutable `(group id, group generation)` and is published
+  copy-on-write by a later manifest generation.
 - **Delta group**: small columnar group produced by flushing the memtable;
   the LSM L0 of this design.
 - **Memtable**: the in-memory row-form delta (`CowSegmentedMap`) between
@@ -144,9 +146,15 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    generation-scoped deletion vectors marking superseded base rows, and (c)
    references to untouched groups from the previous generation without
    copying their bytes.
-2. Deletion vectors are part of the generation that publishes them. A reader
-   pinned to generation G MUST observe exactly G's deletion vectors. Between
-   checkpoints, deletes exist only as memtable tombstones.
+2. A deletion vector has two distinct generation identities:
+   `group_generation` identifies the immutable physical group's row-ordinal
+   space, while `publication_generation` identifies the first manifest that
+   made this cumulative bitmap visible. A later checkpoint MUST be able to
+   publish new deletes against an older group without rewriting the group.
+   The pinned manifest selects the exact DV artifact for each group; its
+   reader MUST reject a physical-group binding mismatch and MUST reject a DV
+   whose publication generation is newer than the pinned generation.
+   Between checkpoints, deletes exist only as memtable tombstones.
 3. The read path for any table is the ordered merge:
    `base groups ⊗ DV  ∪  delta groups  ∪  memtable`, filtered by tombstones,
    exactly one visibility rule shared by graph and relational access
@@ -158,6 +166,15 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
 5. Checkpoint write amplification MUST be proportional to the volume of
    change since the previous checkpoint (delta rows + DV bitmap bytes +
    manifest), not to the size of touched groups or of the database.
+6. Compaction preparation MUST bind its input row locations and deletion
+   vectors to one source manifest generation. Publication MUST compare that
+   source generation with the current generation under the manifest publish
+   lock. If they differ, the prepared output is stale and MUST NOT publish;
+   it is discarded or rebuilt from the new generation. This generation guard
+   replaces the distributed row-id-conversion reconciliation needed by
+   engines that allow commits to publish delete bitmaps concurrently with a
+   compaction. Skein MUST NOT merge a stale prepared bitmap into a newer
+   ordinal space.
 
 ### 3.4 WAL unification
 
@@ -211,9 +228,11 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
       discipline: ids are assigned once and never reused, renames are
       catalog-metadata-only, and a dropped column's id is retired
       forever.
-   d. A deletion vector is bound to `(node group, publishing generation)`
-      the way an Iceberg delete file is bound by sequence number: it
-      applies to exactly the base rows visible at that generation (§5.2).
+   d. A deletion vector is bound to
+      `(group id, group generation, publication generation)`: the first two
+      identify the immutable row-ordinal space and the last provides the
+      visibility fence. The manifest, not directory discovery, selects the
+      DV artifact for a pinned snapshot (§3.3.2).
 
 ## 4. Declared indexes
 

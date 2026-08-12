@@ -145,6 +145,15 @@ representation that must not change the visible state; readers pin one
 immutable generation under the coarse reclamation policy of
 `SkeinGenerationReclamation.tla`.
 
+Compaction is modeled as separate preparation and publication actions.
+Preparation records the source manifest generation whose immutable group
+row ordinals and cumulative deletion vector it consumed. Publication is a
+generation-guarded compare-and-swap: if a flush advanced the current
+generation while compaction was running, the prepared output is discarded
+instead of publishing over the newer deletion frontier. This is the embedded
+single-publisher counterpart of the row-id conversion and concurrent delete
+bitmap reconciliation required by distributed merge-on-write engines.
+
 Records carry per-key version numbers and the scan is modeled as the set of
 emitted versions per key. That choice is what gives the deletion vector's
 obligation teeth: under a key-presence abstraction, a flush that appends a
@@ -157,8 +166,9 @@ never a stale duplicate) across every interleaving of commits, flush,
 compaction, crash, and reclamation; that a pinned reader observes its
 recorded durable view for the lifetime of the pin; that pinned and current
 generations remain available; that a scan emits at most one version per
-key; and that deletion vectors only mark rows that exist in the base
-column.
+key; that deletion vectors only mark rows that exist in the base column;
+and that every prepared compaction is an identity transform of the exact
+source generation it names.
 
 Mutation testing sizes the instance (two keys, two readers,
 `MaxVersion = 2`, `MaxGeneration = 3`, about 176k distinct states): a flush
@@ -166,7 +176,10 @@ that marks deletion-vector entries only for deletes but not for
 superseding puts reports `LayeredReadEqualsLogicalState`, a compaction that
 drops delta rows reports `LayeredReadEqualsLogicalState`, and a flush that
 rewrites the published current generation in place instead of publishing
-the next one reports `PinnedViewIsImmutable`.
+the next one reports `PinnedViewIsImmutable`. Removing the compaction
+publication generation guard permits `PrepareCompaction -> Flush ->
+PublishCompaction` and reports `LayeredReadEqualsLogicalState`: the stale
+output loses the flush's newer deletion vector and delta rows.
 
 ## Implementation Refinement Evidence
 

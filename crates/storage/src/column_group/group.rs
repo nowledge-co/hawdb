@@ -20,6 +20,8 @@ use super::encoding::{
     bits_for, decode_chunk, encode_chunk_auto, pack_values, unpack_values, ChunkEncoding, Cursor,
 };
 use super::zone::{ChunkZoneMap, ZONE_MAP_RECORD_BYTES};
+#[cfg(test)]
+use super::DeletionVectorBinding;
 use super::{corrupt, unsupported, ColumnGroupError, COLUMN_GROUP_MAGIC};
 use crate::durability::durable_replace_file;
 use crate::scan::RangeBound;
@@ -753,20 +755,29 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
     }
 
     /// The rows of this group still visible under a deletion vector,
-    /// ascending. The vector must be bound to this group and its publishing
-    /// generation (§3.5.3(d)); any other binding is rejected.
+    /// ascending. The vector must be bound to this group's physical
+    /// generation (§3.5.3(d)); a vector published after the pinned
+    /// snapshot is also rejected. Older cumulative vectors may be reused by
+    /// newer manifests when no additional deletes were published.
     pub fn visible_rows<'a>(
         &self,
         deletion_vector: &'a DeletionVector,
+        snapshot_generation: ManifestGeneration,
     ) -> Result<impl Iterator<Item = u32> + 'a, ColumnGroupError> {
         if deletion_vector.group_id() != self.directory.group_id
-            || deletion_vector.generation() != self.directory.generation
+            || deletion_vector.group_generation() != self.directory.generation
         {
-            return Err(ColumnGroupError::DeletionVectorMismatch {
+            return Err(ColumnGroupError::DeletionVectorGroupMismatch {
                 expected_group: self.directory.group_id,
                 actual_group: deletion_vector.group_id(),
-                expected_generation: self.directory.generation.0,
-                actual_generation: deletion_vector.generation().0,
+                expected_group_generation: self.directory.generation.0,
+                actual_group_generation: deletion_vector.group_generation().0,
+            });
+        }
+        if deletion_vector.publication_generation().0 > snapshot_generation.0 {
+            return Err(ColumnGroupError::DeletionVectorFromFuture {
+                snapshot_generation: snapshot_generation.0,
+                publication_generation: deletion_vector.publication_generation().0,
             });
         }
         if deletion_vector.row_count() != self.directory.row_count {
@@ -1362,29 +1373,58 @@ mod tests {
             .write(&path, 7, ManifestGeneration(9), &ids, &columns)
             .unwrap();
         let reader = ColumnGroupReader::open_path(&path).unwrap();
-        let mut vector = DeletionVector::new(7, ManifestGeneration(9), 40);
+        let mut vector = DeletionVector::new(
+            DeletionVectorBinding::new(7, ManifestGeneration(9), ManifestGeneration(10), 40)
+                .unwrap(),
+        );
         vector.mark_deleted(0).unwrap();
         vector.mark_deleted(39).unwrap();
-        let visible = reader.visible_rows(&vector).unwrap().collect::<Vec<_>>();
+        let visible = reader
+            .visible_rows(&vector, ManifestGeneration(10))
+            .unwrap()
+            .collect::<Vec<_>>();
         assert_eq!(visible.len(), 38);
         assert_eq!(visible.first(), Some(&1));
         assert_eq!(visible.last(), Some(&38));
-        // Wrong generation.
-        let stale = DeletionVector::new(7, ManifestGeneration(8), 40);
+        // Wrong physical group generation.
+        let stale = DeletionVector::new(
+            DeletionVectorBinding::new(7, ManifestGeneration(8), ManifestGeneration(10), 40)
+                .unwrap(),
+        );
         assert!(matches!(
-            reader.visible_rows(&stale).map(|_| ()),
-            Err(ColumnGroupError::DeletionVectorMismatch { .. })
+            reader
+                .visible_rows(&stale, ManifestGeneration(10))
+                .map(|_| ()),
+            Err(ColumnGroupError::DeletionVectorGroupMismatch { .. })
         ));
         // Wrong group.
-        let foreign = DeletionVector::new(6, ManifestGeneration(9), 40);
+        let foreign = DeletionVector::new(
+            DeletionVectorBinding::new(6, ManifestGeneration(9), ManifestGeneration(10), 40)
+                .unwrap(),
+        );
         assert!(matches!(
-            reader.visible_rows(&foreign).map(|_| ()),
-            Err(ColumnGroupError::DeletionVectorMismatch { .. })
+            reader
+                .visible_rows(&foreign, ManifestGeneration(10))
+                .map(|_| ()),
+            Err(ColumnGroupError::DeletionVectorGroupMismatch { .. })
+        ));
+        // A reader pinned before the vector's publication cannot see future
+        // deletes, even though it addresses the same immutable group.
+        assert!(matches!(
+            reader
+                .visible_rows(&vector, ManifestGeneration(9))
+                .map(|_| ()),
+            Err(ColumnGroupError::DeletionVectorFromFuture { .. })
         ));
         // Wrong row count.
-        let short = DeletionVector::new(7, ManifestGeneration(9), 39);
+        let short = DeletionVector::new(
+            DeletionVectorBinding::new(7, ManifestGeneration(9), ManifestGeneration(10), 39)
+                .unwrap(),
+        );
         assert!(matches!(
-            reader.visible_rows(&short).map(|_| ()),
+            reader
+                .visible_rows(&short, ManifestGeneration(10))
+                .map(|_| ()),
             Err(ColumnGroupError::Corrupt(_))
         ));
         fs::remove_file(path).unwrap();
