@@ -119,18 +119,17 @@ fn apply_requires_acknowledgement_for_the_exact_plan() {
 fn doctor_rejects_complete_checksum_corruption_without_modifying_wal() {
     let path = unique_test_dir("checksum_corruption");
     let wal_path = create_database(&path);
-    let wal = fs::read_to_string(&wal_path).unwrap();
-    let mut lines = wal.lines().map(str::to_string).collect::<Vec<_>>();
-    let last = lines.last_mut().unwrap();
-    let body = last.rsplit_once('\t').unwrap().0;
-    *last = format!("{body}\t0");
-    let corrupt = format!("{}\n", lines.join("\n"));
+    // Flip one payload byte of the final complete fragment chain: the
+    // chain stays structurally complete, so its checksum failure is
+    // corruption, never a repairable torn tail.
+    let mut corrupt = fs::read(&wal_path).unwrap();
+    *corrupt.last_mut().unwrap() ^= 0xff;
     fs::write(&wal_path, &corrupt).unwrap();
 
     let error =
         DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap_err();
     assert!(error.to_string().contains("rejected corruption"));
-    assert_eq!(fs::read_to_string(&wal_path).unwrap(), corrupt);
+    assert_eq!(fs::read(&wal_path).unwrap(), corrupt);
     assert!(!doctor_directory(&path).exists());
     fs::remove_dir_all(path).unwrap();
 }

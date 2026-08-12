@@ -1,13 +1,13 @@
 use super::{
-    decode_wal_header, file_checksum, read_bounded_wal_record, sync_parent_dir, DurableManifest,
-    WalDecodeResult, WalEntry, MANIFEST_FILE,
+    file_checksum, sync_parent_dir, DurableManifest, WalCursorEvent, WalOpenOutcome,
+    WalRecordCursor, MANIFEST_FILE,
 };
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_integrity::IntegrityHasher;
 use skein_storage::{DatabaseDirectoryLease, DEFAULT_MAX_WAL_RECORD_BYTES};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "skein-wal-doctor-repair-v1";
@@ -197,78 +197,71 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
         )));
     }
 
-    let file = File::open(&wal_path)?;
-    let mut reader = BufReader::new(file);
-    let mut expected_lsn = manifest.wal_replay_start_lsn;
-    let mut byte_offset = 0u64;
-    let mut last_valid_offset = 0u64;
-    let mut saw_header = false;
-    while let Some(record) = read_bounded_wal_record(&mut reader, options.max_record_bytes)? {
-        let record_start = byte_offset;
-        byte_offset = byte_offset.saturating_add(record.encoded_len);
-        if !record.terminated_by_newline {
-            if !saw_header {
-                return Err(SkeinError::Storage(
-                    "WAL doctor rejected an incomplete WAL header".to_string(),
-                ));
-            }
-            let plan = build_plan(
-                &manifest_path,
-                &wal_path,
-                manifest,
-                expected_lsn,
-                last_valid_offset,
-                wal_len,
-            )?;
-            if let Some(pending) = load_matching_pending_record(path, &plan.plan_id)?
-                && pending.plan != plan
-            {
-                return Err(SkeinError::Storage(
-                    "pending WAL doctor repair record does not match the current repair plan"
-                        .to_string(),
-                ));
-            }
-            return Ok(plan);
-        }
-
-        let line = std::str::from_utf8(&record.bytes).map_err(|error| {
-            SkeinError::Storage(format!(
-                "WAL doctor rejected corruption at byte offset {record_start}: record is not valid UTF-8: {error}"
-            ))
-        })?;
-        if !saw_header {
-            let (generation, start_lsn) = decode_wal_header(line).map_err(|error| {
-                SkeinError::Storage(format!(
-                    "WAL doctor rejected corruption at byte offset {record_start}: {error}"
-                ))
-            })?;
-            if generation != manifest.wal_generation || start_lsn != manifest.wal_replay_start_lsn {
-                return Err(SkeinError::Storage(format!(
-                    "WAL header generation/start ({generation}, {start_lsn}) does not match manifest ({}, {})",
-                    manifest.wal_generation, manifest.wal_replay_start_lsn
-                )));
-            }
-            saw_header = true;
-            last_valid_offset = byte_offset;
-            continue;
-        }
-        if line.is_empty() {
+    let mut cursor = match WalRecordCursor::open(&wal_path, options.max_record_bytes)? {
+        WalOpenOutcome::Cursor(cursor) => cursor,
+        WalOpenOutcome::MissingHeader => {
             return Err(SkeinError::Storage(format!(
-                "WAL doctor rejected corruption at byte offset {record_start}: record is empty"
+                "WAL generation {} is missing its header",
+                manifest.wal_generation
             )));
         }
-        let entry = match WalEntry::decode(line) {
-            Err(error) => {
+        WalOpenOutcome::HeaderTorn { .. } => {
+            return Err(SkeinError::Storage(
+                "WAL doctor rejected an incomplete WAL header".to_string(),
+            ));
+        }
+        WalOpenOutcome::HeaderCorrupt { reason } => {
+            return Err(SkeinError::Storage(format!(
+                "WAL doctor rejected corruption at byte offset 0: {reason}"
+            )));
+        }
+    };
+    if cursor.generation() != manifest.wal_generation
+        || cursor.start_lsn() != manifest.wal_replay_start_lsn
+    {
+        return Err(SkeinError::Storage(format!(
+            "WAL header generation/start ({}, {}) does not match manifest ({}, {})",
+            cursor.generation(),
+            cursor.start_lsn(),
+            manifest.wal_generation,
+            manifest.wal_replay_start_lsn
+        )));
+    }
+    let mut expected_lsn = manifest.wal_replay_start_lsn;
+    loop {
+        let (entry, record_start) = match cursor.next()? {
+            WalCursorEvent::Eof => break,
+            WalCursorEvent::TornTail {
+                valid_prefix_len, ..
+            } => {
+                let plan = build_plan(
+                    &manifest_path,
+                    &wal_path,
+                    manifest,
+                    expected_lsn,
+                    valid_prefix_len,
+                    wal_len,
+                )?;
+                if let Some(pending) = load_matching_pending_record(path, &plan.plan_id)?
+                    && pending.plan != plan
+                {
+                    return Err(SkeinError::Storage(
+                        "pending WAL doctor repair record does not match the current repair plan"
+                            .to_string(),
+                    ));
+                }
+                return Ok(plan);
+            }
+            WalCursorEvent::Corrupt { offset, reason } => {
                 return Err(SkeinError::Storage(format!(
-                    "WAL doctor rejected corruption at byte offset {record_start}: {error}"
+                    "WAL doctor rejected corruption at byte offset {offset}: {reason}"
                 )));
             }
-            Ok(WalDecodeResult::Entry(entry)) => entry,
-            Ok(WalDecodeResult::Corrupt(reason)) => {
-                return Err(SkeinError::Storage(format!(
-                    "WAL doctor rejected corruption at byte offset {record_start}: {reason}"
-                )));
-            }
+            WalCursorEvent::Entry {
+                entry,
+                start_offset,
+                ..
+            } => (entry, start_offset),
         };
         if entry.lsn != expected_lsn {
             return Err(SkeinError::Storage(format!(
@@ -289,15 +282,8 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
         expected_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
             SkeinError::Storage("WAL LSN overflow during doctor scan".to_string())
         })?;
-        last_valid_offset = byte_offset;
     }
 
-    if !saw_header {
-        return Err(SkeinError::Storage(format!(
-            "WAL generation {} is missing its header",
-            manifest.wal_generation
-        )));
-    }
     if let Some(record) = load_single_pending_record(path)? {
         validate_pending_truncated_wal(path, &record)?;
         return Ok(record.plan);

@@ -120,9 +120,8 @@ use wal_codec::frame::{
     encode_binary_wal_header, frame_binary_wal_record, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use wal_codec::{
-    decode_wal_header, encode_wal_header, quarantine_corrupt_wal, read_bounded_wal_record,
-    reject_corrupt_wal_record, sniff_wal_format, WalCursorEvent, WalDecodeResult, WalEntry,
-    WalFileFormat, WalOpenOutcome, WalOp, WalRecordCursor,
+    encode_wal_header, quarantine_corrupt_wal, reject_corrupt_wal_record, sniff_wal_format,
+    WalCursorEvent, WalEntry, WalFileFormat, WalOpenOutcome, WalOp, WalRecordCursor,
 };
 
 const STORAGE_VERSION: &str = "skein-storage-v1";
