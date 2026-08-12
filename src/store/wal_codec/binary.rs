@@ -77,7 +77,7 @@
 
 use super::wire::{
     decode_fixed64, decode_len_body, decode_string_body, decode_tag, decode_varint_u64,
-    encode_fixed64_field, encode_len_field, encode_string_field, encode_tag, encode_varint_field,
+    encode_fixed64_field, encode_len_field, encode_string_field, encode_varint_field,
     encode_varint_u64, skip_field, zigzag_decode_i64, zigzag_encode_i64, WIRE_TYPE_FIXED64,
     WIRE_TYPE_LEN, WIRE_TYPE_VARINT,
 };

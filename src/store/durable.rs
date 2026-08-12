@@ -6,22 +6,24 @@ use super::{
     canonical_artifact_generation_file, canonical_manifest_generation_file,
     checkpoint_generation_file, checkpoint_publish_failpoint, checksum_bytes,
     cleanup_abandoned_checkpoint_preparations, copy_backup_file, decode_projected_graph_artifacts,
-    decode_stable_id_mapping, decode_wal_header, derived_repair, doctor, elapsed_micros,
-    encode_bool, encode_durable_text, encode_index_kind, encode_nullable, encode_optional_sha256,
-    encode_optional_u64, encode_property_type, encode_schema_object_state,
-    encode_stable_id_mapping, encode_string, encode_string_vec, encode_table_kind, encode_u64_vec,
-    encode_value_vec, encode_wal_header, file_checksum, has_storage_artifacts,
-    parse_optional_sha256, parse_optional_u64, parse_u64, process_crash_failpoint,
-    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
-    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
-    read_bounded_wal_record, read_durable_text, read_durable_text_bytes_with_limit,
+    decode_stable_id_mapping, derived_repair, doctor, elapsed_micros, encode_binary_wal_header,
+    encode_binary_wal_record, encode_bool, encode_durable_text, encode_index_kind,
+    encode_nullable, encode_optional_sha256, encode_optional_u64, encode_property_type,
+    encode_schema_object_state, encode_stable_id_mapping, encode_string, encode_string_vec,
+    encode_table_kind, encode_u64_vec, encode_value_vec, encode_wal_header, file_checksum,
+    frame_binary_wal_record, has_storage_artifacts, parse_optional_sha256, parse_optional_u64,
+    parse_u64, process_crash_failpoint, property_projection_artifact_generation_file,
+    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
+    property_spill_manifest_generation_file, read_durable_text, read_durable_text_bytes_with_limit,
     relational_checkpoint_generation_file, remove_source_scan_artifacts, safe_reclaim_commit_epoch,
     source_scan, split_manifest_checksum, split_projected_graph_artifact_checksum,
     split_stable_id_mapping_checksum, storage_generation_for_file, store_id_for_path,
     sync_parent_dir, validate_backup_files, validate_new_backup_destination,
     validate_search_projection_checkpoint_changes, validate_storage_version, verify_integrity,
-    wal_generation_file, wal_group_sync_failpoint, CheckpointPublishStage, ProjectedGraphArtifact,
-    WalDecodeResult, WalEntry, WalOp, BACKUP_MANIFEST_FILE, CANONICAL_ADJACENCY_MANIFEST_MAX_BYTES,
+    sniff_wal_format, wal_generation_file, wal_group_sync_failpoint, CheckpointPublishStage,
+    ProjectedGraphArtifact, WalCursorEvent, WalEntry, WalFileFormat, WalOpenOutcome,
+    WalRecordCursor, WalOp, BACKUP_MANIFEST_FILE, CANONICAL_ADJACENCY_MANIFEST_MAX_BYTES,
+    WAL_BINARY_FILE_HEADER_BYTES,
     CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1, MANIFEST_FILE, MANIFEST_HEADER_V1,
     PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, STORAGE_VERSION,
@@ -49,7 +51,7 @@ use skein_storage::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Write};
+use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -89,6 +91,13 @@ pub(super) struct DurableStore {
     pub(super) wal_replay_start_lsn: u64,
     pub(super) next_lsn: u64,
     pub(super) wal_bytes: u64,
+    /// Encoding of the active WAL generation file. Existing text (V1)
+    /// generations keep appending text records; every new generation is
+    /// binary, so a database upgrades at its next checkpoint rotation.
+    pub(super) wal_format: WalFileFormat,
+    /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
+    /// replay derives commit epochs from LSN order, exactly as before.
+    pub(super) wal_commit_epoch: u64,
     pub(super) max_wal_bytes: Option<u64>,
     source_scan_commit_epoch: Option<u64>,
     source_scan_descriptor_checksum: Option<u64>,
@@ -336,6 +345,7 @@ impl DurableStore {
         let wal_bytes = fs::metadata(&wal_path)
             .map(|metadata| metadata.len())
             .unwrap_or_default();
+        let wal_format = sniff_wal_format(&wal_path)?;
         let segment_cache = Arc::new(SegmentCache::new(segment_cache_capacity_bytes));
         let store_id = store_id_for_path(path)?;
         let canonical_segments = load_published_canonical_segments(
@@ -424,6 +434,8 @@ impl DurableStore {
             wal_replay_start_lsn: manifest.wal_replay_start_lsn,
             next_lsn: manifest.next_lsn,
             wal_bytes,
+            wal_format,
+            wal_commit_epoch: manifest.checkpoint_commit_epoch,
             max_wal_bytes,
             source_scan_commit_epoch: manifest.source_scan_commit_epoch,
             source_scan_descriptor_checksum: manifest.source_scan_descriptor_checksum,
@@ -851,38 +863,48 @@ impl DurableStore {
             return Ok((0, 0));
         }
         let wal_bytes = fs::metadata(&self.wal_path)?.len();
-        let mut reader = BufReader::new(File::open(&self.wal_path)?);
-        let mut saw_header = false;
-        let mut expected_lsn = self.wal_replay_start_lsn;
-        let mut record_count = 0usize;
-        while let Some(record) = read_bounded_wal_record(&mut reader, self.max_record_bytes)? {
-            if !record.terminated_by_newline {
+        let mut cursor = match WalRecordCursor::open(&self.wal_path, self.max_record_bytes)? {
+            WalOpenOutcome::Cursor(cursor) => cursor,
+            WalOpenOutcome::MissingHeader => {
+                return Err(SkeinError::Storage(format!(
+                    "WAL generation {} is missing its header during scrub",
+                    self.wal_generation
+                )));
+            }
+            WalOpenOutcome::HeaderTorn { .. } => {
                 return Err(SkeinError::Storage(
                     "WAL scrub rejected a torn tail; use explicit doctor repair if discarding the incomplete record is acceptable"
                         .to_string(),
                 ));
             }
-            let line = std::str::from_utf8(&record.bytes).map_err(|error| {
-                SkeinError::Storage(format!("WAL scrub found invalid UTF-8: {error}"))
-            })?;
-            if !saw_header {
-                let (generation, start_lsn) = decode_wal_header(line)?;
-                if generation != self.wal_generation || start_lsn != self.wal_replay_start_lsn {
+            WalOpenOutcome::HeaderCorrupt { reason } => {
+                return Err(SkeinError::Storage(reason));
+            }
+        };
+        if cursor.generation() != self.wal_generation
+            || cursor.start_lsn() != self.wal_replay_start_lsn
+        {
+            return Err(SkeinError::Storage(
+                "WAL scrub found a header that does not match the durable manifest".to_string(),
+            ));
+        }
+        let mut expected_lsn = self.wal_replay_start_lsn;
+        let mut record_count = 0usize;
+        loop {
+            let entry = match cursor.next()? {
+                WalCursorEvent::Eof => break,
+                WalCursorEvent::TornTail { .. } => {
                     return Err(SkeinError::Storage(
-                        "WAL scrub found a header that does not match the durable manifest"
+                        "WAL scrub rejected a torn tail; use explicit doctor repair if discarding the incomplete record is acceptable"
                             .to_string(),
                     ));
                 }
-                saw_header = true;
-                continue;
-            }
-            let entry = match WalEntry::decode(line)? {
-                WalDecodeResult::Entry(entry) => entry,
-                WalDecodeResult::Corrupt(reason) => {
+                WalCursorEvent::Corrupt { reason, .. } => {
                     return Err(SkeinError::Storage(format!(
                         "WAL scrub found a corrupt record: {reason}"
                     )));
                 }
+                WalCursorEvent::Entry { entry, .. } => entry,
             };
             if entry.lsn != expected_lsn {
                 return Err(SkeinError::Storage(format!(
@@ -894,12 +916,6 @@ impl DurableStore {
                 .checked_add(1)
                 .ok_or_else(|| SkeinError::Storage("WAL LSN overflow during scrub".to_string()))?;
             record_count = record_count.saturating_add(1);
-        }
-        if !saw_header {
-            return Err(SkeinError::Storage(format!(
-                "WAL generation {} is missing its header during scrub",
-                self.wal_generation
-            )));
         }
         if expected_lsn != self.next_lsn {
             return Err(SkeinError::Storage(format!(
@@ -1039,35 +1055,68 @@ impl DurableStore {
             lsn: self.next_lsn,
             op,
         };
-        let encoded_entry = entry.encode();
-        if self
-            .max_record_bytes
-            .is_some_and(|limit| encoded_entry.len().saturating_add(1) > limit)
-        {
-            return Err(SkeinError::Storage(format!(
-                "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
-                self.max_record_bytes.unwrap_or_default()
-            )));
-        }
+        // Header bytes are written when the record starts a fresh file
+        // (text keeps its original created-file trigger); record bytes are
+        // the framed record itself.
+        let (header_bytes, record_bytes) = match self.wal_format {
+            WalFileFormat::TextV1 => {
+                let encoded_entry = entry.encode();
+                if self
+                    .max_record_bytes
+                    .is_some_and(|limit| encoded_entry.len().saturating_add(1) > limit)
+                {
+                    return Err(SkeinError::Storage(format!(
+                        "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
+                        self.max_record_bytes.unwrap_or_default()
+                    )));
+                }
+                let mut header =
+                    encode_wal_header(self.wal_generation, self.wal_replay_start_lsn).into_bytes();
+                header.push(b'\n');
+                let mut record = encoded_entry.into_bytes();
+                record.push(b'\n');
+                (header, record)
+            }
+            WalFileFormat::BinaryV2 => {
+                let payload =
+                    encode_binary_wal_record(&entry, self.wal_commit_epoch.saturating_add(1));
+                if self
+                    .max_record_bytes
+                    .is_some_and(|limit| payload.len() > limit)
+                {
+                    return Err(SkeinError::Storage(format!(
+                        "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
+                        self.max_record_bytes.unwrap_or_default()
+                    )));
+                }
+                let header = encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
+                let position = self
+                    .wal_bytes
+                    .saturating_sub(WAL_BINARY_FILE_HEADER_BYTES as u64);
+                (
+                    header,
+                    frame_binary_wal_record(self.wal_generation, &payload, position),
+                )
+            }
+        };
         let started = std::time::Instant::now();
-        let mut byte_count = encoded_entry.len().saturating_add(1) as u64;
+        let mut byte_count = record_bytes.len() as u64;
         if self.wal_bytes == 0 {
-            byte_count = byte_count.saturating_add(
-                encode_wal_header(self.wal_generation, self.wal_replay_start_lsn)
-                    .len()
-                    .saturating_add(1) as u64,
-            );
+            byte_count = byte_count.saturating_add(header_bytes.len() as u64);
         }
         self.ensure_wal_admission(self.wal_bytes.saturating_add(byte_count))?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
         let result = (|| {
             let (mut file, created) = self.open_wal_append()?;
-            if created {
-                let header = encode_wal_header(self.wal_generation, self.wal_replay_start_lsn);
-                writeln!(file, "{header}")?;
+            let write_header = match self.wal_format {
+                WalFileFormat::TextV1 => created,
+                WalFileFormat::BinaryV2 => self.wal_bytes == 0,
+            };
+            if write_header {
+                file.write_all(&header_bytes)?;
             }
-            writeln!(file, "{encoded_entry}")?;
+            file.write_all(&record_bytes)?;
             process_crash_failpoint("after_wal_append");
             let fsync_micros = self.finish_wal_append(&mut file, created)?;
             if !sync_deferred {
@@ -1088,6 +1137,7 @@ impl DurableStore {
         }
         if result.is_ok() {
             self.next_lsn += 1;
+            self.wal_commit_epoch = self.wal_commit_epoch.saturating_add(1);
             self.wal_bytes = self.wal_bytes.saturating_add(byte_count);
             if let Some(group) = &mut self.wal_sync_group {
                 group.record_entry(byte_count);
@@ -1795,12 +1845,14 @@ impl DurableStore {
     }
 
     pub(super) fn prepare_wal_generation(&self, generation: u64) -> Result<()> {
+        // New WAL generations always use the binary format; an existing
+        // text database therefore upgrades at its next checkpoint.
         let wal_path = self.root_path.join(wal_generation_file(generation));
         let tmp_path = wal_path.with_extension("skein.tmp");
-        let header = encode_wal_header(generation, self.next_lsn);
+        let header = encode_binary_wal_header(generation, self.next_lsn);
         {
             let mut file = File::create(&tmp_path)?;
-            writeln!(file, "{header}")?;
+            file.write_all(&header)?;
             file.sync_all()?;
         }
         durable_replace_file(&tmp_path, &wal_path)?;
@@ -1911,6 +1963,8 @@ impl DurableStore {
         self.safe_reclaim_commit_epoch = manifest.safe_reclaim_commit_epoch;
         self.wal_replay_start_lsn = manifest.wal_replay_start_lsn;
         self.wal_bytes = fs::metadata(&self.wal_path)?.len();
+        self.wal_format = WalFileFormat::BinaryV2;
+        self.wal_commit_epoch = manifest.checkpoint_commit_epoch;
         self.source_scan_commit_epoch = manifest.source_scan_commit_epoch;
         self.source_scan_descriptor_checksum = manifest.source_scan_descriptor_checksum;
         self.canonical_segments = load_published_canonical_segments(

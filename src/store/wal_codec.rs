@@ -148,6 +148,304 @@ pub(super) fn reject_corrupt_wal_record<T>(
     )))
 }
 
+/// The on-disk encoding of one WAL generation file.
+///
+/// Text (V1) files begin with the `SKEIN_WAL_V1` header line; binary (V2)
+/// files begin with the `SKWALB01` magic. The writer emits the binary
+/// format for every new WAL generation, so an existing text database
+/// upgrades at its next checkpoint rotation; the V1 reader and encoder
+/// stay in the codebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WalFileFormat {
+    TextV1,
+    BinaryV2,
+}
+
+/// Sniffs the format of an existing WAL file for the append path. Missing
+/// and empty files are treated as binary: any new WAL content is binary.
+pub(super) fn sniff_wal_format(path: &Path) -> Result<WalFileFormat> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WalFileFormat::BinaryV2);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut probe = [0u8; 8];
+    let mut filled = 0usize;
+    while filled < probe.len() {
+        let read = std::io::Read::read(&mut file, &mut probe[filled..])?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    if filled == 0 {
+        return Ok(WalFileFormat::BinaryV2);
+    }
+    if probe[..filled] == frame::WAL_BINARY_MAGIC[..filled.min(8)] && filled == 8 {
+        Ok(WalFileFormat::BinaryV2)
+    } else {
+        Ok(WalFileFormat::TextV1)
+    }
+}
+
+/// One decoded event from a format-agnostic WAL scan. Offsets are absolute
+/// file offsets; `encoded_len` covers the framed bytes of the record.
+pub(super) enum WalCursorEvent {
+    Entry {
+        entry: WalEntry,
+        start_offset: u64,
+        encoded_len: u64,
+    },
+    /// Damage inside the durable prefix; recovery fails closed.
+    Corrupt { offset: u64, reason: String },
+    /// An incomplete record or fragment chain at end of file; repairable
+    /// only through the explicit doctor protocol by truncating to
+    /// `valid_prefix_len`.
+    TornTail {
+        valid_prefix_len: u64,
+        reason: String,
+    },
+    Eof,
+}
+
+/// Outcome of opening a WAL file and validating its generation header.
+pub(super) enum WalOpenOutcome {
+    Cursor(WalRecordCursor),
+    /// The file has no header at all (it is empty).
+    MissingHeader,
+    /// The header itself is incomplete at end of file.
+    HeaderTorn { reason: String },
+    /// The header is present but invalid.
+    HeaderCorrupt { reason: String },
+}
+
+enum WalCursorInner {
+    Text {
+        reader: std::io::BufReader<File>,
+        byte_offset: u64,
+        max_record_bytes: Option<usize>,
+        finished: bool,
+    },
+    Binary(frame::BinaryWalReader<std::io::BufReader<File>>),
+}
+
+/// Format-agnostic reader over one WAL generation file: it sniffs the V1
+/// text or V2 binary encoding, validates the generation header, and yields
+/// records with the shared recovery-policy vocabulary.
+pub(super) struct WalRecordCursor {
+    generation: u64,
+    start_lsn: u64,
+    format: WalFileFormat,
+    inner: WalCursorInner,
+}
+
+impl WalRecordCursor {
+    pub(super) fn open(path: &Path, max_record_bytes: Option<usize>) -> Result<WalOpenOutcome> {
+        let file = File::open(path)?;
+        let mut reader = std::io::BufReader::new(file);
+        let probe = std::io::BufRead::fill_buf(&mut reader)?;
+        if probe.is_empty() {
+            return Ok(WalOpenOutcome::MissingHeader);
+        }
+        if probe.starts_with(frame::WAL_BINARY_MAGIC)
+            || frame::WAL_BINARY_MAGIC.starts_with(probe)
+        {
+            return Self::open_binary(reader, max_record_bytes);
+        }
+        Self::open_text(reader, max_record_bytes)
+    }
+
+    fn open_binary(
+        mut reader: std::io::BufReader<File>,
+        max_record_bytes: Option<usize>,
+    ) -> Result<WalOpenOutcome> {
+        let mut header = [0u8; frame::WAL_BINARY_FILE_HEADER_BYTES];
+        let mut filled = 0usize;
+        while filled < header.len() {
+            let read = std::io::Read::read(&mut reader, &mut header[filled..])?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled < header.len() {
+            return Ok(WalOpenOutcome::HeaderTorn {
+                reason: "binary WAL file header is truncated".to_string(),
+            });
+        }
+        let (generation, start_lsn) = match frame::decode_binary_wal_header(&header) {
+            Ok(header) => header,
+            Err(error) => {
+                return Ok(WalOpenOutcome::HeaderCorrupt {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        Ok(WalOpenOutcome::Cursor(WalRecordCursor {
+            generation,
+            start_lsn,
+            format: WalFileFormat::BinaryV2,
+            inner: WalCursorInner::Binary(frame::BinaryWalReader::new(
+                reader,
+                generation,
+                max_record_bytes,
+            )),
+        }))
+    }
+
+    fn open_text(
+        mut reader: std::io::BufReader<File>,
+        max_record_bytes: Option<usize>,
+    ) -> Result<WalOpenOutcome> {
+        let Some(record) = read_bounded_wal_record(&mut reader, max_record_bytes)? else {
+            return Ok(WalOpenOutcome::MissingHeader);
+        };
+        if !record.terminated_by_newline {
+            return Ok(WalOpenOutcome::HeaderTorn {
+                reason: "WAL header is not newline-terminated".to_string(),
+            });
+        }
+        let line = match std::str::from_utf8(&record.bytes) {
+            Ok(line) => line,
+            Err(error) => {
+                return Ok(WalOpenOutcome::HeaderCorrupt {
+                    reason: format!("record is not valid UTF-8: {error}"),
+                });
+            }
+        };
+        let (generation, start_lsn) = match decode_wal_header(line) {
+            Ok(header) => header,
+            Err(error) => {
+                return Ok(WalOpenOutcome::HeaderCorrupt {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        Ok(WalOpenOutcome::Cursor(WalRecordCursor {
+            generation,
+            start_lsn,
+            format: WalFileFormat::TextV1,
+            inner: WalCursorInner::Text {
+                byte_offset: record.encoded_len,
+                reader,
+                max_record_bytes,
+                finished: false,
+            },
+        }))
+    }
+
+    pub(super) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(super) const fn start_lsn(&self) -> u64 {
+        self.start_lsn
+    }
+
+    #[allow(dead_code)]
+    pub(super) const fn format(&self) -> WalFileFormat {
+        self.format
+    }
+
+    pub(super) fn next(&mut self) -> Result<WalCursorEvent> {
+        match &mut self.inner {
+            WalCursorInner::Text {
+                reader,
+                byte_offset,
+                max_record_bytes,
+                finished,
+            } => {
+                if *finished {
+                    return Ok(WalCursorEvent::Eof);
+                }
+                let Some(record) = read_bounded_wal_record(reader, *max_record_bytes)? else {
+                    *finished = true;
+                    return Ok(WalCursorEvent::Eof);
+                };
+                let start_offset = *byte_offset;
+                *byte_offset += record.encoded_len;
+                if !record.terminated_by_newline {
+                    *finished = true;
+                    return Ok(WalCursorEvent::TornTail {
+                        valid_prefix_len: start_offset,
+                        reason: "WAL tail record is not newline-terminated".to_string(),
+                    });
+                }
+                let line = match std::str::from_utf8(&record.bytes) {
+                    Ok(line) => line,
+                    Err(error) => {
+                        *finished = true;
+                        return Ok(WalCursorEvent::Corrupt {
+                            offset: start_offset,
+                            reason: format!("record is not valid UTF-8: {error}"),
+                        });
+                    }
+                };
+                if line.is_empty() {
+                    *finished = true;
+                    return Ok(WalCursorEvent::Corrupt {
+                        offset: start_offset,
+                        reason: "record is empty".to_string(),
+                    });
+                }
+                match WalEntry::decode(line) {
+                    Ok(WalDecodeResult::Entry(entry)) => Ok(WalCursorEvent::Entry {
+                        entry,
+                        start_offset,
+                        encoded_len: record.encoded_len,
+                    }),
+                    Ok(WalDecodeResult::Corrupt(reason)) => {
+                        *finished = true;
+                        Ok(WalCursorEvent::Corrupt {
+                            offset: start_offset,
+                            reason,
+                        })
+                    }
+                    Err(error) => {
+                        *finished = true;
+                        Ok(WalCursorEvent::Corrupt {
+                            offset: start_offset,
+                            reason: error.to_string(),
+                        })
+                    }
+                }
+            }
+            WalCursorInner::Binary(reader) => match reader.next_event()? {
+                frame::BinaryWalReadEvent::Record {
+                    payload,
+                    start_offset,
+                    end_offset,
+                } => match binary::decode_binary_wal_record(&payload)? {
+                    binary::BinaryWalRecordDecode::Entry { entry, .. } => {
+                        Ok(WalCursorEvent::Entry {
+                            entry,
+                            start_offset,
+                            encoded_len: end_offset - start_offset,
+                        })
+                    }
+                    binary::BinaryWalRecordDecode::Corrupt(reason) => Ok(WalCursorEvent::Corrupt {
+                        offset: start_offset,
+                        reason,
+                    }),
+                },
+                frame::BinaryWalReadEvent::TornTail {
+                    valid_prefix_len,
+                    reason,
+                } => Ok(WalCursorEvent::TornTail {
+                    valid_prefix_len,
+                    reason,
+                }),
+                frame::BinaryWalReadEvent::Corrupt { offset, reason } => {
+                    Ok(WalCursorEvent::Corrupt { offset, reason })
+                }
+                frame::BinaryWalReadEvent::Eof => Ok(WalCursorEvent::Eof),
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct WalEntry {
     pub(super) lsn: u64,
