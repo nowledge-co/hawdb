@@ -45,8 +45,8 @@ pub use column_group::{
     encoding::{ChunkEncoding, EncodedChunk},
     group::{
         ColumnChunkDescriptor, ColumnGroupByteSource, ColumnGroupConfig, ColumnGroupDirectory,
-        ColumnGroupReader, ColumnGroupWriter, FileByteSource, IdChunkDescriptor,
-        DEFAULT_GROUP_ROW_CAPACITY,
+        ColumnGroupPruneDecision, ColumnGroupPruneReason, ColumnGroupReader, ColumnGroupWriter,
+        ColumnPredicate, FileByteSource, IdChunkDescriptor, DEFAULT_GROUP_ROW_CAPACITY,
     },
     zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,

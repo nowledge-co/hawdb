@@ -22,6 +22,7 @@ use super::encoding::{
 use super::zone::{ChunkZoneMap, ZONE_MAP_RECORD_BYTES};
 use super::{corrupt, unsupported, ColumnGroupError, COLUMN_GROUP_MAGIC};
 use crate::durability::durable_replace_file;
+use crate::scan::RangeBound;
 use crate::ManifestGeneration;
 use skein_core::{PropertyId, Value};
 use skein_integrity::crc32c;
@@ -458,6 +459,77 @@ impl ColumnGroupWriter {
     }
 }
 
+// --- scan surface -----------------------------------------------------------
+
+/// A single-column predicate over a node group, keyed by `PropertyId`.
+///
+/// Value-match semantics (the contract the pruning soundness obligation is
+/// stated against; null values never match any predicate):
+///
+/// - `Equals`: the stored value equals the predicate value under the
+///   `Value` total order (so types must match; float comparison is
+///   `total_cmp`, hence `NaN == NaN` and `-0.0 != 0.0`).
+/// - `Range` with an `Int` or finite `Float` bound: matches `Int`/`Float`
+///   values by numeric comparison.
+/// - `Range` with a `String` bound that parses as RFC 3339: matches only
+///   string values that also parse, compared as epoch milliseconds
+///   (mirrors `SegmentPruner::range_disjoint_datetime`).
+/// - `Range` with any other `String` bound: matches string values by byte
+///   order.
+/// - `Range` with a `Bool` bound: matches bool values (`false < true`).
+/// - `Range` with a null, non-finite, or nested bound never prunes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColumnPredicate {
+    Equals {
+        property_id: PropertyId,
+        value: Value,
+    },
+    Range {
+        property_id: PropertyId,
+        lower: Option<RangeBound>,
+        upper: Option<RangeBound>,
+    },
+}
+
+impl ColumnPredicate {
+    pub fn property_id(&self) -> PropertyId {
+        match self {
+            Self::Equals { property_id, .. } | Self::Range { property_id, .. } => *property_id,
+        }
+    }
+}
+
+/// Why a group or chunk was skipped without reading chunk bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnGroupPruneReason {
+    /// The group holds no rows.
+    EmptyGroup,
+    /// The group stores no chunk for the predicate's property.
+    PropertyAbsent,
+    /// The chunk stores only nulls, which no predicate matches.
+    AllNull,
+    /// The chunk's zone map proves no stored value can qualify.
+    ZoneMapExcluded,
+}
+
+/// Directory-only pruning verdict for one predicate (§3.2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnGroupPruneDecision {
+    /// No row of the whole group can match.
+    SkipGroup(ColumnGroupPruneReason),
+    /// The predicate's chunk cannot contain a qualifying row; the scan may
+    /// skip decoding it while still opening sibling chunks.
+    SkipChunk(ColumnGroupPruneReason),
+    /// The chunk may contain qualifying rows and must be read.
+    Open,
+}
+
+impl ColumnGroupPruneDecision {
+    pub fn should_open(&self) -> bool {
+        matches!(self, Self::Open)
+    }
+}
+
 // --- byte source ------------------------------------------------------------
 
 /// Byte-range access to a group artifact. The indirection exists so tests
@@ -650,6 +722,36 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
             .collect()
     }
 
+    /// Directory-only pruning: decides from zone maps and null counts
+    /// whether the predicate's chunk (or the whole group) can be skipped,
+    /// without reading any chunk bytes. Sound by the mirror of the
+    /// `SkeinPropertyIndexPruning` obligation: a skipped chunk never
+    /// contains a qualifying row.
+    pub fn prune(&self, predicate: &ColumnPredicate) -> ColumnGroupPruneDecision {
+        if self.directory.row_count == 0 {
+            return ColumnGroupPruneDecision::SkipGroup(ColumnGroupPruneReason::EmptyGroup);
+        }
+        let Some(column) = self.directory.column(predicate.property_id()) else {
+            // No chunk for the property means no row of the group stores
+            // it, so a match-requiring predicate rules out the group.
+            return ColumnGroupPruneDecision::SkipGroup(ColumnGroupPruneReason::PropertyAbsent);
+        };
+        if column.zone_map.value_count() == 0 {
+            return ColumnGroupPruneDecision::SkipChunk(ColumnGroupPruneReason::AllNull);
+        }
+        let may_match = match predicate {
+            ColumnPredicate::Equals { value, .. } => column.zone_map.may_match_equals(value),
+            ColumnPredicate::Range { lower, upper, .. } => column
+                .zone_map
+                .may_match_range(lower.as_ref(), upper.as_ref()),
+        };
+        if may_match {
+            ColumnGroupPruneDecision::Open
+        } else {
+            ColumnGroupPruneDecision::SkipChunk(ColumnGroupPruneReason::ZoneMapExcluded)
+        }
+    }
+
     /// The rows of this group still visible under a deletion vector,
     /// ascending. The vector must be bound to this group and its publishing
     /// generation (§3.5.3(d)); any other binding is rejected.
@@ -710,6 +812,7 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::DateTimeMinMax;
     use std::path::PathBuf;
 
     fn unique_path(name: &str) -> PathBuf {
@@ -962,6 +1065,295 @@ mod tests {
     }
 
     #[test]
+    fn pruning_distinguishes_group_and_chunk_skips() {
+        let path = unique_path("prune");
+        let ids = (0..50u64).collect::<Vec<_>>();
+        let columns = vec![
+            (
+                PropertyId(1),
+                (0..50).map(|row| Value::Int(row * 10)).collect::<Vec<_>>(),
+            ),
+            (PropertyId(2), vec![Value::Null; 50]),
+        ];
+        ColumnGroupWriter::default()
+            .write(&path, 8, ManifestGeneration(1), &ids, &columns)
+            .unwrap();
+        let reader = ColumnGroupReader::open_path(&path).unwrap();
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Equals {
+                property_id: PropertyId(99),
+                value: Value::Int(1),
+            }),
+            ColumnGroupPruneDecision::SkipGroup(ColumnGroupPruneReason::PropertyAbsent)
+        );
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Equals {
+                property_id: PropertyId(2),
+                value: Value::Int(1),
+            }),
+            ColumnGroupPruneDecision::SkipChunk(ColumnGroupPruneReason::AllNull)
+        );
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Equals {
+                property_id: PropertyId(1),
+                value: Value::Int(-5),
+            }),
+            ColumnGroupPruneDecision::SkipChunk(ColumnGroupPruneReason::ZoneMapExcluded)
+        );
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Equals {
+                property_id: PropertyId(1),
+                value: Value::Int(90),
+            }),
+            ColumnGroupPruneDecision::Open
+        );
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Range {
+                property_id: PropertyId(1),
+                lower: Some(RangeBound::exclusive(Value::Int(490))),
+                upper: None,
+            }),
+            ColumnGroupPruneDecision::SkipChunk(ColumnGroupPruneReason::ZoneMapExcluded)
+        );
+        assert!(reader
+            .prune(&ColumnPredicate::Range {
+                property_id: PropertyId(1),
+                lower: Some(RangeBound::inclusive(Value::Int(490))),
+                upper: None,
+            })
+            .should_open());
+        fs::remove_file(&path).unwrap();
+        // An empty group is skipped outright.
+        let empty = unique_path("prune_empty");
+        ColumnGroupWriter::default()
+            .write(&empty, 9, ManifestGeneration(1), &[], &[])
+            .unwrap();
+        let reader = ColumnGroupReader::open_path(&empty).unwrap();
+        assert_eq!(
+            reader.prune(&ColumnPredicate::Equals {
+                property_id: PropertyId(1),
+                value: Value::Int(1),
+            }),
+            ColumnGroupPruneDecision::SkipGroup(ColumnGroupPruneReason::EmptyGroup)
+        );
+        fs::remove_file(empty).unwrap();
+    }
+
+    // Deterministic xorshift64* generator: no external rand dependency.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            let mut state = self.0;
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            self.0 = state;
+            state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    fn random_value(rng: &mut XorShift, style: u64) -> Value {
+        if rng.below(5) == 0 {
+            return Value::Null;
+        }
+        match style {
+            0 => Value::Int(rng.below(200) as i64 - 100),
+            1 => Value::Int(i64::MAX - rng.below(64) as i64),
+            2 => Value::Float(rng.below(400) as f64 / 4.0 - 50.0),
+            3 => match rng.below(12) {
+                0 => Value::Float(f64::INFINITY),
+                1 => Value::Float(f64::NAN),
+                _ => Value::Float(rng.below(100) as f64),
+            },
+            4 => {
+                let length = rng.below(30) as usize;
+                let letter = b'a' + rng.below(6) as u8;
+                Value::String(String::from_utf8(vec![letter; length.max(1)]).unwrap())
+            }
+            5 => Value::String(format!(
+                "2024-{:02}-{:02}T{:02}:00:00Z",
+                rng.below(12) + 1,
+                rng.below(28) + 1,
+                rng.below(24)
+            )),
+            6 => Value::Bool(rng.below(2) == 1),
+            _ => {
+                let style = rng.below(7);
+                random_value(rng, style)
+            }
+        }
+    }
+
+    /// Reference row matcher for the semantics documented on
+    /// `ColumnPredicate`. Null values match nothing.
+    fn value_matches(value: &Value, predicate: &ColumnPredicate) -> bool {
+        if matches!(value, Value::Null) {
+            return false;
+        }
+        match predicate {
+            ColumnPredicate::Equals {
+                value: expected, ..
+            } => value == expected,
+            ColumnPredicate::Range { lower, upper, .. } => {
+                lower
+                    .as_ref()
+                    .is_none_or(|bound| bound_matches(value, bound, true))
+                    && upper
+                        .as_ref()
+                        .is_none_or(|bound| bound_matches(value, bound, false))
+            }
+        }
+    }
+
+    fn bound_matches(value: &Value, bound: &RangeBound, is_lower: bool) -> bool {
+        use std::cmp::Ordering;
+        let ordering = match (&bound.value, value) {
+            (Value::Int(bound), Value::Int(value)) => Some(value.cmp(bound)),
+            (Value::Int(bound), Value::Float(value)) => {
+                cmp_i64_f64(*bound, *value).map(Ordering::reverse)
+            }
+            (Value::Float(bound), Value::Int(value)) if bound.is_finite() => {
+                cmp_i64_f64(*value, *bound)
+            }
+            (Value::Float(bound), Value::Float(value)) if bound.is_finite() => {
+                value.partial_cmp(bound)
+            }
+            (Value::String(bound), Value::String(value)) => {
+                match DateTimeMinMax::parse_rfc3339(bound) {
+                    Some(bound_millis) => DateTimeMinMax::parse_rfc3339(value)
+                        .map(|value_millis| value_millis.cmp(&bound_millis)),
+                    None => Some(value.as_str().cmp(bound.as_str())),
+                }
+            }
+            (Value::Bool(bound), Value::Bool(value)) => Some(value.cmp(bound)),
+            _ => None,
+        };
+        let Some(ordering) = ordering else {
+            return false;
+        };
+        match (is_lower, bound.inclusive) {
+            (true, true) => ordering.is_ge(),
+            (true, false) => ordering.is_gt(),
+            (false, true) => ordering.is_le(),
+            (false, false) => ordering.is_lt(),
+        }
+    }
+
+    /// Exact comparison of an i64 against a finite f64.
+    fn cmp_i64_f64(int: i64, float: f64) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        if float.is_nan() {
+            return None;
+        }
+        if float >= 9_223_372_036_854_775_808.0 {
+            return Some(Ordering::Less);
+        }
+        if float < -9_223_372_036_854_775_808.0 {
+            return Some(Ordering::Greater);
+        }
+        let floor = float.floor();
+        let floor_int = floor as i128;
+        Some(match i128::from(int).cmp(&floor_int) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal if float == floor => Ordering::Equal,
+            Ordering::Equal => Ordering::Less,
+        })
+    }
+
+    fn random_predicate(rng: &mut XorShift, property_ids: &[PropertyId]) -> ColumnPredicate {
+        let property_id = if rng.below(10) == 0 {
+            PropertyId(4096)
+        } else {
+            property_ids[rng.below(property_ids.len() as u64) as usize]
+        };
+        let style = rng.below(8);
+        if rng.below(2) == 0 {
+            ColumnPredicate::Equals {
+                property_id,
+                value: random_value(rng, style),
+            }
+        } else {
+            let bound = |rng: &mut XorShift, style| {
+                let value = random_value(rng, style);
+                if rng.below(2) == 0 {
+                    RangeBound::inclusive(value)
+                } else {
+                    RangeBound::exclusive(value)
+                }
+            };
+            let lower = (rng.below(4) != 0).then(|| bound(rng, style));
+            let upper = (rng.below(4) != 0).then(|| bound(rng, style));
+            ColumnPredicate::Range {
+                property_id,
+                lower,
+                upper,
+            }
+        }
+    }
+
+    #[test]
+    fn zone_map_pruning_never_skips_a_qualifying_row() {
+        let mut rng = XorShift(0x5ee5_c01d_beef_cafe);
+        let path = unique_path("prune_soundness");
+        let property_ids = [PropertyId(0), PropertyId(1), PropertyId(2)];
+        for round in 0..80 {
+            let row_count = rng.below(100) as usize + 1;
+            let ids = {
+                let mut current = rng.below(1000);
+                (0..row_count)
+                    .map(|_| {
+                        current += rng.below(9) + 1;
+                        current
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let columns = property_ids
+                .iter()
+                .map(|property_id| {
+                    let style = rng.below(8);
+                    (
+                        *property_id,
+                        (0..row_count)
+                            .map(|_| random_value(&mut rng, style))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            ColumnGroupWriter::default()
+                .write(&path, round, ManifestGeneration(round), &ids, &columns)
+                .unwrap();
+            let reader = ColumnGroupReader::open_path(&path).unwrap();
+            for _ in 0..6 {
+                let predicate = random_predicate(&mut rng, &property_ids);
+                if reader.prune(&predicate).should_open() {
+                    continue;
+                }
+                // A pruned chunk must not contain a qualifying row.
+                let column = columns
+                    .iter()
+                    .find(|(property_id, _)| *property_id == predicate.property_id());
+                if let Some((property_id, values)) = column {
+                    for (row, value) in values.iter().enumerate() {
+                        assert!(
+                            !value_matches(value, &predicate),
+                            "round {round}: pruned chunk of property {} hides matching \
+                             row {row} ({value:?}) from {predicate:?}",
+                            property_id.0
+                        );
+                    }
+                }
+            }
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn deletion_vectors_bind_to_group_and_generation() {
         let path = unique_path("dv_binding");
         let ids = (0..40u64).collect::<Vec<_>>();
@@ -1034,6 +1426,79 @@ mod tests {
             reader.read_column(PropertyId(1), Some(&[200])),
             Err(ColumnGroupError::RowOutOfRange { .. })
         ));
+        fs::remove_file(path).unwrap();
+    }
+
+    /// Byte source that records every range it serves.
+    struct CountingSource {
+        inner: FileByteSource,
+        reads: std::rc::Rc<std::cell::RefCell<Vec<(u64, u64)>>>,
+    }
+
+    impl ColumnGroupByteSource for CountingSource {
+        fn byte_len(&self) -> Result<u64, ColumnGroupError> {
+            self.inner.byte_len()
+        }
+
+        fn read_at(&self, offset: u64, length: u64) -> Result<Vec<u8>, ColumnGroupError> {
+            self.reads.borrow_mut().push((offset, length));
+            self.inner.read_at(offset, length)
+        }
+    }
+
+    #[test]
+    fn point_reads_touch_only_requested_chunk_extents() {
+        let path = unique_path("counting");
+        let ids = (0..300u64).collect::<Vec<_>>();
+        let columns = sample_columns(ids.len());
+        ColumnGroupWriter::default()
+            .write(&path, 10, ManifestGeneration(6), &ids, &columns)
+            .unwrap();
+        let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let source = CountingSource {
+            inner: FileByteSource::open(&path).unwrap(),
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let reader = ColumnGroupReader::open(source).unwrap();
+        let requested_extent = {
+            let column = reader.directory().column(PropertyId(3)).unwrap();
+            (column.offset, column.length)
+        };
+        let sibling_extents = reader
+            .directory()
+            .columns
+            .iter()
+            .filter(|column| column.property_id != PropertyId(3))
+            .map(|column| (column.offset, column.length))
+            .chain(std::iter::once((
+                reader.directory().id_chunk.offset,
+                reader.directory().id_chunk.length,
+            )))
+            .collect::<Vec<_>>();
+        reads.borrow_mut().clear();
+        let row = reader.read_row(7, &[PropertyId(3)]).unwrap();
+        assert_eq!(row, vec![Value::Int(7 * 7 - 100)]);
+        let logged = reads.borrow().clone();
+        assert!(!logged.is_empty());
+        for (offset, length) in &logged {
+            assert_eq!(
+                (*offset, *length),
+                requested_extent,
+                "point read touched bytes outside the requested chunk"
+            );
+            for (sibling_offset, sibling_length) in &sibling_extents {
+                let disjoint = offset + length <= *sibling_offset
+                    || sibling_offset + sibling_length <= *offset;
+                assert!(disjoint, "point read overlapped an unrequested chunk");
+            }
+        }
+        // A selective column read is equally surgical.
+        reads.borrow_mut().clear();
+        reader.read_column(PropertyId(3), Some(&[1, 2])).unwrap();
+        assert!(reads
+            .borrow()
+            .iter()
+            .all(|extent| *extent == requested_extent));
         fs::remove_file(path).unwrap();
     }
 }
