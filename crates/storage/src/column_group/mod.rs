@@ -9,6 +9,8 @@
 //! wired into `GraphStore`, checkpointing, or recovery.
 
 pub mod encoding;
+pub mod group;
+pub mod zone;
 
 use skein_core::PropertyId;
 use std::error::Error;

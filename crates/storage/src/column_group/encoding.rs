@@ -707,7 +707,7 @@ pub(super) fn pack_values(values: &[u64], width: u8) -> Vec<u8> {
     bytes
 }
 
-fn unpack_values(
+pub(super) fn unpack_values(
     cursor: &mut Cursor<'_>,
     width: u8,
     count: usize,

@@ -42,6 +42,12 @@ pub use canonical_adjacency::{
 };
 pub use column_group::{
     encoding::{ChunkEncoding, EncodedChunk},
+    group::{
+        ColumnChunkDescriptor, ColumnGroupByteSource, ColumnGroupConfig, ColumnGroupDirectory,
+        ColumnGroupReader, ColumnGroupWriter, FileByteSource, IdChunkDescriptor,
+        DEFAULT_GROUP_ROW_CAPACITY,
+    },
+    zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
 };
 pub use config::{
