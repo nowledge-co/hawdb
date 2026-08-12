@@ -26,7 +26,9 @@ const TABLE_DIRECTORY_MAGIC: &[u8; 10] = b"SKNCOLDIR1";
 const FORMAT_VERSION: u32 = 1;
 const MANIFEST_LOCK_FILE: &str = "column-groups.publish.lock";
 const FOOTER_FIXED_BYTES: usize = 8 + 4;
-const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_METADATA_BODY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_METADATA_FILE_BYTES: u64 =
+    MAX_METADATA_BODY_BYTES + (TABLE_DIRECTORY_MAGIC.len() * 2 + FOOTER_FIXED_BYTES) as u64;
 const MAX_TABLES: usize = 1_000_000;
 const MAX_GROUPS_PER_TABLE: usize = 4_000_000;
 const MAX_FILE_NAME_BYTES: usize = 255;
@@ -367,7 +369,7 @@ impl ColumnGroupTableDirectory {
         let path = root.join(&file_name);
         let bytes = encode_envelope(TABLE_DIRECTORY_MAGIC, &self.encode_body()?)?;
         if path.exists() {
-            let existing = read_bounded(&path, MAX_METADATA_BYTES, "table directory")?;
+            let existing = read_bounded(&path, MAX_METADATA_FILE_BYTES, "table directory")?;
             if existing != bytes {
                 return Err(corrupt(format!(
                     "immutable table directory {file_name} already exists with different bytes"
@@ -750,7 +752,7 @@ impl ColumnGroupManifest {
         let mut artifact_files = BTreeSet::new();
         for reference in &self.tables {
             let path = root.join(&reference.file_name);
-            let bytes = read_bounded(&path, MAX_METADATA_BYTES, "table directory")?;
+            let bytes = read_bounded(&path, MAX_METADATA_FILE_BYTES, "table directory")?;
             if bytes.len() as u64 != reference.byte_len
                 || skein_integrity::sha256(&bytes) != reference.sha256
             {
@@ -789,7 +791,7 @@ impl ColumnGroupManifest {
 
     fn load_active_manifest(root: &Path) -> Result<Option<Self>, ColumnGroupError> {
         let path = root.join(COLUMN_GROUP_MANIFEST_FILE);
-        let bytes = match read_bounded(&path, MAX_METADATA_BYTES, "column-group manifest") {
+        let bytes = match read_bounded(&path, MAX_METADATA_FILE_BYTES, "column-group manifest") {
             Ok(bytes) => bytes,
             Err(ColumnGroupError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(None);
@@ -992,18 +994,22 @@ fn candidate_path(path: &Path) -> PathBuf {
 }
 
 fn encode_envelope(magic: &[u8], body: &[u8]) -> Result<Vec<u8>, ColumnGroupError> {
-    if body.len() as u64 > MAX_METADATA_BYTES {
+    if body.len() as u64 > MAX_METADATA_BODY_BYTES {
         return Err(unsupported(format!(
-            "column-group metadata body exceeds {MAX_METADATA_BYTES} bytes"
+            "column-group metadata body exceeds {MAX_METADATA_BODY_BYTES} bytes"
         )));
     }
-    let mut bytes = Vec::with_capacity(magic.len() * 2 + FOOTER_FIXED_BYTES + body.len());
+    let mut bytes = Vec::with_capacity(envelope_len(magic.len(), body.len()));
     bytes.extend(magic);
     bytes.extend(body);
     bytes.extend((body.len() as u64).to_le_bytes());
     bytes.extend(crc32c(body).get().to_le_bytes());
     bytes.extend(magic);
     Ok(bytes)
+}
+
+const fn envelope_len(magic_len: usize, body_len: usize) -> usize {
+    magic_len * 2 + FOOTER_FIXED_BYTES + body_len
 }
 
 fn decode_envelope<'a>(
@@ -1294,6 +1300,21 @@ mod tests {
             Err(ColumnGroupError::Corrupt(_))
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_file_budget_includes_the_checksumming_envelope() {
+        assert_eq!(
+            envelope_len(
+                TABLE_DIRECTORY_MAGIC.len(),
+                MAX_METADATA_BODY_BYTES as usize
+            ) as u64,
+            MAX_METADATA_FILE_BYTES
+        );
+        assert!(
+            envelope_len(MANIFEST_MAGIC.len(), MAX_METADATA_BODY_BYTES as usize) as u64
+                <= MAX_METADATA_FILE_BYTES
+        );
     }
 
     #[test]
