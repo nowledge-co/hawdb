@@ -3,6 +3,7 @@ pub mod backup;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
+pub mod column_group;
 pub mod config;
 pub mod durability;
 pub mod ids;
@@ -38,6 +39,10 @@ pub use canonical_adjacency::{
     CanonicalAdjacencyEntry, CanonicalAdjacencyError, CanonicalAdjacencyManifest,
     CanonicalAdjacencyReadReport, CanonicalAdjacencyReader, CanonicalAdjacencyWriteOutput,
     CanonicalAdjacencyWriter,
+};
+pub use column_group::{
+    encoding::{ChunkEncoding, EncodedChunk},
+    ColumnGroupError, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
 };
 pub use config::{
     DurabilityPolicy, DurableCompression, RecoveryMode, StorageResidencyMode, WalReplayConfig,
