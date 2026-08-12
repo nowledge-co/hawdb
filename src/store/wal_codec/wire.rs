@@ -111,9 +111,12 @@ pub(crate) fn decode_len_body<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'
     let len = usize::try_from(len).map_err(|_| {
         SkeinError::Storage("wire length-delimited body overflows usize".to_string())
     })?;
-    let end = pos.checked_add(len).filter(|end| *end <= bytes.len()).ok_or_else(|| {
-        SkeinError::Storage("wire length-delimited body is truncated".to_string())
-    })?;
+    let end = pos
+        .checked_add(len)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| {
+            SkeinError::Storage("wire length-delimited body is truncated".to_string())
+        })?;
     let body = &bytes[*pos..end];
     *pos = end;
     Ok(body)

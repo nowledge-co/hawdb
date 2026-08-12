@@ -121,7 +121,7 @@ use wal_codec::frame::{
 };
 use wal_codec::{
     encode_wal_header, quarantine_corrupt_wal, reject_corrupt_wal_record, sniff_wal_format,
-    WalCursorEvent, WalEntry, WalFileFormat, WalOpenOutcome, WalOp, WalRecordCursor,
+    WalCursorEvent, WalEntry, WalFileFormat, WalOp, WalOpenOutcome, WalRecordCursor,
 };
 
 const STORAGE_VERSION: &str = "skein-storage-v1";
@@ -240,17 +240,16 @@ fn wal_apply_failpoint() -> Result<()> {
 pub(crate) fn decode_wal_records_as_v1_text(path: &Path) -> std::io::Result<String> {
     use std::io::{Error, ErrorKind};
     let invalid = |reason: String| Error::new(ErrorKind::InvalidData, reason);
-    let mut cursor = match WalRecordCursor::open(path, None)
-        .map_err(|error| invalid(error.to_string()))?
-    {
-        WalOpenOutcome::Cursor(cursor) => cursor,
-        WalOpenOutcome::MissingHeader => {
-            return Err(invalid("WAL is missing its header".to_string()));
-        }
-        WalOpenOutcome::HeaderTorn { reason } | WalOpenOutcome::HeaderCorrupt { reason } => {
-            return Err(invalid(reason));
-        }
-    };
+    let mut cursor =
+        match WalRecordCursor::open(path, None).map_err(|error| invalid(error.to_string()))? {
+            WalOpenOutcome::Cursor(cursor) => cursor,
+            WalOpenOutcome::MissingHeader => {
+                return Err(invalid("WAL is missing its header".to_string()));
+            }
+            WalOpenOutcome::HeaderTorn { reason } | WalOpenOutcome::HeaderCorrupt { reason } => {
+                return Err(invalid(reason));
+            }
+        };
     let mut out = String::new();
     loop {
         match cursor.next().map_err(|error| invalid(error.to_string()))? {
@@ -18000,8 +17999,8 @@ mod tests {
         // Flip one payload byte of the first record: mid-log corruption
         // ahead of a valid suffix must fail closed.
         let mut wal = std::fs::read(&wal_path).unwrap();
-        let first_payload_offset =
-            super::WAL_BINARY_FILE_HEADER_BYTES + super::wal_codec::frame::WAL_FRAGMENT_HEADER_BYTES;
+        let first_payload_offset = super::WAL_BINARY_FILE_HEADER_BYTES
+            + super::wal_codec::frame::WAL_FRAGMENT_HEADER_BYTES;
         wal[first_payload_offset] ^= 0xff;
         std::fs::write(&wal_path, &wal).unwrap();
 

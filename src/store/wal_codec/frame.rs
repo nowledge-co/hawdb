@@ -70,7 +70,10 @@ fn masked_fragment_crc(fragment_type: u8, generation: u64, payload: &[u8]) -> u3
     hasher.update(&[fragment_type]);
     hasher.update(&generation.to_le_bytes());
     hasher.update(payload);
-    hasher.finish_u32().rotate_right(15).wrapping_add(CRC_MASK_DELTA)
+    hasher
+        .finish_u32()
+        .rotate_right(15)
+        .wrapping_add(CRC_MASK_DELTA)
 }
 
 pub(crate) fn encode_binary_wal_header(generation: u64, start_lsn: u64) -> Vec<u8> {
@@ -191,7 +194,10 @@ pub(crate) struct BinaryWalReader<R: Read> {
 
 enum FragmentParse {
     /// A valid current-generation fragment (type, payload slice range).
-    Fragment { fragment_type: u8, payload_end: usize },
+    Fragment {
+        fragment_type: u8,
+        payload_end: usize,
+    },
     /// End-of-log marker: stale generation or all-zero (unwritten) header.
     EndOfLog { reason: String },
     /// Structurally complete but invalid: fails closed.
@@ -288,9 +294,7 @@ impl<R: Read> BinaryWalReader<R> {
         let payload_end = payload_start + declared_len as usize;
         if payload_end > WAL_BLOCK_BYTES {
             return Ok(FragmentParse::Corrupt {
-                reason: format!(
-                    "fragment length {declared_len} overflows its 32 KiB block"
-                ),
+                reason: format!("fragment length {declared_len} overflows its 32 KiB block"),
             });
         }
         if payload_end > self.block_len {
@@ -375,27 +379,19 @@ impl<R: Read> BinaryWalReader<R> {
         if self.live_fragment_after()? {
             return Ok(BinaryWalReadEvent::Corrupt {
                 offset,
-                reason: format!(
-                    "valid fragments follow an end-of-log marker ({marker_reason})"
-                ),
+                reason: format!("valid fragments follow an end-of-log marker ({marker_reason})"),
             });
         }
         match self.chain.take() {
             Some(chain) => Ok(BinaryWalReadEvent::TornTail {
                 valid_prefix_len: chain.start_offset,
-                reason: format!(
-                    "fragment chain is incomplete at end of log ({marker_reason})"
-                ),
+                reason: format!("fragment chain is incomplete at end of log ({marker_reason})"),
             }),
             None => Ok(BinaryWalReadEvent::Eof),
         }
     }
 
-    fn chain_violation(
-        &mut self,
-        offset: u64,
-        reason: String,
-    ) -> Result<BinaryWalReadEvent> {
+    fn chain_violation(&mut self, offset: u64, reason: String) -> Result<BinaryWalReadEvent> {
         self.finished = true;
         if self.chain.is_some() {
             // Skip past the violating fragment, then resynchronize on block
@@ -463,8 +459,7 @@ impl<R: Read> BinaryWalReader<R> {
                                 self.block_pos = payload_start - WAL_FRAGMENT_HEADER_BYTES;
                                 return self.chain_violation(
                                     fragment_offset,
-                                    "FULL fragment interrupts an open fragment chain"
-                                        .to_string(),
+                                    "FULL fragment interrupts an open fragment chain".to_string(),
                                 );
                             }
                             let payload = self.block[payload_start..payload_end].to_vec();
@@ -480,8 +475,7 @@ impl<R: Read> BinaryWalReader<R> {
                                 self.block_pos = payload_start - WAL_FRAGMENT_HEADER_BYTES;
                                 return self.chain_violation(
                                     fragment_offset,
-                                    "FIRST fragment interrupts an open fragment chain"
-                                        .to_string(),
+                                    "FIRST fragment interrupts an open fragment chain".to_string(),
                                 );
                             }
                             let payload = self.block[payload_start..payload_end].to_vec();
@@ -550,11 +544,8 @@ mod tests {
     }
 
     fn read_all(file: &[u8], generation: u64) -> Vec<BinaryWalReadEvent> {
-        let mut reader = BinaryWalReader::new(
-            &file[WAL_BINARY_FILE_HEADER_BYTES..],
-            generation,
-            None,
-        );
+        let mut reader =
+            BinaryWalReader::new(&file[WAL_BINARY_FILE_HEADER_BYTES..], generation, None);
         let mut events = Vec::new();
         loop {
             let event = reader.next_event().unwrap();
@@ -604,7 +595,10 @@ mod tests {
         let payloads = vec![b"alpha".to_vec(), b"beta".to_vec(), Vec::new()];
         let file = framed_file(3, 10, &payloads);
         let events = read_all(&file, 3);
-        assert_eq!(record_payloads(&events), vec![b"alpha".as_slice(), b"beta", b""]);
+        assert_eq!(
+            record_payloads(&events),
+            vec![b"alpha".as_slice(), b"beta", b""]
+        );
         assert!(matches!(events.last(), Some(BinaryWalReadEvent::Eof)));
     }
 
@@ -638,7 +632,7 @@ mod tests {
         );
         // And a record that exactly fills a block ends flush on the boundary.
         let exact = vec![0x11u8; WAL_BLOCK_BYTES - WAL_FRAGMENT_HEADER_BYTES];
-        let file = framed_file(2, 5, &[exact.clone()]);
+        let file = framed_file(2, 5, std::slice::from_ref(&exact));
         assert_eq!(
             (file.len() - WAL_BINARY_FILE_HEADER_BYTES) % WAL_BLOCK_BYTES,
             0
@@ -655,7 +649,9 @@ mod tests {
         let second = b"after-trailer".to_vec();
         let file = framed_file(4, 9, &[first.clone(), second.clone()]);
         let trailer_start = WAL_BINARY_FILE_HEADER_BYTES + WAL_FRAGMENT_HEADER_BYTES + fill;
-        assert!(file[trailer_start..trailer_start + 10].iter().all(|b| *b == 0));
+        assert!(file[trailer_start..trailer_start + 10]
+            .iter()
+            .all(|b| *b == 0));
         let events = read_all(&file, 4);
         assert_eq!(
             record_payloads(&events),
@@ -774,8 +770,9 @@ mod tests {
         let payloads = vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
         let mut file = framed_file(1, 1, &payloads);
         // Flip one payload byte of the middle record (a complete chain).
-        let second_start =
-            WAL_BINARY_FILE_HEADER_BYTES + (WAL_FRAGMENT_HEADER_BYTES + 3) + WAL_FRAGMENT_HEADER_BYTES;
+        let second_start = WAL_BINARY_FILE_HEADER_BYTES
+            + (WAL_FRAGMENT_HEADER_BYTES + 3)
+            + WAL_FRAGMENT_HEADER_BYTES;
         file[second_start] ^= 0xff;
         let events = read_all(&file, 1);
         assert_eq!(record_payloads(&events), vec![b"one".as_slice()]);

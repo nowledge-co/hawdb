@@ -645,7 +645,9 @@ impl<'a> OpFields<'a> {
             let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
             match wire_type {
                 WIRE_TYPE_VARINT => {
-                    fields.varints.push((field_id, decode_varint_u64(bytes, &mut pos)?));
+                    fields
+                        .varints
+                        .push((field_id, decode_varint_u64(bytes, &mut pos)?));
                 }
                 WIRE_TYPE_LEN if string_fields.contains(&field_id) => {
                     fields
@@ -711,7 +713,6 @@ impl<'a> OpFields<'a> {
         }
         Ok(properties)
     }
-
 }
 
 fn decode_op_frame(bytes: &[u8], pos: &mut usize) -> Result<WalOp> {

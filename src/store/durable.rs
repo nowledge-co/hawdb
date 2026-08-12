@@ -7,26 +7,26 @@ use super::{
     checkpoint_generation_file, checkpoint_publish_failpoint, checksum_bytes,
     cleanup_abandoned_checkpoint_preparations, copy_backup_file, decode_projected_graph_artifacts,
     decode_stable_id_mapping, derived_repair, doctor, elapsed_micros, encode_binary_wal_header,
-    encode_binary_wal_record, encode_bool, encode_durable_text, encode_index_kind,
-    encode_nullable, encode_optional_sha256, encode_optional_u64, encode_property_type,
-    encode_schema_object_state, encode_stable_id_mapping, encode_string, encode_string_vec,
-    encode_table_kind, encode_u64_vec, encode_value_vec, encode_wal_header, file_checksum,
-    frame_binary_wal_record, has_storage_artifacts, parse_optional_sha256, parse_optional_u64,
-    parse_u64, process_crash_failpoint, property_projection_artifact_generation_file,
+    encode_binary_wal_record, encode_bool, encode_durable_text, encode_index_kind, encode_nullable,
+    encode_optional_sha256, encode_optional_u64, encode_property_type, encode_schema_object_state,
+    encode_stable_id_mapping, encode_string, encode_string_vec, encode_table_kind, encode_u64_vec,
+    encode_value_vec, encode_wal_header, file_checksum, frame_binary_wal_record,
+    has_storage_artifacts, parse_optional_sha256, parse_optional_u64, parse_u64,
+    process_crash_failpoint, property_projection_artifact_generation_file,
     property_projection_manifest_generation_file, property_spill_artifact_generation_file,
     property_spill_manifest_generation_file, read_durable_text, read_durable_text_bytes_with_limit,
     relational_checkpoint_generation_file, remove_source_scan_artifacts, safe_reclaim_commit_epoch,
-    source_scan, split_manifest_checksum, split_projected_graph_artifact_checksum,
-    split_stable_id_mapping_checksum, storage_generation_for_file, store_id_for_path,
-    sync_parent_dir, validate_backup_files, validate_new_backup_destination,
-    validate_search_projection_checkpoint_changes, validate_storage_version, verify_integrity,
-    sniff_wal_format, wal_generation_file, wal_group_sync_failpoint, CheckpointPublishStage,
-    ProjectedGraphArtifact, WalCursorEvent, WalEntry, WalFileFormat, WalOpenOutcome,
-    WalRecordCursor, WalOp, BACKUP_MANIFEST_FILE, CANONICAL_ADJACENCY_MANIFEST_MAX_BYTES,
-    WAL_BINARY_FILE_HEADER_BYTES,
+    sniff_wal_format, source_scan, split_manifest_checksum,
+    split_projected_graph_artifact_checksum, split_stable_id_mapping_checksum,
+    storage_generation_for_file, store_id_for_path, sync_parent_dir, validate_backup_files,
+    validate_new_backup_destination, validate_search_projection_checkpoint_changes,
+    validate_storage_version, verify_integrity, wal_generation_file, wal_group_sync_failpoint,
+    CheckpointPublishStage, ProjectedGraphArtifact, WalCursorEvent, WalEntry, WalFileFormat, WalOp,
+    WalOpenOutcome, WalRecordCursor, BACKUP_MANIFEST_FILE, CANONICAL_ADJACENCY_MANIFEST_MAX_BYTES,
     CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1, MANIFEST_FILE, MANIFEST_HEADER_V1,
     PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, STORAGE_VERSION,
+    WAL_BINARY_FILE_HEADER_BYTES,
 };
 use crate::error::{Result, SkeinError};
 use crate::schema::{Catalog, GraphStatistics};
@@ -1089,7 +1089,8 @@ impl DurableStore {
                         self.max_record_bytes.unwrap_or_default()
                     )));
                 }
-                let header = encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
+                let header =
+                    encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
                 let position = self
                     .wal_bytes
                     .saturating_sub(WAL_BINARY_FILE_HEADER_BYTES as u64);

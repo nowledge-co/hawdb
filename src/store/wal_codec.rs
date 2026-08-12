@@ -199,7 +199,10 @@ pub(super) enum WalCursorEvent {
         encoded_len: u64,
     },
     /// Damage inside the durable prefix; recovery fails closed.
-    Corrupt { offset: u64, reason: String },
+    Corrupt {
+        offset: u64,
+        reason: String,
+    },
     /// An incomplete record or fragment chain at end of file; repairable
     /// only through the explicit doctor protocol by truncating to
     /// `valid_prefix_len`.
@@ -216,9 +219,13 @@ pub(super) enum WalOpenOutcome {
     /// The file has no header at all (it is empty).
     MissingHeader,
     /// The header itself is incomplete at end of file.
-    HeaderTorn { reason: String },
+    HeaderTorn {
+        reason: String,
+    },
     /// The header is present but invalid.
-    HeaderCorrupt { reason: String },
+    HeaderCorrupt {
+        reason: String,
+    },
 }
 
 enum WalCursorInner {
@@ -249,8 +256,7 @@ impl WalRecordCursor {
         if probe.is_empty() {
             return Ok(WalOpenOutcome::MissingHeader);
         }
-        if probe.starts_with(frame::WAL_BINARY_MAGIC)
-            || frame::WAL_BINARY_MAGIC.starts_with(probe)
+        if probe.starts_with(frame::WAL_BINARY_MAGIC) || frame::WAL_BINARY_MAGIC.starts_with(probe)
         {
             return Self::open_binary(reader, max_record_bytes);
         }
