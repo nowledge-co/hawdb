@@ -18,7 +18,8 @@ Files:
 - `canonical.<generation>.skein` and
   `canonical.<generation>.manifest.skein`: immutable ordered node and
   relationship segments with per-segment digests, record bounds, adaptive
-  endpoint Bloom filters, and exact-property Bloom summaries.
+  endpoint Bloom filters, exact-property Bloom summaries, and the artifact's
+  property key table.
 - `adjacency.<generation>.skein` and
   `adjacency.<generation>.manifest.skein`: rebuildable, generation-bound
   canonical adjacency used by out-of-core traversal.
@@ -838,6 +839,23 @@ blocks and their manifests are checksummed, read through the bounded segment
 cache, included in verified backups, and reclaimed with their canonical
 generation.
 
+Top-level record property keys are not stored inline as strings. The canonical
+writer interns each distinct key — nodes and relationships share one
+dictionary per artifact — into a `u32` id in first-seen order, and record
+payloads encode `key id, tagged value` pairs. The manifest publishes the key
+table as `property_key` lines (id plus hex-encoded UTF-8 key bytes, so keys
+containing tabs or newlines survive the tab-separated text format) under the
+`SKEIN_CANONICAL_MANIFEST_V2` header. The manifest reader accepts both
+versions: a `SKEIN_CANONICAL_MANIFEST_V1` manifest carries no key table and
+its record payloads decode with inline string keys, while a V2 manifest's key
+table selects the interned decoding. The artifact header itself is unchanged;
+the manifest version selects the record payload interpretation. The writer
+always writes V2, so the next checkpoint naturally rewrites an old generation
+into the interned encoding. A record referencing an id outside the key table,
+a key table with duplicate keys or non-contiguous ids, and duplicate key ids
+within one record all fail closed as corruption. Keys inside nested map values
+remain inline strings.
+
 Declared range and full-text indexes are also published as rebuildable,
 generation-bound projection artifacts. Their builders use a bounded external
 sort with explicit resident-memory, spill-byte, run-count, merge-fan-in, key,
@@ -927,7 +945,10 @@ The remaining page-store gaps are explicit:
   older transaction snapshot; such transactions abort and retry on epoch drift
 - no in-place page-version chain; snapshots use immutable COW pages and pinned
   canonical generations
-- no columnar property segments
+- columnar property segments are governed by
+  `specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md` (phased adoption); the
+  row-oriented canonical encoding remains authoritative until each phase of
+  that contract lands
 - no database-owned blob/content parser runtime
 - production-sized resource evidence from a representative Mem replica remains
   a cutover artifact rather than a property established by unit tests

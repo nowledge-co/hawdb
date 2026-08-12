@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINCANONICAL01";
-const MANIFEST_HEADER: &str = "SKEIN_CANONICAL_MANIFEST_V1";
+const MANIFEST_HEADER_V1: &str = "SKEIN_CANONICAL_MANIFEST_V1";
+const MANIFEST_HEADER_V2: &str = "SKEIN_CANONICAL_MANIFEST_V2";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
 const MAX_VALUE_DEPTH: usize = 32;
@@ -196,6 +197,10 @@ pub struct CanonicalSegmentManifest {
     pub artifact_sha256: Sha256Digest,
     pub node_count: u64,
     pub relationship_count: u64,
+    /// The record property key table: `Some` for V2 manifests, whose record
+    /// payloads encode `u32` key ids into this table, and `None` for V1
+    /// manifests, whose record payloads carry inline string keys.
+    pub property_keys: Option<Vec<String>>,
     pub segments: Vec<CanonicalSegmentDescriptor>,
 }
 
@@ -227,6 +232,17 @@ impl CanonicalSegmentManifest {
             return Err(CanonicalSegmentError::Corrupt(
                 "canonical manifest has an unsupported artifact id".to_string(),
             ));
+        }
+        if let Some(keys) = &self.property_keys {
+            u32_len(keys.len(), "canonical property key table")?;
+            let mut seen = BTreeSet::new();
+            for key in keys {
+                if !seen.insert(key.as_str()) {
+                    return Err(CanonicalSegmentError::Corrupt(
+                        "canonical manifest property keys are not unique".to_string(),
+                    ));
+                }
+            }
         }
         let mut previous_end = ARTIFACT_HEADER.len() as u64 + 8;
         let mut previous_id = None;
@@ -303,8 +319,12 @@ impl CanonicalSegmentManifest {
 
     pub fn encode(&self) -> Result<String, CanonicalSegmentError> {
         self.validate()?;
+        let header = match self.property_keys {
+            Some(_) => MANIFEST_HEADER_V2,
+            None => MANIFEST_HEADER_V1,
+        };
         let mut body = format!(
-            "{MANIFEST_HEADER}\ngeneration\t{}\nartifact_id\t{}\nartifact_len\t{}\nartifact_digest\t{}\nartifact_sha256\t{}\nnode_count\t{}\nrelationship_count\t{}\n",
+            "{header}\ngeneration\t{}\nartifact_id\t{}\nartifact_len\t{}\nartifact_digest\t{}\nartifact_sha256\t{}\nnode_count\t{}\nrelationship_count\t{}\n",
             self.generation.0,
             self.artifact_id,
             self.artifact_len,
@@ -313,6 +333,12 @@ impl CanonicalSegmentManifest {
             self.node_count,
             self.relationship_count
         );
+        for (id, key) in self.property_keys.iter().flatten().enumerate() {
+            body.push_str(&format!(
+                "property_key\t{id}\t{}\n",
+                encode_property_key_hex(key)
+            ));
+        }
         for segment in &self.segments {
             body.push_str(&format!(
                 "segment\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -363,11 +389,16 @@ impl CanonicalSegmentManifest {
         let mut artifact_sha256 = None;
         let mut node_count = None;
         let mut relationship_count = None;
+        let mut property_keys = Vec::new();
         let mut segments = Vec::new();
-        let mut saw_header = false;
+        let mut header_version = None;
         for line in body.lines() {
-            if line == MANIFEST_HEADER {
-                saw_header = true;
+            if line == MANIFEST_HEADER_V1 {
+                set_once(&mut header_version, 1u8, "format header")?;
+                continue;
+            }
+            if line == MANIFEST_HEADER_V2 {
+                set_once(&mut header_version, 2u8, "format header")?;
                 continue;
             }
             let fields = line.split('\t').collect::<Vec<_>>();
@@ -411,6 +442,14 @@ impl CanonicalSegmentManifest {
                     parse_u64(value, "relationship count")?,
                     "relationship count",
                 )?,
+                ["property_key", id, key] => {
+                    if parse_u32(id, "property key id")? as usize != property_keys.len() {
+                        return Err(CanonicalSegmentError::Corrupt(
+                            "canonical manifest property key ids are not contiguous".to_string(),
+                        ));
+                    }
+                    property_keys.push(decode_property_key_hex(key)?);
+                }
                 ["segment", id, kind, offset, length, digest, min_id, max_id, count, source_bloom, target_bloom, property_bloom] =>
                 {
                     segments.push(CanonicalSegmentDescriptor {
@@ -441,11 +480,23 @@ impl CanonicalSegmentManifest {
                 }
             }
         }
-        if !saw_header {
-            return Err(CanonicalSegmentError::Corrupt(
-                "canonical manifest is missing its format header".to_string(),
-            ));
-        }
+        let property_keys = match header_version {
+            None => {
+                return Err(CanonicalSegmentError::Corrupt(
+                    "canonical manifest is missing its format header".to_string(),
+                ));
+            }
+            Some(1) => {
+                if !property_keys.is_empty() {
+                    return Err(CanonicalSegmentError::Corrupt(
+                        "canonical manifest declares property keys without the V2 header"
+                            .to_string(),
+                    ));
+                }
+                None
+            }
+            Some(_) => Some(property_keys),
+        };
         let manifest = Self {
             generation: ManifestGeneration(required(generation, "generation")?),
             artifact_id: required(artifact_id, "artifact id")?,
@@ -454,6 +505,7 @@ impl CanonicalSegmentManifest {
             artifact_sha256: required(artifact_sha256, "artifact SHA-256 digest")?,
             node_count: required(node_count, "node count")?,
             relationship_count: required(relationship_count, "relationship count")?,
+            property_keys,
             segments,
         };
         manifest.validate()?;
@@ -675,6 +727,7 @@ impl CanonicalSegmentWriter {
         let mut segments = Vec::new();
         let mut node_count = 0u64;
         let mut relationship_count = 0u64;
+        let mut property_keys = PropertyKeyDictionary::default();
 
         let mut accumulator = SegmentAccumulator::new(
             CanonicalSegmentKind::Nodes,
@@ -684,7 +737,11 @@ impl CanonicalSegmentWriter {
         );
         for node in nodes {
             let node = node?;
-            let payload = encode_node_with_property_spills(&node, property_spills.as_deref_mut())?;
+            let payload = encode_node_with_property_spills(
+                &node,
+                property_spills.as_deref_mut(),
+                Some(&mut property_keys),
+            )?;
             if accumulator.would_exceed(node.id.0, payload.len()) && !accumulator.is_empty() {
                 let descriptor =
                     accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
@@ -721,6 +778,7 @@ impl CanonicalSegmentWriter {
             let payload = encode_relationship_with_property_spills(
                 &relationship,
                 property_spills.as_deref_mut(),
+                Some(&mut property_keys),
             )?;
             if accumulator.would_exceed(relationship.id.0, payload.len()) && !accumulator.is_empty()
             {
@@ -761,6 +819,7 @@ impl CanonicalSegmentWriter {
             artifact_sha256: artifact_integrity.sha256,
             node_count,
             relationship_count,
+            property_keys: Some(property_keys.into_keys()),
             segments,
         };
         manifest.validate()?;
@@ -1014,6 +1073,10 @@ impl CanonicalSegmentReader {
             .map(PropertySpillReader::manifest)
     }
 
+    fn property_keys(&self) -> Option<&[String]> {
+        self.manifest.property_keys.as_deref()
+    }
+
     pub fn get_node(&self, id: NodeId) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
         let Some(segment) = find_segment(
             self.manifest.segments_of_kind(CanonicalSegmentKind::Nodes),
@@ -1028,6 +1091,7 @@ impl CanonicalSegmentReader {
             segment,
             id.0,
             self.property_spills.as_ref(),
+            self.property_keys(),
         )
     }
 
@@ -1046,6 +1110,7 @@ impl CanonicalSegmentReader {
             segment,
             id.0,
             self.property_spills.as_ref(),
+            self.property_keys(),
         )
     }
 
@@ -1086,6 +1151,7 @@ impl CanonicalSegmentReader {
                         id,
                         payload,
                         self.property_spills.as_ref(),
+                        self.property_keys(),
                     )?)?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     Ok(control)
@@ -1127,6 +1193,7 @@ impl CanonicalSegmentReader {
                         id,
                         payload,
                         self.property_spills.as_ref(),
+                        self.property_keys(),
                     )?)?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     Ok(control)
@@ -1173,6 +1240,7 @@ impl CanonicalSegmentReader {
                         id,
                         payload,
                         self.property_spills.as_ref(),
+                        self.property_keys(),
                     )?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     let endpoint_matches = match direction {
@@ -1224,6 +1292,7 @@ impl CanonicalSegmentReader {
                         id,
                         payload,
                         self.property_spills.as_ref(),
+                        self.property_keys(),
                     )?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     if node.labels.contains(&label_id)
@@ -1324,6 +1393,7 @@ impl Iterator for CanonicalNodeIterator {
                         id,
                         payload,
                         self.reader.property_spills.as_ref(),
+                        self.reader.property_keys(),
                     )?);
                     Ok(())
                 },
@@ -1395,6 +1465,7 @@ impl Iterator for CanonicalRelationshipIterator {
                         id,
                         payload,
                         self.reader.property_spills.as_ref(),
+                        self.reader.property_keys(),
                     )?);
                     Ok(())
                 },
@@ -1453,6 +1524,7 @@ fn decode_node_by_id(
     descriptor: &CanonicalSegmentDescriptor,
     id: u64,
     property_spills: Option<&PropertySpillReader>,
+    property_keys: Option<&[String]>,
 ) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
     let mut found = None;
     decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
@@ -1467,6 +1539,7 @@ fn decode_node_by_id(
                 record_id,
                 payload,
                 property_spills,
+                property_keys,
             )?);
         }
         Ok(CanonicalScanControl::Stop)
@@ -1480,6 +1553,7 @@ fn decode_relationship_by_id(
     descriptor: &CanonicalSegmentDescriptor,
     id: u64,
     property_spills: Option<&PropertySpillReader>,
+    property_keys: Option<&[String]>,
 ) -> Result<Option<RelRecord>, CanonicalSegmentError> {
     let mut found = None;
     decode_segment_records_control(bytes, generation, descriptor, |record_id, payload| {
@@ -1491,6 +1565,7 @@ fn decode_relationship_by_id(
                 record_id,
                 payload,
                 property_spills,
+                property_keys,
             )?);
         }
         Ok(CanonicalScanControl::Stop)
@@ -1577,16 +1652,47 @@ fn decode_segment_records_control(
     Ok(CanonicalScanControl::Continue)
 }
 
+/// Interns each distinct top-level record property key into a `u32` id in
+/// first-seen order. Nodes and relationships share one dictionary per
+/// artifact; the manifest publishes the resulting key table.
+#[derive(Default)]
+struct PropertyKeyDictionary {
+    ids: BTreeMap<String, u32>,
+    keys: Vec<String>,
+}
+
+impl PropertyKeyDictionary {
+    fn intern(&mut self, key: &str) -> Result<u32, CanonicalSegmentError> {
+        if let Some(id) = self.ids.get(key) {
+            return Ok(*id);
+        }
+        let id = u32_len(self.keys.len(), "canonical property key table")?;
+        self.ids.insert(key.to_string(), id);
+        self.keys.push(key.to_string());
+        Ok(id)
+    }
+
+    fn into_keys(self) -> Vec<String> {
+        self.keys
+    }
+}
+
 fn encode_node_with_property_spills(
     node: &NodeRecord,
     property_spills: Option<&mut PropertySpillWriter>,
+    property_keys: Option<&mut PropertyKeyDictionary>,
 ) -> Result<Vec<u8>, CanonicalSegmentError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&u32_len(node.labels.len(), "node labels")?.to_le_bytes());
     for label in &node.labels {
         bytes.extend_from_slice(&label.0.to_le_bytes());
     }
-    encode_properties_with_property_spills(&node.properties, &mut bytes, property_spills)?;
+    encode_properties_with_property_spills(
+        &node.properties,
+        &mut bytes,
+        property_spills,
+        property_keys,
+    )?;
     Ok(bytes)
 }
 
@@ -1594,6 +1700,7 @@ fn decode_node_with_property_spills(
     id: u64,
     payload: &[u8],
     property_spills: Option<&PropertySpillReader>,
+    property_keys: Option<&[String]>,
 ) -> Result<NodeRecord, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let label_count = cursor.read_u32()? as usize;
@@ -1601,7 +1708,7 @@ fn decode_node_with_property_spills(
     for _ in 0..label_count {
         labels.insert(LabelId(cursor.read_u32()?));
     }
-    let properties = decode_properties_with_property_spills(&mut cursor, 0, property_spills)?;
+    let properties = decode_record_properties(&mut cursor, property_spills, property_keys)?;
     if !cursor.is_empty() {
         return Err(CanonicalSegmentError::Corrupt(
             "node record has trailing bytes".to_string(),
@@ -1617,18 +1724,24 @@ fn decode_node_with_property_spills(
 pub(crate) fn encode_relationship(
     relationship: &RelRecord,
 ) -> Result<Vec<u8>, CanonicalSegmentError> {
-    encode_relationship_with_property_spills(relationship, None)
+    encode_relationship_with_property_spills(relationship, None, None)
 }
 
 fn encode_relationship_with_property_spills(
     relationship: &RelRecord,
     property_spills: Option<&mut PropertySpillWriter>,
+    property_keys: Option<&mut PropertyKeyDictionary>,
 ) -> Result<Vec<u8>, CanonicalSegmentError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&relationship.source.0.to_le_bytes());
     bytes.extend_from_slice(&relationship.target.0.to_le_bytes());
     bytes.extend_from_slice(&relationship.rel_type.0.to_le_bytes());
-    encode_properties_with_property_spills(&relationship.properties, &mut bytes, property_spills)?;
+    encode_properties_with_property_spills(
+        &relationship.properties,
+        &mut bytes,
+        property_spills,
+        property_keys,
+    )?;
     Ok(bytes)
 }
 
@@ -1636,19 +1749,20 @@ pub(crate) fn decode_relationship(
     id: u64,
     payload: &[u8],
 ) -> Result<RelRecord, CanonicalSegmentError> {
-    decode_relationship_with_property_spills(id, payload, None)
+    decode_relationship_with_property_spills(id, payload, None, None)
 }
 
 fn decode_relationship_with_property_spills(
     id: u64,
     payload: &[u8],
     property_spills: Option<&PropertySpillReader>,
+    property_keys: Option<&[String]>,
 ) -> Result<RelRecord, CanonicalSegmentError> {
     let mut cursor = SliceCursor::new(payload);
     let source = NodeId(cursor.read_u64()?);
     let target = NodeId(cursor.read_u64()?);
     let rel_type = RelTypeId(cursor.read_u32()?);
-    let properties = decode_properties_with_property_spills(&mut cursor, 0, property_spills)?;
+    let properties = decode_record_properties(&mut cursor, property_spills, property_keys)?;
     if !cursor.is_empty() {
         return Err(CanonicalSegmentError::Corrupt(
             "relationship record has trailing bytes".to_string(),
@@ -1680,10 +1794,14 @@ fn encode_properties_with_property_spills(
     properties: &BTreeMap<String, Value>,
     output: &mut Vec<u8>,
     mut property_spills: Option<&mut PropertySpillWriter>,
+    mut property_keys: Option<&mut PropertyKeyDictionary>,
 ) -> Result<(), CanonicalSegmentError> {
     output.extend_from_slice(&u32_len(properties.len(), "property map")?.to_le_bytes());
     for (key, value) in properties {
-        encode_string(key, output)?;
+        match property_keys.as_deref_mut() {
+            Some(dictionary) => output.extend_from_slice(&dictionary.intern(key)?.to_le_bytes()),
+            None => encode_string(key, output)?,
+        }
         let mut encoded_value = Vec::new();
         encode_value(value, &mut encoded_value, 1)?;
         if let Some(spills) = property_spills.as_deref_mut()
@@ -1697,6 +1815,42 @@ fn encode_properties_with_property_spills(
         }
     }
     Ok(())
+}
+
+fn decode_record_properties(
+    cursor: &mut SliceCursor<'_>,
+    property_spills: Option<&PropertySpillReader>,
+    property_keys: Option<&[String]>,
+) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
+    let count = cursor.read_u32()? as usize;
+    let mut properties = BTreeMap::new();
+    for _ in 0..count {
+        let key = match property_keys {
+            Some(keys) => {
+                let key_id = cursor.read_u32()?;
+                keys.get(key_id as usize)
+                    .ok_or_else(|| {
+                        CanonicalSegmentError::Corrupt(format!(
+                            "canonical record references unknown property key id {key_id}"
+                        ))
+                    })?
+                    .clone()
+            }
+            None => cursor.read_string()?,
+        };
+        if properties
+            .insert(
+                key,
+                decode_value_with_property_spills(cursor, 1, property_spills)?,
+            )
+            .is_some()
+        {
+            return Err(CanonicalSegmentError::Corrupt(
+                "canonical property map has duplicate keys".to_string(),
+            ));
+        }
+    }
+    Ok(properties)
 }
 
 fn decode_properties_with_property_spills(
@@ -1884,6 +2038,31 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, CanonicalSegmentError> {
     value
         .parse()
         .map_err(|_| CanonicalSegmentError::Corrupt(format!("invalid canonical {name}: {value}")))
+}
+
+fn encode_property_key_hex(key: &str) -> String {
+    key.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_property_key_hex(value: &str) -> Result<String, CanonicalSegmentError> {
+    if !value.is_ascii() || !value.len().is_multiple_of(2) {
+        return Err(CanonicalSegmentError::Corrupt(
+            "canonical property key has an invalid encoded length".to_string(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        bytes.push(
+            u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| {
+                CanonicalSegmentError::Corrupt(
+                    "canonical property key contains invalid hexadecimal data".to_string(),
+                )
+            })?,
+        );
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        CanonicalSegmentError::Corrupt(format!("canonical property key is not UTF-8: {error}"))
+    })
 }
 
 fn parse_u8(value: &str, name: &str) -> Result<u8, CanonicalSegmentError> {
@@ -2491,6 +2670,333 @@ mod tests {
         manifest.segments[0].max_record_id = manifest.segments[1].max_record_id;
         assert!(manifest.validate().is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    fn fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/canonical_v1_inline_keys")
+    }
+
+    fn fixture_nodes() -> Vec<NodeRecord> {
+        vec![
+            NodeRecord {
+                id: NodeId(1),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([
+                    ("active".to_string(), Value::Bool(true)),
+                    ("age".to_string(), Value::Int(34)),
+                    ("name".to_string(), Value::String("alice".to_string())),
+                    ("score".to_string(), Value::Float(4.5)),
+                ]),
+            },
+            NodeRecord {
+                id: NodeId(2),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([
+                    ("active".to_string(), Value::Bool(false)),
+                    ("age".to_string(), Value::Int(41)),
+                    ("name".to_string(), Value::String("bob".to_string())),
+                    (
+                        "tags".to_string(),
+                        Value::List(vec![Value::String("x".to_string()), Value::Int(7)]),
+                    ),
+                ]),
+            },
+            NodeRecord {
+                id: NodeId(3),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([
+                    (
+                        "meta".to_string(),
+                        Value::Map(BTreeMap::from([
+                            ("k".to_string(), Value::String("v".to_string())),
+                            ("n".to_string(), Value::Int(1)),
+                        ])),
+                    ),
+                    ("name".to_string(), Value::String("carol".to_string())),
+                    ("note".to_string(), Value::Null),
+                ]),
+            },
+            NodeRecord {
+                id: NodeId(4),
+                labels: BTreeSet::from([LabelId(2)]),
+                properties: BTreeMap::from([
+                    ("age".to_string(), Value::Int(28)),
+                    ("name".to_string(), Value::String("dave".to_string())),
+                    ("score".to_string(), Value::Float(-0.25)),
+                ]),
+            },
+            NodeRecord {
+                id: NodeId(5),
+                labels: BTreeSet::from([LabelId(2)]),
+                properties: BTreeMap::from([
+                    (
+                        "meta".to_string(),
+                        Value::Map(BTreeMap::from([("k".to_string(), Value::Float(2.0))])),
+                    ),
+                    ("name".to_string(), Value::String("erin".to_string())),
+                    (
+                        "tags".to_string(),
+                        Value::List(vec![Value::Bool(true), Value::Null]),
+                    ),
+                ]),
+            },
+            NodeRecord {
+                id: NodeId(6),
+                labels: BTreeSet::from([LabelId(1), LabelId(2)]),
+                properties: BTreeMap::from([
+                    ("active".to_string(), Value::Bool(true)),
+                    ("age".to_string(), Value::Int(52)),
+                    ("name".to_string(), Value::String("多字节".to_string())),
+                    ("note".to_string(), Value::String("shared".to_string())),
+                ]),
+            },
+        ]
+    }
+
+    fn fixture_relationships() -> Vec<RelRecord> {
+        vec![
+            RelRecord {
+                id: RelId(1),
+                source: NodeId(1),
+                target: NodeId(2),
+                rel_type: RelTypeId(1),
+                properties: BTreeMap::from([
+                    ("since".to_string(), Value::Int(2020)),
+                    ("weight".to_string(), Value::Float(1.5)),
+                ]),
+            },
+            RelRecord {
+                id: RelId(2),
+                source: NodeId(2),
+                target: NodeId(3),
+                rel_type: RelTypeId(1),
+                properties: BTreeMap::from([
+                    ("kind".to_string(), Value::String("knows".to_string())),
+                    ("weight".to_string(), Value::Float(0.25)),
+                ]),
+            },
+            RelRecord {
+                id: RelId(3),
+                source: NodeId(3),
+                target: NodeId(4),
+                rel_type: RelTypeId(2),
+                properties: BTreeMap::from([
+                    ("active".to_string(), Value::Bool(true)),
+                    ("weight".to_string(), Value::Float(2.0)),
+                ]),
+            },
+            RelRecord {
+                id: RelId(4),
+                source: NodeId(5),
+                target: NodeId(6),
+                rel_type: RelTypeId(2),
+                properties: BTreeMap::from([
+                    ("note".to_string(), Value::Null),
+                    ("weight".to_string(), Value::Float(0.5)),
+                ]),
+            },
+        ]
+    }
+
+    #[test]
+    fn v1_fixture_decodes_with_inline_string_keys() {
+        let dir = fixture_dir();
+        let manifest_text = fs::read_to_string(dir.join("canonical.1.manifest.skein")).unwrap();
+        let manifest = CanonicalSegmentManifest::decode(&manifest_text).unwrap();
+        assert_eq!(manifest.property_keys, None);
+        assert_eq!(manifest.encode().unwrap(), manifest_text);
+        let reader = CanonicalSegmentReader::open(
+            dir.join("canonical.1.skein"),
+            manifest,
+            Arc::new(SegmentCache::new(8 * 1024 * 1024)),
+            StoreId(1),
+            NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        let nodes = reader
+            .node_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(nodes, fixture_nodes());
+        let relationships = reader
+            .relationship_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(relationships, fixture_relationships());
+        assert_eq!(
+            reader.get_node(NodeId(4)).unwrap(),
+            Some(fixture_nodes()[3].clone())
+        );
+        assert_eq!(
+            reader.get_relationship(RelId(3)).unwrap(),
+            Some(fixture_relationships()[2].clone())
+        );
+    }
+
+    #[test]
+    fn v2_manifest_publishes_property_keys_in_first_seen_order() {
+        let path = unique_path("v2_key_table");
+        let manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+            .write(
+                &path,
+                ManifestGeneration(1),
+                &fixture_nodes(),
+                &fixture_relationships(),
+            )
+            .unwrap();
+        assert_eq!(
+            manifest.property_keys,
+            Some(
+                [
+                    "active", "age", "name", "score", "tags", "meta", "note", "since", "weight",
+                    "kind"
+                ]
+                .map(str::to_string)
+                .to_vec()
+            )
+        );
+        let encoded = manifest.encode().unwrap();
+        assert!(encoded.starts_with(MANIFEST_HEADER_V2));
+        assert_eq!(
+            CanonicalSegmentManifest::decode(&encoded).unwrap(),
+            manifest
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v2_manifest_round_trips_hostile_property_keys() {
+        let path = unique_path("hostile_keys");
+        let nodes = vec![NodeRecord {
+            id: NodeId(1),
+            labels: BTreeSet::from([LabelId(1)]),
+            properties: BTreeMap::from([
+                ("with\ttab".to_string(), Value::Int(1)),
+                ("with\nnewline".to_string(), Value::Int(2)),
+                ("键值".to_string(), Value::String("多字节".to_string())),
+                (String::new(), Value::Null),
+            ]),
+        }];
+        let manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+            .write(
+                &path,
+                ManifestGeneration(2),
+                &nodes,
+                std::iter::empty::<RelRecord>(),
+            )
+            .unwrap();
+        let encoded = manifest.encode().unwrap();
+        assert_eq!(
+            CanonicalSegmentManifest::decode(&encoded).unwrap(),
+            manifest
+        );
+        let reader = CanonicalSegmentReader::open(
+            &path,
+            manifest,
+            Arc::new(SegmentCache::new(8 * 1024 * 1024)),
+            StoreId(1),
+            NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reader.get_node(NodeId(1)).unwrap(), Some(nodes[0].clone()));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v2_manifest_rejects_duplicate_and_non_contiguous_property_keys() {
+        let path = unique_path("bad_key_table");
+        let manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+            .write(
+                &path,
+                ManifestGeneration(1),
+                &fixture_nodes(),
+                &fixture_relationships(),
+            )
+            .unwrap();
+        let encoded = manifest.encode().unwrap();
+        let first_key_hex = encoded
+            .lines()
+            .find_map(|line| line.strip_prefix("property_key\t0\t"))
+            .unwrap()
+            .to_string();
+        let duplicated = reseal_manifest(&encoded, |line| {
+            match line.strip_prefix("property_key\t1\t") {
+                Some(_) => format!("property_key\t1\t{first_key_hex}"),
+                None => line.to_string(),
+            }
+        });
+        assert!(CanonicalSegmentManifest::decode(&duplicated)
+            .unwrap_err()
+            .to_string()
+            .contains("property keys are not unique"));
+        let non_contiguous = reseal_manifest(&encoded, |line| {
+            match line.strip_prefix("property_key\t1\t") {
+                Some(key) => format!("property_key\t5\t{key}"),
+                None => line.to_string(),
+            }
+        });
+        assert!(CanonicalSegmentManifest::decode(&non_contiguous)
+            .unwrap_err()
+            .to_string()
+            .contains("property key ids are not contiguous"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v2_reader_rejects_out_of_range_property_key_ids() {
+        let path = unique_path("out_of_range_key_id");
+        let mut manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+            .write(
+                &path,
+                ManifestGeneration(1),
+                &fixture_nodes(),
+                &fixture_relationships(),
+            )
+            .unwrap();
+        manifest.property_keys = Some(Vec::new());
+        let reader = CanonicalSegmentReader::open(
+            &path,
+            manifest,
+            Arc::new(SegmentCache::new(8 * 1024 * 1024)),
+            StoreId(1),
+            NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            reader.get_node(NodeId(1)),
+            Err(CanonicalSegmentError::Corrupt(message))
+                if message.contains("unknown property key id")
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v2_artifact_is_smaller_than_the_v1_fixture_for_repeated_keys() {
+        let path = unique_path("v2_space");
+        let manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+            .write(
+                &path,
+                ManifestGeneration(1),
+                &fixture_nodes(),
+                &fixture_relationships(),
+            )
+            .unwrap();
+        let v1_len = fs::metadata(fixture_dir().join("canonical.1.skein"))
+            .unwrap()
+            .len();
+        assert!(manifest.artifact_len < v1_len);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn reseal_manifest(encoded: &str, mut rewrite: impl FnMut(&str) -> String) -> String {
+        let body = encoded
+            .lines()
+            .filter(|line| !line.starts_with("checksum\t"))
+            .map(|line| rewrite(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        format!("{body}checksum\t{}\n", content_digest(body.as_bytes()).0)
     }
 
     fn unique_path(name: &str) -> PathBuf {
