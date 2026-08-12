@@ -15,12 +15,18 @@ use skein::{Database, DatabaseConfig, Value};
 use std::hint::black_box;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const THREADS: usize = 200;
-const MESSAGES_PER_THREAD: usize = 250;
+// Debug-assertion builds are the smoke execution CI drives through
+// `cargo test --benches`; per-transaction fsync at opt-level 0 makes the full
+// scale take the better part of an hour there. Numbers are only meaningful
+// from `cargo bench`.
+const SMOKE: bool = cfg!(debug_assertions);
+
+const THREADS: usize = if SMOKE { 20 } else { 200 };
+const MESSAGES_PER_THREAD: usize = if SMOKE { 25 } else { 250 };
 const LOAD_BATCH: usize = 500;
-const MIXED_OPS: usize = 4_000;
+const MIXED_OPS: usize = if SMOKE { 200 } else { 4_000 };
 const PAGE_LIMIT: usize = 50;
-const AGGREGATE_SAMPLES: usize = 21;
+const AGGREGATE_SAMPLES: usize = if SMOKE { 3 } else { 21 };
 const SPACES: usize = 8;
 
 const POINT_READ_PERMILLE: u64 = 700;

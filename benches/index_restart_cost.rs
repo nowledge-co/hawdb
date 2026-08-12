@@ -11,8 +11,14 @@ use skein::{Database, DatabaseConfig};
 use std::hint::black_box;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const NODE_COUNT: usize = 60_000;
-const SAMPLES: usize = 5;
+// Debug-assertion builds are the smoke execution CI drives through
+// `cargo test --benches`; building four 60k-node stores at opt-level 0 with
+// per-batch fsync dominates that job. Numbers are only meaningful from
+// `cargo bench`.
+const SMOKE: bool = cfg!(debug_assertions);
+
+const NODE_COUNT: usize = if SMOKE { 2_000 } else { 60_000 };
+const SAMPLES: usize = if SMOKE { 2 } else { 5 };
 const BATCH: usize = 500;
 const INDEXED_PROPERTIES: [&str; 4] = ["id", "space_id", "unit_type", "created_at"];
 
