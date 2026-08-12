@@ -2672,9 +2672,10 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    fn fixture_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/canonical_v1_inline_keys")
-    }
+    const V1_FIXTURE_ARTIFACT: &[u8] =
+        include_bytes!("../fixtures/canonical_v1_inline_keys/canonical.1.skein");
+    const V1_FIXTURE_MANIFEST: &str =
+        include_str!("../fixtures/canonical_v1_inline_keys/canonical.1.manifest.skein");
 
     fn fixture_nodes() -> Vec<NodeRecord> {
         vec![
@@ -2800,13 +2801,13 @@ mod tests {
 
     #[test]
     fn v1_fixture_decodes_with_inline_string_keys() {
-        let dir = fixture_dir();
-        let manifest_text = fs::read_to_string(dir.join("canonical.1.manifest.skein")).unwrap();
-        let manifest = CanonicalSegmentManifest::decode(&manifest_text).unwrap();
+        let path = unique_path("v1_fixture");
+        fs::write(&path, V1_FIXTURE_ARTIFACT).unwrap();
+        let manifest = CanonicalSegmentManifest::decode(V1_FIXTURE_MANIFEST).unwrap();
         assert_eq!(manifest.property_keys, None);
-        assert_eq!(manifest.encode().unwrap(), manifest_text);
+        assert_eq!(manifest.encode().unwrap(), V1_FIXTURE_MANIFEST);
         let reader = CanonicalSegmentReader::open(
-            dir.join("canonical.1.skein"),
+            path.clone(),
             manifest,
             Arc::new(SegmentCache::new(8 * 1024 * 1024)),
             StoreId(1),
@@ -2831,6 +2832,8 @@ mod tests {
             reader.get_relationship(RelId(3)).unwrap(),
             Some(fixture_relationships()[2].clone())
         );
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -2981,18 +2984,15 @@ mod tests {
                 &fixture_relationships(),
             )
             .unwrap();
-        let v1_len = fs::metadata(fixture_dir().join("canonical.1.skein"))
-            .unwrap()
-            .len();
-        assert!(manifest.artifact_len < v1_len);
+        assert!(manifest.artifact_len < V1_FIXTURE_ARTIFACT.len() as u64);
         std::fs::remove_file(path).unwrap();
     }
 
-    fn reseal_manifest(encoded: &str, mut rewrite: impl FnMut(&str) -> String) -> String {
+    fn reseal_manifest(encoded: &str, rewrite: impl FnMut(&str) -> String) -> String {
         let body = encoded
             .lines()
             .filter(|line| !line.starts_with("checksum\t"))
-            .map(|line| rewrite(line))
+            .map(rewrite)
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";

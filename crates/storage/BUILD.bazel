@@ -20,6 +20,7 @@ rust_library(
 rust_test(
     name = "skein_storage_tests",
     crate = ":skein_storage",
+    compile_data = glob(["fixtures/**"]),
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
