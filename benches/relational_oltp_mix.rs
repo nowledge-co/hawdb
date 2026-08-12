@@ -233,7 +233,14 @@ fn message_row(thread: usize, order: usize, note: &str) -> Vec<Value> {
         Value::String(document_key(thread)),
         Value::String(space_key(thread)),
         Value::Int(order as i64),
-        Value::String(if order % 2 == 0 { "user" } else { "assistant" }.to_string()),
+        Value::String(
+            if order.is_multiple_of(2) {
+                "user"
+            } else {
+                "assistant"
+            }
+            .to_string(),
+        ),
         Value::String(format!("{note}: {}", "message body ".repeat(12))),
         Value::Int(48),
         Value::String(format!(
@@ -269,7 +276,7 @@ fn timestamp(sequence: u64) -> String {
     format!("2026-08-12T00:00:00.{:06}Z", sequence % 1_000_000)
 }
 
-fn summarize(nanos: &mut Vec<u64>) -> serde_json::Value {
+fn summarize(nanos: &mut [u64]) -> serde_json::Value {
     if nanos.is_empty() {
         return json!({ "ops": 0 });
     }
