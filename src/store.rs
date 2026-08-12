@@ -11,6 +11,8 @@ use crate::telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink}
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
 use skein_integrity::{checksum_u64, integrity_digest, IntegrityHasher, Sha256Digest};
+#[path = "store/artifact_files.rs"]
+mod artifact_files;
 #[path = "store/cow.rs"]
 mod cow;
 #[path = "store/derived_repair.rs"]
@@ -23,6 +25,17 @@ mod read_view;
 mod source_scan;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
+use artifact_files::{
+    canonical_adjacency_artifact_generation_file, canonical_adjacency_manifest_generation_file,
+    canonical_artifact_generation_file, canonical_manifest_generation_file,
+    checkpoint_generation_file, cleanup_abandoned_checkpoint_preparations, has_storage_artifacts,
+    parse_canonical_adjacency_manifest_generation_file, parse_canonical_manifest_generation_file,
+    parse_generation_file, parse_property_projection_manifest_generation_file,
+    parse_property_spill_manifest_generation_file, property_projection_artifact_generation_file,
+    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
+    property_spill_manifest_generation_file, relational_checkpoint_generation_file,
+    storage_generation_for_file, store_id_for_path, wal_generation_file,
+};
 #[cfg(test)]
 use cow::COW_MAP_TARGET_SEGMENT_BYTES;
 use cow::{CowSegment, CowSegmentedMap};
@@ -213,159 +226,6 @@ fn wal_group_sync_failpoint() -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn checkpoint_generation_file(generation: u64) -> String {
-    format!("checkpoint.{generation}.skein")
-}
-
-fn relational_checkpoint_generation_file(generation: u64) -> String {
-    format!("{RELATIONAL_CHECKPOINT_FILE_PREFIX}.{generation}.skein")
-}
-
-fn wal_generation_file(generation: u64) -> String {
-    format!("wal.{generation}.skein")
-}
-
-fn canonical_artifact_generation_file(generation: u64) -> String {
-    format!("canonical.{generation}.skein")
-}
-
-fn canonical_manifest_generation_file(generation: u64) -> String {
-    format!("canonical.{generation}.manifest.skein")
-}
-
-fn canonical_adjacency_artifact_generation_file(generation: u64) -> String {
-    format!("adjacency.{generation}.skein")
-}
-
-fn canonical_adjacency_manifest_generation_file(generation: u64) -> String {
-    format!("adjacency.{generation}.manifest.skein")
-}
-
-fn property_spill_artifact_generation_file(generation: u64) -> String {
-    format!("properties.{generation}.skein")
-}
-
-fn property_spill_manifest_generation_file(generation: u64) -> String {
-    format!("properties.{generation}.manifest.skein")
-}
-
-fn property_projection_artifact_generation_file(generation: u64) -> String {
-    format!("property-index.{generation}.skein")
-}
-
-fn property_projection_manifest_generation_file(generation: u64) -> String {
-    format!("property-index.{generation}.manifest.skein")
-}
-
-fn parse_generation_file(name: &str, prefix: &str) -> Option<u64> {
-    name.strip_prefix(prefix)?
-        .strip_suffix(".skein")?
-        .parse()
-        .ok()
-}
-
-fn parse_canonical_manifest_generation_file(name: &str) -> Option<u64> {
-    name.strip_prefix("canonical.")?
-        .strip_suffix(".manifest.skein")?
-        .parse()
-        .ok()
-}
-
-fn parse_canonical_adjacency_manifest_generation_file(name: &str) -> Option<u64> {
-    name.strip_prefix("adjacency.")?
-        .strip_suffix(".manifest.skein")?
-        .parse()
-        .ok()
-}
-
-fn parse_property_spill_manifest_generation_file(name: &str) -> Option<u64> {
-    name.strip_prefix("properties.")?
-        .strip_suffix(".manifest.skein")?
-        .parse()
-        .ok()
-}
-
-fn parse_property_projection_manifest_generation_file(name: &str) -> Option<u64> {
-    name.strip_prefix("property-index.")?
-        .strip_suffix(".manifest.skein")?
-        .parse()
-        .ok()
-}
-
-fn storage_generation_for_file(name: &str) -> Option<u64> {
-    parse_generation_file(name, "checkpoint.")
-        .or_else(|| parse_generation_file(name, "wal."))
-        .or_else(|| parse_generation_file(name, "relational."))
-        .or_else(|| parse_generation_file(name, "canonical."))
-        .or_else(|| parse_canonical_manifest_generation_file(name))
-        .or_else(|| parse_generation_file(name, "adjacency."))
-        .or_else(|| parse_canonical_adjacency_manifest_generation_file(name))
-        .or_else(|| parse_generation_file(name, "properties."))
-        .or_else(|| parse_property_spill_manifest_generation_file(name))
-        .or_else(|| parse_generation_file(name, "property-index."))
-        .or_else(|| parse_property_projection_manifest_generation_file(name))
-}
-
-fn parse_checkpoint_staging_generation(name: &str) -> Option<u64> {
-    name.strip_prefix(".checkpoint.")?
-        .strip_suffix(".prepare")?
-        .parse()
-        .ok()
-}
-
-fn cleanup_abandoned_checkpoint_preparations(root: &Path, published_generation: u64) -> Result<()> {
-    let mut changed = false;
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if entry.file_type()?.is_dir()
-            && parse_checkpoint_staging_generation(name)
-                .is_some_and(|generation| generation > published_generation)
-        {
-            fs::remove_dir_all(entry.path())?;
-            changed = true;
-            continue;
-        }
-        if storage_generation_for_file(name)
-            .is_some_and(|generation| generation > published_generation)
-        {
-            fs::remove_file(entry.path())?;
-            changed = true;
-        }
-    }
-    if changed {
-        sync_parent_dir(&root.join(MANIFEST_FILE))?;
-    }
-    Ok(())
-}
-
-fn has_storage_artifacts(root: &Path) -> Result<bool> {
-    for entry in fs::read_dir(root)? {
-        let name = entry?.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name.ends_with(".skein") || name.ends_with(".skein.tmp") {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn store_id_for_path(root: &Path) -> Result<StoreId> {
-    let canonical = fs::canonicalize(root)?;
-    let path = canonical.to_string_lossy();
-    let lower = checksum_bytes(path.as_bytes());
-    let mut salted = Vec::with_capacity(path.len().saturating_add(16));
-    salted.extend_from_slice(b"skein-store-id\0");
-    salted.extend_from_slice(path.as_bytes());
-    let upper = checksum_bytes(&salted);
-    Ok(StoreId((u128::from(upper) << 64) | u128::from(lower)))
 }
 
 fn encode_wal_header(generation: u64, start_lsn: u64) -> String {
