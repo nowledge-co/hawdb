@@ -465,17 +465,17 @@ fn group_commit_delta(
 }
 
 fn verify_wal_order(path: &std::path::Path, final_epoch: u64) -> bool {
-    let Ok(wal) = std::fs::read_to_string(path.join("wal.0.skein")) else {
-        return false;
-    };
-    let Some((_, records)) = wal.split_once('\n') else {
-        return false;
-    };
-    let lsns = records
-        .lines()
-        .map(|line| line.split('\t').next()?.parse::<u64>().ok())
-        .collect::<Option<Vec<_>>>();
-    lsns.is_some_and(|lsns| lsns == (1..=final_epoch).collect::<Vec<_>>())
+    // Format-agnostic WAL order proof: strict recovery enforces LSN
+    // contiguity while replaying, so a clean reopen that replayed exactly
+    // `final_epoch` records from LSN 1 verifies the order for both the V1
+    // text and the binary fragment-framed WAL.
+    Database::open(path).is_ok_and(|db| {
+        let report = db.storage_recovery_report();
+        report.wal_replay_start_lsn == Some(1)
+            && report.next_lsn_after_replay == Some(final_epoch + 1)
+            && report.replayed_wal_entries as u64 == final_epoch
+            && report.torn_tail_reason.is_none()
+    })
 }
 
 fn percentile(values: &[u64], percentile: usize) -> u64 {
