@@ -21,6 +21,17 @@ over descriptive implementation notes, per `docs/specs/README.md`.
 
 ## 1. Goals and non-goals
 
+Positioning: Skein is an **embedded, TP-first HTAP engine for operational
+knowledge workloads**. The request mix it replaces (Nowledge Mem over
+Kuzu + SQLite + LanceDB) is TP-shaped — point CRUD, short read-modify-write
+graph transactions, paginated reads, bounded hybrid search — while resource
+peaks are dominated by background AP jobs (graph algorithms, reindexing,
+projection rebuilds). The contract therefore optimizes foreground
+transactional latency first, admits analytical capability through the same
+columnar representation second, and treats the unified snapshot across
+relational, graph, and search-served reads as the property that
+distinguishes one engine from three glued ones.
+
 Goals:
 
 1. Columnar canonical storage for graph and relational data with per-column
@@ -98,6 +109,12 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
 7. Adjacency MUST be stored as per-node-group CSR (forward and backward):
    offsets column plus neighbor/rel-id columns, rebuildable from canonical
    data, maintained as a projection under §6.
+8. Relational tables whose primary key is monotonically assigned (e.g.
+   append-ordered thread messages) MUST assign record ids in primary-key
+   order so node groups are primary-key-clustered: an ordered paginated
+   read is then one group-contiguous range read. Ordered scans MUST
+   terminate early once a `LIMIT` is satisfied instead of draining the
+   group.
 
 ### 3.2 Physical encodings
 
@@ -116,6 +133,9 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
 3. Point reads MUST decode only the chunks of requested columns. Full-row
    reconstruction is a projection over per-column reads, not a decode of
    the whole group.
+4. `COUNT(*)`, per-table, and per-label cardinalities MUST be answerable
+   from group metadata (record counts combined with deletion-vector
+   cardinality and memtable deltas) without reading column chunks.
 
 ### 3.3 Updates: deletion vectors and delta groups
 
@@ -186,6 +206,11 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    private spool files; a transaction MUST be able to read its own spilled
    writes. Large transactions MUST NOT expand the memory budget (§8) and
    MUST NOT block unrelated transactions.
+6. **Read-your-own-writes**: every read inside a transaction — canonical
+   scan, index seek, or projection-served access — MUST observe the
+   transaction's own uncommitted writes overlaid on its snapshot. An access
+   path that cannot overlay the private write set for a given predicate
+   MUST fall back to one that can rather than serve a stale result.
 
 ## 6. Durable projection framework
 
@@ -246,6 +271,15 @@ projections/<kind>/
    `base ∪ deltas ∪ catch-up over (cursor, current]` where catch-up is
    evaluated from the live changefeed/memtable. Served results MUST equal a
    full rebuild at the query epoch (`SkeinProjectionDurability.tla`).
+6. **Unified snapshot**: all reads issued by one query or transaction —
+   relational, graph, and projection-served (vector, lexical, index) —
+   MUST evaluate against the same snapshot `(generation, commit epoch)`.
+   In particular, hydrating search candidates against canonical records
+   MUST read the epoch the candidates were evaluated at, never a later
+   one. This is the property the replaced three-engine deployment
+   (authoritative graph + relational sidecar + rebuildable search
+   projection) cannot provide, and it MUST hold for every combination of
+   access paths the planner may choose.
 
 ### 6.4 Restart and crash semantics
 
@@ -284,7 +318,15 @@ projections/<kind>/
    candidates and statistics denominators visible to ranking, either
    exactly or within a bound restored by the next merge. The chosen bound
    MUST be stated and validated by the existing recall-validation gate.
-3. The analyzer contract is unchanged: jieba `cut_for_search` CJK analysis,
+   Lexical and vector projections MUST bound their delta-segment count so
+   query-time statistics and candidate merging stay proportional to a
+   configured segment budget, not to write history.
+3. Hybrid search execution (ANN + lexical + fusion) MUST run its branches
+   under one execution-budget admission with explicit candidate limits and
+   timeouts; predicate filters MUST push down into projection scans as id
+   bitmaps (the existing `allowed_ids` contract); and candidate hydration
+   against canonical records MUST read the unified snapshot of §6.3.6.
+4. The analyzer contract is unchanged: jieba `cut_for_search` CJK analysis,
    `analyzer_digest` (analyzer version + lexicon) is part of
    `config_digest`; changing the analyzer or lexicon triggers a full
    rebuild, never a silent mix of tokenizations.
@@ -336,19 +378,27 @@ projections/<kind>/
 1. All work admitted to the engine carries `(WorkPriority, WorkClass)`
    (existing `skein-qos` vocabulary: Foreground/Background × Query,
    Mutation, Projection, Import, Analytics, Shadow).
-2. Background maintenance (compaction, projection build/merge, rebuild)
-   MUST run under the maintenance budget and `RuntimeGovernor` admission;
-   it MUST yield to foreground work and MUST be throttleable to a floor
-   that still guarantees eventual convergence (delta groups and projection
-   lag both bounded).
-3. Foreground tail-latency protection: admission MUST bound concurrent
+2. Background work — compaction, projection build/merge/rebuild, and
+   analytical jobs (graph-algorithm projections such as PageRank, Louvain,
+   and community refresh; reindexing; backfill; reconciliation) — MUST run
+   under the maintenance budget and `RuntimeGovernor` admission; it MUST
+   yield to foreground work, MUST be pausable and preemptible at morsel or
+   group boundaries, and MUST be throttleable to a floor that still
+   guarantees eventual convergence (delta groups and projection lag both
+   bounded).
+3. Background scans MUST NOT displace the foreground working set: chunk
+   cache admission is tagged with the requester's `WorkPriority`, and
+   background reads either bypass promotion or are confined to a bounded
+   cache partition. A full-graph analytics scan running behind foreground
+   traffic MUST leave foreground point-read hit rates intact.
+4. Foreground tail-latency protection: admission MUST bound concurrent
    foreground work by the execution budget; deferred work is queued or
    rejected with an explicit `RuntimeAdmissionCode`, never silently
    degraded.
-4. The QoS surface MUST expose, per component: budget, occupancy, pressure
+5. The QoS surface MUST expose, per component: budget, occupancy, pressure
    step, projection lag (epochs behind), and delta-group debt, so that the
    degradation ladder of §8.3 is externally observable.
-5. Starvation bounds: a continuously loaded system MUST still advance
+6. Starvation bounds: a continuously loaded system MUST still advance
    checkpoints and projection cursors (no unbounded write-amplification
    debt); conversely maintenance MUST NOT push foreground p99 beyond the
    gates in §10.
@@ -367,6 +417,7 @@ block the phase, per `PRODUCTION_READINESS_SPEC.md` discipline.
 | Search restart | `search_generation`, `search_checkpoint` | projection mount + catch-up replaces full rebuild; restart cost ∝ crash window |
 | Incremental projection | new `projection_incremental` bench | delta build cost ∝ change volume; query results identical to full rebuild (recall-validation gate) |
 | OLTP mix (SQLite parity) | new `relational_oltp_mix` bench (YCSB-style point read/write/scan mix) | point read/write p99 not worse than current relational row storage; scan/aggregate strictly better |
+| TP under background AP | `relational_oltp_mix` re-run with a concurrent background graph-analytics job (full-graph scan class) | foreground point read/write p99 within 2× of the quiet baseline; foreground cache hit rate intact (§9.3); background job still converges |
 | Write amplification | new measurement in checkpoint report | checkpoint bytes ∝ change volume; steady-state space amplification ≤ current |
 | Group commit | `wal_group_commit` | unchanged |
 | Memory envelope | 512 MiB-class out-of-core run | RSS within budget; pressure ladder steps observable; no OOM |
