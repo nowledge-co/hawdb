@@ -178,7 +178,7 @@ impl ColumnGroupArtifactDescriptor {
     }
 
     pub const fn visible_count(&self) -> u32 {
-        self.row_count - self.deleted_count
+        self.row_count.saturating_sub(self.deleted_count)
     }
 
     pub const fn min_id(&self) -> u64 {
@@ -365,6 +365,7 @@ impl ColumnGroupTableDirectory {
             group.validate_artifacts(root)?;
         }
         let _lease = PublicationLease::acquire(root)?;
+        remove_orphaned_candidates(root);
         let file_name = self.file_name();
         let path = root.join(&file_name);
         let bytes = encode_envelope(TABLE_DIRECTORY_MAGIC, &self.encode_body()?)?;
@@ -635,13 +636,21 @@ impl ColumnGroupManifest {
     /// Publishes this candidate while holding the cooperative filesystem
     /// publish lease. Its embedded parent generation is the compare-and-swap
     /// token; a stale candidate fails before replacing the active manifest.
+    ///
+    /// Artifact validation here is proportional to the change volume: only
+    /// tables whose directory generation equals the candidate generation open
+    /// their group and deletion-vector artifacts. `validate_transition`
+    /// proves untouched tables are byte-identical references to the parent's
+    /// directories, which were validated at their own publication and remain
+    /// SHA-256-bound. Reopen (`open`) stays the full fail-closed boundary.
     pub fn publish(&self, root: &Path) -> Result<PublishedColumnGroupCatalog, ColumnGroupError> {
         self.validate()?;
         fs::create_dir_all(root)?;
         let _lease = PublicationLease::acquire(root)?;
+        remove_orphaned_candidates(root);
         let current = Self::load_active_manifest(root)?;
         if current.as_ref() == Some(self) {
-            let directories = self.load_directories(root)?;
+            let directories = self.load_directories(root, ArtifactValidation::ChangedTables)?;
             return Ok(PublishedColumnGroupCatalog {
                 manifest: self.clone(),
                 directories,
@@ -655,7 +664,7 @@ impl ColumnGroupManifest {
             });
         }
         self.validate_transition(current.as_ref())?;
-        let directories = self.load_directories(root)?;
+        let directories = self.load_directories(root, ArtifactValidation::ChangedTables)?;
         let bytes = encode_envelope(MANIFEST_MAGIC, &self.encode_body()?)?;
         publish_bytes(&root.join(COLUMN_GROUP_MANIFEST_FILE), &bytes)?;
         Ok(PublishedColumnGroupCatalog {
@@ -668,7 +677,7 @@ impl ColumnGroupManifest {
         let Some(manifest) = Self::load_active_manifest(root)? else {
             return Ok(None);
         };
-        let directories = manifest.load_directories(root)?;
+        let directories = manifest.load_directories(root, ArtifactValidation::AllTables)?;
         Ok(Some(PublishedColumnGroupCatalog {
             manifest,
             directories,
@@ -744,9 +753,14 @@ impl ColumnGroupManifest {
         Ok(())
     }
 
+    /// Loads and identity-checks every referenced table directory. Directory
+    /// file identity (byte length plus SHA-256 of the directory bytes) is
+    /// always verified for all tables; `validation` selects which tables'
+    /// referenced group and deletion-vector artifacts are also opened.
     fn load_directories(
         &self,
         root: &Path,
+        validation: ArtifactValidation,
     ) -> Result<Vec<ColumnGroupTableDirectory>, ColumnGroupError> {
         let mut directories = Vec::with_capacity(self.tables.len());
         let mut artifact_files = BTreeSet::new();
@@ -770,6 +784,12 @@ impl ColumnGroupManifest {
                     reference.file_name
                 )));
             }
+            let validate_artifacts = match validation {
+                ArtifactValidation::AllTables => true,
+                ArtifactValidation::ChangedTables => {
+                    reference.directory_generation == self.generation
+                }
+            };
             for group in &directory.groups {
                 if !artifact_files.insert(group.group_file.clone())
                     || group
@@ -782,7 +802,9 @@ impl ColumnGroupManifest {
                         reference.file_name
                     )));
                 }
-                group.validate_artifacts(root)?;
+                if validate_artifacts {
+                    group.validate_artifacts(root)?;
+                }
             }
             directories.push(directory);
         }
@@ -893,6 +915,20 @@ impl ColumnGroupManifest {
     }
 }
 
+/// Selects which tables' referenced artifacts (group files and deletion
+/// vectors) are opened and cross-checked while loading table directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactValidation {
+    /// Validate every table's artifacts. Reopen is the fail-closed boundary
+    /// and pays footer-proportional cost for the whole catalog.
+    AllTables,
+    /// Validate only tables published at the candidate manifest generation.
+    /// Untouched tables are byte-identical references to already-validated,
+    /// SHA-256-bound parent directories, so publish cost stays proportional
+    /// to the change volume.
+    ChangedTables,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedColumnGroupCatalog {
     manifest: ColumnGroupManifest,
@@ -963,6 +999,27 @@ impl PublicationLease {
 impl Drop for PublicationLease {
     fn drop(&mut self) {
         let _ = self.0.unlock();
+    }
+}
+
+/// Removes candidate files orphaned by a crash between candidate creation and
+/// the atomic rename. Callers MUST hold the publication lease: candidates are
+/// only ever written under it, so any candidate visible here is garbage from
+/// a dead publisher, never another publisher's in-flight file. Per-file
+/// removal errors are ignored so a transient sharing violation (for example
+/// on Windows) cannot fail an otherwise valid publication.
+fn remove_orphaned_candidates(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.starts_with('.') && name.ends_with(".candidate") {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -1102,12 +1159,20 @@ fn bounded_file_len(path: &Path, maximum: u64, what: &str) -> Result<u64, Column
 }
 
 fn read_bounded(path: &Path, maximum: u64, what: &str) -> Result<Vec<u8>, ColumnGroupError> {
-    let length = bounded_file_len(path, maximum, what)?;
+    // Open first and stat the descriptor: length and bytes then come from the
+    // same inode, so a concurrent atomic rename over `path` (a publish racing
+    // this reader) can never make the length check fail spuriously.
+    let file = File::open(path)?;
+    let length = file.metadata()?.len();
+    if length > maximum {
+        return Err(corrupt(format!(
+            "{what} holds {length} bytes, exceeding {maximum}"
+        )));
+    }
     let capacity = usize::try_from(length)
         .map_err(|_| corrupt(format!("{what} length exceeds addressable memory")))?;
     let mut bytes = Vec::with_capacity(capacity);
-    File::open(path)?
-        .take(maximum.saturating_add(1))
+    file.take(maximum.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 != length {
         return Err(corrupt(format!("{what} changed while it was being read")));
@@ -1135,6 +1200,7 @@ mod tests {
     use crate::column_group::group::ColumnGroupWriter;
     use crate::column_group::DeletionVectorBinding;
     use skein_core::{PropertyId, Value};
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1404,6 +1470,210 @@ mod tests {
             Err(ColumnGroupError::Unsupported(_))
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decode_rejects_file_names_with_path_separators_despite_valid_checksum() {
+        for file_name in ["../escape", "a/b", "a\\b"] {
+            let bytes = encode_envelope(
+                TABLE_DIRECTORY_MAGIC,
+                &directory_body_with_group_file_name(file_name),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    ColumnGroupTableDirectory::decode(&bytes),
+                    Err(ColumnGroupError::Unsupported(_))
+                ),
+                "file name {file_name:?} must be rejected by the basename whitelist"
+            );
+        }
+    }
+
+    /// Encodes a syntactically well-formed table-directory body whose single
+    /// group references `file_name`, bypassing the encoder's own validation.
+    fn directory_body_with_group_file_name(file_name: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend(FORMAT_VERSION.to_le_bytes());
+        body.push(ColumnGroupTableKind::Node as u8);
+        body.extend([0; 3]);
+        body.extend(1u64.to_le_bytes()); // table id
+        body.extend(1u64.to_le_bytes()); // publication generation
+        body.extend(1u32.to_le_bytes()); // group count
+        body.extend(0u32.to_le_bytes()); // reserved
+        body.extend(1u64.to_le_bytes()); // group id
+        body.extend(1u64.to_le_bytes()); // group generation
+        body.extend(0u32.to_le_bytes()); // row count
+        body.extend(0u32.to_le_bytes()); // deleted count
+        body.extend(0u64.to_le_bytes()); // min id
+        body.extend(0u64.to_le_bytes()); // max id
+        body.extend(64u64.to_le_bytes()); // group byte length
+        body.extend([0u8; SHA256_BYTES]); // group SHA-256
+        body.extend((file_name.len() as u32).to_le_bytes());
+        body.extend(file_name.as_bytes());
+        body.push(0); // no deletion vector
+        body.extend([0; 7]);
+        body
+    }
+
+    #[test]
+    fn publication_sweeps_orphaned_candidate_files_under_the_lease() {
+        let root = unique_dir("orphan-sweep");
+        fs::create_dir_all(&root).unwrap();
+        let write_orphan = |name: &str| {
+            let path = root.join(name);
+            fs::write(&path, b"torn candidate").unwrap();
+            path
+        };
+        let before_directory = write_orphan(".table-stale.skein.999-0.candidate");
+        let directory = table_with_group(&root, ColumnGroupTableKind::Node, 1, 1, 1, None);
+        let reference = directory.write_immutable(&root).unwrap();
+        assert!(
+            !before_directory.exists(),
+            "write_immutable must sweep orphaned candidates"
+        );
+
+        let before_publish = write_orphan(&format!(
+            ".{COLUMN_GROUP_MANIFEST_FILE}.{}-99999.candidate",
+            std::process::id()
+        ));
+        let kept = root.join("candidate.notes"); // no leading dot, wrong suffix
+        fs::write(&kept, b"unrelated").unwrap();
+        ColumnGroupManifest::new(ManifestGeneration(1), None, 1, vec![reference])
+            .unwrap()
+            .publish(&root)
+            .unwrap();
+        assert!(
+            !before_publish.exists(),
+            "publish must sweep orphaned candidates"
+        );
+        assert!(kept.exists(), "non-candidate files must be left alone");
+        assert!(ColumnGroupManifest::open(&root).unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publish_skips_unchanged_tables_artifacts_while_reopen_fails_closed() {
+        let root = unique_dir("unchanged-artifact-skip");
+        fs::create_dir_all(&root).unwrap();
+        let node = table_with_group(&root, ColumnGroupTableKind::Node, 1, 1, 1, None);
+        let relational = table_with_group(&root, ColumnGroupTableKind::Relational, 2, 1, 20, None);
+        let relational_group_file = relational.groups()[0].group_file().to_string();
+        let node_ref = node.write_immutable(&root).unwrap();
+        let relational_ref = relational.write_immutable(&root).unwrap();
+        ColumnGroupManifest::new(
+            ManifestGeneration(1),
+            None,
+            1,
+            vec![node_ref, relational_ref.clone()],
+        )
+        .unwrap()
+        .publish(&root)
+        .unwrap();
+
+        // Corrupt the unchanged relational table's group artifact footer in
+        // place (same length, broken footer magic). If publish opened the
+        // unchanged table's artifacts, it would fail closed here.
+        let path = root.join(relational_group_file);
+        let mut bytes = fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x40;
+        fs::write(path, bytes).unwrap();
+
+        let node_v2 = table_with_group(&root, ColumnGroupTableKind::Node, 1, 2, 2, None);
+        let node_v2_ref = node_v2.write_immutable(&root).unwrap();
+        ColumnGroupManifest::new(
+            ManifestGeneration(2),
+            Some(ManifestGeneration(1)),
+            2,
+            vec![node_v2_ref, relational_ref],
+        )
+        .unwrap()
+        .publish(&root)
+        .expect("publish changing only the node table must not open unchanged artifacts");
+
+        assert!(
+            matches!(
+                ColumnGroupManifest::open(&root),
+                Err(ColumnGroupError::Corrupt(_))
+            ),
+            "reopen must keep validating every table's artifacts"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_reopen_always_observes_a_complete_published_catalog() {
+        const LAST_GENERATION: u64 = 50;
+        let root = Arc::new(unique_dir("publish-reopen-race"));
+        fs::create_dir_all(root.as_ref()).unwrap();
+        let directory = table_with_group(root.as_ref(), ColumnGroupTableKind::Node, 1, 1, 1, None);
+        let reference = directory.write_immutable(root.as_ref()).unwrap();
+        ColumnGroupManifest::new(ManifestGeneration(1), None, 1, vec![reference])
+            .unwrap()
+            .publish(root.as_ref())
+            .unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let root = Arc::clone(&root);
+            let done = Arc::clone(&done);
+            thread::spawn(move || {
+                let mut observed = 0u64;
+                while !done.load(Ordering::Acquire) {
+                    let catalog = ColumnGroupManifest::open(root.as_ref())
+                        .expect("concurrent reopen must never fail")
+                        .expect("a manifest is always published");
+                    let generation = catalog.manifest().generation().0;
+                    assert!(
+                        (1..=LAST_GENERATION).contains(&generation),
+                        "observed unpublished generation {generation}"
+                    );
+                    assert_eq!(
+                        catalog.directories().len(),
+                        catalog.manifest().tables().len(),
+                        "catalog must be complete"
+                    );
+                    for (directory, reference) in catalog
+                        .directories()
+                        .iter()
+                        .zip(catalog.manifest().tables())
+                    {
+                        assert_eq!(directory.table(), reference.table());
+                        assert_eq!(
+                            directory.publication_generation(),
+                            reference.directory_generation()
+                        );
+                    }
+                    observed += 1;
+                }
+                observed
+            })
+        };
+        for generation in 2..=LAST_GENERATION {
+            let directory = table_with_group(
+                root.as_ref(),
+                ColumnGroupTableKind::Node,
+                1,
+                generation,
+                generation,
+                None,
+            );
+            let reference = directory.write_immutable(root.as_ref()).unwrap();
+            ColumnGroupManifest::new(
+                ManifestGeneration(generation),
+                Some(ManifestGeneration(generation - 1)),
+                generation,
+                vec![reference],
+            )
+            .unwrap()
+            .publish(root.as_ref())
+            .unwrap();
+        }
+        done.store(true, Ordering::Release);
+        let observed = reader.join().unwrap();
+        assert!(observed > 0, "the reader must have reopened at least once");
+        fs::remove_dir_all(root.as_ref()).unwrap();
     }
 
     fn table_with_group(

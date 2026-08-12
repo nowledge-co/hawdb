@@ -267,7 +267,16 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    checksummed footers. Full group/DV SHA-256 verification belongs to an
    explicit scrub/doctor operation. Corrupt published metadata or a referenced
    artifact mismatch fails closed; it MUST NOT fall back to directory discovery.
-7. The atomic selection and stale-publisher obligations are modeled by
+7. Publish-time artifact validation MUST cover only changed tables: a
+   candidate opens group/DV artifacts solely for tables whose directory
+   generation equals the candidate manifest generation, so publication cost
+   is proportional to the change volume. Directory-file identity (byte
+   length and SHA-256 of the directory bytes) MUST still be verified for
+   every referenced table; untouched tables are byte-identical references to
+   parent directories already validated at their own publication. Reopen
+   remains the full fail-closed boundary and MUST validate every table's
+   artifacts per clause 6.
+8. The atomic selection and stale-publisher obligations are modeled by
    `SkeinColumnGroupManifest.tla`. The Rust refinement boundary is
    `ColumnGroupTableDirectory::write_immutable`,
    `ColumnGroupManifest::{publish, open}`, and
