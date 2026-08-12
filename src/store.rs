@@ -296,10 +296,28 @@ pub(crate) fn rewrite_wal_as_v1_text(path: &Path) -> Result<()> {
             }
         }
     }
-    // Windows denies truncating a file that still has an open handle, and the
-    // cursor holds one on this exact path.
+    // Windows denies truncating a file that still has an open handle: the
+    // cursor holds one on this exact path, and on CI runners a virus scanner
+    // briefly holds newly written files open without write sharing. Drop our
+    // own handle, then retry the transient sharing violations bounded-ly.
     drop(cursor);
-    fs::write(path, text)?;
+    let mut attempt = 0u32;
+    loop {
+        match fs::write(path, &text) {
+            Err(error)
+                if attempt < 200
+                    && cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            result => {
+                result?;
+                break;
+            }
+        }
+    }
     File::open(path)?.sync_all()?;
     Ok(())
 }
