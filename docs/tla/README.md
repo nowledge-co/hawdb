@@ -15,8 +15,9 @@ a Java 11 or newer runtime. Without `TLA2TOOLS_JAR`, the script downloads TLA+
 Tools 1.7.4 and verifies its SHA-256 digest before execution.
 
 Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain a release artifact.
-The artifact contains the exact ten `.tla` and `.cfg` inputs, one complete TLC
-log per model, the Java version, and a revision- and tool-bound manifest. CI
+The artifact contains the exact `.tla` and `.cfg` inputs for every model in
+the checked set, one complete TLC log per model, the Java version, and a
+revision- and tool-bound manifest. CI
 validates the downloaded artifact with:
 
 ```bash
@@ -100,6 +101,72 @@ and the current and immediately previous generations remain after reclamation.
 Reader actions map to `Database::begin_read_transaction` and `ReaderPin::drop`.
 Publication and reclamation map to `DurableStore::publish_checkpoint_manifest`
 and `DurableStore::reclaim_old_generations`.
+
+## Durable Projection Cursor and Catch-up
+
+`SkeinProjectionDurability.tla` models the durable projection framework of
+[`../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md`](../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md)
+§6. A projection's only durable incremental progress state is the cursor
+inside its manifest; a delta artifact becomes durable before the manifest
+replace that both registers it and advances the cursor, so a crash at any
+point leaves the previous manifest intact and incremental builds are
+idempotent from the persisted cursor. Query-time catch-up over
+`(cursor, currentEpoch]` is derived from WAL replay, so serving as Ready is
+sound only while the cursor sits at or above the WAL replay floor.
+Reclamation may pass the cursor of a projection lagging beyond the staleness
+bound, and doing so forces the projection out of Ready until a full rebuild
+publishes a current manifest.
+
+The model checks that the cursor and replay floor never pass the canonical
+epoch, that a Ready projection can always derive its catch-up window
+(serve-soundness: served state equals a full rebuild at the current epoch),
+that an in-flight delta covers exactly `(cursor, target]` with no coverage
+gap, that a projection below the floor is never served as Ready, and that
+the cursor only ever references durable artifact coverage.
+
+Mutation testing sizes the instance (`MaxEpoch = 4`, `StaleLimit = 2`, 679
+distinct states): keeping the projection Ready when reclamation passes its
+cursor reports `ReadyImpliesCatchUpCoverage`, publishing a manifest without
+first making the delta artifact durable reports `CursorIsAlwaysDurable`, and
+recovery that ignores the replay floor reports
+`ReadyImpliesCatchUpCoverage`. The generation-diff catch-up fallback of
+§6.4 is deliberately not modeled; the model treats a below-floor cursor as
+requiring rebuild, which over-approximates the implementation conservatively.
+
+## Layered Columnar Visibility and Compaction Identity
+
+`SkeinCompactionVisibility.tla` models the layered read path of
+[`../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md`](../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md)
+§3.3: base groups filtered by generation-scoped deletion vectors, delta
+groups, and the WAL-backed memtable. Flush publishes a new generation by
+marking superseded base rows in the deletion vector and appending delta
+rows without rewriting base bytes; compaction publishes a merged
+representation that must not change the visible state; readers pin one
+immutable generation under the coarse reclamation policy of
+`SkeinGenerationReclamation.tla`.
+
+Records carry per-key version numbers and the scan is modeled as the set of
+emitted versions per key. That choice is what gives the deletion vector's
+obligation teeth: under a key-presence abstraction, a flush that appends a
+superseding delta row but fails to mask the stale base row is
+indistinguishable from a correct merge, because both collapse to "present".
+
+The model checks that the layered read overlaid with the memtable emits
+exactly the committed logical state (one current version per live key,
+never a stale duplicate) across every interleaving of commits, flush,
+compaction, crash, and reclamation; that a pinned reader observes its
+recorded durable view for the lifetime of the pin; that pinned and current
+generations remain available; that a scan emits at most one version per
+key; and that deletion vectors only mark rows that exist in the base
+column.
+
+Mutation testing sizes the instance (two keys, two readers,
+`MaxVersion = 2`, `MaxGeneration = 3`, about 176k distinct states): a flush
+that marks deletion-vector entries only for deletes but not for
+superseding puts reports `LayeredReadEqualsLogicalState`, a compaction that
+drops delta rows reports `LayeredReadEqualsLogicalState`, and a flush that
+rewrites the published current generation in place instead of publishing
+the next one reports `PinnedViewIsImmutable`.
 
 ## Implementation Refinement Evidence
 

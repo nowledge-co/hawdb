@@ -6,8 +6,12 @@ This specification defines the storage-neutral columnar batch contract, the
 initial vectorized read fragment, morsel resource admission, deterministic
 execution, fallback behavior, and performance evidence.
 
-The canonical graph remains row-oriented storage. Columnar data is an executor
-projection and MUST NOT become a second durable representation.
+The durable canonical representation is governed by
+[`COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md`](COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md):
+canonical storage is columnar, and executor columnar batches become zero-copy
+views over canonical column chunks as its phases land. Until a phase lands,
+the executor projection remains storage-neutral and MUST NOT introduce an
+additional durable representation beyond the canonical one.
 
 ## Columnar Batch Contract
 
