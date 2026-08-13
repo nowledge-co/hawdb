@@ -259,6 +259,10 @@ parent behind an all-dirty rebuild, and discards a corrupt shadow (the
 projected-graph policy) instead of failing the open. A shadow build or
 publication failure after the canonical manifest replaced returns success
 from the checkpoint call and preserves the dirty state for the retry.
+After a successful publish, a bounded best-effort sweep reclaims artifact
+files outside the active manifest's reference closure; partial removal
+models recorded-and-retried failures, and a crash between publish and
+sweep leaves only unreferenced garbage for the next sweep.
 
 The model checks that recovery never fails because of shadow state, that a
 mounted catalog always binds an intact published shadow at its own epoch,
@@ -267,16 +271,29 @@ all-dirty flag or full dirty coverage, that a checkpoint whose shadow
 published leaves the shadow exactly at the canonical epoch, that the
 shadow manifest never leads the canonical epoch and always has dictionary
 coverage, that the checkpoint result tracks canonical publication only,
-and that a reader only ever pins published canonical epochs.
+that a reader only ever pins published canonical epochs, and that a sweep
+never removes a file the active shadow manifest references
+(`ActiveClosureRetained` — the shadow has no reader pins, so the closure
+is the only retention obligation).
 
-Mutation testing sizes the instance (`MaxEpoch = 3`, 1,185 distinct
+Resource admission stays out of this model deliberately: nested admission
+is absent structurally — the shadow builder receives a pre-admitted
+`ColumnarShadowAdmission` context by value and holds no governor handle —
+and the constrained-governor convergence test
+(`pre_admitted_shadow_converges_under_a_constrained_governor`) proves it;
+admission semantics are modeled separately by `SkeinRuntimeAdmission.tla`
+(landing via another PR).
+
+Mutation testing sizes the instance (`MaxEpoch = 3`, 3,657 distinct
 states): a recovery that mounts a corrupt shadow as current reports
 `NoStaleShadowMount`, a shadow failure that fails the checkpoint call
 although the canonical manifest replaced reports
 `CheckpointResultTracksCanonicalOnly`, a recovery that skips the all-dirty
-rebuild after an epoch gap reports `StaleShadowGapIsCovered`, and a
-recovery that fails closed on a corrupt shadow reports
-`CanonicalRecoveryIndependentOfShadow`.
+rebuild after an epoch gap reports `StaleShadowGapIsCovered`, a recovery
+that fails closed on a corrupt shadow reports
+`CanonicalRecoveryIndependentOfShadow`, and a sweep that retains only the
+current generation's files instead of the reference closure reports
+`ActiveClosureRetained`.
 
 ## Implementation Refinement Evidence
 

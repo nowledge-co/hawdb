@@ -1,5 +1,5 @@
 ---------------- MODULE SkeinColumnarShadowIntegration ----------------
-EXTENDS Integers, Naturals
+EXTENDS Integers, Naturals, FiniteSets
 
 (***************************************************************************)
 (* Columnar shadow adoption phase (spec §3.7). A checkpoint is a           *)
@@ -11,7 +11,10 @@ EXTENDS Integers, Naturals
 (* checkpoint's result reflects canonical publication only — a shadow      *)
 (* build or publication failure reports through the shadow report with     *)
 (* dirty state preserved, and a later successful checkpoint converges the  *)
-(* shadow onto the canonical epoch.                                        *)
+(* shadow onto the canonical epoch. After a successful publish, a bounded  *)
+(* best-effort sweep reclaims artifacts outside the active manifest's      *)
+(* reference closure; the shadow has no reader pins, so the closure is the *)
+(* only retention obligation (ActiveClosureRetained).                      *)
 (*                                                                         *)
 (* Epochs abstract commit epochs: memEpoch is the committed in-memory      *)
 (* epoch (WAL-durable under SyncOnEveryWrite, so recovery restores it),    *)
@@ -20,6 +23,14 @@ EXTENDS Integers, Naturals
 (* abstracts the dirty-table tracker: TRUE iff the in-memory dirty state   *)
 (* covers every mutation since the mounted shadow epoch. Corruption is a   *)
 (* byte flip at rest, discovered only by validation at the next reopen.    *)
+(*                                                                         *)
+(* Artifact files are abstracted by the epoch that wrote them:             *)
+(* shadowFiles is the set of epochs with artifact bytes on disk, and       *)
+(* activeClosure the set of epochs the active shadow manifest references   *)
+(* (reused untouched tables keep referencing older epochs). The            *)
+(* fine-grained artifacts-before-manifest durability ordering belongs to   *)
+(* SkeinColumnGroupManifest.tla; here publication selects files and        *)
+(* closure in one step so the sweep obligation stays the focus.            *)
 (***************************************************************************)
 
 CONSTANT MaxEpoch
@@ -47,7 +58,9 @@ VARIABLES
     lastResult,
     lastCanonicalPublished,
     lastShadowPublished,
-    readerEpoch
+    readerEpoch,
+    shadowFiles,
+    activeClosure
 
 vars == <<
     memEpoch,
@@ -64,7 +77,9 @@ vars == <<
     lastResult,
     lastCanonicalPublished,
     lastShadowPublished,
-    readerEpoch
+    readerEpoch,
+    shadowFiles,
+    activeClosure
 >>
 
 Max(left, right) == IF left >= right THEN left ELSE right
@@ -85,6 +100,8 @@ Init ==
     /\ lastCanonicalPublished = FALSE
     /\ lastShadowPublished = FALSE
     /\ readerEpoch = -1
+    /\ shadowFiles = {}
+    /\ activeClosure = {}
 
 (***************************************************************************)
 (* A committed mutation. The dirty-table tracker marks its shadow tables   *)
@@ -98,7 +115,8 @@ Mutate ==
     /\ UNCHANGED <<
         canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch, phase,
         mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        lastResult, lastCanonicalPublished, lastShadowPublished, readerEpoch
+        lastResult, lastCanonicalPublished, lastShadowPublished, readerEpoch,
+        shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -116,7 +134,8 @@ PublishCanonicalManifest ==
     /\ lastShadowPublished' = FALSE
     /\ UNCHANGED <<
         memEpoch, shadowEpoch, shadowIntact, dictEpoch, mountedEpoch,
-        allDirty, dirtyCovers, crashed, recoveryFailed, readerEpoch
+        allDirty, dirtyCovers, crashed, recoveryFailed, readerEpoch,
+        shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -132,7 +151,7 @@ CanonicalPublishFailure ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        readerEpoch
+        readerEpoch, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -148,13 +167,17 @@ PublishShadowDictionary ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, mountedEpoch,
         allDirty, dirtyCovers, crashed, recoveryFailed, lastResult,
-        lastCanonicalPublished, lastShadowPublished, readerEpoch
+        lastCanonicalPublished, lastShadowPublished, readerEpoch,
+        shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
 (* Phase 3: the shadow manifest atomically replaces, selecting a complete  *)
 (* catalog whose source epoch is the just-published canonical epoch. The   *)
-(* dictionary must already cover it.                                       *)
+(* dictionary must already cover it. This epoch's artifact files become    *)
+(* part of the on-disk set, and the new reference closure keeps this       *)
+(* epoch plus any subset of the previous closure (reused untouched         *)
+(* tables keep referencing older epochs' files).                           *)
 (***************************************************************************)
 PublishShadowManifest ==
     /\ ~crashed
@@ -163,6 +186,9 @@ PublishShadowManifest ==
     /\ shadowEpoch' = canonicalEpoch
     /\ shadowIntact' = TRUE
     /\ phase' = "shadow"
+    /\ shadowFiles' = shadowFiles \cup {canonicalEpoch}
+    /\ \E reused \in SUBSET activeClosure:
+        activeClosure' = reused \cup {canonicalEpoch}
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, dictEpoch, mountedEpoch, allDirty,
         dirtyCovers, crashed, recoveryFailed, lastResult,
@@ -184,12 +210,34 @@ UpdateMountedCatalog ==
     /\ lastShadowPublished' = TRUE
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
-        crashed, recoveryFailed, lastCanonicalPublished, readerEpoch
+        crashed, recoveryFailed, lastCanonicalPublished, readerEpoch,
+        shadowFiles, activeClosure
+        >>
+
+(***************************************************************************)
+(* The post-publish reclamation sweep: best-effort removal of artifact     *)
+(* files outside the active manifest's reference closure. Partial removal  *)
+(* models recorded-and-retried failures; the sweep may also run again at   *)
+(* a later publish, which is why it is enabled whenever the process runs.  *)
+(* It MUST retain the complete active closure — the shadow has no reader   *)
+(* pins, so the closure is the only retention obligation.                  *)
+(***************************************************************************)
+SweepShadowArtifacts ==
+    /\ ~crashed
+    /\ shadowEpoch # -1
+    /\ \E kept \in SUBSET shadowFiles:
+        /\ activeClosure \subseteq kept
+        /\ shadowFiles' = kept
+    /\ UNCHANGED <<
+        memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
+        phase, mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
+        lastResult, lastCanonicalPublished, lastShadowPublished, readerEpoch,
+        activeClosure
         >>
 
 (***************************************************************************)
 (* The shadow build or publication fails after the canonical manifest      *)
-(* replaced (spec §3.7.5). The checkpoint call still returns success —     *)
+(* replaced (spec §3.7). The checkpoint call still returns success —       *)
 (* canonical publication is what its result reflects — and the dirty       *)
 (* state is preserved untouched for the retry.                             *)
 (***************************************************************************)
@@ -202,13 +250,15 @@ ShadowBuildFailure ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        lastCanonicalPublished, readerEpoch
+        lastCanonicalPublished, readerEpoch, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
 (* A crash at any boundary. Volatile state (the in-memory catalog, dirty   *)
 (* tracker, reader pin, in-flight checkpoint) is lost; durable state       *)
-(* survives. memEpoch survives because every mutation is WAL-durable.      *)
+(* survives — including any artifact garbage a crash between publish and   *)
+(* sweep left behind, which the next sweep removes. memEpoch survives      *)
+(* because every mutation is WAL-durable.                                  *)
 (***************************************************************************)
 Crash ==
     /\ ~crashed
@@ -223,7 +273,7 @@ Crash ==
     /\ lastShadowPublished' = FALSE
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
-        recoveryFailed
+        recoveryFailed, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -238,7 +288,8 @@ CorruptShadowAtRest ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, dictEpoch, phase,
         mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        lastResult, lastCanonicalPublished, lastShadowPublished, readerEpoch
+        lastResult, lastCanonicalPublished, lastShadowPublished, readerEpoch,
+        shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -256,14 +307,16 @@ RecoverWithoutShadow ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, lastResult, lastCanonicalPublished, lastShadowPublished,
-        readerEpoch
+        readerEpoch, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
 (* Recovery, corrupt shadow: the shadow is rebuildable derived state, so   *)
 (* validation failure discards it (the projected-graph policy of           *)
-(* STORAGE.md recovery step 10) instead of failing the open. The next      *)
-(* checkpoint rebuilds every table from a fresh sequence.                  *)
+(* STORAGE.md recovery step 10) instead of failing the open. The whole     *)
+(* shadow directory is removed, so the artifact set and closure go with    *)
+(* it, and the next checkpoint rebuilds every table from a fresh           *)
+(* sequence.                                                               *)
 (***************************************************************************)
 RecoverDiscardsCorruptShadow ==
     /\ crashed
@@ -277,6 +330,8 @@ RecoverDiscardsCorruptShadow ==
     /\ mountedEpoch' = -1
     /\ allDirty' = TRUE
     /\ dirtyCovers' = FALSE
+    /\ shadowFiles' = {}
+    /\ activeClosure' = {}
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, phase, lastResult, lastCanonicalPublished,
         lastShadowPublished, readerEpoch
@@ -300,7 +355,7 @@ RecoverMountsMatchingShadow ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, lastResult, lastCanonicalPublished, lastShadowPublished,
-        readerEpoch
+        readerEpoch, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -322,7 +377,7 @@ RecoverKeepsStaleShadowAllDirty ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, lastResult, lastCanonicalPublished, lastShadowPublished,
-        readerEpoch
+        readerEpoch, shadowFiles, activeClosure
         >>
 
 (***************************************************************************)
@@ -336,7 +391,8 @@ BeginRead ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        lastResult, lastCanonicalPublished, lastShadowPublished
+        lastResult, lastCanonicalPublished, lastShadowPublished,
+        shadowFiles, activeClosure
         >>
 
 EndRead ==
@@ -345,7 +401,8 @@ EndRead ==
     /\ UNCHANGED <<
         memEpoch, canonicalEpoch, shadowEpoch, shadowIntact, dictEpoch,
         phase, mountedEpoch, allDirty, dirtyCovers, crashed, recoveryFailed,
-        lastResult, lastCanonicalPublished, lastShadowPublished
+        lastResult, lastCanonicalPublished, lastShadowPublished,
+        shadowFiles, activeClosure
         >>
 
 Next ==
@@ -355,6 +412,7 @@ Next ==
     \/ PublishShadowDictionary
     \/ PublishShadowManifest
     \/ UpdateMountedCatalog
+    \/ SweepShadowArtifacts
     \/ ShadowBuildFailure
     \/ Crash
     \/ CorruptShadowAtRest
@@ -381,6 +439,8 @@ TypeOK ==
     /\ lastCanonicalPublished \in BOOLEAN
     /\ lastShadowPublished \in BOOLEAN
     /\ readerEpoch \in OptionalEpochs
+    /\ shadowFiles \subseteq Epochs
+    /\ activeClosure \subseteq Epochs
 
 (***************************************************************************)
 (* (a) Shadow state never influences the canonical recovery outcome:       *)
@@ -441,6 +501,17 @@ ReaderPinsCanonicalOnly ==
     readerEpoch # -1 =>
         /\ readerEpoch >= 0
         /\ readerEpoch <= canonicalEpoch
+
+(***************************************************************************)
+(* Reclamation safety: the sweep never removes a file the active shadow    *)
+(* manifest references. The published shadow's own artifacts are always    *)
+(* part of the retained closure; a crash between publish and sweep leaves  *)
+(* only unreferenced garbage, cleaned by the next sweep.                   *)
+(***************************************************************************)
+ActiveClosureRetained ==
+    /\ activeClosure \subseteq shadowFiles
+    /\ shadowEpoch # -1 => shadowEpoch \in activeClosure
+    /\ shadowEpoch = -1 => activeClosure = {}
 
 Spec == Init /\ [][Next]_vars
 
