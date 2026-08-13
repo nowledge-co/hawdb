@@ -308,6 +308,12 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    `column-groups/`; dictionary ids are assigned once in first-seen order
    and never reused or reordered, so every published generation keeps
    decoding under any later dictionary.
+5. The canonical checkpoint's result MUST reflect canonical publication
+   only. A shadow build or publication failure after the canonical
+   manifest replaced MUST NOT fail the checkpoint call; it MUST be
+   surfaced through the shadow checkpoint report, MUST preserve the dirty
+   state it would have consumed, and the next checkpoint MUST retry from
+   that state.
 
 ## 4. Declared indexes
 

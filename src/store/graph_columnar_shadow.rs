@@ -76,10 +76,29 @@ const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// Fixed per-row overhead charged against the buffer budget.
 const SHADOW_ROW_OVERHEAD_BYTES: u64 = 16;
 
+/// Outcome of the shadow double-write attempted by one checkpoint. The
+/// canonical checkpoint's `Result` reflects canonical publication only; a
+/// shadow failure lands here instead of failing the checkpoint call, and
+/// the preserved dirty state makes the next checkpoint retry. A disabled
+/// shadow has no report at all (`columnar_shadow_checkpoint_report()`
+/// returns `None`), so no `Disabled` variant exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ColumnarShadowCheckpointStatus {
+    /// The shadow manifest for this checkpoint's epoch was published.
+    #[default]
+    Published,
+    /// The shadow build or publication failed after the canonical
+    /// checkpoint succeeded; dirty state is preserved for the retry.
+    Failed { error: String },
+}
+
 /// Write-amplification evidence for one shadow checkpoint, in the style of
-/// the existing storage reports.
+/// the existing storage reports. A `Failed` report carries only the status
+/// and source epoch; its remaining counters stay zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ColumnarShadowCheckpointReport {
+    /// Whether the shadow published or failed for this checkpoint.
+    pub status: ColumnarShadowCheckpointStatus,
     /// Shadow manifest generation this checkpoint published.
     pub generation: u64,
     /// Storage commit epoch the checkpoint publishes (§3.6.1).
@@ -888,16 +907,37 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Runs the shadow double-write for a just-published canonical
+    /// checkpoint and records the outcome. The canonical checkpoint's
+    /// `Result` reflects canonical publication only: a shadow failure here
+    /// never fails the checkpoint call — it lands in the report as
+    /// [`ColumnarShadowCheckpointStatus::Failed`] with the dirty state
+    /// preserved (never cleared on failure), so the next checkpoint
+    /// retries and converges.
+    pub(super) fn record_columnar_shadow_checkpoint(&mut self, source_commit_epoch: u64) {
+        if !self.columnar_shadow.enabled {
+            return;
+        }
+        if let Err(error) = self.publish_columnar_shadow_checkpoint(source_commit_epoch) {
+            self.columnar_shadow.report = Some(ColumnarShadowCheckpointReport {
+                status: ColumnarShadowCheckpointStatus::Failed {
+                    error: error.to_string(),
+                },
+                source_commit_epoch,
+                ..ColumnarShadowCheckpointReport::default()
+            });
+        }
+    }
+
     /// Builds and publishes the shadow for a just-published checkpoint.
     /// Untouched tables reuse their previous directory references without
     /// rebuilding bytes (§3.6.5); dirty tables are rebuilt whole. Durable
     /// order: immutable groups -> immutable table directories -> key
     /// dictionary -> manifest replace, all through temp-file/fsync/rename
-    /// publication.
-    pub(super) fn publish_columnar_shadow_checkpoint(
-        &mut self,
-        source_commit_epoch: u64,
-    ) -> Result<()> {
+    /// publication. State (dirty set, all-dirty flag, catalog) is mutated
+    /// only after successful publication, so the failure path preserves
+    /// everything the retry needs.
+    fn publish_columnar_shadow_checkpoint(&mut self, source_commit_epoch: u64) -> Result<()> {
         if !self.columnar_shadow.enabled {
             return Ok(());
         }
@@ -1024,6 +1064,7 @@ impl GraphStore {
         self.columnar_shadow.all_dirty = false;
         self.columnar_shadow.dirty.clear();
         self.columnar_shadow.report = Some(ColumnarShadowCheckpointReport {
+            status: ColumnarShadowCheckpointStatus::Published,
             generation: generation.0,
             source_commit_epoch,
             table_count,
@@ -1650,6 +1691,89 @@ mod tests {
             .create_node(&mut catalog, "A", properties(&[]))
             .unwrap();
         assert!(store.columnar_shadow.dirty.is_empty());
+    }
+
+    #[test]
+    fn shadow_publish_failure_never_fails_the_canonical_checkpoint_and_retries() {
+        let root = unique_shadow_dir("shadow_failure");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let n1 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("a".to_string()))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "City",
+                properties(&[("name", Value::String("b".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(
+            store.columnar_shadow_checkpoint_report().unwrap().status,
+            ColumnarShadowCheckpointStatus::Published
+        );
+
+        // Dirty exactly the Person table, then poison the shadow directory:
+        // a directory squats on the path the next generation's Person group
+        // must atomically replace, so the shadow build fails mid-flush.
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[n1],
+                &[NodeSetAssignment {
+                    property: "name".to_string(),
+                    value: NodeSetValue::Value(Value::String("a2".to_string())),
+                }],
+            )
+            .unwrap();
+        let person_table = node_table_key(&BTreeSet::from([catalog.label_id("Person").unwrap()]));
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let poison = shadow_root.join(format!("group-node-{}-2-0.skein", person_table.table_id));
+        fs::create_dir_all(&poison).unwrap();
+
+        // The canonical checkpoint MUST succeed; only the shadow report
+        // records the failure, with dirty state preserved for the retry.
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert!(
+            matches!(report.status, ColumnarShadowCheckpointStatus::Failed { .. }),
+            "expected a failed shadow report, got {report:?}"
+        );
+        assert!(store.columnar_shadow.dirty.contains(&person_table));
+        assert!(!store.columnar_shadow.all_dirty);
+        // The canonical side is intact and the shadow on disk still selects
+        // the previous complete generation.
+        let (nodes, _) = canonical_scan(&store);
+        assert_eq!(
+            nodes[&n1].properties["name"],
+            Value::String("a2".to_string())
+        );
+        assert_eq!(
+            ColumnGroupManifest::open(&shadow_root)
+                .unwrap()
+                .unwrap()
+                .manifest()
+                .generation(),
+            ManifestGeneration(1)
+        );
+
+        // Clearing the poison lets the NEXT checkpoint converge from the
+        // preserved dirty state without any new mutation.
+        fs::remove_dir_all(&poison).unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert_eq!(report.generation, 2);
+        assert_eq!(report.dirty_table_count, 1);
+        assert_eq!(report.reused_table_count, 1);
+        assert!(store.columnar_shadow.dirty.is_empty());
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
