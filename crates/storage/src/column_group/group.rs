@@ -529,6 +529,268 @@ impl ColumnGroupWriter {
     }
 }
 
+// --- streaming single-row writer --------------------------------------------
+
+/// A blob streamed into a byte-table chunk without materializing its bytes
+/// in memory: the source declares its exact encoded length, then writes
+/// itself through an incremental-CRC sink.
+pub trait StreamedBlob {
+    /// Exact byte length `write_blob` will produce.
+    fn blob_len(&self) -> u64;
+    fn write_blob(&self, out: &mut dyn Write) -> std::io::Result<()>;
+}
+
+impl StreamedBlob for &[u8] {
+    fn blob_len(&self) -> u64 {
+        self.len() as u64
+    }
+
+    fn write_blob(&self, out: &mut dyn Write) -> std::io::Result<()> {
+        out.write_all(self)
+    }
+}
+
+/// File sink that tracks the running offset and a per-chunk incremental
+/// CRC32C, so streamed chunk bodies never coexist with a buffered copy.
+struct StreamingChunkSink<'a> {
+    file: &'a mut File,
+    offset: u64,
+    hasher: skein_integrity::Crc32cHasher,
+}
+
+impl<'a> StreamingChunkSink<'a> {
+    fn new(file: &'a mut File, offset: u64) -> Self {
+        Self {
+            file,
+            offset,
+            hasher: skein_integrity::Crc32cHasher::new(),
+        }
+    }
+
+    fn begin_chunk(&mut self) {
+        self.hasher = skein_integrity::Crc32cHasher::new();
+    }
+
+    fn chunk_crc32c(&self) -> u32 {
+        // `Crc32cHasher` accumulates with crc32c_append from zero, which is
+        // exactly what the whole-buffer `crc32c` the readers verify against
+        // computes.
+        self.hasher.finish_u32()
+    }
+}
+
+impl Write for StreamingChunkSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.file.write_all(bytes)?;
+        self.hasher.update(bytes);
+        self.offset += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Shared chunk-body prelude for one present row: `row_count = 1`,
+/// `value_count = 1`, validity bit set.
+const SINGLE_ROW_PRELUDE: [u8; 9] = [1, 0, 0, 0, 1, 0, 0, 0, 0x01];
+
+impl ColumnGroupWriter {
+    /// Streams one single-row group to disk. Value columns hold the row's
+    /// non-null scalar cells (strings stream their borrowed bytes; nested
+    /// values belong in blob columns); blob columns stream through
+    /// [`StreamedBlob`]. Every chunk body flows through an incremental-CRC
+    /// sink, so the transient memory is O(io block), never O(value) — the
+    /// convergence path for rows larger than any buffering budget.
+    pub fn write_single_row_streaming(
+        &self,
+        path: &Path,
+        group_id: u64,
+        generation: ManifestGeneration,
+        id: u64,
+        value_columns: &[(PropertyId, &Value)],
+        byte_columns: &[(PropertyId, &dyn StreamedBlob)],
+    ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for property_id in value_columns
+            .iter()
+            .map(|(property_id, _)| *property_id)
+            .chain(byte_columns.iter().map(|(property_id, _)| *property_id))
+        {
+            if !seen.insert(property_id.0) {
+                return Err(unsupported(format!(
+                    "group declares property {} twice",
+                    property_id.0
+                )));
+            }
+        }
+        for (property_id, value) in value_columns {
+            if matches!(value, Value::Null | Value::List(_) | Value::Map(_)) {
+                return Err(unsupported(format!(
+                    "streamed single-row value column {} must hold a scalar",
+                    property_id.0
+                )));
+            }
+        }
+        let tmp_path = path.with_extension("skein.tmp");
+        let result = self.write_single_row_inner(
+            &tmp_path,
+            group_id,
+            generation,
+            id,
+            value_columns,
+            byte_columns,
+        );
+        let directory = match result {
+            Ok(directory) => directory,
+            Err(error) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(error);
+            }
+        };
+        durable_replace_file(&tmp_path, path)?;
+        Ok(directory)
+    }
+
+    fn write_single_row_inner(
+        &self,
+        path: &Path,
+        group_id: u64,
+        generation: ManifestGeneration,
+        id: u64,
+        value_columns: &[(PropertyId, &Value)],
+        byte_columns: &[(PropertyId, &dyn StreamedBlob)],
+    ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
+        enum StreamedColumn<'a> {
+            Value(&'a Value),
+            Blob(&'a dyn StreamedBlob),
+        }
+
+        let mut file = File::create(path)?;
+        file.write_all(COLUMN_GROUP_MAGIC)?;
+        let mut offset = HEADER_BYTES;
+
+        let id_bytes = encode_ids(&[id]);
+        let id_chunk = IdChunkDescriptor {
+            offset,
+            length: id_bytes.len() as u64,
+            crc32c: crc32c(&id_bytes).get(),
+        };
+        file.write_all(&id_bytes)?;
+        offset += id_bytes.len() as u64;
+
+        let mut sorted = value_columns
+            .iter()
+            .map(|(property_id, value)| (*property_id, StreamedColumn::Value(value)))
+            .chain(
+                byte_columns
+                    .iter()
+                    .map(|(property_id, blob)| (*property_id, StreamedColumn::Blob(*blob))),
+            )
+            .collect::<Vec<_>>();
+        sorted.sort_by_key(|(property_id, _)| property_id.0);
+
+        let mut descriptors = Vec::with_capacity(sorted.len());
+        let mut sink = StreamingChunkSink::new(&mut file, offset);
+        for (property_id, column) in sorted {
+            let chunk_offset = sink.offset;
+            sink.begin_chunk();
+            let (encoding, zone_map) = match column {
+                StreamedColumn::Value(value) => {
+                    let encoding = match value {
+                        Value::Int(_) => ChunkEncoding::PlainInt,
+                        Value::Float(_) => ChunkEncoding::PlainFloat,
+                        Value::Bool(_) => ChunkEncoding::BoolBitmap,
+                        Value::String(_) => ChunkEncoding::StringTable,
+                        Value::Null | Value::List(_) | Value::Map(_) => {
+                            unreachable!("validated scalar cells")
+                        }
+                    };
+                    sink.write_all(&SINGLE_ROW_PRELUDE)?;
+                    match value {
+                        Value::Int(value) => sink.write_all(&value.to_le_bytes())?,
+                        Value::Float(value) => sink.write_all(&value.to_bits().to_le_bytes())?,
+                        Value::Bool(value) => sink.write_all(&[u8::from(*value)])?,
+                        Value::String(value) => {
+                            let length = u32::try_from(value.len()).map_err(|_| {
+                                unsupported("string table chunk exceeds u32 bytes".to_string())
+                            })?;
+                            sink.write_all(&0u32.to_le_bytes())?;
+                            sink.write_all(&length.to_le_bytes())?;
+                            // The borrowed string bytes stream straight to
+                            // the file: no value-sized buffer exists.
+                            sink.write_all(value.as_bytes())?;
+                        }
+                        Value::Null | Value::List(_) | Value::Map(_) => {
+                            unreachable!("validated scalar cells")
+                        }
+                    }
+                    (encoding, ChunkZoneMap::build(std::slice::from_ref(value)))
+                }
+                StreamedColumn::Blob(blob) => {
+                    let length = u32::try_from(blob.blob_len()).map_err(|_| {
+                        unsupported("byte table chunk exceeds u32 bytes".to_string())
+                    })?;
+                    sink.write_all(&SINGLE_ROW_PRELUDE)?;
+                    sink.write_all(&0u32.to_le_bytes())?;
+                    sink.write_all(&length.to_le_bytes())?;
+                    let before = sink.offset;
+                    blob.write_blob(&mut sink)?;
+                    if sink.offset - before != u64::from(length) {
+                        return Err(unsupported(format!(
+                            "streamed blob for column {} wrote {} bytes but declared {length}",
+                            property_id.0,
+                            sink.offset - before
+                        )));
+                    }
+                    // Presence-only zone map, exactly like buffered byte
+                    // columns: opaque content, no scalar bounds.
+                    (
+                        ChunkEncoding::ByteTable,
+                        ChunkZoneMap::build(&[Value::List(Vec::new())]),
+                    )
+                }
+            };
+            descriptors.push(ColumnChunkDescriptor {
+                property_id,
+                encoding,
+                compressed: false,
+                offset: chunk_offset,
+                length: sink.offset - chunk_offset,
+                crc32c: sink.chunk_crc32c(),
+                zone_map,
+            });
+        }
+        let data_end = sink.offset;
+
+        let directory = ColumnGroupDirectory {
+            group_id,
+            generation,
+            row_capacity: self.config.row_capacity,
+            row_count: 1,
+            min_id: id,
+            max_id: id,
+            id_chunk,
+            columns: descriptors,
+        };
+        let directory_bytes = directory.encode()?;
+        if directory_bytes.len() as u64 > MAX_GROUP_DIRECTORY_BYTES {
+            return Err(unsupported(format!(
+                "group directory holds {} bytes, exceeding {MAX_GROUP_DIRECTORY_BYTES}",
+                directory_bytes.len()
+            )));
+        }
+        let _ = data_end;
+        file.write_all(&directory_bytes)?;
+        file.write_all(&(directory_bytes.len() as u64).to_le_bytes())?;
+        file.write_all(&crc32c(&directory_bytes).get().to_le_bytes())?;
+        file.write_all(COLUMN_GROUP_MAGIC)?;
+        file.sync_all()?;
+        Ok(directory)
+    }
+}
+
 // --- scan surface -----------------------------------------------------------
 
 /// A single-column predicate over a node group, keyed by `PropertyId`.

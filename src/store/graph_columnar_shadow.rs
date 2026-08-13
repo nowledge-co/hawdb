@@ -71,11 +71,27 @@
 use super::*;
 use skein_integrity::crc32c;
 use skein_storage::{
-    durable_replace_file, encode_residual_row_properties, ColumnGroupArtifactDescriptor,
-    ColumnGroupError, ColumnGroupManifest, ColumnGroupTableDirectory, ColumnGroupTableDirectoryRef,
+    durable_replace_file, encode_residual_row_properties, residual_row_properties_encoded_len,
+    write_residual_row_properties, ColumnGroupArtifactDescriptor, ColumnGroupError,
+    ColumnGroupManifest, ColumnGroupTableDirectory, ColumnGroupTableDirectoryRef,
     ColumnGroupTableKey, ColumnGroupTableKind, ColumnGroupWriter, PublishedColumnGroupCatalog,
     DEFAULT_GROUP_ROW_CAPACITY,
 };
+
+// Convergence contract: any legitimate graph content eventually publishes.
+// Three mechanisms carry it — (1) the whole build's resources are admitted
+// once, up front, through an unforgeable crate-private token (the builder
+// never sees a governor, so nested self-rejection is structurally
+// impossible); (2) a row too large for any buffer streams from the
+// borrowed record straight to its own single-row group inside a fixed
+// O(io block) allowance, so no legal row can exceed the budget; (3) the
+// metadata reservation is enforced, and a build that exhausts it fails
+// with its interned keys durable, so the next attempt's measured
+// admission covers the grown dictionary — monotone progress. The
+// integration TLA model deliberately covers neither resource admission
+// (modeled by SkeinRuntimeAdmission.tla) nor reclamation pins (none
+// exist); its scope is publication/recovery ordering and closure
+// retention.
 
 /// Subdirectory of the database root holding the self-contained shadow.
 pub const COLUMN_GROUP_SHADOW_DIR: &str = "column-groups";
@@ -113,6 +129,11 @@ const SHADOW_METADATA_RESERVATION_BYTES: u64 = 8 * 1024 * 1024;
 const SHADOW_KEY_ENTRY_OVERHEAD_BYTES: u64 = 48;
 /// Per-table overhead charged for pass-1 state.
 const SHADOW_PASS1_TABLE_OVERHEAD_BYTES: u64 = 64;
+/// Transient allowance one streamed single-row flush draws from the token.
+/// The streaming path's memory is O(io block + framing scratch), never
+/// O(value): arbitrarily large legal rows publish inside this fixed
+/// allowance, which is what makes the shadow converge on any input.
+const SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES: u64 = 64 * 1024;
 
 /// Outcome of the shadow double-write attempted by one checkpoint. The
 /// canonical checkpoint's `Result` reflects canonical publication only; a
@@ -205,6 +226,12 @@ pub(super) struct ColumnarShadowState {
     /// shadow build; exceeding it flushes the largest buffer as a short
     /// group.
     pub(super) buffer_budget_bytes: u64,
+    /// Enforced allowance for pass-1 schema state plus per-build key
+    /// dictionary growth. The persisted dictionary's measured size is
+    /// admitted separately, so exhausting this allowance fails one attempt
+    /// while the interned keys persist — the next attempt admits the grown
+    /// dictionary and converges.
+    pub(super) metadata_reservation_bytes: u64,
     pub(super) recovery: ColumnarShadowRecoveryStatus,
     pub(super) report: Option<ColumnarShadowCheckpointReport>,
 }
@@ -217,6 +244,7 @@ impl Default for ColumnarShadowState {
             dirty: BTreeSet::new(),
             catalog: None,
             buffer_budget_bytes: DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
+            metadata_reservation_bytes: SHADOW_METADATA_RESERVATION_BYTES,
             recovery: ColumnarShadowRecoveryStatus::default(),
             report: None,
         }
@@ -576,8 +604,11 @@ pub struct ColumnarShadowAdmission {
 
 impl ColumnarShadowAdmission {
     /// The caller already admitted `allowance_bytes` for the shadow build
-    /// inside its own governor permit.
-    pub fn pre_admitted(allowance_bytes: u64) -> Self {
+    /// inside its own governor permit. Crate-private on purpose: the
+    /// token's meaning is that admission actually happened, so only the
+    /// code paths that perform it may issue one — external callers get
+    /// facades that admit for themselves.
+    pub(crate) fn pre_admitted(allowance_bytes: u64) -> Self {
         Self {
             _permit: None,
             allowance_bytes: Some(allowance_bytes),
@@ -603,6 +634,20 @@ impl ColumnarShadowAdmission {
         self.allowance_bytes.unwrap_or(0)
     }
 
+    /// Draws one streamed single-row flush. Its transient memory is
+    /// O(io block), independent of the value's size.
+    fn draw_for_streamed_flush(&self) -> Result<()> {
+        let Some(allowance) = self.allowance_bytes else {
+            return Ok(());
+        };
+        if SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES > allowance {
+            return Err(SkeinError::Storage(format!(
+                "columnar shadow streamed flush needs                  {SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES} bytes, exceeding its                  admitted {allowance} byte allowance"
+            )));
+        }
+        Ok(())
+    }
+
     /// Draws one flush against the allowance: the flush's transient need is
     /// its buffered bytes plus the documented encoder-scratch multiple. No
     /// governor is consulted — the whole build was admitted up front.
@@ -618,6 +663,36 @@ impl ColumnarShadowAdmission {
             )));
         }
         Ok(())
+    }
+}
+
+/// Streams a residual row from borrowed entries: exact length up front,
+/// value bytes written through the canonical streaming writer — transient
+/// memory O(recursion frame), never O(value).
+struct ResidualRowBlob<'a> {
+    entries: &'a [(u32, &'a Value)],
+    encoded_len: u64,
+}
+
+impl<'a> ResidualRowBlob<'a> {
+    fn new(entries: &'a [(u32, &'a Value)]) -> Result<Self> {
+        let encoded_len = residual_row_properties_encoded_len(entries)
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        Ok(Self {
+            entries,
+            encoded_len,
+        })
+    }
+}
+
+impl skein_storage::StreamedBlob for ResidualRowBlob<'_> {
+    fn blob_len(&self) -> u64 {
+        self.encoded_len
+    }
+
+    fn write_blob(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        write_residual_row_properties(out, self.entries)
+            .map_err(|error| std::io::Error::other(error.to_string()))
     }
 }
 
@@ -669,6 +744,10 @@ struct ShadowCheckpointBuilder {
     pass1_bytes: u64,
     /// Live key-dictionary footprint, grown as residual keys intern.
     dictionary_bytes: u64,
+    /// Dictionary bytes at build start; growth beyond this counts against
+    /// the enforced metadata reservation.
+    dictionary_base_bytes: u64,
+    metadata_reservation_bytes: u64,
     peak_builder_bytes: u64,
     flushed_group_count: usize,
     oversized_row_group_count: usize,
@@ -676,14 +755,17 @@ struct ShadowCheckpointBuilder {
 }
 
 impl ShadowCheckpointBuilder {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         shadow_root: PathBuf,
         generation: ManifestGeneration,
         admission: ColumnarShadowAdmission,
         buffer_budget_bytes: u64,
+        metadata_reservation_bytes: u64,
         layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
         pass1_bytes: u64,
         dictionary_bytes: u64,
+        dictionary_base_bytes: u64,
     ) -> Self {
         let mut builder = Self {
             shadow_root,
@@ -698,6 +780,8 @@ impl ShadowCheckpointBuilder {
             buffered_bytes: 0,
             pass1_bytes,
             dictionary_bytes,
+            dictionary_base_bytes,
+            metadata_reservation_bytes,
             peak_builder_bytes: 0,
             flushed_group_count: 0,
             oversized_row_group_count: 0,
@@ -705,6 +789,50 @@ impl ShadowCheckpointBuilder {
         };
         builder.note_peak();
         builder
+    }
+
+    /// Enforces the metadata reservation over pass-1 state and per-build
+    /// dictionary growth. Exceeding it fails this attempt; the caller
+    /// persists the interned keys so the next attempt's measured admission
+    /// covers them.
+    /// Only dictionary GROWTH is hard-enforced: interned keys persist, so
+    /// a failed attempt makes monotone progress and the next attempt's
+    /// measured admission covers them — convergence. Pass-1 state is NOT a
+    /// failure condition: it is a pure function of the schema, so failing
+    /// on it could never converge; it counts honestly toward
+    /// `peak_builder_bytes` and the admitted reservation instead.
+    fn check_metadata_budget(&self) -> Result<()> {
+        let growth = self
+            .dictionary_bytes
+            .saturating_sub(self.dictionary_base_bytes);
+        if growth > self.metadata_reservation_bytes {
+            return Err(SkeinError::Storage(format!(
+                "columnar shadow dictionary grew {growth} bytes this build, \
+                 exceeding its {} byte reservation; interned keys persist, \
+                 so the next checkpoint admits the grown dictionary and \
+                 converges",
+                self.metadata_reservation_bytes
+            )));
+        }
+        Ok(())
+    }
+
+    /// Interns one residual key, charging dictionary growth against the
+    /// enforced metadata reservation.
+    fn intern_residual_key(
+        &mut self,
+        dictionary: &mut ShadowKeyDictionary,
+        key: &str,
+    ) -> Result<u32> {
+        let before = dictionary.len();
+        let key_id = dictionary.intern(key)?.0;
+        if dictionary.len() > before {
+            self.dictionary_bytes = self
+                .dictionary_bytes
+                .saturating_add(2 * (key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES));
+            self.check_metadata_budget()?;
+        }
+        Ok(key_id)
     }
 
     fn note_peak(&mut self) {
@@ -786,18 +914,24 @@ impl ShadowCheckpointBuilder {
         // single-row group immediately — a bounded transient, never
         // buffered behind other rows.
         let row_bytes = self.estimate_row_bytes(table, label_set.as_ref(), properties);
-        let oversized = row_bytes > self.buffer_budget_bytes;
-        if oversized {
+        if row_bytes > self.buffer_budget_bytes {
+            // The row cannot fit any buffer: flush everything, then stream
+            // it straight from the borrowed record to its own single-row
+            // group. Nothing row-sized is ever cloned, encoded, or
+            // buffered, so arbitrarily large legal rows publish inside the
+            // fixed streaming allowance — the convergence guarantee.
             let pending = self.buffers.keys().copied().collect::<Vec<_>>();
             for pending_table in pending {
                 self.flush_table(pending_table)?;
             }
-        } else {
-            while self.buffered_bytes > 0
-                && self.buffered_bytes.saturating_add(row_bytes) > self.buffer_budget_bytes
-            {
-                self.flush_largest_buffer()?;
-            }
+            return self.flush_streamed_single_row(
+                dictionary, table, id, label_set, endpoints, properties,
+            );
+        }
+        while self.buffered_bytes > 0
+            && self.buffered_bytes.saturating_add(row_bytes) > self.buffer_budget_bytes
+        {
+            self.flush_largest_buffer()?;
         }
 
         // Materialize only after the flush decision: one pass over the
@@ -812,15 +946,7 @@ impl ShadowCheckpointBuilder {
                     typed_cells[*index] = value.clone();
                 }
                 None => {
-                    let before = dictionary.len();
-                    let key_id = dictionary.intern(key)?.0;
-                    if dictionary.len() > before {
-                        // A newly interned key grows the dictionary's
-                        // footprint (id map + key table entries).
-                        self.dictionary_bytes = self.dictionary_bytes.saturating_add(
-                            2 * (key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES),
-                        );
-                    }
+                    let key_id = self.intern_residual_key(dictionary, key)?;
                     residual_entries.push((key_id, value));
                 }
             }
@@ -865,12 +991,103 @@ impl ShadowCheckpointBuilder {
         let full = buffer.ids.len() >= DEFAULT_GROUP_ROW_CAPACITY as usize;
         self.buffered_bytes = self.buffered_bytes.saturating_add(row_bytes);
         self.note_peak();
-        if oversized {
-            self.oversized_row_group_count += 1;
-            self.flush_table(table)?;
-        } else if full {
+        if full {
             self.flush_table(table)?;
         }
+        Ok(())
+    }
+
+    /// Streams one oversized row as its own single-row group. Typed cells
+    /// and residual values are borrowed from the scanned record; the
+    /// residual envelope and every string stream straight to the file, so
+    /// the transient memory is the fixed streaming allowance, independent
+    /// of the row's size.
+    fn flush_streamed_single_row(
+        &mut self,
+        dictionary: &mut ShadowKeyDictionary,
+        table: ColumnGroupTableKey,
+        id: u64,
+        label_set: Option<Vec<u8>>,
+        endpoints: Option<(u64, u64)>,
+        properties: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        self.admission.draw_for_streamed_flush()?;
+        let mut typed_cells: Vec<(PropertyId, &Value)> = Vec::new();
+        let mut residual_entries: Vec<(u32, &Value)> = Vec::new();
+        for (key, value) in properties {
+            match self.layouts[&table].typed_index.get(key).copied() {
+                Some(index) => {
+                    typed_cells.push((self.layouts[&table].typed[index].0, value));
+                }
+                None => {
+                    let key_id = self.intern_residual_key(dictionary, key)?;
+                    residual_entries.push((key_id, value));
+                }
+            }
+        }
+        residual_entries.sort_by_key(|(key_id, _)| *key_id);
+        let endpoint_values = endpoints
+            .map(|(source, target)| (Value::Int(source as i64), Value::Int(target as i64)));
+        let mut value_columns = typed_cells;
+        if let Some((source, target)) = &endpoint_values {
+            value_columns.push((SOURCE_COLUMN, source));
+            value_columns.push((TARGET_COLUMN, target));
+        }
+        let residual_blob = if residual_entries.is_empty() {
+            None
+        } else {
+            Some(ResidualRowBlob::new(&residual_entries)?)
+        };
+        let label_slice: Option<&[u8]> = label_set.as_deref();
+        let mut byte_columns: Vec<(PropertyId, &dyn skein_storage::StreamedBlob)> = Vec::new();
+        if let Some(label) = &label_slice {
+            byte_columns.push((LABEL_SET_COLUMN, label));
+        }
+        if let Some(blob) = &residual_blob {
+            byte_columns.push((RESIDUAL_COLUMN, blob));
+        }
+        let kind_tag = match table.kind {
+            ColumnGroupTableKind::Node => "node",
+            ColumnGroupTableKind::Relationship => "relationship",
+            ColumnGroupTableKind::Relational => {
+                return Err(SkeinError::Storage(
+                    "columnar shadow does not cover relational tables".to_string(),
+                ));
+            }
+        };
+        let group_index = self.next_group_index.entry(table).or_insert(0);
+        let file_name = format!(
+            "group-{kind_tag}-{}-{}-{}.skein",
+            table.table_id, self.generation.0, group_index
+        );
+        let path = self.shadow_root.join(&file_name);
+        self.writer
+            .write_single_row_streaming(
+                &path,
+                *group_index,
+                self.generation,
+                id,
+                &value_columns,
+                &byte_columns,
+            )
+            .map_err(shadow_error)?;
+        *group_index += 1;
+        self.group_bytes_written = self
+            .group_bytes_written
+            .saturating_add(fs::metadata(&path)?.len());
+        self.flushed_group_count += 1;
+        self.oversized_row_group_count += 1;
+        // The streamed transient is part of the honest peak.
+        let footprint = self
+            .pass1_bytes
+            .saturating_add(self.dictionary_bytes)
+            .saturating_add(self.buffered_bytes)
+            .saturating_add(SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES);
+        self.peak_builder_bytes = self.peak_builder_bytes.max(footprint);
+        self.descriptors.entry(table).or_default().push(
+            ColumnGroupArtifactDescriptor::inspect(&self.shadow_root, file_name, None)
+                .map_err(shadow_error)?,
+        );
         Ok(())
     }
 
@@ -1152,10 +1369,29 @@ impl GraphStore {
         if !self.columnar_shadow.enabled {
             return 0;
         }
+        // The persisted dictionary's size is measured, not guessed: a
+        // build whose dictionary growth exhausts the metadata reservation
+        // fails once with its interned keys durable, and this measurement
+        // makes the next attempt's admission cover the grown dictionary —
+        // monotone progress, hence convergence.
+        let dictionary_bytes = self
+            .durable
+            .as_ref()
+            .and_then(|durable| {
+                fs::metadata(
+                    durable
+                        .root_path
+                        .join(COLUMN_GROUP_SHADOW_DIR)
+                        .join(SHADOW_KEY_DICTIONARY_FILE),
+                )
+                .ok()
+            })
+            .map_or(0, |metadata| metadata.len());
         self.columnar_shadow
             .buffer_budget_bytes
             .saturating_mul(1 + SHADOW_ENCODER_SCRATCH_MULTIPLIER)
-            .saturating_add(SHADOW_METADATA_RESERVATION_BYTES)
+            .saturating_add(dictionary_bytes)
+            .saturating_add(self.columnar_shadow.metadata_reservation_bytes)
     }
 
     /// Acquires the whole build's resources in exactly one non-nested
@@ -1254,10 +1490,24 @@ impl GraphStore {
         let shadow_root = durable.root_path.join(COLUMN_GROUP_SHADOW_DIR);
         let previous = self.columnar_shadow.catalog.clone();
         if previous.is_none() && shadow_root.exists() {
-            // No mounted catalog means anything on disk is stale garbage
-            // (for example a shadow discarded at recovery in a read-only
-            // process): restart the shadow's generation sequence cleanly.
-            fs::remove_dir_all(&shadow_root)?;
+            // No mounted catalog means the artifacts on disk are stale
+            // garbage (a failed attempt, or a shadow discarded at recovery
+            // in a read-only process): restart the generation sequence
+            // cleanly. The key dictionary survives — it is append-only
+            // monotone state, and preserving it is what makes a
+            // reservation-exhausted attempt converge on retry.
+            for entry in fs::read_dir(&shadow_root)? {
+                let entry = entry?;
+                if entry.file_name() == SHADOW_KEY_DICTIONARY_FILE {
+                    continue;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(&path);
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+            }
         }
         fs::create_dir_all(&shadow_root)?;
         let mut dictionary = ShadowKeyDictionary::load(&shadow_root)?;
@@ -1299,6 +1549,9 @@ impl GraphStore {
                     .observe(&relationship.properties);
             }
         }
+        // Measure the dictionary BEFORE layout interning so typed-key
+        // growth counts against the enforced reservation too.
+        let dictionary_base_bytes = dictionary.estimated_bytes();
         let mut layouts = BTreeMap::new();
         for (table, types) in &table_types {
             layouts.insert(*table, shadow_table_layout(types, &mut dictionary)?);
@@ -1319,23 +1572,53 @@ impl GraphStore {
             generation,
             admission,
             self.columnar_shadow.buffer_budget_bytes,
+            self.columnar_shadow.metadata_reservation_bytes,
             layouts,
             estimated_pass1_bytes(&table_types),
             dictionary.estimated_bytes(),
+            dictionary_base_bytes,
         );
+        if let Err(error) = builder.check_metadata_budget() {
+            // Layout interning already grew the dictionary; persist it so
+            // the failed attempt still makes monotone progress.
+            let _ = dictionary.persist(&shadow_root);
+            return Err(error);
+        }
+        let mut build_error = None;
         for record in self.node_records_owned() {
             let node = record?;
-            if is_dirty(node_table_key(&node.labels)) {
-                builder.append_node(&mut dictionary, node)?;
+            if is_dirty(node_table_key(&node.labels))
+                && let Err(error) = builder.append_node(&mut dictionary, node)
+            {
+                build_error = Some(error);
+                break;
             }
         }
-        for record in self.relationship_records_owned() {
-            let relationship = record?;
-            if is_dirty(relationship_table_key(relationship.rel_type)) {
-                builder.append_relationship(&mut dictionary, relationship)?;
+        if build_error.is_none() {
+            for record in self.relationship_records_owned() {
+                let relationship = record?;
+                if is_dirty(relationship_table_key(relationship.rel_type))
+                    && let Err(error) = builder.append_relationship(&mut dictionary, relationship)
+                {
+                    build_error = Some(error);
+                    break;
+                }
             }
         }
-        let built = builder.finish()?;
+        if let Some(error) = build_error {
+            // Monotone progress on failure: keys interned by this attempt
+            // persist, so the next attempt's measured admission covers the
+            // grown dictionary and the build converges.
+            let _ = dictionary.persist(&shadow_root);
+            return Err(error);
+        }
+        let built = match builder.finish() {
+            Ok(built) => built,
+            Err(error) => {
+                let _ = dictionary.persist(&shadow_root);
+                return Err(error);
+            }
+        };
 
         let mut tables = Vec::new();
         let mut reused_table_count = 0usize;
@@ -1464,7 +1747,16 @@ mod tests {
                     ColumnGroupReader::open_path(&shadow_root.join(descriptor.group_file()))
                         .unwrap();
                 let ids = reader.read_ids().unwrap();
-                let residual = reader.read_byte_column(RESIDUAL_COLUMN).unwrap();
+                // A group's directory lists only the columns it holds; a
+                // missing column reads as all-null (streamed single-row
+                // groups omit an empty residual column entirely).
+                let residual = match reader.read_byte_column(RESIDUAL_COLUMN) {
+                    Ok(residual) => residual,
+                    Err(skein_storage::ColumnGroupError::PropertyMissing(_)) => {
+                        vec![None; reader.directory().row_count as usize]
+                    }
+                    Err(error) => panic!("residual column read failed: {error}"),
+                };
                 let mut row_properties: Vec<BTreeMap<String, Value>> =
                     vec![BTreeMap::new(); ids.len()];
                 for (row, blob) in residual.iter().enumerate() {
@@ -2171,16 +2463,18 @@ mod tests {
         // reservation either way.
         assert!(report.peak_builder_bytes > 0);
         assert_eq!(report.admitted_budget_bytes, 0, "unmetered build");
-        let oversized_row_bytes = 3 * BUDGET + 64;
+        // The oversized row streams: no row-sized term appears in the
+        // peak, only the fixed streaming allowance.
         assert!(
             report.peak_builder_bytes
-                <= BUDGET + SHADOW_METADATA_RESERVATION_BYTES + oversized_row_bytes,
+                <= BUDGET
+                    + SHADOW_METADATA_RESERVATION_BYTES
+                    + SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES,
             "peak builder bytes {} exceed the budgeted footprint",
             report.peak_builder_bytes
         );
         assert!(
-            report.peak_builder_bytes
-                < store.columnar_shadow_admission_bytes() + oversized_row_bytes,
+            report.peak_builder_bytes < store.columnar_shadow_admission_bytes(),
             "peak builder bytes {} exceed the admission reservation",
             report.peak_builder_bytes
         );
@@ -2496,5 +2790,95 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
         assert!(ShadowKeyDictionary::load(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+    /// The review's convergence case: a legal single row far larger than
+    /// the whole admission must publish via the streaming path — never
+    /// materialized, never a permanent build failure — and the peak stays
+    /// row-size-independent.
+    #[test]
+    fn oversized_legal_row_publishes_via_streaming_and_converges() {
+        let root = unique_shadow_dir("stream-oversized");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        const BUDGET: u64 = 8 * 1024;
+        store.columnar_shadow.buffer_budget_bytes = BUDGET;
+        const ROW_BYTES: usize = 1024 * 1024;
+        store
+            .create_node(
+                &mut catalog,
+                "Doc",
+                properties(&[
+                    ("body", Value::String("z".repeat(ROW_BYTES))),
+                    (
+                        "attachments",
+                        Value::List(vec![Value::String("a".repeat(64 * 1024)), Value::Int(7)]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Doc",
+                properties(&[("body", Value::String("small".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert_eq!(report.oversized_row_group_count, 1);
+        // Row-size independence: the 1 MiB+ row never appears in the peak.
+        assert!(
+            report.peak_builder_bytes < ROW_BYTES as u64 / 4,
+            "peak {} suggests the oversized row was materialized",
+            report.peak_builder_bytes
+        );
+        assert_shadow_equivalence(&root, &store);
+    }
+
+    /// The review's dictionary case: growth past the enforced reservation
+    /// fails exactly once with the interned keys durable, and the next
+    /// checkpoint converges because its measured admission covers them.
+    #[test]
+    fn dictionary_growth_past_reservation_fails_once_then_converges() {
+        let root = unique_shadow_dir("dictionary-converges");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        store.columnar_shadow.metadata_reservation_bytes = 256;
+        for index in 0..24u32 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties(&[(
+                        format!("distinct_property_key_number_{index:04}").as_str(),
+                        Value::Int(i64::from(index)),
+                    )]),
+                )
+                .unwrap();
+        }
+        let admission_before = store.columnar_shadow_admission_bytes();
+        store.checkpoint(&catalog).unwrap();
+        let first = store.columnar_shadow_checkpoint_report().unwrap();
+        let ColumnarShadowCheckpointStatus::Failed { error } = &first.status else {
+            panic!("dictionary growth past the reservation must fail this attempt");
+        };
+        assert!(
+            error.contains("dictionary grew"),
+            "unexpected error: {error}"
+        );
+        // Monotone progress: the interned keys are durable...
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let dictionary_bytes = fs::metadata(shadow_root.join(SHADOW_KEY_DICTIONARY_FILE))
+            .unwrap()
+            .len();
+        assert!(dictionary_bytes > 0);
+        // ...so the next attempt admits the measured dictionary and
+        // converges with zero new growth.
+        assert!(store.columnar_shadow_admission_bytes() > admission_before);
+        store.checkpoint(&catalog).unwrap();
+        let second = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(second.status, ColumnarShadowCheckpointStatus::Published);
+        assert_shadow_equivalence(&root, &store);
     }
 }

@@ -1099,7 +1099,7 @@ impl Database {
     /// shadow build then draws only against the passed token — it never
     /// touches the governor, so nested admission cannot deadlock a
     /// constrained configuration.
-    pub fn checkpoint_with_shadow_admission(
+    pub(crate) fn checkpoint_with_shadow_admission(
         &mut self,
         shadow_admission: crate::store::ColumnarShadowAdmission,
     ) -> Result<()> {
