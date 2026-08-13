@@ -326,6 +326,22 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    surfaced through the shadow checkpoint report, MUST preserve the dirty
    state it would have consumed, and the next checkpoint MUST retry from
    that state.
+7. Each shadow scan record is an owned transfer into its group buffer. The
+   builder MUST move typed property payloads out of that record rather than
+   cloning their backing allocation. Residual encoding MAY borrow the owned
+   record only for the duration of encoding; no shadow buffer may retain a
+   second logical copy merely to cross the scan-to-builder boundary.
+8. The writer and reader MUST enforce one identical limit on each logical,
+   uncompressed chunk body. The writer MUST reject an oversized body before
+   zstd compression or artifact publication; compression MUST NOT make an
+   otherwise unreadable chunk publishable. Uncompressed reads MUST enforce
+   the same limit as decompression.
+9. Shadow metadata uses an explicit builder-lifetime budget included in the
+   up-front admission. Loading or interning a dictionary key, adding pass-1
+   type state, constructing a typed layout, and materializing dictionary
+   serialization bytes MUST charge that budget before allocation. Exceeding
+   it fails only the derived shadow build, preserves dirty state, and MUST
+   publish neither a new shadow manifest nor a partial dictionary.
 
 ## 4. Declared indexes
 
