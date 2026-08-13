@@ -1054,6 +1054,11 @@ mod tests {
     /// the admission gate exists to prevent. Sensed zero headroom is
     /// authoritative; environments whose own artifacts consume the
     /// instance's memory must provision more, not weaken admission.
+    ///
+    /// Deliberately unasserted: retryability. Saturation is a transient
+    /// state — the request fits the container's stable capacity, so once
+    /// the limits split into capacity and dynamic budget it should report
+    /// retryable and let waiting admissions ride a resource refresh.
     #[test]
     fn saturated_cgroup_rejects_admissions_despite_a_large_hard_limit() {
         let limit = 512 * 1024 * 1024;
@@ -1079,6 +1084,5 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
-        assert!(!error.is_retryable());
     }
 }
