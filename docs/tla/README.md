@@ -245,6 +245,34 @@ generation already selected by the racing publisher. This demonstrates that
 the model distinguishes a serialized publish lease from the required
 generation compare-and-swap.
 
+## Runtime Memory Admission
+
+`SkeinRuntimeAdmission.tla` models the governor's split between memory
+capacity and the dynamic budget beneath it. Capacity is independent of
+current headroom, but resource refresh may change it when sensed host or
+cgroup policy ceilings change. The model includes zero capacity, dynamic capacity
+shrink, and temporary overcommit caused by preserving active permits.
+Submission runs the static capacity check before any dynamic gate. A request
+within capacity but above the uncommitted budget waits; if refreshed capacity
+later falls below that request, its next retry terminates non-retryably.
+
+The model checks that budget never exceeds capacity, over-capacity submission
+never enters waiting, terminal rejection occurs only against the capacity
+current at that transition, and an over-capacity waiter has a terminating
+retry. Refresh may lower capacity beneath existing reservations, so the model
+does not assert the false global invariant that admitted bytes always fit the
+latest capacity. Instead it proves that admission never creates capacity
+overcommit and cannot grow overcommit created by refresh.
+
+Mutation testing sizes the instance (`MaxCapacity = 3`, two waiters): skipping
+the static capacity check reports `SubmissionNeverWaitsAboveCapacity`, letting
+a refresh raise budget above capacity reports `TypeOK` alongside
+`BudgetNeverExceedsCapacity`, failing to terminate a waiter after capacity
+shrink reports `OverCapacityWaiterIsRejectable`, and admission that ignores
+the uncommitted budget reports `AdmissionNeverCreatesCapacityOvercommit` or
+`CapacityOvercommitNeverGrows`. Scheduler liveness remains implementation
+evidence in the runtime-tokio timing tests.
+
 ## Columnar Shadow Checkpoint Integration
 
 `SkeinColumnarShadowIntegration.tla` models the shadow adoption phase of

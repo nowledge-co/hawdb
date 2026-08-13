@@ -456,6 +456,19 @@ mod tests {
         )
     }
 
+    fn cgroup_resources(limit: u64, current: u64) -> RuntimeResourceSnapshot {
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(
+                Some(8 * 1024 * 1024 * 1024),
+                Some(6 * 1024 * 1024 * 1024),
+                Some(limit),
+                None,
+                Some(current),
+            ),
+        )
+    }
+
     #[test]
     fn borrowed_runtime_does_not_take_host_lifecycle_ownership() {
         let host = Builder::new_multi_thread().enable_time().build().unwrap();
@@ -657,5 +670,88 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(result.unwrap(), 42);
+    }
+
+    /// A saturated cgroup rejects retryably, so an async admission waits
+    /// instead of failing; when a resource refresh restores headroom, the
+    /// same waiting admission must succeed without being re-submitted.
+    #[test]
+    fn waiting_admission_succeeds_after_refresh_restores_headroom() {
+        let limit = 512 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            cgroup_resources(limit, limit),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let config = TokioRuntimeConfig {
+            admission_poll_interval: Duration::from_millis(5),
+            resource_refresh_interval: Duration::from_secs(3600),
+            ..TokioRuntimeConfig::default()
+        };
+        let adapter = TokioRuntimeAdapter::borrowed(host.handle().clone(), governor, config);
+        host.block_on(async {
+            let request =
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 48 * 1024 * 1024);
+            let context = RuntimeTaskContext::default();
+            let acquire = adapter.acquire::<Infallible>(request, &context);
+            tokio::pin!(acquire);
+            let still_waiting = tokio::time::timeout(Duration::from_millis(60), &mut acquire).await;
+            assert!(
+                still_waiting.is_err(),
+                "admission must wait while the cgroup is saturated"
+            );
+            assert!(adapter
+                .governor
+                .update_resources(cgroup_resources(limit, 0)));
+            let permit = tokio::time::timeout(Duration::from_secs(5), &mut acquire)
+                .await
+                .expect("admission must resume after the refresh")
+                .expect("restored headroom must admit the waiting request");
+            drop(permit);
+        });
+    }
+
+    /// A request that was satisfiable when submitted may become impossible
+    /// after the cgroup policy ceiling shrinks. The existing acquire future
+    /// must observe the refreshed capacity and terminate rather than polling
+    /// forever for headroom that can no longer satisfy it.
+    #[test]
+    fn waiting_admission_terminates_after_capacity_shrinks_below_request() {
+        let initial_limit = 512 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            cgroup_resources(initial_limit, initial_limit),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let config = TokioRuntimeConfig {
+            admission_poll_interval: Duration::from_millis(5),
+            resource_refresh_interval: Duration::from_secs(3600),
+            ..TokioRuntimeConfig::default()
+        };
+        let adapter = TokioRuntimeAdapter::borrowed(host.handle().clone(), governor, config);
+        host.block_on(async {
+            let request =
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 96 * 1024 * 1024);
+            let context = RuntimeTaskContext::default();
+            let acquire = adapter.acquire::<Infallible>(request, &context);
+            tokio::pin!(acquire);
+            let still_waiting = tokio::time::timeout(Duration::from_millis(60), &mut acquire).await;
+            assert!(still_waiting.is_err());
+
+            assert!(adapter
+                .governor
+                .update_resources(cgroup_resources(64 * 1024 * 1024, 0)));
+            let error = tokio::time::timeout(Duration::from_secs(5), &mut acquire)
+                .await
+                .expect("capacity shrink must terminate the admission loop")
+                .expect_err("request above refreshed capacity must terminate");
+            let TokioTaskError::Admission(error) = error else {
+                panic!("capacity shrink must return an admission error");
+            };
+            assert_eq!(error.code, skein_qos::RuntimeAdmissionCode::MemorySaturated);
+            assert!(!error.is_retryable());
+        });
     }
 }

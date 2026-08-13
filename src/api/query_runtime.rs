@@ -735,6 +735,7 @@ mod tests {
             blocking_task_limit: cpu_slots,
             foreground_io_depth: NonZeroUsize::MIN,
             background_io_depth: NonZeroUsize::MIN,
+            memory_capacity_bytes: memory_budget_bytes,
             memory_budget_bytes,
             result_budget_bytes: memory_budget_bytes,
         }
