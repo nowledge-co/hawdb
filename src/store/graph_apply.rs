@@ -66,7 +66,11 @@ impl GraphStore {
     ) {
         self.next_node_id = self.next_node_id.max(id.0 + 1);
         self.node_tombstones.remove(&id);
+        // Shadow dirty tracking: the new primary table, plus the old primary
+        // table when this create replaces a node whose label set differed.
+        self.mark_columnar_node_dirty(&labels);
         if let Some(old_node) = self.nodes.remove(&id) {
+            self.mark_columnar_node_dirty(&old_node.labels);
             self.remove_node_from_basic_statistics(&old_node);
         }
         self.nodes.insert(
@@ -147,7 +151,11 @@ impl GraphStore {
     ) {
         self.next_rel_id = self.next_rel_id.max(id.0 + 1);
         self.relationship_tombstones.remove(&id);
+        // Shadow dirty tracking: the new type's table, plus the old type's
+        // table when this create replaces a relationship of another type.
+        self.mark_columnar_relationship_dirty(rel_type);
         if let Some(old_relationship) = self.relationships.remove(&id) {
+            self.mark_columnar_relationship_dirty(old_relationship.rel_type);
             self.remove_relationship_from_basic_statistics(&old_relationship);
             self.remove_relationship_from_property_index(&old_relationship);
             self.remove_relationship_from_adjacency(&old_relationship);
@@ -289,6 +297,8 @@ impl GraphStore {
         let old_value = node.properties.insert(property.clone(), value.clone());
         let labels = node.labels.clone();
         self.nodes.rebalance_key(&id);
+        // Shadow dirty tracking: a property write dirties the primary table.
+        self.mark_columnar_node_dirty(&labels);
         for label_id in labels {
             if let Some(old_value) = &old_value {
                 let key = (label_id, property.clone(), old_value.clone());
@@ -325,6 +335,8 @@ impl GraphStore {
             .properties
             .insert(property.clone(), value.clone());
         self.relationships.rebalance_key(&id);
+        // Shadow dirty tracking: a property write dirties the type's table.
+        self.mark_columnar_relationship_dirty(rel_type);
         if let Some(old_value) = old_value {
             let key = (rel_type, property.clone(), old_value);
             if let Some(ids) = self.relationship_property_index.get_mut(&key) {
@@ -343,6 +355,8 @@ impl GraphStore {
         let Some(relationship) = self.relationships.remove(&id) else {
             return;
         };
+        // Shadow dirty tracking: the deleted relationship's type table.
+        self.mark_columnar_relationship_dirty(relationship.rel_type);
         self.remove_relationship_from_basic_statistics(&relationship);
         self.remove_relationship_from_property_index(&relationship);
         self.remove_relationship_from_adjacency(&relationship);
@@ -369,6 +383,8 @@ impl GraphStore {
         let Some(node) = self.nodes.remove(&id) else {
             return;
         };
+        // Shadow dirty tracking: the deleted node's primary table.
+        self.mark_columnar_node_dirty(&node.labels);
         self.remove_node_from_basic_statistics(&node);
         self.remove_node_from_composite_property_indexes(catalog, &node);
         self.remove_node_from_full_text_property_indexes(catalog, &node);

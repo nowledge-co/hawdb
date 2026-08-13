@@ -256,6 +256,12 @@ pub struct DatabaseConfig {
     pub storage_residency_mode: skein_storage::StorageResidencyMode,
     pub auto_materialize_checkpoint_bytes: u64,
     pub max_out_of_core_delta_bytes: Option<u64>,
+    /// Columnar shadow double-write (spec §3.7): every checkpoint also
+    /// publishes a column-group catalog under `column-groups/`, and recovery
+    /// validates it. Off by default; with the flag off checkpoints are
+    /// byte-for-byte unchanged and no shadow directory exists. Reads are
+    /// never served from the shadow.
+    pub columnar_shadow_checkpoint: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_plan_cache_entries: Option<usize>,
     pub slow_query_log_capacity: usize,
@@ -334,6 +340,7 @@ impl Default for DatabaseConfig {
             auto_materialize_checkpoint_bytes:
                 skein_storage::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
             max_out_of_core_delta_bytes: Some(skein_storage::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
+            columnar_shadow_checkpoint: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
             ),
@@ -706,6 +713,7 @@ impl Database {
             residency_mode: config.storage_residency_mode,
             auto_materialize_checkpoint_bytes: config.auto_materialize_checkpoint_bytes,
             max_out_of_core_delta_bytes: config.max_out_of_core_delta_bytes,
+            columnar_shadow_checkpoint: config.columnar_shadow_checkpoint,
         };
         let mut store = if config.read_only {
             GraphStore::open_read_only_with_durability_and_replay_config(
@@ -1161,6 +1169,20 @@ impl Database {
 
     pub fn storage_residency_report(&self) -> crate::store::StorageResidencyReport {
         self.store.storage_residency_report()
+    }
+
+    /// Shadow write-amplification evidence of the most recent checkpoint,
+    /// `None` while `columnar_shadow_checkpoint` is off or before the first
+    /// shadow checkpoint (spec §3.7).
+    pub fn columnar_shadow_checkpoint_report(
+        &self,
+    ) -> Option<crate::store::ColumnarShadowCheckpointReport> {
+        self.store.columnar_shadow_checkpoint_report()
+    }
+
+    /// What recovery observed about the columnar shadow catalog.
+    pub fn columnar_shadow_recovery_status(&self) -> crate::store::ColumnarShadowRecoveryStatus {
+        self.store.columnar_shadow_recovery_status()
     }
 
     pub fn storage_pressure_snapshot(&self) -> StoragePressureSnapshot {

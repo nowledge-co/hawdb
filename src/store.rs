@@ -27,6 +27,8 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+#[path = "store/graph_columnar_shadow.rs"]
+mod graph_columnar_shadow;
 #[path = "store/graph_commit.rs"]
 mod graph_commit;
 #[path = "store/graph_indexes.rs"]
@@ -79,6 +81,10 @@ use durable::{
     load_published_property_projection, BackupFileEntry, BackupManifest, CheckpointImage,
     CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableArtifactMetadata,
     DurableManifest, DurableOpenMode, DurableStore,
+};
+use graph_columnar_shadow::ColumnarShadowState;
+pub use graph_columnar_shadow::{
+    ColumnarShadowCheckpointReport, ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
 };
 pub use read_view::PublishedReadView;
 use skein_storage::{
@@ -907,6 +913,7 @@ pub struct GraphStore {
     relational_state: RelationalState,
     relational_mutation_limits: RelationalMutationLimits,
     relational_overflow_config: RelationalOverflowConfig,
+    columnar_shadow: ColumnarShadowState,
     durable: Option<DurableStore>,
 }
 
@@ -1530,9 +1537,15 @@ impl GraphStore {
             relational_state: RelationalState::default(),
             relational_mutation_limits: RelationalMutationLimits::default(),
             relational_overflow_config: RelationalOverflowConfig::default(),
+            columnar_shadow: ColumnarShadowState::default(),
             durable: Some(durable),
         };
         store.load_checkpoint(catalog, replay_config)?;
+        if replay_config.columnar_shadow_checkpoint {
+            // Mounted between checkpoint load and WAL replay so replayed
+            // mutations mark their shadow tables dirty (spec §3.7).
+            store.mount_columnar_shadow_for_recovery()?;
+        }
         let checkpoint_catalog = catalog.clone();
         store.storage_recovery_report = store.replay_wal(catalog, replay_config)?;
         store.validate_relationship_endpoints()?;
@@ -1779,6 +1792,7 @@ impl GraphStore {
             relational_state: self.relational_state.clone(),
             relational_mutation_limits: self.relational_mutation_limits,
             relational_overflow_config: self.relational_overflow_config,
+            columnar_shadow: self.columnar_shadow.clone(),
             durable: None,
         }
     }
