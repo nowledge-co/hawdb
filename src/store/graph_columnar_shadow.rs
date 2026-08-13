@@ -651,7 +651,7 @@ struct BuiltShadowTables {
 /// governor handle: flushes only draw down the token's byte allowance.
 ///
 /// The flush decision is taken from a size estimate BEFORE the row's cells
-/// are cloned or its residual is encoded, and the builder-footprint peak
+/// are moved or its residual is encoded, and the builder-footprint peak
 /// folds in the pass-1 type-lattice state and the live key dictionary, so
 /// `peak_builder_bytes` is an honest builder metric, not a logical count.
 struct ShadowCheckpointBuilder {
@@ -720,16 +720,14 @@ impl ShadowCheckpointBuilder {
         dictionary: &mut ShadowKeyDictionary,
         node: NodeRecord,
     ) -> Result<()> {
-        let key = node_table_key(&node.labels);
-        let label_set = encode_label_set(&node.labels);
-        self.append_row(
-            dictionary,
-            key,
-            node.id.0,
-            Some(label_set),
-            None,
-            &node.properties,
-        )
+        let NodeRecord {
+            id,
+            labels,
+            properties,
+        } = node;
+        let key = node_table_key(&labels);
+        let label_set = encode_label_set(&labels);
+        self.append_row(dictionary, key, id.0, Some(label_set), None, properties)
     }
 
     fn append_relationship(
@@ -737,14 +735,21 @@ impl ShadowCheckpointBuilder {
         dictionary: &mut ShadowKeyDictionary,
         relationship: RelRecord,
     ) -> Result<()> {
-        let key = relationship_table_key(relationship.rel_type);
+        let RelRecord {
+            id,
+            source,
+            target,
+            rel_type,
+            properties,
+        } = relationship;
+        let key = relationship_table_key(rel_type);
         self.append_row(
             dictionary,
             key,
-            relationship.id.0,
+            id.0,
             None,
-            Some((relationship.source.0, relationship.target.0)),
-            &relationship.properties,
+            Some((source.0, target.0)),
+            properties,
         )
     }
 
@@ -777,15 +782,15 @@ impl ShadowCheckpointBuilder {
         id: u64,
         label_set: Option<Vec<u8>>,
         endpoints: Option<(u64, u64)>,
-        properties: &BTreeMap<String, Value>,
+        properties: BTreeMap<String, Value>,
     ) -> Result<()> {
         // The flush decision comes from an estimate over borrowed values,
-        // BEFORE the row's cells are cloned or its residual encoded, so the
+        // BEFORE the row's cells are moved or its residual encoded, so the
         // budget bounds materialization too. A row whose estimate alone
         // exceeds the budget flushes everything and is written as its own
         // single-row group immediately — a bounded transient, never
         // buffered behind other rows.
-        let row_bytes = self.estimate_row_bytes(table, label_set.as_ref(), properties);
+        let row_bytes = self.estimate_row_bytes(table, label_set.as_ref(), &properties);
         let oversized = row_bytes > self.buffer_budget_bytes;
         if oversized {
             let pending = self.buffers.keys().copied().collect::<Vec<_>>();
@@ -805,15 +810,18 @@ impl ShadowCheckpointBuilder {
         // index (O(P log C)); everything unindexed is residual.
         let layout_typed_len = self.layouts[&table].typed.len();
         let mut typed_cells = vec![Value::Null; layout_typed_len];
-        let mut residual_entries = Vec::new();
+        let mut residual_values = Vec::new();
         for (key, value) in properties {
-            match self.layouts[&table].typed_index.get(key) {
+            match self.layouts[&table].typed_index.get(&key) {
                 Some(index) => {
-                    typed_cells[*index] = value.clone();
+                    // Pass 2 owns the canonical scan record, so move large
+                    // typed values into the group buffer instead of cloning
+                    // their payload allocation.
+                    typed_cells[*index] = value;
                 }
                 None => {
                     let before = dictionary.len();
-                    let key_id = dictionary.intern(key)?.0;
+                    let key_id = dictionary.intern(&key)?.0;
                     if dictionary.len() > before {
                         // A newly interned key grows the dictionary's
                         // footprint (id map + key table entries).
@@ -821,14 +829,18 @@ impl ShadowCheckpointBuilder {
                             2 * (key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES),
                         );
                     }
-                    residual_entries.push((key_id, value));
+                    residual_values.push((key_id, value));
                 }
             }
         }
-        let residual = if residual_entries.is_empty() {
+        let residual = if residual_values.is_empty() {
             None
         } else {
-            residual_entries.sort_by_key(|(key_id, _)| *key_id);
+            residual_values.sort_by_key(|(key_id, _)| *key_id);
+            let residual_entries = residual_values
+                .iter()
+                .map(|(key_id, value)| (*key_id, value))
+                .collect::<Vec<_>>();
             Some(
                 encode_residual_row_properties(&residual_entries)
                     .map_err(|error| SkeinError::Storage(error.to_string()))?,
@@ -1279,8 +1291,7 @@ impl GraphStore {
         // tables with zero remaining rows never appear here and are dropped
         // from the manifest instead of publishing empty directories.
         let mut table_types: BTreeMap<ColumnGroupTableKey, TablePropertyTypes> = BTreeMap::new();
-        for record in self.node_records_owned() {
-            let node = record?;
+        self.try_visit_nodes_owned(None, |node| {
             let key = node_table_key(&node.labels);
             if is_dirty(key) {
                 table_types
@@ -1288,9 +1299,9 @@ impl GraphStore {
                     .or_default()
                     .observe(&node.properties);
             }
-        }
-        for record in self.relationship_records_owned() {
-            let relationship = record?;
+            Ok(GraphScanControl::Continue)
+        })?;
+        self.try_visit_relationships_owned(None, |relationship| {
             let key = relationship_table_key(relationship.rel_type);
             if is_dirty(key) {
                 table_types
@@ -1298,7 +1309,8 @@ impl GraphStore {
                     .or_default()
                     .observe(&relationship.properties);
             }
-        }
+            Ok(GraphScanControl::Continue)
+        })?;
         let mut layouts = BTreeMap::new();
         for (table, types) in &table_types {
             layouts.insert(*table, shadow_table_layout(types, &mut dictionary)?);
@@ -1323,18 +1335,18 @@ impl GraphStore {
             estimated_pass1_bytes(&table_types),
             dictionary.estimated_bytes(),
         );
-        for record in self.node_records_owned() {
-            let node = record?;
+        self.try_visit_nodes_owned(None, |node| {
             if is_dirty(node_table_key(&node.labels)) {
                 builder.append_node(&mut dictionary, node)?;
             }
-        }
-        for record in self.relationship_records_owned() {
-            let relationship = record?;
+            Ok(GraphScanControl::Continue)
+        })?;
+        self.try_visit_relationships_owned(None, |relationship| {
             if is_dirty(relationship_table_key(relationship.rel_type)) {
                 builder.append_relationship(&mut dictionary, relationship)?;
             }
-        }
+            Ok(GraphScanControl::Continue)
+        })?;
         let built = builder.finish()?;
 
         let mut tables = Vec::new();
@@ -1558,6 +1570,53 @@ mod tests {
         assert_eq!(nodes, expected_nodes);
         assert_eq!(relationships, expected_relationships);
         inference
+    }
+
+    fn single_typed_string_layout(
+        dictionary: &mut ShadowKeyDictionary,
+        table: ColumnGroupTableKey,
+        key: &str,
+    ) -> BTreeMap<ColumnGroupTableKey, ShadowTableLayout> {
+        let types = TablePropertyTypes {
+            inferred: BTreeMap::from([(key.to_string(), InferredType::Str)]),
+        };
+        BTreeMap::from([(table, shadow_table_layout(&types, dictionary).unwrap())])
+    }
+
+    #[test]
+    fn shadow_builder_moves_owned_typed_payload_into_group_buffer() {
+        let root = unique_shadow_dir("owned_typed_payload");
+        fs::create_dir_all(&root).unwrap();
+        let table = ColumnGroupTableKey::new(ColumnGroupTableKind::Node, 0);
+        let mut dictionary = ShadowKeyDictionary::default();
+        let layouts = single_typed_string_layout(&mut dictionary, table, "body");
+        let mut builder = ShadowCheckpointBuilder::new(
+            root.clone(),
+            ManifestGeneration(1),
+            ColumnarShadowAdmission::unmetered(),
+            DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
+            layouts,
+            0,
+            dictionary.estimated_bytes(),
+        );
+        let payload = "x".repeat(1024 * 1024);
+        let payload_ptr = payload.as_ptr();
+        builder
+            .append_node(
+                &mut dictionary,
+                NodeRecord {
+                    id: NodeId(1),
+                    labels: BTreeSet::new(),
+                    properties: BTreeMap::from([("body".to_string(), Value::String(payload))]),
+                },
+            )
+            .unwrap();
+
+        let Value::String(buffered) = &builder.buffers[&table].typed[0][0] else {
+            panic!("typed body must remain a string")
+        };
+        assert_eq!(buffered.as_ptr(), payload_ptr);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
