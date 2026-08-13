@@ -652,9 +652,11 @@ fn derive_limits(
     }
 }
 
-/// The stable maximum: explicit configuration and the hard-limit-derived
-/// term, with the fallback when neither is sensed. A request above this
-/// can never be satisfied by waiting, so admission reports it
+/// The stable maximum: explicit configuration and the limit-derived term
+/// (`effective_limit_bytes` = min of cgroup `memory.max`, the kernel hard
+/// limit, and `memory.high`, the throttle threshold Skein honors as its
+/// policy ceiling), with the fallback when neither is sensed. A request
+/// above this can never be satisfied by waiting, so admission reports it
 /// non-retryable.
 fn derived_memory_capacity(
     config: RuntimeGovernorConfig,
@@ -717,6 +719,40 @@ fn admission_error(
             false,
         ));
     }
+    // Statically unsatisfiable requests terminate non-retryably before any
+    // dynamic saturation check: a request over the stable capacity must
+    // never read as a transient shortage just because a task slot, CPU, or
+    // I/O depth happened to be busy at submission time.
+    let cpu_limit = state.limits.effective_cpu_slots.get();
+    if request.cpu_slots > cpu_limit {
+        return Some(admission_error_value(
+            RuntimeAdmissionCode::CpuSaturated,
+            request.cpu_slots as u64,
+            cpu_limit as u64,
+            false,
+        ));
+    }
+    let reserved_memory = request.reserved_memory_bytes();
+    if reserved_memory > state.limits.memory_capacity_bytes {
+        return Some(admission_error_value(
+            RuntimeAdmissionCode::MemorySaturated,
+            reserved_memory,
+            state.limits.memory_capacity_bytes,
+            false,
+        ));
+    }
+    let static_io_limit = match request.priority {
+        RuntimeWorkPriority::Foreground => state.limits.foreground_io_depth.get(),
+        RuntimeWorkPriority::Background => state.limits.background_io_depth.get(),
+    };
+    if request.io_slots > static_io_limit {
+        return Some(admission_error_value(
+            RuntimeAdmissionCode::IoSaturated,
+            request.io_slots as u64,
+            static_io_limit as u64,
+            false,
+        ));
+    }
     if request.priority == RuntimeWorkPriority::Background
         && state.resources.memory.pressure == RuntimeMemoryPressure::Critical
     {
@@ -759,15 +795,6 @@ fn admission_error(
             true,
         ));
     }
-    let cpu_limit = state.limits.effective_cpu_slots.get();
-    if request.cpu_slots > cpu_limit {
-        return Some(admission_error_value(
-            RuntimeAdmissionCode::CpuSaturated,
-            request.cpu_slots as u64,
-            cpu_limit as u64,
-            false,
-        ));
-    }
     let available_cpu = cpu_limit.saturating_sub(state.active_cpu_slots);
     if request.cpu_slots > available_cpu {
         return Some(admission_error_value(
@@ -775,15 +802,6 @@ fn admission_error(
             request.cpu_slots as u64,
             available_cpu as u64,
             true,
-        ));
-    }
-    let reserved_memory = request.reserved_memory_bytes();
-    if reserved_memory > state.limits.memory_capacity_bytes {
-        return Some(admission_error_value(
-            RuntimeAdmissionCode::MemorySaturated,
-            reserved_memory,
-            state.limits.memory_capacity_bytes,
-            false,
         ));
     }
     let available_memory = state
@@ -808,14 +826,6 @@ fn admission_error(
             state.limits.background_io_depth.get(),
         ),
     };
-    if request.io_slots > io_limit {
-        return Some(admission_error_value(
-            RuntimeAdmissionCode::IoSaturated,
-            request.io_slots as u64,
-            io_limit as u64,
-            false,
-        ));
-    }
     let available_io = io_limit.saturating_sub(active_io);
     (request.io_slots > available_io).then(|| {
         admission_error_value(
@@ -1136,6 +1146,71 @@ mod tests {
             .try_admit(RuntimeWorkRequest::blocking_cpu(
                 RuntimeWorkPriority::Foreground,
                 600 * 1024 * 1024,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
+    }
+    /// A statically unsatisfiable request must terminate non-retryably even
+    /// when a dynamic gate (here: the foreground task slots) is saturated at
+    /// submission time — otherwise a waiter polls forever for an admission
+    /// that can never come.
+    #[test]
+    fn over_capacity_while_task_saturated_stays_non_retryable() {
+        let governor = governor(2, 4 * 1024 * 1024 * 1024);
+        let first = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1024,
+            ))
+            .unwrap();
+        let second = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1024,
+            ))
+            .unwrap();
+        let capacity = governor.snapshot().limits.memory_capacity_bytes;
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                capacity + 1,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
+        drop(first);
+        drop(second);
+    }
+
+    /// Critical memory pressure gates background work retryably, but an
+    /// over-capacity background request is still a terminal rejection.
+    #[test]
+    fn over_capacity_under_critical_pressure_stays_non_retryable() {
+        let limit = 512 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(6 * 1024 * 1024 * 1024),
+                    Some(limit),
+                    Some(limit / 2),
+                    Some(limit),
+                ),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        assert_eq!(
+            governor.snapshot().resources.memory.pressure,
+            RuntimeMemoryPressure::Critical
+        );
+        let capacity = governor.snapshot().limits.memory_capacity_bytes;
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Background,
+                capacity + 1,
             ))
             .unwrap_err();
         assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);

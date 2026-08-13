@@ -182,7 +182,14 @@ The default concurrency budget MUST be derived from the smallest known limit:
 Linux cgroup v2 discovery MUST resolve the unified process path against the
 cgroup2 mount root from `/proc/self/mountinfo`; it MUST NOT assume the hierarchy
 is mounted directly below `/sys/fs/cgroup`. Memory sizing uses `memory.max`,
-`memory.high`, `memory.current`, and derived headroom. `max` does not constrain
+`memory.high`, `memory.current`, and derived headroom. `memory.max` is the
+kernel hard limit; `memory.high` is the kernel's throttle-and-reclaim
+threshold, not an OOM boundary, and Skein deliberately honors it as its
+policy ceiling. Either MAY therefore bound the stable admission capacity
+(the smaller wins), while the dynamic admission budget additionally tracks
+derived headroom. A request above the stable capacity is rejected
+non-retryably; a request above only the dynamic budget is a transient
+shortage and MUST be reported retryable. `max` does not constrain
 the host limit. If an enabled controller has an unreadable or invalid quota,
 cpuset, memory limit, or usage, runtime detection MUST fail closed to one CPU or
 zero memory admission instead of using host-wide resources.

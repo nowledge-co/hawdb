@@ -245,6 +245,31 @@ generation already selected by the racing publisher. This demonstrates that
 the model distinguishes a serialized publish lease from the required
 generation compare-and-swap.
 
+## Runtime Memory Admission
+
+`SkeinRuntimeAdmission.tla` models the governor's split between the stable
+memory capacity (explicit configuration and the cgroup limit ceiling) and
+the dynamic budget that resource refreshes move underneath it. Submission
+runs the static capacity check before any dynamic saturation gate, so a
+statically unsatisfiable request terminates non-retryably instead of
+entering the waiting state; a request within capacity but above the
+uncommitted budget waits, retries as refreshes restore headroom, and can be
+cancelled. Rejected and cancelled are terminal for the submitted request.
+
+The model checks that the budget never exceeds capacity, that a waiting
+request always fits capacity (the property whose violation would leave a
+Tokio waiter polling forever for an admission that cannot come), that
+terminal rejection is reserved for over-capacity requests, and that
+concurrently admitted reservations never exceed capacity.
+
+Mutation testing sizes the instance (`Capacity = 3`, two waiters): skipping
+the static capacity check reports `OverCapacityNeverWaits`, letting a
+refresh raise the budget above capacity reports `TypeOK` alongside
+`BudgetNeverExceedsCapacity`, and a retry that ignores the uncommitted
+budget reports `AdmittedNeverExceedsCapacity`. Liveness (a waiter
+eventually admitting after a refresh) is deliberately left to the
+runtime-tokio timing test `waiting_admission_succeeds_after_refresh_restores_headroom`.
+
 ## Implementation Refinement Evidence
 
 The Rust tests below exercise the concrete boundaries represented by the model.
