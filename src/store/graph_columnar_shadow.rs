@@ -85,6 +85,15 @@ const FIRST_DICTIONARY_COLUMN: u32 = 4;
 const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// Fixed per-row overhead charged against the buffer budget.
 const SHADOW_ROW_OVERHEAD_BYTES: u64 = 16;
+/// Encoder scratch allowance multiplier inside the admission reservation:
+/// while a chunk encodes, the buffered input, the encoded body, and the
+/// compressed body coexist; the largest chunk is bounded by the buffer
+/// budget, so twice the budget bounds the scratch.
+const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
+/// Reservation for pass-1 type-lattice state and the key dictionary inside
+/// the admission reservation. Both scale with distinct property keys
+/// (schema), not with data volume.
+const SHADOW_METADATA_RESERVATION_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Outcome of the shadow double-write attempted by one checkpoint. The
 /// canonical checkpoint's `Result` reflects canonical publication only; a
@@ -496,45 +505,70 @@ fn estimated_shadow_value_bytes(value: &Value) -> u64 {
     }
 }
 
-/// Requests background admission for one group flush from the engine's
-/// runtime governor (`WorkClass::Shadow` maps to background `Control`
-/// work, mirroring `runtime_work_request_with_capacity`). Retryable
-/// rejections back off briefly; persistent denial fails the shadow build,
-/// which the checkpoint records as a failed shadow and retries later.
-/// Without a threaded governor (plain `GraphStore` opens) the flush
-/// proceeds unmetered.
-fn admit_shadow_flush(
-    governor: Option<&skein_qos::RuntimeGovernor>,
-    flush_bytes: u64,
-) -> Result<Option<skein_qos::RuntimePermit>> {
-    const RETRY_LIMIT: u32 = 200;
-    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
-    let Some(governor) = governor else {
-        return Ok(None);
-    };
-    let request = skein_qos::RuntimeWorkRequest {
-        priority: skein_qos::RuntimeWorkPriority::Background,
-        kind: skein_qos::RuntimeWorkKind::Control,
-        cpu_slots: 1,
-        memory_bytes: flush_bytes,
-        io_slots: 1,
-        result_bytes: 0,
-        blocking: false,
-    };
-    let mut attempt = 0;
-    loop {
-        match governor.try_admit(request) {
-            Ok(permit) => return Ok(Some(permit)),
-            Err(error) if error.is_retryable() && attempt < RETRY_LIMIT => {
-                attempt += 1;
-                std::thread::sleep(RETRY_DELAY);
-            }
-            Err(error) => {
-                return Err(SkeinError::Storage(format!(
-                    "columnar shadow flush admission denied: {error}"
-                )));
-            }
+/// Pre-admitted resource context for one whole shadow build.
+///
+/// Structural non-reentrancy: the builder receives this token **by value**
+/// and holds no governor handle at all, so a nested admission against a
+/// permit the caller already holds is impossible by construction. The
+/// token is one of:
+///
+/// - **pre-admitted** — the caller extended its own single admission's
+///   memory request by [`GraphStore::columnar_shadow_admission_bytes`]
+///   (the nowledge_mem typed checkpoint, which holds a background
+///   maintenance permit for the duration);
+/// - **owned** — the checkpoint entry acquired exactly one non-nested
+///   `try_admit` for the whole build, with no waiting loop (plain
+///   `Database::checkpoint` with a threaded governor);
+/// - **unmetered** — no governor is threaded (plain `GraphStore` opens).
+///
+/// Flushes never talk to a governor; they only draw against the token's
+/// byte allowance.
+#[derive(Debug)]
+pub struct ColumnarShadowAdmission {
+    _permit: Option<skein_qos::RuntimePermit>,
+    /// `None` = unmetered; `Some` = the admitted builder-lifetime bytes.
+    allowance_bytes: Option<u64>,
+}
+
+impl ColumnarShadowAdmission {
+    /// The caller already admitted `allowance_bytes` for the shadow build
+    /// inside its own governor permit.
+    pub fn pre_admitted(allowance_bytes: u64) -> Self {
+        Self {
+            _permit: None,
+            allowance_bytes: Some(allowance_bytes),
         }
+    }
+
+    fn owned(permit: skein_qos::RuntimePermit, allowance_bytes: u64) -> Self {
+        Self {
+            _permit: Some(permit),
+            allowance_bytes: Some(allowance_bytes),
+        }
+    }
+
+    fn unmetered() -> Self {
+        Self {
+            _permit: None,
+            allowance_bytes: None,
+        }
+    }
+
+    /// Draws one flush against the allowance: the flush's transient need is
+    /// its buffered bytes plus the documented encoder-scratch multiple. No
+    /// governor is consulted — the whole build was admitted up front.
+    fn draw_for_flush(&self, flush_bytes: u64) -> Result<()> {
+        let Some(allowance) = self.allowance_bytes else {
+            return Ok(());
+        };
+        let transient = flush_bytes.saturating_mul(1 + SHADOW_ENCODER_SCRATCH_MULTIPLIER);
+        if transient > allowance {
+            return Err(SkeinError::Storage(format!(
+                "columnar shadow flush needs {transient} bytes, exceeding its \
+                 admitted {allowance} byte allowance"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -563,11 +597,12 @@ struct BuiltShadowTables {
 /// Streaming pass-2 builder: appends rows into per-table bounded group
 /// buffers under one global byte budget. A full buffer flushes as a
 /// complete group; exceeding the budget flushes the largest buffer as a
-/// shorter group. Every flush requests governor admission first.
+/// shorter group. The builder holds the pre-admitted token by value and no
+/// governor handle: flushes only draw down the token's byte allowance.
 struct ShadowCheckpointBuilder {
     shadow_root: PathBuf,
     generation: ManifestGeneration,
-    governor: Option<skein_qos::RuntimeGovernor>,
+    admission: ColumnarShadowAdmission,
     buffer_budget_bytes: u64,
     writer: ColumnGroupWriter,
     layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
@@ -584,14 +619,14 @@ impl ShadowCheckpointBuilder {
     fn new(
         shadow_root: PathBuf,
         generation: ManifestGeneration,
-        governor: Option<skein_qos::RuntimeGovernor>,
+        admission: ColumnarShadowAdmission,
         buffer_budget_bytes: u64,
         layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
     ) -> Self {
         Self {
             shadow_root,
             generation,
-            governor,
+            admission,
             buffer_budget_bytes,
             writer: ColumnGroupWriter::default(),
             layouts,
@@ -738,7 +773,8 @@ impl ShadowCheckpointBuilder {
     }
 
     /// Flushes one table's buffer as an immutable group (possibly shorter
-    /// than the group row capacity), gated by governor admission.
+    /// than the group row capacity), drawing against the pre-admitted
+    /// token's byte allowance — never against a governor.
     fn flush_table(&mut self, table: ColumnGroupTableKey) -> Result<()> {
         let Some(buffer) = self.buffers.remove(&table) else {
             return Ok(());
@@ -746,7 +782,7 @@ impl ShadowCheckpointBuilder {
         if buffer.ids.is_empty() {
             return Ok(());
         }
-        let _permit = admit_shadow_flush(self.governor.as_ref(), buffer.estimated_bytes)?;
+        self.admission.draw_for_flush(buffer.estimated_bytes)?;
         let kind_tag = match table.kind {
             ColumnGroupTableKind::Node => "node",
             ColumnGroupTableKind::Relationship => "relationship",
@@ -923,6 +959,51 @@ impl GraphStore {
         Ok(())
     }
 
+    /// The builder-lifetime byte reservation one shadow build needs from
+    /// the runtime governor: the buffer budget (buffered rows and the row
+    /// being materialized), the documented encoder-scratch multiple of it,
+    /// and a fixed schema-proportional metadata reservation (pass-1
+    /// type-lattice state and the key dictionary). Callers that already
+    /// hold a governor permit extend that single admission's memory request
+    /// by this amount and pass [`ColumnarShadowAdmission::pre_admitted`]
+    /// into the checkpoint. Zero when the shadow is disabled.
+    pub fn columnar_shadow_admission_bytes(&self) -> u64 {
+        if !self.columnar_shadow.enabled {
+            return 0;
+        }
+        self.columnar_shadow
+            .buffer_budget_bytes
+            .saturating_mul(1 + SHADOW_ENCODER_SCRATCH_MULTIPLIER)
+            .saturating_add(SHADOW_METADATA_RESERVATION_BYTES)
+    }
+
+    /// Acquires the whole build's resources in exactly one non-nested
+    /// `try_admit` (no waiting loop): background `Control` work, the
+    /// established `WorkClass::Shadow` mapping. Rejection fails the shadow
+    /// build once — the checkpoint records `Failed` and the next checkpoint
+    /// retries from the preserved dirty state.
+    fn acquire_columnar_shadow_admission(&self) -> Result<ColumnarShadowAdmission> {
+        let Some(governor) = &self.runtime_governor else {
+            return Ok(ColumnarShadowAdmission::unmetered());
+        };
+        let allowance = self.columnar_shadow_admission_bytes();
+        let request = skein_qos::RuntimeWorkRequest {
+            priority: skein_qos::RuntimeWorkPriority::Background,
+            kind: skein_qos::RuntimeWorkKind::Control,
+            cpu_slots: 1,
+            memory_bytes: allowance,
+            io_slots: 1,
+            result_bytes: 0,
+            blocking: false,
+        };
+        match governor.try_admit(request) {
+            Ok(permit) => Ok(ColumnarShadowAdmission::owned(permit, allowance)),
+            Err(error) => Err(SkeinError::Storage(format!(
+                "columnar shadow build admission denied: {error}"
+            ))),
+        }
+    }
+
     /// Runs the shadow double-write for a just-published canonical
     /// checkpoint and records the outcome. The canonical checkpoint's
     /// `Result` reflects canonical publication only: a shadow failure here
@@ -930,18 +1011,42 @@ impl GraphStore {
     /// [`ColumnarShadowCheckpointStatus::Failed`] with the dirty state
     /// preserved (never cleared on failure), so the next checkpoint
     /// retries and converges.
-    pub(super) fn record_columnar_shadow_checkpoint(&mut self, source_commit_epoch: u64) {
+    ///
+    /// `admission` is the caller's explicit pre-admitted context (the
+    /// nowledge_mem typed checkpoint, which extended its own held permit);
+    /// `None` acquires exactly one non-nested `try_admit` here at the
+    /// checkpoint entry, before the builder exists.
+    pub(super) fn record_columnar_shadow_checkpoint(
+        &mut self,
+        source_commit_epoch: u64,
+        admission: Option<ColumnarShadowAdmission>,
+    ) {
         if !self.columnar_shadow.enabled {
             return;
         }
-        if let Err(error) = self.publish_columnar_shadow_checkpoint(source_commit_epoch) {
-            self.columnar_shadow.report = Some(ColumnarShadowCheckpointReport {
+        let record_failure = |report: &mut Option<ColumnarShadowCheckpointReport>,
+                              error: SkeinError| {
+            *report = Some(ColumnarShadowCheckpointReport {
                 status: ColumnarShadowCheckpointStatus::Failed {
                     error: error.to_string(),
                 },
                 source_commit_epoch,
                 ..ColumnarShadowCheckpointReport::default()
             });
+        };
+        let admission = match admission {
+            Some(admission) => admission,
+            None => match self.acquire_columnar_shadow_admission() {
+                Ok(admission) => admission,
+                Err(error) => {
+                    record_failure(&mut self.columnar_shadow.report, error);
+                    return;
+                }
+            },
+        };
+        if let Err(error) = self.publish_columnar_shadow_checkpoint(source_commit_epoch, admission)
+        {
+            record_failure(&mut self.columnar_shadow.report, error);
         }
     }
 
@@ -953,7 +1058,11 @@ impl GraphStore {
     /// publication. State (dirty set, all-dirty flag, catalog) is mutated
     /// only after successful publication, so the failure path preserves
     /// everything the retry needs.
-    fn publish_columnar_shadow_checkpoint(&mut self, source_commit_epoch: u64) -> Result<()> {
+    fn publish_columnar_shadow_checkpoint(
+        &mut self,
+        source_commit_epoch: u64,
+        admission: ColumnarShadowAdmission,
+    ) -> Result<()> {
         if !self.columnar_shadow.enabled {
             return Ok(());
         }
@@ -1020,12 +1129,12 @@ impl GraphStore {
         let generation = ManifestGeneration(parent_generation.map_or(1, |parent| parent.0 + 1));
 
         // Pass 2: stream again, appending rows into bounded per-table group
-        // buffers under the global byte budget; every flush requests
-        // governor admission.
+        // buffers under the global byte budget. The builder takes the
+        // pre-admitted token by value and never sees a governor.
         let mut builder = ShadowCheckpointBuilder::new(
             shadow_root.clone(),
             generation,
-            self.runtime_governor.clone(),
+            admission,
             self.columnar_shadow.buffer_budget_bytes,
             layouts,
         );
@@ -1868,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_flushes_request_admission_from_the_threaded_governor() {
+    fn shadow_builds_take_exactly_one_admission_for_the_whole_build() {
         let root = unique_shadow_dir("governor");
         let mut catalog = Catalog::default();
         let mut store = open_shadow_store(&root, &mut catalog);
@@ -1893,13 +2002,74 @@ mod tests {
         let admissions_before = governor.snapshot().admissions;
         store.checkpoint(&catalog).unwrap();
         let report = store.columnar_shadow_checkpoint_report().unwrap();
-        assert!(report.flushed_group_count > 0);
-        let admissions_after = governor.snapshot().admissions;
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert!(report.flushed_group_count > 1);
+        // The whole multi-flush build rode exactly one up-front admission:
+        // flushes only draw down the token's byte allowance.
+        assert_eq!(governor.snapshot().admissions, admissions_before + 1);
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pre_admitted_shadow_converges_under_a_constrained_governor() {
+        let root = unique_shadow_dir("constrained_governor");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        // A mobile-style constraint: one background task, total. The outer
+        // permit (the nowledge_mem typed checkpoint's background
+        // maintenance admission) is held for the whole duration, so any
+        // nested admission inside the shadow build could never succeed.
+        let governor = skein_qos::RuntimeGovernor::detect(
+            skein_qos::RuntimeGovernorConfig {
+                background_task_limit: std::num::NonZeroUsize::new(1),
+                ..skein_qos::RuntimeGovernorConfig::desktop_bound()
+            },
+            skein_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        store.set_runtime_governor(governor.clone());
+        for index in 0..40u32 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Constrained",
+                    properties(&[("rank", Value::Int(i64::from(index)))]),
+                )
+                .unwrap();
+        }
+        let shadow_bytes = store.columnar_shadow_admission_bytes();
+        assert!(shadow_bytes > 0);
+        let _outer_permit = governor
+            .try_admit(
+                skein_qos::RuntimeWorkRequest::background_maintenance(shadow_bytes)
+                    .with_io_slots(1),
+            )
+            .expect("outer maintenance permit is admitted");
+
+        // The plain path's single non-nested try_admit is rejected while
+        // the outer permit exhausts the background slot — the shadow fails
+        // fast (no waiting loop) and the canonical checkpoint succeeds.
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
         assert!(
-            admissions_after >= admissions_before + report.flushed_group_count as u64,
-            "every group flush requests one background admission \
-             ({admissions_before} -> {admissions_after}, {} flushes)",
-            report.flushed_group_count
+            matches!(report.status, ColumnarShadowCheckpointStatus::Failed { .. }),
+            "un-annotated build under an exhausted governor fails fast: {report:?}"
+        );
+
+        // The pre-admitted token path — the outer permit's memory request
+        // already covers the shadow reservation — PUBLISHES while the outer
+        // permit stays held: structural non-reentrancy, no nested wait.
+        store
+            .checkpoint_with_shadow_admission(
+                &catalog,
+                ColumnarShadowAdmission::pre_admitted(shadow_bytes),
+            )
+            .unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(
+            report.status,
+            ColumnarShadowCheckpointStatus::Published,
+            "pre-admitted shadow converges under the held outer permit"
         );
         assert_shadow_equivalence(&root, &store);
         fs::remove_dir_all(root).unwrap();

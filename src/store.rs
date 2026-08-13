@@ -84,7 +84,8 @@ use durable::{
 };
 use graph_columnar_shadow::ColumnarShadowState;
 pub use graph_columnar_shadow::{
-    ColumnarShadowCheckpointReport, ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
+    ColumnarShadowAdmission, ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
+    ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
 };
 pub use read_view::PublishedReadView;
 use skein_storage::{

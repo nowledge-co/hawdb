@@ -277,6 +277,25 @@ impl GraphStore {
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
     ) -> Result<()> {
+        self.publish_prepared_checkpoint_with_shadow_admission(
+            prepared,
+            oldest_reader_commit_epoch,
+            None,
+        )
+    }
+
+    /// Publication with an explicit pre-admitted shadow context: callers
+    /// that already hold a governor permit (the nowledge_mem typed
+    /// checkpoint) extend that single admission by
+    /// [`GraphStore::columnar_shadow_admission_bytes`] and pass the token
+    /// here; `None` lets the shadow acquire its own single non-nested
+    /// admission.
+    pub(crate) fn publish_prepared_checkpoint_with_shadow_admission(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
         let durable = self.durable.as_mut().ok_or_else(|| {
             SkeinError::Storage("prepared checkpoint requires durable storage".to_string())
         })?;
@@ -350,8 +369,27 @@ impl GraphStore {
         // canonical publication only — a shadow failure is recorded in the
         // shadow report with dirty state preserved, and the next checkpoint
         // retries.
-        self.record_columnar_shadow_checkpoint(prepared.source_commit_epoch);
+        self.record_columnar_shadow_checkpoint(prepared.source_commit_epoch, shadow_admission);
         Ok(())
+    }
+
+    /// Checkpoint entry that carries an explicit pre-admitted shadow
+    /// context from a caller already holding a governor permit.
+    pub fn checkpoint_with_shadow_admission(
+        &mut self,
+        catalog: &Catalog,
+        shadow_admission: ColumnarShadowAdmission,
+    ) -> Result<()> {
+        let Some(prepared) = self
+            .prepare_checkpoint_with_build_config(catalog, DerivedArtifactBuildConfig::default())?
+        else {
+            return Ok(());
+        };
+        self.publish_prepared_checkpoint_with_shadow_admission(
+            prepared,
+            None,
+            Some(shadow_admission),
+        )
     }
 
     pub fn rebuild_projected_graph_artifacts(&mut self, catalog: &Catalog) -> Result<()> {

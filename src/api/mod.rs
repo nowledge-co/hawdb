@@ -1090,12 +1090,50 @@ impl Database {
     }
 
     pub fn checkpoint(&mut self) -> Result<()> {
+        self.checkpoint_internal(None)
+    }
+
+    /// Checkpoint entry carrying an explicit pre-admitted columnar-shadow
+    /// context, for callers that already hold a governor permit and
+    /// extended it by [`Database::columnar_shadow_admission_bytes`]. The
+    /// shadow build then draws only against the passed token — it never
+    /// touches the governor, so nested admission cannot deadlock a
+    /// constrained configuration.
+    pub fn checkpoint_with_shadow_admission(
+        &mut self,
+        shadow_admission: crate::store::ColumnarShadowAdmission,
+    ) -> Result<()> {
+        self.checkpoint_internal(Some(shadow_admission))
+    }
+
+    /// The builder-lifetime byte reservation one shadow build needs; zero
+    /// when `graph_columnar_shadow_checkpoint` is off.
+    pub fn columnar_shadow_admission_bytes(&self) -> u64 {
+        self.store.columnar_shadow_admission_bytes()
+    }
+
+    fn checkpoint_internal(
+        &mut self,
+        shadow_admission: Option<crate::store::ColumnarShadowAdmission>,
+    ) -> Result<()> {
         self.ensure_writable()?;
         let started = std::time::Instant::now();
         let durable = self.store.storage_recovery_report().durable;
         let prepared = self.checkpoint_source()?.prepare()?;
         let result = match prepared {
-            Some(prepared) => self.publish_prepared_checkpoint(prepared),
+            Some(prepared) => {
+                let oldest_reader_epoch = self
+                    .reader_pins
+                    .lock()
+                    .expect("database reader pins lock should not be poisoned")
+                    .oldest_epoch();
+                self.store
+                    .publish_prepared_checkpoint_with_shadow_admission(
+                        prepared,
+                        oldest_reader_epoch,
+                        shadow_admission,
+                    )
+            }
             None => Ok(()),
         };
         if durable && let Some(telemetry) = &self.telemetry {
