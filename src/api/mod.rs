@@ -1171,6 +1171,14 @@ impl Database {
         self.store.storage_residency_report()
     }
 
+    /// Threads the engine's runtime governor into the storage layer so
+    /// background columnar-shadow work can request admission. Called by the
+    /// embedding layers that own the governor (`SkeinEmbedded`,
+    /// `NowledgeMemGraph`); a second governor is never constructed here.
+    pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
+        self.store.set_runtime_governor(governor);
+    }
+
     /// Shadow write-amplification evidence of the most recent checkpoint,
     /// `None` while `columnar_shadow_checkpoint` is off or before the first
     /// shadow checkpoint (spec §3.7).

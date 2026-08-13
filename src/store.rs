@@ -914,6 +914,10 @@ pub struct GraphStore {
     relational_mutation_limits: RelationalMutationLimits,
     relational_overflow_config: RelationalOverflowConfig,
     columnar_shadow: ColumnarShadowState,
+    /// The engine's runtime governor, threaded down from the embedding
+    /// layer (`SkeinEmbedded` / `NowledgeMemGraph`) so background shadow
+    /// work can request admission. The store never constructs its own.
+    runtime_governor: Option<skein_qos::RuntimeGovernor>,
     durable: Option<DurableStore>,
 }
 
@@ -1538,6 +1542,7 @@ impl GraphStore {
             relational_mutation_limits: RelationalMutationLimits::default(),
             relational_overflow_config: RelationalOverflowConfig::default(),
             columnar_shadow: ColumnarShadowState::default(),
+            runtime_governor: None,
             durable: Some(durable),
         };
         store.load_checkpoint(catalog, replay_config)?;
@@ -1793,8 +1798,16 @@ impl GraphStore {
             relational_mutation_limits: self.relational_mutation_limits,
             relational_overflow_config: self.relational_overflow_config,
             columnar_shadow: self.columnar_shadow.clone(),
+            runtime_governor: self.runtime_governor.clone(),
             durable: None,
         }
+    }
+
+    /// Threads the engine's runtime governor into the store so background
+    /// shadow work can request admission (`WorkClass::Shadow`, background
+    /// priority). The store never constructs a governor of its own.
+    pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
+        self.runtime_governor = Some(governor);
     }
 
     pub fn register_projected_graph(

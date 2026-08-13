@@ -71,6 +71,10 @@ const TARGET_COLUMN: PropertyId = PropertyId(2);
 const RESIDUAL_COLUMN: PropertyId = PropertyId(3);
 /// First shadow key-dictionary id; everything below is reserved.
 const FIRST_DICTIONARY_COLUMN: u32 = 4;
+/// Default global byte budget across all in-flight shadow group buffers.
+const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+/// Fixed per-row overhead charged against the buffer budget.
+const SHADOW_ROW_OVERHEAD_BYTES: u64 = 16;
 
 /// Write-amplification evidence for one shadow checkpoint, in the style of
 /// the existing storage reports.
@@ -90,6 +94,12 @@ pub struct ColumnarShadowCheckpointReport {
     pub group_bytes_written: u64,
     /// Table-directory, key-dictionary, and manifest bytes written.
     pub metadata_bytes_written: u64,
+    /// Largest total held across all group buffers at any point of the
+    /// build; bounded by the shadow buffer budget (spec §8 discipline).
+    pub peak_buffered_bytes: u64,
+    /// Column groups flushed by this checkpoint, including budget-driven
+    /// short groups (the group row capacity is a maximum, not a minimum).
+    pub flushed_group_count: usize,
     /// Wall-clock time spent building and publishing the shadow.
     pub elapsed_micros: u64,
 }
@@ -107,7 +117,7 @@ pub struct ColumnarShadowRecoveryStatus {
 }
 
 /// Shadow bookkeeping carried by [`GraphStore`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(super) struct ColumnarShadowState {
     /// The config flag; when off, every shadow hook is a no-op.
     pub(super) enabled: bool,
@@ -118,8 +128,26 @@ pub(super) struct ColumnarShadowState {
     pub(super) dirty: BTreeSet<ColumnGroupTableKey>,
     /// The active published shadow catalog, for untouched-table reuse.
     pub(super) catalog: Option<PublishedColumnGroupCatalog>,
+    /// Global byte budget across all in-flight group buffers during a
+    /// shadow build; exceeding it flushes the largest buffer as a short
+    /// group.
+    pub(super) buffer_budget_bytes: u64,
     pub(super) recovery: ColumnarShadowRecoveryStatus,
     pub(super) report: Option<ColumnarShadowCheckpointReport>,
+}
+
+impl Default for ColumnarShadowState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            all_dirty: false,
+            dirty: BTreeSet::new(),
+            catalog: None,
+            buffer_budget_bytes: DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
+            recovery: ColumnarShadowRecoveryStatus::default(),
+            report: None,
+        }
+    }
 }
 
 /// The shadow table key of a node with `labels` (minimum label = primary).
@@ -378,169 +406,403 @@ impl InferredType {
     }
 }
 
-/// Per-generation type inference over one table snapshot: a key is typed
-/// iff every occurrence has one scalar type; anything else is residual.
-fn infer_typed_keys<'a>(
-    property_maps: impl Iterator<Item = &'a BTreeMap<String, Value>>,
-) -> BTreeMap<String, InferredType> {
-    let mut inferred: BTreeMap<String, InferredType> = BTreeMap::new();
-    for properties in property_maps {
+/// Per-table pass-1 accumulator: O(1) state per property (current
+/// type-lattice point), never buffered rows.
+#[derive(Debug, Default)]
+struct TablePropertyTypes {
+    inferred: BTreeMap<String, InferredType>,
+}
+
+impl TablePropertyTypes {
+    fn observe(&mut self, properties: &BTreeMap<String, Value>) {
         for (key, value) in properties {
             let observed = InferredType::of(value);
-            inferred
+            self.inferred
                 .entry(key.clone())
                 .and_modify(|current| *current = current.merge(observed))
                 .or_insert(observed);
         }
     }
-    inferred
 }
 
-struct BuiltTable {
-    reference: ColumnGroupTableDirectoryRef,
-    group_bytes: u64,
-    directory_bytes: u64,
+/// The fixed column layout of one dirty table for this generation, derived
+/// from pass 1 before any row is buffered.
+struct ShadowTableLayout {
+    /// Typed columns, sorted by key: `(shadow column id, property key)`.
+    typed: Vec<(PropertyId, String)>,
 }
 
-struct TableRow {
-    id: u64,
-    /// Label-set blob for node tables, `None` for relationship tables.
-    label_set: Option<Vec<u8>>,
-    /// `(source, target)` endpoints for relationship tables.
-    endpoints: Option<(u64, u64)>,
-    properties: BTreeMap<String, Value>,
-}
-
-fn build_table(
-    shadow_root: &Path,
-    table: ColumnGroupTableKey,
-    generation: ManifestGeneration,
-    rows: &[TableRow],
+fn shadow_table_layout(
+    types: &TablePropertyTypes,
     dictionary: &mut ShadowKeyDictionary,
-) -> Result<BuiltTable> {
-    let typed_keys = infer_typed_keys(rows.iter().map(|row| &row.properties))
-        .into_iter()
-        .filter(|(_, inferred)| *inferred != InferredType::Residual)
-        .map(|(key, _)| key)
-        .collect::<Vec<_>>();
-    let mut typed_columns = Vec::with_capacity(typed_keys.len());
-    for key in &typed_keys {
-        typed_columns.push((dictionary.intern(key)?, key.as_str()));
+) -> Result<ShadowTableLayout> {
+    let mut typed = Vec::new();
+    for (key, inferred) in &types.inferred {
+        if *inferred != InferredType::Residual {
+            typed.push((dictionary.intern(key)?, key.clone()));
+        }
     }
-    let typed_key_set = typed_keys
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
+    Ok(ShadowTableLayout { typed })
+}
 
-    let kind_tag = match table.kind {
-        ColumnGroupTableKind::Node => "node",
-        ColumnGroupTableKind::Relationship => "relationship",
-        ColumnGroupTableKind::Relational => {
-            return Err(SkeinError::Storage(
-                "columnar shadow does not cover relational tables".to_string(),
-            ))
-        }
-    };
-    let writer = ColumnGroupWriter::default();
-    let mut descriptors = Vec::new();
-    let mut group_bytes = 0u64;
-    for (group_index, chunk) in rows.chunks(DEFAULT_GROUP_ROW_CAPACITY as usize).enumerate() {
-        let ids = chunk.iter().map(|row| row.id).collect::<Vec<_>>();
-        let mut value_columns: Vec<(PropertyId, Vec<Value>)> = Vec::new();
-        for (property_id, key) in &typed_columns {
-            let values = chunk
+/// Rough resident-byte estimate of one buffered value, mirroring the
+/// existing record estimators' spirit: enough to keep the budget honest,
+/// never exact.
+fn estimated_shadow_value_bytes(value: &Value) -> u64 {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => 16,
+        Value::String(value) => 16 + value.len() as u64,
+        Value::List(values) => 16 + values.iter().map(estimated_shadow_value_bytes).sum::<u64>(),
+        Value::Map(entries) => {
+            16 + entries
                 .iter()
-                .map(|row| row.properties.get(*key).cloned().unwrap_or(Value::Null))
-                .collect::<Vec<_>>();
-            value_columns.push((*property_id, values));
+                .map(|(key, value)| key.len() as u64 + estimated_shadow_value_bytes(value))
+                .sum::<u64>()
         }
-        if table.kind == ColumnGroupTableKind::Relationship {
-            // u64 endpoints ride plain integer columns bit-preserving:
-            // `id as i64` on write, `value as u64` on read.
-            value_columns.push((
-                SOURCE_COLUMN,
-                chunk
-                    .iter()
-                    .map(|row| Value::Int(row.endpoints.expect("relationship row").0 as i64))
-                    .collect(),
-            ));
-            value_columns.push((
-                TARGET_COLUMN,
-                chunk
-                    .iter()
-                    .map(|row| Value::Int(row.endpoints.expect("relationship row").1 as i64))
-                    .collect(),
-            ));
-        }
-        let mut byte_columns: Vec<(PropertyId, Vec<Option<Vec<u8>>>)> = Vec::new();
-        if table.kind == ColumnGroupTableKind::Node {
-            byte_columns.push((
-                LABEL_SET_COLUMN,
-                chunk
-                    .iter()
-                    .map(|row| row.label_set.clone())
-                    .collect::<Vec<_>>(),
-            ));
-        }
-        let mut residual_rows = Vec::with_capacity(chunk.len());
-        for row in chunk {
-            let mut entries = Vec::new();
-            for (key, value) in &row.properties {
-                if typed_key_set.contains(key.as_str()) {
-                    continue;
-                }
-                entries.push((dictionary.intern(key)?.0, value));
+    }
+}
+
+/// Requests background admission for one group flush from the engine's
+/// runtime governor (`WorkClass::Shadow` maps to background `Control`
+/// work, mirroring `runtime_work_request_with_capacity`). Retryable
+/// rejections back off briefly; persistent denial fails the shadow build,
+/// which the checkpoint records as a failed shadow and retries later.
+/// Without a threaded governor (plain `GraphStore` opens) the flush
+/// proceeds unmetered.
+fn admit_shadow_flush(
+    governor: Option<&skein_qos::RuntimeGovernor>,
+    flush_bytes: u64,
+) -> Result<Option<skein_qos::RuntimePermit>> {
+    const RETRY_LIMIT: u32 = 200;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+    let Some(governor) = governor else {
+        return Ok(None);
+    };
+    let request = skein_qos::RuntimeWorkRequest {
+        priority: skein_qos::RuntimeWorkPriority::Background,
+        kind: skein_qos::RuntimeWorkKind::Control,
+        cpu_slots: 1,
+        memory_bytes: flush_bytes,
+        io_slots: 1,
+        result_bytes: 0,
+        blocking: false,
+    };
+    let mut attempt = 0;
+    loop {
+        match governor.try_admit(request) {
+            Ok(permit) => return Ok(Some(permit)),
+            Err(error) if error.is_retryable() && attempt < RETRY_LIMIT => {
+                attempt += 1;
+                std::thread::sleep(RETRY_DELAY);
             }
-            if entries.is_empty() {
-                residual_rows.push(None);
-            } else {
-                entries.sort_by_key(|(key_id, _)| *key_id);
-                residual_rows.push(Some(
-                    encode_residual_row_properties(&entries)
-                        .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            Err(error) => {
+                return Err(SkeinError::Storage(format!(
+                    "columnar shadow flush admission denied: {error}"
+                )));
+            }
+        }
+    }
+}
+
+/// One in-flight bounded group buffer (max one group's rows).
+#[derive(Debug, Default)]
+struct ShadowGroupBuffer {
+    ids: Vec<u64>,
+    /// Parallel to the table layout's typed columns.
+    typed: Vec<Vec<Value>>,
+    /// Node tables only.
+    label_sets: Vec<Option<Vec<u8>>>,
+    /// Relationship tables only: `(source, target)` as u64-as-i64 values.
+    sources: Vec<Value>,
+    targets: Vec<Value>,
+    residuals: Vec<Option<Vec<u8>>>,
+    estimated_bytes: u64,
+}
+
+struct BuiltShadowTables {
+    references: Vec<(ColumnGroupTableDirectoryRef, u64)>,
+    group_bytes_written: u64,
+    peak_buffered_bytes: u64,
+    flushed_group_count: usize,
+}
+
+/// Streaming pass-2 builder: appends rows into per-table bounded group
+/// buffers under one global byte budget. A full buffer flushes as a
+/// complete group; exceeding the budget flushes the largest buffer as a
+/// shorter group. Every flush requests governor admission first.
+struct ShadowCheckpointBuilder {
+    shadow_root: PathBuf,
+    generation: ManifestGeneration,
+    governor: Option<skein_qos::RuntimeGovernor>,
+    buffer_budget_bytes: u64,
+    writer: ColumnGroupWriter,
+    layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
+    buffers: BTreeMap<ColumnGroupTableKey, ShadowGroupBuffer>,
+    descriptors: BTreeMap<ColumnGroupTableKey, Vec<ColumnGroupArtifactDescriptor>>,
+    next_group_index: BTreeMap<ColumnGroupTableKey, u64>,
+    buffered_bytes: u64,
+    peak_buffered_bytes: u64,
+    flushed_group_count: usize,
+    group_bytes_written: u64,
+}
+
+impl ShadowCheckpointBuilder {
+    fn new(
+        shadow_root: PathBuf,
+        generation: ManifestGeneration,
+        governor: Option<skein_qos::RuntimeGovernor>,
+        buffer_budget_bytes: u64,
+        layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
+    ) -> Self {
+        Self {
+            shadow_root,
+            generation,
+            governor,
+            buffer_budget_bytes,
+            writer: ColumnGroupWriter::default(),
+            layouts,
+            buffers: BTreeMap::new(),
+            descriptors: BTreeMap::new(),
+            next_group_index: BTreeMap::new(),
+            buffered_bytes: 0,
+            peak_buffered_bytes: 0,
+            flushed_group_count: 0,
+            group_bytes_written: 0,
+        }
+    }
+
+    fn append_node(
+        &mut self,
+        dictionary: &mut ShadowKeyDictionary,
+        node: NodeRecord,
+    ) -> Result<()> {
+        let key = node_table_key(&node.labels);
+        let label_set = encode_label_set(&node.labels);
+        self.append_row(
+            dictionary,
+            key,
+            node.id.0,
+            Some(label_set),
+            None,
+            &node.properties,
+        )
+    }
+
+    fn append_relationship(
+        &mut self,
+        dictionary: &mut ShadowKeyDictionary,
+        relationship: RelRecord,
+    ) -> Result<()> {
+        let key = relationship_table_key(relationship.rel_type);
+        self.append_row(
+            dictionary,
+            key,
+            relationship.id.0,
+            None,
+            Some((relationship.source.0, relationship.target.0)),
+            &relationship.properties,
+        )
+    }
+
+    fn append_row(
+        &mut self,
+        dictionary: &mut ShadowKeyDictionary,
+        table: ColumnGroupTableKey,
+        id: u64,
+        label_set: Option<Vec<u8>>,
+        endpoints: Option<(u64, u64)>,
+        properties: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        // Materialize the row's column cells first so its cost is known
+        // before it is admitted against the budget.
+        let layout_typed_len = self.layouts[&table].typed.len();
+        let mut typed_cells = Vec::with_capacity(layout_typed_len);
+        let mut row_bytes = SHADOW_ROW_OVERHEAD_BYTES;
+        for index in 0..layout_typed_len {
+            let key = &self.layouts[&table].typed[index].1;
+            let cell = properties.get(key).cloned().unwrap_or(Value::Null);
+            row_bytes = row_bytes.saturating_add(estimated_shadow_value_bytes(&cell));
+            typed_cells.push(cell);
+        }
+        let mut residual_entries = Vec::new();
+        for (key, value) in properties {
+            if self.layouts[&table]
+                .typed
+                .iter()
+                .any(|(_, typed_key)| typed_key == key)
+            {
+                continue;
+            }
+            residual_entries.push((dictionary.intern(key)?.0, value));
+        }
+        let residual = if residual_entries.is_empty() {
+            None
+        } else {
+            residual_entries.sort_by_key(|(key_id, _)| *key_id);
+            Some(
+                encode_residual_row_properties(&residual_entries)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            )
+        };
+        row_bytes = row_bytes
+            .saturating_add(residual.as_ref().map_or(0, |blob| blob.len() as u64))
+            .saturating_add(label_set.as_ref().map_or(0, |blob| blob.len() as u64));
+
+        // Budget admission: flush the largest buffer as a shorter group
+        // until this row fits. A row larger than the whole budget is the
+        // sole occupant of an otherwise empty buffer set.
+        while self.buffered_bytes > 0
+            && self.buffered_bytes.saturating_add(row_bytes) > self.buffer_budget_bytes
+        {
+            self.flush_largest_buffer()?;
+        }
+
+        let buffer = self.buffers.entry(table).or_default();
+        if buffer.typed.is_empty() {
+            buffer.typed = vec![Vec::new(); layout_typed_len];
+        }
+        buffer.ids.push(id);
+        for (column, cell) in buffer.typed.iter_mut().zip(typed_cells) {
+            column.push(cell);
+        }
+        match table.kind {
+            ColumnGroupTableKind::Node => {
+                buffer.label_sets.push(label_set);
+            }
+            ColumnGroupTableKind::Relationship => {
+                let (source, target) = endpoints.expect("relationship row has endpoints");
+                // u64 endpoints ride plain integer columns bit-preserving:
+                // `id as i64` on write, `value as u64` on read.
+                buffer.sources.push(Value::Int(source as i64));
+                buffer.targets.push(Value::Int(target as i64));
+            }
+            ColumnGroupTableKind::Relational => {
+                return Err(SkeinError::Storage(
+                    "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
         }
-        byte_columns.push((RESIDUAL_COLUMN, residual_rows));
+        buffer.residuals.push(residual);
+        buffer.estimated_bytes = buffer.estimated_bytes.saturating_add(row_bytes);
+        let full = buffer.ids.len() >= DEFAULT_GROUP_ROW_CAPACITY as usize;
+        self.buffered_bytes = self.buffered_bytes.saturating_add(row_bytes);
+        self.peak_buffered_bytes = self.peak_buffered_bytes.max(self.buffered_bytes);
+        if full {
+            self.flush_table(table)?;
+        }
+        Ok(())
+    }
 
+    fn flush_largest_buffer(&mut self) -> Result<()> {
+        let largest = self
+            .buffers
+            .iter()
+            .filter(|(_, buffer)| !buffer.ids.is_empty())
+            .max_by_key(|(_, buffer)| buffer.estimated_bytes)
+            .map(|(table, _)| *table);
+        match largest {
+            Some(table) => self.flush_table(table),
+            None => Ok(()),
+        }
+    }
+
+    /// Flushes one table's buffer as an immutable group (possibly shorter
+    /// than the group row capacity), gated by governor admission.
+    fn flush_table(&mut self, table: ColumnGroupTableKey) -> Result<()> {
+        let Some(buffer) = self.buffers.remove(&table) else {
+            return Ok(());
+        };
+        if buffer.ids.is_empty() {
+            return Ok(());
+        }
+        let _permit = admit_shadow_flush(self.governor.as_ref(), buffer.estimated_bytes)?;
+        let kind_tag = match table.kind {
+            ColumnGroupTableKind::Node => "node",
+            ColumnGroupTableKind::Relationship => "relationship",
+            ColumnGroupTableKind::Relational => {
+                return Err(SkeinError::Storage(
+                    "columnar shadow does not cover relational tables".to_string(),
+                ));
+            }
+        };
+        let group_index = self.next_group_index.entry(table).or_insert(0);
         let file_name = format!(
             "group-{kind_tag}-{}-{}-{}.skein",
-            table.table_id, generation.0, group_index
+            table.table_id, self.generation.0, group_index
         );
-        let path = shadow_root.join(&file_name);
-        writer
+        let mut value_columns: Vec<(PropertyId, Vec<Value>)> = self.layouts[&table]
+            .typed
+            .iter()
+            .map(|(property_id, _)| *property_id)
+            .zip(buffer.typed)
+            .collect();
+        let mut byte_columns: Vec<(PropertyId, Vec<Option<Vec<u8>>>)> = Vec::new();
+        match table.kind {
+            ColumnGroupTableKind::Node => {
+                byte_columns.push((LABEL_SET_COLUMN, buffer.label_sets));
+            }
+            ColumnGroupTableKind::Relationship => {
+                value_columns.push((SOURCE_COLUMN, buffer.sources));
+                value_columns.push((TARGET_COLUMN, buffer.targets));
+            }
+            ColumnGroupTableKind::Relational => unreachable!("rejected above"),
+        }
+        byte_columns.push((RESIDUAL_COLUMN, buffer.residuals));
+        let path = self.shadow_root.join(&file_name);
+        self.writer
             .write_with_byte_columns(
                 &path,
-                group_index as u64,
-                generation,
-                &ids,
+                *group_index,
+                self.generation,
+                &buffer.ids,
                 &value_columns,
                 &byte_columns,
             )
             .map_err(shadow_error)?;
-        group_bytes = group_bytes.saturating_add(fs::metadata(&path)?.len());
-        descriptors.push(
-            ColumnGroupArtifactDescriptor::inspect(shadow_root, file_name, None)
+        *group_index += 1;
+        self.group_bytes_written = self
+            .group_bytes_written
+            .saturating_add(fs::metadata(&path)?.len());
+        self.flushed_group_count += 1;
+        self.buffered_bytes = self.buffered_bytes.saturating_sub(buffer.estimated_bytes);
+        self.descriptors.entry(table).or_default().push(
+            ColumnGroupArtifactDescriptor::inspect(&self.shadow_root, file_name, None)
                 .map_err(shadow_error)?,
         );
+        Ok(())
     }
 
-    let directory =
-        ColumnGroupTableDirectory::new(table, generation, descriptors).map_err(shadow_error)?;
-    // A crashed earlier publication attempt of this same (unpublished)
-    // generation may have left an immutable directory file with different
-    // bytes; the active manifest never references the candidate generation,
-    // so the orphan is garbage and safe to drop before rewriting.
-    let _ = fs::remove_file(shadow_root.join(directory.file_name()));
-    let reference = directory
-        .write_immutable(shadow_root)
-        .map_err(shadow_error)?;
-    let directory_bytes = fs::metadata(shadow_root.join(reference.file_name()))?.len();
-    Ok(BuiltTable {
-        reference,
-        group_bytes,
-        directory_bytes,
-    })
+    /// Flushes every remaining buffer and publishes one immutable directory
+    /// per rebuilt table, returning the new references with their byte
+    /// sizes.
+    fn finish(mut self) -> Result<BuiltShadowTables> {
+        let pending = self.buffers.keys().copied().collect::<Vec<_>>();
+        for table in pending {
+            self.flush_table(table)?;
+        }
+        let mut references = Vec::with_capacity(self.descriptors.len());
+        for (table, descriptors) in std::mem::take(&mut self.descriptors) {
+            let directory = ColumnGroupTableDirectory::new(table, self.generation, descriptors)
+                .map_err(shadow_error)?;
+            // A crashed earlier publication attempt of this same
+            // (unpublished) generation may have left an immutable directory
+            // file with different bytes; the active manifest never
+            // references the candidate generation, so the orphan is garbage
+            // and safe to drop before rewriting.
+            let _ = fs::remove_file(self.shadow_root.join(directory.file_name()));
+            let reference = directory
+                .write_immutable(&self.shadow_root)
+                .map_err(shadow_error)?;
+            let directory_bytes = fs::metadata(self.shadow_root.join(reference.file_name()))?.len();
+            references.push((reference, directory_bytes));
+        }
+        Ok(BuiltShadowTables {
+            references,
+            group_bytes_written: self.group_bytes_written,
+            peak_buffered_bytes: self.peak_buffered_bytes,
+            flushed_group_count: self.flushed_group_count,
+        })
+    }
 }
 
 // --- GraphStore hooks -------------------------------------------------------
@@ -665,32 +927,35 @@ impl GraphStore {
                     .is_none_or(|catalog| catalog.manifest().table(key).is_none())
         };
 
-        let mut dirty_tables: BTreeMap<ColumnGroupTableKey, Vec<TableRow>> = BTreeMap::new();
+        // Pass 1: stream the canonical scan accumulating only per-table
+        // per-property type-lattice state (O(1) per property), fixing each
+        // dirty table's column layout before any row is buffered. Dirty
+        // tables with zero remaining rows never appear here and are dropped
+        // from the manifest instead of publishing empty directories.
+        let mut table_types: BTreeMap<ColumnGroupTableKey, TablePropertyTypes> = BTreeMap::new();
         for record in self.node_records_owned() {
             let node = record?;
             let key = node_table_key(&node.labels);
-            if !is_dirty(key) {
-                continue;
+            if is_dirty(key) {
+                table_types
+                    .entry(key)
+                    .or_default()
+                    .observe(&node.properties);
             }
-            dirty_tables.entry(key).or_default().push(TableRow {
-                id: node.id.0,
-                label_set: Some(encode_label_set(&node.labels)),
-                endpoints: None,
-                properties: node.properties,
-            });
         }
         for record in self.relationship_records_owned() {
             let relationship = record?;
             let key = relationship_table_key(relationship.rel_type);
-            if !is_dirty(key) {
-                continue;
+            if is_dirty(key) {
+                table_types
+                    .entry(key)
+                    .or_default()
+                    .observe(&relationship.properties);
             }
-            dirty_tables.entry(key).or_default().push(TableRow {
-                id: relationship.id.0,
-                label_set: None,
-                endpoints: Some((relationship.source.0, relationship.target.0)),
-                properties: relationship.properties,
-            });
+        }
+        let mut layouts = BTreeMap::new();
+        for (table, types) in &table_types {
+            layouts.insert(*table, shadow_table_layout(types, &mut dictionary)?);
         }
 
         let parent_generation = previous
@@ -698,10 +963,32 @@ impl GraphStore {
             .map(|catalog| catalog.manifest().generation());
         let generation = ManifestGeneration(parent_generation.map_or(1, |parent| parent.0 + 1));
 
+        // Pass 2: stream again, appending rows into bounded per-table group
+        // buffers under the global byte budget; every flush requests
+        // governor admission.
+        let mut builder = ShadowCheckpointBuilder::new(
+            shadow_root.clone(),
+            generation,
+            self.runtime_governor.clone(),
+            self.columnar_shadow.buffer_budget_bytes,
+            layouts,
+        );
+        for record in self.node_records_owned() {
+            let node = record?;
+            if is_dirty(node_table_key(&node.labels)) {
+                builder.append_node(&mut dictionary, node)?;
+            }
+        }
+        for record in self.relationship_records_owned() {
+            let relationship = record?;
+            if is_dirty(relationship_table_key(relationship.rel_type)) {
+                builder.append_relationship(&mut dictionary, relationship)?;
+            }
+        }
+        let built = builder.finish()?;
+
         let mut tables = Vec::new();
-        let mut dirty_table_count = 0usize;
         let mut reused_table_count = 0usize;
-        let mut group_bytes_written = 0u64;
         let mut metadata_bytes_written = 0u64;
         if let Some(previous) = &previous {
             for reference in previous.manifest().tables() {
@@ -713,15 +1000,11 @@ impl GraphStore {
                 }
             }
         }
-        for (table, rows) in &dirty_tables {
-            let built = build_table(&shadow_root, *table, generation, rows, &mut dictionary)?;
-            group_bytes_written = group_bytes_written.saturating_add(built.group_bytes);
-            metadata_bytes_written = metadata_bytes_written.saturating_add(built.directory_bytes);
-            tables.push(built.reference);
-            dirty_table_count += 1;
+        let dirty_table_count = built.references.len();
+        for (reference, directory_bytes) in built.references {
+            metadata_bytes_written = metadata_bytes_written.saturating_add(directory_bytes);
+            tables.push(reference);
         }
-        // Dirty tables that ended up with zero visible rows are dropped from
-        // the manifest entirely rather than published as empty directories.
 
         if dictionary.len() != dictionary_len_before || dictionary_len_before == 0 {
             metadata_bytes_written =
@@ -746,8 +1029,10 @@ impl GraphStore {
             table_count,
             dirty_table_count,
             reused_table_count,
-            group_bytes_written,
+            group_bytes_written: built.group_bytes_written,
             metadata_bytes_written,
+            peak_buffered_bytes: built.peak_buffered_bytes,
+            flushed_group_count: built.flushed_group_count,
             elapsed_micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         });
         Ok(())
@@ -1365,6 +1650,116 @@ mod tests {
             .create_node(&mut catalog, "A", properties(&[]))
             .unwrap();
         assert!(store.columnar_shadow.dirty.is_empty());
+    }
+
+    #[test]
+    fn large_builds_stay_under_the_buffer_budget_with_short_groups() {
+        let root = unique_shadow_dir("bounded");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        // A small budget override against a graph an order of magnitude
+        // larger: the build must flush short groups instead of collecting
+        // whole tables (write amplification stays proportional to the dirty
+        // table count, but memory must not scale with table size).
+        const BUDGET: u64 = 8 * 1024;
+        store.columnar_shadow.buffer_budget_bytes = BUDGET;
+
+        let mut node_ids = Vec::new();
+        for index in 0..600u32 {
+            let label = if index % 2 == 0 { "Alpha" } else { "Beta" };
+            let id = store
+                .create_node(
+                    &mut catalog,
+                    label,
+                    properties(&[
+                        (
+                            "name",
+                            Value::String(format!("row-{index:05}-{}", "x".repeat(48))),
+                        ),
+                        ("rank", Value::Int(i64::from(index))),
+                        (
+                            "flex",
+                            if index % 3 == 0 {
+                                Value::Int(i64::from(index))
+                            } else {
+                                Value::String("mixed".to_string())
+                            },
+                        ),
+                    ]),
+                )
+                .unwrap();
+            node_ids.push(id);
+        }
+        for window in node_ids.windows(2).step_by(3) {
+            store
+                .create_relationship(
+                    &mut catalog,
+                    window[0],
+                    window[1],
+                    "LINKS",
+                    properties(&[("weight", Value::Int(7))]),
+                )
+                .unwrap();
+        }
+
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert!(
+            report.peak_buffered_bytes <= BUDGET,
+            "peak buffered bytes {} exceed the {BUDGET} byte budget",
+            report.peak_buffered_bytes
+        );
+        assert!(report.peak_buffered_bytes > 0);
+        // The data volume is far beyond one budget's worth, so the build
+        // must have flushed many budget-driven short groups.
+        assert!(report.group_bytes_written > BUDGET);
+        assert!(
+            report.flushed_group_count > report.table_count,
+            "expected budget-driven short groups beyond one per table, got {}",
+            report.flushed_group_count
+        );
+        // Short groups are legal (row capacity is a max, not a min) and the
+        // multi-group reconstruction still matches the canonical scan.
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shadow_flushes_request_admission_from_the_threaded_governor() {
+        let root = unique_shadow_dir("governor");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let governor = skein_qos::RuntimeGovernor::detect(
+            skein_qos::RuntimeGovernorConfig::desktop_bound(),
+            skein_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        store.set_runtime_governor(governor.clone());
+        store.columnar_shadow.buffer_budget_bytes = 4 * 1024;
+        for index in 0..200u32 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Metered",
+                    properties(&[(
+                        "name",
+                        Value::String(format!("metered-{index:04}-{}", "y".repeat(32))),
+                    )]),
+                )
+                .unwrap();
+        }
+        let admissions_before = governor.snapshot().admissions;
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert!(report.flushed_group_count > 0);
+        let admissions_after = governor.snapshot().admissions;
+        assert!(
+            admissions_after >= admissions_before + report.flushed_group_count as u64,
+            "every group flush requests one background admission \
+             ({admissions_before} -> {admissions_after}, {} flushes)",
+            report.flushed_group_count
+        );
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

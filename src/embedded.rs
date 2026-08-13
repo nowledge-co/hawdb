@@ -259,11 +259,12 @@ impl SkeinEmbedded {
             resource_snapshot,
             storage_io,
         );
-        let database = Database::open_with_durability_and_config(
+        let mut database = Database::open_with_durability_and_config(
             &options.path,
             options.durability,
             options.config,
         )?;
+        database.set_runtime_governor(runtime_governor.clone());
         Ok(Self {
             path: options.path,
             database,
