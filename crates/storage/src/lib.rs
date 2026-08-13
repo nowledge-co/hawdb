@@ -29,7 +29,8 @@ pub use cache::{
     SegmentCacheError, SegmentCacheKey, SegmentCacheLease, SegmentCacheSnapshot, StoreId,
 };
 pub use canonical::{
-    CanonicalEndpointBloom, CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalReadReport,
+    decode_residual_row_properties, encode_residual_row_properties, CanonicalEndpointBloom,
+    CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalReadReport,
     CanonicalRelationshipIterator, CanonicalScanControl, CanonicalSegmentConfig,
     CanonicalSegmentDescriptor, CanonicalSegmentError, CanonicalSegmentKind,
     CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter,

@@ -37,9 +37,18 @@ pub enum ChunkEncoding {
     BitPackedInt,
     /// Cumulative `u32` offsets plus concatenated UTF-8 bytes.
     StringTable,
+    /// Cumulative `u32` offsets plus concatenated opaque bytes: the
+    /// byte-string analog of [`ChunkEncoding::StringTable`], carrying
+    /// row-major blobs (residual property rows, label sets). Byte-table
+    /// chunks encode through [`encode_byte_chunk`] and decode through
+    /// [`decode_byte_chunk`]; they never travel through the `Value` codecs.
+    ByteTable,
 }
 
 impl ChunkEncoding {
+    // Encoding id 8 is reserved for the group id column
+    // (`group::ID_CHUNK_ENCODING`), which lives in a separate directory
+    // field but shares the one-byte id namespace for clarity.
     pub const fn id(self) -> u8 {
         match self {
             Self::PlainInt => 1,
@@ -49,6 +58,7 @@ impl ChunkEncoding {
             Self::RunLength => 5,
             Self::BitPackedInt => 6,
             Self::StringTable => 7,
+            Self::ByteTable => 9,
         }
     }
 
@@ -61,6 +71,7 @@ impl ChunkEncoding {
             5 => Ok(Self::RunLength),
             6 => Ok(Self::BitPackedInt),
             7 => Ok(Self::StringTable),
+            9 => Ok(Self::ByteTable),
             _ => Err(corrupt(format!("unknown chunk encoding id {id}"))),
         }
     }
@@ -103,6 +114,13 @@ pub fn encode_chunk_body(
         ChunkEncoding::RunLength => encode_run_length(&dense)?,
         ChunkEncoding::BitPackedInt => encode_bit_packed_int(&dense)?,
         ChunkEncoding::StringTable => encode_string_table(&dense)?,
+        ChunkEncoding::ByteTable => {
+            return Err(unsupported(
+                "byte-table chunks encode through encode_byte_chunk, not the \
+                 Value chunk codec"
+                    .to_string(),
+            ))
+        }
     };
     let mut body = Vec::with_capacity(8 + validity_bytes(row_count) + payload.len());
     body.extend(row_count.to_le_bytes());
@@ -169,39 +187,7 @@ pub fn decode_chunk(
         bytes
     };
     let mut cursor = Cursor::new(body);
-    let row_count = cursor.read_u32("chunk row count")?;
-    let value_count = cursor.read_u32("chunk value count")?;
-    if row_count > MAX_CHUNK_ROWS {
-        return Err(corrupt(format!(
-            "chunk row count {row_count} exceeds the {MAX_CHUNK_ROWS} row limit"
-        )));
-    }
-    if value_count > row_count {
-        return Err(corrupt(format!(
-            "chunk value count {value_count} exceeds its row count {row_count}"
-        )));
-    }
-    let validity = cursor
-        .read_bytes(validity_bytes(row_count), "chunk validity bitmap")?
-        .to_vec();
-    let set_bits = validity
-        .iter()
-        .map(|byte| u32::from(byte.count_ones() as u8))
-        .sum::<u32>();
-    if set_bits != value_count {
-        return Err(corrupt(format!(
-            "chunk validity bitmap marks {set_bits} values but the header \
-             declares {value_count}"
-        )));
-    }
-    if row_count % 8 != 0 {
-        let tail = validity[validity.len().saturating_sub(1)];
-        if tail & !((1u16 << (row_count % 8)) as u8).wrapping_sub(1) != 0 {
-            return Err(corrupt(
-                "chunk validity bitmap sets bits beyond the row count".to_string(),
-            ));
-        }
-    }
+    let (row_count, value_count, validity) = read_chunk_prelude(&mut cursor)?;
     let dense = match encoding {
         ChunkEncoding::PlainInt => decode_plain_int(&mut cursor, value_count)?,
         ChunkEncoding::PlainFloat => decode_plain_float(&mut cursor, value_count)?,
@@ -210,6 +196,13 @@ pub fn decode_chunk(
         ChunkEncoding::RunLength => decode_run_length(&mut cursor, value_count)?,
         ChunkEncoding::BitPackedInt => decode_bit_packed_int(&mut cursor, value_count)?,
         ChunkEncoding::StringTable => decode_string_table(&mut cursor, value_count)?,
+        ChunkEncoding::ByteTable => {
+            return Err(unsupported(
+                "byte-table chunks decode through decode_byte_chunk, not the \
+                 Value chunk codec"
+                    .to_string(),
+            ))
+        }
     };
     cursor.expect_exhausted("chunk payload")?;
     debug_assert_eq!(dense.len(), value_count as usize);
@@ -245,6 +238,146 @@ fn finish_chunk(encoding: ChunkEncoding, body: Vec<u8>, compress: bool) -> Encod
         compressed: false,
         bytes: body,
     }
+}
+
+/// Reads and validates the shared chunk-body prelude: row count, value
+/// count, and the validity bitmap whose set bits must match the declared
+/// value count.
+fn read_chunk_prelude(cursor: &mut Cursor<'_>) -> Result<(u32, u32, Vec<u8>), ColumnGroupError> {
+    let row_count = cursor.read_u32("chunk row count")?;
+    let value_count = cursor.read_u32("chunk value count")?;
+    if row_count > MAX_CHUNK_ROWS {
+        return Err(corrupt(format!(
+            "chunk row count {row_count} exceeds the {MAX_CHUNK_ROWS} row limit"
+        )));
+    }
+    if value_count > row_count {
+        return Err(corrupt(format!(
+            "chunk value count {value_count} exceeds its row count {row_count}"
+        )));
+    }
+    let validity = cursor
+        .read_bytes(validity_bytes(row_count), "chunk validity bitmap")?
+        .to_vec();
+    let set_bits = validity
+        .iter()
+        .map(|byte| u32::from(byte.count_ones() as u8))
+        .sum::<u32>();
+    if set_bits != value_count {
+        return Err(corrupt(format!(
+            "chunk validity bitmap marks {set_bits} values but the header \
+             declares {value_count}"
+        )));
+    }
+    if row_count % 8 != 0 {
+        let tail = validity[validity.len().saturating_sub(1)];
+        if tail & !((1u16 << (row_count % 8)) as u8).wrapping_sub(1) != 0 {
+            return Err(corrupt(
+                "chunk validity bitmap sets bits beyond the row count".to_string(),
+            ));
+        }
+    }
+    Ok((row_count, value_count, validity))
+}
+
+/// Encodes a byte-table chunk: one optional opaque blob per row (`None` =
+/// null). The body reuses the standard chunk prelude, then stores
+/// `value_count + 1` cumulative `u32` offsets followed by the concatenated
+/// blob bytes — the byte-string analog of the string table encoding.
+pub fn encode_byte_chunk(
+    rows: &[Option<Vec<u8>>],
+    compress: bool,
+) -> Result<EncodedChunk, ColumnGroupError> {
+    let row_count = u32::try_from(rows.len())
+        .ok()
+        .filter(|count| *count <= MAX_CHUNK_ROWS)
+        .ok_or_else(|| {
+            unsupported(format!(
+                "chunk row count {} exceeds the {MAX_CHUNK_ROWS} row limit",
+                rows.len()
+            ))
+        })?;
+    let dense = rows.iter().flatten().collect::<Vec<_>>();
+    let value_count = dense.len() as u32;
+    let mut offsets = Vec::with_capacity(dense.len() + 1);
+    let mut blob_bytes = 0usize;
+    offsets.push(0u32);
+    for blob in &dense {
+        blob_bytes = blob_bytes
+            .checked_add(blob.len())
+            .filter(|total| u32::try_from(*total).is_ok())
+            .ok_or_else(|| unsupported("byte table chunk exceeds u32 bytes".to_string()))?;
+        offsets.push(blob_bytes as u32);
+    }
+    let mut body =
+        Vec::with_capacity(8 + validity_bytes(row_count) + 4 * offsets.len() + blob_bytes);
+    body.extend(row_count.to_le_bytes());
+    body.extend(value_count.to_le_bytes());
+    let mut validity = vec![0u8; validity_bytes(row_count)];
+    for (row, blob) in rows.iter().enumerate() {
+        if blob.is_some() {
+            validity[row / 8] |= 1 << (row % 8);
+        }
+    }
+    body.extend(validity);
+    for offset in offsets {
+        body.extend(offset.to_le_bytes());
+    }
+    for blob in dense {
+        body.extend(blob);
+    }
+    Ok(finish_chunk(ChunkEncoding::ByteTable, body, compress))
+}
+
+/// Decodes a byte-table chunk back to one optional blob per row, `None` at
+/// null positions per the validity bitmap.
+pub fn decode_byte_chunk(
+    bytes: &[u8],
+    compressed: bool,
+) -> Result<Vec<Option<Vec<u8>>>, ColumnGroupError> {
+    let body;
+    let body = if compressed {
+        body = decompress_body(bytes)?;
+        body.as_slice()
+    } else {
+        bytes
+    };
+    let mut cursor = Cursor::new(body);
+    let (row_count, value_count, validity) = read_chunk_prelude(&mut cursor)?;
+    let mut offsets = Vec::with_capacity(value_count as usize + 1);
+    for _ in 0..=value_count {
+        offsets.push(cursor.read_u32("byte table offset")?);
+    }
+    let total = *offsets
+        .last()
+        .expect("offsets holds value_count + 1 entries");
+    let blob_bytes = cursor.read_bytes(total as usize, "byte table bytes")?;
+    cursor.expect_exhausted("byte table chunk payload")?;
+    let mut dense = offsets
+        .windows(2)
+        .map(|window| {
+            let (start, end) = (window[0] as usize, window[1] as usize);
+            if window[0] > window[1] || end > blob_bytes.len() {
+                return Err(corrupt(
+                    "byte table offsets are not monotonically increasing".to_string(),
+                ));
+            }
+            Ok(blob_bytes[start..end].to_vec())
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
+    let rows = (0..row_count as usize)
+        .map(|row| {
+            if validity[row / 8] & (1 << (row % 8)) != 0 {
+                dense.next().map(Some).ok_or_else(|| {
+                    corrupt("byte table payload ends before its validity bitmap".to_string())
+                })
+            } else {
+                Ok(None)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 fn decompress_body(bytes: &[u8]) -> Result<Vec<u8>, ColumnGroupError> {
@@ -1026,6 +1159,64 @@ mod tests {
         tampered[8] ^= 0b10;
         assert!(matches!(
             decode_chunk(&tampered, chunk.encoding, false),
+            Err(ColumnGroupError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn byte_table_round_trips_with_nulls_binary_and_empty_blobs() {
+        let rows = vec![
+            Some(vec![0u8, 255, 7, 0, 128]),
+            None,
+            Some(Vec::new()),
+            Some(b"skein".to_vec()),
+            None,
+            Some(vec![0xde; 300]),
+        ];
+        for compress in [false, true] {
+            let chunk = encode_byte_chunk(&rows, compress).unwrap();
+            assert_eq!(chunk.encoding, ChunkEncoding::ByteTable);
+            let decoded = decode_byte_chunk(&chunk.bytes, chunk.compressed).unwrap();
+            assert_eq!(decoded, rows, "compress={compress}");
+        }
+        // Empty and all-null chunks round trip too.
+        for rows in [Vec::new(), vec![None, None, None]] {
+            let chunk = encode_byte_chunk(&rows, true).unwrap();
+            assert_eq!(
+                decode_byte_chunk(&chunk.bytes, chunk.compressed).unwrap(),
+                rows
+            );
+        }
+    }
+
+    #[test]
+    fn byte_table_rejects_truncation_tampering_and_value_codec_use() {
+        let rows = vec![Some(vec![1u8, 2, 3]), None, Some(vec![4u8; 100])];
+        let chunk = encode_byte_chunk(&rows, false).unwrap();
+        for cut in [0, 1, 4, 7, chunk.bytes.len() - 1] {
+            assert!(matches!(
+                decode_byte_chunk(&chunk.bytes[..cut], false),
+                Err(ColumnGroupError::Corrupt(_))
+            ));
+        }
+        let mut padded = chunk.bytes.clone();
+        padded.push(0);
+        assert!(matches!(
+            decode_byte_chunk(&padded, false),
+            Err(ColumnGroupError::Corrupt(_))
+        ));
+        // The Value chunk codec refuses byte-table chunks in both directions.
+        assert!(matches!(
+            encode_chunk_with(&[Value::Int(1)], ChunkEncoding::ByteTable, false),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
+        assert!(matches!(
+            decode_chunk(&chunk.bytes, ChunkEncoding::ByteTable, false),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
+        // Invalid zstd bytes are corrupt, not a panic.
+        assert!(matches!(
+            decode_byte_chunk(&chunk.bytes, true),
             Err(ColumnGroupError::Corrupt(_))
         ));
     }

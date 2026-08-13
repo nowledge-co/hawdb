@@ -1945,6 +1945,49 @@ pub(crate) fn decode_standalone_value(encoded: &[u8]) -> Result<Value, Canonical
     Ok(value)
 }
 
+/// Encodes one residual-column row for the columnar shadow (§3.1.3):
+/// `u32 count | (u32 interned key id | canonical tagged value)*`. The value
+/// bytes are exactly the canonical record codec's, so no second value
+/// encoding exists; only the key representation differs (interned id instead
+/// of an inline string, per §3.1.4).
+pub fn encode_residual_row_properties(
+    entries: &[(u32, &Value)],
+) -> Result<Vec<u8>, CanonicalSegmentError> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&u32_len(entries.len(), "residual row property map")?.to_le_bytes());
+    for (key_id, value) in entries {
+        bytes.extend_from_slice(&key_id.to_le_bytes());
+        encode_value(value, &mut bytes, 1)?;
+    }
+    Ok(bytes)
+}
+
+/// Decodes one residual-column row back to its `(interned key id, value)`
+/// pairs, rejecting duplicates and trailing bytes.
+pub fn decode_residual_row_properties(
+    bytes: &[u8],
+) -> Result<Vec<(u32, Value)>, CanonicalSegmentError> {
+    let mut cursor = SliceCursor::new(bytes);
+    let count = cursor.read_u32()? as usize;
+    let mut entries = Vec::with_capacity(count.min(1024));
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..count {
+        let key_id = cursor.read_u32()?;
+        if !seen.insert(key_id) {
+            return Err(CanonicalSegmentError::Corrupt(format!(
+                "residual row repeats property key id {key_id}"
+            )));
+        }
+        entries.push((key_id, decode_value(&mut cursor, 1)?));
+    }
+    if !cursor.is_empty() {
+        return Err(CanonicalSegmentError::Corrupt(
+            "residual row has trailing bytes".to_string(),
+        ));
+    }
+    Ok(entries)
+}
+
 fn decode_value_with_property_spills(
     cursor: &mut SliceCursor<'_>,
     depth: usize,

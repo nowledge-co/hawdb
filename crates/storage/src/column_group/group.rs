@@ -17,7 +17,8 @@
 
 use super::deletion::DeletionVector;
 use super::encoding::{
-    bits_for, decode_chunk, encode_chunk_auto, pack_values, unpack_values, ChunkEncoding, Cursor,
+    bits_for, decode_byte_chunk, decode_chunk, encode_byte_chunk, encode_chunk_auto, pack_values,
+    unpack_values, ChunkEncoding, Cursor,
 };
 use super::zone::{ChunkZoneMap, ZONE_MAP_RECORD_BYTES};
 #[cfg(test)]
@@ -350,9 +351,25 @@ impl ColumnGroupWriter {
         ids: &[u64],
         columns: &[(PropertyId, Vec<Value>)],
     ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
-        self.validate(ids, columns)?;
+        self.write_with_byte_columns(path, group_id, generation, ids, columns, &[])
+    }
+
+    /// Writes one group carrying both `Value` columns and byte-table blob
+    /// columns (`None` = absent). Blob columns share the directory, footer,
+    /// and validity machinery; their zone maps record only presence counts
+    /// and the nested-content marker, so no value predicate ever opens them.
+    pub fn write_with_byte_columns(
+        &self,
+        path: &Path,
+        group_id: u64,
+        generation: ManifestGeneration,
+        ids: &[u64],
+        columns: &[(PropertyId, Vec<Value>)],
+        byte_columns: &[(PropertyId, Vec<Option<Vec<u8>>>)],
+    ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
+        self.validate(ids, columns, byte_columns)?;
         let tmp_path = path.with_extension("skein.tmp");
-        let result = self.write_inner(&tmp_path, group_id, generation, ids, columns);
+        let result = self.write_inner(&tmp_path, group_id, generation, ids, columns, byte_columns);
         let directory = match result {
             Ok(directory) => directory,
             Err(error) => {
@@ -368,6 +385,7 @@ impl ColumnGroupWriter {
         &self,
         ids: &[u64],
         columns: &[(PropertyId, Vec<Value>)],
+        byte_columns: &[(PropertyId, Vec<Option<Vec<u8>>>)],
     ) -> Result<(), ColumnGroupError> {
         if ids.len() > self.config.row_capacity as usize {
             return Err(unsupported(format!(
@@ -382,18 +400,26 @@ impl ColumnGroupWriter {
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
-        for (property_id, values) in columns {
+        let lengths = columns
+            .iter()
+            .map(|(property_id, values)| (*property_id, values.len()))
+            .chain(
+                byte_columns
+                    .iter()
+                    .map(|(property_id, rows)| (*property_id, rows.len())),
+            );
+        for (property_id, length) in lengths {
             if !seen.insert(property_id.0) {
                 return Err(unsupported(format!(
                     "group declares property {} twice",
                     property_id.0
                 )));
             }
-            if values.len() != ids.len() {
+            if length != ids.len() {
                 return Err(unsupported(format!(
                     "column {} holds {} values for {} rows",
                     property_id.0,
-                    values.len(),
+                    length,
                     ids.len()
                 )));
             }
@@ -408,7 +434,13 @@ impl ColumnGroupWriter {
         generation: ManifestGeneration,
         ids: &[u64],
         columns: &[(PropertyId, Vec<Value>)],
+        byte_columns: &[(PropertyId, Vec<Option<Vec<u8>>>)],
     ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
+        enum ColumnPayload<'a> {
+            Values(&'a Vec<Value>),
+            Bytes(&'a Vec<Option<Vec<u8>>>),
+        }
+
         let mut file = File::create(path)?;
         let mut offset = 0u64;
         file.write_all(COLUMN_GROUP_MAGIC)?;
@@ -423,19 +455,48 @@ impl ColumnGroupWriter {
         file.write_all(&id_bytes)?;
         offset += id_bytes.len() as u64;
 
-        let mut sorted = columns.iter().collect::<Vec<_>>();
+        let mut sorted = columns
+            .iter()
+            .map(|(property_id, values)| (*property_id, ColumnPayload::Values(values)))
+            .chain(
+                byte_columns
+                    .iter()
+                    .map(|(property_id, rows)| (*property_id, ColumnPayload::Bytes(rows))),
+            )
+            .collect::<Vec<_>>();
         sorted.sort_by_key(|(property_id, _)| property_id.0);
         let mut descriptors = Vec::with_capacity(sorted.len());
-        for (property_id, values) in sorted {
-            let chunk = encode_chunk_auto(values, self.config.compress)?;
+        for (property_id, payload) in sorted {
+            let (chunk, zone_map) = match payload {
+                ColumnPayload::Values(values) => (
+                    encode_chunk_auto(values, self.config.compress)?,
+                    ChunkZoneMap::build(values),
+                ),
+                ColumnPayload::Bytes(rows) => {
+                    // Presence-only zone map: blobs are opaque, so their
+                    // statistics carry the nested-content marker and no
+                    // scalar bounds, keeping pruning trivially sound.
+                    let presence = rows
+                        .iter()
+                        .map(|row| match row {
+                            Some(_) => Value::List(Vec::new()),
+                            None => Value::Null,
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        encode_byte_chunk(rows, self.config.compress)?,
+                        ChunkZoneMap::build(&presence),
+                    )
+                }
+            };
             let descriptor = ColumnChunkDescriptor {
-                property_id: *property_id,
+                property_id,
                 encoding: chunk.encoding,
                 compressed: chunk.compressed,
                 offset,
                 length: chunk.bytes.len() as u64,
                 crc32c: crc32c(&chunk.bytes).get(),
-                zone_map: ChunkZoneMap::build(values),
+                zone_map,
             };
             file.write_all(&chunk.bytes)?;
             offset += chunk.bytes.len() as u64;
@@ -736,6 +797,43 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
             .collect()
     }
 
+    /// Decodes one byte-table blob column: one optional blob per row,
+    /// `None` at null positions. Only columns written as byte columns
+    /// decode this way; a `Value` column is rejected rather than
+    /// reinterpreted.
+    pub fn read_byte_column(
+        &self,
+        property_id: PropertyId,
+    ) -> Result<Vec<Option<Vec<u8>>>, ColumnGroupError> {
+        let column = self
+            .directory
+            .column(property_id)
+            .ok_or(ColumnGroupError::PropertyMissing(property_id))?;
+        if column.encoding != ChunkEncoding::ByteTable {
+            return Err(unsupported(format!(
+                "column {} is not a byte-table column",
+                property_id.0
+            )));
+        }
+        let bytes = self.source.read_at(column.offset, column.length)?;
+        if crc32c(&bytes).get() != column.crc32c {
+            return Err(corrupt(format!(
+                "column chunk {} checksum does not match its contents",
+                column.property_id.0
+            )));
+        }
+        let rows = decode_byte_chunk(&bytes, column.compressed)?;
+        if rows.len() != self.directory.row_count as usize {
+            return Err(corrupt(format!(
+                "column chunk {} decodes {} rows in a {} row group",
+                column.property_id.0,
+                rows.len(),
+                self.directory.row_count
+            )));
+        }
+        Ok(rows)
+    }
+
     /// Directory-only pruning: decides from zone maps and null counts
     /// whether the predicate's chunk (or the whole group) can be skipped,
     /// without reading any chunk bytes. Sound by the mirror of the
@@ -922,6 +1020,70 @@ mod tests {
         assert_eq!(written.row_count, 0);
         let reader = ColumnGroupReader::open_path(&path).unwrap();
         assert_eq!(reader.read_ids().unwrap(), Vec::<u64>::new());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn byte_columns_ride_the_group_beside_value_columns() {
+        let path = unique_path("byte_columns");
+        let ids = (0..300u64).map(|index| index * 2 + 1).collect::<Vec<_>>();
+        let columns = sample_columns(ids.len());
+        let blobs = (0..ids.len())
+            .map(|row| match row % 3 {
+                0 => None,
+                1 => Some(vec![row as u8, 0, 255, 7]),
+                _ => Some(Vec::new()),
+            })
+            .collect::<Vec<_>>();
+        let written = ColumnGroupWriter::default()
+            .write_with_byte_columns(
+                &path,
+                11,
+                ManifestGeneration(2),
+                &ids,
+                &columns,
+                &[(PropertyId(0), blobs.clone())],
+            )
+            .unwrap();
+        // Byte columns sort into the shared directory by property id.
+        assert_eq!(
+            written
+                .columns
+                .iter()
+                .map(|column| column.property_id.0)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3, 9]
+        );
+        let reader = ColumnGroupReader::open_path(&path).unwrap();
+        assert_eq!(reader.read_byte_column(PropertyId(0)).unwrap(), blobs);
+        for (property_id, values) in &columns {
+            assert_eq!(reader.read_column(*property_id, None).unwrap(), *values);
+        }
+        // A byte column refuses the Value read path and vice versa.
+        assert!(matches!(
+            reader.read_column(PropertyId(0), None),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
+        assert!(matches!(
+            reader.read_byte_column(PropertyId(1)),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
+        assert!(matches!(
+            reader.read_byte_column(PropertyId(404)),
+            Err(ColumnGroupError::PropertyMissing(PropertyId(404)))
+        ));
+        // A duplicate property across the two column sets is rejected.
+        assert!(matches!(
+            ColumnGroupWriter::default().write_with_byte_columns(
+                &path,
+                12,
+                ManifestGeneration(2),
+                &[1],
+                &[(PropertyId(0), vec![Value::Int(1)])],
+                &[(PropertyId(0), vec![None])],
+            ),
+            Err(ColumnGroupError::Unsupported(_))
+        ));
         fs::remove_file(path).unwrap();
     }
 
