@@ -52,7 +52,21 @@
 //! Untouched tables reuse their previous directory references without
 //! rebuilding bytes (§3.6.5). Memory, by contrast, is bounded regardless
 //! of table size: rows stream through per-table group buffers under one
-//! global byte budget, flushing short groups when the budget fills.
+//! global byte budget, flushing short groups when the budget fills, and a
+//! post-publish sweep retains only the active catalog's reference closure
+//! so disk stays bounded too.
+//!
+//! Formal-model coverage note: `SkeinColumnarShadowIntegration.tla` models
+//! the four-phase publication machine, recovery, and the post-publish
+//! reclamation sweep (`ActiveClosureRetained`: a sweep never removes a
+//! file the active shadow manifest references; the sweep here is exactly
+//! that bounded best-effort action, with no reader pins to respect).
+//! Resource admission stays out of the model deliberately: nested
+//! admission is absent structurally — the builder receives a pre-admitted
+//! [`ColumnarShadowAdmission`] by value and has no governor handle — and
+//! the constrained-governor convergence test proves it; admission
+//! semantics are modeled separately by `SkeinRuntimeAdmission.tla`
+//! (landing via another PR).
 
 use super::*;
 use skein_integrity::crc32c;
@@ -151,6 +165,14 @@ pub struct ColumnarShadowCheckpointReport {
     /// every buffer and is written as its own single-row group immediately
     /// (a bounded transient), never buffered.
     pub oversized_row_group_count: usize,
+    /// Superseded shadow files removed by the post-publish sweep, which
+    /// retains only the active manifest's reference closure plus the key
+    /// dictionary (the shadow has no readers and no pins).
+    pub reclaimed_file_count: usize,
+    /// Sweep removals that failed (for example a transient Windows sharing
+    /// violation); recorded here and retried by the next publish, never
+    /// propagated into the publication result.
+    pub reclaim_failed_count: usize,
     /// Wall-clock time spent building and publishing the shadow.
     pub elapsed_micros: u64,
 }
@@ -966,6 +988,59 @@ impl ShadowCheckpointBuilder {
     }
 }
 
+/// Best-effort reclamation of superseded shadow artifacts, run strictly
+/// AFTER a successful manifest publish. The keep set is the just-published
+/// catalog's complete reference closure — the active manifest file, every
+/// referenced table directory, group, and deletion-vector file — plus the
+/// key dictionary. The shadow has no readers and no pins, so retaining
+/// only the current closure is safe; the manifest layer stays generic and
+/// this sweep touches only `*.skein` / `*.skein.tmp` names. Removal
+/// failures are recorded and retried by the next publish (Windows
+/// discipline: a transient sharing violation never fails a publication).
+/// A crash between publish and sweep leaves only unreferenced garbage,
+/// which the next sweep removes.
+fn sweep_superseded_shadow_files(
+    shadow_root: &Path,
+    catalog: &PublishedColumnGroupCatalog,
+) -> (usize, usize) {
+    let mut keep = BTreeSet::new();
+    keep.insert(skein_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+    keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
+    for reference in catalog.manifest().tables() {
+        keep.insert(reference.file_name().to_string());
+    }
+    for directory in catalog.directories() {
+        for group in directory.groups() {
+            keep.insert(group.group_file().to_string());
+            if let Some(deletion_vector) = group.deletion_vector_file() {
+                keep.insert(deletion_vector.to_string());
+            }
+        }
+    }
+    let mut reclaimed = 0usize;
+    let mut failed = 0usize;
+    let Ok(entries) = fs::read_dir(shadow_root) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !(name.ends_with(".skein") || name.ends_with(".skein.tmp")) {
+            continue;
+        }
+        if keep.contains(name) {
+            continue;
+        }
+        match fs::remove_file(entry.path()) {
+            Ok(()) => reclaimed += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    (reclaimed, failed)
+}
+
 /// Estimated resident footprint of the pass-1 per-table type-lattice
 /// state, measured with the shared per-key overhead constant.
 fn estimated_pass1_bytes(table_types: &BTreeMap<ColumnGroupTableKey, TablePropertyTypes>) -> u64 {
@@ -1294,6 +1369,11 @@ impl GraphStore {
         metadata_bytes_written = metadata_bytes_written.saturating_add(
             fs::metadata(shadow_root.join(skein_storage::COLUMN_GROUP_MANIFEST_FILE))?.len(),
         );
+        // Strictly after the publish succeeded: best-effort reclamation of
+        // everything outside the new catalog's reference closure, so disk
+        // stays bounded by the current closure while the flag is on.
+        let (reclaimed_file_count, reclaim_failed_count) =
+            sweep_superseded_shadow_files(&shadow_root, &catalog);
 
         self.columnar_shadow.catalog = Some(catalog);
         self.columnar_shadow.all_dirty = false;
@@ -1311,6 +1391,8 @@ impl GraphStore {
             admitted_budget_bytes,
             flushed_group_count: built.flushed_group_count,
             oversized_row_group_count: built.oversized_row_group_count,
+            reclaimed_file_count,
+            reclaim_failed_count,
             elapsed_micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         });
         Ok(())
@@ -2213,6 +2295,157 @@ mod tests {
             ColumnarShadowCheckpointStatus::Published,
             "pre-admitted shadow converges under the held outer permit"
         );
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn shadow_disk_footprint(shadow_root: &Path) -> (usize, u64) {
+        let mut files = 0usize;
+        let mut bytes = 0u64;
+        for entry in fs::read_dir(shadow_root).unwrap().flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.ends_with(".skein") || name.ends_with(".skein.tmp") {
+                files += 1;
+                bytes += entry.metadata().unwrap().len();
+            }
+        }
+        (files, bytes)
+    }
+
+    #[test]
+    fn superseded_shadow_artifacts_are_reclaimed_after_each_publish() {
+        let root = unique_shadow_dir("reclaim");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let n1 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("a".to_string()))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "City",
+                properties(&[("name", Value::String("b".to_string()))]),
+            )
+            .unwrap();
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+
+        // Five dirty checkpoints: without reclamation every round would add
+        // a new generation of Person group + directory files. The sweep
+        // keeps disk bounded by the active reference closure.
+        let mut footprints = Vec::new();
+        for round in 0..5u32 {
+            store
+                .set_node_properties_by_ids(
+                    &mut catalog,
+                    &[n1],
+                    &[NodeSetAssignment {
+                        property: "name".to_string(),
+                        value: NodeSetValue::Value(Value::String(format!("round-{round}"))),
+                    }],
+                )
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            footprints.push(shadow_disk_footprint(&shadow_root));
+        }
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert!(report.reclaimed_file_count > 0, "old generations reclaimed");
+        assert_eq!(report.reclaim_failed_count, 0);
+        // Steady state: the footprint after round 5 matches round 2 — no
+        // per-generation growth (round 1 may differ while the reused City
+        // directory still carries its first-generation name).
+        assert_eq!(
+            footprints[1].0, footprints[4].0,
+            "file count is bounded across dirty checkpoints: {footprints:?}"
+        );
+        // Every remaining artifact belongs to the active closure.
+        let catalog_on_disk = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
+        let mut keep = BTreeSet::new();
+        keep.insert(skein_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+        keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
+        for reference in catalog_on_disk.manifest().tables() {
+            keep.insert(reference.file_name().to_string());
+        }
+        for directory in catalog_on_disk.directories() {
+            for group in directory.groups() {
+                keep.insert(group.group_file().to_string());
+            }
+        }
+        for entry in fs::read_dir(&shadow_root).unwrap().flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.ends_with(".skein") || name.ends_with(".skein.tmp") {
+                assert!(
+                    keep.contains(name),
+                    "unreferenced artifact {name} survived the sweep"
+                );
+            }
+        }
+        assert_shadow_equivalence(&root, &store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sweep_removal_failure_is_recorded_and_never_fails_the_publish() {
+        let root = unique_shadow_dir("reclaim_failure");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let n1 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("a".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+
+        // A non-empty directory squatting on a stale-artifact name: the
+        // sweep's remove_file fails on it, which must be recorded — never
+        // propagated into the publication result.
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let stubborn = shadow_root.join("group-node-999-1-0.skein");
+        fs::create_dir_all(stubborn.join("occupant")).unwrap();
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[n1],
+                &[NodeSetAssignment {
+                    property: "name".to_string(),
+                    value: NodeSetValue::Value(Value::String("a2".to_string())),
+                }],
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert!(
+            report.reclaim_failed_count >= 1,
+            "failure recorded: {report:?}"
+        );
+
+        // Clearing the obstruction lets the next publish's retry reclaim it.
+        fs::remove_dir_all(&stubborn).unwrap();
+        fs::write(&stubborn, b"now a stale file").unwrap();
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[n1],
+                &[NodeSetAssignment {
+                    property: "name".to_string(),
+                    value: NodeSetValue::Value(Value::String("a3".to_string())),
+                }],
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.status, ColumnarShadowCheckpointStatus::Published);
+        assert_eq!(report.reclaim_failed_count, 0);
+        assert!(!stubborn.exists(), "retried sweep reclaimed the stale file");
         assert_shadow_equivalence(&root, &store);
         fs::remove_dir_all(root).unwrap();
     }
