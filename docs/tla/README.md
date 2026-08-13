@@ -310,7 +310,7 @@ is absent structurally — the shadow builder receives a pre-admitted
 and the constrained-governor convergence test
 (`pre_admitted_shadow_converges_under_a_constrained_governor`) proves it;
 admission semantics are modeled separately by `SkeinRuntimeAdmission.tla`
-(landing via another PR).
+below.
 
 Mutation testing sizes the instance (`MaxEpoch = 3`, 3,657 distinct
 states): a recovery that mounts a corrupt shadow as current reports
