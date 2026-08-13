@@ -658,4 +658,57 @@ mod tests {
             .unwrap();
         assert_eq!(result.unwrap(), 42);
     }
+
+    /// A saturated cgroup rejects retryably, so an async admission waits
+    /// instead of failing; when a resource refresh restores headroom, the
+    /// same waiting admission must succeed without being re-submitted.
+    #[test]
+    fn waiting_admission_succeeds_after_refresh_restores_headroom() {
+        let limit = 512 * 1024 * 1024;
+        let memory = |current: u64| {
+            RuntimeMemorySnapshot::from_limits(
+                Some(8 * 1024 * 1024 * 1024),
+                Some(6 * 1024 * 1024 * 1024),
+                Some(limit),
+                None,
+                Some(current),
+            )
+        };
+        let snapshot = |current: u64| {
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+                memory(current),
+            )
+        };
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            snapshot(limit),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let config = TokioRuntimeConfig {
+            admission_poll_interval: Duration::from_millis(5),
+            resource_refresh_interval: Duration::from_secs(3600),
+            ..TokioRuntimeConfig::default()
+        };
+        let adapter = TokioRuntimeAdapter::borrowed(host.handle().clone(), governor, config);
+        host.block_on(async {
+            let request =
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 48 * 1024 * 1024);
+            let context = RuntimeTaskContext::default();
+            let acquire = adapter.acquire::<Infallible>(request, &context);
+            tokio::pin!(acquire);
+            let still_waiting = tokio::time::timeout(Duration::from_millis(60), &mut acquire).await;
+            assert!(
+                still_waiting.is_err(),
+                "admission must wait while the cgroup is saturated"
+            );
+            assert!(adapter.governor.update_resources(snapshot(0)));
+            let permit = tokio::time::timeout(Duration::from_secs(5), &mut acquire)
+                .await
+                .expect("admission must resume after the refresh")
+                .expect("restored headroom must admit the waiting request");
+            drop(permit);
+        });
+    }
 }

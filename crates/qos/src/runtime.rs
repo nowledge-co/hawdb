@@ -237,6 +237,7 @@ pub struct RuntimeGovernorLimits {
     pub blocking_task_limit: NonZeroUsize,
     pub foreground_io_depth: NonZeroUsize,
     pub background_io_depth: NonZeroUsize,
+    pub memory_capacity_bytes: u64,
     pub memory_budget_bytes: u64,
     pub result_budget_bytes: u64,
 }
@@ -645,36 +646,58 @@ fn derive_limits(
         blocking_task_limit,
         foreground_io_depth: storage_io.foreground_depth,
         background_io_depth: storage_io.background_depth,
+        memory_capacity_bytes: derived_memory_capacity(config, resources),
         memory_budget_bytes: derived_memory_budget(config, resources, admitted_memory_bytes),
         result_budget_bytes: config.result_budget_bytes,
     }
 }
 
-fn derived_memory_budget(
+/// The stable maximum: explicit configuration and the hard-limit-derived
+/// term, with the fallback when neither is sensed. A request above this
+/// can never be satisfied by waiting, so admission reports it
+/// non-retryable.
+fn derived_memory_capacity(
     config: RuntimeGovernorConfig,
     resources: RuntimeResourceSnapshot,
-    admitted_memory_bytes: u64,
 ) -> u64 {
     let fraction = u64::from(config.memory_fraction_per_million.min(PER_MILLION as u32));
     let total_budget = resources
         .memory
         .effective_limit_bytes
         .map(|bytes| scale_memory(bytes, fraction));
-    let headroom_budget = resources
-        .memory
-        .effective_available_bytes
-        .map(|bytes| scale_memory(bytes, fraction).saturating_add(admitted_memory_bytes));
     [
         config.memory_budget_bytes,
         total_budget,
-        headroom_budget,
-        (total_budget.is_none() && headroom_budget.is_none())
+        total_budget
+            .is_none()
             .then_some(config.fallback_memory_budget_bytes),
     ]
     .into_iter()
     .flatten()
     .min()
     .unwrap_or_default()
+}
+
+/// The current dynamic budget: capacity further bounded by sensed
+/// availability. A request above this but within capacity is a transient
+/// shortage, so admission reports it retryable and waiters ride the
+/// resource refresh.
+fn derived_memory_budget(
+    config: RuntimeGovernorConfig,
+    resources: RuntimeResourceSnapshot,
+    admitted_memory_bytes: u64,
+) -> u64 {
+    let fraction = u64::from(config.memory_fraction_per_million.min(PER_MILLION as u32));
+    let capacity = derived_memory_capacity(config, resources);
+    resources
+        .memory
+        .effective_available_bytes
+        .map(|bytes| {
+            scale_memory(bytes, fraction)
+                .saturating_add(admitted_memory_bytes)
+                .min(capacity)
+        })
+        .unwrap_or(capacity)
 }
 
 fn scale_memory(bytes: u64, fraction_per_million: u64) -> u64 {
@@ -755,11 +778,11 @@ fn admission_error(
         ));
     }
     let reserved_memory = request.reserved_memory_bytes();
-    if reserved_memory > state.limits.memory_budget_bytes {
+    if reserved_memory > state.limits.memory_capacity_bytes {
         return Some(admission_error_value(
             RuntimeAdmissionCode::MemorySaturated,
             reserved_memory,
-            state.limits.memory_budget_bytes,
+            state.limits.memory_capacity_bytes,
             false,
         ));
     }
@@ -1055,10 +1078,9 @@ mod tests {
     /// authoritative; environments whose own artifacts consume the
     /// instance's memory must provision more, not weaken admission.
     ///
-    /// Deliberately unasserted: retryability. Saturation is a transient
-    /// state — the request fits the container's stable capacity, so once
-    /// the limits split into capacity and dynamic budget it should report
-    /// retryable and let waiting admissions ride a resource refresh.
+    /// Saturation is a transient state: the request fits the container's
+    /// stable capacity, so the rejection reports retryable and waiting
+    /// admissions ride the resource refresh.
     #[test]
     fn saturated_cgroup_rejects_admissions_despite_a_large_hard_limit() {
         let limit = 512 * 1024 * 1024;
@@ -1084,5 +1106,39 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(error.is_retryable());
+        assert_eq!(
+            governor.snapshot().limits.memory_capacity_bytes,
+            384 * 1024 * 1024
+        );
+    }
+
+    /// A request above the stable capacity can never be satisfied by
+    /// waiting, so it stays non-retryable regardless of current headroom.
+    #[test]
+    fn over_capacity_requests_stay_non_retryable() {
+        let limit = 512 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(6 * 1024 * 1024 * 1024),
+                    Some(limit),
+                    None,
+                    Some(0),
+                ),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                600 * 1024 * 1024,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
     }
 }
