@@ -1,6 +1,6 @@
 //! Columnar shadow double-write for [`GraphStore`] checkpoints (spec §3.7).
 //!
-//! With `columnar_shadow_checkpoint` on, every checkpoint additionally
+//! With `graph_columnar_shadow_checkpoint` on, every checkpoint additionally
 //! publishes column groups, per-table directories, and the layered
 //! [`ColumnGroupManifest`] under the `column-groups/` subdirectory of the
 //! database root, through the column-group manifest layer's own durable
@@ -908,7 +908,11 @@ impl GraphStore {
             }
             Err(error) => {
                 if !read_only {
-                    fs::remove_dir_all(&shadow_root)?;
+                    // Cleanup failure must not block open: the shadow is
+                    // derived state, so a corrupt catalog is unmounted and
+                    // recorded here, and leftover bytes are retried by the
+                    // next checkpoint's stale-garbage sweep.
+                    let _ = fs::remove_dir_all(&shadow_root);
                 }
                 self.columnar_shadow.recovery.discarded = true;
                 self.columnar_shadow.recovery.error = Some(error);
@@ -1105,7 +1109,7 @@ mod tests {
 
     fn shadow_replay_config() -> WalReplayConfig {
         WalReplayConfig {
-            columnar_shadow_checkpoint: true,
+            graph_columnar_shadow_checkpoint: true,
             ..WalReplayConfig::default()
         }
     }

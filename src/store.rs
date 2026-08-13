@@ -1546,7 +1546,7 @@ impl GraphStore {
             durable: Some(durable),
         };
         store.load_checkpoint(catalog, replay_config)?;
-        if replay_config.columnar_shadow_checkpoint {
+        if replay_config.graph_columnar_shadow_checkpoint {
             // Mounted between checkpoint load and WAL replay so replayed
             // mutations mark their shadow tables dirty (spec §3.7).
             store.mount_columnar_shadow_for_recovery()?;
