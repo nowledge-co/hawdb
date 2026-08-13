@@ -94,6 +94,11 @@ const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
 /// the admission reservation. Both scale with distinct property keys
 /// (schema), not with data volume.
 const SHADOW_METADATA_RESERVATION_BYTES: u64 = 8 * 1024 * 1024;
+/// Per-key map-entry overhead charged for pass-1 state and each side of a
+/// dictionary entry (id map + key table).
+const SHADOW_KEY_ENTRY_OVERHEAD_BYTES: u64 = 48;
+/// Per-table overhead charged for pass-1 state.
+const SHADOW_PASS1_TABLE_OVERHEAD_BYTES: u64 = 64;
 
 /// Outcome of the shadow double-write attempted by one checkpoint. The
 /// canonical checkpoint's `Result` reflects canonical publication only; a
@@ -132,12 +137,20 @@ pub struct ColumnarShadowCheckpointReport {
     pub group_bytes_written: u64,
     /// Table-directory, key-dictionary, and manifest bytes written.
     pub metadata_bytes_written: u64,
-    /// Largest total held across all group buffers at any point of the
-    /// build; bounded by the shadow buffer budget (spec §8 discipline).
-    pub peak_buffered_bytes: u64,
+    /// Honest builder-footprint peak: pass-1 type-lattice state, the key
+    /// dictionary, and all buffered group rows at their largest, measured
+    /// with the same estimates the budget uses (spec §8 discipline).
+    pub peak_builder_bytes: u64,
+    /// The builder-lifetime byte allowance admitted for this build (0 when
+    /// unmetered); `peak_builder_bytes` stays within it.
+    pub admitted_budget_bytes: u64,
     /// Column groups flushed by this checkpoint, including budget-driven
     /// short groups (the group row capacity is a maximum, not a minimum).
     pub flushed_group_count: usize,
+    /// Rows whose estimate alone exceeded the buffer budget: each flushes
+    /// every buffer and is written as its own single-row group immediately
+    /// (a bounded transient), never buffered.
+    pub oversized_row_group_count: usize,
     /// Wall-clock time spent building and publishing the shadow.
     pub elapsed_micros: u64,
 }
@@ -343,6 +356,15 @@ impl ShadowKeyDictionary {
 
     fn len(&self) -> usize {
         self.keys.len()
+    }
+
+    /// Rough resident footprint of the dictionary (each key lives in the
+    /// id map and the key table), measured with the same per-entry
+    /// overhead constant the pass-1 accounting uses.
+    fn estimated_bytes(&self) -> u64 {
+        self.keys.iter().fold(0u64, |bytes, key| {
+            bytes.saturating_add(2 * (key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES))
+        })
     }
 
     fn intern(&mut self, key: &str) -> Result<PropertyId> {
@@ -554,6 +576,11 @@ impl ColumnarShadowAdmission {
         }
     }
 
+    /// The admitted builder-lifetime byte allowance (0 when unmetered).
+    fn admitted_budget_bytes(&self) -> u64 {
+        self.allowance_bytes.unwrap_or(0)
+    }
+
     /// Draws one flush against the allowance: the flush's transient need is
     /// its buffered bytes plus the documented encoder-scratch multiple. No
     /// governor is consulted — the whole build was admitted up front.
@@ -590,8 +617,9 @@ struct ShadowGroupBuffer {
 struct BuiltShadowTables {
     references: Vec<(ColumnGroupTableDirectoryRef, u64)>,
     group_bytes_written: u64,
-    peak_buffered_bytes: u64,
+    peak_builder_bytes: u64,
     flushed_group_count: usize,
+    oversized_row_group_count: usize,
 }
 
 /// Streaming pass-2 builder: appends rows into per-table bounded group
@@ -599,6 +627,11 @@ struct BuiltShadowTables {
 /// complete group; exceeding the budget flushes the largest buffer as a
 /// shorter group. The builder holds the pre-admitted token by value and no
 /// governor handle: flushes only draw down the token's byte allowance.
+///
+/// The flush decision is taken from a size estimate BEFORE the row's cells
+/// are cloned or its residual is encoded, and the builder-footprint peak
+/// folds in the pass-1 type-lattice state and the live key dictionary, so
+/// `peak_builder_bytes` is an honest builder metric, not a logical count.
 struct ShadowCheckpointBuilder {
     shadow_root: PathBuf,
     generation: ManifestGeneration,
@@ -610,8 +643,13 @@ struct ShadowCheckpointBuilder {
     descriptors: BTreeMap<ColumnGroupTableKey, Vec<ColumnGroupArtifactDescriptor>>,
     next_group_index: BTreeMap<ColumnGroupTableKey, u64>,
     buffered_bytes: u64,
-    peak_buffered_bytes: u64,
+    /// Pass-1 type-lattice footprint, fixed for the build.
+    pass1_bytes: u64,
+    /// Live key-dictionary footprint, grown as residual keys intern.
+    dictionary_bytes: u64,
+    peak_builder_bytes: u64,
     flushed_group_count: usize,
+    oversized_row_group_count: usize,
     group_bytes_written: u64,
 }
 
@@ -622,8 +660,10 @@ impl ShadowCheckpointBuilder {
         admission: ColumnarShadowAdmission,
         buffer_budget_bytes: u64,
         layouts: BTreeMap<ColumnGroupTableKey, ShadowTableLayout>,
+        pass1_bytes: u64,
+        dictionary_bytes: u64,
     ) -> Self {
-        Self {
+        let mut builder = Self {
             shadow_root,
             generation,
             admission,
@@ -634,10 +674,23 @@ impl ShadowCheckpointBuilder {
             descriptors: BTreeMap::new(),
             next_group_index: BTreeMap::new(),
             buffered_bytes: 0,
-            peak_buffered_bytes: 0,
+            pass1_bytes,
+            dictionary_bytes,
+            peak_builder_bytes: 0,
             flushed_group_count: 0,
+            oversized_row_group_count: 0,
             group_bytes_written: 0,
-        }
+        };
+        builder.note_peak();
+        builder
+    }
+
+    fn note_peak(&mut self) {
+        let footprint = self
+            .pass1_bytes
+            .saturating_add(self.dictionary_bytes)
+            .saturating_add(self.buffered_bytes);
+        self.peak_builder_bytes = self.peak_builder_bytes.max(footprint);
     }
 
     fn append_node(
@@ -673,6 +726,28 @@ impl ShadowCheckpointBuilder {
         )
     }
 
+    /// Estimated buffered cost of one row from borrowed values only — no
+    /// clone, no residual encoding. The same figure later charges the
+    /// buffer, so accounting is consistent on both sides of the flush
+    /// decision.
+    fn estimate_row_bytes(
+        &self,
+        table: ColumnGroupTableKey,
+        label_set: Option<&Vec<u8>>,
+        properties: &BTreeMap<String, Value>,
+    ) -> u64 {
+        let mut estimated =
+            SHADOW_ROW_OVERHEAD_BYTES.saturating_add(label_set.map_or(0, |blob| blob.len() as u64));
+        for (key, value) in properties {
+            estimated = estimated.saturating_add(estimated_shadow_value_bytes(value));
+            if !self.layouts[&table].typed_index.contains_key(key) {
+                // Residual wire envelope: tags, lengths, and the key id.
+                estimated = estimated.saturating_add(8);
+            }
+        }
+        estimated
+    }
+
     fn append_row(
         &mut self,
         dictionary: &mut ShadowKeyDictionary,
@@ -682,22 +757,49 @@ impl ShadowCheckpointBuilder {
         endpoints: Option<(u64, u64)>,
         properties: &BTreeMap<String, Value>,
     ) -> Result<()> {
-        // Materialize the row's column cells first so its cost is known
-        // before it is admitted against the budget. One pass over the row's
-        // properties routes each through the precomputed typed-column index
-        // (O(P log C)); everything unindexed is residual.
+        // The flush decision comes from an estimate over borrowed values,
+        // BEFORE the row's cells are cloned or its residual encoded, so the
+        // budget bounds materialization too. A row whose estimate alone
+        // exceeds the budget flushes everything and is written as its own
+        // single-row group immediately — a bounded transient, never
+        // buffered behind other rows.
+        let row_bytes = self.estimate_row_bytes(table, label_set.as_ref(), properties);
+        let oversized = row_bytes > self.buffer_budget_bytes;
+        if oversized {
+            let pending = self.buffers.keys().copied().collect::<Vec<_>>();
+            for pending_table in pending {
+                self.flush_table(pending_table)?;
+            }
+        } else {
+            while self.buffered_bytes > 0
+                && self.buffered_bytes.saturating_add(row_bytes) > self.buffer_budget_bytes
+            {
+                self.flush_largest_buffer()?;
+            }
+        }
+
+        // Materialize only after the flush decision: one pass over the
+        // row's properties routes each through the precomputed typed-column
+        // index (O(P log C)); everything unindexed is residual.
         let layout_typed_len = self.layouts[&table].typed.len();
         let mut typed_cells = vec![Value::Null; layout_typed_len];
-        let mut row_bytes = SHADOW_ROW_OVERHEAD_BYTES;
         let mut residual_entries = Vec::new();
         for (key, value) in properties {
             match self.layouts[&table].typed_index.get(key) {
                 Some(index) => {
-                    row_bytes = row_bytes.saturating_add(estimated_shadow_value_bytes(value));
                     typed_cells[*index] = value.clone();
                 }
                 None => {
-                    residual_entries.push((dictionary.intern(key)?.0, value));
+                    let before = dictionary.len();
+                    let key_id = dictionary.intern(key)?.0;
+                    if dictionary.len() > before {
+                        // A newly interned key grows the dictionary's
+                        // footprint (id map + key table entries).
+                        self.dictionary_bytes = self.dictionary_bytes.saturating_add(
+                            2 * (key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES),
+                        );
+                    }
+                    residual_entries.push((key_id, value));
                 }
             }
         }
@@ -710,18 +812,6 @@ impl ShadowCheckpointBuilder {
                     .map_err(|error| SkeinError::Storage(error.to_string()))?,
             )
         };
-        row_bytes = row_bytes
-            .saturating_add(residual.as_ref().map_or(0, |blob| blob.len() as u64))
-            .saturating_add(label_set.as_ref().map_or(0, |blob| blob.len() as u64));
-
-        // Budget admission: flush the largest buffer as a shorter group
-        // until this row fits. A row larger than the whole budget is the
-        // sole occupant of an otherwise empty buffer set.
-        while self.buffered_bytes > 0
-            && self.buffered_bytes.saturating_add(row_bytes) > self.buffer_budget_bytes
-        {
-            self.flush_largest_buffer()?;
-        }
 
         let buffer = self.buffers.entry(table).or_default();
         if buffer.typed.is_empty() {
@@ -752,8 +842,11 @@ impl ShadowCheckpointBuilder {
         buffer.estimated_bytes = buffer.estimated_bytes.saturating_add(row_bytes);
         let full = buffer.ids.len() >= DEFAULT_GROUP_ROW_CAPACITY as usize;
         self.buffered_bytes = self.buffered_bytes.saturating_add(row_bytes);
-        self.peak_buffered_bytes = self.peak_buffered_bytes.max(self.buffered_bytes);
-        if full {
+        self.note_peak();
+        if oversized {
+            self.oversized_row_group_count += 1;
+            self.flush_table(table)?;
+        } else if full {
             self.flush_table(table)?;
         }
         Ok(())
@@ -866,10 +959,23 @@ impl ShadowCheckpointBuilder {
         Ok(BuiltShadowTables {
             references,
             group_bytes_written: self.group_bytes_written,
-            peak_buffered_bytes: self.peak_buffered_bytes,
+            peak_builder_bytes: self.peak_builder_bytes,
             flushed_group_count: self.flushed_group_count,
+            oversized_row_group_count: self.oversized_row_group_count,
         })
     }
+}
+
+/// Estimated resident footprint of the pass-1 per-table type-lattice
+/// state, measured with the shared per-key overhead constant.
+fn estimated_pass1_bytes(table_types: &BTreeMap<ColumnGroupTableKey, TablePropertyTypes>) -> u64 {
+    table_types.values().fold(0u64, |bytes, types| {
+        bytes
+            .saturating_add(SHADOW_PASS1_TABLE_OVERHEAD_BYTES)
+            .saturating_add(types.inferred.keys().fold(0u64, |inner, key| {
+                inner.saturating_add(key.len() as u64 + SHADOW_KEY_ENTRY_OVERHEAD_BYTES)
+            }))
+    })
 }
 
 // --- GraphStore hooks -------------------------------------------------------
@@ -1130,13 +1236,17 @@ impl GraphStore {
 
         // Pass 2: stream again, appending rows into bounded per-table group
         // buffers under the global byte budget. The builder takes the
-        // pre-admitted token by value and never sees a governor.
+        // pre-admitted token by value and never sees a governor; its peak
+        // metric folds in the pass-1 state and the live dictionary.
+        let admitted_budget_bytes = admission.admitted_budget_bytes();
         let mut builder = ShadowCheckpointBuilder::new(
             shadow_root.clone(),
             generation,
             admission,
             self.columnar_shadow.buffer_budget_bytes,
             layouts,
+            estimated_pass1_bytes(&table_types),
+            dictionary.estimated_bytes(),
         );
         for record in self.node_records_owned() {
             let node = record?;
@@ -1197,8 +1307,10 @@ impl GraphStore {
             reused_table_count,
             group_bytes_written: built.group_bytes_written,
             metadata_bytes_written,
-            peak_buffered_bytes: built.peak_buffered_bytes,
+            peak_builder_bytes: built.peak_builder_bytes,
+            admitted_budget_bytes,
             flushed_group_count: built.flushed_group_count,
+            oversized_row_group_count: built.oversized_row_group_count,
             elapsed_micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         });
         Ok(())
@@ -1954,14 +2066,43 @@ mod tests {
                 .unwrap();
         }
 
+        // One row whose estimate alone dwarfs the whole budget: it must
+        // flush everything and become its own single-row group instead of
+        // ever being buffered behind other rows.
+        store
+            .create_node(
+                &mut catalog,
+                "Alpha",
+                properties(&[(
+                    "name",
+                    Value::String(format!("oversized-{}", "z".repeat(3 * BUDGET as usize))),
+                )]),
+            )
+            .unwrap();
+
         store.checkpoint(&catalog).unwrap();
         let report = store.columnar_shadow_checkpoint_report().unwrap();
+        // Honest builder-footprint accounting: pass-1 state, the key
+        // dictionary, and buffered rows all count, and outside the single
+        // oversized-row transient the footprint stays within budget plus
+        // that fixed metadata overhead — well inside the admitted
+        // reservation either way.
+        assert!(report.peak_builder_bytes > 0);
+        assert_eq!(report.admitted_budget_bytes, 0, "unmetered build");
+        let oversized_row_bytes = 3 * BUDGET + 64;
         assert!(
-            report.peak_buffered_bytes <= BUDGET,
-            "peak buffered bytes {} exceed the {BUDGET} byte budget",
-            report.peak_buffered_bytes
+            report.peak_builder_bytes
+                <= BUDGET + SHADOW_METADATA_RESERVATION_BYTES + oversized_row_bytes,
+            "peak builder bytes {} exceed the budgeted footprint",
+            report.peak_builder_bytes
         );
-        assert!(report.peak_buffered_bytes > 0);
+        assert!(
+            report.peak_builder_bytes
+                < store.columnar_shadow_admission_bytes() + oversized_row_bytes,
+            "peak builder bytes {} exceed the admission reservation",
+            report.peak_builder_bytes
+        );
+        assert_eq!(report.oversized_row_group_count, 1);
         // The data volume is far beyond one budget's worth, so the build
         // must have flushed many budget-driven short groups.
         assert!(report.group_bytes_written > BUDGET);
@@ -1971,7 +2112,8 @@ mod tests {
             report.flushed_group_count
         );
         // Short groups are legal (row capacity is a max, not a min) and the
-        // multi-group reconstruction still matches the canonical scan.
+        // multi-group reconstruction — including the single-row oversized
+        // group — still matches the canonical scan.
         assert_shadow_equivalence(&root, &store);
         fs::remove_dir_all(root).unwrap();
     }
