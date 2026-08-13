@@ -326,6 +326,11 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    surfaced through the shadow checkpoint report, MUST preserve the dirty
    state it would have consumed, and the next checkpoint MUST retry from
    that state.
+7. Each shadow scan record is an owned transfer into its group buffer. The
+   builder MUST move typed property payloads out of that record rather than
+   cloning their backing allocation. Residual encoding MAY borrow the owned
+   record only for the duration of encoding; no shadow buffer may retain a
+   second logical copy merely to cross the scan-to-builder boundary.
 
 ## 4. Declared indexes
 
