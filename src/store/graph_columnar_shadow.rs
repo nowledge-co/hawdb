@@ -459,6 +459,9 @@ impl TablePropertyTypes {
 struct ShadowTableLayout {
     /// Typed columns, sorted by key: `(shadow column id, property key)`.
     typed: Vec<(PropertyId, String)>,
+    /// Precomputed property key -> typed column position, so wide-table row
+    /// appends stay O(P log C) instead of the quadratic per-property scan.
+    typed_index: BTreeMap<String, usize>,
 }
 
 fn shadow_table_layout(
@@ -466,12 +469,14 @@ fn shadow_table_layout(
     dictionary: &mut ShadowKeyDictionary,
 ) -> Result<ShadowTableLayout> {
     let mut typed = Vec::new();
+    let mut typed_index = BTreeMap::new();
     for (key, inferred) in &types.inferred {
         if *inferred != InferredType::Residual {
+            typed_index.insert(key.clone(), typed.len());
             typed.push((dictionary.intern(key)?, key.clone()));
         }
     }
-    Ok(ShadowTableLayout { typed })
+    Ok(ShadowTableLayout { typed, typed_index })
 }
 
 /// Rough resident-byte estimate of one buffered value, mirroring the
@@ -643,26 +648,23 @@ impl ShadowCheckpointBuilder {
         properties: &BTreeMap<String, Value>,
     ) -> Result<()> {
         // Materialize the row's column cells first so its cost is known
-        // before it is admitted against the budget.
+        // before it is admitted against the budget. One pass over the row's
+        // properties routes each through the precomputed typed-column index
+        // (O(P log C)); everything unindexed is residual.
         let layout_typed_len = self.layouts[&table].typed.len();
-        let mut typed_cells = Vec::with_capacity(layout_typed_len);
+        let mut typed_cells = vec![Value::Null; layout_typed_len];
         let mut row_bytes = SHADOW_ROW_OVERHEAD_BYTES;
-        for index in 0..layout_typed_len {
-            let key = &self.layouts[&table].typed[index].1;
-            let cell = properties.get(key).cloned().unwrap_or(Value::Null);
-            row_bytes = row_bytes.saturating_add(estimated_shadow_value_bytes(&cell));
-            typed_cells.push(cell);
-        }
         let mut residual_entries = Vec::new();
         for (key, value) in properties {
-            if self.layouts[&table]
-                .typed
-                .iter()
-                .any(|(_, typed_key)| typed_key == key)
-            {
-                continue;
+            match self.layouts[&table].typed_index.get(key) {
+                Some(index) => {
+                    row_bytes = row_bytes.saturating_add(estimated_shadow_value_bytes(value));
+                    typed_cells[*index] = value.clone();
+                }
+                None => {
+                    residual_entries.push((dictionary.intern(key)?.0, value));
+                }
             }
-            residual_entries.push((dictionary.intern(key)?.0, value));
         }
         let residual = if residual_entries.is_empty() {
             None
