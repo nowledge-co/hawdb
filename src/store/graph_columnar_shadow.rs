@@ -32,9 +32,11 @@
 //! - `column id 1` / `2`: relationship source / target — the `u64` node id
 //!   stored bit-preserving as `i64` (`id as i64`; readers reverse it with
 //!   `value as u64`).
-//! - `column id 3`: residual blob column — the canonical
-//!   `(interned key id, tagged value)` row codec from `skein-storage`'s
-//!   canonical module; no second value encoding exists.
+//! - `column id 3`: residual blob column — §3.5.1 field-tagged varint rows
+//!   (`skein-storage`'s `encode/decode_residual_row_properties`): each
+//!   property is a length-delimited submessage of interned key id plus one
+//!   wire-typed value field, with nested and null values carrying the
+//!   canonical tagged-value codec; unknown field ids are skippable.
 //! - `column id >= 4`: typed property columns, id = shadow dictionary id.
 //!
 //! Column typing is per-generation inference: a property key gets a typed
@@ -43,6 +45,14 @@
 //! Null occurrences send the key to the residual column. Each generation's
 //! directories are self-contained, so this inference is deterministic and
 //! sound without cross-generation schema state.
+//!
+//! Write amplification in this phase is proportional to the **dirty table
+//! count**, not to change volume: a dirty table is rebuilt whole, so a
+//! one-row edit rewrites its entire table until C4's delta groups land.
+//! Untouched tables reuse their previous directory references without
+//! rebuilding bytes (§3.6.5). Memory, by contrast, is bounded regardless
+//! of table size: rows stream through per-table group buffers under one
+//! global byte budget, flushing short groups when the budget fills.
 
 use super::*;
 use skein_integrity::crc32c;
@@ -1409,8 +1419,11 @@ mod tests {
         assert_eq!(second_report.table_count, 4);
         assert_eq!(second_report.dirty_table_count, 2);
         assert_eq!(second_report.reused_table_count, 2);
-        // The second checkpoint rewrote strictly less than the first even
-        // though it added a row: untouched tables cost no bytes.
+        // Write amplification is proportional to the dirty TABLE COUNT:
+        // the one-row edit still rewrote the whole Person table (no delta
+        // groups until C4), but the two untouched tables cost zero group
+        // bytes, so rebuilding 2 of 4 tables wrote strictly less than the
+        // full first checkpoint.
         assert!(second_report.group_bytes_written < first_report.group_bytes_written);
 
         let second_catalog = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();

@@ -301,8 +301,11 @@ ownership model in `EMBEDDED_RUNTIME_SPEC.md`.
    MUST rebuild every table.
 3. Shadow checkpoints MUST rebuild only tables dirtied since the previous
    shadow publication and MUST reuse untouched tables' directory references
-   per §3.6.5. The checkpoint report MUST expose total/dirty/reused table
-   counts and shadow group and metadata bytes written.
+   per §3.6.5. Shadow write amplification in this phase is proportional to
+   the dirty table count, not to change volume: a dirty table is rebuilt
+   whole (a one-row edit rewrites its table) until delta groups (§3.3)
+   reach the shadow. The checkpoint report MUST expose total/dirty/reused
+   table counts and shadow group and metadata bytes written.
 4. Shadow property keys MUST be interned under field-id discipline
    (§3.5.3(c)) in a persistent per-shadow key dictionary inside
    `column-groups/`; dictionary ids are assigned once in first-seen order
