@@ -1046,4 +1046,39 @@ mod tests {
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Completed));
     }
+
+    /// A saturated cgroup must reject new admissions even when the hard
+    /// limit is large: with `memory.current == memory.max` the governor
+    /// cannot distinguish anonymous saturation from reclaimable file
+    /// pages, so admitting anything risks a kernel OOM kill — the failure
+    /// the admission gate exists to prevent. Sensed zero headroom is
+    /// authoritative; environments whose own artifacts consume the
+    /// instance's memory must provision more, not weaken admission.
+    #[test]
+    fn saturated_cgroup_rejects_admissions_despite_a_large_hard_limit() {
+        let limit = 512 * 1024 * 1024;
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(6 * 1024 * 1024 * 1024),
+                    Some(limit),
+                    None,
+                    Some(limit),
+                ),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        assert_eq!(governor.snapshot().limits.memory_budget_bytes, 0);
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                48 * 1024 * 1024,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
+    }
 }
