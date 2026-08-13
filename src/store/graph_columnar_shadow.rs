@@ -753,3 +753,665 @@ impl GraphStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skein_storage::{decode_residual_row_properties, ColumnGroupReader};
+
+    fn unique_shadow_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("skein_columnar_shadow_{name}_{nanos}"))
+    }
+
+    fn shadow_replay_config() -> WalReplayConfig {
+        WalReplayConfig {
+            columnar_shadow_checkpoint: true,
+            ..WalReplayConfig::default()
+        }
+    }
+
+    fn open_shadow_store(path: &Path, catalog: &mut Catalog) -> GraphStore {
+        GraphStore::open_with_durability_and_replay_config(
+            path,
+            catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            shadow_replay_config(),
+        )
+        .unwrap()
+    }
+
+    fn properties(entries: &[(&str, Value)]) -> BTreeMap<String, Value> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect()
+    }
+
+    #[derive(Debug, Default)]
+    struct ShadowInference {
+        typed_column_count: usize,
+        residual_row_count: usize,
+    }
+
+    /// Opens the shadow catalog fresh from disk and reconstructs every node
+    /// and relationship from typed columns + residual + label-set columns.
+    fn reconstruct_shadow(
+        root: &Path,
+    ) -> (
+        BTreeMap<NodeId, NodeRecord>,
+        BTreeMap<RelId, RelRecord>,
+        ShadowInference,
+    ) {
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let catalog = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
+        let dictionary = ShadowKeyDictionary::load(&shadow_root).unwrap();
+        let mut nodes = BTreeMap::new();
+        let mut relationships = BTreeMap::new();
+        let mut inference = ShadowInference::default();
+        for directory in catalog.directories() {
+            let table = directory.table();
+            for descriptor in directory.groups() {
+                let reader =
+                    ColumnGroupReader::open_path(&shadow_root.join(descriptor.group_file()))
+                        .unwrap();
+                let ids = reader.read_ids().unwrap();
+                let residual = reader.read_byte_column(RESIDUAL_COLUMN).unwrap();
+                let mut row_properties: Vec<BTreeMap<String, Value>> =
+                    vec![BTreeMap::new(); ids.len()];
+                for (row, blob) in residual.iter().enumerate() {
+                    let Some(blob) = blob else { continue };
+                    inference.residual_row_count += 1;
+                    for (key_id, value) in decode_residual_row_properties(blob).unwrap() {
+                        let key = dictionary.key(PropertyId(key_id)).unwrap().to_string();
+                        assert!(row_properties[row].insert(key, value).is_none());
+                    }
+                }
+                for column in &reader.directory().columns {
+                    if column.property_id.0 < FIRST_DICTIONARY_COLUMN {
+                        continue;
+                    }
+                    inference.typed_column_count += 1;
+                    let key = dictionary.key(column.property_id).unwrap().to_string();
+                    let values = reader.read_column(column.property_id, None).unwrap();
+                    for (row, value) in values.into_iter().enumerate() {
+                        if !matches!(value, Value::Null) {
+                            assert!(row_properties[row].insert(key.clone(), value).is_none());
+                        }
+                    }
+                }
+                match table.kind {
+                    ColumnGroupTableKind::Node => {
+                        let label_sets = reader.read_byte_column(LABEL_SET_COLUMN).unwrap();
+                        for (row, id) in ids.iter().enumerate() {
+                            let labels = decode_label_set(
+                                label_sets[row].as_deref().expect("label set present"),
+                            )
+                            .unwrap();
+                            // The table id is the primary (minimum) label.
+                            assert_eq!(node_table_key(&labels), table);
+                            let record = NodeRecord {
+                                id: NodeId(*id),
+                                labels,
+                                properties: std::mem::take(&mut row_properties[row]),
+                            };
+                            assert!(nodes.insert(record.id, record).is_none());
+                        }
+                    }
+                    ColumnGroupTableKind::Relationship => {
+                        let sources = reader.read_column(SOURCE_COLUMN, None).unwrap();
+                        let targets = reader.read_column(TARGET_COLUMN, None).unwrap();
+                        let rel_type = RelTypeId(u32::try_from(table.table_id).unwrap());
+                        for (row, id) in ids.iter().enumerate() {
+                            let source = match sources[row] {
+                                Value::Int(value) => NodeId(value as u64),
+                                ref other => panic!("source column held {other:?}"),
+                            };
+                            let target = match targets[row] {
+                                Value::Int(value) => NodeId(value as u64),
+                                ref other => panic!("target column held {other:?}"),
+                            };
+                            let record = RelRecord {
+                                id: RelId(*id),
+                                source,
+                                target,
+                                rel_type,
+                                properties: std::mem::take(&mut row_properties[row]),
+                            };
+                            assert!(relationships.insert(record.id, record).is_none());
+                        }
+                    }
+                    ColumnGroupTableKind::Relational => panic!("shadow holds no relational table"),
+                }
+            }
+        }
+        (nodes, relationships, inference)
+    }
+
+    fn canonical_scan(
+        store: &GraphStore,
+    ) -> (BTreeMap<NodeId, NodeRecord>, BTreeMap<RelId, RelRecord>) {
+        let nodes = store
+            .node_records_owned()
+            .map(|record| record.map(|node| (node.id, node)))
+            .collect::<Result<BTreeMap<_, _>>>()
+            .unwrap();
+        let relationships = store
+            .relationship_records_owned()
+            .map(|record| record.map(|relationship| (relationship.id, relationship)))
+            .collect::<Result<BTreeMap<_, _>>>()
+            .unwrap();
+        (nodes, relationships)
+    }
+
+    fn assert_shadow_equivalence(root: &Path, store: &GraphStore) -> ShadowInference {
+        let (expected_nodes, expected_relationships) = canonical_scan(store);
+        let (nodes, relationships, inference) = reconstruct_shadow(root);
+        assert_eq!(nodes, expected_nodes);
+        assert_eq!(relationships, expected_relationships);
+        inference
+    }
+
+    #[test]
+    fn shadow_reconstruction_matches_canonical_scan_and_reuses_untouched_tables() {
+        let root = unique_shadow_dir("equivalence");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+
+        let n1 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[
+                    ("name", Value::String("alice".to_string())),
+                    ("age", Value::Int(30)),
+                    ("score", Value::Float(1.5)),
+                    ("flex", Value::Int(7)),
+                    (
+                        "tags",
+                        Value::List(vec![Value::Int(1), Value::String("x".to_string())]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        let n2 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[
+                    ("name", Value::String("bob".to_string())),
+                    ("age", Value::Int(41)),
+                    ("active", Value::Bool(true)),
+                    ("flex", Value::String("seven".to_string())),
+                    ("ghost", Value::Null),
+                ]),
+            )
+            .unwrap();
+        let n3 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[
+                    ("name", Value::String("cara".to_string())),
+                    ("score", Value::Float(-2.25)),
+                    ("active", Value::Bool(false)),
+                    ("meta", Value::Map(properties(&[("k", Value::Int(3))]))),
+                ]),
+            )
+            .unwrap();
+        // Multi-label node: created through the apply layer (the WAL surface
+        // is single-label), primary table = minimum label id = Person.
+        catalog.get_or_create_label("Extra");
+        let n4 = NodeId(store.next_node_id);
+        store.apply_create_node_with_labels(
+            &catalog,
+            n4,
+            BTreeSet::from([
+                catalog.label_id("Person").unwrap(),
+                catalog.label_id("Extra").unwrap(),
+            ]),
+            properties(&[("name", Value::String("dora".to_string()))]),
+        );
+        store.commit_epoch += 1;
+        // Unlabeled node: reserved table 0.
+        let u1 = NodeId(store.next_node_id);
+        store.apply_create_node_with_labels(
+            &catalog,
+            u1,
+            BTreeSet::new(),
+            properties(&[("kind", Value::String("floating".to_string()))]),
+        );
+        store.commit_epoch += 1;
+
+        store
+            .create_relationship(
+                &mut catalog,
+                n1,
+                n2,
+                "KNOWS",
+                properties(&[("since", Value::Int(2019))]),
+            )
+            .unwrap();
+        store
+            .create_relationship(
+                &mut catalog,
+                n2,
+                n3,
+                "KNOWS",
+                properties(&[("since", Value::Int(2021)), ("weight", Value::Float(0.5))]),
+            )
+            .unwrap();
+        store
+            .create_relationship(
+                &mut catalog,
+                n3,
+                n1,
+                "LIKES",
+                properties(&[("strength", Value::Int(2))]),
+            )
+            .unwrap();
+        store
+            .create_relationship(
+                &mut catalog,
+                n4,
+                n1,
+                "LIKES",
+                properties(&[("strength", Value::String("high".to_string()))]),
+            )
+            .unwrap();
+
+        store.checkpoint(&catalog).unwrap();
+        let inference = assert_shadow_equivalence(&root, &store);
+        // Per-generation inference: Person typed {name, age, score, active},
+        // unlabeled typed {kind}, KNOWS typed {since, weight}, LIKES none
+        // (mixed strength). Residual rows: n1 (flex, tags), n2 (flex,
+        // ghost), n3 (meta), and both mixed-strength LIKES rows.
+        assert_eq!(inference.typed_column_count, 7);
+        assert_eq!(inference.residual_row_count, 5);
+        let first_report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(first_report.generation, 1);
+        assert_eq!(first_report.table_count, 4);
+        assert_eq!(first_report.dirty_table_count, 4);
+        assert_eq!(first_report.reused_table_count, 0);
+        assert!(first_report.group_bytes_written > 0);
+        assert!(first_report.metadata_bytes_written > 0);
+
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let untouched_tables = [
+            ColumnGroupTableKey::new(ColumnGroupTableKind::Node, 0),
+            relationship_table_key(catalog.rel_type_id("LIKES").unwrap()),
+        ];
+        let first_catalog = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
+        let first_refs = untouched_tables
+            .iter()
+            .map(|table| {
+                let reference = first_catalog.manifest().table(*table).unwrap().clone();
+                let bytes = fs::read(shadow_root.join(reference.file_name())).unwrap();
+                (reference, bytes)
+            })
+            .collect::<Vec<_>>();
+
+        // Mutate a subset: one Person property write and one new KNOWS
+        // relationship; the unlabeled and LIKES tables stay untouched.
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[n1],
+                &[NodeSetAssignment {
+                    property: "age".to_string(),
+                    value: NodeSetValue::Value(Value::Int(31)),
+                }],
+            )
+            .unwrap();
+        store
+            .create_relationship(
+                &mut catalog,
+                n3,
+                n4,
+                "KNOWS",
+                properties(&[("since", Value::Int(2024))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+
+        assert_shadow_equivalence(&root, &store);
+        let second_report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(second_report.generation, 2);
+        assert_eq!(second_report.table_count, 4);
+        assert_eq!(second_report.dirty_table_count, 2);
+        assert_eq!(second_report.reused_table_count, 2);
+        // The second checkpoint rewrote strictly less than the first even
+        // though it added a row: untouched tables cost no bytes.
+        assert!(second_report.group_bytes_written < first_report.group_bytes_written);
+
+        let second_catalog = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
+        assert_eq!(
+            second_catalog.manifest().generation(),
+            ManifestGeneration(2)
+        );
+        for (reference, bytes) in &first_refs {
+            let reused = second_catalog.manifest().table(reference.table()).unwrap();
+            assert_eq!(reused, reference, "untouched table reference is reused");
+            assert_eq!(
+                &fs::read(shadow_root.join(reused.file_name())).unwrap(),
+                bytes,
+                "untouched table directory bytes are identical"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn flag_off_checkpoints_produce_no_shadow_directory_or_report() {
+        let root = unique_shadow_dir("flag_off");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &root,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("a".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert!(!root.join(COLUMN_GROUP_SHADOW_DIR).exists());
+        assert_eq!(store.columnar_shadow_checkpoint_report(), None);
+        assert_eq!(
+            store.columnar_shadow_recovery_status(),
+            ColumnarShadowRecoveryStatus::default()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_validates_the_shadow_and_replayed_mutations_mark_dirty_tables() {
+        let root = unique_shadow_dir("restart");
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let n1 = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("a".to_string()))]),
+            )
+            .unwrap();
+        let n2 = store
+            .create_node(
+                &mut catalog,
+                "City",
+                properties(&[("name", Value::String("b".to_string()))]),
+            )
+            .unwrap();
+        store
+            .create_relationship(&mut catalog, n1, n2, "IN", properties(&[]))
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        // A WAL-only mutation between checkpoint and restart: replay must
+        // mark exactly the Person table dirty.
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[n1],
+                &[NodeSetAssignment {
+                    property: "name".to_string(),
+                    value: NodeSetValue::Value(Value::String("a2".to_string())),
+                }],
+            )
+            .unwrap();
+        drop(store);
+
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let status = store.columnar_shadow_recovery_status();
+        assert!(
+            status.validated,
+            "shadow catalog validates on reopen: {status:?}"
+        );
+        assert!(!status.discarded);
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(report.generation, 2);
+        assert_eq!(report.table_count, 3);
+        assert_eq!(report.dirty_table_count, 1);
+        assert_eq!(report.reused_table_count, 2);
+        assert_shadow_equivalence(&root, &store);
+        drop(store);
+
+        // Corrupt one manifest-referenced shadow group's checksummed footer:
+        // the shadow is rebuildable derived state, so reopen discards it
+        // (the projected-graph policy of STORAGE.md recovery step 10)
+        // instead of failing closed, and the next checkpoint rebuilds every
+        // table.
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let referenced_group = |shadow_root: &Path| {
+            let catalog = ColumnGroupManifest::open(shadow_root).unwrap().unwrap();
+            let file = catalog.directories()[0].groups()[0]
+                .group_file()
+                .to_string();
+            shadow_root.join(file)
+        };
+        let group_file = referenced_group(&shadow_root);
+        let mut bytes = fs::read(&group_file).unwrap();
+        let footer_byte = bytes.len() - 10;
+        bytes[footer_byte] ^= 0x40;
+        fs::write(&group_file, &bytes).unwrap();
+
+        let mut catalog = Catalog::default();
+        let mut store = open_shadow_store(&root, &mut catalog);
+        let status = store.columnar_shadow_recovery_status();
+        assert!(status.discarded, "corrupt shadow is discarded: {status:?}");
+        assert!(status.error.is_some());
+        assert!(
+            !shadow_root.exists(),
+            "discarded shadow directory is removed"
+        );
+        store.checkpoint(&catalog).unwrap();
+        let report = store.columnar_shadow_checkpoint_report().unwrap();
+        assert_eq!(
+            report.generation, 1,
+            "shadow restarts its generation sequence"
+        );
+        assert_eq!(report.dirty_table_count, report.table_count);
+        assert_eq!(report.reused_table_count, 0);
+        assert_shadow_equivalence(&root, &store);
+        drop(store);
+
+        // With the flag off, a corrupt shadow is neither validated nor
+        // touched.
+        let group_file = referenced_group(&shadow_root);
+        let mut bytes = fs::read(&group_file).unwrap();
+        let footer_byte = bytes.len() - 10;
+        bytes[footer_byte] ^= 0x40;
+        fs::write(&group_file, &bytes).unwrap();
+        let mut catalog = Catalog::default();
+        let store = GraphStore::open_with_durability_and_replay_config(
+            &root,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.columnar_shadow_recovery_status(),
+            ColumnarShadowRecoveryStatus::default()
+        );
+        assert!(
+            shadow_root.exists(),
+            "flag-off open leaves the shadow untouched"
+        );
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn each_mutation_kind_marks_its_shadow_table_dirty() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        store.columnar_shadow.enabled = true;
+
+        let node_table = |label: &str, catalog: &Catalog| {
+            node_table_key(&BTreeSet::from([catalog.label_id(label).unwrap()]))
+        };
+
+        // Node create marks the primary-label table.
+        let a = store
+            .create_node(&mut catalog, "A", properties(&[("p", Value::Int(1))]))
+            .unwrap();
+        assert_eq!(
+            store.columnar_shadow.dirty,
+            BTreeSet::from([node_table("A", &catalog)])
+        );
+        store.columnar_shadow.dirty.clear();
+
+        // Node property set marks the primary-label table.
+        store
+            .apply_wal_op(
+                &mut catalog,
+                WalOp::SetNodeProperty {
+                    id: a,
+                    property: "p".to_string(),
+                    value: Value::Int(2),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.columnar_shadow.dirty,
+            BTreeSet::from([node_table("A", &catalog)])
+        );
+        store.columnar_shadow.dirty.clear();
+
+        // A label-set replacement marks BOTH primary tables.
+        catalog.get_or_create_label("B");
+        store.apply_create_node_with_labels(
+            &catalog,
+            a,
+            BTreeSet::from([catalog.label_id("B").unwrap()]),
+            properties(&[]),
+        );
+        assert_eq!(
+            store.columnar_shadow.dirty,
+            BTreeSet::from([node_table("A", &catalog), node_table("B", &catalog)])
+        );
+        store.columnar_shadow.dirty.clear();
+
+        // An unlabeled create marks the reserved table 0.
+        store.apply_create_node_with_labels(
+            &catalog,
+            NodeId(store.next_node_id),
+            BTreeSet::new(),
+            properties(&[]),
+        );
+        assert_eq!(
+            store.columnar_shadow.dirty,
+            BTreeSet::from([ColumnGroupTableKey::new(ColumnGroupTableKind::Node, 0)])
+        );
+        store.columnar_shadow.dirty.clear();
+
+        // Relationship create marks the rel-type table (and only it).
+        let b = store
+            .create_node(&mut catalog, "B", properties(&[]))
+            .unwrap();
+        store.columnar_shadow.dirty.clear();
+        let r = store
+            .create_relationship(&mut catalog, a, b, "R", properties(&[]))
+            .unwrap();
+        let r_table = relationship_table_key(catalog.rel_type_id("R").unwrap());
+        assert_eq!(store.columnar_shadow.dirty, BTreeSet::from([r_table]));
+        store.columnar_shadow.dirty.clear();
+
+        // Relationship property set marks the rel-type table.
+        store
+            .apply_wal_op(
+                &mut catalog,
+                WalOp::SetRelationshipProperty {
+                    id: r,
+                    property: "w".to_string(),
+                    value: Value::Int(9),
+                },
+            )
+            .unwrap();
+        assert_eq!(store.columnar_shadow.dirty, BTreeSet::from([r_table]));
+        store.columnar_shadow.dirty.clear();
+
+        // Relationship delete marks the rel-type table.
+        store
+            .apply_wal_op(&mut catalog, WalOp::DeleteRelationship { id: r })
+            .unwrap();
+        assert_eq!(store.columnar_shadow.dirty, BTreeSet::from([r_table]));
+        store.columnar_shadow.dirty.clear();
+
+        // Node delete marks the primary-label table.
+        store
+            .apply_wal_op(&mut catalog, WalOp::DeleteNode { id: b })
+            .unwrap();
+        assert_eq!(
+            store.columnar_shadow.dirty,
+            BTreeSet::from([node_table("B", &catalog)])
+        );
+        store.columnar_shadow.dirty.clear();
+
+        // With the shadow disabled, nothing is tracked.
+        store.columnar_shadow.enabled = false;
+        store
+            .create_node(&mut catalog, "A", properties(&[]))
+            .unwrap();
+        assert!(store.columnar_shadow.dirty.is_empty());
+    }
+
+    #[test]
+    fn varint_label_sets_round_trip() {
+        for labels in [
+            BTreeSet::new(),
+            BTreeSet::from([LabelId(0)]),
+            BTreeSet::from([LabelId(0), LabelId(1), LabelId(127), LabelId(128)]),
+            BTreeSet::from([LabelId(16_383), LabelId(16_384), LabelId(u32::MAX)]),
+        ] {
+            let encoded = encode_label_set(&labels);
+            assert_eq!(decode_label_set(&encoded).unwrap(), labels);
+        }
+        assert!(decode_label_set(&[0x80]).is_err());
+        assert!(decode_label_set(&[0xff, 0xff, 0xff, 0xff, 0x7f]).is_err());
+    }
+
+    #[test]
+    fn shadow_key_dictionary_persists_append_only_and_fails_closed_on_corruption() {
+        let root = unique_shadow_dir("dictionary");
+        fs::create_dir_all(&root).unwrap();
+        let mut dictionary = ShadowKeyDictionary::load(&root).unwrap();
+        assert_eq!(dictionary.len(), 0);
+        let name = dictionary.intern("name").unwrap();
+        let age = dictionary.intern("age").unwrap();
+        assert_eq!(name, PropertyId(FIRST_DICTIONARY_COLUMN));
+        assert_eq!(age, PropertyId(FIRST_DICTIONARY_COLUMN + 1));
+        assert_eq!(dictionary.intern("name").unwrap(), name);
+        dictionary.persist(&root).unwrap();
+
+        let mut reloaded = ShadowKeyDictionary::load(&root).unwrap();
+        assert_eq!(reloaded.key(name), Some("name"));
+        assert_eq!(reloaded.key(age), Some("age"));
+        assert_eq!(reloaded.key(PropertyId(0)), None);
+        // Ids are stable across reload-and-extend.
+        assert_eq!(reloaded.intern("age").unwrap(), age);
+        assert_eq!(
+            reloaded.intern("score").unwrap(),
+            PropertyId(FIRST_DICTIONARY_COLUMN + 2)
+        );
+
+        let path = root.join(SHADOW_KEY_DICTIONARY_FILE);
+        let mut bytes = fs::read(&path).unwrap();
+        let flip = bytes.len() / 2;
+        bytes[flip] ^= 0x01;
+        fs::write(&path, &bytes).unwrap();
+        assert!(ShadowKeyDictionary::load(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
