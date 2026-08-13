@@ -652,12 +652,15 @@ fn derive_limits(
     }
 }
 
-/// The stable maximum: explicit configuration and the limit-derived term
+/// The headroom-independent maximum for the current resource snapshot:
+/// explicit configuration and the limit-derived term
 /// (`effective_limit_bytes` = min of cgroup `memory.max`, the kernel hard
 /// limit, and `memory.high`, the throttle threshold Skein honors as its
 /// policy ceiling), with the fallback when neither is sensed. A request
 /// above this can never be satisfied by waiting, so admission reports it
-/// non-retryable.
+/// non-retryable. A resource refresh may change this capacity when the
+/// sensed host or cgroup policy ceiling changes; explicit configuration
+/// remains an upper bound.
 fn derived_memory_capacity(
     config: RuntimeGovernorConfig,
     resources: RuntimeResourceSnapshot,
@@ -1033,6 +1036,86 @@ mod tests {
         assert!(error.is_retryable());
         drop(permit);
         assert!(!governor.snapshot().overcommitted);
+    }
+
+    /// A cgroup policy change may lower capacity below an active reservation.
+    /// The governor cannot revoke memory already handed to the operation, so
+    /// it reports overcommit and blocks new work until release closes the gap.
+    #[test]
+    fn capacity_shrink_preserves_active_permits_and_blocks_new_admission() {
+        let snapshot = |limit: u64| {
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(6 * 1024 * 1024 * 1024),
+                    Some(limit),
+                    None,
+                    Some(0),
+                ),
+            )
+        };
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            snapshot(512 * 1024 * 1024),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let permit = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                256 * 1024 * 1024,
+            ))
+            .unwrap();
+
+        assert!(governor.update_resources(snapshot(128 * 1024 * 1024)));
+        let shrunk = governor.snapshot();
+        assert_eq!(shrunk.limits.memory_capacity_bytes, 96 * 1024 * 1024);
+        assert_eq!(shrunk.admitted_memory_bytes, 256 * 1024 * 1024);
+        assert!(shrunk.overcommitted);
+
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(error.is_retryable());
+
+        drop(permit);
+        let recovered = governor.snapshot();
+        assert_eq!(recovered.admitted_memory_bytes, 0);
+        assert!(!recovered.overcommitted);
+    }
+
+    #[test]
+    fn zero_capacity_rejects_nonzero_memory_without_waiting() {
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(
+                    Some(8 * 1024 * 1024 * 1024),
+                    Some(6 * 1024 * 1024 * 1024),
+                    Some(0),
+                    None,
+                    Some(u64::MAX),
+                ),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.limits.memory_capacity_bytes, 0);
+        assert_eq!(snapshot.limits.memory_budget_bytes, 0);
+
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
     }
 
     #[derive(Debug, Default)]

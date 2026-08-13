@@ -2,30 +2,32 @@
 EXTENDS Integers, Naturals, FiniteSets
 
 (***************************************************************************)
-(* Memory admission with a stable capacity and a dynamic budget. Capacity  *)
-(* is the stable maximum (explicit configuration and the cgroup limit      *)
-(* ceiling); the budget is capacity further bounded by sensed              *)
-(* availability, so it moves under the capacity as resources refresh. A    *)
-(* request above capacity is statically unsatisfiable and terminates       *)
-(* non-retryably at submission, before any dynamic saturation check. A     *)
-(* request within capacity but above the currently uncommitted budget      *)
-(* waits, retries as refreshes restore headroom, and can be cancelled.     *)
+(* Memory admission with a capacity and a dynamic budget. Capacity is       *)
+(* stable with respect to sensed headroom, but a resource refresh may       *)
+(* change it when the sensed host or cgroup policy ceiling changes; explicit *)
+(* configuration remains an upper bound. The budget is further bounded by   *)
+(* sensed availability. A request                                            *)
+(* above current capacity terminates non-retryably before any dynamic gate. *)
+(* A request within capacity but above the uncommitted budget waits. A      *)
+(* capacity shrink does not revoke admitted work; it blocks further         *)
+(* admission, and an affected waiter terminates on its next retry.          *)
 (***************************************************************************)
 
-CONSTANT Capacity, Waiters
+CONSTANT MaxCapacity, Waiters
 
-ASSUME /\ Capacity \in Nat \ {0}
+ASSUME /\ MaxCapacity \in Nat \ {0}
        /\ Waiters # {}
 
-Sizes == 1..(Capacity + 1)
+Sizes == 1..(MaxCapacity + 1)
 Statuses == {"idle", "waiting", "admitted", "rejected", "cancelled"}
 
 VARIABLES
+    capacity,
     budget,
     requested,
     status
 
-vars == <<budget, requested, status>>
+vars == <<capacity, budget, requested, status>>
 
 AdmittedBytes ==
     LET admitted == {waiter \in Waiters: status[waiter] = "admitted"}
@@ -38,7 +40,8 @@ AdmittedBytes ==
 UncommittedBudget == budget - AdmittedBytes
 
 Init ==
-    /\ budget \in 0..Capacity
+    /\ capacity \in 0..MaxCapacity
+    /\ budget \in 0..capacity
     /\ requested = [waiter \in Waiters |-> 0]
     /\ status = [waiter \in Waiters |-> "idle"]
 
@@ -53,30 +56,35 @@ Submit(waiter, size) ==
     /\ requested' = [requested EXCEPT ![waiter] = size]
     /\ status' =
         [status EXCEPT ![waiter] =
-            IF size > Capacity THEN "rejected"
+            IF size > capacity THEN "rejected"
             ELSE IF size <= UncommittedBudget THEN "admitted"
             ELSE "waiting"]
-    /\ UNCHANGED budget
+    /\ UNCHANGED <<capacity, budget>>
 
 Retry(waiter) ==
     /\ status[waiter] = "waiting"
-    /\ requested[waiter] <= UncommittedBudget
-    /\ status' = [status EXCEPT ![waiter] = "admitted"]
-    /\ UNCHANGED <<budget, requested>>
+    /\ IF requested[waiter] > capacity
+          THEN status' = [status EXCEPT ![waiter] = "rejected"]
+          ELSE /\ requested[waiter] <= UncommittedBudget
+               /\ status' = [status EXCEPT ![waiter] = "admitted"]
+    /\ UNCHANGED <<capacity, budget, requested>>
 
 (***************************************************************************)
-(* A resource refresh moves the dynamic budget anywhere under capacity,    *)
-(* never above it.                                                         *)
+(* A resource refresh may move both capacity and budget, including to zero. *)
+(* Existing admissions are not revoked when the policy ceiling shrinks.     *)
 (***************************************************************************)
 Refresh ==
-    /\ \E next \in 0..Capacity: budget' = next
+    /\ \E next_capacity \in 0..MaxCapacity:
+          \E next_budget \in 0..next_capacity:
+            /\ capacity' = next_capacity
+            /\ budget' = next_budget
     /\ UNCHANGED <<requested, status>>
 
 Release(waiter) ==
     /\ status[waiter] = "admitted"
     /\ status' = [status EXCEPT ![waiter] = "idle"]
     /\ requested' = [requested EXCEPT ![waiter] = 0]
-    /\ UNCHANGED budget
+    /\ UNCHANGED <<capacity, budget>>
 
 (***************************************************************************)
 (* Cancellation and deadlines terminate a wait; rejected and cancelled     *)
@@ -85,13 +93,13 @@ Release(waiter) ==
 Cancel(waiter) ==
     /\ status[waiter] = "waiting"
     /\ status' = [status EXCEPT ![waiter] = "cancelled"]
-    /\ UNCHANGED <<budget, requested>>
+    /\ UNCHANGED <<capacity, budget, requested>>
 
 Reset(waiter) ==
     /\ status[waiter] \in {"rejected", "cancelled"}
     /\ status' = [status EXCEPT ![waiter] = "idle"]
     /\ requested' = [requested EXCEPT ![waiter] = 0]
-    /\ UNCHANGED budget
+    /\ UNCHANGED <<capacity, budget>>
 
 Next ==
     \/ \E waiter \in Waiters: \E size \in Sizes: Submit(waiter, size)
@@ -102,32 +110,46 @@ Next ==
     \/ \E waiter \in Waiters: Reset(waiter)
 
 TypeOK ==
-    /\ budget \in 0..Capacity
-    /\ requested \in [Waiters -> 0..(Capacity + 1)]
+    /\ capacity \in 0..MaxCapacity
+    /\ budget \in 0..capacity
+    /\ requested \in [Waiters -> 0..(MaxCapacity + 1)]
     /\ status \in [Waiters -> Statuses]
 
 BudgetNeverExceedsCapacity ==
-    budget <= Capacity
+    budget <= capacity
 
 (***************************************************************************)
-(* The blocking property from the review: a statically unsatisfiable       *)
-(* request never enters the waiting state, so no waiter polls forever for  *)
-(* an admission that cannot come.                                          *)
+(* A statically unsatisfiable submission never enters the waiting state. A  *)
+(* later capacity shrink may temporarily leave an over-capacity waiter, but *)
+(* Retry is then enabled and can only terminate that waiter.                 *)
 (***************************************************************************)
-OverCapacityNeverWaits ==
+OverCapacityWaiterIsRejectable ==
     \A waiter \in Waiters:
-        status[waiter] = "waiting" => requested[waiter] <= Capacity
+        status[waiter] = "waiting" /\ requested[waiter] > capacity
+            => ENABLED Retry(waiter)
+
+SubmissionNeverWaitsAboveCapacity ==
+    [][\A waiter \in Waiters:
+        status[waiter] = "idle" /\ status'[waiter] = "waiting"
+            => requested'[waiter] <= capacity']_vars
+
+TerminalRejectionRequiresCurrentOverCapacity ==
+    [][\A waiter \in Waiters:
+        status[waiter] # "rejected" /\ status'[waiter] = "rejected"
+            => requested'[waiter] > capacity']_vars
 
 (***************************************************************************)
-(* Terminal rejection is reserved for over-capacity requests; a request    *)
-(* within capacity is never terminally rejected, only made to wait.        *)
+(* Refresh may create overcommit by lowering capacity below active work.    *)
+(* Admission itself must never create it, and no admission may increase an  *)
+(* existing overcommit. Release is the only way for admitted bytes to fall. *)
 (***************************************************************************)
-RejectionIsOnlyForOverCapacity ==
-    \A waiter \in Waiters:
-        status[waiter] = "rejected" => requested[waiter] > Capacity
+AdmissionNeverCreatesCapacityOvercommit ==
+    [][AdmittedBytes' > AdmittedBytes
+        => AdmittedBytes' <= capacity']_vars
 
-AdmittedNeverExceedsCapacity ==
-    AdmittedBytes <= Capacity
+CapacityOvercommitNeverGrows ==
+    [][AdmittedBytes > capacity
+        => AdmittedBytes' <= AdmittedBytes]_vars
 
 Spec == Init /\ [][Next]_vars
 

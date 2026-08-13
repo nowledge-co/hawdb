@@ -189,7 +189,14 @@ policy ceiling. Either MAY therefore bound the stable admission capacity
 (the smaller wins), while the dynamic admission budget additionally tracks
 derived headroom. A request above the stable capacity is rejected
 non-retryably; a request above only the dynamic budget is a transient
-shortage and MUST be reported retryable. `max` does not constrain
+shortage and MUST be reported retryable. Stable means independent of current
+headroom within one resource snapshot, not immutable across policy changes:
+a refresh MUST recompute capacity after `memory.max` or `memory.high` changes.
+Shrinking capacity MUST NOT revoke active permits. It MAY temporarily leave
+the governor overcommitted, in which case additional positive memory
+reservations remain blocked until active work releases enough memory. A
+waiting request that no longer fits the refreshed capacity MUST terminate
+non-retryably on its next admission poll. `max` does not constrain
 the host limit. If an enabled controller has an unreadable or invalid quota,
 cpuset, memory limit, or usage, runtime detection MUST fail closed to one CPU or
 zero memory admission instead of using host-wide resources.

@@ -247,28 +247,31 @@ generation compare-and-swap.
 
 ## Runtime Memory Admission
 
-`SkeinRuntimeAdmission.tla` models the governor's split between the stable
-memory capacity (explicit configuration and the cgroup limit ceiling) and
-the dynamic budget that resource refreshes move underneath it. Submission
-runs the static capacity check before any dynamic saturation gate, so a
-statically unsatisfiable request terminates non-retryably instead of
-entering the waiting state; a request within capacity but above the
-uncommitted budget waits, retries as refreshes restore headroom, and can be
-cancelled. Rejected and cancelled are terminal for the submitted request.
+`SkeinRuntimeAdmission.tla` models the governor's split between memory
+capacity and the dynamic budget beneath it. Capacity is independent of
+current headroom, but resource refresh may change it when sensed host or
+cgroup policy ceilings change. The model includes zero capacity, dynamic capacity
+shrink, and temporary overcommit caused by preserving active permits.
+Submission runs the static capacity check before any dynamic gate. A request
+within capacity but above the uncommitted budget waits; if refreshed capacity
+later falls below that request, its next retry terminates non-retryably.
 
-The model checks that the budget never exceeds capacity, that a waiting
-request always fits capacity (the property whose violation would leave a
-Tokio waiter polling forever for an admission that cannot come), that
-terminal rejection is reserved for over-capacity requests, and that
-concurrently admitted reservations never exceed capacity.
+The model checks that budget never exceeds capacity, over-capacity submission
+never enters waiting, terminal rejection occurs only against the capacity
+current at that transition, and an over-capacity waiter has a terminating
+retry. Refresh may lower capacity beneath existing reservations, so the model
+does not assert the false global invariant that admitted bytes always fit the
+latest capacity. Instead it proves that admission never creates capacity
+overcommit and cannot grow overcommit created by refresh.
 
-Mutation testing sizes the instance (`Capacity = 3`, two waiters): skipping
-the static capacity check reports `OverCapacityNeverWaits`, letting a
-refresh raise the budget above capacity reports `TypeOK` alongside
-`BudgetNeverExceedsCapacity`, and a retry that ignores the uncommitted
-budget reports `AdmittedNeverExceedsCapacity`. Liveness (a waiter
-eventually admitting after a refresh) is deliberately left to the
-runtime-tokio timing test `waiting_admission_succeeds_after_refresh_restores_headroom`.
+Mutation testing sizes the instance (`MaxCapacity = 3`, two waiters): skipping
+the static capacity check reports `SubmissionNeverWaitsAboveCapacity`, letting
+a refresh raise budget above capacity reports `TypeOK` alongside
+`BudgetNeverExceedsCapacity`, failing to terminate a waiter after capacity
+shrink reports `OverCapacityWaiterIsRejectable`, and admission that ignores
+the uncommitted budget reports `AdmissionNeverCreatesCapacityOvercommit` or
+`CapacityOvercommitNeverGrows`. Scheduler liveness remains implementation
+evidence in the runtime-tokio timing tests.
 
 ## Implementation Refinement Evidence
 
