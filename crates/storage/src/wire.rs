@@ -1,24 +1,25 @@
-//! Field-tagged varint wire primitives for binary WAL record payloads.
+//! Field-tagged varint wire primitives for record-level payloads.
 //!
-//! Record-level payloads follow the protobuf wire discipline required by
+//! Record-level payloads (binary WAL records, residual column rows) follow
+//! the protobuf wire discipline required by
 //! `COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md` §3.5.1: each field is a
 //! `(field_id << 3) | wire_type` varint tag followed by a varint,
 //! fixed-width, or length-delimited body. Readers skip unknown field ids by
 //! wire type. The codec is hand-rolled; no code generation enters the
 //! supply chain.
 
-use crate::error::{Result, SkeinError};
+use skein_core::error::{Result, SkeinError};
 
 /// Varint-encoded unsigned body.
-pub(crate) const WIRE_TYPE_VARINT: u8 = 0;
+pub const WIRE_TYPE_VARINT: u8 = 0;
 /// Eight-byte little-endian body.
-pub(crate) const WIRE_TYPE_FIXED64: u8 = 1;
+pub const WIRE_TYPE_FIXED64: u8 = 1;
 /// Varint length followed by that many bytes.
-pub(crate) const WIRE_TYPE_LEN: u8 = 2;
+pub const WIRE_TYPE_LEN: u8 = 2;
 
 const MAX_VARINT_BYTES: usize = 10;
 
-pub(crate) fn encode_varint_u64(mut value: u64, out: &mut Vec<u8>) {
+pub fn encode_varint_u64(mut value: u64, out: &mut Vec<u8>) {
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
@@ -30,7 +31,7 @@ pub(crate) fn encode_varint_u64(mut value: u64, out: &mut Vec<u8>) {
     }
 }
 
-pub(crate) fn decode_varint_u64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
+pub fn decode_varint_u64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     let mut value = 0u64;
     let mut shift = 0u32;
     for _ in 0..MAX_VARINT_BYTES {
@@ -53,20 +54,20 @@ pub(crate) fn decode_varint_u64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     ))
 }
 
-pub(crate) const fn zigzag_encode_i64(value: i64) -> u64 {
+pub const fn zigzag_encode_i64(value: i64) -> u64 {
     ((value << 1) ^ (value >> 63)) as u64
 }
 
-pub(crate) const fn zigzag_decode_i64(value: u64) -> i64 {
+pub const fn zigzag_decode_i64(value: u64) -> i64 {
     ((value >> 1) as i64) ^ -((value & 1) as i64)
 }
 
-pub(crate) fn encode_tag(field_id: u32, wire_type: u8, out: &mut Vec<u8>) {
+pub fn encode_tag(field_id: u32, wire_type: u8, out: &mut Vec<u8>) {
     debug_assert!(wire_type <= WIRE_TYPE_LEN);
     encode_varint_u64((u64::from(field_id) << 3) | u64::from(wire_type), out);
 }
 
-pub(crate) fn decode_tag(bytes: &[u8], pos: &mut usize) -> Result<(u32, u8)> {
+pub fn decode_tag(bytes: &[u8], pos: &mut usize) -> Result<(u32, u8)> {
     let tag = decode_varint_u64(bytes, pos)?;
     let wire_type = (tag & 0x7) as u8;
     let field_id = tag >> 3;
@@ -75,27 +76,27 @@ pub(crate) fn decode_tag(bytes: &[u8], pos: &mut usize) -> Result<(u32, u8)> {
     Ok((field_id, wire_type))
 }
 
-pub(crate) fn encode_varint_field(field_id: u32, value: u64, out: &mut Vec<u8>) {
+pub fn encode_varint_field(field_id: u32, value: u64, out: &mut Vec<u8>) {
     encode_tag(field_id, WIRE_TYPE_VARINT, out);
     encode_varint_u64(value, out);
 }
 
-pub(crate) fn encode_fixed64_field(field_id: u32, value: u64, out: &mut Vec<u8>) {
+pub fn encode_fixed64_field(field_id: u32, value: u64, out: &mut Vec<u8>) {
     encode_tag(field_id, WIRE_TYPE_FIXED64, out);
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn encode_len_field(field_id: u32, body: &[u8], out: &mut Vec<u8>) {
+pub fn encode_len_field(field_id: u32, body: &[u8], out: &mut Vec<u8>) {
     encode_tag(field_id, WIRE_TYPE_LEN, out);
     encode_varint_u64(body.len() as u64, out);
     out.extend_from_slice(body);
 }
 
-pub(crate) fn encode_string_field(field_id: u32, value: &str, out: &mut Vec<u8>) {
+pub fn encode_string_field(field_id: u32, value: &str, out: &mut Vec<u8>) {
     encode_len_field(field_id, value.as_bytes(), out);
 }
 
-pub(crate) fn decode_fixed64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
+pub fn decode_fixed64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     let end = pos
         .checked_add(8)
         .filter(|end| *end <= bytes.len())
@@ -106,7 +107,7 @@ pub(crate) fn decode_fixed64(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     Ok(u64::from_le_bytes(raw))
 }
 
-pub(crate) fn decode_len_body<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
+pub fn decode_len_body<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
     let len = decode_varint_u64(bytes, pos)?;
     let len = usize::try_from(len).map_err(|_| {
         SkeinError::Storage("wire length-delimited body overflows usize".to_string())
@@ -122,7 +123,7 @@ pub(crate) fn decode_len_body<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'
     Ok(body)
 }
 
-pub(crate) fn decode_string_body(bytes: &[u8], pos: &mut usize) -> Result<String> {
+pub fn decode_string_body(bytes: &[u8], pos: &mut usize) -> Result<String> {
     let body = decode_len_body(bytes, pos)?;
     String::from_utf8(body.to_vec())
         .map_err(|error| SkeinError::Storage(format!("wire string is not valid UTF-8: {error}")))
@@ -130,7 +131,7 @@ pub(crate) fn decode_string_body(bytes: &[u8], pos: &mut usize) -> Result<String
 
 /// Skips one field body of the given wire type, enabling forward-compatible
 /// readers that ignore unknown field ids.
-pub(crate) fn skip_field(bytes: &[u8], pos: &mut usize, wire_type: u8) -> Result<()> {
+pub fn skip_field(bytes: &[u8], pos: &mut usize, wire_type: u8) -> Result<()> {
     match wire_type {
         WIRE_TYPE_VARINT => {
             decode_varint_u64(bytes, pos)?;

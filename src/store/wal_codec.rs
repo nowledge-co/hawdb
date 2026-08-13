@@ -4,8 +4,7 @@
 pub(crate) mod binary;
 #[path = "wal_codec/frame.rs"]
 pub(crate) mod frame;
-#[path = "wal_codec/wire.rs"]
-pub(crate) mod wire;
+pub(crate) use skein_storage::wire;
 
 use super::{
     checksum_bytes, decode_bytes_base64, decode_nullable, decode_properties, decode_property_type,

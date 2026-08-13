@@ -16,6 +16,7 @@ pub mod property_spill;
 pub mod relational;
 pub mod scan;
 pub mod snapshot;
+pub mod wire;
 
 pub use adjacency::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
