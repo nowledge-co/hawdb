@@ -245,6 +245,39 @@ generation already selected by the racing publisher. This demonstrates that
 the model distinguishes a serialized publish lease from the required
 generation compare-and-swap.
 
+## Columnar Shadow Checkpoint Integration
+
+`SkeinColumnarShadowIntegration.tla` models the shadow adoption phase of
+[`../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md`](../specs/COLUMNAR_CANONICAL_AND_PROJECTION_SPEC.md)
+§3.7 as a four-phase checkpoint machine — publish the canonical manifest,
+publish the shadow key dictionary, publish the shadow manifest, update the
+in-memory shadow catalog — with a crash enabled at every boundary and a
+reader pinned to the canonical side. The shadow is derived, rebuildable
+state: recovery mounts an intact shadow whose source epoch matches the
+recovered canonical epoch, keeps an intact stale shadow only as the reuse
+parent behind an all-dirty rebuild, and discards a corrupt shadow (the
+projected-graph policy) instead of failing the open. A shadow build or
+publication failure after the canonical manifest replaced returns success
+from the checkpoint call and preserves the dirty state for the retry.
+
+The model checks that recovery never fails because of shadow state, that a
+mounted catalog always binds an intact published shadow at its own epoch,
+that a shadow-behind-canonical gap at rest always stands behind the
+all-dirty flag or full dirty coverage, that a checkpoint whose shadow
+published leaves the shadow exactly at the canonical epoch, that the
+shadow manifest never leads the canonical epoch and always has dictionary
+coverage, that the checkpoint result tracks canonical publication only,
+and that a reader only ever pins published canonical epochs.
+
+Mutation testing sizes the instance (`MaxEpoch = 3`, 1,185 distinct
+states): a recovery that mounts a corrupt shadow as current reports
+`NoStaleShadowMount`, a shadow failure that fails the checkpoint call
+although the canonical manifest replaced reports
+`CheckpointResultTracksCanonicalOnly`, a recovery that skips the all-dirty
+rebuild after an epoch gap reports `StaleShadowGapIsCovered`, and a
+recovery that fails closed on a corrupt shadow reports
+`CanonicalRecoveryIndependentOfShadow`.
+
 ## Implementation Refinement Evidence
 
 The Rust tests below exercise the concrete boundaries represented by the model.
@@ -265,6 +298,7 @@ They are implementation evidence, not a machine-checked refinement proof.
 | A deadlock-closing multi-owner wait edge selects one victim and releases its dependencies | `WaitForGraph::register`, `ConcurrentDatabaseTransaction::abort_after_lock_failure` | `point_lock_upgrade_cycle_selects_one_deadlock_victim`, `wait_for_graph_detects_a_cycle_with_multiple_blockers` |
 | A stale, mixed, missing, or corrupt Source scan sidecar falls back to the canonical graph | `source_scan::load`, `ScanSegmentManifest::plan_scan` | `checkpoint_publishes_source_scan_and_wal_mutation_invalidates_it`, `corrupted_source_scan_artifact_never_blocks_canonical_graph_recovery` |
 | A column-group catalog publishes artifacts and changed table directories before one generation-CAS manifest; reopen ignores orphan candidates and fails closed on referenced corruption | `ColumnGroupTableDirectory::write_immutable`, `ColumnGroupManifest::{publish,open}`, `PublishedColumnGroupCatalog::scrub_artifacts` | `publishes_reopens_and_reuses_untouched_table_directory`, `stale_publishers_are_serialized_and_one_fails_closed`, `orphan_candidate_is_ignored_and_corrupt_published_metadata_fails_closed`, `deep_scrub_detects_payload_corruption_not_read_by_reopen` |
+| The columnar shadow never influences canonical recovery or checkpoint success; recovery discards a corrupt shadow and rebuilds all-dirty after an epoch gap; a shadow failure preserves dirty state and later converges | `GraphStore::{mount_columnar_shadow_for_recovery, record_columnar_shadow_checkpoint}` | `restart_validates_the_shadow_and_replayed_mutations_mark_dirty_tables`, `shadow_publish_failure_never_fails_the_canonical_checkpoint_and_retries`, `shadow_reconstruction_matches_canonical_scan_and_reuses_untouched_tables` |
 | System schema objects and migration identities publish atomically; invalid, future, read-only, failed-DDL, and crash-recovered states never return a usable partially upgraded handle | `Database::apply_system_schema_registry`, `execute_database_transaction_sql`, `GraphStore::commit_mutation_transaction_and_relational` | `application_system_schema_upgrades_and_reopens_idempotently`, `application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_schema`, `application_system_schema_rejects_changed_applied_migration`, `application_system_schema_rejects_a_database_from_a_newer_binary`, `failed_application_system_schema_upgrade_does_not_publish_version`, `read_only_database_rejects_pending_application_system_schema_upgrade` |
 | Skein Lightning derives a registry-complete export without advancing an in-memory source epoch and imports only a valid stream into an empty or verified engine-only target | `Database::skein_lightning_relational_state`, `Database::skein_lightning_initial_import_apply_internal`, `GraphStore::import_skein_snapshot_rows_with_source_fingerprint` | `skein_lightning_initial_import_apply_imports_database_state_into_empty_target`, `skein_lightning_initial_import_rejects_stream_without_engine_registry` |
 
