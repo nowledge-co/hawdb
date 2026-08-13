@@ -143,7 +143,7 @@ pub fn encode_chunk_with(
     compress: bool,
 ) -> Result<EncodedChunk, ColumnGroupError> {
     let body = encode_chunk_body(values, encoding)?;
-    Ok(finish_chunk(encoding, body, compress))
+    finish_chunk(encoding, body, compress)
 }
 
 /// Picks the smallest valid physical encoding for `values`, optionally
@@ -169,7 +169,7 @@ pub fn encode_chunk_auto(
                 .to_string(),
         )
     })?;
-    Ok(finish_chunk(encoding, body, compress))
+    finish_chunk(encoding, body, compress)
 }
 
 /// Decodes a stored chunk back to one `Value` per row, with `Value::Null`
@@ -184,6 +184,7 @@ pub fn decode_chunk(
         body = decompress_body(bytes)?;
         body.as_slice()
     } else {
+        validate_readable_chunk_body_len(bytes.len())?;
         bytes
     };
     let mut cursor = Cursor::new(body);
@@ -221,23 +222,55 @@ pub fn decode_chunk(
     Ok(values)
 }
 
-fn finish_chunk(encoding: ChunkEncoding, body: Vec<u8>, compress: bool) -> EncodedChunk {
+fn finish_chunk(
+    encoding: ChunkEncoding,
+    body: Vec<u8>,
+    compress: bool,
+) -> Result<EncodedChunk, ColumnGroupError> {
+    // The limit describes the logical, uncompressed body. Enforce it before
+    // compression so the writer can never publish a compact zstd frame that
+    // the bounded reader must reject after decompression.
+    validate_writable_chunk_body_len(body.len())?;
     if compress
         && body.len() >= MIN_COMPRESS_BYTES
         && let Ok(packed) = zstd::stream::encode_all(body.as_slice(), ZSTD_LEVEL)
         && packed.len() < body.len()
     {
-        return EncodedChunk {
+        return Ok(EncodedChunk {
             encoding,
             compressed: true,
             bytes: packed,
-        };
+        });
     }
-    EncodedChunk {
+    Ok(EncodedChunk {
         encoding,
         compressed: false,
         bytes: body,
+    })
+}
+
+fn chunk_body_len_u64(body_len: usize) -> u64 {
+    u64::try_from(body_len).unwrap_or(u64::MAX)
+}
+
+fn validate_writable_chunk_body_len(body_len: usize) -> Result<(), ColumnGroupError> {
+    let body_len = chunk_body_len_u64(body_len);
+    if body_len > MAX_CHUNK_BODY_BYTES {
+        return Err(unsupported(format!(
+            "chunk body holds {body_len} bytes, exceeding the {MAX_CHUNK_BODY_BYTES} byte limit"
+        )));
     }
+    Ok(())
+}
+
+fn validate_readable_chunk_body_len(body_len: usize) -> Result<(), ColumnGroupError> {
+    let body_len = chunk_body_len_u64(body_len);
+    if body_len > MAX_CHUNK_BODY_BYTES {
+        return Err(corrupt(format!(
+            "chunk body holds {body_len} bytes, exceeding the {MAX_CHUNK_BODY_BYTES} byte limit"
+        )));
+    }
+    Ok(())
 }
 
 /// Reads and validates the shared chunk-body prelude: row count, value
@@ -326,7 +359,7 @@ pub fn encode_byte_chunk(
     for blob in dense {
         body.extend(blob);
     }
-    Ok(finish_chunk(ChunkEncoding::ByteTable, body, compress))
+    finish_chunk(ChunkEncoding::ByteTable, body, compress)
 }
 
 /// Decodes a byte-table chunk back to one optional blob per row, `None` at
@@ -340,6 +373,7 @@ pub fn decode_byte_chunk(
         body = decompress_body(bytes)?;
         body.as_slice()
     } else {
+        validate_readable_chunk_body_len(bytes.len())?;
         bytes
     };
     let mut cursor = Cursor::new(body);
@@ -1218,6 +1252,25 @@ mod tests {
         assert!(matches!(
             decode_byte_chunk(&chunk.bytes, true),
             Err(ColumnGroupError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn writer_and_reader_enforce_the_same_chunk_body_limit() {
+        let within_limit = usize::try_from(MAX_CHUNK_BODY_BYTES).unwrap();
+        assert!(validate_writable_chunk_body_len(within_limit).is_ok());
+        assert!(validate_readable_chunk_body_len(within_limit).is_ok());
+
+        let beyond_limit = within_limit.checked_add(1).unwrap();
+        assert!(matches!(
+            validate_writable_chunk_body_len(beyond_limit),
+            Err(ColumnGroupError::Unsupported(message))
+                if message.contains("exceeding")
+        ));
+        assert!(matches!(
+            validate_readable_chunk_body_len(beyond_limit),
+            Err(ColumnGroupError::Corrupt(message))
+                if message.contains("exceeding")
         ));
     }
 
