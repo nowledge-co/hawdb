@@ -4,6 +4,33 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:public"])
 
+_CARGO_WORKSPACE_PACKAGES = [
+    "crates/analytics",
+    "crates/cgroup",
+    "crates/core",
+    "crates/cypher",
+    "crates/ddl",
+    "crates/evidence",
+    "crates/executor",
+    "crates/expression",
+    "crates/fuzz",
+    "crates/integrity",
+    "crates/optimizer",
+    "crates/plan",
+    "crates/plan-cache",
+    "crates/qos",
+    "crates/qualification",
+    "crates/query",
+    "crates/readiness",
+    "crates/route-ownership",
+    "crates/runtime-tokio",
+    "crates/sql",
+    "crates/sql-syntax",
+    "crates/storage",
+    "crates/telemetry",
+    "crates/vector-projection",
+]
+
 sh_test(
     name = "cargo_bazel_package_parity_test",
     size = "small",
@@ -11,10 +38,13 @@ sh_test(
     data = [
         "BUILD.bazel",
         "Cargo.toml",
-    ] + glob([
-        "crates/*/BUILD.bazel",
-        "crates/*/Cargo.toml",
-    ]),
+    ] + [
+        "//%s:BUILD.bazel" % package
+        for package in _CARGO_WORKSPACE_PACKAGES
+    ] + [
+        "//%s:Cargo.toml" % package
+        for package in _CARGO_WORKSPACE_PACKAGES
+    ],
 )
 
 sh_test(
