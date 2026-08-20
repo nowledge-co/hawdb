@@ -33,25 +33,43 @@ impl GraphStore {
             catalog,
             transaction,
             relational_transaction,
+            AppendTransaction::default(),
             limits,
             false,
         )
     }
 
-    pub(crate) fn commit_rebased_mutation_transaction_and_relational(
+    pub(crate) fn commit_mutation_transaction_relational_and_append(
         &mut self,
         catalog: &mut Catalog,
         transaction: GraphMutationTransaction,
         relational_transaction: RelationalTransaction,
+        append_transaction: AppendTransaction,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        // The caller must hold locks that cover every read and write in the
-        // staged transaction. Rebase only skips the coarse epoch check; current
-        // graph and relational constraints are still validated before WAL.
         self.commit_mutation_transaction_and_relational_internal(
             catalog,
             transaction,
             relational_transaction,
+            append_transaction,
+            limits,
+            false,
+        )
+    }
+
+    pub(crate) fn commit_rebased_mutation_transaction_relational_and_append(
+        &mut self,
+        catalog: &mut Catalog,
+        transaction: GraphMutationTransaction,
+        relational_transaction: RelationalTransaction,
+        append_transaction: AppendTransaction,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.commit_mutation_transaction_and_relational_internal(
+            catalog,
+            transaction,
+            relational_transaction,
+            append_transaction,
             limits,
             true,
         )
@@ -62,10 +80,13 @@ impl GraphStore {
         catalog: &mut Catalog,
         transaction: GraphMutationTransaction,
         relational_transaction: RelationalTransaction,
+        append_transaction: AppendTransaction,
         limits: MutationLimits,
         allow_stale_rebase: bool,
     ) -> Result<MutationSummary> {
-        let read_only = transaction.ops.is_empty() && relational_transaction.writes.is_empty();
+        let read_only = transaction.ops.is_empty()
+            && relational_transaction.writes.is_empty()
+            && append_transaction.writes.is_empty();
         if !read_only && !allow_stale_rebase && self.commit_epoch != transaction.base_commit_epoch {
             return Err(SkeinError::Execution(format!(
                 "transaction snapshot is stale: started at commit epoch {}, current epoch is {}",
@@ -81,6 +102,7 @@ impl GraphStore {
             limits,
             MutationCommitOptions {
                 relational: Some(relational_transaction),
+                append: Some(append_transaction),
                 ..MutationCommitOptions::default()
             },
         )

@@ -111,6 +111,7 @@ pub(crate) struct SystemSqlContext<'a> {
     pub(crate) catalog: &'a Catalog,
     pub(crate) store: &'a GraphStore,
     pub(crate) relational_state: &'a RelationalState,
+    pub(crate) append_state: &'a skein_storage::AppendState,
     pub(crate) runtime: SystemRuntimeSnapshot,
     pub(crate) plan_cache_stats: &'a PlanCacheStats,
     pub(crate) slow_queries: &'a [SlowQueryRecord],
@@ -166,6 +167,8 @@ enum SystemTable {
     Properties,
     Indexes,
     Constraints,
+    AppendTables,
+    AppendStorage,
     RuntimeStatus,
     RuntimeCapabilities,
     GraphStatistics,
@@ -660,6 +663,8 @@ fn execute_system_table_scan(
         SystemTable::Properties => property_rows(context.catalog),
         SystemTable::Indexes => index_rows(context.catalog),
         SystemTable::Constraints => constraint_rows(context.catalog),
+        SystemTable::AppendTables => append_table_rows(context.append_state),
+        SystemTable::AppendStorage => append_storage_rows(context.store, context.append_state),
         SystemTable::RuntimeStatus => runtime_status_rows(context),
         SystemTable::RuntimeCapabilities => runtime_capability_rows(context.runtime),
         SystemTable::GraphStatistics => {
@@ -1269,6 +1274,80 @@ fn runtime_status_rows(context: &SystemSqlContext<'_>) -> Vec<Row> {
             Value::String(
                 relational_index_mode_name(context.runtime.relational_index_mode).to_string(),
             ),
+        ),
+    ])]
+}
+
+fn append_table_rows(state: &skein_storage::AppendState) -> Vec<Row> {
+    state
+        .schemas()
+        .values()
+        .map(|schema| {
+            BTreeMap::from([
+                ("table_name".to_string(), Value::String(schema.name.clone())),
+                (
+                    "storage_mode".to_string(),
+                    Value::String("strict_append".to_string()),
+                ),
+                (
+                    "partition_key".to_string(),
+                    Value::List(
+                        schema
+                            .partition_key
+                            .iter()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "order_key".to_string(),
+                    Value::List(
+                        schema
+                            .order_key
+                            .iter()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "column_count".to_string(),
+                    Value::Int(i64::try_from(schema.columns.len()).unwrap_or(i64::MAX)),
+                ),
+            ])
+        })
+        .collect()
+}
+
+fn append_storage_rows(store: &GraphStore, state: &skein_storage::AppendState) -> Vec<Row> {
+    let mut report = store.append_storage_residency_report();
+    report.live_rows = state.live_rows();
+    report.live_payload_bytes = state.live_payload_bytes();
+    vec![BTreeMap::from([
+        (
+            "canonical_segment_count".to_string(),
+            Value::Int(i64::try_from(report.canonical_segment_count).unwrap_or(i64::MAX)),
+        ),
+        (
+            "canonical_segment_bytes".to_string(),
+            Value::Int(i64::try_from(report.canonical_segment_bytes).unwrap_or(i64::MAX)),
+        ),
+        (
+            "resident_segment_payload_bytes".to_string(),
+            Value::Int(i64::try_from(report.resident_segment_payload_bytes).unwrap_or(i64::MAX)),
+        ),
+        (
+            "resident_descriptor_count".to_string(),
+            Value::Int(i64::try_from(report.resident_descriptor_count).unwrap_or(i64::MAX)),
+        ),
+        (
+            "live_rows".to_string(),
+            Value::Int(i64::try_from(report.live_rows).unwrap_or(i64::MAX)),
+        ),
+        (
+            "live_payload_bytes".to_string(),
+            Value::Int(i64::try_from(report.live_payload_bytes).unwrap_or(i64::MAX)),
         ),
     ])]
 }
@@ -1990,6 +2069,8 @@ fn system_table(select: &SelectStatement) -> Result<SystemTable> {
         (Some("system"), "properties") => Ok(SystemTable::Properties),
         (Some("system"), "indexes") => Ok(SystemTable::Indexes),
         (Some("system"), "constraints") => Ok(SystemTable::Constraints),
+        (Some("system"), "append_tables") => Ok(SystemTable::AppendTables),
+        (Some("system"), "append_storage") => Ok(SystemTable::AppendStorage),
         (Some("system"), "runtime_status") => Ok(SystemTable::RuntimeStatus),
         (Some("system"), "runtime_capabilities") => Ok(SystemTable::RuntimeCapabilities),
         (Some("system"), "graph_statistics") => Ok(SystemTable::GraphStatistics),
@@ -2062,6 +2143,8 @@ fn validate_column(table: SystemTable, column: &SqlColumnRef) -> Result<()> {
             SystemTable::Properties => "properties",
             SystemTable::Indexes => "indexes",
             SystemTable::Constraints => "constraints",
+            SystemTable::AppendTables => "append_tables",
+            SystemTable::AppendStorage => "append_storage",
             SystemTable::RuntimeStatus => "runtime_status",
             SystemTable::RuntimeCapabilities => "runtime_capabilities",
             SystemTable::GraphStatistics => "graph_statistics",
@@ -2119,6 +2202,21 @@ fn table_columns(table: SystemTable) -> &'static [&'static str] {
             "subject_name",
             "property_name",
             "constraint_kind",
+        ],
+        SystemTable::AppendTables => &[
+            "table_name",
+            "storage_mode",
+            "partition_key",
+            "order_key",
+            "column_count",
+        ],
+        SystemTable::AppendStorage => &[
+            "canonical_segment_count",
+            "canonical_segment_bytes",
+            "resident_segment_payload_bytes",
+            "resident_descriptor_count",
+            "live_rows",
+            "live_payload_bytes",
         ],
         SystemTable::RuntimeStatus => &[
             "commit_epoch",
@@ -2392,6 +2490,7 @@ mod tests {
                 catalog: &catalog,
                 store: &store,
                 relational_state: store.relational_state(),
+                append_state: store.append_state(),
                 runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
                 plan_cache_stats: &stats,
                 slow_queries: &[],
@@ -2425,6 +2524,7 @@ mod tests {
             catalog: &catalog,
             store: &store,
             relational_state: store.relational_state(),
+            append_state: store.append_state(),
             runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
             plan_cache_stats: &stats,
             slow_queries: &[],
@@ -2474,6 +2574,7 @@ mod tests {
             catalog: &catalog,
             store: &store,
             relational_state: store.relational_state(),
+            append_state: store.append_state(),
             runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
             plan_cache_stats: &stats,
             slow_queries: &[],
@@ -2579,6 +2680,7 @@ mod tests {
                 catalog: &catalog,
                 store: &store,
                 relational_state: store.relational_state(),
+                append_state: store.append_state(),
                 runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
                 plan_cache_stats: &stats,
                 slow_queries: &records,
@@ -2625,6 +2727,7 @@ mod tests {
             catalog: &catalog,
             store: &store,
             relational_state: store.relational_state(),
+            append_state: store.append_state(),
             runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
             plan_cache_stats: &stats,
             slow_queries: &[],

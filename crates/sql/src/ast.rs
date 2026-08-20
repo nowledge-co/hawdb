@@ -92,6 +92,17 @@ pub struct CreateTableStatement {
     pub if_not_exists: bool,
     pub columns: Vec<SqlColumnDefinition>,
     pub constraints: Vec<SqlTableConstraint>,
+    pub storage: SqlTableStorage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SqlTableStorage {
+    #[default]
+    RowPage,
+    StrictAppend {
+        partition_key: Vec<String>,
+        order_key: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

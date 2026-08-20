@@ -13,6 +13,32 @@ executed through `Database`, `DatabaseReadTransaction`,
 `NowledgeMemGraph` query surface. Relational behavior MUST be expressed as
 PostgreSQL-dialect SQL through the corresponding SQL entry points.
 
+Strict Append tables use the same SQL boundary. The storage mode is declared
+with PostgreSQL `CREATE TABLE ... WITH (...)` storage-parameter syntax; the
+parameter names and values are Skein extensions:
+
+```sql
+CREATE TABLE events (
+    stream_id TEXT NOT NULL,
+    sequence BIGINT NOT NULL,
+    payload BYTEA NOT NULL
+) WITH (
+    storage_mode = 'strict_append',
+    partition_key = 'stream_id',
+    order_key = 'sequence'
+);
+```
+
+The initial SQL contract accepts one partition-key column and one order-key
+column. `INSERT` is parameterized and append-only. `UPDATE`, `DELETE`,
+`ON CONFLICT`, `CREATE INDEX`, and `ALTER TABLE` fail closed for Strict Append
+tables. Reads require an exact partition predicate, ascending order by the
+order key, an optional exclusive lower bound on that key, and an explicit
+`LIMIT`. `EXPLAIN` and `EXPLAIN ANALYZE` expose the
+`StrictAppendPartitionScan` path. `system.append_tables` and
+`system.append_storage` expose schema and storage-residency state without
+making typed row CRUD a production integration surface.
+
 Every application-owned read statement MUST have explicit row and payload
 budgets. Multiple distinct read phases SHOULD remain separate named
 statements. The host MAY normalize requests, account for budgets across
