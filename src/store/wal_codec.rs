@@ -41,7 +41,10 @@ pub(super) fn quarantine_corrupt_wal(path: &Path, generation: u64, read_only: bo
         nonce
     ));
     fs::copy(path, &quarantine_path)?;
-    File::open(&quarantine_path)?.sync_all()?;
+    File::options()
+        .write(true)
+        .open(&quarantine_path)?
+        .sync_all()?;
     sync_parent_dir(&quarantine_path)
 }
 
