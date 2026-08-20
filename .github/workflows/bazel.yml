@@ -1,4 +1,5 @@
-name: Bazel
+# Prow owns the shared build and test targets. Keep only GitHub-only checks here.
+name: Bazel Coverage Gaps
 
 on:
   pull_request:
@@ -11,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Bazel Build
+  package-parity:
+    name: Cargo/Bazel Package Parity
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,14 +23,6 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
         with:
           profile: minimal
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.19.0
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          external-cache: false
-          disk-cache: bazel-build
 
       - name: Check Cargo and Bazel package parity
         shell: bash
@@ -49,17 +42,8 @@ jobs:
                 fi
               done
 
-      - name: Build
-        run: bazel build //:skein
-
-      - name: Check minimal feature boundary
-        run: >-
-          bazel build //:skein_minimal
-          --@rules_rust//rust/settings:pipelined_compilation=True
-          --output_groups=build_metadata
-
-  test-root:
-    name: Bazel Test (Root)
+  qualification-cli:
+    name: Bazel Qualification CLI
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -76,64 +60,13 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           external-cache: false
-          disk-cache: bazel-test-root
-
-      - name: Test
-        run: >-
-          bazel test --test_output=errors
-          //:skein_unit_tests
-          //:skein_cli_tests
-          //:skein_shadow_self_tests
-
-  test-crates:
-    name: Bazel Test (Crates)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          profile: minimal
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.19.0
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          external-cache: false
-          disk-cache: bazel-test-crates
+          disk-cache: bazel-qualification-cli
 
       - name: Test
         run: |
           bazel test --test_output=errors \
-            //crates/core:skein_core_tests \
-            //crates/cypher:skein_cypher_tests \
-            //crates/ddl:skein_ddl_tests \
-            //crates/executor:skein_executor_tests \
-            //crates/expression:skein_expression_tests \
-            //crates/fuzz:skein_fuzz_cli_tests \
-            //crates/fuzz:skein_fuzz_tests \
-            //crates/cgroup:skein_cgroup_tests \
-            //crates/optimizer:planner_golden_test \
-            //crates/optimizer:skein_optimizer_tests \
-            //crates/plan-cache:skein_plan_cache_tests \
-            //crates/plan:skein_plan_tests \
-            //crates/qos:skein_qos_tests \
-            //crates/query:skein_query_tests \
-            //crates/qualification:skein_content_store_contract_tests \
             //crates/qualification:skein_content_store_memory_qualification_cli_tests \
             //crates/qualification:skein_content_store_mutation_qualification_cli_tests \
             //crates/qualification:skein_content_store_read_qualification_cli_tests \
             //crates/qualification:skein_graph_index_qualification_cli_tests \
-            //crates/qualification:skein_graph_storage_qualification_cli_tests \
-            //crates/qualification:skein_qualification_tests \
-            //crates/qualification:skein_soak_cli_tests \
-            //crates/readiness:skein_readiness_tests \
-            //crates/route-ownership:skein_route_ownership_tests \
-            //crates/runtime-tokio:skein_runtime_tokio_tests \
-            //crates/sql:skein_sql_tests \
-            //crates/storage:skein_storage_tests \
-            //crates/telemetry:skein_telemetry_tests \
-            //crates/vector-projection:skein_vector_projection_tests
+            //crates/qualification:skein_graph_storage_qualification_cli_tests
