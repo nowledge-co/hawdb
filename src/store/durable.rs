@@ -66,7 +66,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 fn stable_identity_error(error: StableIdentityMappingError) -> SkeinError {
     SkeinError::Storage(error.to_string())
@@ -81,7 +81,6 @@ pub(super) struct DurableStore {
     projected_graphs_path: PathBuf,
     stable_id_mapping_path: PathBuf,
     pub(super) wal_path: PathBuf,
-    wal_append_file: Arc<Mutex<WalAppendFileCache>>,
     pub(super) checkpoint_encoded_len: Option<u64>,
     checkpoint_encoded_checksum: Option<u64>,
     checkpoint_encoded_sha256: Option<Sha256Digest>,
@@ -131,62 +130,6 @@ pub(super) struct DurableStore {
     max_batch_operations: Option<usize>,
     pub(super) telemetry: Option<Arc<dyn TelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
-}
-
-#[derive(Debug)]
-struct WalAppendFile {
-    path: PathBuf,
-    file: File,
-}
-
-#[derive(Debug, Default)]
-struct WalAppendFileCache {
-    current: Option<WalAppendFile>,
-}
-
-impl WalAppendFileCache {
-    fn open(&mut self, path: &Path) -> Result<(&mut File, bool)> {
-        let matches = self
-            .current
-            .as_ref()
-            .is_some_and(|current| current.path == path);
-        if !matches {
-            let created = !path.exists();
-            let file = OpenOptions::new().create(true).append(true).open(path)?;
-            self.current = Some(WalAppendFile {
-                path: path.to_path_buf(),
-                file,
-            });
-            return Ok((
-                &mut self
-                    .current
-                    .as_mut()
-                    .expect("WAL append file was installed")
-                    .file,
-                created,
-            ));
-        }
-        Ok((
-            &mut self
-                .current
-                .as_mut()
-                .expect("matching WAL append file exists")
-                .file,
-            false,
-        ))
-    }
-
-    fn close(&mut self) {
-        self.current = None;
-    }
-}
-
-fn lock_wal_append_file(
-    cache: &Mutex<WalAppendFileCache>,
-) -> Result<MutexGuard<'_, WalAppendFileCache>> {
-    cache
-        .lock()
-        .map_err(|_| SkeinError::Storage("WAL append file cache lock was poisoned".to_string()))
 }
 
 struct StorageScrubCounters {
@@ -588,7 +531,6 @@ impl DurableStore {
             projected_graphs_path: path.join(PROJECTED_GRAPHS_FILE),
             stable_id_mapping_path: path.join(STABLE_ID_MAPPING_FILE),
             wal_path,
-            wal_append_file: Arc::new(Mutex::new(WalAppendFileCache::default())),
             checkpoint_encoded_len: manifest.checkpoint_encoded_len,
             checkpoint_encoded_checksum: manifest.checkpoint_encoded_checksum,
             checkpoint_encoded_sha256: manifest.checkpoint_encoded_sha256,
@@ -752,9 +694,7 @@ impl DurableStore {
         }
         wal_group_sync_failpoint()?;
         let started = std::time::Instant::now();
-        let cache = Arc::clone(&self.wal_append_file);
-        let mut cache = lock_wal_append_file(&cache)?;
-        let (file, _) = cache.open(&self.wal_path)?;
+        let file = OpenOptions::new().write(true).open(&self.wal_path)?;
         file.sync_data()?;
         if group.requires_parent_sync() {
             sync_parent_dir(&self.wal_path)?;
@@ -1893,15 +1833,13 @@ impl DurableStore {
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
         let result = (|| {
-            let cache = Arc::clone(&self.wal_append_file);
-            let mut cache = lock_wal_append_file(&cache)?;
-            let (file, created) = cache.open(&self.wal_path)?;
+            let (mut file, created) = self.open_wal_append()?;
             if self.wal_bytes == 0 {
                 file.write_all(&header_bytes)?;
             }
             file.write_all(&record_bytes)?;
             process_crash_failpoint("after_wal_append");
-            let fsync_micros = self.finish_wal_append(file, created)?;
+            let fsync_micros = self.finish_wal_append(&mut file, created)?;
             if !sync_deferred {
                 process_crash_failpoint("after_wal_sync");
             }
@@ -1951,6 +1889,15 @@ impl DurableStore {
             pressure.state.as_str(),
             self.max_wal_bytes.unwrap_or_default()
         )))
+    }
+
+    fn open_wal_append(&self) -> Result<(File, bool)> {
+        let created = !self.wal_path.exists();
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.wal_path)?;
+        Ok((file, created))
     }
 
     fn finish_wal_append(&mut self, file: &mut File, created: bool) -> Result<u64> {
@@ -2894,10 +2841,6 @@ impl DurableStore {
         manifest.write(&self.manifest_path)?;
         checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished)?;
 
-        // Windows cannot reclaim an old WAL generation while this process
-        // still owns an open handle. Close before switching the canonical
-        // generation; the next commit lazily opens the new WAL.
-        lock_wal_append_file(&self.wal_append_file)?.close();
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
         self.wal_path = manifest.wal_path(&self.root_path);
         self.checkpoint_encoded_len = manifest.checkpoint_encoded_len;
