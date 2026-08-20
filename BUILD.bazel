@@ -1,7 +1,28 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 package(default_visibility = ["//visibility:public"])
+
+sh_test(
+    name = "cargo_bazel_package_parity_test",
+    size = "small",
+    srcs = ["scripts/check-cargo-bazel-package-parity.sh"],
+    data = [
+        "BUILD.bazel",
+        "Cargo.toml",
+    ] + glob([
+        "crates/*/BUILD.bazel",
+        "crates/*/Cargo.toml",
+    ]),
+)
+
+sh_test(
+    name = "cargo_bazel_package_parity_script_test",
+    size = "small",
+    srcs = ["scripts/check-cargo-bazel-package-parity.test.sh"],
+    data = ["scripts/check-cargo-bazel-package-parity.sh"],
+)
 
 _SKEIN_SRCS = glob(
     ["src/**/*.rs"],
