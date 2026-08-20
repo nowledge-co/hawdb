@@ -3,9 +3,10 @@
 use super::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checksum_bytes, decode_string,
-    encode_string, parse_canonical_adjacency_descriptor_generation_file,
-    parse_canonical_manifest_generation_file, parse_canonical_segment_descriptor_generation_file,
-    parse_generation_file, parse_property_projection_descriptor_generation_file,
+    encode_string, parse_append_manifest_generation_file, parse_append_segment_generation_file,
+    parse_canonical_adjacency_descriptor_generation_file, parse_canonical_manifest_generation_file,
+    parse_canonical_segment_descriptor_generation_file, parse_generation_file,
+    parse_property_projection_descriptor_generation_file,
     parse_property_projection_manifest_generation_file,
     parse_property_spill_descriptor_generation_file, parse_property_spill_manifest_generation_file,
     parse_relational_index_artifact_generation_file,
@@ -22,17 +23,18 @@ use super::{
 use crate::error::{Result, SkeinError};
 use skein_integrity::{IntegrityHasher, Sha256Digest};
 use skein_storage::{
-    decode_relational_checkpoint_file, durable_replace_file, CanonicalAdjacencyConfig,
-    CanonicalAdjacencyReader, CanonicalSegmentConfig, CanonicalSegmentManifest,
-    CanonicalSegmentReader, GraphDescriptorKind, GraphDescriptorTreeBuildConfig,
-    GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, ManifestGeneration, PersistentPropertyProjectionConfig,
-    PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
-    PersistentPropertyProjectionReader, PersistentPropertySpillDescriptorTree, PropertySpillConfig,
-    PropertySpillManifest, PropertySpillReader, RelationalDecodeLimits,
-    RelationalIndexArtifactMetadata, RelationalIndexGenerationIdentity,
-    RelationalIndexShadowConfig, RelationalIndexShadowReader, SegmentCache,
-    StableIdentityMappingConfig, StableIdentityMappingReader, StorageRestoreReport,
+    append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
+    durable_replace_file, AppendGenerationReader, AppendPublicationConfig,
+    CanonicalAdjacencyConfig, CanonicalAdjacencyReader, CanonicalSegmentConfig,
+    CanonicalSegmentManifest, CanonicalSegmentReader, GraphDescriptorKind,
+    GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
+    GraphDescriptorTreePaths, GraphDescriptorTreeRootReader, ManifestGeneration,
+    PersistentPropertyProjectionConfig, PersistentPropertyProjectionDescriptorTree,
+    PersistentPropertyProjectionManifest, PersistentPropertyProjectionReader,
+    PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
+    PropertySpillReader, RelationalDecodeLimits, RelationalIndexArtifactMetadata,
+    RelationalIndexGenerationIdentity, RelationalIndexShadowConfig, RelationalIndexShadowReader,
+    SegmentCache, StableIdentityMappingConfig, StableIdentityMappingReader, StorageRestoreReport,
 };
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -218,7 +220,9 @@ fn validate_backup_file_name(name: &str) -> Result<()> {
         || parse_relational_index_artifact_generation_file(name).is_some()
         || parse_relational_index_manifest_generation_file(name).is_some()
         || parse_relational_row_generation_file(name).is_some()
-        || parse_relational_overflow_generation_file(name).is_some();
+        || parse_relational_overflow_generation_file(name).is_some()
+        || parse_append_segment_generation_file(name).is_some()
+        || parse_append_manifest_generation_file(name).is_some();
     if !allowed || Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name) {
         return Err(SkeinError::Storage(format!(
             "backup contains unsupported file name: {name}"
@@ -368,6 +372,7 @@ pub(super) fn validate_backup_files(
     validate_backup_relational_roots(root, files, manifest)?;
     validate_backup_relational_index_generation(root, files, manifest)?;
     validate_backup_stable_identity(root, &names)?;
+    validate_backup_append_generation(root, files, &names, manifest)?;
     let checkpoint_text = read_durable_text_bytes_with_limit(
         &fs::read(root.join(&checkpoint_name))?,
         "checkpoint",
@@ -799,6 +804,72 @@ fn validate_backup_stable_identity(root: &Path, names: &BTreeSet<&str>) -> Resul
             "backup stable identity selector must bind exactly one generation: selected {selected_name}, found {generation_files:?}"
         )));
     }
+    Ok(())
+}
+
+fn validate_backup_append_generation(
+    root: &Path,
+    files: &[BackupFileEntry],
+    names: &BTreeSet<&str>,
+    manifest: DurableManifest,
+) -> Result<()> {
+    let Some(binding) = manifest.append_generation_artifacts else {
+        if files.iter().any(|file| {
+            parse_append_segment_generation_file(&file.name).is_some()
+                || parse_append_manifest_generation_file(&file.name).is_some()
+        }) {
+            return Err(SkeinError::Storage(
+                "backup contains unreferenced append artifacts".to_string(),
+            ));
+        }
+        return Ok(());
+    };
+
+    let manifest_name = append_generation_manifest_file(binding.generation);
+    if !names.contains(manifest_name.as_str()) {
+        return Err(SkeinError::Storage(format!(
+            "backup is missing required append generation manifest: {manifest_name}"
+        )));
+    }
+    let manifest_file = files
+        .iter()
+        .find(|file| file.name == manifest_name)
+        .expect("required append manifest must exist");
+    if manifest_file.encoded_len != binding.manifest_artifact.encoded_len
+        || manifest_file.encoded_checksum != u64::from(binding.manifest_artifact.encoded_crc32c)
+        || manifest_file.sha256 != binding.manifest_artifact.encoded_sha256
+    {
+        return Err(SkeinError::Storage(
+            "backup append manifest metadata does not match the durable manifest".to_string(),
+        ));
+    }
+
+    let reader =
+        AppendGenerationReader::open_bound(root, binding, AppendPublicationConfig::default())
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+    for segment in reader.segment_bindings() {
+        let name = append_segment_file(segment.generation);
+        if !names.contains(name.as_str()) {
+            return Err(SkeinError::Storage(format!(
+                "backup is missing required append segment: {name}"
+            )));
+        }
+        let file = files
+            .iter()
+            .find(|file| file.name == name)
+            .expect("required append segment must exist");
+        if file.encoded_len != segment.artifact.encoded_len
+            || file.encoded_checksum != u64::from(segment.artifact.encoded_crc32c)
+            || file.sha256 != segment.artifact.encoded_sha256
+        {
+            return Err(SkeinError::Storage(format!(
+                "backup append segment metadata does not match its manifest: {name}"
+            )));
+        }
+    }
+    reader
+        .deep_scrub()
+        .map_err(|error| SkeinError::Storage(error.to_string()))?;
     Ok(())
 }
 

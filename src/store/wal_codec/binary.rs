@@ -62,6 +62,7 @@
 //! | 25   | MarkInitialImportSource                   | 1 source_fingerprint:str                                               |
 //! | 26   | Relational                                | 1 record:bytes                                                         |
 //! | 27   | RelationalSnapshot                        | 1 record:bytes                                                         |
+//! | 28   | Append                                    | 1 record:bytes                                                         |
 //!
 //! Nested messages:
 //!
@@ -119,6 +120,7 @@ const OP_PROJECT_GRAPH: u64 = 24;
 const OP_MARK_INITIAL_IMPORT_SOURCE: u64 = 25;
 const OP_RELATIONAL: u64 = 26;
 const OP_RELATIONAL_SNAPSHOT: u64 = 27;
+const OP_APPEND: u64 = 28;
 
 const VALUE_FIELD_NULL: u32 = 1;
 const VALUE_FIELD_BOOL: u32 = 2;
@@ -629,6 +631,10 @@ fn encode_op_body(op: &WalOp) -> (u64, Vec<u8>) {
             encode_len_field(1, record, &mut body);
             OP_RELATIONAL_SNAPSHOT
         }
+        WalOp::Append { record } => {
+            encode_len_field(1, record, &mut body);
+            OP_APPEND
+        }
         WalOp::Batch(_) => unreachable!("nested wal batches are not encoded"),
     };
     (op_code, body)
@@ -924,6 +930,12 @@ fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
                 record: Arc::from(fields.required_message(1, "relational record")?.to_vec()),
             })
         }
+        OP_APPEND => {
+            let fields = OpFields::parse(body, &[], &[1])?;
+            Ok(WalOp::Append {
+                record: Arc::from(fields.required_message(1, "append record")?.to_vec()),
+            })
+        }
         op_code => Err(SkeinError::Storage(format!(
             "unknown WAL op code {op_code}"
         ))),
@@ -1013,6 +1025,7 @@ mod tests {
             | WalOp::MarkInitialImportSource { .. }
             | WalOp::Relational { .. }
             | WalOp::RelationalSnapshot { .. }
+            | WalOp::Append { .. }
             | WalOp::Batch(_) => {}
         };
         samples.push(WalOp::CreateNodeLabel {
@@ -1153,6 +1166,9 @@ mod tests {
         });
         samples.push(WalOp::RelationalSnapshot {
             record: Arc::from(Vec::new()),
+        });
+        samples.push(WalOp::Append {
+            record: Arc::from(vec![7u8, 8, 9]),
         });
         samples.push(WalOp::Batch(vec![
             WalOp::CreateNodeLabel {

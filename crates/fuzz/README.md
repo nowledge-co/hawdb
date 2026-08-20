@@ -79,3 +79,19 @@ include the target artifact, mutation, case seed, and exact replay command:
 cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed 7 --cases 256
 cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed 7 --case-index 19
 ```
+
+The storage fixture includes a checkpointed Strict Append segment and manifest
+plus a post-checkpoint append WAL suffix. Target selection rotates across the
+fixture before repeating, so a sufficiently large deterministic campaign covers
+both append artifact parsers instead of relying on random selection.
+
+The Strict Append state-machine oracle compares the embedded database with a
+pure partition-watermark model. It exercises valid append, duplicate and
+out-of-order rejection, arity and type rejection, unknown tables, bounded tail
+reads, payload-budget failure, checkpoint reopen, and WAL replay. Every rejected
+operation must leave the commit epoch and visible state unchanged.
+
+```console
+cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed 7 --cases 128 --steps 256
+cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed 7 --case-index 19 --steps 256
+```

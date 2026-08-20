@@ -1,5 +1,8 @@
 use serde_json::{json, Value as JsonValue};
-use skein::{Database, SearchDocument, SearchIndex};
+use skein::{
+    AppendTableSchema, AppendTransaction, AppendWrite, Database, RelationalColumnSchema,
+    RelationalRow, RelationalScalarType, RelationalValue, SearchDocument, SearchIndex,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -70,7 +73,7 @@ fn run_case(
 ) -> Result<JsonValue, String> {
     let case_seed = mix_seed(campaign_seed, index as u64);
     let mut rng = DeterministicRng::new(case_seed);
-    let target = &targets[(rng.next_u64() as usize) % targets.len()];
+    let target = &targets[index % targets.len()];
     let case_root = workspace.join(format!("case-{index}"));
     copy_tree(fixture, &case_root)?;
     let target_path = case_root.join(target);
@@ -133,9 +136,30 @@ fn create_fixture(root: &Path) -> Result<(), String> {
     database
         .query("CREATE (:Memory {id: 'checkpoint', title: 'checkpoint payload'})")
         .map_err(|error| error.to_string())?;
+    database
+        .append_transaction(AppendTransaction {
+            writes: vec![
+                AppendWrite::CreateTable {
+                    schema: append_schema(),
+                },
+                AppendWrite::Append {
+                    table: "events".to_string(),
+                    rows: append_rows(0, 64),
+                },
+            ],
+        })
+        .map_err(|error| error.to_string())?;
     database.checkpoint().map_err(|error| error.to_string())?;
     database
         .query("CREATE (:Memory {id: 'wal', title: 'wal payload'})")
+        .map_err(|error| error.to_string())?;
+    database
+        .append_transaction(AppendTransaction {
+            writes: vec![AppendWrite::Append {
+                table: "events".to_string(),
+                rows: append_rows(64, 8),
+            }],
+        })
         .map_err(|error| error.to_string())?;
     drop(database);
 
@@ -155,6 +179,41 @@ fn create_fixture(root: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     search.checkpoint().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn append_schema() -> AppendTableSchema {
+    AppendTableSchema {
+        name: "events".to_string(),
+        columns: vec![
+            append_column("stream", RelationalScalarType::Text),
+            append_column("sequence", RelationalScalarType::BigInt),
+            append_column("payload", RelationalScalarType::Text),
+        ],
+        partition_key: vec!["stream".to_string()],
+        order_key: vec!["sequence".to_string()],
+    }
+}
+
+fn append_column(name: &str, scalar_type: RelationalScalarType) -> RelationalColumnSchema {
+    RelationalColumnSchema {
+        name: name.to_string(),
+        scalar_type,
+        nullable: false,
+        default: None,
+    }
+}
+
+fn append_rows(start: i64, count: usize) -> Vec<RelationalRow> {
+    (0..count)
+        .map(|offset| {
+            let sequence = start + offset as i64;
+            RelationalRow::new(vec![
+                RelationalValue::Text("alpha".to_string()),
+                RelationalValue::BigInt(sequence),
+                RelationalValue::Text(format!("payload-{sequence:04}")),
+            ])
+        })
+        .collect()
 }
 
 fn parser_targets(root: &Path) -> Result<Vec<PathBuf>, String> {

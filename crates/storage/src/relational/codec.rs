@@ -28,7 +28,7 @@ const CODEC_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
-pub(super) fn encode_relational_table_schema(
+pub(crate) fn encode_relational_table_schema(
     schema: &RelationalTableSchema,
 ) -> Result<Vec<u8>, RelationalError> {
     validate_table_schema(schema)?;
@@ -37,7 +37,7 @@ pub(super) fn encode_relational_table_schema(
     Ok(encoder.finish())
 }
 
-pub(super) fn decode_relational_table_schema(
+pub(crate) fn decode_relational_table_schema(
     encoded: &[u8],
     max_encoded_bytes: usize,
     max_schema_items: usize,
@@ -63,6 +63,35 @@ pub(super) fn decode_relational_table_schema(
     decoder.finish()?;
     validate_table_schema(&schema)?;
     Ok(schema)
+}
+
+pub(crate) fn encode_relational_row_payload(
+    row: &RelationalRow,
+) -> Result<Vec<u8>, RelationalError> {
+    let mut encoder = Encoder::default();
+    encoder.row(row)?;
+    Ok(encoder.finish())
+}
+
+pub(crate) fn decode_relational_row_payload(
+    encoded: &[u8],
+    max_values: usize,
+    max_value_bytes: usize,
+) -> Result<RelationalRow, RelationalError> {
+    let limits = RelationalDecodeLimits {
+        max_record_bytes: encoded.len(),
+        max_tables: 0,
+        max_writes: 0,
+        max_rows: 1,
+        max_values,
+        max_value_bytes,
+        max_overflow_segments: 0,
+        max_overflow_bytes: 0,
+    };
+    let mut decoder = Decoder::from_slice(encoded, limits, false);
+    let row = decoder.row()?;
+    decoder.finish()?;
+    Ok(row)
 }
 
 pub(super) fn validate_relational_table_schema_codec_shape(

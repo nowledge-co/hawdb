@@ -743,6 +743,21 @@ impl GraphStore {
                 );
                 self.relational_state = checkpoint.state;
             }
+            WalOp::Append { record } => {
+                let batch = decode_append_wal_batch(&record, AppendDecodeLimits::wal())
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                let expected_epoch = self.commit_epoch.saturating_add(1);
+                if batch.epoch != expected_epoch {
+                    return Err(SkeinError::Storage(format!(
+                        "append WAL epoch mismatch: expected {expected_epoch}, got {}",
+                        batch.epoch
+                    )));
+                }
+                self.append_state = self
+                    .append_state
+                    .stage_transaction(&batch.transaction, self.append_mutation_limits)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            }
             WalOp::Batch(ops) => {
                 for op in ops {
                     self.apply_wal_op(catalog, op)?;

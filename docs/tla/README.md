@@ -141,6 +141,59 @@ audit record, and the pending record is removed last. Crashes preserve these
 durable phases so an interrupted repair either resumes or keeps ordinary open
 fail-closed. Stale or unacknowledged plans are rejected without changing the WAL.
 
+## Strict Append Storage
+
+`SkeinAppendTable.tla` models the generic admission and visibility contract for
+a strict append table. Each batch belongs to one partition, contains a bounded
+non-empty set of order keys, and is admitted only when every key is above that
+partition's visible watermark. The complete batch becomes durable through one
+WAL transition and visible through one publication transition. Recovery exposes
+an exact durable batch prefix, including a durable but previously unpublished
+batch, while an unsynced batch disappears. Duplicate and out-of-order batches
+are rejected without changing canonical state.
+
+The Rust refinement maps the modeled partition and order key to catalog
+column identities, `durableBatches` to relational WAL append records,
+`visibleBatchCount` to the published append live view, and `visibleRows` to the
+snapshot-visible row set. `AppendState::stage_transaction` validates the
+watermark in a private state, while `GraphStore::commit_kernel_write_batch`
+publishes the complete state only after the shared WAL accepts it.
+
+`SkeinAppendSegmentPublication.tla` models checkpointing durable append batches
+into immutable segments. Segment bytes become durable before their manifest,
+and the manifest becomes durable before the active selector changes. Active,
+previous, candidate, and reader-pinned generations form the reclamation closure.
+The candidate generation remains protected between manifest durability and
+selector publication; omitting that protection permits GC to remove a complete
+candidate immediately before it becomes canonical. WAL truncation advances only
+to an already-published checkpoint epoch, and crash recovery retains the active
+checkpoint plus the durable WAL suffix.
+
+The Rust refinement maps candidate phases to append segment builder and
+manifest publication calls, generation sets to immutable segment manifests,
+reader generations to `SnapshotCoordinator` pins, and `walFloorEpoch` to the
+storage reclamation watermark. Segment encoding, checksums, byte admission, and
+filesystem operations remain concrete refinement obligations.
+
+`SkeinAppendMixedTransaction.tla` models a single transaction whose private
+workspace changes graph state, mutable row-page state, and strict append state.
+The complete workspace receives one durability decision and one visible commit
+epoch. Publication cannot expose only one component, crash recovery selects a
+complete durable state, and a pinned reader retains its original triple while
+later transactions commit.
+
+Negative-control configurations live under `docs/tla/mutants`. Each enables one
+unsafe transition and must violate its declared invariant. They are checked
+separately so deliberately failing models cannot enter the positive Bazel suite:
+
+```bash
+scripts/check-storage-tla.sh --check-mutants
+```
+
+The controls cover publication before WAL sync, skipped partition watermarks,
+partial recovery, manifest-before-segment publication, pinned-generation
+reclamation, and partial mixed-transaction publication.
+
 ## Query-Owned Runtime Memory
 
 `SkeinKnowledgeRetrievalPipeline.tla` models the application-facing retrieval

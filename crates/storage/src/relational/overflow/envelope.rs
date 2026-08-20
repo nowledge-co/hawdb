@@ -20,12 +20,12 @@ const DECODE_CHUNK_BYTES: usize = 64 * 1024;
 const INITIAL_DECODE_CAPACITY_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::relational) struct EncodedRelationalOverflow {
-    pub(in crate::relational) reference: RelationalOverflowRef,
-    pub(in crate::relational) bytes: Arc<[u8]>,
+pub(crate) struct EncodedRelationalOverflow {
+    pub(crate) reference: RelationalOverflowRef,
+    pub(crate) bytes: Arc<[u8]>,
 }
 
-pub(in crate::relational) fn encode_overflow_envelope(
+pub(crate) fn encode_overflow_envelope(
     scalar_type: RelationalScalarType,
     raw: &[u8],
     config: RelationalOverflowConfig,
@@ -91,7 +91,7 @@ pub(in crate::relational) fn encode_overflow_envelope(
     })
 }
 
-pub(in crate::relational) fn decode_overflow_envelope(
+pub(crate) fn decode_overflow_envelope(
     reference: &RelationalOverflowRef,
     encoded: &[u8],
     budget: &mut RelationalHydrationBudget,

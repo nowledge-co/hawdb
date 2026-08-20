@@ -15,7 +15,7 @@ mod codec;
 mod constraints;
 mod index_shadow;
 mod ordered_key;
-mod overflow;
+pub(crate) mod overflow;
 mod recovery;
 mod row_page;
 
@@ -28,6 +28,10 @@ pub use codec::{
     encode_relational_wal_batch_with_replay_access, EncodedRelationalWalBatch,
     RelationalCheckpoint, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
     RelationalWalBatch,
+};
+pub(crate) use codec::{
+    decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
+    encode_relational_table_schema,
 };
 pub use constraints::RelationalConstraintIndex;
 pub use index_shadow::{

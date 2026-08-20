@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+mod append_oracle;
 mod coverage;
 mod generator;
 mod predicate_rewrite;
@@ -19,6 +20,7 @@ use generator::StateAwareCaseGenerator;
 use predicate_rewrite::PREDICATE_REWRITE_SHAPES;
 use query_ast::QueryAst;
 
+pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
 pub use coverage::PlanCoverageReport;
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlMutation, SqlPredicateRewriteCase,

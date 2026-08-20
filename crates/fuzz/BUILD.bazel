@@ -9,7 +9,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = ["src/main.rs"],
+        exclude = ["src/append_main.rs", "src/main.rs", "src/storage_main.rs"],
     ),
     edition = "2024",
     aliases = aliases(),
@@ -33,6 +33,16 @@ rust_binary(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + ["//:skein"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_binary(
+    name = "skein_append_fuzz",
+    crate_root = "src/append_main.rs",
+    srcs = ["src/append_main.rs"],
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [":skein_fuzz"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 

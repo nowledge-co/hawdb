@@ -152,6 +152,14 @@ pub(super) fn parse_relational_overflow_extent_generation_file(name: &str) -> Op
     parse_hyphenated_generation_file(name, "relational-overflow-", ".extents.skein")
 }
 
+pub(super) fn parse_append_segment_generation_file(name: &str) -> Option<u64> {
+    parse_hyphenated_generation_file(name, "append-", ".segment.skein")
+}
+
+pub(super) fn parse_append_manifest_generation_file(name: &str) -> Option<u64> {
+    parse_hyphenated_generation_file(name, "append-", ".manifest.skein")
+}
+
 pub(super) fn storage_generation_for_file(name: &str) -> Option<u64> {
     parse_generation_file(name, "checkpoint.")
         .or_else(|| parse_generation_file(name, "wal."))
@@ -171,6 +179,8 @@ pub(super) fn storage_generation_for_file(name: &str) -> Option<u64> {
         .or_else(|| parse_relational_index_manifest_generation_file(name))
         .or_else(|| parse_relational_row_generation_file(name))
         .or_else(|| parse_relational_overflow_generation_file(name))
+        .or_else(|| parse_append_segment_generation_file(name))
+        .or_else(|| parse_append_manifest_generation_file(name))
 }
 
 fn parse_checkpoint_staging_generation(name: &str) -> Option<u64> {
@@ -268,6 +278,14 @@ mod tests {
         );
         assert_eq!(
             storage_generation_for_file("property-spill-descriptors-17.root.skein"),
+            Some(17)
+        );
+        assert_eq!(
+            storage_generation_for_file("append-17.segment.skein"),
+            Some(17)
+        );
+        assert_eq!(
+            storage_generation_for_file("append-17.manifest.skein"),
             Some(17)
         );
     }

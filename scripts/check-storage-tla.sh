@@ -129,8 +129,9 @@ if [[ "${1:-}" == "--verify-results" ]]; then
   exit
 fi
 
-if [[ "$#" -ne 0 ]]; then
-  printf 'usage: %s [--manifest-json SOURCE_REVISION | --verify-results RESULTS_DIR SOURCE_REVISION]\n' "$0" >&2
+if [[ "$#" -ne 0 ]] &&
+  ! [[ "$#" -eq 1 && "${1:-}" == "--check-mutants" ]]; then
+  printf 'usage: %s [--manifest-json SOURCE_REVISION | --verify-results RESULTS_DIR SOURCE_REVISION | --check-mutants]\n' "$0" >&2
   exit 2
 fi
 
@@ -167,6 +168,59 @@ resolve_tla_jar() {
 tla_jar="$(resolve_tla_jar)"
 readonly tla_jar
 readonly tla_java="${TLA_JAVA:-java}"
+
+check_mutants() {
+  local mutants_file="$repository_root/docs/tla/mutants/mutants.txt"
+  local mutant_state_root="$tla_work_root/mutants"
+  local checked=0
+  local module
+  local config
+  local invariant
+
+  mkdir -p "$mutant_state_root"
+  while read -r module config invariant; do
+    [[ -n "$module" ]] || continue
+    local module_path="$repository_root/docs/tla/$module.tla"
+    local config_path="$repository_root/docs/tla/mutants/$config.cfg"
+    local state_dir="$mutant_state_root/$config"
+    local log="$mutant_state_root/$config.log"
+    if [[ ! -f "$module_path" ]] || [[ ! -f "$config_path" ]]; then
+      printf 'storage TLA+ mutant pair is missing: module=%s config=%s\n' \
+        "$module" "$config" >&2
+      return 1
+    fi
+    rm -rf "$state_dir"
+    mkdir -p "$state_dir"
+    if "$tla_java" -XX:+UseParallelGC -jar "$tla_jar" \
+      -cleanup \
+      -metadir "$state_dir" \
+      -workers auto \
+      -config "$config_path" \
+      "$module_path" >"$log" 2>&1; then
+      printf 'storage TLA+ mutant survived unexpectedly: %s\n' "$config" >&2
+      return 1
+    fi
+    if ! grep -Fq "Invariant $invariant is violated." "$log"; then
+      printf 'storage TLA+ mutant did not violate %s: %s\n' \
+        "$invariant" "$config" >&2
+      cat "$log" >&2
+      return 1
+    fi
+    checked=$((checked + 1))
+    printf 'storage TLA+ mutant rejected: %s -> %s\n' "$config" "$invariant"
+  done < "$mutants_file"
+
+  if [[ "$checked" -eq 0 ]]; then
+    printf 'storage TLA+ mutant manifest is empty: %s\n' "$mutants_file" >&2
+    return 1
+  fi
+}
+
+if [[ "${1:-}" == "--check-mutants" ]]; then
+  check_mutants
+  exit
+fi
+
 readonly tla_results_dir="${TLA_RESULTS_DIR:-}"
 evidence_source_revision=""
 if [[ -n "$tla_results_dir" ]]; then

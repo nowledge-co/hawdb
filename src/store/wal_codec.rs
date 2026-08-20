@@ -309,6 +309,9 @@ pub(super) enum WalOp {
     RelationalSnapshot {
         record: Arc<[u8]>,
     },
+    Append {
+        record: Arc<[u8]>,
+    },
     Batch(Vec<WalOp>),
 }
 
@@ -488,6 +491,9 @@ impl WalEntry {
             }
             WalOp::RelationalSnapshot { record } => {
                 format!("relational_snapshot\t{}", encode_bytes_base64(record))
+            }
+            WalOp::Append { record } => {
+                format!("append\t{}", encode_bytes_base64(record))
             }
             WalOp::Batch(ops) => format!(
                 "batch\t{}",
@@ -696,6 +702,9 @@ fn encode_wal_op_for_batch(op: &WalOp) -> String {
         }
         WalOp::RelationalSnapshot { record } => {
             format!("relational_snapshot,{}", encode_bytes_base64(record))
+        }
+        WalOp::Append { record } => {
+            format!("append,{}", encode_bytes_base64(record))
         }
         WalOp::Batch(_) => unreachable!("nested wal batches are not encoded"),
     }

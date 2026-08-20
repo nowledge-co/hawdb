@@ -1532,7 +1532,8 @@ impl GraphStore {
                 | WalOp::ProjectGraph { .. }
                 | WalOp::MarkInitialImportSource { .. }
                 | WalOp::Relational { .. }
-                | WalOp::RelationalSnapshot { .. } => {}
+                | WalOp::RelationalSnapshot { .. }
+                | WalOp::Append { .. } => {}
             }
         }
     }

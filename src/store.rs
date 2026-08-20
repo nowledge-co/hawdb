@@ -12,6 +12,8 @@ use crate::telemetry::TelemetrySink;
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
 use skein_integrity::{checksum_u64, integrity_digest, Sha256Digest};
+#[path = "store/append_tables.rs"]
+mod append_tables;
 #[path = "store/artifact_files.rs"]
 mod artifact_files;
 #[path = "store/backup.rs"]
@@ -58,6 +60,7 @@ use artifact_files::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file,
     cleanup_abandoned_checkpoint_preparations, has_storage_artifacts,
+    parse_append_manifest_generation_file, parse_append_segment_generation_file,
     parse_canonical_adjacency_descriptor_generation_file, parse_canonical_manifest_generation_file,
     parse_canonical_segment_descriptor_generation_file, parse_generation_file,
     parse_property_projection_descriptor_generation_file,
@@ -119,27 +122,30 @@ pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
 pub(crate) use relational_row_pages::RelationalTransactionRowView;
 use skein_storage::{
-    available_storage_space, decode_relational_checkpoint_file_with_index_load,
+    available_storage_space, decode_append_wal_batch,
+    decode_relational_checkpoint_file_with_index_load,
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
-    encode_relational_checkpoint, persistent_composite_property_identity, sync_parent_directory,
-    AdjacencyPostingList, CanonicalEndpointDirection, CanonicalNodeIterator,
-    CanonicalRelationshipIterator, CanonicalSegmentError,
-    PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
-    RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
-    RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
-    RelationalRecoverySourceBuilder, RelationalRowPageGenerationRequest,
-    RelationalRowPagePublicationConfig, RelationalRowPagePublisher, RelationalSparseLiveStage,
-    RelationalState, RelationalTransaction,
+    encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
+    sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
+    AppendMutationLimits, AppendPublicationConfig, AppendPublisher, AppendState,
+    CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalRelationshipIterator,
+    CanonicalSegmentError, PersistentPropertyProjectionDefinitionAdmission,
+    PersistentPropertyProjectionRecord, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
+    RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
+    RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
+    RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
+    RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState, RelationalTransaction,
 };
 pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
-    AdjacencyLayout, CanonicalAdjacencyBuildReport, CanonicalAdjacencyConfig,
-    CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport, CanonicalAdjacencyReader,
-    CanonicalAdjacencyWriter, CanonicalScanControl, CanonicalSegmentConfig,
-    CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter, ConnectedNodesCreate,
-    DurabilityPolicy, DurableCompression, FileSegmentRangeReader, GraphMutation,
-    ManifestGeneration, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
-    MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
+    AdjacencyLayout, AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow,
+    AppendTableSchema, AppendTransaction, AppendWrite, CanonicalAdjacencyBuildReport,
+    CanonicalAdjacencyConfig, CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport,
+    CanonicalAdjacencyReader, CanonicalAdjacencyWriter, CanonicalScanControl,
+    CanonicalSegmentConfig, CanonicalSegmentManifest, CanonicalSegmentReader,
+    CanonicalSegmentWriter, ConnectedNodesCreate, DurabilityPolicy, DurableCompression,
+    FileSegmentRangeReader, GraphMutation, ManifestGeneration, MatchedRelationshipCopyMerge,
+    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
     MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeId, NodeRecord, NodeSetAssignment,
     NodeSetValue, OrderedAdjacencyEntry, PersistentPropertyProjectionConfig,
     PersistentPropertyProjectionDefinition, PersistentPropertyProjectionError,
@@ -147,13 +153,14 @@ pub use skein_storage::{
     PersistentPropertyProjectionReader, PersistentPropertyProjectionWriter,
     ProjectedGraphDefinition, ProjectedGraphStatus, ProjectedNodeRecord, PropertyFilter,
     PropertyIndexProjectionRebuildAction, PropertySpillConfig, PropertySpillManifest,
-    PropertySpillReader, RecoveryMode, RelId, RelRecord, RelationalIndexMode,
-    RelationalIndexReadLimits, RelationalIndexReadReport, RelationalIndexRecoveryReadReport,
-    RelationshipDeleteRequest, RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
-    RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
-    ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest, SchemaMaintenanceAction,
-    SchemaMaintenancePlanItem, SearchProjectionChangefeedReadiness,
+    PropertySpillReader, RecoveryMode, RelId, RelRecord, RelationalColumnSchema,
+    RelationalIndexMode, RelationalIndexReadLimits, RelationalIndexReadReport,
+    RelationalIndexRecoveryReadReport, RelationalKey, RelationalRow, RelationalScalarType,
+    RelationalValue, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
+    RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
+    RelationshipTargetNodeDelete, ScanPredicate, ScanPruningReport, ScanPruningStrategy,
+    ScanPruningTargetKind, ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest,
+    SchemaMaintenanceAction, SchemaMaintenancePlanItem, SearchProjectionChangefeedReadiness,
     SearchProjectionChangefeedStatus, SearchProjectionGraphChange, SearchProjectionMutationId,
     SegmentCache, SegmentCacheSnapshot, SegmentRangeReader, SegmentReadError,
     SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
@@ -495,6 +502,21 @@ pub struct ScanPrunedRelationshipScan<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KernelWriteBatch {
+    pub graph: Vec<GraphMutation>,
+    pub relational: RelationalTransaction,
+    pub append: AppendTransaction,
+}
+
+#[derive(Default)]
+struct MutationCommitOptions<'a> {
+    relational: Option<RelationalTransaction>,
+    append: Option<AppendTransaction>,
+    preserve_single_create_wal: bool,
+    captured_graph_ops: Option<&'a mut Vec<WalOp>>,
 }
 
 /// An isolated graph mutation workspace for a single explicit transaction.
@@ -940,6 +962,10 @@ pub struct GraphStore {
     post_wal_apply_poisoned: bool,
     integrity_poisoned: Arc<AtomicBool>,
     relational_state: RelationalState,
+    append_state: AppendState,
+    append_mutation_limits: AppendMutationLimits,
+    append_publication_config: AppendPublicationConfig,
+    append_generation_reader: Option<AppendGenerationReader>,
     relational_mutation_limits: RelationalMutationLimits,
     relational_overflow_config: RelationalOverflowConfig,
     columnar_shadow: ColumnarShadowState,
@@ -1439,10 +1465,11 @@ impl GraphMutationTransaction {
         let summary = self.store.commit_mutations_internal(
             &mut self.catalog,
             vec![mutation],
-            None,
             limits,
-            false,
-            Some(&mut captured_ops),
+            MutationCommitOptions {
+                captured_graph_ops: Some(&mut captured_ops),
+                ..MutationCommitOptions::default()
+            },
         )?;
         self.ops.extend(captured_ops);
         if retain_commit_rows {
@@ -1604,7 +1631,8 @@ fn collect_graph_lock_footprint(
             | WalOp::ProjectGraph { .. }
             | WalOp::MarkInitialImportSource { .. }
             | WalOp::Relational { .. }
-            | WalOp::RelationalSnapshot { .. } => footprint.requires_database_lock = true,
+            | WalOp::RelationalSnapshot { .. }
+            | WalOp::Append { .. } => footprint.requires_database_lock = true,
         }
     }
     Ok(())
@@ -1957,6 +1985,10 @@ impl GraphStore {
             post_wal_apply_poisoned: false,
             integrity_poisoned: Arc::new(AtomicBool::new(false)),
             relational_state: RelationalState::default(),
+            append_state: AppendState::default(),
+            append_mutation_limits: AppendMutationLimits::default(),
+            append_publication_config: AppendPublicationConfig::default(),
+            append_generation_reader: None,
             relational_mutation_limits: RelationalMutationLimits::default(),
             relational_overflow_config: RelationalOverflowConfig::default(),
             columnar_shadow: ColumnarShadowState::default(),
@@ -1975,6 +2007,7 @@ impl GraphStore {
         }
         let checkpoint_root_open_started = std::time::Instant::now();
         store.load_checkpoint(catalog, replay_config)?;
+        store.mount_append_generation_for_recovery()?;
         if replay_config.graph_columnar_shadow_checkpoint {
             // Mounted between checkpoint load and WAL replay so replayed
             // mutations mark their derived shadow tables dirty.
@@ -2320,6 +2353,10 @@ impl GraphStore {
             post_wal_apply_poisoned: self.post_wal_apply_poisoned,
             integrity_poisoned: Arc::clone(&self.integrity_poisoned),
             relational_state: self.relational_state.clone(),
+            append_state: self.append_state.clone(),
+            append_mutation_limits: self.append_mutation_limits,
+            append_publication_config: self.append_publication_config,
+            append_generation_reader: self.append_generation_reader.clone(),
             relational_mutation_limits: self.relational_mutation_limits,
             relational_overflow_config: self.relational_overflow_config,
             columnar_shadow: self.columnar_shadow.clone(),
@@ -2759,7 +2796,8 @@ fn apply_wal_op_to_snapshot(
         | WalOp::ProjectGraph { .. }
         | WalOp::MarkInitialImportSource { .. }
         | WalOp::Relational { .. }
-        | WalOp::RelationalSnapshot { .. } => {}
+        | WalOp::RelationalSnapshot { .. }
+        | WalOp::Append { .. } => {}
     }
 }
 
@@ -6737,7 +6775,12 @@ mod tests {
             store.backup_to(&catalog, &backup).unwrap()
         };
         assert!(report.generation > 0);
-        assert_eq!(report.file_count, 25);
+        assert_eq!(report.file_count, 26);
+        assert!(backup
+            .join(skein_storage::append_generation_manifest_file(
+                report.generation
+            ))
+            .exists());
         assert!(backup
             .join(skein_storage::canonical_segment_descriptor_page_file(
                 report.generation

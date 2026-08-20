@@ -75,6 +75,9 @@ jobs:
         # the number of models in the suite.
         run: bazel test //docs/tla:storage_models --jobs=1 --test_output=errors
 
+      - name: Check storage TLA+ negative controls
+        run: scripts/check-storage-tla.sh --check-mutants
+
       # rules_tla is the authoritative model-check gate. The release artifact
       # collector repeats the bounded checks only because the published
       # evidence contract retains complete TLC logs, while rules_tla 0.2.0
@@ -105,6 +108,11 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Append storage fuzz smoke
+        run: |
+          cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed 7 --cases 8 --steps 64
+          cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed 7 --cases 32
 
       - name: Optimizer smoke summary gate
         run: |

@@ -17,3 +17,7 @@ path = "src/main.rs"
 [[bin]]
 name = "skein-storage-fuzz"
 path = "src/storage_main.rs"
+
+[[bin]]
+name = "skein-append-fuzz"
+path = "src/append_main.rs"

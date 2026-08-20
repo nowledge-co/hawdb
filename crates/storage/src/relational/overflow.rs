@@ -10,9 +10,10 @@ mod envelope;
 mod exact;
 mod publication;
 
+pub(in crate::relational) use envelope::admit_overflow_hydration;
 use envelope::DEFAULT_ZSTD_LEVEL;
-pub(in crate::relational) use envelope::{
-    admit_overflow_hydration, decode_overflow_envelope, encode_overflow_envelope,
+pub(crate) use envelope::{
+    decode_overflow_envelope, encode_overflow_envelope, EncodedRelationalOverflow,
 };
 pub use exact::{
     RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,

@@ -28,9 +28,9 @@ use crate::sql::{
 use crate::store::DurabilityPolicy;
 use crate::value::Value;
 use skein_storage::{
-    RelationalConflictAction, RelationalKey, RelationalRow, RelationalState, RelationalTableSchema,
-    RelationalTransaction, RelationalValue, RelationalWrite, StoragePressureSnapshot,
-    StorageRecoveryReport,
+    AppendTransaction, RelationalConflictAction, RelationalKey, RelationalRow, RelationalState,
+    RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite,
+    StoragePressureSnapshot, StorageRecoveryReport,
 };
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -252,6 +252,21 @@ impl ConcurrentDatabase {
         self.with_autocommit_exclusive(|database| {
             database.query_sql_with_params(sql_text, parameters)
         })
+    }
+
+    /// Commits one strict append transaction through the same serialized WAL
+    /// sequencer used by other concurrent writers. When group commit is
+    /// enabled, success is returned only after the shared durability barrier.
+    pub fn append_transaction(&self, transaction: AppendTransaction) -> Result<()> {
+        self.inner
+            .commits
+            .execute_grouped(move |database| {
+                database.append_transaction(transaction)?;
+                Ok(QueryOutput {
+                    rows: Vec::new().into(),
+                })
+            })
+            .map(|_| ())
     }
 
     fn with_autocommit_exclusive(
@@ -1236,6 +1251,9 @@ fn checkpoint_coordinator_poisoned_error() -> SkeinError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skein_storage::{
+        AppendTableSchema, AppendWrite, RelationalColumnSchema, RelationalScalarType,
+    };
 
     fn key(value: i64) -> RelationalKey {
         RelationalKey(vec![RelationalValue::BigInt(value)])
@@ -1255,5 +1273,63 @@ mod tests {
             ),
             Some((Bound::Included(key(20)), Bound::Included(key(20))))
         );
+    }
+
+    #[test]
+    fn concurrent_append_transaction_uses_the_shared_commit_sequencer() {
+        let path = std::env::temp_dir().join(format!(
+            "skein-concurrent-append-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut database = Database::open(&path).expect("open append database");
+        database
+            .append_transaction(AppendTransaction {
+                writes: vec![AppendWrite::CreateTable {
+                    schema: AppendTableSchema {
+                        name: "events".to_string(),
+                        columns: vec![
+                            append_column("stream", RelationalScalarType::Text),
+                            append_column("sequence", RelationalScalarType::BigInt),
+                        ],
+                        partition_key: vec!["stream".to_string()],
+                        order_key: vec!["sequence".to_string()],
+                    },
+                }],
+            })
+            .expect("create append table");
+        let before = database.commit_epoch();
+        let database = ConcurrentDatabase::new(database);
+
+        database
+            .append_transaction(AppendTransaction {
+                writes: vec![AppendWrite::Append {
+                    table: "events".to_string(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("alpha".to_string()),
+                        RelationalValue::BigInt(1),
+                    ])],
+                }],
+            })
+            .expect("commit concurrent append");
+
+        assert_eq!(
+            database.commit_epoch().expect("read commit epoch"),
+            before + 1
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).expect("remove append database");
+    }
+
+    fn append_column(name: &str, scalar_type: RelationalScalarType) -> RelationalColumnSchema {
+        RelationalColumnSchema {
+            name: name.to_string(),
+            scalar_type,
+            nullable: false,
+            default: None,
+        }
     }
 }

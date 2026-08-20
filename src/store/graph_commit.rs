@@ -78,10 +78,11 @@ impl GraphStore {
             transaction.catalog,
             ops,
             transaction.rows,
-            Some(relational_transaction),
             limits,
-            false,
-            None,
+            MutationCommitOptions {
+                relational: Some(relational_transaction),
+                ..MutationCommitOptions::default()
+            },
         )
     }
 
@@ -91,7 +92,15 @@ impl GraphStore {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.commit_mutations_internal(catalog, vec![mutation], None, limits, true, None)
+        self.commit_mutations_internal(
+            catalog,
+            vec![mutation],
+            limits,
+            MutationCommitOptions {
+                preserve_single_create_wal: true,
+                ..MutationCommitOptions::default()
+            },
+        )
     }
 
     pub fn commit_mutations_with_limits(
@@ -100,7 +109,7 @@ impl GraphStore {
         mutations: Vec<GraphMutation>,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.commit_mutations_internal(catalog, mutations, None, limits, false, None)
+        self.commit_mutations_internal(catalog, mutations, limits, MutationCommitOptions::default())
     }
 
     pub(crate) fn commit_relational_transaction(
@@ -123,17 +132,41 @@ impl GraphStore {
         transaction: RelationalTransaction,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.commit_mutations_internal(catalog, mutations, Some(transaction), limits, false, None)
+        self.commit_mutations_internal(
+            catalog,
+            mutations,
+            limits,
+            MutationCommitOptions {
+                relational: Some(transaction),
+                ..MutationCommitOptions::default()
+            },
+        )
+    }
+
+    pub fn commit_kernel_write_batch(
+        &mut self,
+        catalog: &mut Catalog,
+        batch: KernelWriteBatch,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.commit_mutations_internal(
+            catalog,
+            batch.graph,
+            limits,
+            MutationCommitOptions {
+                relational: Some(batch.relational),
+                append: Some(batch.append),
+                ..MutationCommitOptions::default()
+            },
+        )
     }
 
     pub(super) fn commit_mutations_internal(
         &mut self,
         catalog: &mut Catalog,
         mutations: Vec<GraphMutation>,
-        relational_transaction: Option<RelationalTransaction>,
         limits: MutationLimits,
-        preserve_single_create_wal: bool,
-        captured_graph_ops: Option<&mut Vec<WalOp>>,
+        options: MutationCommitOptions<'_>,
     ) -> Result<MutationSummary> {
         let mut next_node_id = self.next_node_id;
         let mut next_rel_id = self.next_rel_id;
@@ -1673,30 +1706,24 @@ impl GraphStore {
             ensure_mutation_commit_limits(&ops, &rows, limits)?;
         }
 
-        self.commit_prepared_mutation_ops(
-            catalog,
-            working_catalog,
-            ops,
-            rows,
-            relational_transaction,
-            limits,
-            preserve_single_create_wal,
-            captured_graph_ops,
-        )
+        self.commit_prepared_mutation_ops(catalog, working_catalog, ops, rows, limits, options)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn commit_prepared_mutation_ops(
         &mut self,
         catalog: &mut Catalog,
         working_catalog: Catalog,
         mut ops: Vec<WalOp>,
         rows: Vec<BTreeMap<String, Value>>,
-        relational_transaction: Option<RelationalTransaction>,
         limits: MutationLimits,
-        preserve_single_create_wal: bool,
-        captured_graph_ops: Option<&mut Vec<WalOp>>,
+        options: MutationCommitOptions<'_>,
     ) -> Result<MutationSummary> {
+        let MutationCommitOptions {
+            relational: relational_transaction,
+            append: append_transaction,
+            preserve_single_create_wal,
+            captured_graph_ops,
+        } = options;
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
         if let Some(captured_graph_ops) = captured_graph_ops {
@@ -1706,6 +1733,7 @@ impl GraphStore {
         let mut staged_relational_index_capture = None;
         let mut staged_relational_row_capture = None;
         let mut staged_relational_primary_key_changes = None;
+        let mut staged_append_state = None;
         let next_commit_epoch = self
             .commit_epoch
             .checked_add(1)
@@ -1789,6 +1817,18 @@ impl GraphStore {
                 record: Arc::from(encoded.record),
             });
         }
+        if let Some(transaction) = append_transaction.filter(|value| !value.writes.is_empty()) {
+            staged_append_state = Some(
+                self.append_state
+                    .stage_transaction(&transaction, self.append_mutation_limits)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            );
+            let record = encode_append_wal_batch(next_commit_epoch, &transaction)
+                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            ops.push(WalOp::Append {
+                record: Arc::from(record),
+            });
+        }
         if ops.is_empty() {
             return Ok(MutationSummary { rows });
         }
@@ -1836,6 +1876,10 @@ impl GraphStore {
                 self.relational_state = staged_relational_state
                     .take()
                     .expect("relational WAL operation must have staged state");
+            } else if matches!(op, WalOp::Append { .. }) {
+                self.append_state = staged_append_state
+                    .take()
+                    .expect("append WAL operation must have staged state");
             } else {
                 self.apply_wal_op(catalog, op)?;
             }
@@ -2066,7 +2110,8 @@ impl GraphStore {
                 | WalOp::ProjectGraph { .. }
                 | WalOp::MarkInitialImportSource { .. }
                 | WalOp::Relational { .. }
-                | WalOp::RelationalSnapshot { .. } => {}
+                | WalOp::RelationalSnapshot { .. }
+                | WalOp::Append { .. } => {}
             }
         }
         Ok(bytes)

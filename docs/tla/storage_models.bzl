@@ -1,6 +1,9 @@
 """Authoritative storage model set shared by Bazel and retained evidence."""
 
 STORAGE_MODELS = [
+    "SkeinAppendMixedTransaction",
+    "SkeinAppendSegmentPublication",
+    "SkeinAppendTable",
     "SkeinBoundedMorselMerge",
     "SkeinColumnGroupManifest",
     "SkeinColumnarShadowIntegration",

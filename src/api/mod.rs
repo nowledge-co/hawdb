@@ -32,16 +32,17 @@ use crate::search::{
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
-    AdjacencyConsolidationReport, AdjacencyDirection, AdjacencyLayout,
-    BasicStatisticsConsistencyReport, DegreeStatisticsConsistencyReport,
-    DistinctValueStatisticsConsistencyReport, DurabilityPolicy, GraphMutationLockFootprint,
-    GraphMutationSavepoint, GraphMutationTransaction, GraphSnapshotNodeImport,
-    GraphSnapshotRelationshipImport, GraphStore, NodeId, NodeRecord,
-    OptimizerStatisticsRefreshWork, PreparedCheckpoint, PropertyIndexConsistencyReport,
-    PropertyIndexProjectionRebuildAction, PublishedReadView, RecoveryMode, RelId, RelRecord,
-    SchemaMaintenanceAction, SegmentCacheSnapshot, SkeinSnapshotRowsImport, StorageBackupReport,
-    StoragePressureSnapshot, StorageReclamationWatermark, StorageRecoveryReport,
-    StorageRestoreReport, StorageScrubReport, StoreStableIdMapping, WalReplayConfig,
+    AdjacencyConsolidationReport, AdjacencyDirection, AdjacencyLayout, AppendSegmentReadOutput,
+    AppendTableSchema, AppendTransaction, BasicStatisticsConsistencyReport,
+    DegreeStatisticsConsistencyReport, DistinctValueStatisticsConsistencyReport, DurabilityPolicy,
+    GraphMutationLockFootprint, GraphMutationSavepoint, GraphMutationTransaction,
+    GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, KernelWriteBatch,
+    MutationSummary, NodeId, NodeRecord, OptimizerStatisticsRefreshWork, PreparedCheckpoint,
+    PropertyIndexConsistencyReport, PropertyIndexProjectionRebuildAction, PublishedReadView,
+    RecoveryMode, RelId, RelRecord, SchemaMaintenanceAction, SegmentCacheSnapshot,
+    SkeinSnapshotRowsImport, StorageBackupReport, StoragePressureSnapshot,
+    StorageReclamationWatermark, StorageRecoveryReport, StorageRestoreReport, StorageScrubReport,
+    StoreStableIdMapping, WalReplayConfig,
 };
 use crate::telemetry::{
     operations_telemetry_readiness, qos_telemetry_sink, KernelTelemetry, KernelTelemetryOperation,
@@ -1240,6 +1241,81 @@ impl Database {
 
     pub fn checkpoint(&mut self) -> Result<()> {
         self.checkpoint_internal(None)
+    }
+
+    pub fn append_transaction(&mut self, transaction: AppendTransaction) -> Result<u64> {
+        self.ensure_writable()?;
+        self.store.commit_kernel_write_batch(
+            &mut self.catalog,
+            KernelWriteBatch {
+                append: transaction,
+                ..KernelWriteBatch::default()
+            },
+            self.config.mutation_limits,
+        )?;
+        Ok(self.store.commit_epoch())
+    }
+
+    pub fn commit_kernel_write_batch(
+        &mut self,
+        batch: KernelWriteBatch,
+    ) -> Result<MutationSummary> {
+        self.ensure_writable()?;
+        self.store
+            .commit_kernel_write_batch(&mut self.catalog, batch, self.config.mutation_limits)
+    }
+
+    pub fn read_append_partition(
+        &self,
+        table: &str,
+        partition: &skein_storage::RelationalKey,
+        after: Option<&skein_storage::RelationalKey>,
+        max_rows: usize,
+    ) -> Result<AppendSegmentReadOutput> {
+        let max_rows = self
+            .config
+            .max_read_result_rows
+            .map_or(max_rows, |configured| configured.min(max_rows));
+        let max_payload_bytes = self
+            .config
+            .max_read_result_payload_bytes
+            .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
+        self.read_append_partition_bounded(table, partition, after, max_rows, max_payload_bytes)
+    }
+
+    pub fn read_append_partition_bounded(
+        &self,
+        table: &str,
+        partition: &skein_storage::RelationalKey,
+        after: Option<&skein_storage::RelationalKey>,
+        max_rows: usize,
+        max_payload_bytes: usize,
+    ) -> Result<AppendSegmentReadOutput> {
+        let max_rows = self
+            .config
+            .max_read_result_rows
+            .map_or(max_rows, |configured| configured.min(max_rows));
+        let max_payload_bytes = self
+            .config
+            .max_read_result_payload_bytes
+            .map_or(max_payload_bytes, |configured| {
+                configured.min(max_payload_bytes)
+            });
+        self.store.read_append_partition_bounded(
+            table,
+            partition,
+            after,
+            max_rows,
+            max_payload_bytes,
+        )
+    }
+
+    pub fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema> {
+        self.store.append_table_schema(table)
+    }
+
+    pub fn append_storage_residency_report(&self) -> crate::AppendStorageResidencyReport {
+        self.store.append_storage_residency_report()
     }
 
     /// Runs an explicitly admitted full relational-row closure scan and

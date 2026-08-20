@@ -67,6 +67,30 @@ fn push_relationship_property_projection_definitions(
 }
 
 impl GraphStore {
+    pub(super) fn mount_append_generation_for_recovery(&mut self) -> Result<()> {
+        let Some(durable) = self.durable.as_ref() else {
+            self.append_generation_reader = None;
+            self.append_state = AppendState::default();
+            return Ok(());
+        };
+        let Some(binding) = durable.append_generation_artifacts else {
+            self.append_generation_reader = None;
+            self.append_state = AppendState::default();
+            return Ok(());
+        };
+        let reader = AppendGenerationReader::open_bound(
+            durable.root_path(),
+            binding,
+            self.append_publication_config,
+        )
+        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        self.append_state =
+            AppendState::from_checkpoint(reader.manifest().schemas.clone(), reader.watermarks())
+                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        self.append_generation_reader = Some(reader);
+        Ok(())
+    }
+
     pub fn checkpoint(&mut self, catalog: &Catalog) -> Result<()> {
         self.checkpoint_with_reader_epoch(catalog, None)
     }
@@ -389,6 +413,26 @@ impl GraphStore {
         let generation = durable.checkpoint_epoch.saturating_add(1);
         let staging_path = durable.prepare_checkpoint_staging(generation)?;
         let prepared = (|| {
+            let append_rows = self
+                .append_state
+                .checkpoint_rows(self.append_publication_config.segment.max_rows)
+                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            let append_report = AppendPublisher::publish_candidate(
+                durable.root_path(),
+                generation,
+                commit_epoch,
+                self.append_generation_reader.as_ref(),
+                self.append_state.schemas(),
+                &append_rows,
+                self.append_publication_config,
+            )
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            let checkpoint_append_reader = AppendGenerationReader::open_bound(
+                durable.root_path(),
+                append_report.generation_artifacts,
+                self.append_publication_config,
+            )
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
             if let Some(encoded) = projected_graph_artifacts.as_deref() {
                 durable.write_projected_graph_artifacts_to(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
@@ -672,6 +716,7 @@ impl GraphStore {
                 source_scan_publication,
                 checkpoint_statistics,
                 checkpoint_relational_state,
+                checkpoint_append_reader,
                 relational_index_candidate,
                 relational_overflow_compaction_report,
                 manifest_artifacts: CheckpointManifestArtifacts {
@@ -684,6 +729,7 @@ impl GraphStore {
                     relational_row: relational_row_report.generation_artifacts,
                     relational_overflow: relational_overflow_report.generation_artifacts,
                     relational_index,
+                    append: append_report.generation_artifacts,
                 },
                 staging_path: staging_path.clone(),
             })
@@ -769,6 +815,12 @@ impl GraphStore {
         if let Some(relational_state) = prepared.checkpoint_relational_state {
             self.relational_state = relational_state;
         }
+        self.append_state = AppendState::from_checkpoint(
+            prepared.checkpoint_append_reader.manifest().schemas.clone(),
+            prepared.checkpoint_append_reader.watermarks(),
+        )
+        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        self.append_generation_reader = Some(prepared.checkpoint_append_reader);
         if prepared.checkpoint_out_of_core {
             self.canonical_base = durable.canonical_segments.clone();
             self.canonical_adjacency = durable.canonical_adjacency.clone();

@@ -1,4 +1,5 @@
 pub mod adjacency;
+pub mod append_table;
 pub mod backup;
 pub mod cache;
 pub mod canonical;
@@ -27,6 +28,17 @@ pub use adjacency::{
     AdjacencyLayout, AdjacencyPostingIter, AdjacencyPostingList, OrderedAdjacencyEntry,
     ADJACENCY_DELTA_CONSOLIDATION_ENTRIES, ADJACENCY_DELTA_HARD_MAX_ENTRIES,
     ADJACENCY_MINI_DELTA_MAX_ENTRIES, ADJACENCY_PIVOT_MIN_DEGREE,
+};
+pub use append_table::{
+    append_generation_manifest_file, append_segment_file, decode_append_wal_batch,
+    encode_append_wal_batch, AppendDecodeLimits, AppendGenerationArtifacts,
+    AppendGenerationManifest, AppendGenerationReader, AppendLiveBatch, AppendMutationLimits,
+    AppendPublicationConfig, AppendPublicationPhase, AppendPublicationReport, AppendPublisher,
+    AppendSegmentArtifactMetadata, AppendSegmentBinding, AppendSegmentBlockDescriptor,
+    AppendSegmentConfig, AppendSegmentReadOutput, AppendSegmentReadReport, AppendSegmentReader,
+    AppendSegmentWriteOutput, AppendSegmentWriter, AppendState, AppendStorageResidencyReport,
+    AppendTableError, AppendTableRow, AppendTableSchema, AppendTransaction, AppendWalBatch,
+    AppendWrite, DEFAULT_MAX_APPEND_MUTATION_BYTES, DEFAULT_MAX_APPEND_MUTATION_ROWS,
 };
 pub use backup::{StorageBackupReport, StorageRestoreReport, StorageScrubReport};
 pub use cache::{
