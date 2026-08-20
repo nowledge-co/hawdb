@@ -1233,9 +1233,12 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
     .unwrap();
 
     let error = Database::open(&path).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("WAL is missing a supported generation header"));
+    assert!(
+        error
+            .to_string()
+            .contains("WAL is missing a supported generation header"),
+        "unexpected legacy WAL error: {error}"
+    );
 
     std::fs::remove_dir_all(path).unwrap();
 }
