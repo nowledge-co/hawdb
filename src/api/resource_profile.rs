@@ -295,6 +295,10 @@ fn relational_row_residency_json(
         "live_entries": report.live_entries,
         "live_encoded_bytes": report.live_encoded_bytes,
         "live_resident_bytes": report.live_resident_bytes,
+        "monotonic_append_attempts": report.monotonic_append_attempts,
+        "monotonic_append_hits": report.monotonic_append_hits,
+        "monotonic_append_fallbacks": report.monotonic_append_fallbacks,
+        "monotonic_append_proven_absent_primary_keys": report.monotonic_append_proven_absent_primary_keys,
     })
 }
 

@@ -154,6 +154,25 @@ impl RelationalRowPageLiveBatch {
             end,
         })
     }
+
+    fn may_contain_prefix_at_or_after(
+        &self,
+        table: &str,
+        prefix: &RelationalKey,
+        lower: &RelationalKey,
+    ) -> bool {
+        let start = self.changes.partition_point(|change| {
+            change
+                .table
+                .as_str()
+                .cmp(table)
+                .then_with(|| change.primary_key.cmp(lower))
+                .is_lt()
+        });
+        self.changes.get(start).is_some_and(|change| {
+            change.table == table && change.primary_key.0.starts_with(prefix.0.as_slice())
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +300,22 @@ impl RelationalRowPageLiveOverlay {
             current = batch.previous.as_deref();
         }
         (None, batches_examined)
+    }
+
+    fn may_contain_prefix_at_or_after(
+        &self,
+        table: &str,
+        prefix: &RelationalKey,
+        lower: &RelationalKey,
+    ) -> bool {
+        let mut current = self.head.as_deref();
+        while let Some(batch) = current {
+            if batch.may_contain_prefix_at_or_after(table, prefix, lower) {
+                return true;
+            }
+            current = batch.previous.as_deref();
+        }
+        false
     }
 }
 
@@ -585,6 +620,16 @@ impl RelationalRowPageReadView {
 
     pub const fn live_resident_bytes(&self) -> usize {
         self.live.resident_bytes
+    }
+
+    pub(super) fn live_may_contain_prefix_at_or_after(
+        &self,
+        table: &str,
+        prefix: &RelationalKey,
+        lower: &RelationalKey,
+    ) -> bool {
+        self.live
+            .may_contain_prefix_at_or_after(table, prefix, lower)
     }
 
     pub fn overlay_value(

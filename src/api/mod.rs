@@ -286,6 +286,9 @@ pub struct DatabaseConfig {
     pub graph_columnar_shadow_checkpoint: bool,
     /// Persistent relational-index publication and read activation mode.
     pub relational_index_mode: skein_storage::RelationalIndexMode,
+    /// Enables the metadata-only monotonic INSERT fast path for RowPage tables.
+    /// Disabled by default until workload qualification explicitly activates it.
+    pub relational_monotonic_append_fast_path: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
@@ -429,6 +432,7 @@ impl Default for DatabaseConfig {
             max_out_of_core_delta_bytes: Some(skein_storage::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
             graph_columnar_shadow_checkpoint: false,
             relational_index_mode: skein_storage::RelationalIndexMode::default(),
+            relational_monotonic_append_fast_path: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
             ),
@@ -721,11 +725,18 @@ fn configure_search_projection_changefeed(store: &mut GraphStore, config: &Datab
     store.set_max_search_projection_change_log_bytes(config.max_search_projection_change_log_bytes);
 }
 
+fn configure_relational_fast_paths(store: &mut GraphStore, config: &DatabaseConfig) {
+    store.set_relational_monotonic_append_fast_path_enabled(
+        config.relational_monotonic_append_fast_path,
+    );
+}
+
 impl Default for Database {
     fn default() -> Self {
         let config = effective_database_config(DatabaseConfig::default());
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
+        configure_relational_fast_paths(&mut store, &config);
         Self {
             catalog: Catalog::default(),
             store,
@@ -761,6 +772,7 @@ impl Database {
         let config = effective_database_config(config);
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
+        configure_relational_fast_paths(&mut store, &config);
         let optimizer = CascadesOptimizer::new(optimizer_config_from_database_config(&config));
         Self {
             catalog: Catalog::default(),
@@ -880,6 +892,7 @@ impl Database {
             )?
         };
         configure_search_projection_changefeed(&mut store, &config);
+        configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
             catalog,
             store,

@@ -1136,6 +1136,10 @@ pub struct RelationalRowStorageResidencyReport {
     pub live_entries: usize,
     pub live_encoded_bytes: usize,
     pub live_resident_bytes: usize,
+    pub monotonic_append_attempts: u64,
+    pub monotonic_append_hits: u64,
+    pub monotonic_append_fallbacks: u64,
+    pub monotonic_append_proven_absent_primary_keys: u64,
 }
 
 impl RelationalRowStorageResidencyReport {

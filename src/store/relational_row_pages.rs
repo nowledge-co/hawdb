@@ -4,14 +4,15 @@ use super::{GraphStore, RelationalOverflowCompactionConfig, RelationalRowStorage
 use skein_storage::{
     RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
-    RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
-    RelationalOverflowReferenceSortReport, RelationalOverflowRootReader, RelationalProjectedRow,
-    RelationalRecoveryFence, RelationalRecoverySourceIdentity, RelationalReplayAccess,
-    RelationalReplayAccessSet, RelationalRow, RelationalRowChangeCapture,
-    RelationalRowChangeCaptureLimits, RelationalRowDeltaBuilder, RelationalRowDeltaConfig,
-    RelationalRowDeltaError, RelationalRowDeltaReader, RelationalRowDeltaReport,
-    RelationalRowPageDemandReadError, RelationalRowPageLiveError, RelationalRowPageMutationPlanner,
-    RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig, RelationalRowPageReadView,
+    RelationalMonotonicAppendHydration, RelationalOverflowReferenceSet,
+    RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortReport,
+    RelationalOverflowRootReader, RelationalProjectedRow, RelationalRecoveryFence,
+    RelationalRecoverySourceIdentity, RelationalReplayAccess, RelationalReplayAccessSet,
+    RelationalRow, RelationalRowChangeCapture, RelationalRowChangeCaptureLimits,
+    RelationalRowDeltaBuilder, RelationalRowDeltaConfig, RelationalRowDeltaError,
+    RelationalRowDeltaReader, RelationalRowDeltaReport, RelationalRowPageDemandReadError,
+    RelationalRowPageLiveError, RelationalRowPageMutationPlanner, RelationalRowPageProjectedRange,
+    RelationalRowPagePublicationConfig, RelationalRowPageReadView,
     RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
     RelationalRowPageRootReader, RelationalRowPageSnapshotPointReport,
     RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
@@ -19,11 +20,12 @@ use skein_storage::{
     RelationalRowPageSnapshotRowSource, RelationalRowPageTableDelta, RelationalSparseIndexProbe,
     RelationalSparseLivePreparationStage, RelationalSparseLiveStage, RelationalSparseRecoveryRow,
     RelationalSparseWorkspaceBuilder, RelationalState, RelationalTransaction, RelationalValue,
-    SegmentCache, StorageResidencyMode, StoreId,
+    SegmentCache, StorageResidencyMode, StoreId, RELATIONAL_PRIMARY_INDEX_NAME,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,6 +88,40 @@ pub(super) struct RelationalRowPageState {
     recovery_report: Option<RelationalRowDeltaReport>,
     recovery_status: RelationalRowPageRecoveryStatus,
     schema_checkpoint_required: bool,
+    monotonic_append_fast_path_enabled: bool,
+    monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
+}
+
+#[derive(Debug, Default)]
+struct RelationalMonotonicAppendMetrics {
+    attempts: AtomicU64,
+    hits: AtomicU64,
+    fallbacks: AtomicU64,
+    proven_absent_primary_keys: AtomicU64,
+}
+
+impl RelationalMonotonicAppendMetrics {
+    fn record_hit(&self, proven_absent_primary_keys: usize) {
+        saturating_add_atomic(&self.attempts, 1);
+        saturating_add_atomic(&self.hits, 1);
+        saturating_add_atomic(
+            &self.proven_absent_primary_keys,
+            u64::try_from(proven_absent_primary_keys).unwrap_or(u64::MAX),
+        );
+    }
+
+    fn record_fallback(&self) {
+        saturating_add_atomic(&self.attempts, 1);
+        saturating_add_atomic(&self.fallbacks, 1);
+    }
+}
+
+fn saturating_add_atomic(counter: &AtomicU64, value: u64) {
+    let _ = counter.fetch_update(
+        AtomicOrdering::Relaxed,
+        AtomicOrdering::Relaxed,
+        |current| Some(current.saturating_add(value)),
+    );
 }
 
 #[derive(Debug)]
@@ -98,6 +134,63 @@ struct RelationalRowPageServingResources {
 pub(super) struct RelationalRowPageCheckpointPlan {
     pub base: Option<Arc<RelationalRowPageRootReader>>,
     pub deltas: Vec<RelationalRowPageTableDelta>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RelationalSparseLiveHydrationReport {
+    point_reads: usize,
+    range_reads: usize,
+    monotonic_append_attempts: usize,
+    monotonic_append_hits: usize,
+    monotonic_append_fallbacks: usize,
+    pages_read: usize,
+    rows_decoded: usize,
+    bytes_read: usize,
+}
+
+pub(super) struct RelationalSparseLiveWorkspace {
+    pub rows: Vec<RelationalSparseRecoveryRow>,
+    pub proven_absent_primary_keys: BTreeSet<RelationalReplayAccess>,
+}
+
+pub(super) struct RelationalProvenAbsenceConstraintIndex<'a> {
+    inner: &'a dyn RelationalConstraintIndex,
+    proven_absent_primary_keys: &'a BTreeSet<RelationalReplayAccess>,
+}
+
+impl<'a> RelationalProvenAbsenceConstraintIndex<'a> {
+    pub(super) fn new(
+        inner: &'a dyn RelationalConstraintIndex,
+        proven_absent_primary_keys: &'a BTreeSet<RelationalReplayAccess>,
+    ) -> Self {
+        Self {
+            inner,
+            proven_absent_primary_keys,
+        }
+    }
+}
+
+impl RelationalConstraintIndex for RelationalProvenAbsenceConstraintIndex<'_> {
+    fn visit_exact_primary_keys(
+        &self,
+        table: &str,
+        index: &str,
+        key: &skein_storage::RelationalKey,
+        visit: &mut dyn FnMut(&skein_storage::RelationalKey) -> bool,
+    ) -> Result<(), RelationalError> {
+        if index == RELATIONAL_PRIMARY_INDEX_NAME
+            && self
+                .proven_absent_primary_keys
+                .contains(&RelationalReplayAccess {
+                    table: table.to_string(),
+                    primary_key: key.clone(),
+                })
+        {
+            return Ok(());
+        }
+        self.inner
+            .visit_exact_primary_keys(table, index, key, visit)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -164,6 +257,13 @@ struct RelationalSparseLiveHydrator<'a> {
     bytes_read: usize,
     overlay_entries: usize,
     overlay_resident_bytes: usize,
+    point_reads: usize,
+    range_reads: usize,
+    monotonic_append_attempts: usize,
+    monotonic_append_hits: usize,
+    monotonic_append_fallbacks: usize,
+    proven_absent_primary_keys: BTreeSet<RelationalReplayAccess>,
+    monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
 
 impl<'a> RelationalSparseLiveHydrator<'a> {
@@ -171,6 +271,7 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
         state: &'a RelationalState,
         reader: RelationalRowPageSnapshotReader,
         workspace_limits: RelationalRowChangeCaptureLimits,
+        monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
     ) -> Self {
         let mut limits = RelationalRowPageSnapshotReadLimits::default();
         limits.demand.max_rows = nonzero_min(limits.demand.max_rows, workspace_limits.max_entries);
@@ -201,6 +302,13 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
             bytes_read: 0,
             overlay_entries: 0,
             overlay_resident_bytes: 0,
+            point_reads: 0,
+            range_reads: 0,
+            monotonic_append_attempts: 0,
+            monotonic_append_hits: 0,
+            monotonic_append_fallbacks: 0,
+            proven_absent_primary_keys: BTreeSet::new(),
+            monotonic_append_metrics,
         }
     }
 
@@ -227,6 +335,11 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
         if self.workspace.contains(access) {
             return Ok(false);
         }
+        self.point_reads = self.point_reads.checked_add(1).ok_or_else(|| {
+            RelationalError::Admission(
+                "sparse relational live point-read counter overflow".to_string(),
+            )
+        })?;
         let fields = self.fields(&access.table)?;
         let limits = self.remaining_limits()?;
         let (mut projected, report) = self
@@ -269,6 +382,11 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
     }
 
     fn hydrate_table(&mut self, table: &str) -> Result<(), RelationalError> {
+        self.range_reads = self.range_reads.checked_add(1).ok_or_else(|| {
+            RelationalError::Admission(
+                "sparse relational live range-read counter overflow".to_string(),
+            )
+        })?;
         let fields = self.fields(table)?;
         let limits = self.remaining_limits()?;
         let state = self.state;
@@ -320,12 +438,115 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
         Ok(())
     }
 
+    fn hydrate_monotonic_append(
+        &mut self,
+        append: &RelationalMonotonicAppendHydration,
+    ) -> Result<(), RelationalError> {
+        self.monotonic_append_attempts =
+            self.monotonic_append_attempts
+                .checked_add(1)
+                .ok_or_else(|| {
+                    RelationalError::Admission(
+                        "sparse relational monotonic-append counter overflow".to_string(),
+                    )
+                })?;
+        let Some(first_key) = append.primary_keys.first() else {
+            return Err(RelationalError::Corruption(
+                "monotonic append hydration contains no primary keys".to_string(),
+            ));
+        };
+        let proven_absent = self
+            .reader
+            .prove_partition_absent_at_or_after(
+                &append.table,
+                &append.partition_prefix,
+                first_key,
+                &self.task,
+            )
+            .map_err(map_sparse_live_snapshot_error)?;
+        if !proven_absent {
+            self.monotonic_append_fallbacks = self
+                .monotonic_append_fallbacks
+                .checked_add(1)
+                .ok_or_else(|| {
+                    RelationalError::Admission(
+                        "sparse relational monotonic-append fallback counter overflow".to_string(),
+                    )
+                })?;
+            self.monotonic_append_metrics.record_fallback();
+            return self.hydrate_append_points(append);
+        }
+
+        self.monotonic_append_hits =
+            self.monotonic_append_hits.checked_add(1).ok_or_else(|| {
+                RelationalError::Admission(
+                    "sparse relational monotonic-append hit counter overflow".to_string(),
+                )
+            })?;
+        self.monotonic_append_metrics
+            .record_hit(append.primary_keys.len());
+        for primary_key in &append.primary_keys {
+            self.proven_absent_primary_keys
+                .insert(RelationalReplayAccess {
+                    table: append.table.clone(),
+                    primary_key: primary_key.clone(),
+                });
+            self.workspace.insert(RelationalSparseRecoveryRow {
+                table: append.table.clone(),
+                primary_key: primary_key.clone(),
+                row: None,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn hydrate_append_points(
+        &mut self,
+        append: &RelationalMonotonicAppendHydration,
+    ) -> Result<(), RelationalError> {
+        for primary_key in &append.primary_keys {
+            self.hydrate_point(&RelationalReplayAccess {
+                table: append.table.clone(),
+                primary_key: primary_key.clone(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn report(&self) -> RelationalSparseLiveHydrationReport {
+        RelationalSparseLiveHydrationReport {
+            point_reads: self.point_reads,
+            range_reads: self.range_reads,
+            monotonic_append_attempts: self.monotonic_append_attempts,
+            monotonic_append_hits: self.monotonic_append_hits,
+            monotonic_append_fallbacks: self.monotonic_append_fallbacks,
+            pages_read: self.pages_read,
+            rows_decoded: self.rows_decoded,
+            bytes_read: self.bytes_read,
+        }
+    }
+
+    fn proven_absent_primary_keys(&self) -> BTreeSet<RelationalReplayAccess> {
+        self.proven_absent_primary_keys.clone()
+    }
+
     fn resolve_probe(
         &mut self,
         probe: &RelationalSparseIndexProbe,
         index: &dyn RelationalConstraintIndex,
     ) -> Result<(), RelationalError> {
         if self.resolved_probes.contains(probe) {
+            return Ok(());
+        }
+        if probe.index == RELATIONAL_PRIMARY_INDEX_NAME
+            && self
+                .proven_absent_primary_keys
+                .contains(&RelationalReplayAccess {
+                    table: probe.table.clone(),
+                    primary_key: probe.index_key.clone(),
+                })
+        {
+            self.resolved_probes.insert(probe.clone());
             return Ok(());
         }
         let mut missing = Vec::new();
@@ -602,6 +823,22 @@ impl RelationalRowPageState {
             materialized_row_bytes: state.estimated_materialized_row_bytes(),
             logical_row_count: state.total_row_count(),
             recovery_delta_checkpoint_runs: self.delta_config.checkpoint_runs.get(),
+            monotonic_append_attempts: self
+                .monotonic_append_metrics
+                .attempts
+                .load(AtomicOrdering::Relaxed),
+            monotonic_append_hits: self
+                .monotonic_append_metrics
+                .hits
+                .load(AtomicOrdering::Relaxed),
+            monotonic_append_fallbacks: self
+                .monotonic_append_metrics
+                .fallbacks
+                .load(AtomicOrdering::Relaxed),
+            monotonic_append_proven_absent_primary_keys: self
+                .monotonic_append_metrics
+                .proven_absent_primary_keys
+                .load(AtomicOrdering::Relaxed),
             ..RelationalRowStorageResidencyReport::default()
         };
         let Some(view) = self.current_read_view(commit_epoch) else {
@@ -655,6 +892,8 @@ impl RelationalRowPageState {
             recovery_report: self.recovery_report.clone(),
             recovery_status: self.recovery_status.clone(),
             schema_checkpoint_required: self.schema_checkpoint_required,
+            monotonic_append_fast_path_enabled: self.monotonic_append_fast_path_enabled,
+            monotonic_append_metrics: Arc::clone(&self.monotonic_append_metrics),
         }
     }
 
@@ -729,6 +968,10 @@ pub(super) struct RelationalRowLiveUnavailable {
 }
 
 impl GraphStore {
+    pub(crate) fn set_relational_monotonic_append_fast_path_enabled(&mut self, enabled: bool) {
+        self.relational_row_pages.monotonic_append_fast_path_enabled = enabled;
+    }
+
     pub(super) fn activate_out_of_core_relational_rows(&mut self) -> crate::error::Result<()> {
         if self.residency_mode != StorageResidencyMode::OutOfCore
             || !matches!(
@@ -1212,7 +1455,7 @@ impl GraphStore {
         index_capture_limits: RelationalIndexChangeCaptureLimits,
         row_capture_limits: RelationalRowChangeCaptureLimits,
         constraint_index: &dyn RelationalConstraintIndex,
-    ) -> Result<Vec<RelationalSparseRecoveryRow>, RelationalError> {
+    ) -> Result<RelationalSparseLiveWorkspace, RelationalError> {
         let reader = self
             .open_relational_row_snapshot_reader()
             .map_err(|error| RelationalError::Corruption(error.to_string()))?
@@ -1222,13 +1465,19 @@ impl GraphStore {
                         .to_string(),
                 )
             })?;
-        self.hydrate_sparse_relational_workspace(
+        self.hydrate_sparse_relational_workspace_with_report(
             &self.relational_state,
             reader,
             transaction,
             index_capture_limits,
             row_capture_limits,
             constraint_index,
+        )
+        .map(
+            |(rows, _, proven_absent_primary_keys)| RelationalSparseLiveWorkspace {
+                rows,
+                proven_absent_primary_keys,
+            },
         )
     }
 
@@ -1260,14 +1509,19 @@ impl GraphStore {
         let reader = self
             .open_relational_transaction_row_snapshot_reader(rows)
             .map_err(|error| RelationalError::Corruption(error.to_string()))?;
-        let hydrated_workspace = self.hydrate_sparse_relational_workspace(
-            state,
-            reader,
-            &transaction,
-            index_capture_limits,
-            row_capture_limits,
+        let (hydrated_workspace, _, proven_absent_primary_keys) = self
+            .hydrate_sparse_relational_workspace_with_report(
+                state,
+                reader,
+                &transaction,
+                index_capture_limits,
+                row_capture_limits,
+                constraint_index,
+            )?;
+        let proven_constraint_index = RelationalProvenAbsenceConstraintIndex::new(
             constraint_index,
-        )?;
+            &proven_absent_primary_keys,
+        );
         state
             .stage_sparse_transaction_with_authoritative_replay_access(RelationalSparseLiveStage {
                 transaction,
@@ -1276,12 +1530,12 @@ impl GraphStore {
                 overflow_config: self.relational_overflow_config,
                 index_capture_limits,
                 row_capture_limits,
-                constraint_index,
+                constraint_index: &proven_constraint_index,
             })
             .map(|(next, index_capture, row_capture, _)| (next, index_capture, row_capture))
     }
 
-    fn hydrate_sparse_relational_workspace(
+    fn hydrate_sparse_relational_workspace_with_report(
         &self,
         state: &RelationalState,
         reader: RelationalRowPageSnapshotReader,
@@ -1289,7 +1543,14 @@ impl GraphStore {
         index_capture_limits: RelationalIndexChangeCaptureLimits,
         row_capture_limits: RelationalRowChangeCaptureLimits,
         constraint_index: &dyn RelationalConstraintIndex,
-    ) -> Result<Vec<RelationalSparseRecoveryRow>, RelationalError> {
+    ) -> Result<
+        (
+            Vec<RelationalSparseRecoveryRow>,
+            RelationalSparseLiveHydrationReport,
+            BTreeSet<RelationalReplayAccess>,
+        ),
+        RelationalError,
+    > {
         if !state.canonical_row_metadata_only() {
             return Err(RelationalError::Admission(
                 "sparse relational live hydration requires canonical metadata-only state"
@@ -1297,9 +1558,21 @@ impl GraphStore {
             ));
         }
         let plan = state.plan_sparse_transaction_hydration(transaction)?;
-        let mut hydrator = RelationalSparseLiveHydrator::new(state, reader, row_capture_limits);
+        let mut hydrator = RelationalSparseLiveHydrator::new(
+            state,
+            reader,
+            row_capture_limits,
+            Arc::clone(&self.relational_row_pages.monotonic_append_metrics),
+        );
         for access in plan.point_access() {
             hydrator.hydrate_point(access)?;
+        }
+        for append in plan.monotonic_appends() {
+            if self.relational_row_pages.monotonic_append_fast_path_enabled {
+                hydrator.hydrate_monotonic_append(append)?;
+            } else {
+                hydrator.hydrate_append_points(append)?;
+            }
         }
         for table in plan.scan_tables() {
             hydrator.hydrate_table(table)?;
@@ -1327,7 +1600,13 @@ impl GraphStore {
                 hydrator.resolve_probe(probe, constraint_index)?;
             }
             if hydrator.workspace.len() == previous_entries {
-                return Ok(hydrator.workspace_snapshot());
+                let report = hydrator.report();
+                let proven_absent_primary_keys = hydrator.proven_absent_primary_keys();
+                return Ok((
+                    hydrator.workspace_snapshot(),
+                    report,
+                    proven_absent_primary_keys,
+                ));
             }
         }
     }
@@ -2646,6 +2925,248 @@ mod tests {
             }
         ));
         drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn metadata_only_monotonic_append_matches_fallback_semantics() {
+        let seed = WalReplayConfig {
+            relational_index_mode: RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let path = seed_row_root("metadata-only-monotonic-append", seed);
+        let replay = WalReplayConfig {
+            residency_mode: StorageResidencyMode::OutOfCore,
+            relational_index_mode: RelationalIndexMode::Authoritative,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        store.set_relational_monotonic_append_fast_path_enabled(true);
+
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![row(2, "two"), row(3, "three")],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .expect("commit monotonic append batch");
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![row(5, "five"), row(4, "four")],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .expect("out-of-order batch uses point fallback");
+        assert_eq!(store.relational_state.row_count("documents"), 5);
+
+        let commit_epoch = store.commit_epoch;
+        let next_lsn = store.durable.as_ref().unwrap().next_lsn;
+        let duplicate = store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![row(4, "duplicate"), row(6, "six")],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .expect_err("range proof falls back when a partition successor exists");
+        assert!(duplicate.to_string().contains("duplicate primary key"));
+        assert_eq!(store.commit_epoch, commit_epoch);
+        assert_eq!(store.durable.as_ref().unwrap().next_lsn, next_lsn);
+        assert_eq!(store.relational_state.row_count("documents"), 5);
+        let metrics = store.storage_residency_report().relational_rows;
+        assert_eq!(metrics.monotonic_append_attempts, 2);
+        assert_eq!(metrics.monotonic_append_hits, 1);
+        assert_eq!(metrics.monotonic_append_fallbacks, 1);
+        assert_eq!(metrics.monotonic_append_proven_absent_primary_keys, 2);
+
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn metadata_only_monotonic_append_is_default_off_and_reduces_hydration_when_enabled() {
+        let seed = WalReplayConfig {
+            relational_index_mode: RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let path = unique_test_dir("metadata-only-monotonic-append-reads");
+        let event_schema = RelationalTableSchema {
+            name: "events".to_string(),
+            columns: vec![
+                RelationalColumnSchema {
+                    name: "stream".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "sequence".to_string(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "payload".to_string(),
+                    scalar_type: RelationalScalarType::Text,
+                    nullable: false,
+                    default: None,
+                },
+            ],
+            primary_key: vec!["stream".to_string(), "sequence".to_string()],
+            unique_constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let event = |stream: &str, sequence: i64| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(stream.to_string()),
+                RelationalValue::BigInt(sequence),
+                RelationalValue::Text("x".repeat(128)),
+            ])
+        };
+        let mut seed_catalog = Catalog::default();
+        let mut seed_store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut seed_catalog,
+            DurabilityPolicy::default(),
+            seed,
+        )
+        .unwrap();
+        let seed_rows = (0..512)
+            .flat_map(|sequence| [event("a", sequence), event("c", sequence)])
+            .collect::<Vec<_>>();
+        seed_store
+            .commit_relational_transaction(
+                &mut seed_catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(event_schema),
+                        RelationalWrite::Insert {
+                            table: "events".to_string(),
+                            rows: seed_rows,
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        seed_store.checkpoint(&seed_catalog).unwrap();
+        drop(seed_store);
+        let replay = WalReplayConfig {
+            residency_mode: StorageResidencyMode::OutOfCore,
+            relational_index_mode: RelationalIndexMode::Authoritative,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        let ascending = (0..64)
+            .map(|sequence| event("b", sequence))
+            .collect::<Vec<_>>();
+        let mut descending = ascending.clone();
+        descending.reverse();
+        let transaction = |rows| RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "events".to_string(),
+                rows,
+                mode: RelationalInsertMode::Error,
+            }],
+        };
+        let index_limits = store.relational_index_live_capture_limits().unwrap();
+        let row_limits = store.relational_row_live_capture_limits().unwrap();
+        let disabled = {
+            let constraint_index = store
+                .authoritative_relational_constraint_index()
+                .unwrap()
+                .unwrap();
+            let (_, report, _) = store
+                .hydrate_sparse_relational_workspace_with_report(
+                    &store.relational_state,
+                    store
+                        .open_relational_row_snapshot_reader()
+                        .unwrap()
+                        .unwrap(),
+                    &transaction(ascending.clone()),
+                    index_limits,
+                    row_limits,
+                    &constraint_index,
+                )
+                .expect("hydrate default-off append batch");
+            report
+        };
+        assert_eq!(disabled.monotonic_append_attempts, 0);
+        assert_eq!(disabled.point_reads, 64, "disabled report: {disabled:?}");
+
+        store.set_relational_monotonic_append_fast_path_enabled(true);
+        let constraint_index = store
+            .authoritative_relational_constraint_index()
+            .unwrap()
+            .unwrap();
+        let (_, fast, _) = store
+            .hydrate_sparse_relational_workspace_with_report(
+                &store.relational_state,
+                store
+                    .open_relational_row_snapshot_reader()
+                    .unwrap()
+                    .unwrap(),
+                &transaction(ascending),
+                index_limits,
+                row_limits,
+                &constraint_index,
+            )
+            .expect("hydrate monotonic append batch");
+        let (_, fallback, _) = store
+            .hydrate_sparse_relational_workspace_with_report(
+                &store.relational_state,
+                store
+                    .open_relational_row_snapshot_reader()
+                    .unwrap()
+                    .unwrap(),
+                &transaction(descending),
+                index_limits,
+                row_limits,
+                &constraint_index,
+            )
+            .expect("hydrate point fallback batch");
+
+        assert_eq!(fast.monotonic_append_hits, 1, "fast report: {fast:?}");
+        assert_eq!(fast.monotonic_append_fallbacks, 0, "fast report: {fast:?}");
+        assert_eq!(fast.point_reads, 0, "fast report: {fast:?}");
+        assert_eq!(fast.range_reads, 0, "fast report: {fast:?}");
+        assert_eq!(fallback.monotonic_append_attempts, 0);
+        assert_eq!(fallback.point_reads, 64, "fallback report: {fallback:?}");
+        assert_eq!(fast.pages_read, 0, "fast report: {fast:?}");
+        assert_eq!(fast.bytes_read, 0, "fast report: {fast:?}");
+        assert_eq!(fallback.pages_read, 0, "fallback report: {fallback:?}");
+        assert_eq!(fallback.bytes_read, 0, "fallback report: {fallback:?}");
+
+        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
 

@@ -1133,6 +1133,152 @@ fn sparse_mutation_hydration_plan_separates_points_scans_and_upsert_probes() {
 }
 
 #[test]
+fn sparse_mutation_hydration_plan_groups_monotonic_primary_keys_by_partition() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    name: "events".to_string(),
+                    columns: vec![
+                        RelationalColumnSchema {
+                            name: "stream".to_string(),
+                            scalar_type: RelationalScalarType::Text,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "sequence".to_string(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "payload".to_string(),
+                            scalar_type: RelationalScalarType::Text,
+                            nullable: false,
+                            default: None,
+                        },
+                    ],
+                    primary_key: vec!["stream".to_string(), "sequence".to_string()],
+                    unique_constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                })],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create partitioned event table");
+    let event = |stream: &str, sequence: i64| {
+        RelationalRow::new(vec![
+            RelationalValue::Text(stream.to_string()),
+            RelationalValue::BigInt(sequence),
+            RelationalValue::Text(format!("event-{sequence}")),
+        ])
+    };
+    let transaction = RelationalTransaction {
+        writes: vec![RelationalWrite::Insert {
+            table: "events".to_string(),
+            rows: vec![event("a", 2), event("a", 3), event("b", 8), event("b", 9)],
+            mode: RelationalInsertMode::Error,
+        }],
+    };
+
+    let plan = state
+        .plan_sparse_transaction_hydration(&transaction)
+        .expect("derive monotonic append hydration plan");
+
+    assert!(plan.point_access().is_empty());
+    assert_eq!(plan.monotonic_appends().len(), 2);
+    assert_eq!(
+        plan.monotonic_appends()[0],
+        RelationalMonotonicAppendHydration {
+            table: "events".to_string(),
+            partition_prefix: RelationalKey(vec![RelationalValue::Text("a".to_string())]),
+            primary_keys: vec![
+                RelationalKey(vec![
+                    RelationalValue::Text("a".to_string()),
+                    RelationalValue::BigInt(2),
+                ]),
+                RelationalKey(vec![
+                    RelationalValue::Text("a".to_string()),
+                    RelationalValue::BigInt(3),
+                ]),
+            ],
+        }
+    );
+}
+
+#[test]
+fn sparse_mutation_hydration_plan_falls_back_for_out_of_order_insert() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            create_content_tables(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create table");
+    let transaction = RelationalTransaction {
+        writes: vec![RelationalWrite::Insert {
+            table: "content_documents".to_string(),
+            rows: vec![document_row("id-2"), document_row("id-1")],
+            mode: RelationalInsertMode::Error,
+        }],
+    };
+
+    let plan = state
+        .plan_sparse_transaction_hydration(&transaction)
+        .expect("derive fallback hydration plan");
+
+    assert!(plan.monotonic_appends().is_empty());
+    assert_eq!(plan.point_access().len(), 2);
+}
+
+#[test]
+fn sparse_mutation_hydration_plan_falls_back_for_unique_and_foreign_key_probes() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            create_content_tables(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create content tables")
+        .stage_transaction(
+            create_upsert_table(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create unique table");
+    let transaction = RelationalTransaction {
+        writes: vec![
+            RelationalWrite::Insert {
+                table: "documents".to_string(),
+                rows: vec![
+                    upsert_row("id-1", "owner-1", "one"),
+                    upsert_row("id-2", "owner-2", "two"),
+                ],
+                mode: RelationalInsertMode::Error,
+            },
+            RelationalWrite::Insert {
+                table: "content_anchors".to_string(),
+                rows: vec![
+                    anchor_row("anchor-1", "doc-1"),
+                    anchor_row("anchor-2", "doc-2"),
+                ],
+                mode: RelationalInsertMode::Error,
+            },
+        ],
+    };
+
+    let plan = state
+        .plan_sparse_transaction_hydration(&transaction)
+        .expect("derive constrained fallback hydration plan");
+
+    assert!(plan.monotonic_appends().is_empty());
+    assert_eq!(plan.point_access().len(), 4);
+}
+
+#[test]
 fn sparse_live_preparation_discovers_foreign_key_constraint_probes() {
     let base = RelationalState::default()
         .stage_transaction(

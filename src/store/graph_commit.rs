@@ -1767,16 +1767,21 @@ impl GraphStore {
                         index,
                     )
                     .map_err(map_relational_staging_error)?;
+                let proven_constraint_index =
+                    crate::store::relational_row_pages::RelationalProvenAbsenceConstraintIndex::new(
+                        index,
+                        &hydrated_workspace.proven_absent_primary_keys,
+                    );
                 self.relational_state
                     .stage_sparse_transaction_with_primary_key_changes(
                         RelationalSparseLiveStage {
                             transaction: transaction.clone(),
-                            hydrated_workspace,
+                            hydrated_workspace: hydrated_workspace.rows,
                             mutation_limits: self.relational_mutation_limits,
                             overflow_config: self.relational_overflow_config,
                             index_capture_limits: index_limits,
                             row_capture_limits: row_limits,
-                            constraint_index: index,
+                            constraint_index: &proven_constraint_index,
                         },
                         self.search_projection_primary_key_capture_limits,
                     )

@@ -938,6 +938,18 @@ pub struct RelationalSparseIndexProbe {
     pub index_key: RelationalKey,
 }
 
+/// One primary-key-ordered insert batch that may prove all target keys absent
+/// from immutable page descriptors and live-overlay bounds.
+///
+/// The partition is the primary-key prefix excluding its final component. An
+/// empty prefix therefore represents a table with a single-column primary key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RelationalMonotonicAppendHydration {
+    pub table: String,
+    pub partition_prefix: RelationalKey,
+    pub primary_keys: Vec<RelationalKey>,
+}
+
 /// Schema-derived hydration needed before a live transaction can be prepared.
 ///
 /// Point accesses include explicit absence checks for direct keys. Predicate
@@ -947,6 +959,7 @@ pub struct RelationalSparseIndexProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalSparseMutationHydrationPlan {
     point_access: Vec<RelationalReplayAccess>,
+    monotonic_appends: Vec<RelationalMonotonicAppendHydration>,
     scan_tables: Vec<String>,
     index_probes: Vec<RelationalSparseIndexProbe>,
 }
@@ -954,6 +967,10 @@ pub struct RelationalSparseMutationHydrationPlan {
 impl RelationalSparseMutationHydrationPlan {
     pub fn point_access(&self) -> &[RelationalReplayAccess] {
         &self.point_access
+    }
+
+    pub fn monotonic_appends(&self) -> &[RelationalMonotonicAppendHydration] {
+        &self.monotonic_appends
     }
 
     pub fn scan_tables(&self) -> &[String] {
@@ -2464,8 +2481,29 @@ impl RelationalState {
             ));
         }
         let mut point_access = BTreeSet::new();
+        let mut monotonic_appends = Vec::new();
         let mut scan_tables = BTreeSet::new();
         let mut index_probes = BTreeSet::new();
+        let mut append_only_tables = BTreeMap::<&str, bool>::new();
+        for write in &transaction.writes {
+            let (table, eligible) = match write {
+                RelationalWrite::Insert { table, mode, .. } => {
+                    (table.as_str(), *mode == RelationalInsertMode::Error)
+                }
+                RelationalWrite::Upsert { table, .. }
+                | RelationalWrite::DeleteByPrimaryKey { table, .. }
+                | RelationalWrite::DeleteWhere { table, .. }
+                | RelationalWrite::UpdateWhere { table, .. }
+                | RelationalWrite::AddColumn { table, .. }
+                | RelationalWrite::CreateIndex { table, .. } => (table.as_str(), false),
+                RelationalWrite::CreateTable(schema) => (schema.name.as_str(), false),
+            };
+            append_only_tables
+                .entry(table)
+                .and_modify(|current| *current &= eligible)
+                .or_insert(eligible);
+        }
+        let mut append_candidates = BTreeMap::<(String, RelationalKey), Vec<RelationalKey>>::new();
         for write in &transaction.writes {
             match write {
                 RelationalWrite::Insert { table, rows, .. } => {
@@ -2473,10 +2511,24 @@ impl RelationalState {
                     let primary_key = column_positions(schema, &schema.primary_key)?;
                     for row in rows {
                         validate_row(schema, row)?;
-                        point_access.insert(RelationalReplayAccess {
-                            table: table.clone(),
-                            primary_key: row_key(row, &primary_key),
-                        });
+                        let key = row_key(row, &primary_key);
+                        let has_constraint_probes = !schema.unique_constraints.is_empty()
+                            || !schema.foreign_keys.is_empty();
+                        if append_only_tables.get(table.as_str()) == Some(&true)
+                            && !has_constraint_probes
+                        {
+                            let prefix =
+                                RelationalKey(key.0[..key.0.len().saturating_sub(1)].to_vec());
+                            append_candidates
+                                .entry((table.clone(), prefix))
+                                .or_default()
+                                .push(key);
+                        } else {
+                            point_access.insert(RelationalReplayAccess {
+                                table: table.clone(),
+                                primary_key: key,
+                            });
+                        }
                     }
                 }
                 RelationalWrite::Upsert {
@@ -2532,9 +2584,27 @@ impl RelationalState {
                 }
             }
         }
+        for ((table, partition_prefix), primary_keys) in append_candidates {
+            let strictly_increasing = primary_keys.windows(2).all(|pair| pair[0] < pair[1]);
+            if primary_keys.len() > 1 && strictly_increasing {
+                monotonic_appends.push(RelationalMonotonicAppendHydration {
+                    table,
+                    partition_prefix,
+                    primary_keys,
+                });
+            } else {
+                point_access.extend(primary_keys.into_iter().map(|primary_key| {
+                    RelationalReplayAccess {
+                        table: table.clone(),
+                        primary_key,
+                    }
+                }));
+            }
+        }
         point_access.retain(|access| !scan_tables.contains(&access.table));
         Ok(RelationalSparseMutationHydrationPlan {
             point_access: point_access.into_iter().collect(),
+            monotonic_appends,
             scan_tables: scan_tables.into_iter().collect(),
             index_probes: index_probes.into_iter().collect(),
         })

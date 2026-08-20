@@ -14,8 +14,9 @@ use super::{
     RelationalRowPageReadView, RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
 };
 use crate::relational::{
-    RelationalHydrationBudget, RelationalKey, RelationalOverflowRootReader, RelationalRowPageError,
-    RelationalRowPagePublicationError, RelationalValue,
+    ordered_key::encode_ordered_relational_key, RelationalHydrationBudget, RelationalKey,
+    RelationalOverflowRootReader, RelationalRowPageError, RelationalRowPagePublicationError,
+    RelationalValue,
 };
 use crate::{SegmentCache, StoreId};
 use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
@@ -204,6 +205,64 @@ impl RelationalRowPageSnapshotReader {
                 .view
                 .recovery_delta()
                 .is_some_and(|delta| delta.is_poisoned())
+    }
+
+    /// Proves that the pinned snapshot has no primary key in `partition_prefix`
+    /// at or after `lower` without reading a row page.
+    ///
+    /// Recovery deltas and ambiguous page boundaries return `false`, which is
+    /// a conservative "not proven" result rather than an absence claim.
+    pub fn prove_partition_absent_at_or_after(
+        &self,
+        table: &str,
+        partition_prefix: &RelationalKey,
+        lower: &RelationalKey,
+        task: &RuntimeTaskContext,
+    ) -> Result<bool, RelationalRowPageSnapshotReadError> {
+        self.checkpoint(task)?;
+        if lower.0.len() != partition_prefix.0.len().saturating_add(1)
+            || !lower.0.starts_with(partition_prefix.0.as_slice())
+        {
+            return Err(RelationalRowPageSnapshotReadError::Admission(
+                "partition absence proof requires a primary-key prefix and one ordered suffix"
+                    .to_string(),
+            ));
+        }
+        if self.view.recovery_delta().is_some()
+            || self
+                .view
+                .live_may_contain_prefix_at_or_after(table, partition_prefix, lower)
+        {
+            return Ok(false);
+        }
+        let encoded_lower = encode_ordered_relational_key(lower).map_err(|error| {
+            RelationalRowPageSnapshotReadError::Admission(format!(
+                "partition absence lower key cannot be encoded: {error}"
+            ))
+        })?;
+        let descriptor = self
+            .view
+            .base()
+            .find_table_page_descriptor(table, lower)
+            .map_err(|error| self.map_row_publication_error(error))?;
+        let Some(descriptor) = descriptor else {
+            return Ok(true);
+        };
+        if descriptor.upper_bound.as_slice() < encoded_lower.as_slice() {
+            return Ok(true);
+        }
+        if partition_prefix.0.is_empty() {
+            return Ok(false);
+        }
+        let encoded_prefix = encode_ordered_relational_key(partition_prefix).map_err(|error| {
+            RelationalRowPageSnapshotReadError::Admission(format!(
+                "partition prefix cannot be encoded: {error}"
+            ))
+        })?;
+        let Some(prefix_upper) = lexicographic_prefix_upper_bound(&encoded_prefix) else {
+            return Ok(false);
+        };
+        Ok(descriptor.lower_bound.as_slice() >= prefix_upper.as_slice())
     }
 
     pub fn has_overlay_overflow_root(&self) -> bool {
@@ -691,6 +750,14 @@ impl RelationalRowPageSnapshotReader {
             self.poisoned.store(true, Ordering::Release);
         }
     }
+}
+
+fn lexicographic_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[position] = upper[position].saturating_add(1);
+    upper.truncate(position + 1);
+    Some(upper)
 }
 
 struct StreamingOverlayHead {
