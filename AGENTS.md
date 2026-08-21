@@ -13,6 +13,18 @@
 - New readiness, slow-query, blackbox, background-maintenance, and replacement-gate capabilities should expose typed Rust APIs first, then derive JSON or CLI output from those APIs when needed.
 - Avoid environment variables, command arguments, helper processes, or shell-out behavior as production control planes.
 
+## Mem Release Modes and Full Verification
+
+- During the current development phase, Skein code must not appear in any stable or GA release. Stable release artifacts and the public release dependency graph must exclude Skein crates, features, binaries, bundled source, and transitive Skein dependencies.
+- Only nightly or development builds may compile, bundle, or execute Skein during this phase. The stable dual-write and full-activation rules below remain inactive until a separate explicit release-policy decision authorizes Skein code in stable artifacts.
+- Nightly or development builds may support three explicit storage modes:
+  1. dual-write to the legacy stores and Skein while legacy reads remain authoritative;
+  2. dual-write and dual-read from the legacy stores and Skein, with mismatches surfaced as verification evidence;
+  3. Skein-only reads and writes.
+- After Skein is explicitly authorized for stable release artifacts, but before the first full Skein activation, stable or GA builds support only the dual-write transition mode and keep legacy reads authoritative. Dual-write startup must not run or require a full consistency comparison between Skein and the legacy stores.
+- The first stable or GA activation that makes Skein the active data plane must complete this bootstrap sequence before reporting Skein as ready: successfully open Skein, import all required data from Kuzu, LanceDB, and SQLite, then complete one full-data verification of the imported result.
+- The activation verification may use bounded pages or streaming, but it must cover the complete imported datasets rather than a sample. A mismatch or incomplete import or verification must fail closed for Skein readiness, keep the legacy stores authoritative and retained, and must not publish ownership, authorize cutover, or delete legacy data.
+
 ## Query and Storage Discipline
 
 - Mem route behavior should be expressed as parameterized Cypher and executed through
