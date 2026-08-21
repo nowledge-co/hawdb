@@ -298,6 +298,7 @@ jobs:
               else:
                   print(json.dumps({"error": {"class": "execution", "message": f"unsupported op {op}"}}), flush=True)
           PY
+          cargo build --quiet --example nowledge_previous_wrapper_shadow_adapter
           cargo run --quiet --bin skein -- \
             external-shadow-adapter-smoke \
             --require-previous-wrapper \
