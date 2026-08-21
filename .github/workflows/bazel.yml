@@ -19,28 +19,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
         with:
-          profile: minimal
+          bazelisk-cache: true
+          repository-cache: true
+          external-cache: false
+          disk-cache: bazel-package-parity
 
       - name: Check Cargo and Bazel package parity
-        shell: bash
         run: |
-          set -euo pipefail
-          cargo metadata --no-deps --format-version 1 \
-            | jq -r '.workspace_members[] as $member | .packages[] | select(.id == $member) | .manifest_path' \
-            | while IFS= read -r manifest; do
-                package_dir="$(dirname "$manifest")"
-                if [[ ! -f "$package_dir/BUILD.bazel" ]]; then
-                  echo "missing BUILD.bazel for Cargo workspace package: $package_dir"
-                  exit 1
-                fi
-                if ! grep -Eq '^[[:space:]]*rust_test\(' "$package_dir/BUILD.bazel"; then
-                  echo "missing rust_test target for Cargo workspace package: $package_dir"
-                  exit 1
-                fi
-              done
+          bazel test --test_output=errors \
+            //:cargo_bazel_package_parity_test \
+            //:cargo_bazel_package_parity_script_test
 
   qualification-cli:
     name: Bazel Qualification CLI
