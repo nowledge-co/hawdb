@@ -199,6 +199,17 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+rust_binary(
+    name = "skein_soak",
+    crate_name = "skein_soak",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":skein_qualification"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
 rust_test(
     name = "skein_qualification_tests",
     crate = ":skein_qualification",
@@ -219,6 +230,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    data = [":skein_soak"],
     deps = all_crate_deps(normal = True, normal_dev = True) + [":skein_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
