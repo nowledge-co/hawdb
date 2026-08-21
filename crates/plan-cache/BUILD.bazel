@@ -41,7 +41,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        "@crate_index//loom-0.7.2",
+        "@crate_index__loom-0.7.2//:loom",
         "//crates/core:skein_core",
         "//crates/cypher:skein_cypher",
         "//crates/optimizer:skein_optimizer",
