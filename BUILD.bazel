@@ -156,6 +156,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = _SKEIN_BASE_DEPS + all_crate_deps(normal_dev = True) + [
+        "@crate_index//:loom",
         "//crates/runtime-tokio:skein_runtime_tokio",
         "//crates/vector-projection:skein_vector_projection",
     ],

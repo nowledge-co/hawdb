@@ -40,6 +40,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
+        "@crate_index//:loom",
         "//crates/cgroup:skein_cgroup",
         "//crates/core:skein_core",
     ],
