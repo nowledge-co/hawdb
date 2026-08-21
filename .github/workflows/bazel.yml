@@ -43,7 +43,7 @@ jobs:
               done
 
   qualification-cli:
-    name: Bazel Qualification CLI
+    name: Bazel Qualification And Loom Gaps
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,7 +69,10 @@ jobs:
             //crates/qualification:skein_content_store_mutation_qualification_cli_tests \
             //crates/qualification:skein_content_store_read_qualification_cli_tests \
             //crates/qualification:skein_graph_index_qualification_cli_tests \
-            //crates/qualification:skein_graph_storage_qualification_cli_tests
+            //crates/qualification:skein_graph_storage_qualification_cli_tests \
+            //crates/plan-cache:skein_plan_cache_loom_tests \
+            //crates/qos:skein_qos_loom_tests \
+            //:skein_system_sql_loom_tests
 
   linux-ci-smokes:
     name: Bazel Linux CI Smokes

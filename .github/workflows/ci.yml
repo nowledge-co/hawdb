@@ -241,25 +241,6 @@ jobs:
           path: storage-resource-results
           if-no-files-found: error
 
-  concurrency-model:
-    name: Concurrency Model
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Loom plan cache model
-        run: cargo test -p skein-plan-cache --features loom-tests loom_tests
-
-      - name: Loom QoS scheduler model
-        run: cargo test -p skein-qos --features loom-tests loom_tests
-
-      - name: Loom slow query ring model
-        run: cargo test -p skein --features loom-tests api::system_sql::loom_tests
-
   storage-crash-recovery:
     name: Storage Crash Recovery (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

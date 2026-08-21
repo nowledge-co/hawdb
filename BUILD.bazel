@@ -132,6 +132,34 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+rust_test(
+    name = "skein_system_sql_loom_tests",
+    args = ["api::system_sql::loom_tests"],
+    crate_features = [
+        "background-maintenance",
+        "full-text-search",
+        "graph-analytics",
+        "loom-tests",
+        "tokio-runtime",
+        "vector-search",
+    ],
+    crate_root = "src/lib.rs",
+    srcs = _SKEIN_SRCS,
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _SKEIN_BASE_DEPS + all_crate_deps(normal_dev = True) + [
+        "//crates/runtime-tokio:skein_runtime_tokio",
+        "//crates/vector-projection:skein_vector_projection",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    size = "medium",
+)
+
 # Matches `cargo test -p skein --features acl --lib` for the storage crash
 # recovery qualification. Keep this target opt-in because it recompiles the
 # root inline tests under a distinct feature set.
