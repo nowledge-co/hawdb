@@ -32,8 +32,10 @@ skein-storage = { path = "crates/storage" }
 skein-vector-projection = { path = "crates/vector-projection", optional = true }
 zstd = "0.13"
 unicode-width = "0.2"
-loom = { version = "0.7", optional = true }
 skein-telemetry = { path = "crates/telemetry" }
+
+[dev-dependencies]
+loom = "0.7"
 
 [features]
 default = [
@@ -47,7 +49,7 @@ background-maintenance = []
 full-text-search = []
 graph-analytics = []
 vector-search = ["dep:skein-vector-projection"]
-loom-tests = ["dep:loom"]
+loom-tests = []
 opentelemetry = ["skein-telemetry/opentelemetry"]
 qualification = []
 tokio-runtime = ["dep:skein-runtime-tokio"]
