@@ -2,7 +2,16 @@
 
 set -euo pipefail
 
-checker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-cargo-bazel-package-parity.sh"
+if [[ $# -gt 1 ]]; then
+  echo "usage: $0 [checker]" >&2
+  exit 2
+fi
+
+if [[ $# -eq 1 ]]; then
+  checker="$1"
+else
+  checker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-cargo-bazel-package-parity.sh"
+fi
 fixture_root="${TEST_TMPDIR:-$(mktemp -d)}/cargo-bazel-package-parity"
 
 make_fixture() {

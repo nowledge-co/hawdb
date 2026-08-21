@@ -51,6 +51,7 @@ sh_test(
     name = "cargo_bazel_package_parity_script_test",
     size = "small",
     srcs = ["scripts/check-cargo-bazel-package-parity.test.sh"],
+    args = ["$(location scripts/check-cargo-bazel-package-parity.sh)"],
     data = ["scripts/check-cargo-bazel-package-parity.sh"],
 )
 
