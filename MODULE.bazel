@@ -28,4 +28,8 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     manifests = ["//:Cargo.toml"],
 )
-use_repo(crate, "crate_index")
+use_repo(
+    crate,
+    "crate_index",
+    "crate_index__loom-0.7.2",
+)
