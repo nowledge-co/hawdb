@@ -135,6 +135,30 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Matches `cargo test -p skein --features acl --lib` for the storage crash
+# recovery qualification. Keep this target opt-in because it recompiles the
+# root inline tests under a distinct feature set.
+rust_test(
+    name = "skein_storage_crash_recovery_tests",
+    size = "large",
+    crate = ":skein",
+    crate_features = [
+        "acl",
+        "background-maintenance",
+        "full-text-search",
+        "graph-analytics",
+        "vector-search",
+    ],
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 rust_test(
     name = "skein_cli_tests",
     crate_root = "src/main.rs",
