@@ -46,10 +46,21 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+rust_binary(
+    name = "skein_optimizer_fuzz",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [":skein_fuzz"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
 rust_test(
     name = "skein_fuzz_cli_tests",
     crate_root = "src/main.rs",
     srcs = ["src/main.rs"],
+    data = [":skein_optimizer_fuzz"],
     edition = "2024",
     aliases = aliases(
         normal = True,
