@@ -2,7 +2,11 @@
 
 set -euo pipefail
 
-checker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-cargo-bazel-package-parity.sh"
+if [[ -n "${TEST_SRCDIR:-}" && -n "${TEST_WORKSPACE:-}" ]]; then
+  checker="${TEST_SRCDIR}/${TEST_WORKSPACE}/scripts/check-cargo-bazel-package-parity.sh"
+else
+  checker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-cargo-bazel-package-parity.sh"
+fi
 fixture_root="${TEST_TMPDIR:-$(mktemp -d)}/cargo-bazel-package-parity"
 
 make_fixture() {
