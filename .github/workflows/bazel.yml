@@ -70,3 +70,21 @@ jobs:
             //crates/qualification:skein_content_store_read_qualification_cli_tests \
             //crates/qualification:skein_graph_index_qualification_cli_tests \
             //crates/qualification:skein_graph_storage_qualification_cli_tests
+
+  linux-ci-smokes:
+    name: Bazel Linux CI Smokes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          external-cache: false
+          disk-cache: bazel-linux-ci-smokes
+
+      - name: Test
+        run: bazel test --test_output=errors //:skein_linux_ci_smoke_tests

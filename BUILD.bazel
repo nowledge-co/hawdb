@@ -1,6 +1,7 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//:benchmarks.bzl", "SKEIN_BENCHMARK_TARGETS", "skein_benchmark_binaries")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -83,17 +84,19 @@ _SKEIN_BASE_DEPS = all_crate_deps(normal = True) + [
     "//crates/telemetry:skein_telemetry",
 ]
 
+_SKEIN_DEFAULT_FEATURES = [
+    "background-maintenance",
+    "full-text-search",
+    "graph-analytics",
+    "tokio-runtime",
+    "vector-search",
+]
+
 rust_library(
     name = "skein",
     crate_name = "skein",
     crate_root = "src/lib.rs",
-    crate_features = [
-        "background-maintenance",
-        "full-text-search",
-        "graph-analytics",
-        "tokio-runtime",
-        "vector-search",
-    ],
+    crate_features = _SKEIN_DEFAULT_FEATURES,
     srcs = _SKEIN_SRCS,
     edition = "2024",
     aliases = aliases(),
@@ -119,13 +122,7 @@ rust_library(
 rust_test(
     name = "skein_unit_tests",
     crate = ":skein",
-    crate_features = [
-        "background-maintenance",
-        "full-text-search",
-        "graph-analytics",
-        "tokio-runtime",
-        "vector-search",
-    ],
+    crate_features = _SKEIN_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(
         normal_dev = True,
@@ -159,17 +156,30 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+_SKEIN_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])
+
+_SKEIN_CLI_DEPS = all_crate_deps(normal = True) + [
+    ":skein",
+    "//crates/integrity:skein_integrity",
+    "//crates/storage:skein_storage",
+]
+
+rust_binary(
+    name = "skein_cli",
+    crate_root = "src/main.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = _SKEIN_CLI_SRCS,
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = _SKEIN_CLI_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
 rust_test(
     name = "skein_cli_tests",
     crate_root = "src/main.rs",
-    crate_features = [
-        "background-maintenance",
-        "full-text-search",
-        "graph-analytics",
-        "tokio-runtime",
-        "vector-search",
-    ],
-    srcs = ["src/main.rs"] + glob(["src/cli/**/*.rs"]),
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = _SKEIN_CLI_SRCS,
     edition = "2024",
     aliases = aliases(
         normal = True,
@@ -177,24 +187,25 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein",
-        "//crates/integrity:skein_integrity",
-        "//crates/storage:skein_storage",
-    ],
+    deps = _SKEIN_CLI_DEPS + all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
+rust_binary(
+    name = "skein_shadow_self",
+    crate_root = "src/bin/skein-shadow-self.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = ["src/bin/skein-shadow-self.rs"],
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":skein"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
     name = "skein_shadow_self_tests",
     crate_root = "src/bin/skein-shadow-self.rs",
-    crate_features = [
-        "background-maintenance",
-        "full-text-search",
-        "graph-analytics",
-        "tokio-runtime",
-        "vector-search",
-    ],
+    crate_features = _SKEIN_DEFAULT_FEATURES,
     srcs = ["src/bin/skein-shadow-self.rs"],
     edition = "2024",
     aliases = aliases(
@@ -205,4 +216,41 @@ rust_test(
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [":skein"],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
+rust_binary(
+    name = "nowledge_previous_wrapper_shadow_adapter",
+    crate_root = "examples/nowledge_previous_wrapper_shadow_adapter.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = ["examples/nowledge_previous_wrapper_shadow_adapter.rs"],
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":skein"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+skein_benchmark_binaries(_SKEIN_DEFAULT_FEATURES)
+
+sh_test(
+    name = "skein_linux_ci_smoke_tests",
+    size = "large",
+    srcs = ["scripts/check-linux-ci-smokes.sh"],
+    args = [
+        "$(location :skein_cli)",
+        "$(location :skein_shadow_self)",
+        "$(location :nowledge_previous_wrapper_shadow_adapter)",
+        "$(location //crates/fuzz:skein_append_fuzz)",
+        "$(location //crates/fuzz:skein_storage_fuzz)",
+    ] + [
+        "$(location %s)" % target
+        for target in SKEIN_BENCHMARK_TARGETS
+    ],
+    data = [
+        ":nowledge_previous_wrapper_shadow_adapter",
+        ":skein_cli",
+        ":skein_shadow_self",
+        "//crates/fuzz:skein_append_fuzz",
+        "//crates/fuzz:skein_storage_fuzz",
+    ] + SKEIN_BENCHMARK_TARGETS,
+    tags = ["manual"],
 )
