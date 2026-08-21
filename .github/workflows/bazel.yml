@@ -87,4 +87,12 @@ jobs:
           disk-cache: bazel-linux-ci-smokes
 
       - name: Test
-        run: bazel test --test_output=errors //:skein_linux_ci_smoke_tests
+        run: |
+          bazel test --test_output=errors \
+            //:cargo_bazel_package_parity_test \
+            //:cargo_bazel_package_parity_script_test \
+            //:skein_unit_tests \
+            //:skein_cli_tests \
+            //:skein_shadow_self_tests \
+            //:skein_linux_ci_smoke_tests \
+            //crates/...
