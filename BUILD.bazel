@@ -42,9 +42,6 @@ sh_test(
     ] + [
         "//%s:BUILD.bazel" % package
         for package in _CARGO_WORKSPACE_PACKAGES
-    ] + [
-        "//%s:Cargo.toml" % package
-        for package in _CARGO_WORKSPACE_PACKAGES
     ],
 )
 
