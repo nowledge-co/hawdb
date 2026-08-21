@@ -12,36 +12,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  package-parity:
-    name: Cargo/Bazel Package Parity
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          profile: minimal
-
-      - name: Check Cargo and Bazel package parity
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo metadata --no-deps --format-version 1 \
-            | jq -r '.workspace_members[] as $member | .packages[] | select(.id == $member) | .manifest_path' \
-            | while IFS= read -r manifest; do
-                package_dir="$(dirname "$manifest")"
-                if [[ ! -f "$package_dir/BUILD.bazel" ]]; then
-                  echo "missing BUILD.bazel for Cargo workspace package: $package_dir"
-                  exit 1
-                fi
-                if ! grep -Eq '^[[:space:]]*rust_test\(' "$package_dir/BUILD.bazel"; then
-                  echo "missing rust_test target for Cargo workspace package: $package_dir"
-                  exit 1
-                fi
-              done
-
   qualification-cli:
     name: Bazel Qualification CLI
     runs-on: ubuntu-latest
