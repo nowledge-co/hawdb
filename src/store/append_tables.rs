@@ -1,6 +1,10 @@
 use super::*;
 
 impl GraphStore {
+    pub(crate) fn append_state(&self) -> &skein_storage::AppendState {
+        &self.append_state
+    }
+
     pub fn append_transaction(&mut self, transaction: AppendTransaction) -> Result<u64> {
         let mut catalog = Catalog::default();
         self.commit_kernel_write_batch(
@@ -32,8 +36,27 @@ impl GraphStore {
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
+        self.read_append_partition_from_state_bounded(
+            &self.append_state,
+            table,
+            partition,
+            after,
+            max_rows,
+            max_payload_bytes,
+        )
+    }
+
+    pub(crate) fn read_append_partition_from_state_bounded(
+        &self,
+        append_state: &skein_storage::AppendState,
+        table: &str,
+        partition: &skein_storage::RelationalKey,
+        after: Option<&skein_storage::RelationalKey>,
+        max_rows: usize,
+        max_payload_bytes: usize,
+    ) -> Result<AppendSegmentReadOutput> {
         self.ensure_usable()?;
-        if self.append_state.schema(table).is_none() {
+        if append_state.schema(table).is_none() {
             return Err(SkeinError::Storage(format!("unknown append table {table}")));
         }
         let mut output = match self.append_generation_reader.as_ref() {
@@ -49,8 +72,7 @@ impl GraphStore {
             return Ok(output);
         }
         let remaining = max_rows - output.rows.len();
-        let live = self
-            .append_state
+        let live = append_state
             .visit_live_rows(table, partition, after, remaining, |row| {
                 let row_payload_bytes = append_row_payload_bytes(&row.row)?;
                 let next_payload_bytes = output

@@ -4,8 +4,8 @@ use super::{
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
 use sqlparser::ast::{
-    AlterTableOperation, ColumnOption, CreateTableOptions, DataType, HiveDistributionStyle,
-    ReferentialAction, TableConstraint,
+    AlterTableOperation, ColumnOption, CreateTableOptions, DataType, Expr, HiveDistributionStyle,
+    ReferentialAction, SqlOption, TableConstraint, ValueWithSpan,
 };
 
 pub(super) fn lower_create_table_statement(
@@ -21,7 +21,6 @@ pub(super) fn lower_create_table_statement(
         || create.iceberg
         || !matches!(create.hive_distribution, HiveDistributionStyle::NONE)
         || create.hive_formats.is_some()
-        || !matches!(create.table_options, CreateTableOptions::None)
         || create.file_format.is_some()
         || create.location.is_some()
         || create.query.is_some()
@@ -78,7 +77,110 @@ pub(super) fn lower_create_table_statement(
             .iter()
             .map(lower_table_constraint)
             .collect::<Result<_>>()?,
+        storage: lower_table_storage(&create.table_options)?,
     }))
+}
+
+fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> {
+    let options = match options {
+        CreateTableOptions::None => return Ok(SqlTableStorage::RowPage),
+        CreateTableOptions::With(options) => options,
+        _ => {
+            return Err(SkeinError::Semantic(
+                "PostgreSQL CREATE TABLE storage options require WITH (...)".to_string(),
+            ));
+        }
+    };
+    let mut storage_mode = None;
+    let mut partition_key = None;
+    let mut order_key = None;
+    for option in options {
+        let SqlOption::KeyValue { key, value } = option else {
+            return Err(SkeinError::Semantic(
+                "PostgreSQL CREATE TABLE storage options require key = value entries".to_string(),
+            ));
+        };
+        let name = normalize_ident(key);
+        match name.as_str() {
+            "storage_mode" => set_once(
+                &mut storage_mode,
+                lower_storage_mode(value)?,
+                "storage_mode",
+            )?,
+            "partition_key" => set_once(
+                &mut partition_key,
+                lower_storage_key(value, "partition_key")?,
+                "partition_key",
+            )?,
+            "order_key" => set_once(
+                &mut order_key,
+                lower_storage_key(value, "order_key")?,
+                "order_key",
+            )?,
+            _ => {
+                return Err(SkeinError::Semantic(format!(
+                    "unsupported PostgreSQL CREATE TABLE storage option {name}"
+                )));
+            }
+        }
+    }
+    match storage_mode.as_deref() {
+        Some("strict_append") => Ok(SqlTableStorage::StrictAppend {
+            partition_key: partition_key.ok_or_else(|| {
+                SkeinError::Semantic("strict_append storage requires partition_key".to_string())
+            })?,
+            order_key: order_key.ok_or_else(|| {
+                SkeinError::Semantic("strict_append storage requires order_key".to_string())
+            })?,
+        }),
+        Some(mode) => Err(SkeinError::Semantic(format!(
+            "unsupported PostgreSQL CREATE TABLE storage_mode {mode}"
+        ))),
+        None if partition_key.is_none() && order_key.is_none() => Ok(SqlTableStorage::RowPage),
+        None => Err(SkeinError::Semantic(
+            "partition_key and order_key require storage_mode = 'strict_append'".to_string(),
+        )),
+    }
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<()> {
+    if slot.replace(value).is_some() {
+        return Err(SkeinError::Semantic(format!(
+            "PostgreSQL CREATE TABLE storage option {name} is specified more than once"
+        )));
+    }
+    Ok(())
+}
+
+fn lower_storage_mode(value: &Expr) -> Result<String> {
+    let Expr::Value(ValueWithSpan {
+        value: sqlparser::ast::Value::SingleQuotedString(value),
+        ..
+    }) = value
+    else {
+        return Err(SkeinError::Semantic(
+            "CREATE TABLE storage_mode must be a string literal".to_string(),
+        ));
+    };
+    Ok(value.to_ascii_lowercase())
+}
+
+fn lower_storage_key(value: &Expr, name: &str) -> Result<Vec<String>> {
+    let Expr::Value(ValueWithSpan {
+        value: sqlparser::ast::Value::SingleQuotedString(value),
+        ..
+    }) = value
+    else {
+        return Err(SkeinError::Semantic(format!(
+            "CREATE TABLE {name} must be a string literal"
+        )));
+    };
+    if value.is_empty() {
+        return Err(SkeinError::Semantic(format!(
+            "CREATE TABLE {name} must not contain an empty column name"
+        )));
+    }
+    Ok(vec![value.clone()])
 }
 
 fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColumnDefinition> {

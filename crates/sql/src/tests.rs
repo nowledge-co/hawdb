@@ -274,6 +274,43 @@ fn parses_content_table_schema() {
     assert!(!create.columns[1].nullable);
     assert!(create.columns[1].references.is_some());
     assert_eq!(create.constraints.len(), 1);
+    assert_eq!(create.storage, crate::SqlTableStorage::RowPage);
+}
+
+#[test]
+fn parses_strict_append_table_storage() {
+    let statement = parse_postgres_sql(
+        "CREATE TABLE events (\
+           stream_id TEXT NOT NULL, \
+           sequence BIGINT NOT NULL, \
+           payload BYTEA NOT NULL\
+         ) WITH (\
+           storage_mode = 'strict_append', \
+           partition_key = 'stream_id', \
+           order_key = 'sequence'\
+         )",
+    )
+    .expect("supported strict append CREATE TABLE statement");
+    let SqlStatement::CreateTable(create) = statement else {
+        panic!("expected CREATE TABLE statement");
+    };
+    assert_eq!(
+        create.storage,
+        crate::SqlTableStorage::StrictAppend {
+            partition_key: vec!["stream_id".to_string()],
+            order_key: vec!["sequence".to_string()],
+        }
+    );
+}
+
+#[test]
+fn rejects_incomplete_strict_append_table_storage() {
+    let error = parse_postgres_sql(
+        "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) \
+         WITH (storage_mode = 'strict_append', partition_key = 'stream_id')",
+    )
+    .expect_err("missing order key must fail closed");
+    assert!(error.to_string().contains("requires order_key"));
 }
 
 #[test]

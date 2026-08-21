@@ -659,6 +659,8 @@ pub(super) struct DatabaseTransactionState {
     graph_transaction: Option<GraphMutationTransaction>,
     relational_transaction: skein_storage::RelationalTransaction,
     relational_state: skein_storage::RelationalState,
+    append_transaction: skein_storage::AppendTransaction,
+    append_state: skein_storage::AppendState,
     relational_index:
         std::result::Result<Option<crate::store::RelationalTransactionIndexView>, String>,
     relational_rows:
@@ -19171,6 +19173,8 @@ impl DatabaseTransactionState {
             graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
             relational_transaction: skein_storage::RelationalTransaction::default(),
             relational_state: db.store.relational_state().clone(),
+            append_transaction: skein_storage::AppendTransaction::default(),
+            append_state: db.store.append_state().clone(),
             relational_index: db
                 .store
                 .begin_authoritative_relational_transaction_index()
@@ -19185,6 +19189,7 @@ impl DatabaseTransactionState {
     fn rollback(&mut self) {
         self.graph_transaction.take();
         self.relational_transaction.writes.clear();
+        self.append_transaction.writes.clear();
         self.relational_index = Ok(None);
         self.relational_rows = Ok(None);
     }
@@ -19201,6 +19206,8 @@ impl DatabaseTransactionState {
             graph_transaction: self.graph_transaction.take(),
             relational_transaction: std::mem::take(&mut self.relational_transaction),
             relational_state: std::mem::take(&mut self.relational_state),
+            append_transaction: std::mem::take(&mut self.append_transaction),
+            append_state: std::mem::take(&mut self.append_state),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
         }
@@ -19484,12 +19491,73 @@ fn execute_database_transaction_sql(
                 catalog: graph_transaction.catalog(),
                 store: graph_transaction.store(),
                 relational_state: &state.relational_state,
+                append_state: &state.append_state,
                 runtime: system_sql::SystemRuntimeSnapshot::from_config(&runtime.config),
                 plan_cache_stats: &plan_cache_stats,
                 slow_queries: &[],
                 statement_summaries: &[],
             },
         );
+    }
+    if let Some(plan) = crate::relational_sql::compile_append_select_sql(
+        sql_text,
+        parameters,
+        &state.append_state,
+        runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
+    )? {
+        let store = state
+            .graph_transaction
+            .as_ref()
+            .expect("database transaction must own a graph workspace")
+            .store();
+        let output = store.read_append_partition_from_state_bounded(
+            &state.append_state,
+            &plan.table,
+            &plan.partition,
+            plan.after.as_ref(),
+            plan.max_rows,
+            runtime
+                .config
+                .max_read_result_payload_bytes
+                .unwrap_or(usize::MAX),
+        )?;
+        return Ok(QueryOutput {
+            rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
+        });
+    }
+    if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
+        sql_text,
+        parameters,
+        &state.append_state,
+        runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
+    )? {
+        let report = if plan.analyze {
+            let store = state
+                .graph_transaction
+                .as_ref()
+                .expect("database transaction must own a graph workspace")
+                .store();
+            Some(
+                store
+                    .read_append_partition_from_state_bounded(
+                        &state.append_state,
+                        &plan.select.table,
+                        &plan.select.partition,
+                        plan.select.after.as_ref(),
+                        plan.select.max_rows,
+                        runtime
+                            .config
+                            .max_read_result_payload_bytes
+                            .unwrap_or(usize::MAX),
+                    )?
+                    .report,
+            )
+        } else {
+            None
+        };
+        return Ok(QueryOutput {
+            rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
+        });
     }
     if matches!(
         prepared.statement,
@@ -19547,6 +19615,39 @@ fn execute_database_transaction_sql(
             .expect("database transaction must own a graph workspace")
             .store(),
     )?;
+    if let Some(transaction) = crate::relational_sql::compile_append_statement_sql(
+        sql_text,
+        parameters,
+        &state.append_state,
+    )? {
+        if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+            && state
+                .relational_state
+                .table_schema(&create.table.name)
+                .is_some()
+        {
+            return Err(SkeinError::Semantic(format!(
+                "table {} already exists as a RowPage table",
+                create.table.name
+            )));
+        }
+        state.append_state = state
+            .append_state
+            .stage_transaction(&transaction, skein_storage::AppendMutationLimits::default())
+            .map_err(map_transaction_append_error)?;
+        state.append_transaction.writes.extend(transaction.writes);
+        return Ok(QueryOutput {
+            rows: Vec::new().into(),
+        });
+    }
+    if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+        && state.append_state.schema(&create.table.name).is_some()
+    {
+        return Err(SkeinError::Semantic(format!(
+            "table {} already exists as a strict append table",
+            create.table.name
+        )));
+    }
     let transaction = crate::relational_sql::compile_relational_statement_sql(
         sql_text,
         parameters,
@@ -19610,6 +19711,20 @@ fn execute_database_transaction_sql(
     })
 }
 
+fn map_transaction_append_error(error: skein_storage::AppendTableError) -> SkeinError {
+    match error {
+        skein_storage::AppendTableError::Corruption(message)
+        | skein_storage::AppendTableError::Durability(message) => {
+            SkeinError::StorageIntegrity(message)
+        }
+        error @ (skein_storage::AppendTableError::Admission(_)
+        | skein_storage::AppendTableError::Schema(_)
+        | skein_storage::AppendTableError::Constraint(_)) => {
+            SkeinError::Execution(error.to_string())
+        }
+    }
+}
+
 fn map_transaction_relational_error(error: skein_storage::RelationalError) -> SkeinError {
     match error {
         skein_storage::RelationalError::Corruption(message)
@@ -19654,19 +19769,22 @@ fn commit_database_transaction_state(
         .take()
         .expect("database transaction must own a graph workspace");
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
+    let append_transaction = std::mem::take(&mut state.append_transaction);
     let summary = if allow_stale_rebase {
         db.store
-            .commit_rebased_mutation_transaction_and_relational(
+            .commit_rebased_mutation_transaction_relational_and_append(
                 &mut db.catalog,
                 graph_transaction,
                 relational_transaction,
+                append_transaction,
                 db.config.mutation_limits,
             )?
     } else {
-        db.store.commit_mutation_transaction_and_relational(
+        db.store.commit_mutation_transaction_relational_and_append(
             &mut db.catalog,
             graph_transaction,
             relational_transaction,
+            append_transaction,
             db.config.mutation_limits,
         )?
     };
@@ -20703,6 +20821,7 @@ impl DatabaseReadTransaction {
                     catalog: &self.catalog,
                     store: &self.store,
                     relational_state: self.store.relational_state(),
+                    append_state: self.store.append_state(),
                     runtime: system_sql::SystemRuntimeSnapshot::from_config(&self.config),
                     plan_cache_stats: &self.plan_cache.borrow().stats(),
                     slow_queries: &self.slow_query_snapshot,
@@ -20711,6 +20830,51 @@ impl DatabaseReadTransaction {
             )?;
             query_runtime::query_runtime_checkpoint(Some(task_context))?;
             return Ok(output);
+        }
+
+        if let Some(plan) = crate::relational_sql::compile_append_select_sql(
+            sql_text,
+            parameters,
+            self.store.append_state(),
+            max_rows.unwrap_or(usize::MAX),
+        )? {
+            let output = self.store.read_append_partition_bounded(
+                &plan.table,
+                &plan.partition,
+                plan.after.as_ref(),
+                plan.max_rows,
+                max_payload_bytes.unwrap_or(usize::MAX),
+            )?;
+            query_runtime::query_runtime_checkpoint(Some(task_context))?;
+            return Ok(QueryOutput {
+                rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
+            });
+        }
+        if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
+            sql_text,
+            parameters,
+            self.store.append_state(),
+            max_rows.unwrap_or(usize::MAX),
+        )? {
+            let report = if plan.analyze {
+                Some(
+                    self.store
+                        .read_append_partition_bounded(
+                            &plan.select.table,
+                            &plan.select.partition,
+                            plan.select.after.as_ref(),
+                            plan.select.max_rows,
+                            max_payload_bytes.unwrap_or(usize::MAX),
+                        )?
+                        .report,
+                )
+            } else {
+                None
+            };
+            query_runtime::query_runtime_checkpoint(Some(task_context))?;
+            return Ok(QueryOutput {
+                rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
+            });
         }
 
         self.execute_profiled_relational_sql(

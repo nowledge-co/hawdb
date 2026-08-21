@@ -3,6 +3,51 @@ use crate::store::set_wal_apply_failpoint;
 use crate::StorageResidencyMode;
 
 #[test]
+fn strict_append_sql_replays_from_wal_after_reopen() {
+    let path = unique_test_dir("strict_append_sql_reopen");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence'\
+             )",
+        )
+        .unwrap();
+        db.query_sql_with_params(
+            "INSERT INTO events (stream_id, sequence, payload) VALUES ($1, $2, $3)",
+            &[
+                Value::String("thread-1".to_string()),
+                Value::Int(1),
+                Value::String("durable".to_string()),
+            ],
+        )
+        .unwrap();
+    }
+
+    let db = Database::open(&path).unwrap();
+    let output = db
+        .begin_read_transaction()
+        .query_sql_with_params(
+            "SELECT payload FROM events \
+             WHERE stream_id = $1 ORDER BY sequence ASC LIMIT 10",
+            &[Value::String("thread-1".to_string())],
+        )
+        .unwrap();
+    assert_eq!(
+        output.rows[0].get("payload"),
+        Some(&Value::String("durable".to_string()))
+    );
+
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn wal_pressure_schedules_and_completes_a_bounded_background_checkpoint() {
     let path = unique_test_dir("wal_pressure_background_checkpoint");
     let config = DatabaseConfig {

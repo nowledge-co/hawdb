@@ -3,7 +3,10 @@ use super::{
     SlowQueryLogRecordSummary, StatementExecutionContext,
 };
 use crate::error::{Result, SkeinError};
-use crate::relational_sql::compile_relational_statement_sql;
+use crate::relational_sql::{
+    compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
+    compile_relational_statement_sql, format_append_explain, project_append_rows,
+};
 use crate::telemetry::QueryTelemetry;
 use crate::value::Value;
 use std::io::Write;
@@ -170,12 +173,56 @@ impl Database {
                     catalog: &self.catalog,
                     store: &self.store,
                     relational_state: self.store.relational_state(),
+                    append_state: self.store.append_state(),
                     runtime: system_sql::SystemRuntimeSnapshot::from_config(&self.config),
                     plan_cache_stats: &plan_cache_stats,
                     slow_queries: &slow_queries,
                     statement_summaries: &statement_summaries,
                 },
             );
+        }
+
+        if let Some(plan) = compile_append_select_sql(
+            sql_text,
+            parameters,
+            self.store.append_state(),
+            max_rows.unwrap_or(usize::MAX),
+        )? {
+            let output = self.store.read_append_partition_bounded(
+                &plan.table,
+                &plan.partition,
+                plan.after.as_ref(),
+                plan.max_rows,
+                max_payload_bytes.unwrap_or(usize::MAX),
+            )?;
+            return Ok(QueryOutput {
+                rows: project_append_rows(&plan, &output.rows)?.into(),
+            });
+        }
+        if let Some(plan) = compile_append_explain_sql(
+            sql_text,
+            parameters,
+            self.store.append_state(),
+            max_rows.unwrap_or(usize::MAX),
+        )? {
+            let report = if plan.analyze {
+                Some(
+                    self.store
+                        .read_append_partition_bounded(
+                            &plan.select.table,
+                            &plan.select.partition,
+                            plan.select.after.as_ref(),
+                            plan.select.max_rows,
+                            max_payload_bytes.unwrap_or(usize::MAX),
+                        )?
+                        .report,
+                )
+            } else {
+                None
+            };
+            return Ok(QueryOutput {
+                rows: format_append_explain(&plan, report.as_ref()).into(),
+            });
         }
 
         if matches!(
@@ -204,6 +251,41 @@ impl Database {
         }
 
         self.ensure_writable()?;
+        if let Some(transaction) =
+            compile_append_statement_sql(sql_text, parameters, self.store.append_state())?
+        {
+            if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+                && self
+                    .store
+                    .relational_state()
+                    .table_schema(&create.table.name)
+                    .is_some()
+            {
+                return Err(SkeinError::Semantic(format!(
+                    "table {} already exists as a RowPage table",
+                    create.table.name
+                )));
+            }
+            let summary = self.store.commit_kernel_write_batch(
+                &mut self.catalog,
+                crate::store::KernelWriteBatch {
+                    append: transaction,
+                    ..crate::store::KernelWriteBatch::default()
+                },
+                self.config.mutation_limits,
+            )?;
+            return Ok(QueryOutput {
+                rows: summary.rows.into(),
+            });
+        }
+        if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+            && self.store.append_table_schema(&create.table.name).is_some()
+        {
+            return Err(SkeinError::Semantic(format!(
+                "table {} already exists as a strict append table",
+                create.table.name
+            )));
+        }
         let transaction =
             compile_relational_statement_sql(sql_text, parameters, self.store.relational_state())?;
         let summary = self

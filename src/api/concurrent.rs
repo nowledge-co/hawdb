@@ -379,7 +379,12 @@ impl ConcurrentDatabaseTransaction {
     ) -> Result<QueryOutput> {
         self.ensure_active()?;
         if self.options.mode == ConcurrentTransactionMode::Pessimistic {
-            let requests = sql_lock_requests(sql_text, parameters, &self.state.relational_state)?;
+            let requests = sql_lock_requests(
+                sql_text,
+                parameters,
+                &self.state.relational_state,
+                &self.state.append_state,
+            )?;
             if !requests.is_empty() {
                 self.acquire_locks(&requests)?;
             }
@@ -687,6 +692,7 @@ fn sql_lock_requests(
     sql_text: &str,
     parameters: &[Value],
     state: &RelationalState,
+    append_state: &skein_storage::AppendState,
 ) -> Result<Vec<LockRequest>> {
     let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
     if prepared.parameters.len() != parameters.len() {
@@ -695,6 +701,50 @@ fn sql_lock_requests(
             prepared.parameters.len(),
             parameters.len()
         )));
+    }
+    let append_lock_mode = match &prepared.statement {
+        SqlStatement::Select(select) if append_state.schema(&select.from.name).is_some() => {
+            Some(LockMode::Shared)
+        }
+        SqlStatement::Explain(explain)
+            if explain.analyze
+                && matches!(
+                    explain.statement.as_ref(),
+                    SqlStatement::Select(select)
+                        if append_state.schema(&select.from.name).is_some()
+                ) =>
+        {
+            Some(LockMode::Shared)
+        }
+        SqlStatement::Insert(insert) if append_state.schema(&insert.table.name).is_some() => {
+            Some(LockMode::Exclusive)
+        }
+        SqlStatement::Update(update) if append_state.schema(&update.table.name).is_some() => {
+            Some(LockMode::Exclusive)
+        }
+        SqlStatement::Delete(delete) if append_state.schema(&delete.table.name).is_some() => {
+            Some(LockMode::Exclusive)
+        }
+        SqlStatement::CreateIndex(create) if append_state.schema(&create.table.name).is_some() => {
+            Some(LockMode::Exclusive)
+        }
+        SqlStatement::AlterTableAddColumn(alter)
+            if append_state.schema(&alter.table.name).is_some() =>
+        {
+            Some(LockMode::Exclusive)
+        }
+        SqlStatement::CreateTable(create)
+            if matches!(
+                create.storage,
+                crate::sql::SqlTableStorage::StrictAppend { .. }
+            ) =>
+        {
+            Some(LockMode::Exclusive)
+        }
+        _ => None,
+    };
+    if let Some(mode) = append_lock_mode {
+        return Ok(vec![LockRequest::database(mode)]);
     }
     match prepared.statement {
         SqlStatement::Select(select) => {
@@ -1322,6 +1372,39 @@ mod tests {
         );
         drop(database);
         std::fs::remove_dir_all(path).expect("remove append database");
+    }
+
+    #[test]
+    fn append_explain_analyze_takes_a_shared_database_lock() {
+        let append_state = skein_storage::AppendState::default()
+            .stage_transaction(
+                &AppendTransaction {
+                    writes: vec![AppendWrite::CreateTable {
+                        schema: AppendTableSchema {
+                            name: "events".to_string(),
+                            columns: vec![
+                                append_column("stream", RelationalScalarType::Text),
+                                append_column("sequence", RelationalScalarType::BigInt),
+                            ],
+                            partition_key: vec!["stream".to_string()],
+                            order_key: vec!["sequence".to_string()],
+                        },
+                    }],
+                },
+                skein_storage::AppendMutationLimits::default(),
+            )
+            .expect("stage append schema");
+
+        let requests = sql_lock_requests(
+            "EXPLAIN ANALYZE SELECT * FROM events \
+             WHERE stream = 'alpha' ORDER BY sequence LIMIT 10",
+            &[],
+            &RelationalState::default(),
+            &append_state,
+        )
+        .expect("derive append explain analyze locks");
+
+        assert_eq!(requests, vec![LockRequest::database(LockMode::Shared)]);
     }
 
     fn append_column(name: &str, scalar_type: RelationalScalarType) -> RelationalColumnSchema {

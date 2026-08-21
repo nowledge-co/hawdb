@@ -2,7 +2,7 @@ use crate::error::{Result, SkeinError};
 use crate::sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlAssignmentValue,
     SqlColumnDefinition, SqlComparisonOp, SqlConflictAction, SqlDataType, SqlPredicate,
-    SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlValue,
+    SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
 use skein_storage::{
@@ -12,6 +12,12 @@ use skein_storage::{
     RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
     RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
     RelationalWrite,
+};
+mod append;
+
+pub(crate) use append::{
+    compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
+    format_append_explain, project_append_rows,
 };
 
 mod index_access;
@@ -402,6 +408,11 @@ fn compile_schema_statement(statement: SqlStatement) -> Result<Vec<RelationalWri
 
 fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableSchema> {
     reject_non_public_schema(create.table.schema.as_deref())?;
+    if !matches!(create.storage, SqlTableStorage::RowPage) {
+        return Err(SkeinError::Semantic(
+            "RowPage compiler does not accept a strict append table".to_string(),
+        ));
+    }
     if create.if_not_exists {
         return Err(SkeinError::Semantic(
             "content-store schema must not hide drift with IF NOT EXISTS".to_string(),
@@ -605,6 +616,225 @@ mod tests {
     use crate::{Database, DatabaseConfig};
     use skein_storage::{DurabilityPolicy, RelationalStore};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn database_sql_entrypoint_executes_strict_append_ddl_insert_and_bounded_select() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE public.events (\
+                   stream_id TEXT NOT NULL, \
+                   sequence BIGINT NOT NULL, \
+                   payload BYTEA NOT NULL\
+                 ) WITH (\
+                   storage_mode = 'strict_append', \
+                   partition_key = 'stream_id', \
+                   order_key = 'sequence'\
+                 )",
+            )
+            .expect("create strict append table");
+        database
+            .query_sql_with_params(
+                "INSERT INTO public.events (stream_id, sequence, payload) \
+                 VALUES ($1, $2, $3), ($1, $4, $5)",
+                &[
+                    Value::String("thread-1".to_string()),
+                    Value::Int(1),
+                    Value::Binary(vec![1]),
+                    Value::Int(2),
+                    Value::Binary(vec![2]),
+                ],
+            )
+            .expect("append rows through SQL");
+
+        let output = database
+            .query_sql_with_params(
+                "SELECT sequence, payload FROM public.events \
+                 WHERE stream_id = $1 AND sequence > $2 \
+                 ORDER BY sequence ASC LIMIT $3",
+                &[
+                    Value::String("thread-1".to_string()),
+                    Value::Int(1),
+                    Value::Int(10),
+                ],
+            )
+            .expect("read strict append rows through bounded SQL");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            output.rows[0],
+            BTreeMap::from([
+                ("payload".to_string(), Value::Binary(vec![2])),
+                ("sequence".to_string(), Value::Int(2)),
+            ])
+        );
+
+        let tables = database
+            .query_sql(
+                "SELECT table_name, storage_mode, partition_key, order_key \
+                 FROM system.append_tables WHERE table_name = 'events'",
+            )
+            .expect("query strict append system catalog");
+        assert_eq!(tables.rows.len(), 1);
+        assert_eq!(
+            tables.rows[0].get("storage_mode"),
+            Some(&Value::String("strict_append".to_string()))
+        );
+        let storage = database
+            .query_sql("SELECT live_rows FROM system.append_storage")
+            .expect("query strict append storage residency");
+        assert_eq!(storage.rows[0].get("live_rows"), Some(&Value::Int(2)));
+        let explained = database
+            .query_sql(
+                "EXPLAIN SELECT * FROM events \
+                 WHERE stream_id = 'thread-1' ORDER BY sequence ASC LIMIT 10",
+            )
+            .expect("explain strict append access path");
+        assert_eq!(
+            explained.rows[0].get("id"),
+            Some(&Value::String("StrictAppendPartitionScan_1".to_string()))
+        );
+        let analyzed = database
+            .query_sql(
+                "EXPLAIN ANALYZE SELECT * FROM events \
+                 WHERE stream_id = 'thread-1' ORDER BY sequence ASC LIMIT 10",
+            )
+            .expect("analyze strict append access path");
+        assert!(matches!(
+            analyzed.rows[0].get("execution info"),
+            Some(Value::String(info)) if info.contains("live_rows_examined=2")
+        ));
+
+        let error = database
+            .query_sql("UPDATE public.events SET payload = '\\x03' WHERE sequence = 2")
+            .expect_err("strict append UPDATE must fail closed");
+        assert!(error.to_string().contains("do not support UPDATE"));
+    }
+
+    #[test]
+    fn database_transaction_stages_strict_append_sql_atomically() {
+        let mut database = Database::new();
+        let mut transaction = database.begin_transaction();
+        transaction
+            .query_sql(
+                "CREATE TABLE events (\
+                   stream_id TEXT NOT NULL, \
+                   sequence BIGINT NOT NULL, \
+                   payload TEXT NOT NULL\
+                 ) WITH (\
+                   storage_mode = 'strict_append', \
+                   partition_key = 'stream_id', \
+                   order_key = 'sequence'\
+                 )",
+            )
+            .expect("stage strict append table");
+        transaction
+            .query_sql_with_params(
+                "INSERT INTO events (stream_id, sequence, payload) VALUES ($1, $2, $3)",
+                &[
+                    Value::String("thread-1".to_string()),
+                    Value::Int(1),
+                    Value::String("first".to_string()),
+                ],
+            )
+            .expect("stage strict append row");
+        let staged = transaction
+            .query_sql_with_params(
+                "SELECT * FROM events WHERE stream_id = $1 ORDER BY sequence LIMIT 10",
+                &[Value::String("thread-1".to_string())],
+            )
+            .expect("read staged strict append row");
+        assert_eq!(staged.rows.len(), 1);
+        let staged_catalog = transaction
+            .query_sql("SELECT table_name FROM system.append_tables")
+            .expect("read staged strict append catalog");
+        assert_eq!(
+            staged_catalog.rows[0].get("table_name"),
+            Some(&Value::String("events".to_string()))
+        );
+        transaction
+            .commit()
+            .expect("commit strict append transaction");
+
+        let committed = database
+            .query_sql_with_params(
+                "SELECT payload FROM events WHERE stream_id = $1 ORDER BY sequence LIMIT 10",
+                &[Value::String("thread-1".to_string())],
+            )
+            .expect("read committed strict append row");
+        assert_eq!(committed.rows.len(), 1);
+        assert_eq!(
+            committed.rows[0].get("payload"),
+            Some(&Value::String("first".to_string()))
+        );
+    }
+
+    #[test]
+    fn strict_append_sql_fails_closed_for_unbounded_and_mutating_shapes() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE events (\
+                   stream_id TEXT NOT NULL, \
+                   sequence BIGINT NOT NULL, \
+                   payload TEXT NOT NULL\
+                 ) WITH (\
+                   storage_mode = 'strict_append', \
+                   partition_key = 'stream_id', \
+                   order_key = 'sequence'\
+                 )",
+            )
+            .expect("create strict append table");
+        database
+            .query_sql(
+                "INSERT INTO events (stream_id, sequence, payload) \
+                 VALUES ('thread-1', 1, 'first')",
+            )
+            .expect("append initial row");
+
+        for (sql, expected) in [
+            (
+                "SELECT * FROM events WHERE stream_id = 'thread-1' ORDER BY sequence",
+                "requires an explicit LIMIT",
+            ),
+            (
+                "SELECT * FROM events ORDER BY sequence LIMIT 10",
+                "requires an exact partition predicate",
+            ),
+            (
+                "SELECT * FROM events WHERE stream_id = 'thread-1' LIMIT 10",
+                "requires ORDER BY sequence ASC",
+            ),
+            (
+                "SELECT * FROM events AS e WHERE events.stream_id = 'thread-1' \
+                 ORDER BY e.sequence LIMIT 10",
+                "unknown qualifier events",
+            ),
+            (
+                "DELETE FROM events WHERE stream_id = 'thread-1'",
+                "do not support DELETE",
+            ),
+            (
+                "INSERT INTO events (stream_id, sequence, payload) \
+                 VALUES ('thread-1', 2, 'second') \
+                 ON CONFLICT (stream_id, sequence) DO NOTHING",
+                "does not support ON CONFLICT",
+            ),
+        ] {
+            let error = database.query_sql(sql).expect_err("shape must fail closed");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, received {error}"
+            );
+        }
+
+        let error = database
+            .query_sql(
+                "INSERT INTO events (stream_id, sequence, payload) \
+                 VALUES ('thread-1', 1, 'duplicate')",
+            )
+            .expect_err("duplicate order key must fail");
+        assert!(error.to_string().contains("order key must increase"));
+    }
 
     #[test]
     fn database_sql_entrypoint_executes_relational_ddl_dml_and_select() {

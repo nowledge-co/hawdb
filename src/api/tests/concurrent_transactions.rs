@@ -1419,7 +1419,7 @@ fn dropped_pessimistic_transaction_releases_the_database_lock() {
 }
 
 #[test]
-fn concurrent_transaction_publishes_graph_and_relational_writes_in_one_wal_epoch() {
+fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wal_epoch() {
     let path = super::unique_test_dir("concurrent_mixed_transaction");
     {
         let db = crate::ConcurrentDatabase::open(&path).unwrap();
@@ -1434,6 +1434,27 @@ fn concurrent_transaction_publishes_graph_and_relational_writes_in_one_wal_epoch
         tx.query_sql_with_params(
             "INSERT INTO public.messages (id) VALUES ($1)",
             &[Value::String("message-1".to_string())],
+        )
+        .unwrap();
+        tx.query_sql(
+            "CREATE TABLE public.events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence'\
+             )",
+        )
+        .unwrap();
+        tx.query_sql_with_params(
+            "INSERT INTO public.events (stream_id, sequence, payload) VALUES ($1, $2, $3)",
+            &[
+                Value::String("thread-1".to_string()),
+                Value::Int(1),
+                Value::String("event-1".to_string()),
+            ],
         )
         .unwrap();
         tx.commit().unwrap();
@@ -1457,6 +1478,17 @@ fn concurrent_transaction_publishes_graph_and_relational_writes_in_one_wal_epoch
                 .unwrap()
                 .rows
                 .len(),
+            1
+        );
+        assert_eq!(
+            db.query_sql_with_params(
+                "SELECT payload FROM public.events \
+                 WHERE stream_id = $1 ORDER BY sequence ASC LIMIT 10",
+                &[Value::String("thread-1".to_string())],
+            )
+            .unwrap()
+            .rows
+            .len(),
             1
         );
     }
