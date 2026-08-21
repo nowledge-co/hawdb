@@ -44,7 +44,9 @@ def skein_benchmark_binaries(crate_features):
             name = "skein_bench_%s" % benchmark,
             crate_root = "benches/%s.rs" % benchmark,
             crate_features = crate_features,
-            srcs = ["benches/%s.rs" % benchmark],
+            srcs = ["benches/%s.rs" % benchmark] + native.glob([
+                "benches/%s/**/*.rs" % benchmark,
+            ]),
             edition = "2024",
             aliases = aliases(
                 normal = True,
