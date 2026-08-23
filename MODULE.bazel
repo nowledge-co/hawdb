@@ -23,6 +23,10 @@ rust.toolchain(
 use_repo(rust, "rust_toolchains")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.annotation(
+    build_script_env = {"NK_TARGET_SAPPHIREAMX": "0"},
+    crate = "numkong",
+)
 crate.from_cargo(
     name = "crate_index",
     cargo_lockfile = "//:Cargo.lock",

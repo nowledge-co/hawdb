@@ -1,0 +1,4 @@
+[env]
+# NumKong's Sapphire AMX probe can pass on older GCC releases even when the
+# dispatch translation units reject the required avx512fp16 target attribute.
+NK_TARGET_SAPPHIREAMX = "0"
