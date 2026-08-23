@@ -10,7 +10,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 jieba-rs = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-simsimd = "6.5"
+numkong = { version = "7.8", optional = true }
 skein-core = { path = "crates/core" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
@@ -48,7 +48,7 @@ acl = []
 background-maintenance = []
 full-text-search = []
 graph-analytics = []
-vector-search = ["dep:skein-vector-projection"]
+vector-search = ["dep:numkong", "dep:skein-vector-projection"]
 loom-tests = []
 opentelemetry = ["skein-telemetry/opentelemetry"]
 qualification = []

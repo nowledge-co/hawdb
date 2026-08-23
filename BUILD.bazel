@@ -60,7 +60,13 @@ _SKEIN_SRCS = glob(
     ],
 )
 
-_SKEIN_BASE_DEPS = all_crate_deps(normal = True) + [
+_SKEIN_BASE_DEPS = [
+    "@crate_index//:chrono",
+    "@crate_index//:jieba-rs",
+    "@crate_index//:serde",
+    "@crate_index//:serde_json",
+    "@crate_index//:unicode-width",
+    "@crate_index//:zstd",
     "//crates/analytics:skein_analytics",
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
@@ -81,6 +87,13 @@ _SKEIN_BASE_DEPS = all_crate_deps(normal = True) + [
     "//crates/telemetry:skein_telemetry",
 ]
 
+# crate_universe exposes optional normal dependencies to every Bazel target.
+# Keep the native vector dependency owned by targets that enable vector-search.
+_SKEIN_VECTOR_DEPS = [
+    "@crate_index//:numkong",
+    "//crates/vector-projection:skein_vector_projection",
+]
+
 _SKEIN_DEFAULT_FEATURES = [
     "background-maintenance",
     "full-text-search",
@@ -97,9 +110,8 @@ rust_library(
     srcs = _SKEIN_SRCS,
     edition = "2024",
     aliases = aliases(),
-    deps = _SKEIN_BASE_DEPS + [
+    deps = _SKEIN_BASE_DEPS + _SKEIN_VECTOR_DEPS + [
         "//crates/runtime-tokio:skein_runtime_tokio",
-        "//crates/vector-projection:skein_vector_projection",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -149,9 +161,8 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _SKEIN_BASE_DEPS + all_crate_deps(normal_dev = True) + [
+    deps = _SKEIN_BASE_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
         "//crates/runtime-tokio:skein_runtime_tokio",
-        "//crates/vector-projection:skein_vector_projection",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     size = "medium",
