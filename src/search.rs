@@ -12,7 +12,7 @@ use crate::value::Value;
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 #[cfg(feature = "vector-search")]
-use numkong::Dot;
+use simsimd::SpatialSimilarity;
 use skein_integrity::checksum_u64;
 use skein_optimizer::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
@@ -6640,6 +6640,7 @@ fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
     }
+
     Some(left.iter().zip(right).fold(0.0, |sum, (left, right)| {
         sum + f64::from(*left) * f64::from(*right)
     }))
@@ -7431,9 +7432,9 @@ mod tests {
             .expect("orthogonal non-zero vectors have a cosine score");
         assert!(orthogonal.abs() < 1e-6);
 
-        let observed = cosine_similarity(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0])
+        let observed = cosine_similarity(&[1.0, 2.0, 3.0, 4.0, 5.0], &[5.0, 4.0, 3.0, 2.0, 1.0])
             .expect("non-zero vectors have a cosine score");
-        let expected = 32.0_f64 / (14.0_f64.sqrt() * 77.0_f64.sqrt());
+        let expected = 35.0_f64 / 55.0_f64;
         assert!((observed - expected).abs() < 1e-6);
     }
 

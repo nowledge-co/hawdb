@@ -90,7 +90,7 @@ _SKEIN_BASE_DEPS = [
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
 _SKEIN_VECTOR_DEPS = [
-    "@crate_index//:numkong",
+    "@crate_index//:simsimd",
     "//crates/vector-projection:skein_vector_projection",
 ]
 
