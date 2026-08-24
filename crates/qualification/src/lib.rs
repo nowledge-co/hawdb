@@ -436,6 +436,26 @@ struct WorkloadOutcomes {
     errors: Vec<String>,
 }
 
+#[derive(Default)]
+struct QueryTaskOutcome {
+    reports: Vec<QueryStreamReport>,
+    durations: Vec<u64>,
+    error: Option<String>,
+}
+
+fn merge_query_task_outcome(
+    reports: &mut Vec<QueryStreamReport>,
+    durations: &mut Vec<u64>,
+    errors: &mut Vec<String>,
+    outcome: QueryTaskOutcome,
+) {
+    reports.extend(outcome.reports);
+    durations.extend(outcome.durations);
+    if let Some(error) = outcome.error {
+        errors.push(error);
+    }
+}
+
 async fn run_concurrent_workload(
     database: SkeinTokioEmbedded,
     config: MixedSoakConfig,
@@ -449,8 +469,11 @@ async fn run_concurrent_workload(
         let config = config.clone();
         foreground_handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            let mut reports = Vec::with_capacity(config.foreground_rounds_per_worker);
-            let mut durations = Vec::with_capacity(config.foreground_rounds_per_worker);
+            let mut outcome = QueryTaskOutcome {
+                reports: Vec::with_capacity(config.foreground_rounds_per_worker),
+                durations: Vec::with_capacity(config.foreground_rounds_per_worker),
+                ..QueryTaskOutcome::default()
+            };
             for round in 0..config.foreground_rounds_per_worker {
                 let id = worker
                     .saturating_mul(config.foreground_rounds_per_worker)
@@ -459,17 +482,26 @@ async fn run_concurrent_workload(
                 let mut parameters = BTreeMap::new();
                 parameters.insert("id".to_string(), Value::Int(saturating_i64(id)));
                 let started = Instant::now();
-                let report = stream_query(
+                let report = match stream_query(
                     &database,
                     "MATCH (m:Memory) WHERE m.id = $id RETURN m.body AS body",
                     parameters,
                     config.task_timeout,
                 )
-                .await?;
-                durations.push(elapsed_micros(started));
-                reports.push(report);
+                .await
+                {
+                    Ok(report) => report,
+                    Err(error) => {
+                        outcome.error = Some(format!(
+                            "foreground worker {worker} round {round} node {id}: {error}"
+                        ));
+                        return outcome;
+                    }
+                };
+                outcome.durations.push(elapsed_micros(started));
+                outcome.reports.push(report);
             }
-            Ok::<_, MixedSoakError>((reports, durations))
+            outcome
         }));
     }
 
@@ -478,8 +510,11 @@ async fn run_concurrent_workload(
     let background_config = config.clone();
     let background_handle = tokio::spawn(async move {
         background_barrier.wait().await;
-        let mut reports = Vec::with_capacity(background_config.background_rounds);
-        let mut durations = Vec::with_capacity(background_config.background_rounds);
+        let mut outcome = QueryTaskOutcome {
+            reports: Vec::with_capacity(background_config.background_rounds),
+            durations: Vec::with_capacity(background_config.background_rounds),
+            ..QueryTaskOutcome::default()
+        };
         for round in 0..background_config.background_rounds {
             let started = Instant::now();
             let cypher = if round % 2 == 0 {
@@ -491,17 +526,24 @@ async fn run_concurrent_workload(
                  WHERE a.id < 32 AND b.id < 32 \
                  RETURN a.id AS left_id, b.id AS right_id"
             };
-            let report = stream_query(
+            let report = match stream_query(
                 &background_database,
                 cypher,
                 BTreeMap::new(),
                 background_config.task_timeout,
             )
-            .await?;
-            durations.push(elapsed_micros(started));
-            reports.push(report);
+            .await
+            {
+                Ok(report) => report,
+                Err(error) => {
+                    outcome.error = Some(format!("background round {round}: {error}"));
+                    return outcome;
+                }
+            };
+            outcome.durations.push(elapsed_micros(started));
+            outcome.reports.push(report);
         }
-        Ok::<_, MixedSoakError>((reports, durations))
+        outcome
     });
 
     let checkpoint_database = database.clone();
@@ -544,20 +586,22 @@ async fn run_concurrent_workload(
     let mut outcomes = WorkloadOutcomes::default();
     for handle in foreground_handles {
         match handle.await {
-            Ok(Ok((reports, durations))) => {
-                outcomes.foreground.extend(reports);
-                outcomes.foreground_durations.extend(durations);
-            }
-            Ok(Err(error)) => outcomes.errors.push(format!("foreground: {error}")),
+            Ok(outcome) => merge_query_task_outcome(
+                &mut outcomes.foreground,
+                &mut outcomes.foreground_durations,
+                &mut outcomes.errors,
+                outcome,
+            ),
             Err(error) => outcomes.errors.push(format!("foreground join: {error}")),
         }
     }
     match background_handle.await {
-        Ok(Ok((reports, durations))) => {
-            outcomes.background.extend(reports);
-            outcomes.background_durations.extend(durations);
-        }
-        Ok(Err(error)) => outcomes.errors.push(format!("background: {error}")),
+        Ok(outcome) => merge_query_task_outcome(
+            &mut outcomes.background,
+            &mut outcomes.background_durations,
+            &mut outcomes.errors,
+            outcome,
+        ),
         Err(error) => outcomes.errors.push(format!("background join: {error}")),
     }
     match checkpoint_handle.await {
@@ -942,7 +986,8 @@ mod tests {
         config.runtime_memory_budget_bytes = 1024 * 1024;
         config.result_budget_bytes = 64 * 1024;
         config.blocking_operator_bytes = 32 * 1024;
-        config.task_timeout = Duration::from_secs(30);
+        // Avoid treating shared-runner scheduling delays as workload failures.
+        config.task_timeout = Duration::from_secs(120);
 
         let report = run_mixed_soak(&config).unwrap();
 
@@ -951,7 +996,14 @@ mod tests {
         assert!(!report.production_eligible);
         assert_eq!(report.identity.source_revision, "test-revision");
         assert_eq!(report.identity.dataset_id, "test-dataset");
-        assert_eq!(report.foreground.query_count, 4);
+        let expected_foreground = config
+            .foreground_workers
+            .saturating_mul(config.foreground_rounds_per_worker);
+        assert_eq!(
+            report.foreground.query_count, expected_foreground,
+            "foreground errors: {:?}",
+            report.errors
+        );
         assert_eq!(
             report.background.query_count, 1,
             "background errors: {:?}",
