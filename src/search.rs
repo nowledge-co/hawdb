@@ -11,6 +11,7 @@ use crate::telemetry::{
 use crate::value::Value;
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
+#[cfg(feature = "vector-search")]
 use simsimd::SpatialSimilarity;
 use skein_integrity::checksum_u64;
 use skein_optimizer::{
@@ -6620,13 +6621,29 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
     }
-    let dot = f32::dot(left, right)?;
-    let left_norm_squared = f32::dot(left, left)?;
-    let right_norm_squared = f32::dot(right, right)?;
+    let dot = dot_product(left, right)?;
+    let left_norm_squared = dot_product(left, left)?;
+    let right_norm_squared = dot_product(right, right)?;
     if left_norm_squared == 0.0 || right_norm_squared == 0.0 {
         return None;
     }
     Some((dot / (left_norm_squared.sqrt() * right_norm_squared.sqrt())).clamp(0.0, 1.0))
+}
+
+#[cfg(feature = "vector-search")]
+fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
+    f32::dot(left, right)
+}
+
+#[cfg(not(feature = "vector-search"))]
+fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+
+    Some(left.iter().zip(right).fold(0.0, |sum, (left, right)| {
+        sum + f64::from(*left) * f64::from(*right)
+    }))
 }
 
 fn encode_embedding(embedding: Option<&[f32]>) -> String {
@@ -7400,6 +7417,26 @@ mod tests {
     use crate::store::GraphStore;
     use skein_storage::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn cosine_similarity_preserves_edge_and_numeric_behavior() {
+        assert_eq!(cosine_similarity(&[], &[]), None);
+        assert_eq!(cosine_similarity(&[1.0], &[1.0, 2.0]), None);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]), None);
+
+        let identical = cosine_similarity(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])
+            .expect("identical non-zero vectors have a cosine score");
+        assert!((identical - 1.0).abs() < 1e-6);
+
+        let orthogonal = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0])
+            .expect("orthogonal non-zero vectors have a cosine score");
+        assert!(orthogonal.abs() < 1e-6);
+
+        let observed = cosine_similarity(&[1.0, 2.0, 3.0, 4.0, 5.0], &[5.0, 4.0, 3.0, 2.0, 1.0])
+            .expect("non-zero vectors have a cosine score");
+        let expected = 35.0_f64 / 55.0_f64;
+        assert!((observed - expected).abs() < 1e-6);
+    }
 
     fn force_quantized_policy() -> AdaptiveVectorBackendPolicy {
         AdaptiveVectorBackendPolicy {

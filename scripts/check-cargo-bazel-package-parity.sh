@@ -39,10 +39,6 @@ if [[ -z "${workspace_members}" ]]; then
 fi
 
 printf '.\n%s\n' "${workspace_members}" | while IFS= read -r package_dir; do
-  if [[ ! -f "${package_dir}/Cargo.toml" ]]; then
-    echo "missing Cargo.toml for Cargo workspace package: ${package_dir}" >&2
-    exit 1
-  fi
   if [[ ! -f "${package_dir}/BUILD.bazel" ]]; then
     echo "missing BUILD.bazel for Cargo workspace package: ${package_dir}" >&2
     exit 1

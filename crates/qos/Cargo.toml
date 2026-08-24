@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 libc = "0.2"
-loom = { version = "0.7", optional = true }
 skein-core = { path = "../core" }
 skein-cgroup = { path = "../cgroup" }
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
@@ -19,6 +18,9 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Threading",
 ] }
 
+[dev-dependencies]
+loom = "0.7"
+
 [features]
 default = []
-loom-tests = ["dep:loom"]
+loom-tests = []
