@@ -15,13 +15,22 @@ same row generation. Normal open demand-pages those indexes instead of
 rebuilding every posting. The SQL statement corpus, semantics, and
 qualification obligations of this document are unchanged by that migration.
 
-The initial schema scope is:
+The canonical schema scope is:
 
 - `content_documents`;
 - `thread_messages`;
 - `content_chunks`;
 - `content_anchors`;
 - `content_migration_state`.
+
+This is the Skein projection of Mem App Content Store schema v4, not a claim
+that every SQLite control table becomes canonical Skein data. The App's
+`content_schema_migrations` and `content_mutation_obligations` tables are
+source-only control state. In particular, mutation obligations record delivery
+to Skein; storing them in the destination would make the delivery ledger part
+of the dataset it coordinates. The Mem integration contract MUST name these
+tables explicitly and prove that they are excluded from import and full-data
+comparison.
 
 External artifact and blob files remain outside this contract.
 
@@ -30,8 +39,12 @@ External artifact and blob files remain outside this contract.
 `crates/qualification/fixtures/nowledge_content_store/content_store_schema_v1.sql`
 is the authoritative initial DDL. It contains executable `CREATE TABLE` and
 `CREATE INDEX` statements and is versioned independently from the workload.
-Production schema initialization MUST execute this ordered DDL or an explicit
-append-only successor; it MUST NOT reconstruct schema from test metadata.
+Skein has not entered production, so the current greenfield baseline may be
+updated destructively when the App schema changes; existing development Skein
+databases must then be recreated. After Skein acquires a production data
+compatibility obligation, schema initialization MUST execute this ordered DDL
+or an explicit append-only successor and MUST NOT reconstruct schema from test
+metadata.
 
 `crates/qualification/fixtures/nowledge_content_store/postgres_statement_corpus_v1.json`
 is the versioned compatibility workload. It records the source caller,
@@ -39,9 +52,11 @@ normalized read and mutation SQL, parameter types, result columns,
 deterministic ordering, row budget, payload budget, and transaction group. It
 does not own schema DDL.
 
-The corpus MUST use the actual Nowledge v3 schema. In particular,
-`content_anchors` contains `quote_hash` and `content_message_id`; it does not
-contain fabricated `content_hash` or `updated_at` columns.
+The corpus MUST use the canonical projection of Nowledge Content Store schema
+v4. In particular, `content_anchors` contains `quote_hash` and
+`content_message_id`; it does not contain fabricated `content_hash` or
+`updated_at` columns. Source-only v4 control tables remain visible in the
+integration contract even though their rows are not imported.
 
 The schema and corpus each have an independent protocol, revision, and SHA-256
 identity. A cutover gate MUST compare both identities and MUST fail closed when

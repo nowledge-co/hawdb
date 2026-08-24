@@ -16,6 +16,8 @@
 ## Mem Release Modes and Full Verification
 
 - During the current development phase, Skein code must not appear in any stable or GA release. Stable release artifacts and the public release dependency graph must exclude Skein crates, features, binaries, bundled source, and transitive Skein dependencies.
+- Every Mem App persistence-schema change must update the Skein integration contract in the same delivery. Canonical data changes require matching Skein DDL, import or dual-write mapping, and full-verification coverage. Source-only migration or operational tables must be named explicitly with a rationale and an exclusion test; they must not disappear from the contract merely because Skein does not store them.
+- Skein has not entered production and has no persisted production compatibility obligation. Until that changes, App schema evolution may replace the greenfield Skein baseline destructively and require development databases to be recreated. Do not add compatibility migrations solely for earlier development-only Skein schemas, and do not apply this exception to any authoritative legacy or Cloud datastore.
 - Only nightly or development builds may compile, bundle, or execute Skein during this phase. The stable dual-write and full-activation rules below remain inactive until a separate explicit release-policy decision authorizes Skein code in stable artifacts.
 - Nightly or development builds may support three explicit storage modes:
   1. dual-write to the legacy stores and Skein while legacy reads remain authoritative;

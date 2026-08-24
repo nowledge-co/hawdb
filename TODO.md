@@ -363,8 +363,9 @@ qualification justifies moving them.
 
 - [x] Qualify the partial callers in the frozen SQLite-to-Skein statement
   corpus.
-  - The versioned corpus, real v3 schema, parameter/result contracts, source
-    inventory, and revision digest are specified by
+  - The versioned corpus, schema-v4 canonical projection, explicit source-only
+    control-table exclusions, parameter/result contracts, source inventory,
+    and revision digest are specified by
     `docs/specs/POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md`.
   - Every graph-plus-relational write caller is now `covered` by independent
     runtime evidence rather than parser feature counts. This includes source
