@@ -12,6 +12,10 @@ const TOP_K: usize = 10;
 const SAMPLES: usize = 5;
 const ALLOWLIST_DENSITIES: [usize; 4] = [1, 10, 50, 100];
 const WORKERS: [usize; 2] = [1, 4];
+const KERNELS: [(&str, KernelPreference); 2] = [
+    ("scalar", KernelPreference::Scalar),
+    ("auto", KernelPreference::Auto),
+];
 
 fn main() {
     let dimension = std::env::var("SKEIN_BENCH_VECTOR_DIMENSION")
@@ -26,7 +30,17 @@ fn main() {
             let allowed_ids = (0..DOCUMENT_COUNT as u64)
                 .filter(|id| (*id as usize * 100 / DOCUMENT_COUNT) < density)
                 .collect::<Vec<_>>();
-            results.push(measure(&projection, &query, workers, density, &allowed_ids));
+            for (requested_kernel, kernel) in KERNELS {
+                results.push(measure(
+                    &projection,
+                    &query,
+                    requested_kernel,
+                    kernel,
+                    workers,
+                    density,
+                    &allowed_ids,
+                ));
+            }
         }
     }
     println!(
@@ -66,17 +80,20 @@ fn vector(id: u64, dimension: usize) -> Vec<f32> {
 fn measure(
     projection: &skein_vector_projection::InMemoryProjection,
     query: &[f32],
+    requested_kernel: &str,
+    kernel: KernelPreference,
     workers: usize,
     density: usize,
     allowed_ids: &[u64],
 ) -> serde_json::Value {
     let options = ProjectionSearchOptions::new()
         .with_max_parallelism(NonZeroUsize::new(workers).unwrap())
-        .with_kernel(KernelPreference::Auto)
+        .with_kernel(kernel)
         .with_allowed_ids(allowed_ids);
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut scored_documents = 0usize;
     let mut admitted_workers = 0usize;
+    let mut selected_kernel = "unknown";
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let output = projection
@@ -85,11 +102,14 @@ fn measure(
         let elapsed = started.elapsed();
         scored_documents = output.report.scored_document_count;
         admitted_workers = output.report.worker_count;
+        selected_kernel = output.report.kernel.as_str();
         black_box(output.hits);
         samples.push(scored_documents as f64 / elapsed.as_secs_f64());
     }
     samples.sort_unstable_by(f64::total_cmp);
     json!({
+        "requested_kernel": requested_kernel,
+        "selected_kernel": selected_kernel,
         "requested_workers": workers,
         "admitted_workers": admitted_workers,
         "allowlist_density_percent": density,

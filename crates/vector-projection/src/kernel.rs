@@ -130,34 +130,51 @@ const fn neon_available() -> bool {
 unsafe fn score_avx2(codes: &[u8], query: &[f32], centroids: &[f32; TURBOQUANT_LEVELS]) -> f32 {
     use std::arch::x86_64::*;
 
-    let mut accumulator = _mm256_setzero_ps();
-    let mask = _mm_set1_epi8(0x0f);
+    let centroid_low = unsafe { _mm256_loadu_ps(centroids.as_ptr()) };
+    let centroid_high = unsafe { _mm256_loadu_ps(centroids.as_ptr().add(8)) };
+    let low_table_max_index = _mm256_set1_epi32(7);
+    // Independent streams hide the multiply-add latency across each 32-coordinate block.
+    let mut accumulators = [_mm256_setzero_ps(); 4];
+    let nibble_mask = _mm_set1_epi8(0x0f);
     let mut dimension = 0;
     let mut byte_offset = 0;
     while dimension + 32 <= query.len() {
         let packed = unsafe { _mm_loadu_si128(codes.as_ptr().add(byte_offset).cast()) };
-        let low = _mm_and_si128(packed, mask);
-        let high = _mm_and_si128(_mm_srli_epi16(packed, 4), mask);
+        let low = _mm_and_si128(packed, nibble_mask);
+        let high = _mm_and_si128(_mm_srli_epi16(packed, 4), nibble_mask);
         let first = _mm_unpacklo_epi8(low, high);
         let second = _mm_unpackhi_epi8(low, high);
-        for (chunk, source) in [first, second].into_iter().enumerate() {
-            let source_low = source;
-            let source_high = _mm_srli_si128(source, 8);
-            for (half, bytes) in [source_low, source_high].into_iter().enumerate() {
-                let integers = _mm256_cvtepu8_epi32(bytes);
-                let centers = unsafe { _mm256_i32gather_ps(centroids.as_ptr(), integers, 4) };
-                let query_offset = dimension + chunk * 16 + half * 8;
-                let query_values = unsafe { _mm256_loadu_ps(query.as_ptr().add(query_offset)) };
-                accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(centers, query_values));
-            }
+        let decoded = [
+            first,
+            _mm_srli_si128(first, 8),
+            second,
+            _mm_srli_si128(second, 8),
+        ];
+        for (chunk, bytes) in decoded.into_iter().enumerate() {
+            let indexes = _mm256_cvtepu8_epi32(bytes);
+            let low_centers = _mm256_permutevar8x32_ps(centroid_low, indexes);
+            let high_centers = _mm256_permutevar8x32_ps(centroid_high, indexes);
+            // AVX2 permutes eight f32 lanes, so bit 3 selects the matching table half.
+            let high_mask = _mm256_castsi256_ps(_mm256_cmpgt_epi32(indexes, low_table_max_index));
+            let centers = _mm256_blendv_ps(low_centers, high_centers, high_mask);
+            let query_values =
+                unsafe { _mm256_loadu_ps(query.as_ptr().add(dimension + chunk * 8)) };
+            accumulators[chunk] =
+                _mm256_add_ps(accumulators[chunk], _mm256_mul_ps(centers, query_values));
         }
         dimension += 32;
         byte_offset += 16;
     }
 
-    let mut lanes = [0.0f32; 8];
-    unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator) };
-    let mut score = lanes.into_iter().sum::<f32>();
+    let pair_low = _mm256_add_ps(accumulators[0], accumulators[1]);
+    let pair_high = _mm256_add_ps(accumulators[2], accumulators[3]);
+    let accumulator = _mm256_add_ps(pair_low, pair_high);
+    let halves = _mm_add_ps(
+        _mm256_castps256_ps128(accumulator),
+        _mm256_extractf128_ps(accumulator, 1),
+    );
+    let pairs = _mm_hadd_ps(halves, halves);
+    let mut score = _mm_cvtss_f32(_mm_hadd_ps(pairs, pairs));
     for (index, value) in query.iter().copied().enumerate().skip(dimension) {
         score += value * centroids[usize::from(code_at(codes, index))];
     }
@@ -248,6 +265,29 @@ mod tests {
         assert_eq!(avx2.is_ok(), avx2_available());
         let neon = select_kernel(KernelPreference::Neon);
         assert_eq!(neon.is_ok(), neon_available());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_register_lookup_preserves_nibble_order_and_table_halves() {
+        if !avx2_available() {
+            return;
+        }
+        let centroids = std::array::from_fn(|index| (index as f32).mul_add(1.25, -7.0));
+        let codes = (0..16u8)
+            .map(|low| low | ((15 - low) << 4))
+            .collect::<Vec<_>>();
+        let query = (0..32)
+            .map(|index| (index as f32).mul_add(0.125, -1.5))
+            .collect::<Vec<_>>();
+
+        let scalar = score_codes(ScanKernel::Scalar, &codes, &query, &centroids);
+        let avx2 = score_codes(ScanKernel::Avx2, &codes, &query, &centroids);
+        let tolerance = 1e-5 * scalar.abs().max(1.0);
+        assert!(
+            (scalar - avx2).abs() <= tolerance,
+            "scalar={scalar} avx2={avx2} tolerance={tolerance}"
+        );
     }
 
     #[test]

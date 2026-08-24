@@ -112,6 +112,9 @@ filtered and ACL parity, P50/P95/P99 latency, steady and peak RSS, page faults,
 payload bytes, build amplification, cancellation, mixed-load behavior, and
 reopen/corruption recovery. Until that evidence passes, the capability is
 eligible for shadow or canary use but is not independently production-qualified.
+Local kernel-regression methodology and directional SIMD results are recorded
+in the [TurboQuant vector projection benchmark](../TURBOQUANT_VECTOR_PROJECTION_BENCHMARK.md);
+they do not satisfy production admission.
 
 Cross-platform kernel CI MUST execute the deterministic scalar/SIMD corpus
 natively on Linux x86_64, Linux AArch64, macOS AArch64, and Windows x86_64.
