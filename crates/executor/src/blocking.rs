@@ -279,6 +279,12 @@ impl CartesianOutput {
             reserved_bytes,
             &self.tracker,
         )?;
+        if self.tracker.would_exceed(reserved_bytes)
+            && !self.batch.is_empty()
+            && self.emit(emit)? == BatchControl::Stop
+        {
+            return Ok(BatchControl::Stop);
+        }
         self.tracker.try_charge(reserved_bytes)?;
         let binding = merge_cartesian_bindings(left, right);
         let actual_bytes = binding_memory_bytes(&binding);
@@ -519,6 +525,64 @@ mod tests {
         assert_eq!(ledger.snapshot().used_bytes, 200);
         drop(output);
         drop(retained);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn cartesian_output_flushes_before_exceeding_batch_payload_budget() {
+        let left = value_binding(1);
+        let right = value_binding(2);
+        let reserved_bytes =
+            binding_memory_bytes(&left).saturating_add(binding_memory_bytes(&right));
+        let actual_bytes = binding_memory_bytes(&merge_cartesian_bindings(&left, &right));
+        let budget = NonZeroUsize::new(
+            actual_bytes
+                .saturating_add(reserved_bytes)
+                .saturating_sub(1),
+        )
+        .unwrap();
+        assert!(reserved_bytes <= budget.get());
+
+        let ledger = QueryMemoryLedger::new(budget);
+        let mut output = CartesianOutput::new(
+            8,
+            budget,
+            ledger.account(QueryMemoryClass::PipelineBatch, "cartesian output", budget),
+            ExecutionLimit::unlimited(),
+        );
+        let mut emitted = Vec::new();
+        {
+            let mut emit = |batch| {
+                emitted.push(batch);
+                Ok(BatchControl::Continue)
+            };
+            assert_eq!(
+                output.push(&left, &right, &mut emit).unwrap(),
+                BatchControl::Continue
+            );
+        }
+        assert!(emitted.is_empty());
+        {
+            let mut emit = |batch| {
+                emitted.push(batch);
+                Ok(BatchControl::Continue)
+            };
+            assert_eq!(
+                output.push(&left, &right, &mut emit).unwrap(),
+                BatchControl::Continue
+            );
+        }
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].len(), 1);
+        {
+            let mut emit = |batch| {
+                emitted.push(batch);
+                Ok(BatchControl::Continue)
+            };
+            assert_eq!(output.finish(&mut emit).unwrap(), BatchControl::Continue);
+        }
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[1].len(), 1);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 }
