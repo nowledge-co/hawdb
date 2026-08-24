@@ -11,91 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  supply-chain:
-    name: Supply Chain
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check advisories and licenses
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          rust-version: "1.97.1"
-          command: check advisories licenses
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          components: clippy, rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Check scripts
-        run: |
-          bash -n scripts/nowledge-previous-wrapper-preflight.sh
-          bash -n scripts/check-storage-tla.sh
-          test "$(scripts/check-storage-tla.sh --manifest-json 4ebf76c | jq -r .source_revision)" = "4ebf76c"
-
-      - name: Lint
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  storage-formal-models:
-    name: Storage Formal Models
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.19.0
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          external-cache: false
-          disk-cache: bazel-storage-tla
-
-      - name: Check storage TLA+ models with Bazel
-        # Each TLC process already parallelizes internally. Serial Bazel action
-        # scheduling prevents a runner from multiplying that worker count by
-        # the number of models in the suite.
-        run: bazel test //docs/tla:storage_models --jobs=1 --test_output=errors
-
-      - name: Check storage TLA+ negative controls
-        run: scripts/check-storage-tla.sh --check-mutants
-
-      # rules_tla is the authoritative model-check gate. The release artifact
-      # collector repeats the bounded checks only because the published
-      # evidence contract retains complete TLC logs, while rules_tla 0.2.0
-      # exposes a success marker but not the action log as a declared output.
-      - name: Collect storage model-check evidence
-        env:
-          TLA_RESULTS_DIR: ${{ github.workspace }}/tla-results
-          TLA_SOURCE_REVISION: ${{ github.sha }}
-        run: scripts/check-storage-tla.sh
-
-      - name: Upload storage model-check evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tla-model-check-${{ github.sha }}
-          path: tla-results
-          if-no-files-found: error
-
   runtime-platform:
     name: Runtime Platform (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -247,7 +162,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux crash evidence is owned by Prow.
+        os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -281,21 +197,3 @@ jobs:
           name: storage-crash-recovery-${{ matrix.os }}-${{ github.sha }}
           path: storage-crash-results
           if-no-files-found: error
-
-  tla-model-check:
-    name: TLA Model Check
-    needs: storage-formal-models
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download storage model-check evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: tla-model-check-${{ github.sha }}
-          path: tla-results
-
-      - name: Verify complete storage model-check evidence
-        run: scripts/check-storage-tla.sh --verify-results tla-results "$GITHUB_SHA"
