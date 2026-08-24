@@ -6,10 +6,12 @@ use crate::model::{
 };
 use crate::quantizer::TurboQuantCodebook;
 use crc32fast::Hasher;
+use memmap2::Mmap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const FOOTER_MAGIC: &[u8; 8] = b"SKTQ4F02";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
@@ -157,6 +159,7 @@ pub struct FileProjection {
     path: PathBuf,
     manifest: ProjectionManifest,
     pub(crate) codebook: TurboQuantCodebook,
+    mmap: Arc<Mmap>,
 }
 
 impl FileProjection {
@@ -204,11 +207,16 @@ impl FileProjection {
             ));
         }
 
+        // SAFETY: the artifact is published via atomic rename and never mutated in
+        // place after that point, so external truncation/mutation racing this map is
+        // not part of Skein's supported artifact lifecycle.
+        let mmap = Arc::new(unsafe { Mmap::map(&file)? });
+
         let mut previous_id = None;
         let mut payload_hasher = Hasher::new();
         for descriptor in &manifest.segments {
-            let buffer = read_segment_file(&path, descriptor)?;
-            payload_hasher.update(&buffer.bytes);
+            let buffer = segment_buffer(&mmap, descriptor)?;
+            payload_hasher.update(buffer.bytes);
             let parts = buffer.parts(manifest.dimension, descriptor.row_count)?;
             for row in 0..descriptor.row_count {
                 let id = parts.id(row);
@@ -239,6 +247,7 @@ impl FileProjection {
             path,
             manifest,
             codebook,
+            mmap,
         })
     }
 
@@ -265,21 +274,27 @@ impl FileProjection {
         }
     }
 
-    pub(crate) fn read_segment(&self, index: usize) -> Result<SegmentBuffer> {
+    /// Zero-copy view of a segment's payload backed by the projection's mmap.
+    ///
+    /// Unlike the previous per-call `File::open` + `seek` + `read_exact`, this
+    /// borrows directly from the mapping opened once in `open()`: no syscall
+    /// and no heap allocation/copy per search. The checksum is still verified
+    /// on every call to preserve the existing fail-closed guarantee.
+    pub(crate) fn read_segment(&self, index: usize) -> Result<SegmentBuffer<'_>> {
         let descriptor = self.manifest.segments.get(index).ok_or_else(|| {
             ProjectionError::CorruptArtifact(format!("missing segment descriptor {index}"))
         })?;
-        read_segment_file(&self.path, descriptor)
+        segment_buffer(&self.mmap, descriptor)
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct SegmentBuffer {
-    pub bytes: Vec<u8>,
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SegmentBuffer<'a> {
+    pub bytes: &'a [u8],
 }
 
-impl SegmentBuffer {
-    pub fn parts(&self, dimension: usize, rows: usize) -> Result<SegmentParts<'_>> {
+impl<'a> SegmentBuffer<'a> {
+    pub fn parts(&self, dimension: usize, rows: usize) -> Result<SegmentParts<'a>> {
         let ids_end = ids_bytes(rows);
         let scales_end = ids_end.saturating_add(renormalization_bytes(rows));
         if scales_end > self.bytes.len() {
@@ -348,18 +363,32 @@ fn write_payload(
     Ok(())
 }
 
-fn read_segment_file(path: &Path, descriptor: &SegmentDescriptor) -> Result<SegmentBuffer> {
+fn segment_buffer<'a>(mmap: &'a Mmap, descriptor: &SegmentDescriptor) -> Result<SegmentBuffer<'a>> {
+    let offset = usize::try_from(descriptor.payload_offset).map_err(|_| {
+        ProjectionError::CorruptArtifact(format!(
+            "segment {} payload offset exceeds address space",
+            descriptor.index
+        ))
+    })?;
     let payload_len = usize::try_from(descriptor.payload_bytes).map_err(|_| {
         ProjectionError::CorruptArtifact(format!(
             "segment {} payload exceeds address space",
             descriptor.index
         ))
     })?;
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(descriptor.payload_offset))?;
-    let mut bytes = vec![0u8; payload_len];
-    file.read_exact(&mut bytes)?;
-    if crc32fast::hash(&bytes) != descriptor.payload_checksum {
+    let end = offset.checked_add(payload_len).ok_or_else(|| {
+        ProjectionError::CorruptArtifact(format!(
+            "segment {} payload range overflows",
+            descriptor.index
+        ))
+    })?;
+    let bytes = mmap.get(offset..end).ok_or_else(|| {
+        ProjectionError::CorruptArtifact(format!(
+            "segment {} payload range exceeds mapped artifact",
+            descriptor.index
+        ))
+    })?;
+    if crc32fast::hash(bytes) != descriptor.payload_checksum {
         return Err(ProjectionError::CorruptArtifact(format!(
             "segment {} checksum mismatch",
             descriptor.index

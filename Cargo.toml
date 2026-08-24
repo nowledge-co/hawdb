@@ -172,6 +172,10 @@ name = "vector_projection_scan"
 harness = false
 
 [[bench]]
+name = "file_projection_scan"
+harness = false
+
+[[bench]]
 name = "aggregate_partial_spill"
 harness = false
 
