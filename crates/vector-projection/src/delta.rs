@@ -27,9 +27,16 @@
 
 use crate::error::{ProjectionError, Result};
 use crate::scan::{compare_best, ProjectionHit, ProjectionSearchOptions, ProjectionSearchOutput};
+use skein_core::RuntimeTaskContext;
 use std::collections::HashSet;
 
 const DEFAULT_OPTIMIZE_THRESHOLD: f64 = 0.02;
+/// Matches `DEFAULT_BUILD_MEMORY_BYTES`/`DEFAULT_SEARCH_MEMORY_BYTES`
+/// elsewhere in this crate.
+const DEFAULT_DELTA_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// Fixed per-entry overhead (id, `Vec` header) beyond the vector payload,
+/// folded into the admission estimate.
+const DELTA_ENTRY_FIXED_BYTES: usize = 32;
 
 #[derive(Debug, Clone)]
 struct DeltaEntry {
@@ -42,6 +49,8 @@ struct DeltaEntry {
 pub struct DeltaBuffer {
     dimension: usize,
     optimize_threshold: f64,
+    max_working_bytes: usize,
+    bytes_used: usize,
     entries: Vec<DeltaEntry>,
 }
 
@@ -50,6 +59,8 @@ impl DeltaBuffer {
         Self {
             dimension,
             optimize_threshold: DEFAULT_OPTIMIZE_THRESHOLD,
+            max_working_bytes: DEFAULT_DELTA_MEMORY_BYTES,
+            bytes_used: 0,
             entries: Vec::new(),
         }
     }
@@ -62,8 +73,33 @@ impl DeltaBuffer {
         self
     }
 
+    /// Fail-closed ceiling on `working_bytes()`. `should_optimize` is
+    /// meant to trigger a fold well before this is reached in normal
+    /// operation; this is the hard backstop for a host that ignores that
+    /// signal, not the primary control.
+    pub fn with_max_working_bytes(mut self, max_working_bytes: usize) -> Self {
+        self.max_working_bytes = max_working_bytes;
+        self
+    }
+
+    /// Approximate heap bytes retained by this buffer: vector payloads
+    /// plus fixed per-entry overhead. Does not include allocator overhead
+    /// or `Vec` spare capacity.
+    pub fn working_bytes(&self) -> usize {
+        self.bytes_used
+    }
+
+    fn entry_bytes(&self) -> usize {
+        self.dimension
+            .saturating_mul(std::mem::size_of::<f32>())
+            .saturating_add(DELTA_ENTRY_FIXED_BYTES)
+    }
+
     /// Insert `id`, or replace its vector if already present. Re-upserting
-    /// an id already in the buffer keeps the buffer's size unchanged.
+    /// an id already in the buffer keeps the buffer's size (and
+    /// `working_bytes()`) unchanged. Fails closed with
+    /// `ResourceBudgetExceeded` rather than growing past
+    /// `max_working_bytes` when inserting a genuinely new id.
     pub fn upsert(&mut self, id: u64, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dimension {
             return Err(ProjectionError::InvalidVector(format!(
@@ -79,13 +115,24 @@ impl DeltaBuffer {
         }
         match self.entries.binary_search_by_key(&id, |entry| entry.id) {
             Ok(index) => vector.clone_into(&mut self.entries[index].vector),
-            Err(index) => self.entries.insert(
-                index,
-                DeltaEntry {
-                    id,
-                    vector: vector.to_vec(),
-                },
-            ),
+            Err(index) => {
+                let entry_bytes = self.entry_bytes();
+                let required = self.bytes_used.saturating_add(entry_bytes);
+                if required > self.max_working_bytes {
+                    return Err(ProjectionError::ResourceBudgetExceeded {
+                        required,
+                        available: self.max_working_bytes,
+                    });
+                }
+                self.entries.insert(
+                    index,
+                    DeltaEntry {
+                        id,
+                        vector: vector.to_vec(),
+                    },
+                );
+                self.bytes_used = required;
+            }
         }
         Ok(())
     }
@@ -100,6 +147,7 @@ impl DeltaBuffer {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.bytes_used = 0;
     }
 
     /// Fraction of `base_document_count + len()` this buffer represents.
@@ -123,12 +171,21 @@ impl DeltaBuffer {
     /// approximate TurboQuant score (see module docs): both approximate
     /// the same cosine-similarity metric, since indexed and query vectors
     /// are unit-normalized before TurboQuant's orthogonal transform.
+    ///
+    /// Checkpoints once per call, before scanning, rather than once per
+    /// entry: the buffer is already bounded by `max_working_bytes`, so one
+    /// call's worst case is bounded, and this scan is not a hot inner
+    /// loop the way `scan_segment`'s per-block checks are.
     fn scan(
         &self,
         query: &[f32],
         top_k: usize,
         allowed_ids: Option<&[u64]>,
+        task_context: Option<&RuntimeTaskContext>,
     ) -> Result<Vec<ProjectionHit>> {
+        if let Some(context) = task_context {
+            context.checkpoint()?;
+        }
         if query.len() != self.dimension {
             return Err(ProjectionError::InvalidVector(format!(
                 "expected query dimension {}, got {}",
@@ -208,7 +265,7 @@ where
     let base_top_k = top_k.saturating_add(delta.len());
     let allowed_ids = options.candidates.map(|candidates| candidates.ids);
     let base_output = base_search(query, base_top_k, options)?;
-    let delta_hits = delta.scan(query, top_k, allowed_ids)?;
+    let delta_hits = delta.scan(query, top_k, allowed_ids, options.task_context)?;
 
     let delta_ids: HashSet<u64> = delta.entries.iter().map(|entry| entry.id).collect();
     let mut hits: Vec<ProjectionHit> = base_output
@@ -317,5 +374,65 @@ mod tests {
         let mut delta = DeltaBuffer::new(4);
         let result = delta.upsert(1, &[0.0, 1.0]);
         assert!(matches!(result, Err(ProjectionError::InvalidVector(_))));
+    }
+
+    #[test]
+    fn upsert_fails_closed_once_the_memory_budget_is_exhausted() {
+        // Each entry costs dimension * 4 + 32 fixed bytes = 48 bytes; a
+        // 100-byte budget admits exactly two entries.
+        let mut delta = DeltaBuffer::new(4).with_max_working_bytes(100);
+        delta.upsert(1, &axis_vector(4, 0)).unwrap();
+        delta.upsert(2, &axis_vector(4, 1)).unwrap();
+        let result = delta.upsert(3, &axis_vector(4, 2));
+        assert!(matches!(
+            result,
+            Err(ProjectionError::ResourceBudgetExceeded { .. })
+        ));
+        assert_eq!(delta.len(), 2);
+    }
+
+    #[test]
+    fn re_upserting_an_existing_id_does_not_grow_working_bytes() {
+        let mut delta = DeltaBuffer::new(4).with_max_working_bytes(100);
+        delta.upsert(1, &axis_vector(4, 0)).unwrap();
+        delta.upsert(2, &axis_vector(4, 1)).unwrap();
+        let bytes_before = delta.working_bytes();
+        // Replacing an existing id must not need new budget headroom, and
+        // must not be rejected by the exhausted budget from the test above.
+        delta.upsert(1, &axis_vector(4, 3)).unwrap();
+        assert_eq!(delta.working_bytes(), bytes_before);
+        assert_eq!(delta.len(), 2);
+    }
+
+    #[test]
+    fn clear_resets_working_bytes() {
+        let mut delta = DeltaBuffer::new(4);
+        delta.upsert(1, &axis_vector(4, 0)).unwrap();
+        assert!(delta.working_bytes() > 0);
+        delta.clear();
+        assert_eq!(delta.working_bytes(), 0);
+    }
+
+    #[test]
+    fn search_with_delta_honors_a_cancelled_task_context() {
+        use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+
+        let base = sample_base();
+        let mut delta = DeltaBuffer::new(4);
+        delta.upsert(10, &axis_vector(4, 3)).unwrap();
+        let token = RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(token.clone());
+        token.cancel();
+
+        let result = search_with_delta(
+            &axis_vector(4, 3),
+            2,
+            ProjectionSearchOptions::new()
+                .with_kernel(crate::KernelPreference::Scalar)
+                .with_task_context(&context),
+            &delta,
+            |q, k, o| base.search(q, k, o),
+        );
+        assert!(matches!(result, Err(ProjectionError::Cancelled(_))));
     }
 }

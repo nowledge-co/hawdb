@@ -32,8 +32,18 @@
 
 use crate::error::{ProjectionError, Result};
 use crate::scan::ProjectionHit;
+use skein_core::RuntimeTaskContext;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
+
+/// Matches `DEFAULT_BUILD_MEMORY_BYTES`/`DEFAULT_SEARCH_MEMORY_BYTES`
+/// elsewhere in this crate.
+const DEFAULT_HNSW_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// Fixed per-node overhead (id, `Vec` headers, `Node` struct fields)
+/// beyond the vector and neighbor-list payloads, folded into the
+/// admission estimate so small corpora with large `m` do not slip under
+/// budget on the payload count alone.
+const HNSW_NODE_FIXED_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HnswBuildConfig {
@@ -45,6 +55,9 @@ pub struct HnswBuildConfig {
     pub ef_construction: usize,
     /// Seed for the deterministic layer-assignment RNG.
     pub seed: u64,
+    /// Upper bound on `approximate_memory_bytes()` (plus fixed per-node
+    /// overhead) admitted at build time; see `build`'s admission check.
+    pub max_working_bytes: usize,
 }
 
 impl HnswBuildConfig {
@@ -54,6 +67,7 @@ impl HnswBuildConfig {
             m_max0: 32,
             ef_construction: 200,
             seed: 0x5eed_5eed_5eed_5eed,
+            max_working_bytes: DEFAULT_HNSW_MEMORY_BYTES,
         }
     }
 
@@ -70,6 +84,11 @@ impl HnswBuildConfig {
 
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
+        self
+    }
+
+    pub fn with_max_working_bytes(mut self, max_working_bytes: usize) -> Self {
+        self.max_working_bytes = max_working_bytes;
         self
     }
 }
@@ -103,10 +122,21 @@ impl HnswIndex {
     /// Build a graph over `entries`. Every vector must have `dimension`
     /// finite coordinates and a unique id; build order does not need to be
     /// sorted (unlike `ProjectionBuilder`).
+    ///
+    /// Fails closed with `ResourceBudgetExceeded` before doing any work if
+    /// the estimated graph size (vectors plus a conservative upper bound
+    /// on neighbor-list edges) would exceed `config.max_working_bytes` --
+    /// mirroring `ProjectionBuildConfig::resource_admission()` for the
+    /// quantized base. `task_context`, when supplied, is checkpointed once
+    /// per inserted node (and, inside each insert, once per beam-search
+    /// step) so a host governor can cancel or time out a large build; this
+    /// module never spawns threads of its own, so `admitted_parallelism`
+    /// does not apply here.
     pub fn build(
         entries: &[(u64, Vec<f32>)],
         dimension: usize,
         config: HnswBuildConfig,
+        task_context: Option<&RuntimeTaskContext>,
     ) -> Result<Self> {
         if dimension == 0 {
             return Err(ProjectionError::InvalidConfiguration(
@@ -118,6 +148,22 @@ impl HnswIndex {
                 "m must be greater than zero".to_string(),
             ));
         }
+        let per_node_bytes = dimension
+            .saturating_mul(std::mem::size_of::<f32>())
+            .saturating_add(
+                config
+                    .m
+                    .saturating_add(config.m_max0)
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            )
+            .saturating_add(HNSW_NODE_FIXED_BYTES);
+        let required = entries.len().saturating_mul(per_node_bytes);
+        if required > config.max_working_bytes {
+            return Err(ProjectionError::ResourceBudgetExceeded {
+                required,
+                available: config.max_working_bytes,
+            });
+        }
         let mut index = Self {
             dimension,
             nodes: Vec::with_capacity(entries.len()),
@@ -127,10 +173,13 @@ impl HnswIndex {
         let mut seen_ids = HashSet::with_capacity(entries.len());
         let mut rng = SplitMix64::new(config.seed);
         for (id, vector) in entries {
+            if let Some(context) = task_context {
+                context.checkpoint()?;
+            }
             if !seen_ids.insert(*id) {
                 return Err(ProjectionError::DuplicateId(*id));
             }
-            index.insert(*id, vector, &mut rng)?;
+            index.insert(*id, vector, &mut rng, task_context)?;
         }
         Ok(index)
     }
@@ -161,7 +210,13 @@ impl HnswIndex {
             .sum()
     }
 
-    fn insert(&mut self, id: u64, vector: &[f32], rng: &mut SplitMix64) -> Result<()> {
+    fn insert(
+        &mut self,
+        id: u64,
+        vector: &[f32],
+        rng: &mut SplitMix64,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<()> {
         if vector.len() != self.dimension {
             return Err(ProjectionError::InvalidVector(format!(
                 "expected dimension {}, got {} for id {id}",
@@ -192,7 +247,7 @@ impl HnswIndex {
 
         let mut ep = entry_point;
         for level in ((node_level + 1)..=top_level).rev() {
-            let found = self.search_layer(vector, norm, &[ep], 1, level, None);
+            let found = self.search_layer(vector, norm, &[ep], 1, level, None, task_context)?;
             if let Some(&(_, nearest)) = found.first() {
                 ep = nearest;
             }
@@ -207,7 +262,8 @@ impl HnswIndex {
                 self.config.ef_construction,
                 level,
                 None,
-            );
+                task_context,
+            )?;
             let m_at_level = if level == 0 {
                 self.config.m_max0
             } else {
@@ -266,6 +322,13 @@ impl HnswIndex {
     /// entirely (used to keep the node being inserted out of its own
     /// candidate list, which cannot otherwise happen since it is not
     /// connected to anything yet).
+    ///
+    /// Checkpoints once per call rather than once per node visited: `ef`
+    /// already bounds one call's work, and both `insert` and `search`
+    /// call this only a handful of times each, so checking at entry gives
+    /// a host governor a bounded cancellation window without adding an
+    /// atomic load to this function's hot inner loop.
+    #[allow(clippy::too_many_arguments)]
     fn search_layer(
         &self,
         query: &[f32],
@@ -274,7 +337,11 @@ impl HnswIndex {
         ef: usize,
         level: usize,
         excluded: Option<u32>,
-    ) -> Vec<(f32, u32)> {
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<Vec<(f32, u32)>> {
+        if let Some(context) = task_context {
+            context.checkpoint()?;
+        }
         let mut visited: HashSet<u32> = entry_points.iter().copied().collect();
         if let Some(excluded) = excluded {
             visited.insert(excluded);
@@ -325,18 +392,21 @@ impl HnswIndex {
             .map(|std::cmp::Reverse(ScoredOrdinal(score, ordinal))| (score, ordinal))
             .collect();
         result.sort_by(|left, right| right.0.total_cmp(&left.0));
-        result
+        Ok(result)
     }
 
     /// Approximate top-`top_k` search. `ef_search` bounds the layer-0
     /// candidate list size and must be at least `top_k` to have any
     /// chance of returning `top_k` results; larger values trade latency
-    /// for recall.
+    /// for recall. `task_context`, when supplied, is checkpointed once
+    /// per layer descended (see `search_layer`'s docs for why that
+    /// granularity, not once per node visited).
     pub fn search(
         &self,
         query: &[f32],
         top_k: usize,
         ef_search: usize,
+        task_context: Option<&RuntimeTaskContext>,
     ) -> Result<Vec<ProjectionHit>> {
         if query.len() != self.dimension {
             return Err(ProjectionError::InvalidVector(format!(
@@ -360,13 +430,14 @@ impl HnswIndex {
         let top_level = self.nodes[entry_point as usize].neighbors.len() - 1;
         let mut ep = entry_point;
         for level in (1..=top_level).rev() {
-            let found = self.search_layer(query, query_norm, &[ep], 1, level, None);
+            let found =
+                self.search_layer(query, query_norm, &[ep], 1, level, None, task_context)?;
             if let Some(&(_, nearest)) = found.first() {
                 ep = nearest;
             }
         }
         let ef = ef_search.max(top_k);
-        let mut found = self.search_layer(query, query_norm, &[ep], ef, 0, None);
+        let mut found = self.search_layer(query, query_norm, &[ep], ef, 0, None, task_context)?;
         found.truncate(top_k);
         Ok(found
             .into_iter()
@@ -454,6 +525,7 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 
     fn axis_vector(dimension: usize, axis: usize) -> Vec<f32> {
         let mut vector = vec![0.0; dimension];
@@ -475,37 +547,85 @@ mod tests {
     #[test]
     fn build_rejects_duplicate_ids() {
         let entries = vec![(1, axis_vector(4, 0)), (1, axis_vector(4, 1))];
-        let result = HnswIndex::build(&entries, 4, HnswBuildConfig::new());
+        let result = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), None);
         assert!(matches!(result, Err(ProjectionError::DuplicateId(1))));
     }
 
     #[test]
     fn build_rejects_dimension_mismatch() {
         let entries = vec![(1, vec![0.0, 1.0])];
-        let result = HnswIndex::build(&entries, 4, HnswBuildConfig::new());
+        let result = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), None);
         assert!(matches!(result, Err(ProjectionError::InvalidVector(_))));
+    }
+
+    #[test]
+    fn build_fails_closed_when_the_estimate_exceeds_the_memory_budget() {
+        let dimension = 128;
+        let entries: Vec<(u64, Vec<f32>)> = (0..1_000)
+            .map(|id| (id, mixed_vector(id, dimension)))
+            .collect();
+        // 1 KiB is nowhere near enough for 1,000 128-dimensional vectors
+        // plus their graph edges; this must be rejected before any work
+        // happens, not after partially building and running out of memory.
+        let config = HnswBuildConfig::new().with_max_working_bytes(1_024);
+        let result = HnswIndex::build(&entries, dimension, config, None);
+        assert!(matches!(
+            result,
+            Err(ProjectionError::ResourceBudgetExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn build_admits_a_small_corpus_under_the_default_budget() {
+        let dimension = 128;
+        let entries: Vec<(u64, Vec<f32>)> = (0..1_000)
+            .map(|id| (id, mixed_vector(id, dimension)))
+            .collect();
+        let result = HnswIndex::build(&entries, dimension, HnswBuildConfig::new(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_honors_a_cancelled_task_context() {
+        let entries = vec![(1, axis_vector(4, 0)), (2, axis_vector(4, 1))];
+        let token = RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(token.clone());
+        token.cancel();
+        let result = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), Some(&context));
+        assert!(matches!(result, Err(ProjectionError::Cancelled(_))));
+    }
+
+    #[test]
+    fn search_honors_a_cancelled_task_context() {
+        let entries = vec![(1, axis_vector(4, 0)), (2, axis_vector(4, 1))];
+        let index = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), None).unwrap();
+        let token = RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(token.clone());
+        token.cancel();
+        let result = index.search(&axis_vector(4, 0), 1, 10, Some(&context));
+        assert!(matches!(result, Err(ProjectionError::Cancelled(_))));
     }
 
     #[test]
     fn search_rejects_non_finite_query() {
         let entries = vec![(1, axis_vector(4, 0))];
-        let index = HnswIndex::build(&entries, 4, HnswBuildConfig::new()).unwrap();
-        let result = index.search(&[f32::NAN, 0.0, 0.0, 0.0], 1, 10);
+        let index = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), None).unwrap();
+        let result = index.search(&[f32::NAN, 0.0, 0.0, 0.0], 1, 10, None);
         assert!(matches!(result, Err(ProjectionError::InvalidVector(_))));
     }
 
     #[test]
     fn empty_index_returns_no_hits() {
-        let index = HnswIndex::build(&[], 4, HnswBuildConfig::new()).unwrap();
-        let hits = index.search(&axis_vector(4, 0), 5, 50).unwrap();
+        let index = HnswIndex::build(&[], 4, HnswBuildConfig::new(), None).unwrap();
+        let hits = index.search(&axis_vector(4, 0), 5, 50, None).unwrap();
         assert!(hits.is_empty());
     }
 
     #[test]
     fn single_node_index_finds_itself() {
         let entries = vec![(42, axis_vector(4, 2))];
-        let index = HnswIndex::build(&entries, 4, HnswBuildConfig::new()).unwrap();
-        let hits = index.search(&axis_vector(4, 2), 5, 50).unwrap();
+        let index = HnswIndex::build(&entries, 4, HnswBuildConfig::new(), None).unwrap();
+        let hits = index.search(&axis_vector(4, 2), 5, 50, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, 42);
         assert!(hits[0].score > 0.99);
@@ -521,12 +641,13 @@ mod tests {
             &entries,
             dimension,
             HnswBuildConfig::new().with_m(16).with_ef_construction(200),
+            None,
         )
         .unwrap();
 
         let query = mixed_vector(9_999, dimension);
         let top_k = 10;
-        let approximate = index.search(&query, top_k, 256).unwrap();
+        let approximate = index.search(&query, top_k, 256, None).unwrap();
 
         let mut exact: Vec<ProjectionHit> = entries
             .iter()
@@ -559,14 +680,14 @@ mod tests {
         let entries: Vec<(u64, Vec<f32>)> = (0..count)
             .map(|id| (id, mixed_vector(id, dimension)))
             .collect();
-        let index = HnswIndex::build(&entries, dimension, HnswBuildConfig::new()).unwrap();
+        let index = HnswIndex::build(&entries, dimension, HnswBuildConfig::new(), None).unwrap();
 
         let top_k = 10;
         let mut total_overlap = 0usize;
         let query_count = 20;
         for query_id in 0..query_count {
             let query = mixed_vector(count + query_id, dimension);
-            let approximate = index.search(&query, top_k, 200).unwrap();
+            let approximate = index.search(&query, top_k, 200, None).unwrap();
             let mut exact: Vec<ProjectionHit> = entries
                 .iter()
                 .map(|(id, vector)| ProjectionHit {

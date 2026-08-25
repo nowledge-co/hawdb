@@ -42,7 +42,7 @@ fn main() {
     let base_build_seconds = base_build_started.elapsed().as_secs_f64();
 
     let hnsw_build_started = Instant::now();
-    let hnsw = HnswIndex::build(&entries, dimension, HnswBuildConfig::new())
+    let hnsw = HnswIndex::build(&entries, dimension, HnswBuildConfig::new(), None)
         .expect("benchmark hnsw index must build");
     let hnsw_build_seconds = hnsw_build_started.elapsed().as_secs_f64();
 
@@ -69,7 +69,7 @@ fn main() {
 
         let started = Instant::now();
         let hnsw_hits = hnsw
-            .search(query, TOP_K, EF_SEARCH)
+            .search(query, TOP_K, EF_SEARCH, None)
             .expect("benchmark hnsw search must succeed");
         hnsw_latencies.push(started.elapsed().as_secs_f64());
         let hnsw_hit_ids: Vec<u64> = hnsw_hits.iter().map(|hit| hit.id).collect();
