@@ -76,6 +76,9 @@ pub fn nowledge_deep_search_graph_seed_limit(page_end: usize) -> usize {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchProjectionGraphDeltaRequest {
+    /// Live graph nodes changed in the selected commits. Nodes without a
+    /// direct search-projection kind remain present so a host batch hydrator
+    /// can resolve application-owned projection dependencies.
     pub upsert_node_ids: Vec<u64>,
     pub delete_document_ids: Vec<String>,
     pub max_operations: Option<usize>,

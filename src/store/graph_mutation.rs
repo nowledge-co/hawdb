@@ -1445,25 +1445,19 @@ impl GraphStore {
     ) {
         for op in ops {
             match op {
-                WalOp::CreateNode {
-                    id,
-                    label,
-                    properties,
-                } => {
-                    if search_projection_document_id_for_label_and_properties(
-                        label, properties, *id,
-                    )
-                    .is_some()
-                    {
-                        upsert_node_ids.insert(*id);
-                    }
+                WalOp::CreateNode { id, .. } => {
+                    // The host batch hydrator may own denormalized projection
+                    // dependencies for nodes that are not direct search
+                    // documents, so every live changed node must remain
+                    // observable in the unified changefeed.
+                    upsert_node_ids.insert(*id);
                 }
                 WalOp::SetNodeProperty { id, property, .. } => {
-                    if let Some(node) = self.nodes.get(id)
-                        && let Some(document_id) =
-                            search_projection_document_id_for_node(catalog, node)
-                    {
-                        if property == "id" {
+                    if let Some(node) = self.nodes.get(id) {
+                        if property == "id"
+                            && let Some(document_id) =
+                                search_projection_document_id_for_node(catalog, node)
+                        {
                             delete_document_ids.insert(document_id);
                         }
                         upsert_node_ids.insert(*id);

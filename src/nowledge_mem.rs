@@ -6509,6 +6509,36 @@ impl NowledgeMemEmbeddedStoreHandle {
             )
     }
 
+    /// Runs bounded unified projection catch-up through the embedded library
+    /// handle and invokes the host hydrator for every selected batch.
+    pub fn catch_up_search_projection_with_batch_hydrator<F>(
+        &self,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let estimated_operations = max_change_operations_per_batch
+            .max(max_projection_operations_per_batch)
+            .saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let _permit = self.admit_typed_maintenance(estimated_input_bytes, 1)?;
+        self.write_store()?
+            .catch_up_search_projection_with_batch_hydrator(
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+            )
+    }
+
     pub fn search_projection_changefeed_readiness(
         &self,
         require_restart_recoverable: bool,
@@ -7158,6 +7188,36 @@ impl NowledgeMemEmbeddedStore {
             max_batches,
             relational_hydrator,
         )
+    }
+
+    pub fn catch_up_search_projection_with_batch_hydrator<F>(
+        &mut self,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let Self {
+            graph,
+            search_projection,
+            ..
+        } = self;
+        let search_projection = require_search_projection_mut(search_projection)?;
+        graph
+            .database()
+            .catch_up_search_projection_with_batch_hydrator(
+                search_projection.index_mut(),
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+            )
     }
 
     pub fn catch_up_search_projection_with_scheduler(
@@ -14362,6 +14422,61 @@ mod tests {
                 .map(|document| document.content.as_str()),
             Some("Embedded relational document")
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn embedded_store_handle_runs_unified_graph_batch_hydrator() {
+        let root = unique_nowledge_mem_test_dir("embedded_graph_batch_projection_catch_up");
+        let search_path = root.join("search");
+        let mut db = Database::new();
+        db.query("CREATE (:Thread {id: 'thread-a', title: 'Updated title'})")
+            .unwrap();
+        let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let projection =
+            NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
+            graph,
+            Some(projection),
+        ));
+        handle.catch_up_search_projection(1, 1).unwrap();
+        handle
+            .with_transaction(|transaction| {
+                transaction
+                    .query("MATCH (t:Thread {id: 'thread-a'}) SET t.title = 'Current title'")?;
+                Ok(())
+            })
+            .unwrap();
+        let mut observed_graph_only_batch = false;
+
+        let report = handle
+            .catch_up_search_projection_with_batch_hydrator(1, 2, 1, |_snapshot, batch| {
+                observed_graph_only_batch = !batch.has_relational_changes()
+                    && batch.graph_delta().upsert_node_ids.len() == 1;
+                Ok(SearchProjectionRelationalDelta {
+                    delta: SearchProjectionDelta {
+                        upserts: vec![SearchProjectionRow {
+                            kind: SearchProjectionKind::Message,
+                            external_id: "derived".to_string(),
+                            title: String::new(),
+                            body: "Graph-dependent document".to_string(),
+                            embedding: None,
+                            source_id: None,
+                            metadata: BTreeMap::new(),
+                        }],
+                        ..SearchProjectionDelta::default()
+                    },
+                    processed_primary_key_count: 0,
+                })
+            })
+            .unwrap();
+
+        assert!(observed_graph_only_batch);
+        assert!(report.complete);
+        drop(handle);
+        let reopened = SearchIndex::open(&search_path).unwrap();
+        assert!(reopened.document("thread:thread-a").is_none());
+        assert!(reopened.document("message:derived").is_some());
         std::fs::remove_dir_all(root).unwrap();
     }
 
