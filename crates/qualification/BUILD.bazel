@@ -210,13 +210,42 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+_PRODUCTION_CONTENT_STORE_MUTATION_TEST = "content_store_row_pages::production_mutation::tests::production_mutation_runner_qualifies_isolated_writer_matrix"
+
 rust_test(
-    name = "skein_qualification_tests",
+    name = "skein_qualification_unit_tests",
+    args = [
+        "--skip",
+        _PRODUCTION_CONTENT_STORE_MUTATION_TEST,
+    ],
     crate = ":skein_qualification",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_production_mutation_tests",
+    size = "large",
+    args = [
+        _PRODUCTION_CONTENT_STORE_MUTATION_TEST,
+        "--exact",
+    ],
+    crate = ":skein_qualification",
+    edition = "2024",
+    tags = ["exclusive"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+test_suite(
+    name = "skein_qualification_tests",
+    tests = [
+        ":skein_content_store_production_mutation_tests",
+        ":skein_qualification_unit_tests",
+    ],
 )
 
 rust_test(
