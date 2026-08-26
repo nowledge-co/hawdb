@@ -332,7 +332,7 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
     for smoke, size, extra_tags in [
         ("fuzz", "enormous", []),
         ("optimizer_summary", "medium", ["exclusive"]),
-        ("optimizer_group_1", "medium", ["exclusive"]),
+        ("optimizer_group_1", "large", ["exclusive"]),
         ("optimizer_group_2", "medium", ["exclusive"]),
         ("optimizer_group_3", "medium", ["exclusive"]),
         ("fixture_contract", "medium", []),
