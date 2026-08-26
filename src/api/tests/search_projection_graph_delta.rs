@@ -549,6 +549,198 @@ fn unified_projection_catch_up_checkpoints_one_mixed_commit() {
 }
 
 #[test]
+fn unified_projection_batch_hydrator_observes_graph_only_commit() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', title: 'Graph document'})")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_batch_hydrator_graph_only");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+    let mut observed_batches = 0usize;
+
+    let report = db
+        .catch_up_search_projection_with_batch_hydrator(
+            &mut search_index,
+            1,
+            2,
+            1,
+            |_snapshot, batch| {
+                observed_batches += 1;
+                assert_eq!(batch.graph_delta().upsert_node_ids.len(), 1);
+                assert!(!batch.has_relational_changes());
+                Ok(SearchProjectionRelationalDelta {
+                    delta: SearchProjectionDelta {
+                        upserts: vec![SearchProjectionRow {
+                            kind: SearchProjectionKind::Message,
+                            external_id: "derived".to_string(),
+                            title: String::new(),
+                            body: "Graph-dependent document".to_string(),
+                            embedding: None,
+                            source_id: None,
+                            metadata: BTreeMap::new(),
+                        }],
+                        ..SearchProjectionDelta::default()
+                    },
+                    processed_primary_key_count: 0,
+                })
+            },
+        )
+        .unwrap();
+
+    assert_eq!(observed_batches, 1);
+    assert!(report.complete);
+    assert!(search_index.document("memory:m1").is_some());
+    assert!(search_index.document("message:derived").is_some());
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_batch_hydrator_failure_keeps_graph_only_watermark_unpublished() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', title: 'Not published'})")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_batch_hydrator_graph_failure");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let error = db
+        .catch_up_search_projection_with_batch_hydrator(
+            &mut search_index,
+            1,
+            1,
+            1,
+            |_snapshot, batch| {
+                assert!(!batch.has_relational_changes());
+                Err(SkeinError::Execution(
+                    "graph dependency hydration failed".to_string(),
+                ))
+            },
+        )
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("graph dependency hydration failed"));
+    assert!(search_index.document("memory:m1").is_none());
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .source_graph_commit_epoch,
+        None
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_batch_hydrator_enforces_fanout_budget() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', title: 'Not published'})")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_batch_hydrator_fanout_budget");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let error = db
+        .catch_up_search_projection_with_batch_hydrator(
+            &mut search_index,
+            1,
+            1,
+            1,
+            |_snapshot, _batch| {
+                Ok(SearchProjectionRelationalDelta {
+                    delta: SearchProjectionDelta {
+                        upserts: vec![SearchProjectionRow {
+                            kind: SearchProjectionKind::Message,
+                            external_id: "derived".to_string(),
+                            title: String::new(),
+                            body: "Over budget".to_string(),
+                            embedding: None,
+                            source_id: None,
+                            metadata: BTreeMap::new(),
+                        }],
+                        ..SearchProjectionDelta::default()
+                    },
+                    processed_primary_key_count: 0,
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("operation count 2 exceeded configured limit 1"));
+    assert!(search_index.document("memory:m1").is_none());
+    assert!(search_index.document("message:derived").is_none());
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .source_graph_commit_epoch,
+        None
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_batch_hydrator_rejects_zero_fanout_budget() {
+    let db = Database::new();
+    let path = unique_test_dir("unified_projection_batch_hydrator_zero_fanout_budget");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let error = db
+        .catch_up_search_projection_with_batch_hydrator(
+            &mut search_index,
+            1,
+            0,
+            1,
+            |_snapshot, _batch| Ok(SearchProjectionRelationalDelta::default()),
+        )
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("max_projection_operations_per_batch must be greater than zero"));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_relational_hydrator_still_skips_graph_only_commit() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', title: 'Graph document'})")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_relational_hydrator_graph_only");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+    let mut invoked = false;
+
+    let report = db
+        .catch_up_search_projection_with_relational(&mut search_index, 1, 1, |_snapshot, _batch| {
+            invoked = true;
+            Ok(SearchProjectionRelationalDelta::default())
+        })
+        .unwrap();
+
+    assert!(!invoked);
+    assert!(report.complete);
+    assert!(search_index.document("memory:m1").is_some());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_relational_hydrator_preserves_zero_budget_error() {
+    let db = Database::new();
+    let path = unique_test_dir("unified_projection_relational_hydrator_zero_budget");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let error = db
+        .catch_up_search_projection_with_relational(&mut search_index, 0, 1, |_snapshot, _batch| {
+            Ok(SearchProjectionRelationalDelta::default())
+        })
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("max_operations_per_batch must be greater than zero"));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn unified_projection_catch_up_failure_does_not_publish_watermark() {
     let mut db = Database::new();
     db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")

@@ -82,26 +82,73 @@ impl Database {
             &SearchProjectionChangeBatch,
         ) -> Result<SearchProjectionRelationalDelta>,
     {
-        self.catch_up_search_projection_with_batch_applier(
+        self.catch_up_search_projection_with_batch_hydrator(
             search_index,
             max_operations_per_batch,
+            max_operations_per_batch,
+            max_batches,
+            |snapshot, batch| {
+                if batch.has_relational_changes() {
+                    relational_hydrator(snapshot, batch)
+                } else {
+                    Ok(SearchProjectionRelationalDelta::default())
+                }
+            },
+        )
+    }
+
+    /// Catches a persistent search projection up through whole unified
+    /// graph-and-relational changefeed commits while allowing the host to
+    /// derive additional projection work from every selected batch.
+    ///
+    /// Unlike [`Self::catch_up_search_projection_with_relational`], the
+    /// hydrator runs for graph-only batches. This supports bounded host-owned
+    /// dependency fan-out without moving application projection semantics into
+    /// Skein. The hydrator must still account for every relational primary key
+    /// in the batch. `max_change_operations_per_batch` bounds changefeed
+    /// selection, while `max_projection_operations_per_batch` independently
+    /// bounds the combined graph and host-derived projection delta. Hydration
+    /// errors, output-budget overflow, and incomplete accounting do not advance
+    /// the projection watermark.
+    pub fn catch_up_search_projection_with_batch_hydrator<F>(
+        &self,
+        search_index: &mut SearchIndex,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        mut batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        validate_catch_up_request(search_index, max_change_operations_per_batch, max_batches)?;
+        if max_projection_operations_per_batch == 0 {
+            return Err(SkeinError::Semantic(
+                "search projection catch-up max_projection_operations_per_batch must be greater than zero"
+                    .to_string(),
+            ));
+        }
+        self.catch_up_search_projection_with_batch_applier(
+            search_index,
+            max_change_operations_per_batch,
             max_batches,
             |database, search_index, max_operations| {
-                let Some(batch) = database.build_search_projection_change_batch_from_freshness(
-                    search_index,
-                    Some(max_operations),
-                )?
+                let Some(mut batch) = database
+                    .build_search_projection_change_batch_from_freshness(
+                        search_index,
+                        Some(max_operations),
+                    )?
                 else {
                     return Ok(None);
                 };
                 let operation_count = batch.operation_count();
-                let relational = if batch.has_relational_changes() {
-                    let mut snapshot = database.begin_read_transaction();
-                    relational_hydrator(&mut snapshot, &batch)?
-                } else {
-                    SearchProjectionRelationalDelta::default()
-                };
-                database.apply_search_projection_change_batch(search_index, batch, relational)?;
+                let mut snapshot = database.begin_read_transaction();
+                let hydrated = batch_hydrator(&mut snapshot, &batch)?;
+                batch.graph_delta.max_operations = Some(max_projection_operations_per_batch);
+                database.apply_search_projection_change_batch(search_index, batch, hydrated)?;
                 Ok(Some(operation_count))
             },
         )
