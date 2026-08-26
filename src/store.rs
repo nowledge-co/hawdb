@@ -5,9 +5,7 @@ use crate::schema::{
     IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
     SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
-use crate::search::{
-    search_projection_document_id_for_label_and_properties, search_projection_document_id_for_node,
-};
+use crate::search::search_projection_document_id_for_node;
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
