@@ -86,6 +86,24 @@ combined delta and its complete-through epoch are applied together; the
 watermark MUST NOT advance when relational work is incomplete or delta
 validation fails.
 
+`Database::catch_up_search_projection_with_relational` is the bounded host
+integration loop for that unified path. It MUST select only whole commits, call
+the host hydrator before projection mutation, apply graph and relational deltas
+together, and checkpoint the persistent `SearchIndex` after every successful
+batch. The operation-per-batch and batch-count limits MUST both be positive.
+Hydrator failure, incomplete primary-key acknowledgement, an indivisible commit
+larger than the operation limit, resume-floor expiry, or a retained rebuild
+barrier MUST fail without publishing a new watermark. Restart resumes from the
+last durable projection checkpoint. The existing graph-only catch-up helper
+continues to reject a selected range containing relational changes.
+
+`NowledgeMemEmbeddedStore` and `NowledgeMemEmbeddedStoreHandle` expose the same
+typed contract. The host hydrator receives one pinned
+`DatabaseReadTransaction` and the exact `SearchProjectionChangeBatch`; it does
+not own batch selection, watermark publication, or checkpoint order. This is
+the supported embedded library seam for application-owned SQL-to-search
+mapping. It is not a CLI, helper-process, or route-specific control plane.
+
 ## Formal refinement
 
 `SkeinProjectionChangefeed.tla` models the following obligations:

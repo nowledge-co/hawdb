@@ -3,7 +3,10 @@ use crate::qos::{
     LocalQosPermit, LocalQosScheduler, QosAdmission, QosAdmissionCode, WorkClass, WorkRequest,
 };
 use crate::search::{SearchIndex, SearchProjectionFreshness};
-use crate::{Result, SkeinError};
+use crate::{
+    DatabaseReadTransaction, Result, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
+    SkeinError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchProjectionCatchUpReport {
@@ -38,6 +41,82 @@ impl Database {
         max_operations_per_batch: usize,
         max_batches: usize,
     ) -> Result<SearchProjectionCatchUpReport> {
+        self.catch_up_search_projection_with_batch_applier(
+            search_index,
+            max_operations_per_batch,
+            max_batches,
+            |database, search_index, max_operations| {
+                let Some(request) = database
+                    .build_search_projection_graph_delta_request_from_freshness(
+                        search_index,
+                        Some(max_operations),
+                    )?
+                else {
+                    return Ok(None);
+                };
+                let report = database.apply_search_projection_graph_delta(search_index, request)?;
+                Ok(Some(report.operation_count))
+            },
+        )
+    }
+
+    /// Catches a persistent search projection up through whole unified
+    /// graph-and-relational changefeed commits.
+    ///
+    /// The hydrator receives the exact selected batch and one pinned database
+    /// read transaction. It must account for every relational primary key in
+    /// the batch. Skein validates that count before applying either the graph
+    /// or relational delta, then checkpoints the combined projection before
+    /// selecting another batch. Hydration errors and incomplete accounting do
+    /// not advance the projection watermark.
+    pub fn catch_up_search_projection_with_relational<F>(
+        &self,
+        search_index: &mut SearchIndex,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+        mut relational_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        self.catch_up_search_projection_with_batch_applier(
+            search_index,
+            max_operations_per_batch,
+            max_batches,
+            |database, search_index, max_operations| {
+                let Some(batch) = database.build_search_projection_change_batch_from_freshness(
+                    search_index,
+                    Some(max_operations),
+                )?
+                else {
+                    return Ok(None);
+                };
+                let operation_count = batch.operation_count();
+                let relational = if batch.has_relational_changes() {
+                    let mut snapshot = database.begin_read_transaction();
+                    relational_hydrator(&mut snapshot, &batch)?
+                } else {
+                    SearchProjectionRelationalDelta::default()
+                };
+                database.apply_search_projection_change_batch(search_index, batch, relational)?;
+                Ok(Some(operation_count))
+            },
+        )
+    }
+
+    fn catch_up_search_projection_with_batch_applier<F>(
+        &self,
+        search_index: &mut SearchIndex,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+        mut apply_next_batch: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(&Database, &mut SearchIndex, usize) -> Result<Option<usize>>,
+    {
         validate_catch_up_request(search_index, max_operations_per_batch, max_batches)?;
         let start = search_index.projection_freshness();
         if start.has_uncheckpointed_changes {
@@ -47,18 +126,14 @@ impl Database {
         let mut applied_batch_count = 0usize;
         let mut applied_operation_count = 0usize;
         while applied_batch_count < max_batches {
-            let Some(request) = self.build_search_projection_graph_delta_request_from_freshness(
-                search_index,
-                Some(max_operations_per_batch),
-            )?
+            let Some(operation_count) =
+                apply_next_batch(self, search_index, max_operations_per_batch)?
             else {
                 break;
             };
-            let report = self.apply_search_projection_graph_delta(search_index, request)?;
             search_index.checkpoint()?;
             applied_batch_count = applied_batch_count.saturating_add(1);
-            applied_operation_count =
-                applied_operation_count.saturating_add(report.operation_count);
+            applied_operation_count = applied_operation_count.saturating_add(operation_count);
         }
 
         Ok(catch_up_report(

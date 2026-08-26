@@ -20,17 +20,18 @@ use crate::search_projection_evidence::{
 use crate::{
     cypher, BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary,
     BackgroundWorkHint, BackgroundWorkPlan, BoundedReadQueryOutput, Database, DatabaseConfig,
-    GraphRagGeneratedQuery, GraphRagSchemaContext, GraphRagSchemaContextOptions,
-    KnowledgeRetrievalOutput, KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosScheduler,
-    LocalQosState, NowledgeGraphStatement, PlanCacheLookup, QueryOutput, QueryStreamOptions,
-    QueryStreamReport, ReadExecutionProfile, Result, ScheduledSearchProjectionCatchUpReport,
-    SearchDocument, SearchIndex, SearchProjectionCatchUpReport,
+    DatabaseReadTransaction, GraphRagGeneratedQuery, GraphRagSchemaContext,
+    GraphRagSchemaContextOptions, KnowledgeRetrievalOutput, KnowledgeRetrievalRequest,
+    LocalQosPolicy, LocalQosScheduler, LocalQosState, NowledgeGraphStatement, PlanCacheLookup,
+    QueryOutput, QueryStreamOptions, QueryStreamReport, ReadExecutionProfile, Result,
+    ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
+    SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
     SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus, SearchProjectionDelta,
     SearchProjectionDeltaReport, SearchProjectionFreshness, SearchProjectionGraphDeltaRequest,
-    SearchProjectionMutationId, SearchProjectionProbeOptions, SearchResultSet, SkeinError,
-    SkeinLightningBootstrapManifest, SkeinLightningInitialImportApplyReport,
-    SkeinLightningInitialImportCheckpoint, SkeinLightningInitialImportCutoverCatchUpReport,
-    SkeinLightningInitialImportDocumentIdentity,
+    SearchProjectionMutationId, SearchProjectionProbeOptions, SearchProjectionRelationalDelta,
+    SearchResultSet, SkeinError, SkeinLightningBootstrapManifest,
+    SkeinLightningInitialImportApplyReport, SkeinLightningInitialImportCheckpoint,
+    SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
     SkeinLightningInitialImportRecoveryReadinessReport, SlowQueryLogRecordSummary,
     StorageResourceProfileLimits, StorageResourceProfileReport, TelemetrySink, Value,
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
@@ -6482,6 +6483,32 @@ impl NowledgeMemEmbeddedStoreHandle {
             .catch_up_search_projection(max_operations_per_batch, max_batches)
     }
 
+    /// Runs bounded unified graph-and-relational projection catch-up through
+    /// the embedded library handle.
+    pub fn catch_up_search_projection_with_relational<F>(
+        &self,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+        relational_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let estimated_operations = max_operations_per_batch.saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let _permit = self.admit_typed_maintenance(estimated_input_bytes, 1)?;
+        self.write_store()?
+            .catch_up_search_projection_with_relational(
+                max_operations_per_batch,
+                max_batches,
+                relational_hydrator,
+            )
+    }
+
     pub fn search_projection_changefeed_readiness(
         &self,
         require_restart_recoverable: bool,
@@ -7104,6 +7131,32 @@ impl NowledgeMemEmbeddedStore {
             search_projection.index_mut(),
             max_operations_per_batch,
             max_batches,
+        )
+    }
+
+    pub fn catch_up_search_projection_with_relational<F>(
+        &mut self,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+        relational_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let Self {
+            graph,
+            search_projection,
+            ..
+        } = self;
+        let search_projection = require_search_projection_mut(search_projection)?;
+        graph.database().catch_up_search_projection_with_relational(
+            search_projection.index_mut(),
+            max_operations_per_batch,
+            max_batches,
+            relational_hydrator,
         )
     }
 
@@ -10397,8 +10450,8 @@ mod tests {
         ProductionEvidenceBinding, ProductionQualificationIdentity, RecoveryMode,
         SearchEmbeddingManifest, SearchIndex, SearchMode, SearchProjectionDelta,
         SearchProjectionFreshness, SearchProjectionKind, SearchProjectionProbeOptions,
-        SearchProjectionRow, SkeinLightningInitialImportCheckpoint,
-        SkeinLightningInitialImportCutoverCatchUpReport,
+        SearchProjectionRelationalDelta, SearchProjectionRow, SkeinError,
+        SkeinLightningInitialImportCheckpoint, SkeinLightningInitialImportCutoverCatchUpReport,
         SkeinLightningInitialImportDocumentIdentity, SkeinLightningInitialImportReadinessInputs,
         StorageOpenTimings, StorageRecoveryReport, StorageResidencyMode,
         StorageResourceProfileLimits, VectorRecallValidationOptions, VectorRecallValidationReport,
@@ -14235,6 +14288,80 @@ mod tests {
         let reopened = SearchIndex::open(&search_path).unwrap();
         assert!(reopened.document("memory:m1").is_some());
         assert!(reopened.document("memory:m2").is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn embedded_store_handle_runs_unified_relational_projection_catch_up() {
+        let root = unique_nowledge_mem_test_dir("embedded_relational_projection_catch_up");
+        let search_path = root.join("search");
+        let mut db = Database::new();
+        db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+            .unwrap();
+        db.query_sql(
+            "INSERT INTO thread_messages (id, body) VALUES (1, 'Embedded relational document')",
+        )
+        .unwrap();
+        let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let projection =
+            NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
+        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
+            graph,
+            Some(projection),
+        ));
+
+        let report = handle
+            .catch_up_search_projection_with_relational(1, 1, |snapshot, batch| {
+                assert_eq!(batch.relational_primary_key_changes().len(), 1);
+                let output = snapshot.query_sql_with_params(
+                    "SELECT body FROM thread_messages WHERE id = $1",
+                    &[Value::Int(1)],
+                )?;
+                let body = match output.rows.as_slice() {
+                    [row] => match row.get("body") {
+                        Some(Value::String(body)) => body.clone(),
+                        value => {
+                            return Err(SkeinError::Execution(format!(
+                                "thread_messages body expected STRING, got {value:?}"
+                            )));
+                        }
+                    },
+                    rows => {
+                        return Err(SkeinError::Execution(format!(
+                            "thread_messages hydration returned {} rows",
+                            rows.len()
+                        )));
+                    }
+                };
+                Ok(SearchProjectionRelationalDelta {
+                    delta: SearchProjectionDelta {
+                        upserts: vec![SearchProjectionRow {
+                            kind: SearchProjectionKind::Message,
+                            external_id: "1".to_string(),
+                            title: String::new(),
+                            body,
+                            embedding: None,
+                            source_id: None,
+                            metadata: BTreeMap::new(),
+                        }],
+                        ..SearchProjectionDelta::default()
+                    },
+                    processed_primary_key_count: 1,
+                })
+            })
+            .unwrap();
+
+        assert!(report.complete);
+        assert_eq!(report.applied_operation_count, 1);
+        assert_eq!(report.end_applied_epoch, report.end_durable_epoch);
+        drop(handle);
+        let reopened = SearchIndex::open(&search_path).unwrap();
+        assert_eq!(
+            reopened
+                .document("message:1")
+                .map(|document| document.content.as_str()),
+            Some("Embedded relational document")
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -73,10 +73,9 @@ use super::{
     KnowledgeThreadMetadataUpdate, KnowledgeTraversalFallbackReasonCode,
     KnowledgeTruncationReasonCode, NowledgeGraphAdapter, NowledgeGraphStatement,
     PlanCacheBypassReason, PlanCacheLookup, QueryOutput, QueryStreamOptions, RecoveryMode,
-    SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
-    NOWLEDGE_DEEP_SEARCH_FILTERED_RANK_WINDOW, NOWLEDGE_DEEP_SEARCH_GRAPH_CONTEXT_MAX_HOPS,
-    NOWLEDGE_DEEP_SEARCH_MIN_GRAPH_SEED_LIMIT, NOWLEDGE_DEEP_SEARCH_MIN_RANK_WINDOW,
-    SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    SearchProjectionGraphDeltaRequest, NOWLEDGE_DEEP_SEARCH_FILTERED_RANK_WINDOW,
+    NOWLEDGE_DEEP_SEARCH_GRAPH_CONTEXT_MAX_HOPS, NOWLEDGE_DEEP_SEARCH_MIN_GRAPH_SEED_LIMIT,
+    NOWLEDGE_DEEP_SEARCH_MIN_RANK_WINDOW, SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
 };
 use crate::optimizer::PlanCost;
 use crate::qos::{

@@ -1,4 +1,69 @@
 use super::*;
+use crate::{
+    RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta, SkeinError,
+};
+
+fn hydrate_thread_message_changes(
+    snapshot: &mut DatabaseReadTransaction,
+    batch: &SearchProjectionChangeBatch,
+) -> crate::Result<SearchProjectionRelationalDelta> {
+    let mut upserts = Vec::new();
+    let mut deletes = Vec::new();
+    let mut processed_primary_key_count = 0usize;
+    for table in batch.relational_primary_key_changes() {
+        if table.table != "thread_messages" {
+            return Err(SkeinError::Execution(format!(
+                "unsupported relational projection table {}",
+                table.table
+            )));
+        }
+        for key in &table.primary_keys {
+            let [RelationalValue::BigInt(message_id)] = key.0.as_slice() else {
+                return Err(SkeinError::Execution(
+                    "thread_messages projection key must be one BIGINT".to_string(),
+                ));
+            };
+            let output = snapshot.query_sql_with_params(
+                "SELECT body FROM thread_messages WHERE id = $1",
+                &[Value::Int(*message_id)],
+            )?;
+            match output.rows.as_slice() {
+                [] => deletes.push(format!("message:{message_id}")),
+                [row] => {
+                    let Some(Value::String(body)) = row.get("body") else {
+                        return Err(SkeinError::Execution(
+                            "thread_messages projection query omitted body".to_string(),
+                        ));
+                    };
+                    upserts.push(SearchProjectionRow {
+                        kind: SearchProjectionKind::Message,
+                        external_id: message_id.to_string(),
+                        title: String::new(),
+                        body: body.clone(),
+                        embedding: None,
+                        source_id: None,
+                        metadata: BTreeMap::new(),
+                    });
+                }
+                rows => {
+                    return Err(SkeinError::Execution(format!(
+                        "thread_messages projection query returned {} rows",
+                        rows.len()
+                    )));
+                }
+            }
+            processed_primary_key_count = processed_primary_key_count.saturating_add(1);
+        }
+    }
+    Ok(SearchProjectionRelationalDelta {
+        delta: SearchProjectionDelta {
+            upserts,
+            deletes,
+            ..SearchProjectionDelta::default()
+        },
+        processed_primary_key_count,
+    })
+}
 
 #[test]
 fn database_facade_builds_search_projection_delta_from_graph_nodes() {
@@ -429,6 +494,169 @@ fn durable_search_projection_catch_up_rejects_unbounded_or_in_memory_usage() {
         .unwrap_err()
         .to_string()
         .contains("max_batches"));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_catch_up_checkpoints_one_mixed_commit() {
+    let mut db = Database::new();
+    db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    let mut transaction = db.begin_transaction();
+    transaction
+        .query("CREATE (:Memory {id: 'm1', title: 'Graph document'})")
+        .unwrap();
+    transaction
+        .query_sql("INSERT INTO thread_messages (id, body) VALUES (1, 'Relational document')")
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let path = unique_test_dir("unified_projection_catch_up_mixed_commit");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+    let report = db
+        .catch_up_search_projection_with_relational(
+            &mut search_index,
+            2,
+            1,
+            hydrate_thread_message_changes,
+        )
+        .unwrap();
+
+    assert!(report.complete);
+    assert_eq!(report.applied_batch_count, 1);
+    assert_eq!(report.applied_operation_count, 2);
+    assert_eq!(report.end_applied_epoch, Some(db.commit_epoch()));
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    assert!(search_index.document("memory:m1").is_some());
+    assert_eq!(
+        search_index
+            .document("message:1")
+            .map(|document| document.content.as_str()),
+        Some("Relational document")
+    );
+
+    drop(search_index);
+    let reopened = SearchIndex::open(&path).unwrap();
+    assert!(reopened.document("memory:m1").is_some());
+    assert!(reopened.document("message:1").is_some());
+    assert_eq!(
+        reopened
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        Some(db.commit_epoch())
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_catch_up_failure_does_not_publish_watermark() {
+    let mut db = Database::new();
+    db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (1, 'Not published')")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_catch_up_failure");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let hydration_error = db
+        .catch_up_search_projection_with_relational(&mut search_index, 1, 1, |_database, _batch| {
+            Err(SkeinError::Execution(
+                "relational hydration failed".to_string(),
+            ))
+        })
+        .unwrap_err();
+    assert!(hydration_error
+        .to_string()
+        .contains("relational hydration failed"));
+    assert!(search_index.document("message:1").is_none());
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .source_graph_commit_epoch,
+        None
+    );
+
+    let incomplete_error = db
+        .catch_up_search_projection_with_relational(&mut search_index, 1, 1, |_database, _batch| {
+            Ok(SearchProjectionRelationalDelta {
+                delta: SearchProjectionDelta {
+                    upserts: vec![SearchProjectionRow {
+                        kind: SearchProjectionKind::Message,
+                        external_id: "1".to_string(),
+                        title: String::new(),
+                        body: "Incomplete".to_string(),
+                        embedding: None,
+                        source_id: None,
+                        metadata: BTreeMap::new(),
+                    }],
+                    ..SearchProjectionDelta::default()
+                },
+                processed_primary_key_count: 0,
+            })
+        })
+        .unwrap_err();
+    assert!(incomplete_error
+        .to_string()
+        .contains("processed 0 primary keys"));
+    assert!(search_index.document("message:1").is_none());
+    assert_eq!(
+        search_index
+            .projection_freshness()
+            .source_graph_commit_epoch,
+        None
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn unified_projection_catch_up_resumes_from_durable_batch_after_reopen() {
+    let mut db = Database::new();
+    db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (1, 'First')")
+        .unwrap();
+    db.query_sql("INSERT INTO thread_messages (id, body) VALUES (2, 'Second')")
+        .unwrap();
+    let path = unique_test_dir("unified_projection_catch_up_resume");
+    let mut search_index = SearchIndex::open(&path).unwrap();
+
+    let first = db
+        .catch_up_search_projection_with_relational(
+            &mut search_index,
+            1,
+            1,
+            hydrate_thread_message_changes,
+        )
+        .unwrap();
+    assert!(!first.complete);
+    assert_eq!(first.applied_batch_count, 1);
+    assert_eq!(first.applied_operation_count, 1);
+    assert_eq!(first.end_applied_epoch, first.end_durable_epoch);
+    assert!(search_index.document("message:1").is_some());
+    assert!(search_index.document("message:2").is_none());
+
+    drop(search_index);
+    let mut reopened = SearchIndex::open(&path).unwrap();
+    let second = db
+        .catch_up_search_projection_with_relational(
+            &mut reopened,
+            1,
+            1,
+            hydrate_thread_message_changes,
+        )
+        .unwrap();
+    assert!(second.complete);
+    assert_eq!(second.start_durable_epoch, first.end_durable_epoch);
+    assert_eq!(second.applied_batch_count, 1);
+    assert_eq!(second.applied_operation_count, 1);
+    assert!(reopened.document("message:1").is_some());
+    assert!(reopened.document("message:2").is_some());
+    assert_eq!(
+        reopened
+            .projection_freshness()
+            .durable_source_graph_commit_epoch,
+        Some(db.commit_epoch())
+    );
     std::fs::remove_dir_all(path).unwrap();
 }
 
