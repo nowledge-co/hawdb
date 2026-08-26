@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 24 ]]; then
-  echo "usage: $0 SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ BENCHMARK..." >&2
+if [[ "$#" -ne 25 ]]; then
+  echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ BENCHMARK..." >&2
   exit 2
 fi
 
+readonly smoke="$1"
+shift
 readonly skein_cli="$1"
 readonly skein_shadow_self="$2"
 readonly previous_wrapper_adapter="$3"
@@ -58,14 +60,10 @@ assert storage["success"] is True
 PY
 }
 
-run_optimizer_smoke() {
+run_optimizer_summary_smoke() {
   local root="$work_root/optimizer-smoke"
   mkdir -p "$root"
   "$optimizer_smoke" > "$root/output.txt"
-  local benchmark
-  for benchmark in "${benchmark_smokes[@]:1}"; do
-    "$benchmark" > "$root/$(basename "$benchmark").txt"
-  done
   python3 - "$root/output.txt" <<'PY'
 import json
 import sys
@@ -100,6 +98,17 @@ for summary in summaries:
     assert isinstance(summary["class_counts"], dict) and summary["class_counts"], "class_counts must be non-empty"
     assert isinstance(summary["fingerprint"], str) and summary["fingerprint"], "fingerprint must be a non-empty string"
 PY
+}
+
+run_optimizer_benchmark_group_smoke() {
+  local start="$1"
+  local length="$2"
+  local root="$work_root/optimizer-benchmarks-$start"
+  mkdir -p "$root"
+  local benchmark
+  for benchmark in "${benchmark_smokes[@]:start:length}"; do
+    "$benchmark" > "$root/$(basename "$benchmark").txt"
+  done
 }
 
 run_fixture_contract_smoke() {
@@ -626,11 +635,20 @@ RS
   grep -q "nowledge migration gate is blocked" "$root/gate.err"
 }
 
-run_fuzz_smokes
-run_optimizer_smoke
-run_fixture_contract_smoke
-run_storage_recovery_smoke
-run_background_maintenance_smoke
-run_previous_wrapper_adapter_smoke
-run_migration_gate_smoke
-run_migration_gate_blocked_smoke
+case "$smoke" in
+  fuzz) run_fuzz_smokes ;;
+  optimizer_summary) run_optimizer_summary_smoke ;;
+  optimizer_group_1) run_optimizer_benchmark_group_smoke 1 6 ;;
+  optimizer_group_2) run_optimizer_benchmark_group_smoke 7 6 ;;
+  optimizer_group_3) run_optimizer_benchmark_group_smoke 13 6 ;;
+  fixture_contract) run_fixture_contract_smoke ;;
+  storage_recovery) run_storage_recovery_smoke ;;
+  background_maintenance) run_background_maintenance_smoke ;;
+  previous_wrapper_adapter) run_previous_wrapper_adapter_smoke ;;
+  migration_gate) run_migration_gate_smoke ;;
+  migration_gate_blocked) run_migration_gate_blocked_smoke ;;
+  *)
+    echo "unknown Linux CI smoke: $smoke" >&2
+    exit 2
+    ;;
+esac

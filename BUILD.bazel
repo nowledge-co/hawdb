@@ -128,8 +128,14 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+_SKEIN_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
+
 rust_test(
-    name = "skein_unit_tests",
+    name = "skein_unit_fast_tests",
+    args = [
+        "--skip",
+        _SKEIN_STORAGE_CRASH_MATRIX_TEST,
+    ],
     crate = ":skein",
     crate_features = _SKEIN_DEFAULT_FEATURES,
     edition = "2024",
@@ -139,6 +145,32 @@ rust_test(
     ),
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_unit_storage_crash_matrix_tests",
+    size = "large",
+    args = [
+        _SKEIN_STORAGE_CRASH_MATRIX_TEST,
+        "--exact",
+    ],
+    crate = ":skein",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+test_suite(
+    name = "skein_unit_tests",
+    tests = [
+        ":skein_unit_fast_tests",
+        ":skein_unit_storage_crash_matrix_tests",
+    ],
 )
 
 rust_test(
@@ -267,26 +299,68 @@ rust_binary(
 
 skein_benchmark_binaries(_SKEIN_DEFAULT_FEATURES)
 
-sh_test(
+_SKEIN_LINUX_CI_SMOKE_ARGS = [
+    "$(location :skein_cli)",
+    "$(location :skein_shadow_self)",
+    "$(location :nowledge_previous_wrapper_shadow_adapter)",
+    "$(location //crates/fuzz:skein_append_fuzz)",
+    "$(location //crates/fuzz:skein_storage_fuzz)",
+] + [
+    "$(location %s)" % target
+    for target in SKEIN_BENCHMARK_TARGETS
+]
+
+_SKEIN_LINUX_CI_SMOKE_DATA = [
+    ":nowledge_previous_wrapper_shadow_adapter",
+    ":skein_cli",
+    ":skein_shadow_self",
+    "//crates/fuzz:skein_append_fuzz",
+    "//crates/fuzz:skein_storage_fuzz",
+] + SKEIN_BENCHMARK_TARGETS
+
+# Optimizer benchmarks emit resource-sensitive evidence. Give each group an
+# independent deadline, but preserve the original serial execution semantics.
+[
+    sh_test(
+        name = "skein_linux_ci_%s_smoke_test" % smoke,
+        size = size,
+        srcs = ["scripts/check-linux-ci-smokes.sh"],
+        args = [smoke] + _SKEIN_LINUX_CI_SMOKE_ARGS,
+        data = _SKEIN_LINUX_CI_SMOKE_DATA,
+        tags = ["manual"] + extra_tags,
+    )
+    for smoke, size, extra_tags in [
+        ("fuzz", "enormous", []),
+        ("optimizer_summary", "medium", ["exclusive"]),
+        ("optimizer_group_1", "medium", ["exclusive"]),
+        ("optimizer_group_2", "medium", ["exclusive"]),
+        ("optimizer_group_3", "medium", ["exclusive"]),
+        ("fixture_contract", "medium", []),
+        ("storage_recovery", "medium", []),
+        ("background_maintenance", "medium", []),
+        ("previous_wrapper_adapter", "medium", []),
+        ("migration_gate", "large", []),
+        ("migration_gate_blocked", "medium", []),
+    ]
+]
+
+test_suite(
     name = "skein_linux_ci_smoke_tests",
-    size = "large",
-    srcs = ["scripts/check-linux-ci-smokes.sh"],
-    args = [
-        "$(location :skein_cli)",
-        "$(location :skein_shadow_self)",
-        "$(location :nowledge_previous_wrapper_shadow_adapter)",
-        "$(location //crates/fuzz:skein_append_fuzz)",
-        "$(location //crates/fuzz:skein_storage_fuzz)",
-    ] + [
-        "$(location %s)" % target
-        for target in SKEIN_BENCHMARK_TARGETS
+    tests = [
+        ":skein_linux_ci_%s_smoke_test" % smoke
+        for smoke in [
+            "fuzz",
+            "optimizer_summary",
+            "optimizer_group_1",
+            "optimizer_group_2",
+            "optimizer_group_3",
+            "fixture_contract",
+            "storage_recovery",
+            "background_maintenance",
+            "previous_wrapper_adapter",
+            "migration_gate",
+            "migration_gate_blocked",
+        ]
     ],
-    data = [
-        ":nowledge_previous_wrapper_shadow_adapter",
-        ":skein_cli",
-        ":skein_shadow_self",
-        "//crates/fuzz:skein_append_fuzz",
-        "//crates/fuzz:skein_storage_fuzz",
-    ] + SKEIN_BENCHMARK_TARGETS,
     tags = ["manual"],
 )
