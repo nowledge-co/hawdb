@@ -210,13 +210,23 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-_PRODUCTION_CONTENT_STORE_MUTATION_TEST = "content_store_row_pages::production_mutation::tests::production_mutation_runner_qualifies_isolated_writer_matrix"
+_INITIAL_CONTENT_STORE_ROW_PAGE_TEST = "content_store_row_pages::tests::initial_content_store_tables_are_qualified_through_canonical_row_pages"
+_PRODUCTION_CONTENT_STORE_MUTATION_TESTS = "content_store_row_pages::production_mutation::tests::"
+_PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_TESTS = "content_store_row_pages::production_overflow_compaction::tests::"
+_PRODUCTION_CONTENT_STORE_READ_TESTS = "content_store_row_pages::production::tests::"
+_QUALIFICATION_CONTENT_STORE_TESTS = "content_store_"
+_QUALIFICATION_PRODUCTION_TESTS = "production_"
+_QUALIFICATION_RELEASE_BUNDLE_TESTS = "release_bundle::tests::"
 
 rust_test(
-    name = "skein_qualification_unit_tests",
+    name = "skein_qualification_misc_tests",
     args = [
         "--skip",
-        _PRODUCTION_CONTENT_STORE_MUTATION_TEST,
+        _QUALIFICATION_CONTENT_STORE_TESTS,
+        "--skip",
+        _QUALIFICATION_PRODUCTION_TESTS,
+        "--skip",
+        _QUALIFICATION_RELEASE_BUNDLE_TESTS,
     ],
     crate = ":skein_qualification",
     edition = "2024",
@@ -226,12 +236,98 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_content_store_production_mutation_tests",
+    name = "skein_qualification_content_store_tests",
+    args = [
+        _QUALIFICATION_CONTENT_STORE_TESTS,
+        "--skip",
+        _INITIAL_CONTENT_STORE_ROW_PAGE_TEST,
+        "--skip",
+        _PRODUCTION_CONTENT_STORE_MUTATION_TESTS,
+        "--skip",
+        _PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_TESTS,
+        "--skip",
+        _PRODUCTION_CONTENT_STORE_READ_TESTS,
+        "--skip",
+        _QUALIFICATION_RELEASE_BUNDLE_TESTS,
+    ],
+    crate = ":skein_qualification",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_qualification_production_tests",
     size = "large",
     args = [
-        _PRODUCTION_CONTENT_STORE_MUTATION_TEST,
+        _QUALIFICATION_PRODUCTION_TESTS,
+        "--skip",
+        _QUALIFICATION_CONTENT_STORE_TESTS,
+        "--skip",
+        _QUALIFICATION_RELEASE_BUNDLE_TESTS,
+    ],
+    crate = ":skein_qualification",
+    edition = "2024",
+    tags = ["exclusive"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_qualification_release_bundle_tests",
+    args = [_QUALIFICATION_RELEASE_BUNDLE_TESTS],
+    crate = ":skein_qualification",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_initial_row_page_qualification_tests",
+    size = "large",
+    args = [
+        _INITIAL_CONTENT_STORE_ROW_PAGE_TEST,
         "--exact",
     ],
+    crate = ":skein_qualification",
+    edition = "2024",
+    tags = ["exclusive"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_production_mutation_tests",
+    size = "large",
+    args = [_PRODUCTION_CONTENT_STORE_MUTATION_TESTS],
+    crate = ":skein_qualification",
+    edition = "2024",
+    tags = ["exclusive"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_production_overflow_compaction_tests",
+    size = "large",
+    args = [_PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_TESTS],
+    crate = ":skein_qualification",
+    edition = "2024",
+    tags = ["exclusive"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_content_store_production_read_tests",
+    size = "large",
+    args = [_PRODUCTION_CONTENT_STORE_READ_TESTS],
     crate = ":skein_qualification",
     edition = "2024",
     tags = ["exclusive"],
@@ -243,8 +339,14 @@ rust_test(
 test_suite(
     name = "skein_qualification_tests",
     tests = [
+        ":skein_content_store_initial_row_page_qualification_tests",
         ":skein_content_store_production_mutation_tests",
-        ":skein_qualification_unit_tests",
+        ":skein_content_store_production_overflow_compaction_tests",
+        ":skein_content_store_production_read_tests",
+        ":skein_qualification_content_store_tests",
+        ":skein_qualification_misc_tests",
+        ":skein_qualification_production_tests",
+        ":skein_qualification_release_bundle_tests",
     ],
 )
 
