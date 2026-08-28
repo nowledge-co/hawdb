@@ -1,6 +1,6 @@
 use super::*;
 use crate::graph::costing::estimate_physical_plan_cost;
-use crate::RuleEvent;
+use crate::{RuleEvent, StageStats};
 use skein_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
 
 const MAX_EXACT_UNION_LOOKUP_VALUES: usize = 64;
@@ -223,11 +223,15 @@ pub(super) fn index_seek_from_conjunction(
     label: &str,
     catalog: &OptimizerCatalog,
     decisions: &mut Vec<String>,
-    _stage_events: &mut Vec<StageTrace>,
+    stage_events: &mut Vec<StageTrace>,
 ) -> Option<PhysicalPlan> {
     let mut candidates = Vec::new();
-    push_candidate(
-        &mut candidates,
+    let mut evaluated_rule_count = 0usize;
+    let mut evaluate_candidate = |candidate, rule_id| {
+        evaluated_rule_count = evaluated_rule_count.saturating_add(1);
+        push_candidate(&mut candidates, candidate, rule_id, catalog);
+    };
+    evaluate_candidate(
         composite_range_index_seek_candidate(
             predicates,
             full_predicate,
@@ -236,29 +240,28 @@ pub(super) fn index_seek_from_conjunction(
             catalog,
         ),
         "node_composite_range_seek",
-        catalog,
     );
-    push_candidate(
-        &mut candidates,
+    evaluate_candidate(
         composite_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
         "node_composite_index_seek",
-        catalog,
     );
-    push_candidate(
-        &mut candidates,
+    evaluate_candidate(
         equality_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog)
             .map(|(_, plan, decision)| (plan, decision)),
         "node_conjunction_index_seek",
-        catalog,
     );
-    push_candidate(
-        &mut candidates,
+    evaluate_candidate(
         range_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
         "node_range_index_seek",
-        catalog,
     );
 
     let alternative_count = candidates.len();
+    stage_events.push(ACCESS_PATH_SELECTION_STAGE.trace(
+        StageStats::new(1, alternative_count).with_rule_counts(
+            alternative_count,
+            evaluated_rule_count.saturating_sub(alternative_count),
+        ),
+    ));
     candidates.sort_by(|left, right| {
         left.cost
             .cmp(&right.cost)

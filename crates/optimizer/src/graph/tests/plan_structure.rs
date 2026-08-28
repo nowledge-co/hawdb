@@ -1243,4 +1243,13 @@ fn conjunction_access_path_compares_equality_and_range_candidates_by_total_cost(
         .decisions
         .iter()
         .any(|decision| { decision.contains("alternatives_considered=2") }));
+    let access_path_stage = trace
+        .stage_events
+        .iter()
+        .find(|event| event.name() == "access_path_selection")
+        .expect("conjunction access path selection should emit a stage trace");
+    assert_eq!(access_path_stage.stats().input_count, 1);
+    assert_eq!(access_path_stage.stats().output_count, 2);
+    assert_eq!(access_path_stage.stats().applied_rules, 2);
+    assert_eq!(access_path_stage.stats().skipped_rules, 2);
 }
