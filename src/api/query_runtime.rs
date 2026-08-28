@@ -55,11 +55,12 @@ impl PreparedRuntimeQuery {
     pub(super) fn into_execution(
         self,
         catalog: &Catalog,
-        store: &GraphStore,
+        _store: &GraphStore,
     ) -> (String, PreparedRuntimeExecution) {
-        let environment_matches = self.optimizer_environment.as_ref().is_some_and(|prepared| {
-            prepared == &OptimizerPlanningCache::environment_hint(catalog, store)
-        });
+        let environment_matches = self
+            .optimizer_environment
+            .as_ref()
+            .is_some_and(|prepared| prepared.is_execution_compatible(catalog));
         (
             self.cypher_text,
             PreparedRuntimeExecution {

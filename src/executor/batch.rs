@@ -3,6 +3,7 @@
 use super::*;
 use skein_executor::observer::ExecutionObserver;
 use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+use std::cell::Cell;
 
 fn charge_graph_algorithm_memory(
     algorithm: &'static str,
@@ -243,7 +244,7 @@ impl<'a> BatchPlanRef<'a> {
         Self(plan)
     }
 
-    fn plan(self) -> &'a PhysicalPlan {
+    pub(super) fn plan(self) -> &'a PhysicalPlan {
         self.0
     }
 }
@@ -300,10 +301,11 @@ pub(super) fn execute_binding_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let plan = BatchPlanRef::try_new(plan).ok_or_else(|| {
+    let prepared = PreparedPhysicalPlan::prepare(plan, context.store, context.memory);
+    let plan = prepared.batch().ok_or_else(|| {
         SkeinError::Execution(format!(
             "physical operator '{}' does not support batch execution",
-            plan.kind().as_str()
+            prepared.plan().kind().as_str()
         ))
     })?;
     execute_prepared_binding_batches(plan, context, execution_limit, emit)
@@ -456,9 +458,7 @@ fn execute_binding_batches_inner(
             variable,
             predicate,
         } => {
-            let bindings =
-                execute_source_segment_scan(variable, predicate, context, execution_limit)?;
-            emit_owned_binding_batches(bindings, memory.batch_rows.get(), emit)
+            stream_source_segment_scan_batches(variable, predicate, context, execution_limit, emit)
         }
         PhysicalPlan::IndexNodeSeek {
             variable,
@@ -630,6 +630,7 @@ fn execute_binding_batches_inner(
                 memory.blocking_operator_bytes,
                 context.memory_ledger,
                 context.observer,
+                context.task_context,
             )?;
             bindings.emit_batches(memory.batch_rows.get(), emit)
         }
@@ -919,6 +920,7 @@ fn execute_binding_batches_inner(
                             account: Some(&count_account),
                         },
                         context.observer,
+                        context.task_context,
                     ) {
                         Ok(count) => total = total.saturating_add(count),
                         Err(error) => {
@@ -1083,7 +1085,7 @@ fn execute_binding_batches_inner(
                 "FilterExec relationship predicate",
                 context.memory.blocking_operator_bytes,
             );
-            let mut emitted = 0usize;
+            let emitted = Cell::new(0usize);
             execute_prepared_binding_batches(
                 BatchPlanRef::descendant(input),
                 context,
@@ -1092,11 +1094,20 @@ fn execute_binding_batches_inner(
                     let remaining = execution_limit
                         .output_rows
                         .unwrap_or(usize::MAX)
-                        .saturating_sub(emitted);
+                        .saturating_sub(emitted.get());
                     if remaining == 0 {
                         return Ok(BatchControl::Stop);
                     }
-                    let mut filtered = Vec::with_capacity(batch.len().min(remaining));
+                    let mut filtered = TransformBatchBuilder::new(
+                        "FilterExec",
+                        context.memory.batch_rows.get(),
+                        context.memory.batch_payload_bytes,
+                        context.memory_ledger,
+                    )?;
+                    let mut emit_filtered = |output: BindingBatch| {
+                        emitted.set(emitted.get().saturating_add(output.len()));
+                        emit(output)
+                    };
                     for binding in batch {
                         if evaluate_predicate_observed(
                             predicate,
@@ -1109,17 +1120,26 @@ fn execute_binding_batches_inner(
                                 account: Some(&predicate_account),
                             },
                         )? {
+                            filtered.reserve_before_allocation()?;
                             filtered.push(binding);
-                            if filtered.len() == remaining {
+                            if filtered.is_full()
+                                && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
+                            {
+                                return Ok(BatchControl::Stop);
+                            }
+                            if execution_limit
+                                .is_reached(emitted.get().saturating_add(filtered.len()))
+                            {
                                 break;
                             }
                         }
                     }
-                    emitted = emitted.saturating_add(filtered.len());
-                    if !filtered.is_empty() && emit(filtered)? == BatchControl::Stop {
+                    if !filtered.is_empty()
+                        && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
+                    {
                         return Ok(BatchControl::Stop);
                     }
-                    Ok(if execution_limit.is_reached(emitted) {
+                    Ok(if execution_limit.is_reached(emitted.get()) {
                         BatchControl::Stop
                     } else {
                         BatchControl::Continue
@@ -1133,14 +1153,24 @@ fn execute_binding_batches_inner(
             {
                 return result;
             }
-            let mut emitted = 0usize;
+            let emitted = Cell::new(0usize);
             execute_prepared_binding_batches(
                 BatchPlanRef::descendant(input),
                 context,
                 execution_limit,
                 &mut |batch| {
-                    let mut projected = Vec::with_capacity(batch.len());
+                    let mut projected = TransformBatchBuilder::new(
+                        "ProjectExec",
+                        context.memory.batch_rows.get(),
+                        context.memory.batch_payload_bytes,
+                        context.memory_ledger,
+                    )?;
+                    let mut emit_projected = |output: BindingBatch| {
+                        emitted.set(emitted.get().saturating_add(output.len()));
+                        emit(output)
+                    };
                     for binding in batch {
+                        projected.reserve_before_allocation()?;
                         let mut values = BTreeMap::new();
                         for item in items {
                             let value = project_value(item, catalog, &binding)?;
@@ -1151,12 +1181,18 @@ fn execute_binding_batches_inner(
                             nodes: binding.nodes,
                             relationships: binding.relationships,
                         });
+                        if projected.is_full()
+                            && projected.emit(&mut emit_projected)? == BatchControl::Stop
+                        {
+                            return Ok(BatchControl::Stop);
+                        }
                     }
-                    emitted = emitted.saturating_add(projected.len());
-                    if !projected.is_empty() && emit(projected)? == BatchControl::Stop {
+                    if !projected.is_empty()
+                        && projected.emit(&mut emit_projected)? == BatchControl::Stop
+                    {
                         return Ok(BatchControl::Stop);
                     }
-                    Ok(if execution_limit.is_reached(emitted) {
+                    Ok(if execution_limit.is_reached(emitted.get()) {
                         BatchControl::Stop
                     } else {
                         BatchControl::Continue
@@ -1169,8 +1205,8 @@ fn execute_binding_batches_inner(
             limit,
             input,
         } => {
-            let mut skipped = 0usize;
-            let mut emitted = 0usize;
+            let skipped = Cell::new(0usize);
+            let emitted = Cell::new(0usize);
             let output_cap = match (limit, execution_limit.output_rows) {
                 (Some(limit), Some(parent)) => (*limit).min(parent),
                 (Some(limit), None) => *limit,
@@ -1184,22 +1220,35 @@ fn execute_binding_batches_inner(
                     output_rows: Some(offset.saturating_add(output_cap)),
                 },
                 &mut |batch| {
-                    let mut output = Vec::new();
+                    let mut output = TransformBatchBuilder::new(
+                        "LimitExec",
+                        context.memory.batch_rows.get(),
+                        context.memory.batch_payload_bytes,
+                        context.memory_ledger,
+                    )?;
+                    let mut emit_output = |batch: BindingBatch| {
+                        emitted.set(emitted.get().saturating_add(batch.len()));
+                        emit(batch)
+                    };
                     for binding in batch {
-                        if skipped < *offset {
-                            skipped += 1;
+                        if skipped.get() < *offset {
+                            skipped.set(skipped.get().saturating_add(1));
                             continue;
                         }
-                        if emitted == output_cap {
+                        if emitted.get() == output_cap {
                             break;
                         }
+                        output.reserve_before_allocation()?;
                         output.push(binding);
-                        emitted += 1;
+                        if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop
+                        {
+                            return Ok(BatchControl::Stop);
+                        }
                     }
-                    if !output.is_empty() && emit(output)? == BatchControl::Stop {
+                    if !output.is_empty() && output.emit(&mut emit_output)? == BatchControl::Stop {
                         return Ok(BatchControl::Stop);
                     }
-                    Ok(if emitted == output_cap {
+                    Ok(if emitted.get() == output_cap {
                         BatchControl::Stop
                     } else {
                         BatchControl::Continue

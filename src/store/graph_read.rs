@@ -3037,7 +3037,7 @@ impl GraphStore {
         max_coalesced_bytes: NonZeroU64,
         max_wave_bytes: NonZeroU64,
     ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        self.collect_published_source_scan_candidates(
             predicate,
             io_depth,
             max_coalesced_bytes,
@@ -3055,7 +3055,7 @@ impl GraphStore {
         max_wave_bytes: NonZeroU64,
         task_context: &RuntimeTaskContext,
     ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        self.collect_published_source_scan_candidates(
             predicate,
             io_depth,
             max_coalesced_bytes,
@@ -3065,7 +3065,7 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn read_published_source_scan_candidates_bounded(
+    pub(crate) fn visit_published_source_scan_candidates_bounded(
         &self,
         predicate: &ScanPredicate,
         io_depth: NonZeroUsize,
@@ -3073,18 +3073,20 @@ impl GraphStore {
         max_wave_bytes: NonZeroU64,
         max_candidate_bytes: NonZeroUsize,
         task_context: Option<&RuntimeTaskContext>,
-    ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
+        self.visit_published_source_scan_candidates_internal(
             predicate,
             io_depth,
             max_coalesced_bytes,
             max_wave_bytes,
             Some(max_candidate_bytes.get()),
             task_context,
+            consumer,
         )
     }
 
-    fn read_published_source_scan_candidates_internal(
+    fn collect_published_source_scan_candidates(
         &self,
         predicate: &ScanPredicate,
         io_depth: NonZeroUsize,
@@ -3093,15 +3095,56 @@ impl GraphStore {
         max_candidate_bytes: Option<usize>,
         task_context: Option<&RuntimeTaskContext>,
     ) -> Result<SourceScanCandidateRead> {
+        let mut rows = Vec::new();
+        let visit = self.visit_published_source_scan_candidates_internal(
+            predicate,
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_candidate_bytes,
+            task_context,
+            &mut |row| {
+                rows.push(row);
+                Ok(GraphScanControl::Continue)
+            },
+        )?;
+        match visit {
+            SourceScanCandidateVisit::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                ..
+            } => Ok(SourceScanCandidateRead::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                rows,
+            }),
+            SourceScanCandidateVisit::Fallback(reason) => {
+                Ok(SourceScanCandidateRead::Fallback(reason))
+            }
+        }
+    }
+
+    fn visit_published_source_scan_candidates_internal(
+        &self,
+        predicate: &ScanPredicate,
+        io_depth: NonZeroUsize,
+        max_coalesced_bytes: NonZeroU64,
+        max_wave_bytes: NonZeroU64,
+        max_candidate_bytes: Option<usize>,
+        task_context: Option<&RuntimeTaskContext>,
+        consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
         let plan = self.plan_published_source_scan(predicate);
         let ScanSegmentAccessPlan::Read(plan) = plan else {
             let ScanSegmentAccessPlan::Fallback(reason) = plan else {
                 unreachable!("source scan plan is read or fallback")
             };
-            return Ok(SourceScanCandidateRead::Fallback(reason));
+            return Ok(SourceScanCandidateVisit::Fallback(reason));
         };
         let Some(durable) = &self.durable else {
-            return Ok(SourceScanCandidateRead::Fallback(
+            return Ok(SourceScanCandidateVisit::Fallback(
                 ScanSegmentFallback::NoManifest,
             ));
         };
@@ -3135,8 +3178,8 @@ impl GraphStore {
             .collect::<BTreeMap<_, _>>();
         let schedule = SegmentReadScheduler::new(io_depth, max_coalesced_bytes)
             .schedule_with_wave_budget(ranges.values().cloned(), max_wave_bytes);
-        let mut rows = Vec::new();
         let mut candidate_bytes = 0usize;
+        let mut candidate_count = 0usize;
         let mut consume = |payload: SegmentReadPayload| {
             for segment_id in &payload.range.segment_ids {
                 let range = ranges.get(segment_id).ok_or_else(|| {
@@ -3193,17 +3236,20 @@ impl GraphStore {
                         )));
                     }
                     candidate_bytes = next_candidate_bytes;
-                    rows.push(row);
+                    candidate_count = candidate_count.saturating_add(1);
+                    if consumer(row)? == GraphScanControl::Stop {
+                        return Ok(skein_storage::SegmentReadControl::Stop);
+                    }
                 }
             }
-            Ok::<_, SkeinError>(())
+            Ok::<_, SkeinError>(skein_storage::SegmentReadControl::Continue)
         };
         let executor = SegmentReadExecutor::new(max_wave_bytes);
         let report = match task_context {
             Some(task_context) => {
-                executor.execute_with_context(reader, &schedule, task_context, &mut consume)
+                executor.execute_with_context_control(reader, &schedule, task_context, &mut consume)
             }
-            None => executor.execute(reader, &schedule, &mut consume),
+            None => executor.execute_control(reader, &schedule, &mut consume),
         }
         .map_err(|error| match error {
             SegmentReadExecutionError::Stopped(reason) => {
@@ -3211,11 +3257,11 @@ impl GraphStore {
             }
             error => SkeinError::StorageIntegrity(error.to_string()),
         })?;
-        Ok(SourceScanCandidateRead::Rows {
+        Ok(SourceScanCandidateVisit::Rows {
             graph_epoch: plan.graph_epoch,
             skipped_segment_count: plan.skipped_segment_count,
             report,
-            rows,
+            candidate_count,
         })
     }
 

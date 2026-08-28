@@ -1378,6 +1378,34 @@ fn batch_plan_ref_rejects_an_unsupported_descendant() {
 }
 
 #[test]
+fn prepared_physical_plan_separates_streaming_and_materialized_execution() {
+    let streaming = PhysicalPlan::SeqNodeScan {
+        variable: "node".to_string(),
+        label: "Item".to_string(),
+    };
+    let mutation = PhysicalPlan::CreateNode {
+        label: "Item".to_string(),
+        properties: BTreeMap::new(),
+    };
+
+    let store = GraphStore::in_memory();
+    let memory = ExecutionMemoryConfig::default();
+    let streaming = PreparedPhysicalPlan::prepare(&streaming, &store, &memory);
+    let mutation = PreparedPhysicalPlan::prepare(&mutation, &store, &memory);
+
+    assert_eq!(streaming.execution_mode(), PreparedExecutionMode::Batch);
+    assert_eq!(
+        mutation.execution_mode(),
+        PreparedExecutionMode::Materialized
+    );
+    assert_eq!(
+        streaming.storage_capability(),
+        PreparedStorageCapability::InMemory
+    );
+    assert!(streaming.required_memory().total_bytes > 0);
+}
+
+#[test]
 fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
     let mut catalog = Catalog::default();
     let table = catalog.get_or_create_table(crate::schema::TableKind::Node, "Item");

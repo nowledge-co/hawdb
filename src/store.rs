@@ -1363,6 +1363,21 @@ pub enum SourceScanCandidateRead {
     Fallback(ScanSegmentFallback),
 }
 
+/// Metadata returned after streaming checkpoint-published Source candidates.
+///
+/// Rows are intentionally consumed at the storage/executor boundary instead of
+/// being retained in a database-sized intermediate collection.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SourceScanCandidateVisit {
+    Rows {
+        graph_epoch: u64,
+        skipped_segment_count: usize,
+        report: SegmentReadExecutionReport,
+        candidate_count: usize,
+    },
+    Fallback(ScanSegmentFallback),
+}
+
 #[derive(Debug, Clone)]
 struct ScanPruningCandidate {
     strategy: ScanPruningStrategy,
