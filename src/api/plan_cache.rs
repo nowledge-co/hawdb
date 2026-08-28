@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 pub(crate) const DEFAULT_PLAN_CACHE_MAX_ENTRIES: usize = 128;
 const ACCESS_CONTROL_VALUES_PARAMETER: &str = "\0skein_access_control_visibility_values";
-const STATISTICS_REFRESH_COMMIT_INTERVAL: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanCacheLookup {
@@ -242,18 +241,27 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &GraphStore,
     ) -> OptimizerEnvironmentKey {
-        self.ensure_statistics(catalog, store);
+        // A cache lookup must retain the last published statistics generation:
+        // ordinary data commits do not make a physical plan illegal. A cache
+        // miss refreshes the snapshot before choosing a new plan instead.
+        self.ensure_statistics(catalog, store, false);
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             statistics_generation: self.statistics_generation,
         }
     }
 
-    fn ensure_statistics(&mut self, catalog: &Catalog, store: &GraphStore) -> bool {
+    fn ensure_statistics(
+        &mut self,
+        catalog: &Catalog,
+        store: &GraphStore,
+        refresh_for_data_change: bool,
+    ) -> bool {
         let schema = OptimizerSchemaKey::from_catalog(catalog);
         let refresh_statistics = self.statistics.as_ref().is_none_or(|statistics| {
             self.statistics_schema.as_ref() != Some(&schema)
-                || statistics_refresh_required(statistics, store)
+                || (refresh_for_data_change
+                    && statistics.computed_at_commit_epoch != store.commit_epoch())
         });
         if refresh_statistics {
             self.statistics = Some(Arc::new(store.statistics(catalog)));
@@ -270,7 +278,10 @@ impl OptimizerPlanningCache {
         store: &GraphStore,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
-        let refresh_statistics = self.ensure_statistics(catalog, store);
+        // This path is reached only after the physical-plan cache missed or
+        // was intentionally bypassed, so cost-based planning must observe the
+        // latest committed graph statistics.
+        let refresh_statistics = self.ensure_statistics(catalog, store, true);
         if refresh_statistics {
             let statistics = self
                 .statistics
@@ -333,13 +344,6 @@ impl OptimizerPlanningCache {
             decisions,
         }
     }
-}
-
-fn statistics_refresh_required(statistics: &GraphStatistics, store: &GraphStore) -> bool {
-    store
-        .commit_epoch()
-        .saturating_sub(statistics.computed_at_commit_epoch)
-        >= STATISTICS_REFRESH_COMMIT_INTERVAL
 }
 
 pub(super) fn optimized_query_plan_for(
