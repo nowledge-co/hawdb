@@ -1997,6 +1997,74 @@ fn source_segment_scan_uses_checkpoint_sidecar_and_keeps_filter_semantics() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+#[test]
+fn source_segment_scan_limit_reports_planned_candidates_without_false_pruning() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("skein-source-segment-limit-{nonce}"));
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+    for id in 0..129 {
+        store
+            .create_node(
+                &mut catalog,
+                "Source",
+                BTreeMap::from([
+                    ("id".to_string(), Value::String(format!("source-{id}"))),
+                    ("space_id".to_string(), Value::String("alpha".to_string())),
+                ]),
+            )
+            .unwrap();
+    }
+    store.checkpoint(&catalog).unwrap();
+
+    let predicate = Predicate::PropertyEq {
+        variable: "s".to_string(),
+        property: "space_id".to_string(),
+        value: Value::String("alpha".to_string()),
+    };
+    let plan = PhysicalPlan::ProjectExec {
+        items: vec![Projection {
+            expression: ProjectionExpression::Property {
+                variable: "s".to_string(),
+                property: "id".to_string(),
+            },
+            name: "id".to_string(),
+        }],
+        input: Box::new(PhysicalPlan::LimitExec {
+            offset: 0,
+            limit: Some(1),
+            input: Box::new(PhysicalPlan::SourceSegmentScan {
+                variable: "s".to_string(),
+                predicate,
+            }),
+        }),
+    };
+
+    let output = execute_with_row_limit_profile(&plan, &mut catalog, &mut store, None).unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    let scan = output
+        .profile
+        .scan_pruning_reports
+        .iter()
+        .find(|report| {
+            report.strategy
+                == ScanPruningStrategy::PropertyEq {
+                    property: "space_id".to_string(),
+                }
+        })
+        .expect("source segment scan should report pruning");
+    assert!(!scan.pruned);
+    assert_eq!(scan.candidate_count_before_pruning, 129);
+    assert_eq!(scan.candidate_count_before_filter, 129);
+    assert_eq!(scan.pruned_candidate_count, 0);
+    assert_eq!(scan.output_count, 1);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 fn properties(items: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {
     items
         .into_iter()

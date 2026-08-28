@@ -542,6 +542,7 @@ impl SegmentReadExecutor {
         F: FnMut(SegmentReadPayload) -> Result<SegmentReadControl, E>,
     {
         segment_read_checkpoint(context)?;
+        let mut executed_wave_count = 0usize;
         let mut range_count = 0usize;
         let mut bytes_read = 0u64;
         let mut max_wave_bytes_read = 0u64;
@@ -580,11 +581,18 @@ impl SegmentReadExecutor {
             .map_err(SegmentReadExecutionError::Read)?;
 
             segment_read_checkpoint(context)?;
+            executed_wave_count = executed_wave_count.saturating_add(1);
+            range_count = range_count.saturating_add(payloads.len());
+            bytes_read = bytes_read.saturating_add(
+                payloads
+                    .iter()
+                    .map(|payload| payload.range.length.get())
+                    .fold(0u64, u64::saturating_add),
+            );
+            max_wave_bytes_read = max_wave_bytes_read.max(wave_bytes);
             let mut stopped = false;
             for payload in payloads {
                 segment_read_checkpoint(context)?;
-                range_count = range_count.saturating_add(1);
-                bytes_read = bytes_read.saturating_add(payload.range.length.get());
                 if consume(payload).map_err(SegmentReadExecutionError::Consume)?
                     == SegmentReadControl::Stop
                 {
@@ -592,14 +600,13 @@ impl SegmentReadExecutor {
                     break;
                 }
             }
-            max_wave_bytes_read = max_wave_bytes_read.max(wave_bytes);
             if stopped {
                 break;
             }
         }
         segment_read_checkpoint(context)?;
         Ok(SegmentReadExecutionReport {
-            wave_count: schedule.wave_count(),
+            wave_count: executed_wave_count,
             range_count,
             bytes_read,
             max_wave_bytes_read,
@@ -953,8 +960,43 @@ mod tests {
             .unwrap();
 
         assert_eq!(payloads, vec![b"abcdefgh".to_vec()]);
+        assert_eq!(report.wave_count, 1);
         assert_eq!(report.range_count, 1);
         assert_eq!(report.bytes_read, 8);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn execution_report_accounts_for_the_entire_wave_before_consumer_stop() {
+        let path = unique_test_file("controlled-wave-accounting");
+        std::fs::write(&path, b"abcdefghijklmnop").unwrap();
+        let mut reader = FileSegmentRangeReader::new();
+        reader.register(7, &path);
+        reader.register(8, &path);
+        let schedule =
+            SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::new(4).unwrap())
+                .schedule_with_wave_budget(
+                    [
+                        SegmentReadRange::new(7, 1, 0, NonZeroU64::new(4).unwrap()),
+                        SegmentReadRange::new(8, 2, 4, NonZeroU64::new(4).unwrap()),
+                    ],
+                    NonZeroU64::new(8).unwrap(),
+                );
+        assert_eq!(schedule.wave_count(), 1);
+        let mut payloads = Vec::new();
+
+        let report = SegmentReadExecutor::new(NonZeroU64::new(8).unwrap())
+            .execute_control(&reader, &schedule, |payload| {
+                payloads.push(payload.bytes.to_vec());
+                Ok::<_, std::convert::Infallible>(SegmentReadControl::Stop)
+            })
+            .unwrap();
+
+        assert_eq!(payloads, vec![b"abcd".to_vec()]);
+        assert_eq!(report.wave_count, 1);
+        assert_eq!(report.range_count, 2);
+        assert_eq!(report.bytes_read, 8);
+        assert_eq!(report.max_wave_bytes_read, 8);
         std::fs::remove_file(path).unwrap();
     }
 
