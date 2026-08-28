@@ -753,22 +753,22 @@ pub fn thread_repair_stats_rows(
     let mut identity_bytes = 0usize;
     let mut visit = |node: NodeRecord| {
         runtime_checkpoint(task_context)?;
-        if node_matches_label_pattern(&node, identity_label_ids.as_deref()) {
-            if let Some(identity_ref) = node.properties.get(identity_ref_property).cloned() {
-                if let Some(count) = identity_counts.get_mut(&identity_ref) {
-                    *count = count.saturating_add(1);
-                } else {
-                    let bytes = thread_repair_identity_entry_bytes(&identity_ref);
-                    if tracker.would_exceed(bytes) {
-                        return Err(SkeinError::Execution(format!(
-                            "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
-                            tracker.budget_bytes
-                        )));
-                    }
-                    tracker.try_charge(bytes)?;
-                    identity_bytes = identity_bytes.saturating_add(bytes);
-                    identity_counts.insert(identity_ref, 1);
+        if node_matches_label_pattern(&node, identity_label_ids.as_deref())
+            && let Some(identity_ref) = node.properties.get(identity_ref_property).cloned()
+        {
+            if let Some(count) = identity_counts.get_mut(&identity_ref) {
+                *count = count.saturating_add(1);
+            } else {
+                let bytes = thread_repair_identity_entry_bytes(&identity_ref);
+                if tracker.would_exceed(bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
+                        tracker.budget_bytes
+                    )));
                 }
+                tracker.try_charge(bytes)?;
+                identity_bytes = identity_bytes.saturating_add(bytes);
+                identity_counts.insert(identity_ref, 1);
             }
         }
         if node_matches_label_pattern(&node, thread_label_ids.as_deref()) {

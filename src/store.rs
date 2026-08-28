@@ -1378,6 +1378,43 @@ pub(crate) enum SourceScanCandidateVisit {
     Fallback(ScanSegmentFallback),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SourceScanCandidateLimits {
+    io_depth: NonZeroUsize,
+    max_coalesced_bytes: NonZeroU64,
+    max_wave_bytes: NonZeroU64,
+    max_candidate_bytes: Option<usize>,
+}
+
+impl SourceScanCandidateLimits {
+    const fn unbounded(
+        io_depth: NonZeroUsize,
+        max_coalesced_bytes: NonZeroU64,
+        max_wave_bytes: NonZeroU64,
+    ) -> Self {
+        Self {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_candidate_bytes: None,
+        }
+    }
+
+    pub(crate) const fn bounded(
+        io_depth: NonZeroUsize,
+        max_coalesced_bytes: NonZeroU64,
+        max_wave_bytes: NonZeroU64,
+        max_candidate_bytes: NonZeroUsize,
+    ) -> Self {
+        Self {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_candidate_bytes: Some(max_candidate_bytes.get()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ScanPruningCandidate {
     strategy: ScanPruningStrategy,

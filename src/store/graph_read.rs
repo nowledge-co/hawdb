@@ -3039,10 +3039,7 @@ impl GraphStore {
     ) -> Result<SourceScanCandidateRead> {
         self.collect_published_source_scan_candidates(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            None,
+            SourceScanCandidateLimits::unbounded(io_depth, max_coalesced_bytes, max_wave_bytes),
             None,
         )
     }
@@ -3057,10 +3054,7 @@ impl GraphStore {
     ) -> Result<SourceScanCandidateRead> {
         self.collect_published_source_scan_candidates(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            None,
+            SourceScanCandidateLimits::unbounded(io_depth, max_coalesced_bytes, max_wave_bytes),
             Some(task_context),
         )
     }
@@ -3068,19 +3062,13 @@ impl GraphStore {
     pub(crate) fn visit_published_source_scan_candidates_bounded(
         &self,
         predicate: &ScanPredicate,
-        io_depth: NonZeroUsize,
-        max_coalesced_bytes: NonZeroU64,
-        max_wave_bytes: NonZeroU64,
-        max_candidate_bytes: NonZeroUsize,
+        limits: SourceScanCandidateLimits,
         task_context: Option<&RuntimeTaskContext>,
         consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
     ) -> Result<SourceScanCandidateVisit> {
         self.visit_published_source_scan_candidates_internal(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            Some(max_candidate_bytes.get()),
+            limits,
             task_context,
             consumer,
         )
@@ -3089,19 +3077,13 @@ impl GraphStore {
     fn collect_published_source_scan_candidates(
         &self,
         predicate: &ScanPredicate,
-        io_depth: NonZeroUsize,
-        max_coalesced_bytes: NonZeroU64,
-        max_wave_bytes: NonZeroU64,
-        max_candidate_bytes: Option<usize>,
+        limits: SourceScanCandidateLimits,
         task_context: Option<&RuntimeTaskContext>,
     ) -> Result<SourceScanCandidateRead> {
         let mut rows = Vec::new();
         let visit = self.visit_published_source_scan_candidates_internal(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            max_candidate_bytes,
+            limits,
             task_context,
             &mut |row| {
                 rows.push(row);
@@ -3129,13 +3111,16 @@ impl GraphStore {
     fn visit_published_source_scan_candidates_internal(
         &self,
         predicate: &ScanPredicate,
-        io_depth: NonZeroUsize,
-        max_coalesced_bytes: NonZeroU64,
-        max_wave_bytes: NonZeroU64,
-        max_candidate_bytes: Option<usize>,
+        limits: SourceScanCandidateLimits,
         task_context: Option<&RuntimeTaskContext>,
         consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
     ) -> Result<SourceScanCandidateVisit> {
+        let SourceScanCandidateLimits {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_candidate_bytes,
+        } = limits;
         let plan = self.plan_published_source_scan(predicate);
         let ScanSegmentAccessPlan::Read(plan) = plan else {
             let ScanSegmentAccessPlan::Fallback(reason) = plan else {

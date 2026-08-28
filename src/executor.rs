@@ -17,7 +17,7 @@ use crate::store::{
     NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, ProjectedGraphDefinition, PropertyFilter,
     RelationshipDeleteRequest, RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
     RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPruningReport, SourceScanCandidateVisit,
+    ScanPruningReport, SourceScanCandidateLimits, SourceScanCandidateVisit,
 };
 use crate::value::Value;
 use skein_analytics::ProjectedGraphExecution;

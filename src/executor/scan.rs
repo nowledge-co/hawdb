@@ -281,10 +281,12 @@ pub(super) fn stream_source_segment_scan_batches(
     };
     let visit = store.visit_published_source_scan_candidates_bounded(
         &storage_predicate,
-        io_depth,
-        max_coalesced_bytes,
-        max_wave_bytes,
-        memory.blocking_operator_bytes,
+        SourceScanCandidateLimits::bounded(
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            memory.blocking_operator_bytes,
+        ),
         task_context,
         &mut |row| {
             runtime_checkpoint(task_context)?;
