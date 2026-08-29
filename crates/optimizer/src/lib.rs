@@ -35,8 +35,9 @@ pub use properties::{
     VectorPrecision,
 };
 pub use relational::{
-    select_relational_access_path, skyline_prune_relational_access_paths,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    estimate_relational_nested_loop_join_cost, select_relational_access_path,
+    skyline_prune_relational_access_paths, RelationalAccessPathDescriptor,
+    RelationalAccessPathKind, RelationalNestedLoopJoinCost,
 };
 pub use rule::{
     apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,

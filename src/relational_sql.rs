@@ -2348,6 +2348,7 @@ mod tests {
         )
         .expect("indexed join");
         assert_eq!(joined.rows.len(), 1);
+        assert_eq!(joined.access_path.name, "idx_messages_order");
         assert_eq!(joined.join_access_paths[0].name, "idx_anchors_message");
         assert_eq!(joined.join_access_paths[0].equality_prefix_len, 2);
 
@@ -2469,6 +2470,107 @@ mod tests {
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
         }
+    }
+
+    #[test]
+    fn selective_content_store_join_uses_the_unique_owner_as_outer() {
+        const SQL: &str = "SELECT c.chunk_id, d.owner_id AS source_id, c.chunk_index, c.text \
+            FROM content_chunks AS c \
+            INNER JOIN content_documents AS d ON d.content_doc_id = c.content_doc_id \
+            WHERE d.owner_kind = 'source' AND d.owner_id = $1 \
+            ORDER BY c.chunk_index ASC, c.chunk_id ASC LIMIT $2";
+
+        let store = RelationalStore::default();
+        for ddl in [
+            "CREATE TABLE content_documents (content_doc_id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, UNIQUE (owner_kind, owner_id))",
+            "CREATE TABLE content_chunks (chunk_id TEXT PRIMARY KEY, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), chunk_index BIGINT NOT NULL, text TEXT NOT NULL, UNIQUE (content_doc_id, chunk_index))",
+            "CREATE UNIQUE INDEX idx_content_chunks_order ON content_chunks (content_doc_id, chunk_index)",
+        ] {
+            commit_sql(&store, ddl, &[]);
+        }
+        for document in 0..4 {
+            let document_id = format!("doc-{document}");
+            let owner_id = format!("source-{document}");
+            commit_sql(
+                &store,
+                "INSERT INTO content_documents (content_doc_id, owner_kind, owner_id) VALUES ($1, 'source', $2)",
+                &[text(&document_id), text(&owner_id)],
+            );
+            for chunk in 0..3 {
+                commit_sql(
+                    &store,
+                    "INSERT INTO content_chunks (chunk_id, content_doc_id, chunk_index, text) VALUES ($1, $2, $3, $4)",
+                    &[
+                        text(&format!("chunk-{document}-{chunk}")),
+                        text(&document_id),
+                        Value::Int(chunk),
+                        text(&format!("body-{document}-{chunk}")),
+                    ],
+                );
+            }
+        }
+
+        let snapshot = store.snapshot().expect("content store query snapshot");
+        let parameters = [text("source-2"), Value::Int(8)];
+        let output = execute_relational_query_sql_with_runtime(
+            SQL,
+            &parameters,
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(8, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("select source chunks from the selective document outer");
+
+        assert_eq!(output.rows.len(), 3);
+        assert_eq!(output.intermediate_rows, 4);
+        assert_eq!(output.rows[0]["chunk_id"], text("chunk-2-0"));
+        assert_eq!(output.rows[2]["chunk_id"], text("chunk-2-2"));
+        assert!(output.access_path.unique_point);
+        assert_eq!(output.access_path.index_columns, ["owner_kind", "owner_id"]);
+        assert_eq!(output.join_access_paths.len(), 1);
+        assert_eq!(output.join_access_paths[0].equality_prefix_len, 1);
+        assert_eq!(
+            output.join_access_paths[0].index_columns[0],
+            "content_doc_id"
+        );
+
+        let explain_sql = format!("EXPLAIN ANALYZE {SQL}");
+        let explained = execute_relational_query_sql_with_runtime(
+            &explain_sql,
+            &parameters,
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(16, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("explain the selective content store join order");
+        let join = explained
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.get("id"),
+                    Some(Value::String(id)) if id.contains("IndexNestedLoopJoinExec")
+                )
+            })
+            .expect("reordered index nested-loop join in explain");
+        assert!(matches!(
+            join.get("access object"),
+            Some(Value::String(access)) if access.contains("content_chunks")
+        ));
+        assert!(matches!(
+            join.get("operator info"),
+            Some(Value::String(info)) if info.contains("join_order=cost_reordered")
+        ));
     }
 
     #[test]

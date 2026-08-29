@@ -7,6 +7,14 @@ pub enum RelationalAccessPathKind {
     Index,
 }
 
+/// Conservative row-work estimate for an index nested-loop join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalNestedLoopJoinCost {
+    pub outer_rows: usize,
+    pub inner_rows_per_outer: usize,
+    pub estimated_work: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalAccessPathDescriptor {
     pub kind: RelationalAccessPathKind,
@@ -120,6 +128,24 @@ pub fn select_relational_access_path(
     }))
 }
 
+/// Estimates row visits for an index nested-loop join.
+///
+/// Non-unique join descriptors currently carry a table-cardinality upper
+/// bound. Keeping that bound here makes join reordering conservative until the
+/// relational statistics contract exposes distinct-prefix estimates.
+pub fn estimate_relational_nested_loop_join_cost(
+    outer: &RelationalAccessPathDescriptor,
+    inner: &RelationalAccessPathDescriptor,
+) -> RelationalNestedLoopJoinCost {
+    let outer_rows = outer.estimated_rows.max(1);
+    let inner_rows_per_outer = inner.estimated_rows.max(1);
+    RelationalNestedLoopJoinCost {
+        outer_rows,
+        inner_rows_per_outer,
+        estimated_work: outer_rows.saturating_add(outer_rows.saturating_mul(inner_rows_per_outer)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +245,47 @@ mod tests {
                 .unwrap();
 
         assert_eq!(frontier[0].estimated_rows, 1);
+    }
+
+    #[test]
+    fn nested_loop_cost_prefers_a_selective_outer_with_an_indexed_probe() {
+        let full_outer = RelationalAccessPathDescriptor {
+            kind: RelationalAccessPathKind::FullScan,
+            name: "__full_scan".to_string(),
+            index_columns: Vec::new(),
+            access_columns: BTreeSet::new(),
+            equality_prefix_len: 0,
+            order_prefix_len: 0,
+            unique_point: false,
+            covering: false,
+            requires_row_fetch: false,
+            estimated_rows: 100,
+        };
+        let unique_probe = path("documents_pk", &["id"], 1, true, 1);
+        let unique_outer = path("documents_owner", &["owner_kind", "owner_id"], 2, true, 1);
+        let indexed_probe = path(
+            "chunks_document",
+            &["document_id", "ordinal"],
+            1,
+            false,
+            100,
+        );
+
+        let syntax_order = estimate_relational_nested_loop_join_cost(&full_outer, &unique_probe);
+        let reordered = estimate_relational_nested_loop_join_cost(&unique_outer, &indexed_probe);
+
+        assert_eq!(syntax_order.estimated_work, 200);
+        assert_eq!(reordered.estimated_work, 101);
+    }
+
+    #[test]
+    fn nested_loop_cost_saturates_for_untrusted_cardinality_inputs() {
+        let outer = path("outer", &["id"], 1, false, usize::MAX);
+        let inner = path("inner", &["id"], 1, false, usize::MAX);
+
+        assert_eq!(
+            estimate_relational_nested_loop_join_cost(&outer, &inner).estimated_work,
+            usize::MAX
+        );
     }
 }
