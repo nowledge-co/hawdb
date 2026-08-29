@@ -611,7 +611,7 @@ pub fn enumerate_relational_join_rewrites(
     })
 }
 
-fn validate_problem_relations(
+pub(crate) fn validate_problem_relations(
     problem: &RelationalJoinRewriteProblem,
     analysis: &RelationalJoinConflictAnalysis,
 ) -> Result<(), RelationalJoinRewriteError> {

@@ -8,6 +8,7 @@ pub mod predicate;
 pub mod properties;
 pub mod relational;
 pub mod relational_join;
+pub mod relational_join_hypergraph;
 pub mod relational_join_rewrite;
 pub mod rule;
 pub mod search;
@@ -46,6 +47,10 @@ pub use relational_join::{
     RelationalJoinAccessApplicability, RelationalJoinAccessPath, RelationalJoinEnumerationConfig,
     RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
     RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
+};
+pub use relational_join_hypergraph::{
+    enumerate_relational_csg_cmp_joins, RelationalCsgCmpAlternative, RelationalCsgCmpEnumeration,
+    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode,
 };
 pub use relational_join_rewrite::{
     analyze_relational_join_conflicts, enumerate_relational_join_rewrites,
