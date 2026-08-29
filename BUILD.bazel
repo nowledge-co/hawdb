@@ -347,12 +347,13 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
     ]
 ]
 
+# Fuzz smoke remains available as a standalone local target, but is excluded
+# from the default CI smoke suite.
 test_suite(
     name = "skein_linux_ci_smoke_tests",
     tests = [
         ":skein_linux_ci_%s_smoke_test" % smoke
         for smoke in [
-            "fuzz",
             "optimizer_summary",
             "optimizer_group_1",
             "optimizer_group_2",
