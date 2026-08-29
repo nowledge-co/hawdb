@@ -57,6 +57,17 @@ pub struct VectorSearchLogicalPlan {
     pub top_k: usize,
 }
 
+/// Planner-owned resource ceilings carried with a vector physical plan.
+///
+/// Runtime admission may grant fewer resources, but execution must never
+/// exceed these limits or silently replace them with process defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VectorExecutionResourceProfile {
+    pub priority: u8,
+    pub max_parallelism: usize,
+    pub max_working_memory_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VectorPhysicalPlan {
     Filter {

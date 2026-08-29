@@ -193,6 +193,7 @@ pub enum PhysicalPlan {
         output_external_id: bool,
         metadata_filters: BTreeMap<String, String>,
         vector_plan: crate::VectorPhysicalPlan,
+        resource_profile: crate::VectorExecutionResourceProfile,
     },
     CreateNode {
         label: String,

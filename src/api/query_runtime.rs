@@ -8,8 +8,8 @@ pub(crate) struct RuntimeAdmissionPlan {
     pub estimated_memory_bytes: u64,
     pub streaming_eligible: bool,
     pub required_io_slots: usize,
-    pub parallel_morsel_eligible: bool,
-    pub morsel_parallelism: usize,
+    pub parallel_execution_eligible: bool,
+    pub max_parallelism: usize,
 }
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
@@ -154,12 +154,12 @@ impl RuntimeAdmissionPlan {
         available_cpu_slots: usize,
         available_memory_bytes: u64,
     ) -> usize {
-        if !self.parallel_morsel_eligible {
+        if !self.parallel_execution_eligible {
             return 1;
         }
         let cpu_slots =
             crate::executor::default_morsel_cpu_ceiling(limits.effective_cpu_slots.get())
-                .min(self.morsel_parallelism)
+                .min(self.max_parallelism)
                 .min(available_cpu_slots);
         if self.estimated_memory_bytes == 0 {
             return cpu_slots.max(1);
@@ -237,8 +237,8 @@ impl Database {
             is_mutation,
             estimated_memory_bytes,
             required_io_slots,
-            parallel_morsel_eligible,
-            morsel_parallelism,
+            parallel_execution_eligible,
+            max_parallelism,
         ) = match body {
             cypher::Statement::Explain(_) => (false, CONTROL_STATEMENT_MEMORY_BYTES, 0, false, 1),
             cypher::Statement::SetSystemVariable(_)
@@ -289,14 +289,22 @@ impl Database {
                 } else {
                     1
                 };
+                let external_read_parallelism = if is_mutation {
+                    1
+                } else {
+                    executor::max_external_read_parallelism(&optimized.physical_plan)
+                };
+                let parallel_execution_eligible =
+                    parallel_morsel_eligible || external_read_parallelism > 1;
+                let max_parallelism = morsel_parallelism.max(external_read_parallelism);
                 optimizer_environment = Some(optimized.optimizer_environment.clone());
                 prepared_optimized = Some(optimized);
                 (
                     is_mutation,
                     estimated_memory_bytes,
                     required_io_slots,
-                    parallel_morsel_eligible,
-                    morsel_parallelism,
+                    parallel_execution_eligible,
+                    max_parallelism,
                 )
             }
         };
@@ -311,8 +319,8 @@ impl Database {
                 estimated_memory_bytes,
                 streaming_eligible,
                 required_io_slots,
-                parallel_morsel_eligible,
-                morsel_parallelism,
+                parallel_execution_eligible,
+                max_parallelism,
             },
             parse_metrics,
         })
@@ -747,15 +755,15 @@ mod tests {
         }
     }
 
-    fn admission(parallel_morsel_eligible: bool) -> RuntimeAdmissionPlan {
+    fn admission(parallel_execution_eligible: bool) -> RuntimeAdmissionPlan {
         RuntimeAdmissionPlan {
             work_request: WorkRequest::foreground(WorkClass::Query, 1),
             is_mutation: false,
             estimated_memory_bytes: 1024,
             streaming_eligible: true,
             required_io_slots: 0,
-            parallel_morsel_eligible,
-            morsel_parallelism: if parallel_morsel_eligible {
+            parallel_execution_eligible,
+            max_parallelism: if parallel_execution_eligible {
                 MAX_MORSEL_PARALLELISM
             } else {
                 1

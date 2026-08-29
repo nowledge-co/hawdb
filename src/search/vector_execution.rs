@@ -67,12 +67,31 @@ pub(super) fn execute_search_vector_plan(
         .with_query_family(QueryFamily::VectorSearch)
         .with_resource_hints(ResourceHints {
             priority: 128,
-            max_memory_bytes: None,
-            max_parallelism: 1,
+            max_memory_bytes: Some(
+                u64::try_from(vector_execution_options.max_working_bytes).unwrap_or(u64::MAX),
+            ),
+            max_parallelism: vector_execution_options.max_parallelism.get(),
         });
     let planned = plan_vector_search(&logical, &context)
         .map_err(|error| SkeinError::Storage(format!("vector planning failed: {error}")))?;
     debug_assert_eq!(planned.properties.precision, VectorPrecision::RawReranked);
+    let vector_execution_options = VectorSearchExecutionOptions {
+        max_parallelism: std::num::NonZeroUsize::new(
+            vector_execution_options
+                .max_parallelism
+                .get()
+                .min(planned.properties.max_parallelism.max(1)),
+        )
+        .expect("planned vector parallelism is non-zero"),
+        max_working_bytes: planned
+            .properties
+            .max_memory_bytes
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .map_or(vector_execution_options.max_working_bytes, |bytes| {
+                bytes.min(vector_execution_options.max_working_bytes)
+            }),
+        ..vector_execution_options
+    };
 
     let mut source = SearchVectorSource {
         query_embedding,
@@ -120,10 +139,11 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
         &mut self,
         request: VectorCandidateScanRequest<'_>,
     ) -> Result<VectorCandidateBatch> {
+        self.checkpoint()?;
         debug_assert_eq!(request.source, self.backend.candidate_source());
         debug_assert_eq!(request.embedding_dimension, self.query_embedding.len());
         match self.backend {
-            VectorSearchBackend::Scalar => Ok(self.raw_vector_candidates()),
+            VectorSearchBackend::Scalar => self.raw_vector_candidates(),
             VectorSearchBackend::CompressedRequiredUnavailable => {
                 self.fallback_reason_codes
                     .push(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable);
@@ -195,7 +215,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                             self.fallback_reasons.push(format!(
                                 "Skein TurboQuant projection unavailable; fell back to scalar vector scan: {error}"
                             ));
-                            Ok(self.raw_vector_candidates())
+                            self.raw_vector_candidates()
                         }
                     }
                 }
@@ -224,7 +244,25 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
     }
 
     fn rerank_raw(&mut self, request: VectorRawRerankRequest<'_>) -> Result<Vec<VectorRawScore>> {
+        self.checkpoint()?;
         debug_assert_eq!(request.embedding_dimension, self.query_embedding.len());
+        let candidate_bytes = request.candidates.iter().fold(0usize, |total, candidate| {
+            total
+                .saturating_add(std::mem::size_of::<VectorCandidate>())
+                .saturating_add(std::mem::size_of::<VectorRawScore>())
+                .saturating_add(candidate.id.capacity().saturating_mul(2))
+        });
+        let lookup_bytes = self
+            .documents
+            .len()
+            .saturating_mul(std::mem::size_of::<(&str, &SearchDocument)>().saturating_mul(3));
+        let required_working_bytes = candidate_bytes.saturating_add(lookup_bytes);
+        if required_working_bytes > self.vector_execution_options.max_working_bytes {
+            return Err(SkeinError::Execution(format!(
+                "raw vector rerank requires {required_working_bytes} estimated bytes, exceeding admitted working memory {}",
+                self.vector_execution_options.max_working_bytes
+            )));
+        }
         let documents = self
             .documents
             .iter()
@@ -232,6 +270,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             .collect::<BTreeMap<_, _>>();
         let mut scores = Vec::with_capacity(request.candidates.len());
         for candidate in request.candidates {
+            self.checkpoint()?;
             let Some(document) = documents.get(candidate.id.as_str()) else {
                 continue;
             };
@@ -259,6 +298,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
         &mut self,
         request: VectorResidualFilterRequest<'_>,
     ) -> Result<Vec<VectorCandidate>> {
+        self.checkpoint()?;
         debug_assert!(
             request.fields.is_empty(),
             "supported Nowledge filters must be descriptor-safe"
@@ -280,6 +320,15 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
 }
 
 impl SearchVectorSource<'_, '_> {
+    fn checkpoint(&self) -> Result<()> {
+        match self.vector_execution_options.task_context {
+            Some(task_context) => task_context
+                .checkpoint()
+                .map_err(|reason| SkeinError::Execution(format!("vector search task {reason}"))),
+            None => Ok(()),
+        }
+    }
+
     #[cfg(feature = "vector-search")]
     fn record_candidate_scan_metrics(
         &mut self,
@@ -329,9 +378,11 @@ impl SearchVectorSource<'_, '_> {
         }
     }
 
-    fn raw_vector_candidates(&mut self) -> VectorCandidateBatch {
-        let mut candidates = Vec::with_capacity(self.documents.len());
+    fn raw_vector_candidates(&mut self) -> Result<VectorCandidateBatch> {
+        let mut candidates = Vec::new();
+        let mut id_bytes = 0usize;
         for document in self.documents {
+            self.checkpoint()?;
             let Some(embedding) = document.embedding.as_deref() else {
                 continue;
             };
@@ -344,15 +395,24 @@ impl SearchVectorSource<'_, '_> {
             let Some(score) = cosine_similarity(self.query_embedding, embedding) else {
                 continue;
             };
-            candidates.push(VectorCandidate {
-                id: document.id.clone(),
-                score,
-            });
+            let id = document.id.clone();
+            id_bytes = id_bytes.saturating_add(id.capacity());
+            candidates.push(VectorCandidate { id, score });
+            let candidate_bytes = candidates
+                .capacity()
+                .saturating_mul(std::mem::size_of::<VectorCandidate>())
+                .saturating_add(id_bytes);
+            if candidate_bytes > self.vector_execution_options.max_working_bytes {
+                return Err(SkeinError::Execution(format!(
+                    "scalar vector candidates require {candidate_bytes} bytes, exceeding admitted working memory {}",
+                    self.vector_execution_options.max_working_bytes
+                )));
+            }
         }
-        VectorCandidateBatch {
+        Ok(VectorCandidateBatch {
             score_source: VectorScoreSource::RawVector,
             candidates,
-        }
+        })
     }
 }
 

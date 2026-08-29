@@ -2,7 +2,7 @@ use super::super::{
     costing::{estimate_physical_plan_cost, estimate_physical_plan_cost_breakdown},
     OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
-use skein_plan::{PhysicalPlan, Predicate, VectorPhysicalPlan};
+use skein_plan::{PhysicalPlan, Predicate, VectorExecutionResourceProfile, VectorPhysicalPlan};
 use std::collections::BTreeMap;
 
 fn assert_scalar_cost_matches_breakdown(plan: &PhysicalPlan, catalog: &OptimizerCatalog) {
@@ -42,6 +42,11 @@ fn vector_seed_scan_preserves_total_cost_in_breakdown() {
         embedding_parameter: "embedding".to_string(),
         output_external_id: true,
         metadata_filters: BTreeMap::new(),
+        resource_profile: VectorExecutionResourceProfile {
+            priority: 128,
+            max_parallelism: 1,
+            max_working_memory_bytes: None,
+        },
         vector_plan: VectorPhysicalPlan::TopK {
             limit: 8,
             input: Box::new(VectorPhysicalPlan::Filter { fields: Vec::new() }),

@@ -7,6 +7,89 @@ use crate::planner::{
 };
 use crate::store::{DurabilityPolicy, ScanPruningStrategy, StorageResidencyMode, WalReplayConfig};
 
+#[test]
+fn vector_seed_receives_resolved_runtime_resource_contract() {
+    #[derive(Default)]
+    struct RecordingExternalRead {
+        observed: Option<(u8, usize, usize, usize, usize, bool)>,
+    }
+
+    impl ExternalReadOperator for RecordingExternalRead {
+        fn execute_vector_seed(
+            &mut self,
+            request: VectorSeedExecutionRequest<'_>,
+        ) -> Result<VectorSeedExecutionOutput> {
+            self.observed = Some((
+                request.resources.priority,
+                request.resources.max_parallelism.get(),
+                request.resources.max_working_memory_bytes.get(),
+                request.resources.result.max_rows,
+                request.resources.result.max_memory_bytes.get(),
+                request.resources.task_context.is_some(),
+            ));
+            Err(SkeinError::Execution(
+                "recorded external read contract".to_string(),
+            ))
+        }
+    }
+
+    let plan = PhysicalPlan::VectorSeedScan {
+        embedding_parameter: "embedding".to_string(),
+        output_external_id: false,
+        metadata_filters: BTreeMap::new(),
+        resource_profile: skein_plan::VectorExecutionResourceProfile {
+            priority: 200,
+            max_parallelism: 4,
+            max_working_memory_bytes: Some(2048),
+        },
+        vector_plan: skein_plan::VectorPhysicalPlan::TopK {
+            limit: 3,
+            input: Box::new(skein_plan::VectorPhysicalPlan::RawVectorRerank {
+                embedding_dimension: 2,
+                input: Box::new(skein_plan::VectorPhysicalPlan::VectorCandidateScan {
+                    source: skein_plan::VectorCandidateSource::Scalar,
+                    embedding_dimension: 2,
+                    candidate_limit: 3,
+                    input: Box::new(skein_plan::VectorPhysicalPlan::Filter { fields: Vec::new() }),
+                }),
+            }),
+        },
+    };
+    let parameters = BTreeMap::from([(
+        "embedding".to_string(),
+        Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+    )]);
+    let memory = ExecutionMemoryConfig {
+        query_memory_bytes: NonZeroUsize::new(64 * 1024).unwrap(),
+        batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4096).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let task_context =
+        RuntimeTaskContext::default().with_admitted_parallelism(NonZeroUsize::new(2).unwrap());
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::in_memory();
+    let mut external = RecordingExternalRead::default();
+
+    let error = execute_with_output_limits_profile_and_external_and_context_and_memory(
+        &plan,
+        &mut catalog,
+        &mut store,
+        &parameters,
+        &mut external,
+        Some(1),
+        None,
+        &task_context,
+        &memory,
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("recorded external read contract"));
+    assert_eq!(external.observed, Some((200, 2, 2048, 2, 4096, true)));
+}
+
 fn spill_test_config(name: &str) -> ExecutionMemoryConfig {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

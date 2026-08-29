@@ -4,8 +4,8 @@ use crate::error::{Result, SkeinError};
 use crate::executor::{self, Row, RowRef};
 use crate::optimizer::{
     CascadesOptimizer, OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
-    OptimizerConfig, OptimizerIndexStatistics, OptimizerSearchDirective, OptimizerTrace,
-    PhysicalPlan,
+    OptimizerConfig, OptimizerContext, OptimizerIndexStatistics, OptimizerSearchDirective,
+    OptimizerTrace, PhysicalPlan, ResourceHints,
 };
 use crate::qos::{
     BackgroundWorkDecision, BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy,
@@ -744,7 +744,7 @@ impl Default for Database {
         Self {
             catalog: Catalog::default(),
             store,
-            optimizer: CascadesOptimizer::new(optimizer_config_from_database_config(&config)),
+            optimizer: optimizer_from_database_config(&config),
             plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
             optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
@@ -777,7 +777,7 @@ impl Database {
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
-        let optimizer = CascadesOptimizer::new(optimizer_config_from_database_config(&config));
+        let optimizer = optimizer_from_database_config(&config);
         Self {
             catalog: Catalog::default(),
             store,
@@ -900,7 +900,7 @@ impl Database {
         let mut database = Self {
             catalog,
             store,
-            optimizer: CascadesOptimizer::new(optimizer_config_from_database_config(&config)),
+            optimizer: optimizer_from_database_config(&config),
             plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
             optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
@@ -19087,6 +19087,20 @@ fn optimizer_config_from_database_config(config: &DatabaseConfig) -> OptimizerCo
         optimizer.max_groups = max_groups;
     }
     optimizer
+}
+
+fn optimizer_from_database_config(config: &DatabaseConfig) -> CascadesOptimizer {
+    CascadesOptimizer::with_context(
+        OptimizerContext::from_config(optimizer_config_from_database_config(config))
+            .with_resource_hints(ResourceHints {
+                priority: ResourceHints::default().priority,
+                max_memory_bytes: Some(
+                    u64::try_from(config.execution_memory.blocking_operator_bytes.get())
+                        .unwrap_or(u64::MAX),
+                ),
+                max_parallelism: executor::MAX_MORSEL_PARALLELISM,
+            }),
+    )
 }
 
 impl<'a> NowledgeGraphAdapter<'a> {

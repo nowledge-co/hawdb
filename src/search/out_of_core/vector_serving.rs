@@ -2,6 +2,14 @@ use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchO
 use crate::error::{Result, SkeinError};
 use crate::search::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
 use std::collections::BTreeMap;
+#[cfg(feature = "vector-search")]
+use std::num::NonZeroUsize;
+
+const VECTOR_SCORE_ENTRY_WORKING_BYTES: usize = 128;
+
+fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
+    configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct VectorScoreScan {
@@ -61,16 +69,17 @@ impl SearchOutOfCoreReader {
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
         compressed_vector_search_mode: CompressedVectorSearchMode,
-        task_context: Option<&crate::RuntimeTaskContext>,
+        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
         match compressed_vector_search_mode {
             CompressedVectorSearchMode::Disabled => self.scan_scalar_vector_scores(
                 query_embedding,
                 candidate_set,
                 retained_limit,
-                task_context,
+                vector_execution_options,
                 metrics,
             ),
             CompressedVectorSearchMode::Preferred => {
@@ -80,7 +89,7 @@ impl SearchOutOfCoreReader {
                         query_embedding,
                         candidate_set,
                         retained_limit,
-                        task_context,
+                        vector_execution_options,
                         metrics,
                     );
                 }
@@ -88,7 +97,7 @@ impl SearchOutOfCoreReader {
                     query_embedding,
                     candidate_set,
                     retained_limit,
-                    task_context,
+                    vector_execution_options,
                     metrics,
                 )?;
                 scan.fallback_reason_codes
@@ -106,7 +115,7 @@ impl SearchOutOfCoreReader {
                         query_embedding,
                         candidate_set,
                         retained_limit,
-                        task_context,
+                        vector_execution_options,
                         metrics,
                     );
                 }
@@ -123,11 +132,17 @@ impl SearchOutOfCoreReader {
         query_embedding: &[f32],
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
-        task_context: Option<&crate::RuntimeTaskContext>,
+        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
-        let mut collector =
-            BoundedScoreCollector::new(retained_limit, self.config.max_score_entries.get())?;
+        let task_context = vector_execution_options.task_context;
+        let mut collector = BoundedScoreCollector::new(
+            retained_limit,
+            admitted_score_entries(
+                self.config.max_score_entries.get(),
+                vector_execution_options.max_working_bytes,
+            ),
+        )?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
         for segment in &self.descriptor.segments {
@@ -177,9 +192,10 @@ impl SearchOutOfCoreReader {
         query_embedding: &[f32],
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
-        task_context: Option<&crate::RuntimeTaskContext>,
+        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let task_context = vector_execution_options.task_context;
         let projection = self.turboquant_projection.as_ref().ok_or_else(|| {
             SkeinError::Storage(
                 "search out-of-core TurboQuant projection is unavailable".to_string(),
@@ -198,7 +214,11 @@ impl SearchOutOfCoreReader {
             .max_vector_candidates
             .get()
             .min(projection.manifest().document_count.max(1));
-        let total_working_bytes = self.config.max_vector_search_working_bytes.get();
+        let total_working_bytes = self
+            .config
+            .max_vector_search_working_bytes
+            .get()
+            .min(vector_execution_options.max_working_bytes);
         let allowlist =
             candidate_set.vector_ordinals(total_working_bytes as u64, task_context, metrics)?;
         let allowlist_bytes = allowlist.as_ref().map_or(0usize, |ids| {
@@ -212,9 +232,17 @@ impl SearchOutOfCoreReader {
                 ))
             })?;
         let mut search_options = skein_vector_projection::ProjectionSearchOptions::new()
-            .with_max_parallelism(self.config.max_vector_search_parallelism)
+            .with_max_parallelism(
+                NonZeroUsize::new(
+                    self.config
+                        .max_vector_search_parallelism
+                        .get()
+                        .min(vector_execution_options.max_parallelism.get()),
+                )
+                .expect("out-of-core vector parallelism is non-zero"),
+            )
             .with_max_working_bytes(scan_working_bytes)
-            .with_kernel(skein_vector_projection::KernelPreference::Auto);
+            .with_kernel(vector_execution_options.kernel.projection_preference());
         if let Some(allowlist) = allowlist.as_deref() {
             search_options = search_options.with_allowed_ids(allowlist);
         }
@@ -240,8 +268,22 @@ impl SearchOutOfCoreReader {
             ));
         }
 
-        let mut collector =
-            BoundedScoreCollector::new(retained_limit, self.config.max_score_entries.get())?;
+        let retained_working_bytes = allowlist_bytes.saturating_add(
+            selected_ordinals
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u64>()),
+        );
+        let score_working_bytes = total_working_bytes
+            .checked_sub(retained_working_bytes)
+            .ok_or_else(|| {
+                SkeinError::Storage(format!(
+                    "search vector retained candidates require {retained_working_bytes} bytes, exceeding {total_working_bytes}"
+                ))
+            })?;
+        let mut collector = BoundedScoreCollector::new(
+            retained_limit,
+            admitted_score_entries(self.config.max_score_entries.get(), score_working_bytes),
+        )?;
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
         for (layout, segment) in self.layout.segments.iter().zip(&self.descriptor.segments) {
