@@ -28,8 +28,10 @@ use skein_executor::{
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryRows, QueryRowsBuilder,
     RelationalRowLocator, SlotDescriptor, SlotId, SlotType,
 };
+use skein_expression::BindingId;
 use skein_optimizer::{
-    select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    select_relational_access_path, PlanCostBreakdown, RelationalAccessPathDescriptor,
+    RelationalAccessPathKind,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -128,14 +130,8 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
     };
     match prepared.statement {
         SqlStatement::Select(select) => {
-            let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
-            execute_select(
-                &planned.statement,
-                parameters,
-                execution,
-                false,
-                planned.join_order_reordered,
-            )
+            let prepared = prepare_relational_select(select, parameters, state, limits)?;
+            execute_select(&prepared, parameters, execution, false)
         }
         SqlStatement::Explain(explain) => {
             let SqlStatement::Select(select) = *explain.statement else {
@@ -143,22 +139,16 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
-            let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
-            let output = execute_select(
-                &planned.statement,
-                parameters,
-                execution,
-                !explain.analyze,
-                planned.join_order_reordered,
-            )?;
+            let prepared = prepare_relational_select(select, parameters, state, limits)?;
+            let output = execute_select(&prepared, parameters, execution, !explain.analyze)?;
             if explain.analyze {
                 format_relational_explain(
-                    &planned.statement,
+                    &prepared.statement,
                     parameters,
                     output,
                     true,
                     limits,
-                    planned.join_order_reordered,
+                    prepared.join_order_reordered,
                 )
             } else {
                 Ok(output)
@@ -196,14 +186,14 @@ struct BoundRow<'a> {
     bindings: Vec<Binding<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RelationalBaseAccess {
     PrimaryKey(RelationalKey),
     Index { name: String, prefix: RelationalKey },
     FullScan,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RelationalJoinAccess {
     PrimaryKey(Vec<(String, SqlColumnRef)>),
     Index {
@@ -213,16 +203,133 @@ enum RelationalJoinAccess {
     FullScan,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RelationalAccessCandidate {
     descriptor: RelationalAccessPathDescriptor,
     access: RelationalBaseAccess,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RelationalJoinAccessCandidate {
     descriptor: RelationalAccessPathDescriptor,
     access: RelationalJoinAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedRelationalJoinSelection {
+    base_binding: BindingId,
+    join_bindings: Vec<BindingId>,
+    cost_breakdown: PlanCostBreakdown,
+}
+
+#[derive(Debug)]
+struct PreparedRelationalAccessPlan {
+    base_access: RelationalAccessCandidate,
+    join_accesses: Vec<RelationalJoinAccessCandidate>,
+    join_selection: Option<PreparedRelationalJoinSelection>,
+}
+
+#[derive(Debug)]
+struct PreparedRelationalSelect {
+    statement: SelectStatement,
+    access_plan: PreparedRelationalAccessPlan,
+    join_order_reordered: bool,
+}
+
+impl PreparedRelationalSelect {
+    fn validate(&self) -> Result<()> {
+        if self.statement.joins.len() != self.access_plan.join_accesses.len() {
+            return Err(SkeinError::Execution(format!(
+                "prepared relational SELECT has {} joins but {} join access paths",
+                self.statement.joins.len(),
+                self.access_plan.join_accesses.len()
+            )));
+        }
+        if !base_access_matches_descriptor(&self.access_plan.base_access) {
+            return Err(SkeinError::Execution(
+                "prepared relational SELECT has an inconsistent base access path".to_string(),
+            ));
+        }
+        if self
+            .access_plan
+            .join_accesses
+            .iter()
+            .any(|access| !join_access_matches_descriptor(access))
+        {
+            return Err(SkeinError::Execution(
+                "prepared relational SELECT has an inconsistent join access path".to_string(),
+            ));
+        }
+        if let Some(selection) = &self.access_plan.join_selection {
+            if selection.join_bindings.len() != self.statement.joins.len() {
+                return Err(SkeinError::Execution(format!(
+                    "prepared relational join selection has {} bindings for {} joins",
+                    selection.join_bindings.len(),
+                    self.statement.joins.len()
+                )));
+            }
+            let mut bindings = BTreeSet::from([selection.base_binding]);
+            if selection
+                .join_bindings
+                .iter()
+                .any(|binding| !bindings.insert(*binding))
+            {
+                return Err(SkeinError::Execution(
+                    "prepared relational join selection contains duplicate bindings".to_string(),
+                ));
+            }
+            let cost = selection.cost_breakdown;
+            let component_total = cost
+                .cpu
+                .saturating_add(cost.random_io)
+                .saturating_add(cost.sequential_io)
+                .saturating_add(cost.output_rows);
+            if cost.estimated_rows == 0 || cost.cost != component_total {
+                return Err(SkeinError::Execution(
+                    "prepared relational join selection has an invalid cost breakdown".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn base_access_matches_descriptor(candidate: &RelationalAccessCandidate) -> bool {
+    match (&candidate.descriptor.kind, &candidate.access) {
+        (RelationalAccessPathKind::PrimaryKey, RelationalBaseAccess::PrimaryKey(key)) => {
+            candidate.descriptor.equality_prefix_len == key.0.len()
+                && candidate.descriptor.access_columns
+                    == candidate.descriptor.index_columns.iter().cloned().collect()
+        }
+        (RelationalAccessPathKind::Index, RelationalBaseAccess::Index { name, prefix }) => {
+            candidate.descriptor.name == *name
+                && candidate.descriptor.equality_prefix_len == prefix.0.len()
+        }
+        (RelationalAccessPathKind::FullScan, RelationalBaseAccess::FullScan) => {
+            candidate.descriptor.equality_prefix_len == 0
+        }
+        _ => false,
+    }
+}
+
+fn join_access_matches_descriptor(candidate: &RelationalJoinAccessCandidate) -> bool {
+    match (&candidate.descriptor.kind, &candidate.access) {
+        (RelationalAccessPathKind::PrimaryKey, RelationalJoinAccess::PrimaryKey(columns)) => {
+            candidate.descriptor.equality_prefix_len == columns.len()
+                && candidate.descriptor.access_columns
+                    == columns.iter().map(|(column, _)| column.clone()).collect()
+        }
+        (RelationalAccessPathKind::Index, RelationalJoinAccess::Index { name, columns }) => {
+            candidate.descriptor.name == *name
+                && candidate.descriptor.equality_prefix_len == columns.len()
+                && candidate.descriptor.access_columns
+                    == columns.iter().map(|(column, _)| column.clone()).collect()
+        }
+        (RelationalAccessPathKind::FullScan, RelationalJoinAccess::FullScan) => {
+            candidate.descriptor.equality_prefix_len == 0
+        }
+        _ => false,
+    }
 }
 
 struct PlannedJoin<'a> {
@@ -384,22 +491,36 @@ impl<'a> RelationalPipelineState<'a> {
     }
 }
 
-fn execute_select<'state>(
+fn prepare_relational_select(
+    select: SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+    limits: RelationalQueryLimits,
+) -> Result<PreparedRelationalSelect> {
+    reject_non_public_schema(select.from.schema.as_deref())?;
+    for join in &select.joins {
+        reject_non_public_schema(join.table.schema.as_deref())?;
+    }
+    let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
+    let access_plan = match planned.access_plan {
+        Some(access_plan) => access_plan,
+        None => prepare_syntax_access_plan(&planned.statement, parameters, state, limits)?,
+    };
+    let prepared = PreparedRelationalSelect {
+        statement: planned.statement,
+        access_plan,
+        join_order_reordered: planned.join_order_reordered,
+    };
+    prepared.validate()?;
+    Ok(prepared)
+}
+
+fn prepare_syntax_access_plan(
     select: &SelectStatement,
     parameters: &[Value],
-    execution: RelationalSelectExecution<'state, '_>,
-    explain_only: bool,
-    join_order_reordered: bool,
-) -> Result<RelationalQueryOutput> {
-    let RelationalSelectExecution {
-        state,
-        index_read_mode,
-        row_read_mode,
-        limits,
-        execution_memory,
-        task_context,
-    } = execution;
-    reject_non_public_schema(select.from.schema.as_deref())?;
+    state: &RelationalState,
+    limits: RelationalQueryLimits,
+) -> Result<PreparedRelationalAccessPlan> {
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
         SkeinError::Semantic(format!("unknown relational table {}", select.from.name))
     })?;
@@ -421,11 +542,61 @@ fn execute_select<'state>(
         qualifier: &base_qualifier,
         cardinality_limit: limits.max_intermediate_rows.saturating_add(1),
     })?;
+    let join_accesses = select
+        .joins
+        .iter()
+        .map(|join| {
+            let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
+                SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
+            })?;
+            let qualifier = join
+                .alias
+                .clone()
+                .unwrap_or_else(|| join.table.name.clone());
+            choose_join_access(&join.on, state, join_schema, &join.table.name, &qualifier)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PreparedRelationalAccessPlan {
+        base_access,
+        join_accesses,
+        join_selection: None,
+    })
+}
+
+fn execute_select<'state>(
+    prepared: &PreparedRelationalSelect,
+    parameters: &[Value],
+    execution: RelationalSelectExecution<'state, '_>,
+    explain_only: bool,
+) -> Result<RelationalQueryOutput> {
+    let select = &prepared.statement;
+    let join_order_reordered = prepared.join_order_reordered;
+    let RelationalSelectExecution {
+        state,
+        index_read_mode,
+        row_read_mode,
+        limits,
+        execution_memory,
+        task_context,
+    } = execution;
+    let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
+        SkeinError::Semantic(format!("unknown relational table {}", select.from.name))
+    })?;
+    let base_qualifier = select
+        .from_alias
+        .clone()
+        .unwrap_or_else(|| select.from.name.clone());
+    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+    let base_access = &prepared.access_plan.base_access;
     let access_path = base_access.descriptor.clone();
     let mut planned_joins = Vec::with_capacity(select.joins.len());
-    let mut join_access_paths = Vec::with_capacity(select.joins.len());
-    for join in &select.joins {
-        reject_non_public_schema(join.table.schema.as_deref())?;
+    let join_access_paths = prepared
+        .access_plan
+        .join_accesses
+        .iter()
+        .map(|access| access.descriptor.clone())
+        .collect::<Vec<_>>();
+    for (join, join_access) in select.joins.iter().zip(&prepared.access_plan.join_accesses) {
         let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
             SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
         })?;
@@ -433,14 +604,11 @@ fn execute_select<'state>(
             .alias
             .clone()
             .unwrap_or_else(|| join.table.name.clone());
-        let join_access =
-            choose_join_access(&join.on, state, join_schema, &join.table.name, &qualifier)?;
-        join_access_paths.push(join_access.descriptor.clone());
         planned_joins.push(PlannedJoin {
             join,
             schema: join_schema,
             qualifier,
-            access: join_access.access,
+            access: join_access.access.clone(),
         });
     }
     let ordered_index_projection = !select.order_by.is_empty()
