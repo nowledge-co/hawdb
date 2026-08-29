@@ -216,7 +216,7 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             plan.request,
             WorkRequest::background(WorkClass::Projection, 10)
         );
-        assert_eq!(plan.hint.recent_delta_operations, 1);
+        assert_eq!(plan.hint.recent_delta_operations, 11);
         assert!(plan.hint.source_graph_commit_lag > 0);
 
         let mut candidate_options = BackgroundMaintenanceOptions {
@@ -357,6 +357,74 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         db.statistics().index_samples.get(&index_id),
         Some(&crate::schema::IndexStatisticsSample::exact(10, 4))
     );
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn incomplete_and_non_index_dirty_statistics_schedule_refresh() {
+    let path = unique_test_dir("optimizer_statistics_dirty_domains");
+    let spill_root = path.join("statistics-spill");
+    let config = DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    db.query(
+        "CREATE (:Memory {id: 1, note: 'initial'})-[:MENTIONS {weight: 1}]->(:Entity {id: 2})",
+    )
+    .unwrap();
+    db.checkpoint().unwrap();
+
+    let statistics = db.statistics();
+    assert_eq!(
+        statistics.advanced_statistics_freshness(db.store.commit_epoch()),
+        crate::AdvancedStatisticsFreshness::Unavailable
+    );
+    assert!(db
+        .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .is_some());
+
+    let options = crate::OptimizerStatisticsRefreshOptions {
+        memory_budget_bytes: 4096,
+        max_spill_bytes: 1024 * 1024,
+        max_spill_runs: 64,
+        max_input_records: 1_000,
+        max_generated_facts: 10_000,
+        max_path_expansions: 1_000,
+        spill_directory: spill_root,
+    };
+    db.refresh_optimizer_statistics_external(&options).unwrap();
+    assert_eq!(
+        db.statistics()
+            .advanced_statistics_freshness(db.store.commit_epoch()),
+        crate::AdvancedStatisticsFreshness::Fresh
+    );
+    assert!(db
+        .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .is_none());
+
+    db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.note = 'updated'")
+        .unwrap();
+    assert_eq!(
+        db.statistics()
+            .advanced_statistics_freshness(db.store.commit_epoch()),
+        crate::AdvancedStatisticsFreshness::Stale
+    );
+    let node_property_plan = db
+        .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap();
+    assert_eq!(node_property_plan.hint.recent_delta_operations, 1);
+
+    db.refresh_optimizer_statistics_external(&options).unwrap();
+    db.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 2")
+        .unwrap();
+    let relationship_property_plan = db
+        .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap();
+    assert_eq!(relationship_property_plan.hint.recent_delta_operations, 1);
+
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }

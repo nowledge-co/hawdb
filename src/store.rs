@@ -1,9 +1,9 @@
 use crate::analytics::ProjectedGraph;
 use crate::error::{Result, SkeinError};
 use crate::schema::{
-    BasicGraphStatistics, Catalog, CompositeIndexDescriptor, ConstraintId, GraphStatistics,
-    IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
-    SchemaObjectState, TableDescriptor, TableId, TableKind,
+    AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, CompositeIndexDescriptor,
+    ConstraintId, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId,
+    PropertyType, RelTypeId, SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
 use crate::search::search_projection_document_id_for_node;
 use crate::telemetry::TelemetrySink;
@@ -919,6 +919,51 @@ impl PropertyIndexConsistencyReport {
     }
 }
 
+/// Mutation domains that invalidate an out-of-core advanced-statistics snapshot.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdvancedStatisticsDirtyState {
+    node_topology: bool,
+    relationship_topology: bool,
+    node_properties: bool,
+    relationship_properties: bool,
+    mutation_operations: u64,
+}
+
+impl AdvancedStatisticsDirtyState {
+    fn mark_node_topology(&mut self) {
+        self.node_topology = true;
+        self.node_properties = true;
+        self.mutation_operations = self.mutation_operations.saturating_add(1);
+    }
+
+    fn mark_relationship_topology(&mut self) {
+        self.relationship_topology = true;
+        self.relationship_properties = true;
+        self.mutation_operations = self.mutation_operations.saturating_add(1);
+    }
+
+    fn mark_node_properties(&mut self) {
+        self.node_properties = true;
+        self.mutation_operations = self.mutation_operations.saturating_add(1);
+    }
+
+    fn mark_relationship_properties(&mut self) {
+        self.relationship_properties = true;
+        self.mutation_operations = self.mutation_operations.saturating_add(1);
+    }
+
+    fn is_empty(self) -> bool {
+        !self.node_topology
+            && !self.relationship_topology
+            && !self.node_properties
+            && !self.relationship_properties
+    }
+
+    fn mutation_operations(self) -> u64 {
+        self.mutation_operations
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct GraphStore {
     next_node_id: u64,
@@ -928,6 +973,7 @@ pub struct GraphStore {
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicGraphStatistics,
     checkpoint_statistics: GraphStatistics,
+    advanced_statistics_dirty: AdvancedStatisticsDirtyState,
     outgoing: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     property_index: NodePropertyIndex,
@@ -2010,6 +2056,7 @@ impl GraphStore {
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicGraphStatistics::default(),
             checkpoint_statistics: GraphStatistics::default(),
+            advanced_statistics_dirty: AdvancedStatisticsDirtyState::default(),
             outgoing: CowSegmentedMap::default(),
             incoming: CowSegmentedMap::default(),
             property_index: CowSegmentedMap::default(),
@@ -2376,6 +2423,7 @@ impl GraphStore {
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),
             checkpoint_statistics: self.checkpoint_statistics.clone(),
+            advanced_statistics_dirty: self.advanced_statistics_dirty,
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             property_index: self.property_index.clone(),

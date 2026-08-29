@@ -123,7 +123,14 @@ impl GraphStore {
                 Some(_) => {}
             }
         }
-        if missing_sample_count == 0 && stale_updates == 0 {
+        let freshness = self
+            .checkpoint_statistics
+            .advanced_statistics_freshness(self.commit_epoch);
+        if freshness == AdvancedStatisticsFreshness::Fresh
+            && self.advanced_statistics_dirty.is_empty()
+            && missing_sample_count == 0
+            && stale_updates == 0
+        {
             return None;
         }
 
@@ -131,14 +138,15 @@ impl GraphStore {
             .basic_statistics
             .node_count
             .saturating_add(self.basic_statistics.relationship_count);
+        let dirty_operations = self.advanced_statistics_dirty.mutation_operations();
         Some(OptimizerStatisticsRefreshWork {
             estimated_operations: usize::try_from(record_count).unwrap_or(usize::MAX).max(1),
-            recent_delta_operations: usize::try_from(stale_updates)
+            recent_delta_operations: usize::try_from(stale_updates.max(dirty_operations))
                 .unwrap_or(usize::MAX)
                 .saturating_add(missing_sample_count),
             source_commit_lag: self
-                .commit_epoch
-                .saturating_sub(self.checkpoint_statistics.computed_at_commit_epoch),
+                .checkpoint_statistics
+                .advanced_statistics_commit_lag(self.commit_epoch),
         })
     }
 
@@ -261,6 +269,7 @@ impl GraphStore {
             ));
         }
         self.checkpoint_statistics = statistics;
+        self.advanced_statistics_dirty = AdvancedStatisticsDirtyState::default();
 
         Ok(OptimizerStatisticsRefreshReport {
             source_commit_epoch,
@@ -287,15 +296,21 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn replace_checkpoint_statistics(
+    pub(crate) fn restore_checkpoint_statistics(
         &mut self,
         statistics: GraphStatistics,
-    ) -> GraphStatistics {
-        std::mem::replace(&mut self.checkpoint_statistics, statistics)
+        dirty_state: AdvancedStatisticsDirtyState,
+    ) {
+        self.checkpoint_statistics = statistics;
+        self.advanced_statistics_dirty = dirty_state;
     }
 
     pub(crate) fn checkpoint_statistics_snapshot(&self) -> GraphStatistics {
         self.checkpoint_statistics.clone()
+    }
+
+    pub(crate) fn advanced_statistics_dirty_snapshot(&self) -> AdvancedStatisticsDirtyState {
+        self.advanced_statistics_dirty
     }
 }
 
