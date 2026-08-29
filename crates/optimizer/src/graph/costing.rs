@@ -16,22 +16,28 @@ pub(super) const NODE_INDEX_TEXT_STARTUP_COST: u64 = 3;
 
 const NODE_FULL_SCAN_STARTUP_COST: u64 = 4;
 const NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD: u64 = 8;
+const VECTOR_SEED_TOTAL_COST_PER_ROW: u64 = 10;
 
 pub(super) fn estimate_node_cartesian_product_cost(
     left_cost: PlanCost,
     right_cost: PlanCost,
 ) -> PlanCost {
+    combine_node_cartesian_product_cost(
+        PlanCostBreakdown::from_scalar(left_cost),
+        PlanCostBreakdown::from_scalar(right_cost),
+    )
+    .as_plan_cost()
+}
+
+fn combine_node_cartesian_product_cost(
+    left_cost: PlanCostBreakdown,
+    right_cost: PlanCostBreakdown,
+) -> PlanCostBreakdown {
     let rows = left_cost
         .estimated_rows
         .saturating_mul(right_cost.estimated_rows)
         .max(1);
-    PlanCost {
-        estimated_rows: rows,
-        cost: left_cost
-            .cost
-            .saturating_add(right_cost.cost)
-            .saturating_add(rows),
-    }
+    PlanCostBreakdown::combine_with_cpu(left_cost, right_cost, rows, rows, 0)
 }
 
 pub(super) fn estimate_node_full_scan_cost(label_count: u64) -> u64 {
@@ -161,350 +167,7 @@ pub(super) fn estimate_physical_plan_cost(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
 ) -> PlanCost {
-    let estimate = match plan {
-        PhysicalPlan::EmptyExec => PlanCost {
-            // Optimizer cardinalities retain a lower bound of one so an
-            // exact-empty branch cannot annihilate parent cost estimates.
-            estimated_rows: 1,
-            cost: 0,
-        },
-        PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
-            PlanCost {
-                estimated_rows: 1,
-                cost: 1,
-            }
-        }
-        PhysicalPlan::SeqNodeScan { label, .. } => {
-            let rows = catalog.label_count(label);
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_full_scan_cost(rows),
-            }
-        }
-        PhysicalPlan::NodeProjectionScanExec {
-            variable,
-            label,
-            access,
-            predicate,
-            items,
-            ..
-        } => {
-            let scan = PhysicalPlan::SeqNodeScan {
-                variable: variable.clone(),
-                label: label.clone(),
-            };
-            let (input_rows, access_cost) = projected_access_cost(access, label, catalog);
-            let rows = predicate.as_ref().map_or(input_rows, |predicate| {
-                estimate_filter_rows(predicate, &scan, input_rows, catalog).max(1)
-            });
-            let cpu_rows = if !items.is_empty() || predicate.is_some() {
-                rows
-            } else {
-                0
-            };
-            PlanCost {
-                estimated_rows: rows,
-                cost: access_cost.saturating_add(cpu_rows),
-            }
-        }
-        PhysicalPlan::SourceSegmentScan { .. } => {
-            let rows = catalog.label_count("Source");
-            PlanCost {
-                estimated_rows: rows,
-                // The persisted sidecar adds bounded range I/O, but avoids a
-                // canonical graph label scan when its summaries prune ranges.
-                cost: rows.saturating_add(NODE_FULL_SCAN_STARTUP_COST),
-            }
-        }
-        PhysicalPlan::VectorSeedScan { vector_plan, .. } => {
-            let rows = vector_top_k(vector_plan) as u64;
-            PlanCost {
-                estimated_rows: rows,
-                cost: rows.saturating_mul(10).max(1),
-            }
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            let left_cost = estimate_physical_plan_cost(left, catalog);
-            let right_cost = estimate_physical_plan_cost(right, catalog);
-            estimate_node_cartesian_product_cost(left_cost, right_cost)
-        }
-        PhysicalPlan::NodeColumnLookupExec { label, input, .. } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let label_rows = catalog.label_count(label).max(1);
-            PlanCost {
-                estimated_rows: input_cost.estimated_rows.max(1),
-                cost: input_cost
-                    .cost
-                    .saturating_add(input_cost.estimated_rows.saturating_mul(label_rows)),
-            }
-        }
-        PhysicalPlan::IndexNodeSeek {
-            label, property, ..
-        } => {
-            let rows = catalog.estimate_property_index_eq_rows(label, property);
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_index_seek_cost(rows, NODE_INDEX_EQ_STARTUP_COST),
-            }
-        }
-        PhysicalPlan::IndexNodeMultiSeek {
-            label,
-            property,
-            values,
-            ..
-        } => {
-            let rows =
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_index_seek_cost(rows, values.len() as u64),
-            }
-        }
-        PhysicalPlan::IndexNodeUnionSeek {
-            label, branches, ..
-        } => {
-            let (rows, cost) = exact_property_union_cost(branches, label, catalog);
-            PlanCost {
-                estimated_rows: rows,
-                cost,
-            }
-        }
-        PhysicalPlan::IndexNodeCompositeSeek {
-            label, predicates, ..
-        } => {
-            let properties = predicates
-                .iter()
-                .map(|(property, _)| property.clone())
-                .collect::<Vec<_>>();
-            let rows = catalog.estimate_composite_property_index_rows(label, &properties);
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_index_seek_cost(rows, predicates.len() as u64),
-            }
-        }
-        PhysicalPlan::IndexNodeCompositeRangeSeek { label, seek, .. } => {
-            let (rows, cost) = composite_range_cost(seek, label, catalog);
-            PlanCost {
-                estimated_rows: rows,
-                cost,
-            }
-        }
-        PhysicalPlan::IndexNodeRangeSeek {
-            label,
-            property,
-            lower,
-            upper,
-            ..
-        } => {
-            let rows =
-                catalog.estimate_range_bounds_rows(label, property, lower.as_ref(), upper.as_ref());
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_index_seek_cost(rows, NODE_INDEX_RANGE_STARTUP_COST),
-            }
-        }
-        PhysicalPlan::IndexNodeTextSeek { label, .. } => {
-            let rows = catalog.label_count(label).div_ceil(4).max(1);
-            PlanCost {
-                estimated_rows: rows,
-                cost: estimate_node_index_seek_cost(rows, NODE_INDEX_TEXT_STARTUP_COST),
-            }
-        }
-        PhysicalPlan::AdjacencyExpandExec {
-            source_label,
-            rel_type,
-            rel_properties,
-            target_label,
-            min_hops,
-            max_hops,
-            input,
-            ..
-        } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let expand_estimate = catalog.estimate_expand_rows(
-                source_label,
-                rel_type,
-                rel_properties,
-                target_label,
-                *min_hops,
-                *max_hops,
-            );
-            let source_rows = catalog.label_count(source_label).max(1);
-            let scaled_rows = expand_estimate
-                .estimated_rows
-                .saturating_mul(input_cost.estimated_rows.max(1))
-                .div_ceil(source_rows)
-                .max(1);
-            PlanCost {
-                estimated_rows: scaled_rows,
-                cost: input_cost
-                    .cost
-                    .saturating_add(input_cost.estimated_rows)
-                    .saturating_add(scaled_rows),
-            }
-        }
-        PhysicalPlan::FilterExec { predicate, input } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let rows = estimate_filter_rows(predicate, input, input_cost.estimated_rows, catalog);
-            PlanCost {
-                estimated_rows: rows,
-                cost: input_cost.cost.saturating_add(input_cost.estimated_rows),
-            }
-        }
-        PhysicalPlan::ProjectExec { input, .. } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            PlanCost {
-                estimated_rows: input_cost.estimated_rows,
-                cost: input_cost.cost.saturating_add(input_cost.estimated_rows),
-            }
-        }
-        PhysicalPlan::OptionalDegreeExec {
-            rel_type,
-            rel_properties,
-            direction,
-            target_label,
-            target_properties,
-            input,
-            ..
-        } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let degree_work = estimate_optional_degree_work(
-                rel_type,
-                rel_properties,
-                *direction,
-                target_label,
-                target_properties,
-                catalog,
-            );
-            PlanCost {
-                estimated_rows: input_cost.estimated_rows,
-                cost: input_cost
-                    .cost
-                    .saturating_add(input_cost.estimated_rows.saturating_mul(degree_work)),
-            }
-        }
-        PhysicalPlan::OptionalRelationshipCountSumExec {
-            label,
-            properties,
-            legs,
-            ..
-        } => estimate_optional_relationship_count_sum(label, properties, legs, catalog).cost,
-        PhysicalPlan::ThreadRepairStatsExec { .. } => PlanCost {
-            estimated_rows: 1,
-            cost: 32,
-        },
-        PhysicalPlan::ShortestPathExec { max_hops, .. } => PlanCost {
-            estimated_rows: 1,
-            cost: (*max_hops as u64).saturating_mul(8).saturating_add(4),
-        },
-        PhysicalPlan::AggregateExec {
-            group_keys,
-            items,
-            input,
-        } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let rows =
-                estimate_aggregate_rows(group_keys, input, input_cost.estimated_rows, catalog);
-            let work_rows =
-                estimate_aggregate_work_rows(items, input, input_cost.estimated_rows, catalog);
-            PlanCost {
-                estimated_rows: rows,
-                cost: input_cost.cost.saturating_add(work_rows),
-            }
-        }
-        PhysicalPlan::DistinctExec { input } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            PlanCost {
-                estimated_rows: input_cost.estimated_rows,
-                cost: input_cost.cost.saturating_add(input_cost.estimated_rows),
-            }
-        }
-        PhysicalPlan::SortExec { input, .. } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            PlanCost {
-                estimated_rows: input_cost.estimated_rows,
-                cost: input_cost
-                    .cost
-                    .saturating_add(input_cost.estimated_rows.saturating_mul(2)),
-            }
-        }
-        PhysicalPlan::TopNExec {
-            offset,
-            limit,
-            input,
-            ..
-        } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let retained_rows =
-                (offset.saturating_add(*limit) as u64).min(input_cost.estimated_rows);
-            let rows = input_cost
-                .estimated_rows
-                .saturating_sub(*offset as u64)
-                .min(*limit as u64);
-            let heap_depth = retained_rows.max(2).ilog2().max(1) as u64;
-            let selection_cost = input_cost
-                .estimated_rows
-                .saturating_add(retained_rows.saturating_mul(heap_depth));
-            PlanCost {
-                estimated_rows: rows,
-                cost: input_cost.cost.saturating_add(selection_cost),
-            }
-        }
-        PhysicalPlan::LimitExec {
-            offset,
-            limit,
-            input,
-        } => {
-            let input_cost = estimate_physical_plan_cost(input, catalog);
-            let remaining_rows = input_cost.estimated_rows.saturating_sub(*offset as u64);
-            let rows = limit
-                .map(|limit| remaining_rows.min(limit as u64))
-                .unwrap_or(remaining_rows)
-                .max(1);
-            PlanCost {
-                estimated_rows: rows,
-                cost: input_cost.cost.saturating_add(rows),
-            }
-        }
-        PhysicalPlan::CreateNodeLabel { .. }
-        | PhysicalPlan::CreateRelationshipType { .. }
-        | PhysicalPlan::CreateNodeTable { .. }
-        | PhysicalPlan::CreateRelationshipTable { .. }
-        | PhysicalPlan::CreateProperty { .. }
-        | PhysicalPlan::AlterTableState { .. }
-        | PhysicalPlan::AlterPropertyState { .. }
-        | PhysicalPlan::CreateIndex { .. }
-        | PhysicalPlan::CreateCompositeIndex { .. }
-        | PhysicalPlan::CreateRangeIndex { .. }
-        | PhysicalPlan::CreateFullTextIndex { .. }
-        | PhysicalPlan::CreateUniqueConstraint { .. }
-        | PhysicalPlan::CreateNodePropertyExistsConstraint { .. }
-        | PhysicalPlan::CreateRelationshipUniqueConstraint { .. }
-        | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
-        | PhysicalPlan::ProjectGraph { .. }
-        | PhysicalPlan::GraphAlgorithm { .. }
-        | PhysicalPlan::CreateNode { .. }
-        | PhysicalPlan::MergeNode { .. }
-        | PhysicalPlan::MergeRelationship { .. }
-        | PhysicalPlan::MergeMatchedRelationship { .. }
-        | PhysicalPlan::MergeRelationshipFromMatchedRelationship { .. }
-        | PhysicalPlan::MergeRelationshipToMatchedTarget { .. }
-        | PhysicalPlan::MergeRelationshipFromMatchedTarget { .. }
-        | PhysicalPlan::CreateMatchedRelationship { .. }
-        | PhysicalPlan::SetNodeProperty { .. }
-        | PhysicalPlan::SetNodeProperties { .. }
-        | PhysicalPlan::SetNodePropertiesReturn { .. }
-        | PhysicalPlan::SetRelationshipProperty { .. }
-        | PhysicalPlan::SetRelationshipProperties { .. }
-        | PhysicalPlan::DeleteNode { .. }
-        | PhysicalPlan::DeleteRelationship { .. }
-        | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
-        | PhysicalPlan::CreateRelationship { .. } => PlanCost {
-            estimated_rows: 1,
-            cost: 1,
-        },
-    };
-    estimate.with_cardinality_floor()
+    estimate_physical_plan_cost_breakdown(plan, catalog).as_plan_cost()
 }
 
 pub(super) fn estimate_physical_plan_cost_breakdown(
@@ -549,20 +212,19 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
         }
         PhysicalPlan::SourceSegmentScan { .. } => {
             let rows = catalog.label_count("Source");
-            PlanCostBreakdown::new(rows, 0, 1, rows, 0)
+            // Persisted segment summaries add bounded range I/O before the
+            // sequential candidate scan.
+            PlanCostBreakdown::new(rows, 0, NODE_FULL_SCAN_STARTUP_COST, rows, 0)
         }
         PhysicalPlan::VectorSeedScan { vector_plan, .. } => {
             let rows = vector_top_k(vector_plan) as u64;
-            PlanCostBreakdown::new(rows, rows.saturating_mul(10).max(1), 0, 0, rows)
+            let total_cost = rows.saturating_mul(VECTOR_SEED_TOTAL_COST_PER_ROW).max(1);
+            PlanCostBreakdown::new(rows, total_cost.saturating_sub(rows), 0, 0, rows)
         }
         PhysicalPlan::NodeCartesianProductExec { left, right } => {
             let left_cost = estimate_physical_plan_cost_breakdown(left, catalog);
             let right_cost = estimate_physical_plan_cost_breakdown(right, catalog);
-            let rows = left_cost
-                .estimated_rows
-                .saturating_mul(right_cost.estimated_rows)
-                .max(1);
-            PlanCostBreakdown::combine_with_cpu(left_cost, right_cost, rows, rows, 0)
+            combine_node_cartesian_product_cost(left_cost, right_cost)
         }
         PhysicalPlan::NodeColumnLookupExec { label, input, .. } => {
             let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
