@@ -2574,6 +2574,73 @@ mod tests {
     }
 
     #[test]
+    fn three_way_inner_join_uses_memo_selected_binding_order() {
+        const SQL: &str = "SELECT c.chunk_id, o.external_id \
+            FROM join_chunks AS c \
+            INNER JOIN join_documents AS d ON d.document_id = c.document_id \
+            INNER JOIN join_owners AS o ON o.owner_id = d.owner_id \
+            WHERE o.external_id = $1 \
+            ORDER BY c.chunk_id ASC";
+
+        let store = RelationalStore::default();
+        for ddl in [
+            "CREATE TABLE join_owners (owner_id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE)",
+            "CREATE TABLE join_documents (document_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL UNIQUE REFERENCES join_owners(owner_id))",
+            "CREATE TABLE join_chunks (chunk_id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES join_documents(document_id))",
+            "CREATE INDEX idx_join_chunks_document ON join_chunks (document_id)",
+        ] {
+            commit_sql(&store, ddl, &[]);
+        }
+        for owner in 0..4 {
+            let owner_id = format!("owner-{owner}");
+            let external_id = format!("external-{owner}");
+            let document_id = format!("document-{owner}");
+            commit_sql(
+                &store,
+                "INSERT INTO join_owners (owner_id, external_id) VALUES ($1, $2)",
+                &[text(&owner_id), text(&external_id)],
+            );
+            commit_sql(
+                &store,
+                "INSERT INTO join_documents (document_id, owner_id) VALUES ($1, $2)",
+                &[text(&document_id), text(&owner_id)],
+            );
+            for chunk in 0..3 {
+                commit_sql(
+                    &store,
+                    "INSERT INTO join_chunks (chunk_id, document_id) VALUES ($1, $2)",
+                    &[text(&format!("chunk-{owner}-{chunk}")), text(&document_id)],
+                );
+            }
+        }
+
+        let snapshot = store.snapshot().expect("three-way join snapshot");
+        let output = execute_relational_query_sql_with_runtime(
+            SQL,
+            &[text("external-2")],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(8, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("execute memo-selected three-way join order");
+
+        assert_eq!(output.rows.len(), 3);
+        assert_eq!(output.rows[0]["chunk_id"], text("chunk-2-0"));
+        assert_eq!(output.rows[2]["chunk_id"], text("chunk-2-2"));
+        assert_eq!(output.access_path.index_columns, ["external_id"]);
+        assert!(output.access_path.unique_point);
+        assert_eq!(output.join_access_paths.len(), 2);
+        assert!(output.join_access_paths[0].unique_point);
+        assert_eq!(output.join_access_paths[0].index_columns, ["owner_id"]);
+        assert_eq!(output.join_access_paths[1].index_columns, ["document_id"]);
+    }
+
+    #[test]
     fn relational_sort_and_distinct_spill_and_pipeline_cancellation_are_bounded() {
         let store = RelationalStore::default();
         let rows = (0..256)

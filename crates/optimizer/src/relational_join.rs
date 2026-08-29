@@ -30,21 +30,77 @@ pub struct RelationalJoinAccessPath {
     pub descriptor: RelationalAccessPathDescriptor,
     pub required_bindings: BindingSet,
     pub properties: PhysicalProperties,
+    pub applicability: RelationalJoinAccessApplicability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalJoinAccessApplicability {
+    Base,
+    Probe,
+    BaseAndProbe,
 }
 
 impl RelationalJoinAccessPath {
-    pub fn new(descriptor: RelationalAccessPathDescriptor, required_bindings: BindingSet) -> Self {
+    pub fn base(descriptor: RelationalAccessPathDescriptor) -> Self {
+        Self::new(
+            descriptor,
+            BindingSet::new(),
+            RelationalJoinAccessApplicability::Base,
+        )
+    }
+
+    pub fn probe(
+        descriptor: RelationalAccessPathDescriptor,
+        required_bindings: BindingSet,
+    ) -> Self {
+        Self::new(
+            descriptor,
+            required_bindings,
+            RelationalJoinAccessApplicability::Probe,
+        )
+    }
+
+    pub fn base_and_probe(descriptor: RelationalAccessPathDescriptor) -> Self {
+        Self::new(
+            descriptor,
+            BindingSet::new(),
+            RelationalJoinAccessApplicability::BaseAndProbe,
+        )
+    }
+
+    fn new(
+        descriptor: RelationalAccessPathDescriptor,
+        required_bindings: BindingSet,
+        applicability: RelationalJoinAccessApplicability,
+    ) -> Self {
         let properties = access_path_properties(&descriptor);
         Self {
             descriptor,
             required_bindings,
             properties,
+            applicability,
         }
     }
 
     pub fn with_properties(mut self, properties: PhysicalProperties) -> Self {
         self.properties = properties;
         self
+    }
+
+    fn supports_base(&self) -> bool {
+        matches!(
+            self.applicability,
+            RelationalJoinAccessApplicability::Base
+                | RelationalJoinAccessApplicability::BaseAndProbe
+        )
+    }
+
+    fn supports_probe(&self) -> bool {
+        matches!(
+            self.applicability,
+            RelationalJoinAccessApplicability::Probe
+                | RelationalJoinAccessApplicability::BaseAndProbe
+        )
     }
 }
 
@@ -351,7 +407,7 @@ fn validate_graph(
         if !relation
             .access_paths
             .iter()
-            .any(|access| access.required_bindings.is_empty())
+            .any(RelationalJoinAccessPath::supports_base)
         {
             return Err(RelationalJoinEnumerationError::MissingBaseAccess(
                 relation.binding,
@@ -574,7 +630,7 @@ fn best_base_plan(
     relation
         .access_paths
         .iter()
-        .filter(|access| access.required_bindings.is_empty())
+        .filter(|access| access.supports_base())
         .filter(|access| access.properties.satisfies(required_properties))
         .map(|access| RelationalJoinPlan {
             base_binding: relation.binding,
@@ -608,7 +664,9 @@ fn best_join_plan(
     let access = right_relation
         .access_paths
         .iter()
-        .filter(|access| access.required_bindings.is_subset(left_bindings))
+        .filter(|access| {
+            access.supports_probe() && access.required_bindings.is_subset(left_bindings)
+        })
         .min_by(|left, right| compare_access_paths(left, right))?
         .clone();
     let inner_rows = access.descriptor.estimated_rows.max(1) as u64;
@@ -727,19 +785,16 @@ mod tests {
     }
 
     fn scan(rows: usize) -> RelationalJoinAccessPath {
-        RelationalJoinAccessPath::new(
-            descriptor(
-                "__full_scan",
-                RelationalAccessPathKind::FullScan,
-                rows,
-                false,
-            ),
-            BindingSet::new(),
-        )
+        RelationalJoinAccessPath::base_and_probe(descriptor(
+            "__full_scan",
+            RelationalAccessPathKind::FullScan,
+            rows,
+            false,
+        ))
     }
 
     fn probe(name: &str, required: BindingId, rows: usize) -> RelationalJoinAccessPath {
-        RelationalJoinAccessPath::new(
+        RelationalJoinAccessPath::probe(
             descriptor(name, RelationalAccessPathKind::Index, rows, rows == 1),
             required.into(),
         )
@@ -863,6 +918,46 @@ mod tests {
 
         assert_eq!(result.plan.binding_order(), [A, B]);
         assert_eq!(result.plan.properties.ordering, ["created_at".to_string()]);
+    }
+
+    #[test]
+    fn base_only_access_paths_are_not_costed_as_inner_probes() {
+        let selective_base = RelationalJoinAccessPath::base(descriptor(
+            "a_constant_filter",
+            RelationalAccessPathKind::Index,
+            5,
+            false,
+        ));
+        let graph = RelationalJoinGraph {
+            relations: vec![
+                RelationalJoinRelation {
+                    binding: A,
+                    access_paths: vec![scan(100), selective_base, probe("a_by_b", B, 100)],
+                },
+                relation_with_probes(B, 1, Vec::new()),
+            ],
+            predicates: vec![predicate(1, [A, B])],
+        };
+
+        let result = enumerate_relational_inner_joins(
+            &graph,
+            &RequiredProperties::default(),
+            RelationalJoinEnumerationConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result.plan.binding_order(), [A, B]);
+        assert_eq!(
+            result.plan.base_access_path.descriptor.name,
+            "a_constant_filter"
+        );
+        assert_eq!(
+            result.plan.cost,
+            PlanCost {
+                estimated_rows: 5,
+                cost: 10
+            }
+        );
     }
 
     #[test]

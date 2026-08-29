@@ -10,8 +10,8 @@ use crate::relational_sql::row_access::{
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression,
-    SqlFunctionArgument, SqlJoin, SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate,
-    SqlStatement, SqlValue,
+    SqlFunctionArgument, SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
+    SqlValue,
 };
 use crate::value::Value;
 use skein_core::Catalog;
@@ -29,8 +29,7 @@ use skein_executor::{
     RelationalRowLocator, SlotDescriptor, SlotId, SlotType,
 };
 use skein_optimizer::{
-    estimate_relational_nested_loop_join_cost, select_relational_access_path,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -43,6 +42,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 mod columnar_aggregate;
+mod join_order;
 mod locator;
 mod streaming_binding;
 
@@ -128,7 +128,7 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
     };
     match prepared.statement {
         SqlStatement::Select(select) => {
-            let planned = plan_select_join_order(select, parameters, state, limits)?;
+            let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
             execute_select(
                 &planned.statement,
                 parameters,
@@ -143,7 +143,7 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
-            let planned = plan_select_join_order(select, parameters, state, limits)?;
+            let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
             let output = execute_select(
                 &planned.statement,
                 parameters,
@@ -168,185 +168,6 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }
-}
-
-struct PlannedSelectStatement {
-    statement: SelectStatement,
-    join_order_reordered: bool,
-}
-
-struct JoinOrderAccessPlan {
-    outer: RelationalAccessPathDescriptor,
-    inner: RelationalAccessPathDescriptor,
-}
-
-/// Explores the reverse order of one inner join without turning the local SQL
-/// planner into an unrestricted join enumerator.
-fn plan_select_join_order(
-    select: SelectStatement,
-    parameters: &[Value],
-    state: &RelationalState,
-    limits: RelationalQueryLimits,
-) -> Result<PlannedSelectStatement> {
-    if !supports_selective_inner_join_reorder(&select) {
-        return Ok(PlannedSelectStatement {
-            statement: select,
-            join_order_reordered: false,
-        });
-    }
-
-    let reordered = reverse_single_inner_join(&select);
-    if !has_explicit_unique_outer_key(&reordered, state) {
-        return Ok(PlannedSelectStatement {
-            statement: select,
-            join_order_reordered: false,
-        });
-    }
-    let syntax_order = join_order_access_plan(&select, parameters, state, limits)?;
-    let candidate = join_order_access_plan(&reordered, parameters, state, limits)?;
-    let explicitly_bound_unique_outer =
-        candidate.outer.unique_point && access_is_explicitly_bound(&reordered, &candidate.outer);
-    let indexed_inner = candidate.inner.kind != RelationalAccessPathKind::FullScan;
-    let syntax_cost =
-        estimate_relational_nested_loop_join_cost(&syntax_order.outer, &syntax_order.inner);
-    let candidate_cost =
-        estimate_relational_nested_loop_join_cost(&candidate.outer, &candidate.inner);
-
-    if explicitly_bound_unique_outer
-        && indexed_inner
-        && candidate_cost.estimated_work < syntax_cost.estimated_work
-    {
-        Ok(PlannedSelectStatement {
-            statement: reordered,
-            join_order_reordered: true,
-        })
-    } else {
-        Ok(PlannedSelectStatement {
-            statement: select,
-            join_order_reordered: false,
-        })
-    }
-}
-
-fn supports_selective_inner_join_reorder(select: &SelectStatement) -> bool {
-    let [join] = select.joins.as_slice() else {
-        return false;
-    };
-    join.kind == SqlJoinKind::Inner
-        && select.lock_strength.is_none()
-        && !select
-            .projection
-            .iter()
-            .any(|projection| matches!(projection, SelectProjection::Wildcard))
-        && (!select.order_by.is_empty()
-            || !select.group_by.is_empty()
-            || select.projection.iter().any(projection_contains_aggregate))
-}
-
-fn reverse_single_inner_join(select: &SelectStatement) -> SelectStatement {
-    let join = select
-        .joins
-        .first()
-        .expect("join reorder eligibility requires one inner join");
-    let mut reordered = select.clone();
-    let original_from = std::mem::replace(&mut reordered.from, join.table.clone());
-    let original_alias = std::mem::replace(&mut reordered.from_alias, join.alias.clone());
-    reordered.joins = vec![SqlJoin {
-        kind: SqlJoinKind::Inner,
-        table: original_from,
-        alias: original_alias,
-        on: join.on.clone(),
-    }];
-    reordered
-}
-
-fn join_order_access_plan(
-    select: &SelectStatement,
-    parameters: &[Value],
-    state: &RelationalState,
-    limits: RelationalQueryLimits,
-) -> Result<JoinOrderAccessPlan> {
-    let join = select
-        .joins
-        .first()
-        .expect("join order planning requires one inner join");
-    let outer_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational table {}", select.from.name))
-    })?;
-    let outer_qualifier = select.from_alias.as_deref().unwrap_or(&select.from.name);
-    let outer = choose_base_access(RelationalBaseAccessPlanning {
-        predicate: select.selection.as_ref(),
-        order_by: &select.order_by,
-        prefer_ordered_access: false,
-        parameters,
-        state,
-        schema: outer_schema,
-        table: &select.from.name,
-        qualifier: outer_qualifier,
-        cardinality_limit: limits.max_intermediate_rows.saturating_add(1),
-    })?;
-    let inner_schema = state.table_schema(&join.table.name).ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
-    })?;
-    let inner_qualifier = join.alias.as_deref().unwrap_or(&join.table.name);
-    let inner = choose_join_access(
-        &join.on,
-        state,
-        inner_schema,
-        &join.table.name,
-        inner_qualifier,
-    )?;
-    Ok(JoinOrderAccessPlan {
-        outer: outer.descriptor,
-        inner: inner.descriptor,
-    })
-}
-
-fn access_is_explicitly_bound(
-    select: &SelectStatement,
-    access: &RelationalAccessPathDescriptor,
-) -> bool {
-    access
-        .access_columns
-        .is_subset(&explicitly_bound_columns(select))
-}
-
-fn has_explicit_unique_outer_key(select: &SelectStatement, state: &RelationalState) -> bool {
-    let Some(schema) = state.table_schema(&select.from.name) else {
-        return false;
-    };
-    let bound = explicitly_bound_columns(select);
-    let fully_bound = |columns: &[String]| {
-        !columns.is_empty() && columns.iter().all(|column| bound.contains(column))
-    };
-    fully_bound(&schema.primary_key)
-        || schema
-            .unique_constraints
-            .iter()
-            .any(|columns| fully_bound(columns))
-        || schema
-            .indexes
-            .iter()
-            .any(|index| index.unique && fully_bound(&index.columns))
-}
-
-fn explicitly_bound_columns(select: &SelectStatement) -> BTreeSet<String> {
-    let Some(predicate) = select.selection.as_ref() else {
-        return BTreeSet::new();
-    };
-    let qualifier = select.from_alias.as_deref().unwrap_or(&select.from.name);
-    let mut equalities = Vec::new();
-    collect_conjunctive_equalities(predicate, &mut equalities);
-    equalities
-        .into_iter()
-        .filter(|(column, _)| {
-            column
-                .qualifier
-                .as_deref()
-                .is_some_and(|candidate| candidate == select.from.name || candidate == qualifier)
-        })
-        .map(|(column, _)| column.name.clone())
-        .collect()
 }
 
 #[derive(Clone)]
@@ -4152,19 +3973,8 @@ fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        optional_estimated_rows_explain_value, optional_usize_explain_value,
-        supports_selective_inner_join_reorder,
-    };
-    use crate::{sql::SqlStatement, Value};
-
-    fn select(sql: &str) -> crate::sql::SelectStatement {
-        let prepared = skein_sql::prepare_postgres_sql(sql).expect("valid PostgreSQL SELECT");
-        let SqlStatement::Select(select) = prepared.statement else {
-            panic!("expected SELECT statement");
-        };
-        select
-    }
+    use super::{optional_estimated_rows_explain_value, optional_usize_explain_value};
+    use crate::Value;
 
     #[test]
     fn explain_estimated_rows_never_render_zero() {
@@ -4174,28 +3984,5 @@ mod tests {
         );
         assert_eq!(optional_estimated_rows_explain_value(None), Value::Null);
         assert_eq!(optional_usize_explain_value(Some(0)), Value::Int(0));
-    }
-
-    #[test]
-    fn selective_join_reorder_is_limited_to_stable_inner_join_shapes() {
-        assert!(supports_selective_inner_join_reorder(&select(
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
-        )));
-        assert!(supports_selective_inner_join_reorder(&select(
-            "SELECT COUNT(*) FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1",
-        )));
-
-        for sql in [
-            "SELECT c.id FROM chunks AS c LEFT JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
-            "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1",
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id FOR UPDATE",
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id INNER JOIN owners AS o ON o.id = d.owner_id WHERE o.id = $1 ORDER BY c.id",
-        ] {
-            assert!(
-                !supports_selective_inner_join_reorder(&select(sql)),
-                "unexpected reorder eligibility for {sql}"
-            );
-        }
     }
 }

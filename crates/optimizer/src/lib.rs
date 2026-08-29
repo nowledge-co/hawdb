@@ -41,10 +41,10 @@ pub use relational::{
     RelationalAccessPathKind, RelationalNestedLoopJoinCost,
 };
 pub use relational_join::{
-    enumerate_relational_inner_joins, RelationalInnerJoinEnumeration, RelationalJoinAccessPath,
-    RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinGraph,
-    RelationalJoinPlan, RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation,
-    RelationalJoinStep,
+    enumerate_relational_inner_joins, RelationalInnerJoinEnumeration,
+    RelationalJoinAccessApplicability, RelationalJoinAccessPath, RelationalJoinEnumerationConfig,
+    RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
+    RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
 };
 pub use rule::{
     apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,
