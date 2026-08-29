@@ -52,6 +52,10 @@ pub(super) fn explain_output_row(
         explain_physical_properties_value(&optimized.trace.selected_plan_properties),
     );
     row.insert(
+        "operator_cardinalities".to_string(),
+        operator_cardinalities_value(&optimized.trace, None),
+    );
+    row.insert(
         "optimizer_stages".to_string(),
         explain_optimizer_stages_value(&optimized.trace.stage_events),
     );
@@ -104,6 +108,10 @@ pub(super) fn explain_analyze_output_row(
         Value::String("explain_analyze".to_string()),
     );
     row.insert("row_count".to_string(), usize_value(row_count));
+    row.insert(
+        "operator_cardinalities".to_string(),
+        operator_cardinalities_value(&optimized.trace, Some(profile)),
+    );
     row.insert(
         "scan_pruning_report_count".to_string(),
         usize_value(profile.scan_pruning_reports.len()),
@@ -169,6 +177,45 @@ pub(super) fn explain_analyze_output_row(
         Value::Bool(profile.operator_row_cap_enabled),
     );
     row
+}
+
+fn operator_cardinalities_value(
+    trace: &crate::optimizer::OptimizerTrace,
+    profile: Option<&executor::ReadExecutionProfile>,
+) -> Value {
+    Value::List(
+        trace
+            .selected_plan_cardinality_estimates
+            .iter()
+            .map(|estimate| {
+                let actual_rows = profile
+                    .and_then(|profile| {
+                        profile.operator_cardinality_profiles.iter().find(|actual| {
+                            actual.operator_id == estimate.operator_id
+                                && actual.operator == estimate.operator
+                        })
+                    })
+                    .and_then(|actual| actual.actual_rows)
+                    .map(usize_value)
+                    .unwrap_or(Value::Null);
+                Value::Map(BTreeMap::from([
+                    (
+                        "operator_id".to_string(),
+                        usize_value(estimate.operator_id.ordinal()),
+                    ),
+                    (
+                        "operator".to_string(),
+                        Value::String(estimate.operator.as_str().to_string()),
+                    ),
+                    (
+                        "estimated_rows".to_string(),
+                        u64_value(estimate.estimated_rows),
+                    ),
+                    ("actual_rows".to_string(), actual_rows),
+                ]))
+            })
+            .collect(),
+    )
 }
 
 fn blocking_operator_memory_report_value(
@@ -539,6 +586,7 @@ pub(super) fn empty_read_execution_profile() -> executor::ReadExecutionProfile {
         detection_row_cap: None,
         row_limit_enforced_before_output: false,
         operator_row_cap_enabled: false,
+        operator_cardinality_profiles: Vec::new(),
         blocking_operator_kinds: Vec::new(),
         scan_pruning_reports: Vec::new(),
         vector_execution_reports: Vec::new(),

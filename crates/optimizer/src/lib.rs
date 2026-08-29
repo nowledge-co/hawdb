@@ -48,14 +48,14 @@ pub use search::{
 };
 pub use skein_plan::PhysicalPlanNode as PlanNode;
 pub use skein_plan::{
-    plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
-    PhysicalPlanNode, PlanChildren,
+    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
+    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
 };
 pub use stage::{
     ApplyOrder, OptimizationPipeline, OptimizationStage, PipelineExecution, RuleStage,
     StageRuleBatch, StageStats, StageTrace,
 };
-pub use trace::{OptimizerConfig, OptimizerTrace};
+pub use trace::{OperatorCardinalityEstimate, OptimizerConfig, OptimizerTrace};
 pub use vector::{
     plan_vector_search, select_adaptive_vector_backend, validate_vector_pipeline,
     AdaptiveVectorBackend, AdaptiveVectorBackendDecision, AdaptiveVectorBackendInput,

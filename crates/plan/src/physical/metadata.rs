@@ -3,6 +3,26 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+/// A plan-local physical operator identity assigned in pre-order.
+///
+/// The identity is stable for one physical plan shape and lets planning and
+/// execution diagnostics correlate repeated operators without relying on
+/// operator names or process-local addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalOperatorId(usize);
+
+impl PhysicalOperatorId {
+    /// Creates an identity from its pre-order position in the physical plan.
+    pub const fn from_ordinal(ordinal: usize) -> Self {
+        Self(ordinal)
+    }
+
+    /// Returns the operator's zero-based pre-order position.
+    pub const fn ordinal(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhysicalPlanKind {
     CreateNodeLabel,
@@ -418,11 +438,42 @@ where
     }
 }
 
+/// Visits a physical plan in pre-order and assigns each operator its plan-local identity.
+pub fn visit_plan_with_ids<P>(plan: &P, visitor: &mut impl FnMut(PhysicalOperatorId, &P))
+where
+    P: PhysicalPlanNode,
+{
+    fn visit<P>(
+        plan: &P,
+        next_ordinal: &mut usize,
+        visitor: &mut impl FnMut(PhysicalOperatorId, &P),
+    ) where
+        P: PhysicalPlanNode,
+    {
+        let operator_id = PhysicalOperatorId::from_ordinal(*next_ordinal);
+        *next_ordinal = next_ordinal
+            .checked_add(1)
+            .expect("physical plan operator count exceeds usize");
+        visitor(operator_id, plan);
+        match plan.children() {
+            PlanChildren::None => {}
+            PlanChildren::Unary(input) => visit(input, next_ordinal, visitor),
+            PlanChildren::Binary(left, right) => {
+                visit(left, next_ordinal, visitor);
+                visit(right, next_ordinal, visitor);
+            }
+        }
+    }
+
+    let mut next_ordinal = 0;
+    visit(plan, &mut next_ordinal, visitor);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
-        PhysicalPlanNode, PlanChildren,
+        plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids,
+        PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
     };
 
     #[test]
@@ -531,5 +582,19 @@ mod tests {
         assert_eq!(plan_operator_counts(&plan)["ProjectExec"], 1);
         assert_eq!(plan_class_counts(&plan)["access"], 2);
         assert_eq!(plan_class_counts(&plan)["relational"], 2);
+
+        let mut identified = Vec::new();
+        visit_plan_with_ids(&plan, &mut |operator_id, node| {
+            identified.push((operator_id.ordinal(), node.kind().as_str()));
+        });
+        assert_eq!(
+            identified,
+            vec![
+                (0, "ProjectExec"),
+                (1, "NodeCartesianProductExec"),
+                (2, "IndexNodeSeek"),
+                (3, "IndexNodeSeek"),
+            ]
+        );
     }
 }

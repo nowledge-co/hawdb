@@ -16,8 +16,8 @@ mod plan_node;
 
 pub use fingerprint::write_projection_expression;
 pub use metadata::{
-    plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
-    PhysicalPlanNode, PlanChildren,
+    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
+    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
 };
 pub use plan_node::PhysicalPlanChildren;
 

@@ -721,6 +721,19 @@ fn cypher_explain_returns_structured_plan_row() {
     assert!(selected_plan_cost_breakdown.contains_key("random_io"));
     assert!(selected_plan_cost_breakdown.contains_key("sequential_io"));
     assert!(selected_plan_cost_breakdown.contains_key("output_rows"));
+    let Some(Value::List(operator_cardinalities)) = row.get("operator_cardinalities") else {
+        panic!("expected operator cardinalities");
+    };
+    assert!(!operator_cardinalities.is_empty());
+    assert!(operator_cardinalities.iter().enumerate().all(|(ordinal, value)| {
+        matches!(
+            value,
+            Value::Map(cardinality)
+                if cardinality.get("operator_id") == Some(&Value::Int(ordinal as i64))
+                    && matches!(cardinality.get("estimated_rows"), Some(Value::Int(rows)) if *rows > 0)
+                    && cardinality.get("actual_rows") == Some(&Value::Null)
+        )
+    }));
     let Some(Value::Map(selected_plan_properties)) = row.get("selected_plan_properties") else {
         panic!("expected selected plan properties map");
     };
@@ -851,6 +864,18 @@ fn cypher_explain_analyze_returns_execution_profile_row() {
         )
     }));
     assert_eq!(row.get("row_count"), Some(&Value::Int(2)));
+    let Some(Value::List(operator_cardinalities)) = row.get("operator_cardinalities") else {
+        panic!("expected operator cardinalities");
+    };
+    let Value::Map(root_cardinality) = &operator_cardinalities[0] else {
+        panic!("expected root operator cardinality map");
+    };
+    assert_eq!(root_cardinality.get("operator_id"), Some(&Value::Int(0)));
+    assert!(matches!(
+        root_cardinality.get("estimated_rows"),
+        Some(Value::Int(rows)) if *rows > 0
+    ));
+    assert_eq!(root_cardinality.get("actual_rows"), Some(&Value::Int(2)));
     assert_eq!(row.get("scan_pruning_report_count"), Some(&Value::Int(1)));
     let Some(Value::List(scan_reports)) = row.get("scan_pruning_reports") else {
         panic!("expected scan pruning reports");

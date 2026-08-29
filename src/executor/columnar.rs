@@ -33,6 +33,13 @@ struct NumericFragment<'a> {
     property_type: crate::schema::PropertyType,
     op: skein_plan::ComparisonOp,
     expected: NumericLiteral,
+    fused_operators: Option<FusedNumericOperators<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FusedNumericOperators<'a> {
+    scan: &'a PhysicalPlan,
+    filter: &'a PhysicalPlan,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -155,17 +162,22 @@ impl<'a> NumericFragment<'a> {
         input: &'a PhysicalPlan,
         catalog: &Catalog,
     ) -> Option<Self> {
-        let PhysicalPlan::FilterExec { predicate, input } = input else {
+        let filter = input;
+        let PhysicalPlan::FilterExec { predicate, input } = filter else {
             return None;
         };
+        let scan = input.as_ref();
         let PhysicalPlan::SeqNodeScan {
             variable: scan_variable,
             label,
-        } = input.as_ref()
+        } = scan
         else {
             return None;
         };
-        Self::try_prepare_parts(items, scan_variable, label, predicate, catalog)
+        let mut fragment =
+            Self::try_prepare_parts(items, scan_variable, label, predicate, catalog)?;
+        fragment.fused_operators = Some(FusedNumericOperators { scan, filter });
+        Some(fragment)
     }
 
     fn try_prepare_parts(
@@ -215,7 +227,27 @@ impl<'a> NumericFragment<'a> {
             property_type: descriptor.value_type,
             op: *op,
             expected,
+            fused_operators: None,
         })
+    }
+
+    fn start_fused_operators(self, observer: &QueryExecutionObserver) {
+        if let Some(operators) = self.fused_operators {
+            observer.record_operator_start(operators.scan);
+            observer.record_operator_start(operators.filter);
+        }
+    }
+
+    fn record_fused_cardinality(
+        self,
+        observer: &QueryExecutionObserver,
+        scan_rows: usize,
+        filter_rows: usize,
+    ) {
+        if let Some(operators) = self.fused_operators {
+            observer.record_operator_output(operators.scan, scan_rows);
+            observer.record_operator_output(operators.filter, filter_rows);
+        }
     }
 
     fn supports_lending_projection(self, items: &[Projection]) -> bool {
@@ -267,6 +299,7 @@ impl<'a> NumericFragment<'a> {
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
+        self.start_fused_operators(context.observer);
         let Some(label_id) = context.catalog.label_id(self.label) else {
             return Ok(BatchControl::Continue);
         };
@@ -882,6 +915,11 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
     }
 
     fn emit_prepared(&mut self, mut prepared: PreparedNumericBatch) -> Result<BatchControl> {
+        self.fragment.record_fused_cardinality(
+            self.observer,
+            prepared.input_rows,
+            prepared.selected_rows,
+        );
         self.observer
             .record_columnar_batch(prepared.input_rows, prepared.selected_rows);
         let remaining = self
@@ -896,6 +934,11 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
     }
 
     fn emit_columnar(&mut self, prepared: PreparedColumnarBatch) -> Result<BatchControl> {
+        self.fragment.record_fused_cardinality(
+            self.observer,
+            prepared.input_rows,
+            prepared.batch.selected_count(),
+        );
         self.observer
             .record_columnar_batch(prepared.input_rows, prepared.batch.selected_count());
         let remaining = self
@@ -1289,6 +1332,7 @@ mod tests {
             property_type: PropertyType::Int,
             op: ComparisonOp::Gte,
             expected: NumericLiteral::Int(0),
+            fused_operators: None,
         };
         let typed = vec![Projection {
             expression: ProjectionExpression::Property {
@@ -1325,6 +1369,7 @@ mod tests {
             property_type: PropertyType::Int,
             op: ComparisonOp::Gte,
             expected: NumericLiteral::Int(4),
+            fused_operators: None,
         };
         let schema = numeric_columnar_schema(fragment, true).unwrap();
 
@@ -1364,6 +1409,7 @@ mod tests {
             property_type: PropertyType::Int,
             op: ComparisonOp::Gte,
             expected: NumericLiteral::Int(0),
+            fused_operators: None,
         };
         let schema = numeric_columnar_schema(fragment, true).unwrap();
 

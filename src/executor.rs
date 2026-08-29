@@ -82,8 +82,8 @@ use skein_executor::scan::{
 };
 pub use skein_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
 pub use skein_executor::{
-    ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
-    VectorSeedExecutionRow,
+    ExternalReadOperator, OperatorCardinalityProfile, VectorSeedExecutionOutput,
+    VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 use skein_executor::{QueryMemoryClass, QueryMemoryLedger};
 use traversal::*;
@@ -547,6 +547,7 @@ pub fn read_execution_profile(
         detection_row_cap: execution_limit.output_rows,
         row_limit_enforced_before_output: max_rows.is_some(),
         operator_row_cap_enabled: execution_limit.output_rows.is_some(),
+        operator_cardinality_profiles: Vec::new(),
         blocking_operator_kinds: blocking_operator_kinds(plan),
         scan_pruning_reports: Vec::new(),
         vector_execution_reports: Vec::new(),

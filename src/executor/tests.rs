@@ -41,6 +41,11 @@ fn empty_exec_returns_without_scanning_or_buffering_rows() {
 
     assert!(output.rows.is_empty());
     assert!(output.profile.scan_pruning_reports.is_empty());
+    assert_eq!(output.profile.operator_cardinality_profiles.len(), 1);
+    assert_eq!(
+        output.profile.operator_cardinality_profiles[0].actual_rows,
+        Some(0)
+    );
     assert_eq!(output.profile.pipeline_memory_report.intermediate_rows, 0);
     assert_eq!(output.profile.pipeline_memory_report.output_rows, 0);
 }
@@ -1553,6 +1558,31 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
     .unwrap();
 
     assert_eq!(parallel.rows, sequential.rows);
+    assert_eq!(
+        parallel
+            .profile
+            .operator_cardinality_profiles
+            .iter()
+            .map(|cardinality| (
+                cardinality.operator_id.ordinal(),
+                cardinality.operator,
+                cardinality.actual_rows,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                0,
+                skein_plan::PhysicalPlanKind::ProjectExec,
+                Some(parallel.rows.len()),
+            ),
+            (
+                1,
+                skein_plan::PhysicalPlanKind::FilterExec,
+                Some(parallel.rows.len()),
+            ),
+            (2, skein_plan::PhysicalPlanKind::SeqNodeScan, Some(513)),
+        ]
+    );
     assert_eq!(
         parallel
             .profile

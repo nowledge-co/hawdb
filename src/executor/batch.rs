@@ -321,6 +321,8 @@ pub(super) fn execute_prepared_binding_batches(
     if execution_limit.output_rows == Some(0) {
         return Ok(BatchControl::Continue);
     }
+    let operator = plan.plan();
+    context.observer.record_operator_start(operator);
     let pipeline_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         format!("{} pipeline", plan.plan().kind().as_str()),
@@ -328,6 +330,9 @@ pub(super) fn execute_prepared_binding_batches(
     );
     let mut measured_emit = |batch: BindingBatch| {
         runtime_checkpoint(context.task_context)?;
+        context
+            .observer
+            .record_operator_output(operator, batch.len());
         let control = emit_byte_bounded_batches(
             batch,
             context.memory.batch_payload_bytes.get(),

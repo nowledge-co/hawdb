@@ -1,6 +1,7 @@
 use crate::binding::value_payload_bytes;
 use crate::columnar::ColumnarRowRef;
 use skein_core::{Result, SkeinError, Value, ValueRef};
+use skein_plan::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
 use std::ops::Index;
 use std::sync::{Arc, OnceLock};
@@ -862,12 +863,23 @@ pub struct PipelineMemoryReport {
     pub major_page_faults: Option<u64>,
 }
 
+/// The observed output cardinality for one physical operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorCardinalityProfile {
+    pub operator_id: PhysicalOperatorId,
+    pub operator: PhysicalPlanKind,
+    /// `None` means the operator was not invoked, while `Some(0)` means it ran
+    /// and produced no output rows.
+    pub actual_rows: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadExecutionProfile<TScanPruningReport> {
     pub max_rows: Option<usize>,
     pub detection_row_cap: Option<usize>,
     pub row_limit_enforced_before_output: bool,
     pub operator_row_cap_enabled: bool,
+    pub operator_cardinality_profiles: Vec<OperatorCardinalityProfile>,
     pub blocking_operator_kinds: Vec<String>,
     pub scan_pruning_reports: Vec<TScanPruningReport>,
     pub vector_execution_reports: Vec<crate::VectorExecutionReport>,
@@ -913,6 +925,7 @@ mod tests {
             detection_row_cap: Some(11),
             row_limit_enforced_before_output: true,
             operator_row_cap_enabled: true,
+            operator_cardinality_profiles: Vec::new(),
             blocking_operator_kinds: vec!["sort".to_string(), "aggregate".to_string()],
             scan_pruning_reports: Vec::new(),
             vector_execution_reports: Vec::new(),

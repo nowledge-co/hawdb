@@ -194,12 +194,14 @@ impl ExecutionProfileBuilder {
         output: OutputMetrics,
     ) -> ReadExecutionProfile {
         let QueryExecutionReports {
+            operator_cardinality,
             scan_pruning,
             vector_execution,
             graph_expansion,
             blocking_memory,
             mut pipeline_memory,
         } = observer.into_reports();
+        self.profile.operator_cardinality_profiles = operator_cardinality;
         self.profile.scan_pruning_reports = scan_pruning;
         self.profile.vector_execution_reports = vector_execution;
         self.profile.graph_expansion_reports = graph_expansion;
@@ -299,7 +301,7 @@ pub(super) fn execute_profiled_consumer(
     );
     let batch_plan = prepared_plan.batch();
     let fully_streamed = batch_plan.is_some();
-    let observer = QueryExecutionObserver::default();
+    let observer = QueryExecutionObserver::new(request.plan);
     let mut context = ExecutionContext {
         parameters: request.parameters,
         external,
@@ -333,6 +335,7 @@ pub(super) fn execute_profiled_consumer(
             },
         )?;
     } else {
+        observer.record_operator_start(request.plan);
         let bindings = execute_bindings_with_limit(
             request.plan,
             catalog,
@@ -340,6 +343,7 @@ pub(super) fn execute_profiled_consumer(
             &mut context,
             execution_limit,
         )?;
+        observer.record_operator_output(request.plan, bindings.len());
         for binding in bindings {
             output.emit(binding)?;
         }
