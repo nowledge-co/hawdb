@@ -1,5 +1,12 @@
 use skein_core::{RelationshipDirection, ValidatedRegex, Value};
 
+mod null_rejection;
+
+pub use null_rejection::{
+    prove_null_rejecting, BindingId, BindingSet, BoundPredicate, BoundScalarExpression,
+    NullRejectionProof, ScalarNullability, TruthSet, TruthValue,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Predicate {
     And(Vec<Predicate>),
