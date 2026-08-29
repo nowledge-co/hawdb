@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub enum QueryMemoryClass {
     PipelineBatch,
     BlockingState,
+    ExternalRead,
     SpillStaging,
     MorselOutput,
     ResultMaterialization,
@@ -19,6 +20,7 @@ impl QueryMemoryClass {
         match self {
             Self::PipelineBatch => "pipeline_batch",
             Self::BlockingState => "blocking_state",
+            Self::ExternalRead => "external_read",
             Self::SpillStaging => "spill_staging",
             Self::MorselOutput => "morsel_output",
             Self::ResultMaterialization => "result_materialization",

@@ -810,17 +810,57 @@ fn execute_binding_batches_inner(
             embedding_parameter,
             output_external_id,
             metadata_filters,
+            resource_profile,
             vector_plan,
         } => {
+            let max_rows = vector_plan_top_k(vector_plan)
+                .ok_or_else(|| {
+                    SkeinError::Execution("vector seed physical plan is missing TopK".to_string())
+                })?
+                .min(execution_limit.output_rows.unwrap_or(usize::MAX));
+            if max_rows == 0 {
+                return emit_owned_binding_batches(Vec::new(), memory.batch_rows.get(), emit);
+            }
             let embedding =
                 vector_embedding_parameter(context.parameters, embedding_parameter, vector_plan)?;
+            let external_memory = external_read_memory_budget(*resource_profile, memory);
+            let admitted_parallelism = context
+                .task_context
+                .map_or(1, |task_context| task_context.admitted_parallelism().get());
+            let resources = ExternalReadResourceContract {
+                priority: resource_profile.priority,
+                max_parallelism: NonZeroUsize::new(
+                    resource_profile
+                        .max_parallelism
+                        .max(1)
+                        .min(admitted_parallelism),
+                )
+                .expect("resolved external read parallelism is non-zero"),
+                max_working_memory_bytes: external_memory.max_working_bytes,
+                result: ExternalReadResultBudget {
+                    max_rows,
+                    max_memory_bytes: external_memory.max_result_bytes,
+                },
+                task_context: context.task_context,
+            };
+            let external_account = context.memory_ledger.account(
+                QueryMemoryClass::ExternalRead,
+                "VectorSeedScan external read",
+                NonZeroUsize::new(resources.reserved_memory_bytes())
+                    .expect("external read reservation is non-zero"),
+            );
+            let _external_lease = external_account.reserve(resources.reserved_memory_bytes())?;
+            resources.checkpoint()?;
             let output = context
                 .external
                 .execute_vector_seed(VectorSeedExecutionRequest {
                     embedding: &embedding,
                     metadata_filters,
                     vector_plan,
+                    resources,
                 })?;
+            resources.checkpoint()?;
+            output.validate_result_budget(resources.result)?;
             context.observer.record_vector_execution(output.report);
             let mut bindings = collect_bounded_operator_bindings_with_account(
                 "VectorSeedScan",

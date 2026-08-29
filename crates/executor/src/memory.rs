@@ -1,6 +1,6 @@
 //! Execution memory defaults and admission estimates.
 
-use skein_plan::{PhysicalPlan, PlanChildren};
+use skein_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
 use skein_storage::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -91,6 +91,7 @@ pub struct ExecutionMemoryEstimate {
     pub blocking_operator_count: usize,
     pub pipeline_bytes: u64,
     pub blocking_bytes: u64,
+    pub external_read_bytes: u64,
     pub fixed_operator_bytes: u64,
     pub total_bytes: u64,
 }
@@ -105,16 +106,69 @@ pub fn estimated_execution_memory(
         .saturating_mul(usize_to_u64(memory.batch_payload_bytes.get()));
     let blocking_bytes = usize_to_u64(shape.blocking_operator_count)
         .saturating_mul(usize_to_u64(memory.blocking_operator_bytes.get()));
+    let external_read_bytes = shape.external_read_bytes;
     let fixed_operator_bytes = shape.fixed_operator_bytes;
     ExecutionMemoryEstimate {
         pipeline_batch_count: shape.pipeline_batch_count,
         blocking_operator_count: shape.blocking_operator_count,
         pipeline_bytes,
         blocking_bytes,
+        external_read_bytes,
         fixed_operator_bytes,
         total_bytes: pipeline_bytes
             .saturating_add(blocking_bytes)
+            .saturating_add(external_read_bytes)
             .saturating_add(fixed_operator_bytes),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct ExternalReadMemoryBudget {
+    pub max_working_bytes: NonZeroUsize,
+    pub max_result_bytes: NonZeroUsize,
+}
+
+impl ExternalReadMemoryBudget {
+    pub fn reserved_bytes(self) -> usize {
+        self.max_working_bytes
+            .get()
+            .saturating_add(self.max_result_bytes.get())
+    }
+}
+
+#[doc(hidden)]
+pub fn external_read_memory_budget(
+    profile: VectorExecutionResourceProfile,
+    memory: &ExecutionMemoryConfig,
+) -> ExternalReadMemoryBudget {
+    let configured_working_bytes = memory.blocking_operator_bytes.get();
+    let planned_working_bytes = profile
+        .max_working_memory_bytes
+        .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+        .unwrap_or(configured_working_bytes)
+        .max(1);
+    ExternalReadMemoryBudget {
+        max_working_bytes: NonZeroUsize::new(planned_working_bytes.min(configured_working_bytes))
+            .expect("configured external read working budget is non-zero"),
+        max_result_bytes: memory.blocking_operator_bytes,
+    }
+}
+
+#[doc(hidden)]
+pub fn max_external_read_parallelism(plan: &PhysicalPlan) -> usize {
+    let own_parallelism = match plan {
+        PhysicalPlan::VectorSeedScan {
+            resource_profile, ..
+        } => resource_profile.max_parallelism.max(1),
+        _ => 1,
+    };
+    match plan.children() {
+        PlanChildren::None => own_parallelism,
+        PlanChildren::Unary(input) => own_parallelism.max(max_external_read_parallelism(input)),
+        PlanChildren::Binary(left, right) => own_parallelism
+            .max(max_external_read_parallelism(left))
+            .max(max_external_read_parallelism(right)),
     }
 }
 
@@ -147,6 +201,7 @@ pub fn estimated_mutation_memory_bytes(
 struct ExecutionMemoryShape {
     pipeline_batch_count: usize,
     blocking_operator_count: usize,
+    external_read_bytes: u64,
     fixed_operator_bytes: u64,
 }
 
@@ -172,6 +227,14 @@ fn peak_execution_memory_shape(
             .fixed_operator_bytes
             .saturating_add(SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES);
     }
+    if let PhysicalPlan::VectorSeedScan {
+        resource_profile, ..
+    } = plan
+    {
+        shape.external_read_bytes = shape.external_read_bytes.saturating_add(usize_to_u64(
+            external_read_memory_budget(*resource_profile, memory).reserved_bytes(),
+        ));
+    }
     shape
 }
 
@@ -187,6 +250,7 @@ fn peak_shape_max(
                 usize_to_u64(shape.blocking_operator_count)
                     .saturating_mul(usize_to_u64(memory.blocking_operator_bytes.get())),
             )
+            .saturating_add(shape.external_read_bytes)
             .saturating_add(shape.fixed_operator_bytes)
     };
     let left_total = shape_bytes(left);
@@ -261,6 +325,7 @@ mod tests {
         assert_eq!(estimate.blocking_operator_count, 2);
         assert_eq!(estimate.pipeline_bytes, 3 * 1024);
         assert_eq!(estimate.blocking_bytes, 2 * 4096);
+        assert_eq!(estimate.external_read_bytes, 0);
         assert_eq!(estimate.fixed_operator_bytes, 0);
         assert_eq!(estimate.total_bytes, 11 * 1024);
     }
@@ -305,6 +370,7 @@ mod tests {
         assert_eq!(estimate.pipeline_bytes, 1024);
         assert_eq!(estimate.blocking_operator_count, 1);
         assert_eq!(estimate.blocking_bytes, 4096);
+        assert_eq!(estimate.external_read_bytes, 0);
         assert_eq!(
             estimate.fixed_operator_bytes,
             SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
@@ -313,6 +379,42 @@ mod tests {
             estimate.total_bytes,
             1024 + 4096 + SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
         );
+    }
+
+    #[test]
+    fn vector_seed_admission_reserves_external_working_and_result_memory() {
+        let plan = PhysicalPlan::VectorSeedScan {
+            embedding_parameter: "embedding".to_string(),
+            output_external_id: true,
+            metadata_filters: Default::default(),
+            resource_profile: VectorExecutionResourceProfile {
+                priority: 128,
+                max_parallelism: 3,
+                max_working_memory_bytes: Some(2048),
+            },
+            vector_plan: skein_plan::VectorPhysicalPlan::TopK {
+                limit: 4,
+                input: Box::new(skein_plan::VectorPhysicalPlan::RawVectorRerank {
+                    embedding_dimension: 2,
+                    input: Box::new(skein_plan::VectorPhysicalPlan::VectorCandidateScan {
+                        source: skein_plan::VectorCandidateSource::Scalar,
+                        embedding_dimension: 2,
+                        candidate_limit: 4,
+                        input: Box::new(skein_plan::VectorPhysicalPlan::Filter {
+                            fields: Vec::new(),
+                        }),
+                    }),
+                }),
+            },
+        };
+
+        let estimate = estimated_execution_memory(&plan, &admission_test_config());
+
+        assert_eq!(estimate.pipeline_bytes, 1024);
+        assert_eq!(estimate.blocking_bytes, 4096);
+        assert_eq!(estimate.external_read_bytes, 2048 + 4096);
+        assert_eq!(estimate.total_bytes, 11 * 1024);
+        assert_eq!(max_external_read_parallelism(&plan), 3);
     }
 
     #[test]

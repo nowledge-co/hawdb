@@ -45,8 +45,8 @@ pub use columnar::{
 };
 pub use concurrent::{BoundedExecutor, SharedExecutorPool, SharedExecutorPoolError};
 pub use external::{
-    ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
-    VectorSeedExecutionRow,
+    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 pub use graph::{GraphExpansionExecutionReport, GraphExpansionTruncationReason};
 pub use limit::ExecutionLimit;

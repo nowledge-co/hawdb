@@ -64,7 +64,8 @@ use skein_executor::kernel::{
     OperatorMemoryTracker,
 };
 pub(crate) use skein_executor::memory::{
-    estimated_execution_memory, estimated_mutation_memory_bytes, ExecutionMemoryEstimate,
+    estimated_execution_memory, estimated_mutation_memory_bytes, external_read_memory_budget,
+    max_external_read_parallelism, ExecutionMemoryEstimate,
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
@@ -82,8 +83,8 @@ use skein_executor::scan::{
 };
 pub use skein_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
 pub use skein_executor::{
-    ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
-    VectorSeedExecutionRow,
+    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 use skein_executor::{QueryMemoryClass, QueryMemoryLedger};
 use traversal::*;

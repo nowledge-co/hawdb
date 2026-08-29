@@ -2,7 +2,10 @@ use super::super::PhysicalPlan;
 use crate::{plan_vector_search, OptimizerContext};
 use skein_plan::{LogicalPlan, VectorCandidateSource, VectorSearchLogicalPlan};
 
-pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
+pub(super) fn lower(
+    logical: &LogicalPlan,
+    optimizer_context: &OptimizerContext,
+) -> Option<PhysicalPlan> {
     match logical {
         LogicalPlan::ProjectGraph {
             name,
@@ -41,13 +44,13 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
                 candidate_limit: *top_k,
                 top_k: *top_k,
             };
+            let planned = plan_vector_search(&logical, optimizer_context).ok()?;
             Some(PhysicalPlan::VectorSeedScan {
                 embedding_parameter: embedding_parameter.clone(),
                 output_external_id: *output_external_id,
                 metadata_filters: Default::default(),
-                vector_plan: plan_vector_search(&logical, &OptimizerContext::default())
-                    .ok()?
-                    .plan,
+                resource_profile: planned.properties.execution_resource_profile(),
+                vector_plan: planned.plan,
             })
         }
         LogicalPlan::ThreadRepairStats {

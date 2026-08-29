@@ -101,9 +101,13 @@ impl PhysicalPlan {
                 output_external_id,
                 metadata_filters,
                 vector_plan,
+                resource_profile,
             } => format!(
-                "{pad}VectorSeedScan embedding=${embedding_parameter} output_external_id={output_external_id} metadata_filter_fields={:?} {}",
+                "{pad}VectorSeedScan embedding=${embedding_parameter} output_external_id={output_external_id} metadata_filter_fields={:?} priority={} max_parallelism={} max_working_memory_bytes={:?} {}",
                 metadata_filters.keys().collect::<Vec<_>>(),
+                resource_profile.priority,
+                resource_profile.max_parallelism,
+                resource_profile.max_working_memory_bytes,
                 vector_plan.explain_summary()
             ),
             PhysicalPlan::CreateNode { label, .. } => {

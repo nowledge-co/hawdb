@@ -229,6 +229,7 @@ impl PhysicalPlan {
                 output_external_id,
                 metadata_filters,
                 vector_plan,
+                resource_profile,
             } => {
                 output.push_str("VectorSeedScan(");
                 write_identifier(output, embedding_parameter);
@@ -248,6 +249,15 @@ impl PhysicalPlan {
                 );
                 output.push(':');
                 output.push_str(&vector_plan.fingerprint());
+                output.push(':');
+                output.push_str(&resource_profile.priority.to_string());
+                output.push(':');
+                output.push_str(&resource_profile.max_parallelism.to_string());
+                output.push(':');
+                match resource_profile.max_working_memory_bytes {
+                    Some(bytes) => output.push_str(&bytes.to_string()),
+                    None => output.push_str("unbounded"),
+                }
                 output.push(')');
             }
             PhysicalPlan::CreateNode { label, properties } => {

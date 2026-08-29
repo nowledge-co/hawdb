@@ -213,8 +213,19 @@ impl std::error::Error for VectorPlanError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorPlanProperties {
     pub precision: VectorPrecision,
+    pub priority: u8,
     pub max_parallelism: usize,
     pub max_memory_bytes: Option<u64>,
+}
+
+impl VectorPlanProperties {
+    pub fn execution_resource_profile(&self) -> skein_plan::VectorExecutionResourceProfile {
+        skein_plan::VectorExecutionResourceProfile {
+            priority: self.priority,
+            max_parallelism: self.max_parallelism.max(1),
+            max_working_memory_bytes: self.max_memory_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +286,7 @@ pub fn plan_vector_search(
         plan,
         properties: VectorPlanProperties {
             precision: VectorPrecision::RawReranked,
+            priority: context.resource_hints().priority,
             max_parallelism: context.resource_hints().max_parallelism.max(1),
             max_memory_bytes: context.resource_hints().max_memory_bytes,
         },
@@ -333,7 +345,9 @@ mod tests {
             vec!["Filter", "VectorCandidateScan", "RawVectorRerank", "TopK"]
         );
         assert_eq!(planned.properties.precision, VectorPrecision::RawReranked);
+        assert_eq!(planned.properties.priority, 128);
         assert_eq!(planned.properties.max_parallelism, 2);
+        assert_eq!(planned.properties.max_memory_bytes, Some(8 * 1024 * 1024));
     }
 
     #[test]

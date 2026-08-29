@@ -10,8 +10,8 @@ use crate::search::{
     SearchMode, SearchOutOfCoreConfig, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
     SearchOutOfCoreReader, SearchQueryOptions, SearchRangeReadConfig,
     VectorRecallProductionQualificationReport, VectorRecallValidationOptions,
-    VectorRecallValidationReport, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
-    VECTOR_RECALL_VALIDATION_PROTOCOL,
+    VectorRecallValidationReport, VectorSearchExecutionOptions,
+    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
 use crate::search_projection_evidence::{
     nowledge_search_projection_evidence_json, nowledge_search_projection_shadow_evidence_json,
@@ -5070,11 +5070,19 @@ impl NowledgeMemOutOfCoreSearchProjection {
         &self,
         request: &NowledgeMemSearchCandidateRequest,
     ) -> Result<NowledgeMemOutOfCoreSearchCandidateOutput> {
+        self.search_candidates_with_report_context(request, VectorSearchExecutionOptions::default())
+    }
+
+    pub fn search_candidates_with_report_context(
+        &self,
+        request: &NowledgeMemSearchCandidateRequest,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+    ) -> Result<NowledgeMemOutOfCoreSearchCandidateOutput> {
         let effective_compressed_vector_search_mode =
             request.effective_compressed_vector_search_mode();
         let output = self
             .reader
-            .search_with_options_compressed_vector_projection_mode(
+            .search_with_options_compressed_vector_projection_execution_options(
                 &request.query_text,
                 request.query_embedding.as_deref(),
                 request.mode,
@@ -5087,6 +5095,7 @@ impl NowledgeMemOutOfCoreSearchProjection {
                     policy_epoch: None,
                 },
                 effective_compressed_vector_search_mode,
+                vector_execution_options,
             )?;
         let report = nowledge_mem_search_candidate_report(
             request,
@@ -5226,11 +5235,22 @@ impl NowledgeMemSearchProjection {
         &self,
         request: &NowledgeMemSearchCandidateRequest,
     ) -> Result<NowledgeMemSearchCandidateOutput> {
+        self.try_search_candidates_with_report_context(
+            request,
+            VectorSearchExecutionOptions::default(),
+        )
+    }
+
+    pub fn try_search_candidates_with_report_context(
+        &self,
+        request: &NowledgeMemSearchCandidateRequest,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+    ) -> Result<NowledgeMemSearchCandidateOutput> {
         let effective_compressed_vector_search_mode =
             request.effective_compressed_vector_search_mode();
         let result = self
             .index
-            .try_search_with_options_adaptive_vector_projection(
+            .try_search_with_options_adaptive_vector_projection_context(
                 &request.query_text,
                 request.query_embedding.as_deref(),
                 request.mode,
@@ -5247,6 +5267,7 @@ impl NowledgeMemSearchProjection {
                     backend_policy: request.adaptive_vector_backend_policy,
                     recall_validation_probe: request.recall_validation_probe,
                 },
+                vector_execution_options,
             )?;
         let report = nowledge_mem_search_candidate_report(
             request,
@@ -5309,16 +5330,23 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
         &mut self,
         request: crate::executor::VectorSeedExecutionRequest<'_>,
     ) -> Result<crate::executor::VectorSeedExecutionOutput> {
-        let top_k = vector_plan_top_k(request.vector_plan)?;
+        request.resources.checkpoint()?;
+        let top_k = vector_plan_top_k(request.vector_plan)?.min(request.resources.result.max_rows);
         let search_request =
             NowledgeMemSearchCandidateRequest::vector(request.embedding.to_vec(), top_k)
                 .with_metadata_filters(request.metadata_filters.clone());
+        let vector_execution_options = VectorSearchExecutionOptions::bounded(
+            request.resources.max_parallelism,
+            request.resources.max_working_memory_bytes.get(),
+            request.resources.task_context,
+        );
         let output = match (self.projection, self.out_of_core_projection) {
-            (Some(projection), None) => {
-                projection.try_search_candidates_with_report(&search_request)?
-            }
+            (Some(projection), None) => projection.try_search_candidates_with_report_context(
+                &search_request,
+                vector_execution_options,
+            )?,
             (None, Some(projection)) => projection
-                .search_candidates_with_report(&search_request)?
+                .search_candidates_with_report_context(&search_request, vector_execution_options)?
                 .into(),
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => {
@@ -5392,6 +5420,8 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                     .collect(),
             },
         };
+        execution_output.validate_result_budget(request.resources.result)?;
+        request.resources.checkpoint()?;
         self.vector_seed_execution_count = self
             .vector_seed_execution_count
             .checked_add(1)
@@ -15902,6 +15932,8 @@ mod tests {
             panic!("expected explain plan");
         };
         assert!(plan.contains("VectorSeedScan embedding=$embedding"));
+        assert!(plan.contains("priority=128 max_parallelism=16"));
+        assert!(plan.contains("max_working_memory_bytes=Some(67108864)"));
         assert!(plan.contains("Filter->VectorCandidateScan->RawVectorRerank->TopK"));
         assert!(!plan.contains("[1"));
 
