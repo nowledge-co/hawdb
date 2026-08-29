@@ -132,6 +132,9 @@ _SKEIN_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_cra
 
 rust_test(
     name = "skein_unit_fast_tests",
+    # The remaining root tests can still exceed the 300-second default under
+    # Prow contention even after the crash matrix is isolated.
+    size = "large",
     args = [
         "--skip",
         _SKEIN_STORAGE_CRASH_MATRIX_TEST,
