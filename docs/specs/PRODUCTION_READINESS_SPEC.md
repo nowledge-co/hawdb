@@ -884,16 +884,17 @@ workflow MAY satisfy this governance requirement without protecting the
 rapid-iteration branch earlier.
 
 The release process SHOULD also include dependency advisory and license policy
-checks, a scheduled optimizer fuzz corpus, storage crash/soak campaigns, and
-artifact retention for production resource evidence. These checks MUST become
-required before their corresponding risk is accepted for production.
+checks, storage crash/soak campaigns, and artifact retention for production
+resource evidence. These checks MUST become required before their corresponding
+risk is accepted for production.
 
-The scheduled quality workflow MUST run the advisory and license policy,
-deterministic optimizer differential/metamorphic campaigns, persistent-format
-corruption campaigns, the scalar/SIMD differential corpus under an address
-sanitizer, and a mixed foreground/background runtime soak. Fuzz failures MUST
-retain their campaign report and minimized replay bundle before the job fails.
-The runtime soak MUST
+Optimizer and persistent-format fuzz targets remain available through Bazel for
+routine local verification. They MUST NOT be added to default or dedicated CI
+jobs. The canonical local command is documented in `AGENTS.md`.
+
+The scheduled quality workflow MUST run the advisory and license policy, the
+scalar/SIMD differential corpus under an address sanitizer, and a mixed
+foreground/background runtime soak. The runtime soak MUST
 use an out-of-core fixture whose raw bytes exceed the admitted runtime memory
 and whose canonical artifact exceeds the segment cache. It MUST exercise the
 admitted Tokio facade, high-cardinality distinct and Cartesian paths, observe
