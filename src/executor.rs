@@ -30,6 +30,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 mod batch;
 mod blocking;
 mod columnar;
+mod entrypoint;
 mod expression;
 mod mutation;
 mod observer;
@@ -42,6 +43,7 @@ mod vector;
 use batch::*;
 use blocking::*;
 use columnar::*;
+use entrypoint::*;
 use expression::*;
 pub(crate) use mutation::project_staged_mutation_return_rows;
 pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_command};
@@ -211,19 +213,6 @@ impl<'a> PreparedPhysicalPlan<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ExecutionRuntimeControl<'a> {
-    memory: &'a ExecutionMemoryConfig,
-    task_context: Option<&'a RuntimeTaskContext>,
-    materialize_output: bool,
-}
-
-#[derive(Clone, Copy)]
-struct ExecutionOutputLimits {
-    max_rows: Option<usize>,
-    max_payload_bytes: Option<usize>,
-}
-
 pub fn execute(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -262,22 +251,15 @@ fn execute_with_row_limit_internal(
     let mut external = NoExternalReadOperator;
     let memory = ExecutionMemoryConfig::default();
     let mut rows = Vec::new();
-    execute_with_row_consumer_profile_internal(
-        plan,
-        catalog,
-        store,
-        &parameters,
-        &mut external,
-        max_rows,
-        None,
+    execute_profiled_consumer(
+        ExecutionRequest::new(plan, &parameters, &memory)
+            .with_output_limits(max_rows, None)
+            .with_optional_task_context(task_context),
+        ExecutionResources::new(catalog, store, &mut external),
+        ConsumerMemoryMode::Retained,
         &mut |row| {
             rows.push(row);
             Ok(())
-        },
-        ExecutionRuntimeControl {
-            memory: &memory,
-            task_context,
-            materialize_output: true,
         },
     )?;
     Ok(rows)
@@ -351,21 +333,10 @@ pub fn execute_with_output_limits_profile_and_external_and_memory(
     max_payload_bytes: Option<usize>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_row_limit_profile_and_external_and_memory_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        ExecutionOutputLimits {
-            max_rows,
-            max_payload_bytes,
-        },
-        ExecutionRuntimeControl {
-            memory,
-            task_context: None,
-            materialize_output: true,
-        },
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, memory)
+            .with_output_limits(max_rows, max_payload_bytes),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
@@ -378,21 +349,9 @@ pub fn execute_with_row_limit_profile_and_external_and_memory(
     max_rows: Option<usize>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_row_limit_profile_and_external_and_memory_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        ExecutionOutputLimits {
-            max_rows,
-            max_payload_bytes: None,
-        },
-        ExecutionRuntimeControl {
-            memory,
-            task_context: None,
-            materialize_output: true,
-        },
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, memory).with_output_limits(max_rows, None),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
@@ -406,21 +365,11 @@ pub fn execute_with_row_limit_profile_and_external_and_context(
     task_context: &RuntimeTaskContext,
 ) -> Result<ProfiledQueryRows> {
     let memory = ExecutionMemoryConfig::default();
-    execute_with_row_limit_profile_and_external_and_memory_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        ExecutionOutputLimits {
-            max_rows,
-            max_payload_bytes: None,
-        },
-        ExecutionRuntimeControl {
-            memory: &memory,
-            task_context: Some(task_context),
-            materialize_output: true,
-        },
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, &memory)
+            .with_output_limits(max_rows, None)
+            .with_task_context(task_context),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
@@ -460,21 +409,11 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
     task_context: &RuntimeTaskContext,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_row_limit_profile_and_external_and_memory_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        ExecutionOutputLimits {
-            max_rows,
-            max_payload_bytes,
-        },
-        ExecutionRuntimeControl {
-            memory,
-            task_context: Some(task_context),
-            materialize_output: true,
-        },
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, memory)
+            .with_output_limits(max_rows, max_payload_bytes)
+            .with_task_context(task_context),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
@@ -540,20 +479,12 @@ pub fn execute_with_row_consumer_profile_and_external_and_memory(
     consumer: &mut dyn FnMut(Row) -> Result<()>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryStream> {
-    execute_with_row_consumer_profile_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        max_payload_bytes,
+    execute_profiled_consumer(
+        ExecutionRequest::new(plan, parameters, memory)
+            .with_output_limits(max_rows, max_payload_bytes),
+        ExecutionResources::new(catalog, store, external),
+        ConsumerMemoryMode::ReleasedAfterCall,
         consumer,
-        ExecutionRuntimeControl {
-            memory,
-            task_context: None,
-            materialize_output: false,
-        },
     )
 }
 
@@ -596,212 +527,14 @@ pub fn execute_with_row_consumer_profile_and_external_and_context_and_memory(
     task_context: &RuntimeTaskContext,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryStream> {
-    execute_with_row_consumer_profile_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        max_payload_bytes,
+    execute_profiled_consumer(
+        ExecutionRequest::new(plan, parameters, memory)
+            .with_output_limits(max_rows, max_payload_bytes)
+            .with_task_context(task_context),
+        ExecutionResources::new(catalog, store, external),
+        ConsumerMemoryMode::ReleasedAfterCall,
         consumer,
-        ExecutionRuntimeControl {
-            memory,
-            task_context: Some(task_context),
-            materialize_output: false,
-        },
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn execute_with_row_consumer_profile_internal(
-    plan: &PhysicalPlan,
-    catalog: &mut Catalog,
-    store: &mut GraphStore,
-    parameters: &BTreeMap<String, Value>,
-    external: &mut dyn ExternalReadOperator,
-    max_rows: Option<usize>,
-    max_payload_bytes: Option<usize>,
-    consumer: &mut dyn FnMut(Row) -> Result<()>,
-    runtime: ExecutionRuntimeControl<'_>,
-) -> Result<ProfiledQueryStream> {
-    store.ensure_usable()?;
-    let ExecutionRuntimeControl {
-        memory,
-        task_context,
-        materialize_output,
-    } = runtime;
-    let memory_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
-    let result_account = memory_ledger.account(
-        QueryMemoryClass::ResultMaterialization,
-        "query result",
-        memory.query_memory_bytes,
-    );
-    let mut materialized_result_lease = result_account.reserve(0)?;
-    let process_memory_start = skein_qos::ProcessMemorySnapshot::capture().ok();
-    let execution_limit = ExecutionLimit::from_user_max_rows(max_rows)?;
-    let mut profile = read_execution_profile(plan, max_rows)?;
-    let prepared_plan = PreparedPhysicalPlan::prepare(plan, store, memory);
-    debug_assert_eq!(
-        prepared_plan.storage_capability(),
-        if store.is_out_of_core() {
-            PreparedStorageCapability::OutOfCore
-        } else {
-            PreparedStorageCapability::InMemory
-        }
-    );
-    debug_assert_eq!(
-        prepared_plan.required_memory(),
-        estimated_execution_memory(plan, memory)
-    );
-    let batch_plan = prepared_plan.batch();
-    let fully_streamed = batch_plan.is_some();
-    let mut output_rows = 0usize;
-    let mut output_payload_bytes = 0usize;
-    let mut emit_binding = |binding: Binding| -> Result<()> {
-        if max_rows.is_some_and(|limit| output_rows >= limit) {
-            return Err(SkeinError::Execution(format!(
-                "read query returned more than {} rows, exceeding max_read_result_rows {}",
-                max_rows.unwrap_or_default(),
-                max_rows.unwrap_or_default()
-            )));
-        }
-        let row = binding.values;
-        let row_memory_bytes = map_memory_bytes(&row);
-        let transient_result_lease = if materialize_output {
-            materialized_result_lease.grow(row_memory_bytes)?;
-            None
-        } else {
-            Some(result_account.reserve(row_memory_bytes)?)
-        };
-        let row_payload_bytes = map_payload_bytes(&row);
-        let next_payload_bytes = output_payload_bytes.saturating_add(row_payload_bytes);
-        if max_payload_bytes.is_some_and(|limit| next_payload_bytes > limit) {
-            return Err(SkeinError::Execution(format!(
-                "read query payload would exceed max_payload_bytes {} (max_read_result_payload_bytes {}; next total {})",
-                max_payload_bytes.unwrap_or_default(),
-                max_payload_bytes.unwrap_or_default(),
-                next_payload_bytes
-            )));
-        }
-        consumer(row)?;
-        drop(transient_result_lease);
-        output_rows = output_rows.saturating_add(1);
-        output_payload_bytes = next_payload_bytes;
-        Ok(())
-    };
-    let observer = QueryExecutionObserver::default();
-    let mut context = ExecutionContext {
-        parameters,
-        external,
-        memory,
-        memory_ledger: &memory_ledger,
-        task_context,
-        observer: &observer,
-    };
-    if let Some(batch_plan) = batch_plan {
-        let external = BatchExternalReadAdapter::new(&mut *context.external);
-        let batch_context = BatchReadContext {
-            catalog,
-            store,
-            parameters: context.parameters,
-            external: &external,
-            memory,
-            memory_ledger: &memory_ledger,
-            task_context,
-            observer: context.observer,
-        };
-        execute_prepared_binding_batches(
-            batch_plan,
-            batch_context,
-            execution_limit,
-            &mut |batch| {
-                for binding in batch {
-                    emit_binding(binding)?;
-                }
-                Ok(BatchControl::Continue)
-            },
-        )?;
-    } else {
-        let bindings =
-            execute_bindings_with_limit(plan, catalog, store, &mut context, execution_limit)?;
-        for binding in bindings {
-            emit_binding(binding)?;
-        }
-    }
-    let QueryExecutionReports {
-        scan_pruning,
-        vector_execution,
-        graph_expansion,
-        blocking_memory,
-        mut pipeline_memory,
-    } = observer.into_reports();
-    profile.scan_pruning_reports = scan_pruning;
-    profile.vector_execution_reports = vector_execution;
-    profile.graph_expansion_reports = graph_expansion;
-    profile.blocking_operator_memory_reports = blocking_memory;
-    let pipeline_memory_report = &mut pipeline_memory;
-    pipeline_memory_report.output_rows = output_rows;
-    pipeline_memory_report.output_payload_bytes = output_payload_bytes;
-    let query_memory = memory_ledger.snapshot();
-    pipeline_memory_report.query_memory_budget_bytes = query_memory.budget_bytes;
-    pipeline_memory_report.query_memory_peak_bytes = query_memory.peak_bytes;
-    pipeline_memory_report.query_memory_completion_bytes = query_memory.used_bytes;
-    pipeline_memory_report.query_memory_account_count = query_memory.account_count;
-    if let Ok(process_memory_end) = skein_qos::ProcessMemorySnapshot::capture() {
-        pipeline_memory_report.steady_resident_bytes = Some(process_memory_end.resident_bytes);
-        pipeline_memory_report.peak_resident_bytes = Some(process_memory_end.peak_resident_bytes);
-        if let Some(process_memory_start) = process_memory_start {
-            let process_memory =
-                skein_qos::ProcessMemoryProfile::between(process_memory_start, process_memory_end);
-            pipeline_memory_report.start_resident_bytes = Some(process_memory.start_resident_bytes);
-            pipeline_memory_report.start_peak_resident_bytes =
-                Some(process_memory.start_peak_resident_bytes);
-            pipeline_memory_report.steady_resident_growth_bytes =
-                Some(process_memory.steady_resident_growth_bytes);
-            pipeline_memory_report.lifetime_peak_resident_growth_bytes =
-                Some(process_memory.lifetime_peak_resident_growth_bytes);
-            pipeline_memory_report.total_page_faults = process_memory.total_page_faults;
-            pipeline_memory_report.minor_page_faults = process_memory.minor_page_faults;
-            pipeline_memory_report.major_page_faults = process_memory.major_page_faults;
-        }
-    }
-    profile.pipeline_memory_report = pipeline_memory;
-    Ok(ProfiledQueryStream {
-        fully_streamed,
-        profile,
-    })
-}
-
-fn execute_with_row_limit_profile_and_external_and_memory_internal(
-    plan: &PhysicalPlan,
-    catalog: &mut Catalog,
-    store: &mut GraphStore,
-    parameters: &BTreeMap<String, Value>,
-    external: &mut dyn ExternalReadOperator,
-    output_limits: ExecutionOutputLimits,
-    runtime: ExecutionRuntimeControl<'_>,
-) -> Result<ProfiledQueryRows> {
-    let ExecutionOutputLimits {
-        max_rows,
-        max_payload_bytes,
-    } = output_limits;
-    let mut rows = QueryRowsBuilder::new();
-    let streamed = execute_with_row_consumer_profile_internal(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        max_payload_bytes,
-        &mut |row| rows.push_named_row(row),
-        runtime,
-    )?;
-    Ok(ProfiledQueryRows {
-        rows: rows.finish(),
-        profile: streamed.profile,
-    })
 }
 
 pub fn read_execution_profile(
