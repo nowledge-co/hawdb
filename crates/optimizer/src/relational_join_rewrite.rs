@@ -1,7 +1,11 @@
 //! CD-C legality analysis and memo-backed join rewrite enumeration.
 
 use crate::{
-    GroupId, Memo, PhysicalProperties, PlanCost, RelationalJoinAccessPath,
+    relational_join_cost::{
+        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
+        RelationalJoinRightInput,
+    },
+    GroupId, Memo, PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
     RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinPredicateId,
     RelationalJoinRelation, RequiredProperties,
 };
@@ -151,11 +155,15 @@ pub struct RelationalJoinRewritePlan {
     pub base_binding: BindingId,
     pub base_access_path: RelationalJoinAccessPath,
     pub steps: Vec<RelationalJoinRewriteStep>,
-    pub cost: PlanCost,
+    pub cost_breakdown: PlanCostBreakdown,
     pub properties: PhysicalProperties,
 }
 
 impl RelationalJoinRewritePlan {
+    pub fn cost(&self) -> PlanCost {
+        self.cost_breakdown.as_plan_cost()
+    }
+
     pub fn binding_order(&self) -> Vec<BindingId> {
         std::iter::once(self.base_binding)
             .chain(self.steps.iter().map(|step| step.binding))
@@ -824,10 +832,7 @@ fn best_rewrite_base_plan(
             base_binding: relation.binding,
             base_access_path: access.clone(),
             steps: Vec::new(),
-            cost: PlanCost {
-                estimated_rows: access.descriptor.estimated_rows.max(1) as u64,
-                cost: access.descriptor.estimated_rows.max(1) as u64,
-            },
+            cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
             properties: access.properties.clone(),
         })
         .min_by(compare_rewrite_plans)
@@ -860,16 +865,16 @@ fn best_rewrite_join_plan(
         })
         .min_by(|left, right| compare_rewrite_access_paths(left, right))?
         .clone();
-    let inner_rows = access.descriptor.estimated_rows.max(1) as u64;
-    let joined_rows = left_plan.cost.estimated_rows.saturating_mul(inner_rows);
-    let output_rows = match operator_kind {
-        RelationalJoinOperatorKind::Inner => joined_rows,
-        RelationalJoinOperatorKind::LeftOuter => joined_rows.max(left_plan.cost.estimated_rows),
+    let cardinality = match operator_kind {
+        RelationalJoinOperatorKind::Inner => RelationalJoinCardinality::Inner,
+        RelationalJoinOperatorKind::LeftOuter => RelationalJoinCardinality::PreserveLeft,
     };
-    left_plan.cost = PlanCost {
-        estimated_rows: output_rows,
-        cost: left_plan.cost.cost.saturating_add(joined_rows),
-    };
+    left_plan.cost_breakdown = estimate_relational_join_cost(
+        left_plan.cost_breakdown,
+        estimate_relational_access_cost(access.descriptor.estimated_rows),
+        cardinality,
+        RelationalJoinRightInput::Probe,
+    );
     left_plan.steps.push(RelationalJoinRewriteStep {
         operator_id,
         operator_kind,
@@ -902,10 +907,14 @@ fn compare_rewrite_plans(
     left: &RelationalJoinRewritePlan,
     right: &RelationalJoinRewritePlan,
 ) -> std::cmp::Ordering {
-    left.cost
+    left.cost_breakdown
         .cost
-        .cmp(&right.cost.cost)
-        .then_with(|| left.cost.estimated_rows.cmp(&right.cost.estimated_rows))
+        .cmp(&right.cost_breakdown.cost)
+        .then_with(|| {
+            left.cost_breakdown
+                .estimated_rows
+                .cmp(&right.cost_breakdown.estimated_rows)
+        })
         .then_with(|| left.stable_key().cmp(&right.stable_key()))
 }
 
@@ -1094,6 +1103,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.plan.binding_order(), [C, A, B]);
+        assert_eq!(
+            result.plan.cost(),
+            PlanCost {
+                estimated_rows: 1,
+                cost: 3,
+            }
+        );
         assert_eq!(
             result.plan.steps[1].operator_kind,
             RelationalJoinOperatorKind::LeftOuter

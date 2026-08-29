@@ -1,8 +1,13 @@
 //! Hypergraph csg-cmp enumeration for bound relational join operators.
 
 use crate::{
-    analyze_relational_join_conflicts, relational_join_rewrite::validate_problem_relations,
-    GroupId, Memo, PhysicalProperties, PlanCost, RelationalJoinAccessPath,
+    analyze_relational_join_conflicts,
+    relational_join_cost::{
+        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
+        RelationalJoinRightInput,
+    },
+    relational_join_rewrite::validate_problem_relations,
+    GroupId, Memo, PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
     RelationalJoinConflictAnalysis, RelationalJoinEnumerationConfig,
     RelationalJoinEnumerationError, RelationalJoinOperatorId, RelationalJoinOperatorKind,
     RelationalJoinPredicateId, RelationalJoinRewriteError, RelationalJoinRewriteProblem,
@@ -66,8 +71,14 @@ impl RelationalCsgCmpPlanNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalCsgCmpPlan {
     pub root: RelationalCsgCmpPlanNode,
-    pub cost: PlanCost,
+    pub cost_breakdown: PlanCostBreakdown,
     pub properties: PhysicalProperties,
+}
+
+impl RelationalCsgCmpPlan {
+    pub fn cost(&self) -> PlanCost {
+        self.cost_breakdown.as_plan_cost()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,10 +386,9 @@ fn best_csg_cmp_plan(
                                 binding: *binding,
                                 access_path: access.clone(),
                             },
-                            cost: PlanCost {
-                                estimated_rows: access.descriptor.estimated_rows.max(1) as u64,
-                                cost: access.descriptor.estimated_rows.max(1) as u64,
-                            },
+                            cost_breakdown: estimate_relational_access_cost(
+                                access.descriptor.estimated_rows,
+                            ),
                             properties: access.properties.clone(),
                         })
                         .min_by(compare_csg_cmp_plans)
@@ -429,30 +439,25 @@ fn best_csg_cmp_plan(
                     ),
                 };
                 left.zip(right).map(|(left, right)| {
-                    let joined_rows = left
-                        .cost
-                        .estimated_rows
-                        .saturating_mul(right.cost.estimated_rows);
-                    let output_rows = match operator_kind {
-                        RelationalJoinOperatorKind::Inner => joined_rows,
+                    let cardinality = match operator_kind {
+                        RelationalJoinOperatorKind::Inner => RelationalJoinCardinality::Inner,
                         RelationalJoinOperatorKind::LeftOuter => {
-                            joined_rows.max(left.cost.estimated_rows)
+                            RelationalJoinCardinality::PreserveLeft
                         }
+                    };
+                    let right_input = if materialized_right {
+                        RelationalJoinRightInput::Materialized
+                    } else {
+                        RelationalJoinRightInput::Probe
                     };
                     RelationalCsgCmpPlan {
                         properties: left.properties.clone(),
-                        cost: PlanCost {
-                            estimated_rows: output_rows,
-                            cost: left
-                                .cost
-                                .cost
-                                .saturating_add(if materialized_right {
-                                    right.cost.cost
-                                } else {
-                                    0
-                                })
-                                .saturating_add(joined_rows),
-                        },
+                        cost_breakdown: estimate_relational_join_cost(
+                            left.cost_breakdown,
+                            right.cost_breakdown,
+                            cardinality,
+                            right_input,
+                        ),
                         root: RelationalCsgCmpPlanNode::Join {
                             operator_id: *operator_id,
                             operator_kind: *operator_kind,
@@ -495,10 +500,7 @@ fn best_probe_relation_plan(
                 binding,
                 access_path: access.clone(),
             },
-            cost: PlanCost {
-                estimated_rows: access.descriptor.estimated_rows.max(1) as u64,
-                cost: access.descriptor.estimated_rows.max(1) as u64,
-            },
+            cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
             properties: access.properties.clone(),
         })
         .min_by(compare_probe_plans)
@@ -508,9 +510,9 @@ fn compare_probe_plans(
     left: &RelationalCsgCmpPlan,
     right: &RelationalCsgCmpPlan,
 ) -> std::cmp::Ordering {
-    left.cost
+    left.cost_breakdown
         .estimated_rows
-        .cmp(&right.cost.estimated_rows)
+        .cmp(&right.cost_breakdown.estimated_rows)
         .then_with(|| match (&left.root, &right.root) {
             (
                 RelationalCsgCmpPlanNode::Relation {
@@ -532,10 +534,14 @@ fn compare_csg_cmp_plans(
     left: &RelationalCsgCmpPlan,
     right: &RelationalCsgCmpPlan,
 ) -> std::cmp::Ordering {
-    left.cost
+    left.cost_breakdown
         .cost
-        .cmp(&right.cost.cost)
-        .then_with(|| left.cost.estimated_rows.cmp(&right.cost.estimated_rows))
+        .cmp(&right.cost_breakdown.cost)
+        .then_with(|| {
+            left.cost_breakdown
+                .estimated_rows
+                .cmp(&right.cost_breakdown.estimated_rows)
+        })
         .then_with(|| left.root.stable_key().cmp(&right.root.stable_key()))
 }
 
@@ -702,6 +708,13 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(
+            result.plan.cost(),
+            PlanCost {
+                estimated_rows: 1,
+                cost: 2,
+            }
+        );
         let RelationalCsgCmpPlanNode::Join { left, right, .. } = result.plan.root else {
             panic!("expected costed join root");
         };
@@ -710,7 +723,6 @@ mod tests {
             panic!("expected singleton probe on the right");
         };
         assert_eq!(access_path.descriptor.name, "by_outer");
-        assert_eq!(result.plan.cost.cost, 2);
     }
 
     #[test]

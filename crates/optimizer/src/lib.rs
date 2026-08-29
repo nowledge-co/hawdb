@@ -8,6 +8,7 @@ pub mod predicate;
 pub mod properties;
 pub mod relational;
 pub mod relational_join;
+mod relational_join_cost;
 pub mod relational_join_hypergraph;
 pub mod relational_join_rewrite;
 pub mod rule;

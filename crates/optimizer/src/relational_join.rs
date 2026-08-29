@@ -1,9 +1,13 @@
 //! Memo-backed enumeration for relational inner joins.
 
 use crate::{
+    relational_join_cost::{
+        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
+        RelationalJoinRightInput,
+    },
     Distribution, GroupId, Memo, MemoryBudgetClass, PhysicalProperties, PlanCost,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind, RequiredProperties,
-    ScanPruningSupport,
+    PlanCostBreakdown, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    RequiredProperties, ScanPruningSupport,
 };
 use skein_expression::{BindingId, BindingSet};
 use std::{
@@ -164,11 +168,15 @@ pub struct RelationalJoinPlan {
     pub base_binding: BindingId,
     pub base_access_path: RelationalJoinAccessPath,
     pub steps: Vec<RelationalJoinStep>,
-    pub cost: PlanCost,
+    pub cost_breakdown: PlanCostBreakdown,
     pub properties: PhysicalProperties,
 }
 
 impl RelationalJoinPlan {
+    pub fn cost(&self) -> PlanCost {
+        self.cost_breakdown.as_plan_cost()
+    }
+
     pub fn binding_order(&self) -> Vec<BindingId> {
         std::iter::once(self.base_binding)
             .chain(self.steps.iter().map(|step| step.binding))
@@ -657,10 +665,7 @@ fn best_base_plan(
             base_binding: relation.binding,
             base_access_path: access.clone(),
             steps: Vec::new(),
-            cost: PlanCost {
-                estimated_rows: access.descriptor.estimated_rows.max(1) as u64,
-                cost: access.descriptor.estimated_rows.max(1) as u64,
-            },
+            cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
             properties: access.properties.clone(),
         })
         .min_by(compare_plans)
@@ -690,13 +695,13 @@ fn best_join_plan(
         })
         .min_by(|left, right| compare_access_paths(left, right))?
         .clone();
-    let inner_rows = access.descriptor.estimated_rows.max(1) as u64;
-    let output_rows = left_plan.cost.estimated_rows.saturating_mul(inner_rows);
-    let work = left_plan.cost.estimated_rows.saturating_mul(inner_rows);
-    left_plan.cost = PlanCost {
-        estimated_rows: output_rows,
-        cost: left_plan.cost.cost.saturating_add(work),
-    };
+    let inner_cost = estimate_relational_access_cost(access.descriptor.estimated_rows);
+    left_plan.cost_breakdown = estimate_relational_join_cost(
+        left_plan.cost_breakdown,
+        inner_cost,
+        RelationalJoinCardinality::Inner,
+        RelationalJoinRightInput::Probe,
+    );
     left_plan.steps.push(RelationalJoinStep {
         binding: right,
         access_path: access,
@@ -718,10 +723,14 @@ fn plan_is_better(candidate: &RelationalJoinPlan, current: &RelationalJoinPlan) 
 }
 
 fn compare_plans(left: &RelationalJoinPlan, right: &RelationalJoinPlan) -> std::cmp::Ordering {
-    left.cost
+    left.cost_breakdown
         .cost
-        .cmp(&right.cost.cost)
-        .then_with(|| left.cost.estimated_rows.cmp(&right.cost.estimated_rows))
+        .cmp(&right.cost_breakdown.cost)
+        .then_with(|| {
+            left.cost_breakdown
+                .estimated_rows
+                .cmp(&right.cost_breakdown.estimated_rows)
+        })
         .then_with(|| left.stable_key().cmp(&right.stable_key()))
 }
 
@@ -861,7 +870,7 @@ mod tests {
 
         assert_eq!(result.plan.binding_order(), [C, B, A]);
         assert_eq!(
-            result.plan.cost,
+            result.plan.cost(),
             PlanCost {
                 estimated_rows: 1,
                 cost: 3
@@ -973,7 +982,7 @@ mod tests {
             "a_constant_filter"
         );
         assert_eq!(
-            result.plan.cost,
+            result.plan.cost(),
             PlanCost {
                 estimated_rows: 5,
                 cost: 10
