@@ -50,3 +50,8 @@
 - Fast paths should be derived from AST or logical-plan shape and remain observable in query reports.
 - Keep storage changes recovery-oriented: WAL, checkpoint, pruning, and scan-filter features need targeted tests that prove replay boundaries, torn-tail handling, and no partial mutation recovery.
 - Do not add broad indexing, filtering, or optimizer features unless they map to active Mem replacement needs for Kuzu, LanceDB, or the graph-first read path.
+
+## Local Fuzz Verification
+
+- Keep fuzz targets available through Bazel, but do not add them to default or dedicated CI jobs.
+- Routine local verification must run `bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test`.
