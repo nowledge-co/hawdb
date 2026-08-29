@@ -27,9 +27,10 @@ pub use graph_rag::{
 pub use logical_type::LogicalType;
 pub use regex::ValidatedRegex;
 pub use schema::{
-    BasicGraphStatistics, Catalog, CompositeIndexDescriptor, ConstraintDescriptor, ConstraintId,
-    ConstraintKind, ConstraintSubject, GraphStatistics, IndexDescriptor, IndexId, IndexKind,
-    IndexStatisticsSample, Label, LabelId, PropertyDescriptor, PropertyId, PropertyType, RelType,
-    RelTypeId, SchemaObjectState, TableDescriptor, TableId, TableKind,
+    AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, CompositeIndexDescriptor,
+    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, GraphStatistics,
+    IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, Label, LabelId, PropertyDescriptor,
+    PropertyId, PropertyType, RelType, RelTypeId, SchemaObjectState, TableDescriptor, TableId,
+    TableKind,
 };
 pub use value::{Value, ValueRef};

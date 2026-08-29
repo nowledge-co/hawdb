@@ -995,8 +995,10 @@ impl GraphStore {
                 .is_none_or(|limit| estimated_delta_resident_bytes <= limit),
             checkpoint_statistics_commit_epoch: self.checkpoint_statistics.computed_at_commit_epoch,
             checkpoint_statistics_complete: self.checkpoint_statistics.advanced_statistics_complete,
-            checkpoint_statistics_stale: !self.checkpoint_statistics.advanced_statistics_complete
-                || self.checkpoint_statistics.computed_at_commit_epoch < self.commit_epoch,
+            checkpoint_statistics_stale: self
+                .checkpoint_statistics
+                .advanced_statistics_freshness(self.commit_epoch)
+                != AdvancedStatisticsFreshness::Fresh,
             graph_manifest_open_budget_bytes,
             graph_manifest_encoded_bytes,
             segment_cache_capacity_bytes: cache.capacity_bytes,

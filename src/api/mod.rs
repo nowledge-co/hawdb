@@ -14,7 +14,9 @@ use crate::qos::{
 };
 #[cfg(test)]
 use crate::schema::LabelId;
-use crate::schema::{Catalog, GraphStatistics, IndexKind, SchemaObjectState};
+use crate::schema::{
+    AdvancedStatisticsFreshness, Catalog, GraphStatistics, IndexKind, SchemaObjectState,
+};
 #[cfg(test)]
 use crate::schema::{
     CompositeIndexDescriptor, ConstraintDescriptor, IndexDescriptor, PropertyDescriptor,
@@ -2060,12 +2062,13 @@ impl Database {
     ) -> Result<crate::store::OptimizerStatisticsRefreshReport> {
         self.ensure_writable()?;
         let previous_statistics = self.store.checkpoint_statistics_snapshot();
+        let previous_dirty_state = self.store.advanced_statistics_dirty_snapshot();
         let mut report = self
             .store
             .refresh_optimizer_statistics_external(&self.catalog, options)?;
         if let Err(error) = self.checkpoint() {
             self.store
-                .replace_checkpoint_statistics(previous_statistics);
+                .restore_checkpoint_statistics(previous_statistics, previous_dirty_state);
             return Err(error);
         }
         report.checkpoint_persisted = true;
@@ -18615,7 +18618,14 @@ impl Drop for ReaderPin {
     }
 }
 
-fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> OptimizerCatalog {
+fn optimizer_catalog(
+    catalog: &Catalog,
+    statistics: &GraphStatistics,
+    graph_commit_epoch: u64,
+) -> OptimizerCatalog {
+    let advanced_statistics = (statistics.advanced_statistics_freshness(graph_commit_epoch)
+        == AdvancedStatisticsFreshness::Fresh)
+        .then_some(statistics);
     let equality_property_indexes = catalog.property_indexes().filter_map(|index| {
         if index.kind != IndexKind::Equality {
             return None;
@@ -18661,26 +18671,26 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| (rel_type.to_string(), *count))
         });
-    let rel_type_source_counts =
-        statistics
-            .rel_type_source_counts
-            .iter()
-            .filter_map(|(rel_type_id, count)| {
-                catalog
-                    .rel_type_name(*rel_type_id)
-                    .map(|rel_type| (rel_type.to_string(), *count))
-            });
-    let rel_type_target_counts =
-        statistics
-            .rel_type_target_counts
-            .iter()
-            .filter_map(|(rel_type_id, count)| {
-                catalog
-                    .rel_type_name(*rel_type_id)
-                    .map(|rel_type| (rel_type.to_string(), *count))
-            });
-    let path_counts = statistics.path_counts.iter().filter_map(
-        |((source_label_id, rel_type_id, target_label_id), count)| {
+    let rel_type_source_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_type_source_counts.iter())
+        .filter_map(|(rel_type_id, count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| (rel_type.to_string(), *count))
+        });
+    let rel_type_target_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_type_target_counts.iter())
+        .filter_map(|(rel_type_id, count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| (rel_type.to_string(), *count))
+        });
+    let path_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
             Some((
                 (
                     catalog.label_name(*source_label_id)?.to_string(),
@@ -18689,10 +18699,11 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 ),
                 *count,
             ))
-        },
-    );
-    let path_source_distinct_counts = statistics.path_source_distinct_counts.iter().filter_map(
-        |((source_label_id, rel_type_id, target_label_id), count)| {
+        });
+    let path_source_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_source_distinct_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
             Some((
                 (
                     catalog.label_name(*source_label_id)?.to_string(),
@@ -18701,10 +18712,11 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 ),
                 *count,
             ))
-        },
-    );
-    let path_target_distinct_counts = statistics.path_target_distinct_counts.iter().filter_map(
-        |((source_label_id, rel_type_id, target_label_id), count)| {
+        });
+    let path_target_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_target_distinct_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
             Some((
                 (
                     catalog.label_name(*source_label_id)?.to_string(),
@@ -18713,24 +18725,10 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 ),
                 *count,
             ))
-        },
-    );
-    let bounded_path_counts = statistics.bounded_path_counts.iter().filter_map(
-        |((source_label_id, rel_type_id, target_label_id, hops), count)| {
-            Some((
-                (
-                    catalog.label_name(*source_label_id)?.to_string(),
-                    catalog.rel_type_name(*rel_type_id)?.to_string(),
-                    catalog.label_name(*target_label_id)?.to_string(),
-                    *hops,
-                ),
-                *count,
-            ))
-        },
-    );
-    let bounded_path_source_distinct_counts = statistics
-        .bounded_path_source_distinct_counts
-        .iter()
+        });
+    let bounded_path_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_counts.iter())
         .filter_map(
             |((source_label_id, rel_type_id, target_label_id, hops), count)| {
                 Some((
@@ -18744,9 +18742,9 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 ))
             },
         );
-    let bounded_path_target_distinct_counts = statistics
-        .bounded_path_target_distinct_counts
-        .iter()
+    let bounded_path_source_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_source_distinct_counts.iter())
         .filter_map(
             |((source_label_id, rel_type_id, target_label_id, hops), count)| {
                 Some((
@@ -18760,42 +18758,59 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 ))
             },
         );
-    let property_distinct_counts =
-        statistics
-            .property_distinct_counts
-            .iter()
-            .filter_map(|((label_id, property), count)| {
-                catalog
-                    .label_name(*label_id)
-                    .map(|label| ((label.to_string(), property.clone()), *count))
-            });
-    let property_histograms =
-        statistics
-            .property_histograms
-            .iter()
-            .filter_map(|((label_id, property), values)| {
-                catalog
-                    .label_name(*label_id)
-                    .map(|label| ((label.to_string(), property.clone()), values.clone()))
-            });
-    let rel_property_distinct_counts = statistics.rel_property_distinct_counts.iter().filter_map(
-        |((rel_type_id, property), count)| {
+    let bounded_path_target_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_target_distinct_counts.iter())
+        .filter_map(
+            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
+                Some((
+                    (
+                        catalog.label_name(*source_label_id)?.to_string(),
+                        catalog.rel_type_name(*rel_type_id)?.to_string(),
+                        catalog.label_name(*target_label_id)?.to_string(),
+                        *hops,
+                    ),
+                    *count,
+                ))
+            },
+        );
+    let property_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.property_distinct_counts.iter())
+        .filter_map(|((label_id, property), count)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *count))
+        });
+    let property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.property_histograms.iter())
+        .filter_map(|((label_id, property), values)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), values.clone()))
+        });
+    let rel_property_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
+        .filter_map(|((rel_type_id, property), count)| {
             catalog
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| ((rel_type.to_string(), property.clone()), *count))
-        },
-    );
-    let rel_property_histograms = statistics.rel_property_histograms.iter().filter_map(
-        |((rel_type_id, property), values)| {
+        });
+    let rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), values)| {
             catalog
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
-        },
-    );
+        });
     let property_index_statistics = catalog.property_indexes().filter_map(|index| {
         if index.kind == IndexKind::FullText {
             return None;
         }
+        let statistics = advanced_statistics?;
         let sample = statistics.index_samples.get(&index.id)?;
         let distinct_count = sample.estimated_unique_values()?;
         let label = catalog.label_name(index.label_id)?;
@@ -18808,6 +18823,7 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
         ))
     });
     let composite_index_statistics = catalog.composite_property_indexes().filter_map(|index| {
+        let statistics = advanced_statistics?;
         let sample = statistics.index_samples.get(&index.id)?;
         let distinct_count = sample.estimated_unique_values()?;
         let label = catalog.label_name(index.label_id)?;
