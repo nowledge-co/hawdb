@@ -14,9 +14,9 @@ pub use manifest::{
 };
 pub use predicate::{PruningDecision, PruningReason, RangeBound, ScanPredicate, SegmentPruner};
 pub use reader::{
-    FileSegmentRangeReader, SegmentRangeRead, SegmentRangeReader, SegmentReadError,
-    SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
-    SegmentReadPool, SegmentReadPoolError,
+    FileSegmentRangeReader, SegmentRangeRead, SegmentRangeReader, SegmentReadControl,
+    SegmentReadError, SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor,
+    SegmentReadPayload, SegmentReadPool, SegmentReadPoolError,
 };
 pub use scheduler::{SegmentReadRange, SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave};
 pub use summary::{

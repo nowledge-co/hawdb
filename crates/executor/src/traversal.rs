@@ -1,6 +1,8 @@
 //! Shortest-path and relationship traversal operators.
 
-use crate::binding::{binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, Binding};
+use crate::binding::{
+    binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
+};
 use crate::blocking::in_memory_report;
 use crate::kernel::{
     ensure_operator_item_fits, push_bounded_operator_binding, OperatorMemoryTracker,
@@ -593,6 +595,7 @@ pub fn relationship_count_sum_leg(
     leg: &RelationshipCountLeg,
     memory: AdjacencyReadMemory<'_>,
     observer: &dyn ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<usize> {
     let rel_type_id = if leg.rel_type.is_empty() {
         None
@@ -615,6 +618,7 @@ pub fn relationship_count_sum_leg(
         memory,
         observer,
         leg.filter.as_ref(),
+        task_context,
     )
 }
 
@@ -624,7 +628,9 @@ fn count_one_hop_relationships(
     memory: AdjacencyReadMemory<'_>,
     observer: &dyn ExecutionObserver,
     count_filter: Option<&RelationshipCountFilter>,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<usize> {
+    runtime_checkpoint(task_context)?;
     let mut count = 0usize;
     visit_one_hop_relationships_with_budget(
         store,
@@ -632,6 +638,7 @@ fn count_one_hop_relationships(
         memory,
         observer,
         &mut |relationship, _| {
+            runtime_checkpoint(task_context)?;
             if relationship_count_filter_matches(&relationship, count_filter) {
                 count = count.saturating_add(1);
             }
@@ -639,6 +646,60 @@ fn count_one_hop_relationships(
         },
     )?;
     Ok(count)
+}
+
+#[derive(Debug)]
+struct ThreadRepairThread {
+    node_id: NodeId,
+    id: Value,
+    identity_key: Value,
+    thread_id: Value,
+    space_id: Value,
+    message_count: Value,
+}
+
+impl ThreadRepairThread {
+    fn from_node(node: NodeRecord, thread_id_property: &str) -> Self {
+        let space_id = match node.properties.get("space_id") {
+            Some(Value::String(value)) if !value.is_empty() => Value::String(value.clone()),
+            _ => Value::String("default".to_string()),
+        };
+        let message_count = match node.properties.get("message_count") {
+            Some(Value::Null) | None => Value::Int(0),
+            Some(value) => value.clone(),
+        };
+        Self {
+            node_id: node.id,
+            id: node.properties.get("id").cloned().unwrap_or(Value::Null),
+            identity_key: node
+                .properties
+                .get(thread_id_property)
+                .cloned()
+                .unwrap_or(Value::Null),
+            thread_id: node
+                .properties
+                .get("thread_id")
+                .cloned()
+                .unwrap_or(Value::Null),
+            space_id,
+            message_count,
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(value_memory_bytes(&self.id))
+            .saturating_add(value_memory_bytes(&self.identity_key))
+            .saturating_add(value_memory_bytes(&self.thread_id))
+            .saturating_add(value_memory_bytes(&self.space_id))
+            .saturating_add(value_memory_bytes(&self.message_count))
+    }
+}
+
+fn thread_repair_identity_entry_bytes(identity_ref: &Value) -> usize {
+    std::mem::size_of::<(Value, usize)>()
+        .saturating_mul(3)
+        .saturating_add(value_memory_bytes(identity_ref))
 }
 
 fn relationship_count_filter_matches(
@@ -672,14 +733,16 @@ pub fn thread_repair_stats_rows(
     memory_budget: NonZeroUsize,
     memory_ledger: &QueryMemoryLedger,
     observer: &dyn ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<AccountedBindingSet> {
+    runtime_checkpoint(task_context)?;
     let thread_label_ids = label_ids_for_pattern(catalog, label);
     let identity_label_ids = label_ids_for_pattern(catalog, identity_label);
     let message_label_ids = label_ids_for_pattern(catalog, message_label);
     let memory_label_ids = label_ids_for_pattern(catalog, memory_label);
     let message_rel_type_id = catalog.rel_type_id(message_rel_type);
     let memory_rel_type_id = catalog.rel_type_id(memory_rel_type);
-    let mut identities = Vec::new();
+    let mut identity_counts = BTreeMap::<Value, usize>::new();
     let mut threads = Vec::new();
     let blocking_account = memory_ledger.account(
         QueryMemoryClass::BlockingState,
@@ -688,62 +751,60 @@ pub fn thread_repair_stats_rows(
     );
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
     let mut identity_bytes = 0usize;
-    let mut callback_error = None;
     let mut visit = |node: NodeRecord| {
-        if node_matches_label_pattern(&node, identity_label_ids.as_deref()) {
-            let bytes = node_memory_bytes(&node);
-            if tracker.would_exceed(bytes) {
-                callback_error = Some(SkeinError::Execution(format!(
-                    "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
-                    tracker.budget_bytes
-                )));
-                return Ok(ScanControl::Stop);
+        runtime_checkpoint(task_context)?;
+        if node_matches_label_pattern(&node, identity_label_ids.as_deref())
+            && let Some(identity_ref) = node.properties.get(identity_ref_property).cloned()
+        {
+            if let Some(count) = identity_counts.get_mut(&identity_ref) {
+                *count = count.saturating_add(1);
+            } else {
+                let bytes = thread_repair_identity_entry_bytes(&identity_ref);
+                if tracker.would_exceed(bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
+                        tracker.budget_bytes
+                    )));
+                }
+                tracker.try_charge(bytes)?;
+                identity_bytes = identity_bytes.saturating_add(bytes);
+                identity_counts.insert(identity_ref, 1);
             }
-            tracker.try_charge(bytes)?;
-            identity_bytes = identity_bytes.saturating_add(bytes);
-            identities.push(node.clone());
         }
         if node_matches_label_pattern(&node, thread_label_ids.as_deref()) {
-            let bytes = node_memory_bytes(&node);
+            let thread = ThreadRepairThread::from_node(node, thread_id_property);
+            let bytes = thread.memory_bytes();
             if tracker.would_exceed(bytes) {
-                callback_error = Some(SkeinError::Execution(format!(
+                return Err(SkeinError::Execution(format!(
                     "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
                     tracker.budget_bytes
                 )));
-                return Ok(ScanControl::Stop);
             }
             tracker.try_charge(bytes)?;
-            threads.push(node);
+            threads.try_reserve(1).map_err(|_| {
+                SkeinError::Execution(
+                    "ThreadRepairStatsExec cannot reserve thread state".to_string(),
+                )
+            })?;
+            threads.push(thread);
         }
         Ok(ScanControl::Continue)
     };
     store.visit_nodes_owned(None, &mut visit)?;
-    if let Some(error) = callback_error {
-        return Err(error);
-    }
-    threads.sort_by(|left, right| {
-        left.properties
-            .get("id")
-            .unwrap_or(&Value::Null)
-            .cmp(right.properties.get("id").unwrap_or(&Value::Null))
-    });
-    let mut rows = Vec::with_capacity(threads.len());
+    threads.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut rows = Vec::new();
     for thread in threads {
-        let thread_bytes = node_memory_bytes(&thread);
-        let thread_id = thread
-            .properties
-            .get(thread_id_property)
-            .cloned()
-            .unwrap_or(Value::Null);
-        let identity_refs = identities
-            .iter()
-            .filter(|identity| identity.properties.get(identity_ref_property) == Some(&thread_id))
-            .count();
+        runtime_checkpoint(task_context)?;
+        let thread_bytes = thread.memory_bytes();
+        let identity_refs = identity_counts
+            .get(&thread.identity_key)
+            .copied()
+            .unwrap_or_default();
         let legacy_messages = match message_rel_type_id {
             Some(rel_type_id) => count_one_hop_relationships(
                 store,
                 OneHopRelationshipSpec {
-                    source: thread.id,
+                    source: thread.node_id,
                     rel_type_id: Some(rel_type_id),
                     target_label_ids: message_label_ids.as_deref(),
                     rel_properties: &BTreeMap::new(),
@@ -756,6 +817,7 @@ pub fn thread_repair_stats_rows(
                 },
                 observer,
                 None,
+                task_context,
             )?,
             None => 0,
         };
@@ -763,7 +825,7 @@ pub fn thread_repair_stats_rows(
             Some(rel_type_id) => count_one_hop_relationships(
                 store,
                 OneHopRelationshipSpec {
-                    source: thread.id,
+                    source: thread.node_id,
                     rel_type_id: Some(rel_type_id),
                     target_label_ids: memory_label_ids.as_deref(),
                     rel_properties: &BTreeMap::new(),
@@ -776,37 +838,20 @@ pub fn thread_repair_stats_rows(
                 },
                 observer,
                 None,
+                task_context,
             )?,
             None => 0,
         };
-        let space_id = match thread.properties.get("space_id") {
-            Some(Value::String(value)) if !value.is_empty() => Value::String(value.clone()),
-            _ => Value::String("default".to_string()),
-        };
-        let message_count = match thread.properties.get("message_count") {
-            Some(Value::Null) | None => Value::Int(0),
-            Some(value) => value.clone(),
-        };
         let binding = Binding {
             values: BTreeMap::from([
-                    (
-                        "t.id".to_string(),
-                        thread.properties.get("id").cloned().unwrap_or(Value::Null),
-                    ),
-                    (
-                        "t.thread_id".to_string(),
-                        thread
-                            .properties
-                            .get("thread_id")
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    ),
+                    ("t.id".to_string(), thread.id),
+                    ("t.thread_id".to_string(), thread.thread_id),
                     (
                         "CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END"
                             .to_string(),
-                        space_id,
+                        thread.space_id,
                     ),
-                    ("COALESCE(t.message_count, 0)".to_string(), message_count),
+                    ("COALESCE(t.message_count, 0)".to_string(), thread.message_count),
                     ("identity_refs".to_string(), Value::Int(identity_refs as i64)),
                     (
                         "legacy_messages".to_string(),

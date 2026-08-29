@@ -205,6 +205,7 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
         plan,
         PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
+            | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::NodeCartesianProductExec { .. }
             | PhysicalPlan::AdjacencyExpandExec { .. }
             | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
@@ -302,13 +303,15 @@ mod tests {
         let estimate = estimated_execution_memory(&plan, &admission_test_config());
 
         assert_eq!(estimate.pipeline_bytes, 1024);
+        assert_eq!(estimate.blocking_operator_count, 1);
+        assert_eq!(estimate.blocking_bytes, 4096);
         assert_eq!(
             estimate.fixed_operator_bytes,
             SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
         );
         assert_eq!(
             estimate.total_bytes,
-            1024 + SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
+            1024 + 4096 + SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
         );
     }
 

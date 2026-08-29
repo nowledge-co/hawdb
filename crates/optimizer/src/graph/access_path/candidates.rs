@@ -1,6 +1,16 @@
 use super::*;
+use crate::graph::costing::estimate_physical_plan_cost;
+use crate::{RuleEvent, StageStats};
+use skein_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
 
 const MAX_EXACT_UNION_LOOKUP_VALUES: usize = 64;
+
+struct PhysicalCandidate {
+    plan: PhysicalPlan,
+    decision: String,
+    cost: u64,
+    rule_id: &'static str,
+}
 
 pub(super) fn exact_union_index_seek_candidate(
     predicates: &[Predicate],
@@ -194,10 +204,12 @@ pub(super) fn composite_range_index_seek_candidate(
                 seek,
             }),
         };
-        if best
-            .as_ref()
-            .is_none_or(|(best_cost, _, _)| seek_cost < *best_cost)
-        {
+        let replace = best.as_ref().is_none_or(|(best_cost, best_plan, _)| {
+            seek_cost < *best_cost
+                || (seek_cost == *best_cost
+                    && plan.instance_fingerprint() < best_plan.instance_fingerprint())
+        });
+        if replace {
             best = Some((seek_cost, plan, decision));
         }
     }
@@ -213,114 +225,70 @@ pub(super) fn index_seek_from_conjunction(
     decisions: &mut Vec<String>,
     stage_events: &mut Vec<StageTrace>,
 ) -> Option<PhysicalPlan> {
-    if let Some(plan) = composite_range_index_seek_from_conjunction(
-        predicates,
-        full_predicate,
-        scan_variable,
-        label,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    if let Some(plan) = equality_index_seek_from_conjunction(
-        predicates,
-        full_predicate,
-        scan_variable,
-        label,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    range_index_seek_from_conjunction(
-        predicates,
-        full_predicate,
-        scan_variable,
-        label,
-        catalog,
-        decisions,
-        stage_events,
-    )
-}
-
-fn composite_range_index_seek_from_conjunction(
-    predicates: &[Predicate],
-    full_predicate: &Predicate,
-    scan_variable: &str,
-    label: &str,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    let logical_scan = LogicalPlan::NodeScan {
-        variable: scan_variable.to_string(),
-        label: label.to_string(),
+    let mut candidates = Vec::new();
+    let mut evaluated_rule_count = 0usize;
+    let mut evaluate_candidate = |candidate, rule_id| {
+        evaluated_rule_count = evaluated_rule_count.saturating_add(1);
+        push_candidate(&mut candidates, candidate, rule_id, catalog);
     };
-    if let Some(plan) = composite_range_index_seek_from_rule(
-        full_predicate,
-        &logical_scan,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    if let Some((plan, decision)) = composite_range_index_seek_candidate(
-        predicates,
-        full_predicate,
-        scan_variable,
-        label,
-        catalog,
-    ) {
-        decisions.push(decision);
-        return Some(plan);
-    }
-    None
-}
-
-fn equality_index_seek_from_conjunction(
-    predicates: &[Predicate],
-    full_predicate: &Predicate,
-    scan_variable: &str,
-    label: &str,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    if let Some(plan) = composite_index_seek_from_conjunction(
-        predicates,
-        full_predicate,
-        scan_variable,
-        label,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    let logical_scan = LogicalPlan::NodeScan {
-        variable: scan_variable.to_string(),
-        label: label.to_string(),
-    };
-    if let Some(plan) = conjunction_index_seek_from_rule(
-        full_predicate,
-        &logical_scan,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    if let Some((_, plan, decision)) =
+    evaluate_candidate(
+        composite_range_index_seek_candidate(
+            predicates,
+            full_predicate,
+            scan_variable,
+            label,
+            catalog,
+        ),
+        "node_composite_range_seek",
+    );
+    evaluate_candidate(
+        composite_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
+        "node_composite_index_seek",
+    );
+    evaluate_candidate(
         equality_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog)
-    {
-        decisions.push(decision);
-        return Some(plan);
-    }
-    None
+            .map(|(_, plan, decision)| (plan, decision)),
+        "node_conjunction_index_seek",
+    );
+    evaluate_candidate(
+        range_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
+        "node_range_index_seek",
+    );
+
+    let alternative_count = candidates.len();
+    stage_events.push(ACCESS_PATH_SELECTION_STAGE.trace(
+        StageStats::new(1, alternative_count).with_rule_counts(
+            alternative_count,
+            evaluated_rule_count.saturating_sub(alternative_count),
+        ),
+    ));
+    candidates.sort_by(|left, right| {
+        left.cost
+            .cmp(&right.cost)
+            .then_with(|| {
+                left.plan
+                    .instance_fingerprint()
+                    .cmp(&right.plan.instance_fingerprint())
+            })
+            .then_with(|| left.rule_id.cmp(right.rule_id))
+    });
+    let selected = candidates.into_iter().next()?;
+    decisions.push(
+        RuleEvent::applied(
+            format!("implementation:{}", selected.rule_id),
+            format!(
+                "total_cost={} alternatives_considered={alternative_count}",
+                selected.cost
+            ),
+        )
+        .into_decision(),
+    );
+    decisions.push(format!(
+        "select access path candidate: rule={} total_cost={} alternatives_considered={}",
+        selected.rule_id, selected.cost, alternative_count,
+    ));
+    decisions.push(selected.decision);
+    Some(selected.plan)
 }
 
 pub(super) fn equality_index_seek_candidate(
@@ -361,10 +329,14 @@ pub(super) fn equality_index_seek_candidate(
                     value: value.clone(),
                 }),
             };
-            if best_candidate
+            let replace = best_candidate
                 .as_ref()
-                .is_none_or(|(best_cost, _, _)| seek_cost < *best_cost)
-            {
+                .is_none_or(|(best_cost, best_plan, _)| {
+                    seek_cost < *best_cost
+                        || (seek_cost == *best_cost
+                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
+                });
+            if replace {
                 best_candidate = Some((seek_cost, plan, decision));
             }
         }
@@ -399,46 +371,19 @@ pub(super) fn equality_index_seek_candidate(
                     values: values.clone(),
                 }),
             };
-            if best_candidate
+            let replace = best_candidate
                 .as_ref()
-                .is_none_or(|(best_cost, _, _)| seek_cost < *best_cost)
-            {
+                .is_none_or(|(best_cost, best_plan, _)| {
+                    seek_cost < *best_cost
+                        || (seek_cost == *best_cost
+                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
+                });
+            if replace {
                 best_candidate = Some((seek_cost, plan, decision));
             }
         }
     }
     best_candidate
-}
-
-fn composite_index_seek_from_conjunction(
-    predicates: &[Predicate],
-    full_predicate: &Predicate,
-    scan_variable: &str,
-    label: &str,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    let logical_scan = LogicalPlan::NodeScan {
-        variable: scan_variable.to_string(),
-        label: label.to_string(),
-    };
-    if let Some(plan) = composite_index_seek_from_rule(
-        full_predicate,
-        &logical_scan,
-        catalog,
-        decisions,
-        stage_events,
-    ) {
-        return Some(plan);
-    }
-    if let Some((plan, decision)) =
-        composite_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog)
-    {
-        decisions.push(decision);
-        return Some(plan);
-    }
-    None
 }
 
 pub(super) fn composite_index_seek_candidate(
@@ -462,6 +407,7 @@ pub(super) fn composite_index_seek_candidate(
             equality_values.insert(property.clone(), value.clone());
         }
     }
+    let mut best_candidate: Option<(u64, PhysicalPlan, String)> = None;
     for properties in catalog.composite_property_indexes_for_label(label) {
         if properties.len() < 2 || !catalog.has_composite_property_index(label, &properties) {
             continue;
@@ -495,21 +441,28 @@ pub(super) fn composite_index_seek_candidate(
                     predicates: seek_predicates,
                 }),
             };
-            return Some((plan, decision));
+            let replace = best_candidate
+                .as_ref()
+                .is_none_or(|(best_cost, best_plan, _)| {
+                    seek_cost < *best_cost
+                        || (seek_cost == *best_cost
+                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
+                });
+            if replace {
+                best_candidate = Some((seek_cost, plan, decision));
+            }
         }
     }
-    None
+    best_candidate.map(|(_, plan, decision)| (plan, decision))
 }
 
-fn range_index_seek_from_conjunction(
+fn range_index_seek_candidate(
     predicates: &[Predicate],
     full_predicate: &Predicate,
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    _stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
+) -> Option<(PhysicalPlan, String)> {
     let mut ranges = BTreeMap::<String, ValueRangeBounds>::new();
     for predicate in predicates {
         let Predicate::PropertyCompare {
@@ -530,7 +483,7 @@ fn range_index_seek_from_conjunction(
         merge_upper_bound(upper, candidate_upper);
     }
 
-    let mut best_plan = None;
+    let mut best_plan: Option<(PhysicalPlan, String)> = None;
     let mut best_seek_cost = u64::MAX;
     for (property, (lower, upper)) in ranges {
         let label_count = catalog.label_count(label);
@@ -539,12 +492,11 @@ fn range_index_seek_from_conjunction(
         let scan_cost = estimate_node_full_scan_cost(label_count);
         let seek_cost =
             estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_RANGE_STARTUP_COST);
-        if node_index_seek_is_cheaper(label_count, seek_cost) && seek_cost < best_seek_cost {
-            best_seek_cost = seek_cost;
-            decisions.push(format!(
+        if node_index_seek_is_cheaper(label_count, seek_cost) && seek_cost <= best_seek_cost {
+            let decision = format!(
                 "choose IndexNodeRangeSeek for {label}.{property} in conjunction: seek_cost={seek_cost} scan_cost={scan_cost} label_count={label_count} estimated_rows={estimated_rows}"
-            ));
-            best_plan = Some(PhysicalPlan::FilterExec {
+            );
+            let plan = PhysicalPlan::FilterExec {
                 predicate: full_predicate.clone(),
                 input: Box::new(PhysicalPlan::IndexNodeRangeSeek {
                     variable: scan_variable.to_string(),
@@ -553,8 +505,33 @@ fn range_index_seek_from_conjunction(
                     lower,
                     upper,
                 }),
+            };
+            let replace = best_plan.as_ref().is_none_or(|(best_plan, _)| {
+                seek_cost < best_seek_cost
+                    || (seek_cost == best_seek_cost
+                        && plan.instance_fingerprint() < best_plan.instance_fingerprint())
             });
+            if replace {
+                best_seek_cost = seek_cost;
+                best_plan = Some((plan, decision));
+            }
         }
     }
     best_plan
+}
+
+fn push_candidate(
+    candidates: &mut Vec<PhysicalCandidate>,
+    candidate: Option<(PhysicalPlan, String)>,
+    rule_id: &'static str,
+    catalog: &OptimizerCatalog,
+) {
+    if let Some((plan, decision)) = candidate {
+        candidates.push(PhysicalCandidate {
+            cost: estimate_physical_plan_cost(&plan, catalog).cost,
+            plan,
+            decision,
+            rule_id,
+        });
+    }
 }

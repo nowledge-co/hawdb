@@ -55,11 +55,12 @@ impl PreparedRuntimeQuery {
     pub(super) fn into_execution(
         self,
         catalog: &Catalog,
-        store: &GraphStore,
+        _store: &GraphStore,
     ) -> (String, PreparedRuntimeExecution) {
-        let environment_matches = self.optimizer_environment.as_ref().is_some_and(|prepared| {
-            prepared == &OptimizerPlanningCache::environment_hint(catalog, store)
-        });
+        let environment_matches = self
+            .optimizer_environment
+            .as_ref()
+            .is_some_and(|prepared| prepared.is_execution_compatible(catalog));
         (
             self.cypher_text,
             PreparedRuntimeExecution {
@@ -809,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_runtime_query_reuses_plan_only_for_the_same_environment() {
+    fn prepared_runtime_query_reuses_plan_across_data_changes_with_compatible_schema() {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'existing'})").unwrap();
         let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.id AS id";
@@ -822,12 +823,13 @@ mod tests {
             .into_execution(&db.catalog, &db.store);
         assert!(reusable.optimized.is_some());
 
-        let stale = db
+        let reusable_after_data_change = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap();
         db.query("CREATE (:Memory {id: 'newer'})").unwrap();
-        let (_, stale) = stale.into_execution(&db.catalog, &db.store);
-        assert!(stale.optimized.is_none());
+        let (_, reusable_after_data_change) =
+            reusable_after_data_change.into_execution(&db.catalog, &db.store);
+        assert!(reusable_after_data_change.optimized.is_some());
     }
 
     #[test]

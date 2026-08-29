@@ -30,6 +30,85 @@ fn optional_match_count_after_node_match_covers_thread_message_count() {
 }
 
 #[test]
+fn thread_repair_summary_counts_identity_refs_across_threads() {
+    let mut db = Database::new();
+    db.query("CREATE (:Thread {id: 'thread-a', thread_id: 'logical-a', message_count: 2})")
+        .unwrap();
+    db.query("CREATE (:Thread {id: 'thread-b', thread_id: 'logical-b', space_id: 'archive'})")
+        .unwrap();
+    db.query("CREATE (:ThreadIdentity {id: 'identity-a-1', thread_node_id: 'thread-a'})")
+        .unwrap();
+    db.query("CREATE (:ThreadIdentity {id: 'identity-a-2', thread_node_id: 'thread-a'})")
+        .unwrap();
+    db.query("CREATE (:Message {id: 'message-a'})").unwrap();
+    db.query("CREATE (:Memory {id: 'memory-a'})").unwrap();
+    db.query("MATCH (t:Thread {id: 'thread-a'}), (m:Message {id: 'message-a'}) CREATE (t)-[:CONTAINS]->(m)")
+        .unwrap();
+    db.query("MATCH (t:Thread {id: 'thread-a'}), (m:Memory {id: 'memory-a'}) CREATE (t)-[:COMPACTS_TO]->(m)")
+        .unwrap();
+
+    let output = db
+        .query(
+            "MATCH (t:Thread) OPTIONAL MATCH (ti:ThreadIdentity) WHERE ti.thread_node_id = t.id WITH t, COUNT(ti) AS identity_refs OPTIONAL MATCH (t)-[:CONTAINS]->(msg:Message) WITH t, identity_refs, COUNT(msg) AS legacy_messages OPTIONAL MATCH (t)-[:COMPACTS_TO]->(m:Memory) RETURN t.id, t.thread_id, CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END, COALESCE(t.message_count, 0), identity_refs, legacy_messages, COUNT(m) ORDER BY t.id ASC",
+        )
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 2);
+    assert_eq!(
+        output.rows[0].get("t.id"),
+        Some(&Value::String("thread-a".into()))
+    );
+    assert_eq!(output.rows[0].get("identity_refs"), Some(&Value::Int(2)));
+    assert_eq!(output.rows[0].get("legacy_messages"), Some(&Value::Int(1)));
+    assert_eq!(output.rows[0].get("COUNT(m)"), Some(&Value::Int(1)));
+    assert_eq!(
+        output.rows[0].get(
+            "CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END"
+        ),
+        Some(&Value::String("default".into()))
+    );
+    assert_eq!(
+        output.rows[1].get("t.id"),
+        Some(&Value::String("thread-b".into()))
+    );
+    assert_eq!(output.rows[1].get("identity_refs"), Some(&Value::Int(0)));
+    assert_eq!(output.rows[1].get("legacy_messages"), Some(&Value::Int(0)));
+    assert_eq!(output.rows[1].get("COUNT(m)"), Some(&Value::Int(0)));
+}
+
+#[test]
+fn thread_repair_summary_does_not_admit_unprojected_node_payloads() {
+    let execution_memory = crate::executor::ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+        ..crate::executor::ExecutionMemoryConfig::default()
+    };
+    let mut db = Database::new_with_config(DatabaseConfig {
+        execution_memory,
+        ..DatabaseConfig::default()
+    });
+    let unused_payload = Value::String("x".repeat(16 * 1024));
+    db.query_with_params(
+        "CREATE (:Thread {id: 'thread', thread_id: 'logical', unused: $payload})",
+        &BTreeMap::from([("payload".to_string(), unused_payload.clone())]),
+    )
+    .unwrap();
+    db.query_with_params(
+        "CREATE (:ThreadIdentity {id: 'identity', thread_node_id: 'thread', unused: $payload})",
+        &BTreeMap::from([("payload".to_string(), unused_payload)]),
+    )
+    .unwrap();
+
+    let output = db
+        .query(
+            "MATCH (t:Thread) OPTIONAL MATCH (ti:ThreadIdentity) WHERE ti.thread_node_id = t.id WITH t, COUNT(ti) AS identity_refs OPTIONAL MATCH (t)-[:CONTAINS]->(msg:Message) WITH t, identity_refs, COUNT(msg) AS legacy_messages OPTIONAL MATCH (t)-[:COMPACTS_TO]->(m:Memory) RETURN t.id, t.thread_id, CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END, COALESCE(t.message_count, 0), identity_refs, legacy_messages, COUNT(m) ORDER BY t.id ASC",
+        )
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0].get("identity_refs"), Some(&Value::Int(1)));
+}
+
+#[test]
 fn optional_match_count_after_relationship_match_covers_legacy_tail_refs() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 't1'})-[:CONTAINS]->(:Message {id: 'msg1', order_index: 1})")

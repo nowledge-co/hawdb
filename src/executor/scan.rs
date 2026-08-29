@@ -2,6 +2,7 @@
 
 use super::*;
 use skein_executor::observer::ExecutionObserver;
+use std::cell::Cell;
 
 pub(super) fn stream_node_scan_batches(
     variable: &str,
@@ -229,65 +230,13 @@ pub(super) fn stream_visited_node_batches(
     })
 }
 
-pub(super) fn execute_node_scan_with_optional_filter(
-    variable: &str,
-    label: &str,
-    filter: Option<(&Predicate, &PropertyFilter)>,
-    context: BatchReadContext<'_>,
-    execution_limit: ExecutionLimit,
-) -> Result<Vec<Binding>> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "NodeScanExec",
-        context.memory.blocking_operator_bytes,
-    );
-    let batch_memory_account = context.memory_ledger.account(
-        QueryMemoryClass::PipelineBatch,
-        "NodeScanExec output",
-        context.memory.batch_payload_bytes,
-    );
-    let mut predicate = |binding: &Binding| match filter {
-        Some((predicate, _)) => evaluate_predicate_observed(
-            predicate,
-            context.catalog,
-            context.store,
-            binding,
-            context.observer,
-            skein_executor::store::AdjacencyReadMemory {
-                budget_bytes: context.memory.blocking_operator_bytes.get(),
-                account: Some(&memory_account),
-            },
-        ),
-        None => Ok(true),
-    };
-    skein_executor::scan::execute_node_scan(
-        NodeScanSpec {
-            variable,
-            label,
-            property_filter: filter.map(|(_, filter)| filter),
-        },
-        NodeScanContext {
-            catalog: context.catalog,
-            store: context.store,
-            execution_limit,
-            memory_budget: context.memory.blocking_operator_bytes,
-            memory_account: &memory_account,
-            batch_memory_budget: context.memory.batch_payload_bytes,
-            batch_memory_account: &batch_memory_account,
-            batch_rows: 1,
-            task_context: context.task_context,
-        },
-        &mut predicate,
-        context.observer,
-    )
-}
-
-pub(super) fn execute_source_segment_scan(
+pub(super) fn stream_source_segment_scan_batches(
     variable: &str,
     predicate: &Predicate,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
-) -> Result<Vec<Binding>> {
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
     let BatchReadContext {
         catalog,
         store,
@@ -297,11 +246,8 @@ pub(super) fn execute_source_segment_scan(
         ..
     } = context;
     runtime_checkpoint(task_context)?;
-    let fallback = || {
-        execute_node_scan_with_optional_filter(variable, "Source", None, context, execution_limit)
-    };
     let Some(storage_predicate) = source_storage_scan_predicate(predicate, variable) else {
-        return fallback();
+        return stream_node_scan_batches(variable, "Source", None, context, execution_limit, emit);
     };
     let io_depth = NonZeroUsize::new(SOURCE_SEGMENT_SCAN_IO_DEPTH)
         .expect("source segment scan I/O depth is non-zero");
@@ -309,77 +255,108 @@ pub(super) fn execute_source_segment_scan(
         .expect("source segment scan coalesced range limit is non-zero");
     let max_wave_bytes = NonZeroU64::new(SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES)
         .expect("source segment scan wave byte limit is non-zero");
-    let read = store.read_published_source_scan_candidates_bounded(
-        &storage_predicate,
-        io_depth,
-        max_coalesced_bytes,
-        max_wave_bytes,
+    // The sidecar decoder owns a bounded candidate wave. Reserve its complete
+    // local limit before issuing I/O so admission and the live ledger describe
+    // the same peak even though decoding is storage-owned.
+    let scratch_account = context.memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "SourceSegmentScan candidates",
         memory.blocking_operator_bytes,
-        task_context,
     );
-    runtime_checkpoint(task_context)?;
-    let rows = match read {
-        Ok(SourceScanCandidateRead::Rows {
-            skipped_segment_count,
-            rows,
-            ..
-        }) => {
-            let source_count = catalog
-                .label_id("Source")
-                .map(|label_id| store.node_count_for_label(Some(label_id)))
-                .unwrap_or_default();
-            observer.record_scan_pruning_report(ScanPruningReport {
-                target_kind: crate::store::ScanPruningTargetKind::Node,
-                label_id: catalog.label_id("Source"),
-                rel_type_id: None,
-                strategy: source_scan_pruning_strategy(&storage_predicate),
-                pruned: skipped_segment_count > 0 || rows.len() < source_count,
-                exact_empty: rows.is_empty(),
-                candidate_count_before_pruning: source_count,
-                pruned_candidate_count: source_count.saturating_sub(rows.len()),
-                candidate_count_before_filter: rows.len(),
-                output_count: rows
-                    .len()
-                    .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
-                filtered_out_count: 0,
-            });
-            rows
-        }
-        Err(error @ SkeinError::Execution(_)) => return Err(error),
-        Ok(SourceScanCandidateRead::Fallback(_)) | Err(_) => {
-            return fallback();
-        }
-    };
+    let _scratch = scratch_account.reserve(memory.blocking_operator_bytes.get())?;
     let source_label_id = catalog.label_id("Source");
-    let mut bindings = Vec::new();
-    let mut tracker = OperatorMemoryTracker::with_account(
-        memory.blocking_operator_bytes,
-        context.memory_ledger.account(
-            QueryMemoryClass::BlockingState,
-            "SourceSegmentScan",
+    let source_count = source_label_id
+        .map(|label_id| store.node_count_for_label(Some(label_id)))
+        .unwrap_or_default();
+    let mut output = AccountedBindingBatch::with_ledger(
+        "SourceSegmentScan",
+        memory.batch_rows.get(),
+        memory.batch_payload_bytes,
+        context.memory_ledger,
+    );
+    let emitted = Cell::new(0usize);
+    let mut emit_output = |batch: BindingBatch| {
+        emitted.set(emitted.get().saturating_add(batch.len()));
+        emit(batch)
+    };
+    let visit = store.visit_published_source_scan_candidates_bounded(
+        &storage_predicate,
+        SourceScanCandidateLimits::bounded(
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
             memory.blocking_operator_bytes,
         ),
+        task_context,
+        &mut |row| {
+            runtime_checkpoint(task_context)?;
+            if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {
+                return Ok(GraphScanControl::Stop);
+            }
+            let Some(node) = store.node_owned(NodeId(row.node_id))? else {
+                return Err(SkeinError::StorageIntegrity(
+                    "SourceSegmentScan sidecar candidate is absent from the canonical graph"
+                        .to_string(),
+                ));
+            };
+            if source_label_id.is_none_or(|label_id| !node.labels.contains(&label_id))
+                || node.properties != row.properties
+            {
+                return Err(SkeinError::StorageIntegrity(
+                    "SourceSegmentScan sidecar candidate disagrees with the canonical graph"
+                        .to_string(),
+                ));
+            }
+            let binding = Binding {
+                values: BTreeMap::new(),
+                nodes: BTreeMap::from([(variable.to_string(), node)]),
+                relationships: BTreeMap::new(),
+            };
+            if output.push(binding, &mut emit_output)? == BatchControl::Stop {
+                return Ok(GraphScanControl::Stop);
+            }
+            if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
+                return Ok(GraphScanControl::Stop);
+            }
+            Ok(
+                if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {
+                    GraphScanControl::Stop
+                } else {
+                    GraphScanControl::Continue
+                },
+            )
+        },
     );
-    for row in rows {
-        let Some(node) = store.node_owned(NodeId(row.node_id))? else {
-            return fallback();
-        };
-        if source_label_id.is_none_or(|label_id| !node.labels.contains(&label_id))
-            || node.properties != row.properties
-        {
-            return fallback();
-        }
-        let binding = Binding {
-            values: BTreeMap::new(),
-            nodes: BTreeMap::from([(variable.to_string(), node)]),
-            relationships: BTreeMap::new(),
-        };
-        push_bounded_operator_binding("SourceSegmentScan", &mut bindings, binding, &mut tracker)?;
-        if execution_limit.is_reached(bindings.len()) {
-            break;
-        }
+    runtime_checkpoint(task_context)?;
+    let SourceScanCandidateVisit::Rows {
+        skipped_segment_count,
+        candidate_count,
+        ..
+    } = visit?
+    else {
+        return stream_node_scan_batches(variable, "Source", None, context, execution_limit, emit);
+    };
+    observer.record_scan_pruning_report(ScanPruningReport {
+        target_kind: crate::store::ScanPruningTargetKind::Node,
+        label_id: source_label_id,
+        rel_type_id: None,
+        strategy: source_scan_pruning_strategy(&storage_predicate),
+        pruned: skipped_segment_count > 0 || candidate_count < source_count,
+        exact_empty: candidate_count == 0,
+        candidate_count_before_pruning: source_count,
+        pruned_candidate_count: source_count.saturating_sub(candidate_count),
+        candidate_count_before_filter: candidate_count,
+        output_count: emitted.get().saturating_add(output.len()),
+        filtered_out_count: 0,
+    });
+    if output.emit(&mut emit_output)? == BatchControl::Stop {
+        return Ok(BatchControl::Stop);
     }
-    Ok(bindings)
+    Ok(if execution_limit.is_reached(emitted.get()) {
+        BatchControl::Stop
+    } else {
+        BatchControl::Continue
+    })
 }
 
 pub(super) fn execute_node_column_lookup(

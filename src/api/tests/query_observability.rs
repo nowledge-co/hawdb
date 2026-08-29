@@ -1044,7 +1044,7 @@ fn plan_cache_rebinds_in_list_parameters_with_the_same_shape() {
 }
 
 #[test]
-fn plan_cache_invalidates_after_data_commits() {
+fn plan_cache_reuses_a_plan_after_data_commits_when_schema_and_statistics_generation_match() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
         ..DatabaseConfig::default()
@@ -1067,7 +1067,7 @@ fn plan_cache_invalidates_after_data_commits() {
         .unwrap();
 
     assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
-    assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Miss);
+    assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Hit);
 }
 
 #[test]

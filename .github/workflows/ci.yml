@@ -1,10 +1,9 @@
-name: CI
+name: Weekly Platform CI
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
+  schedule:
+    # Scheduled workflows run the latest revision of the default branch (main).
+    - cron: "37 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

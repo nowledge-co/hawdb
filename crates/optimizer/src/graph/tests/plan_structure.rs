@@ -1189,3 +1189,67 @@ fn bounded_sort_keeps_full_sort_when_limit_covers_the_input() {
         decision.starts_with("keep Sort + Limit for bounded sort: offset=0 limit=20")
     }));
 }
+
+#[test]
+fn conjunction_access_path_compares_equality_and_range_candidates_by_total_cost() {
+    let logical = LogicalPlan::Filter {
+        predicate: Predicate::And(vec![
+            Predicate::PropertyEq {
+                variable: "m".to_string(),
+                property: "kind".to_string(),
+                value: Value::String("note".to_string()),
+            },
+            Predicate::PropertyCompare {
+                variable: "m".to_string(),
+                property: "created_at".to_string(),
+                op: skein_plan::ComparisonOp::Gte,
+                value: Value::Int(99),
+            },
+        ]),
+        input: Box::new(LogicalPlan::NodeScan {
+            variable: "m".to_string(),
+            label: "Memory".to_string(),
+        }),
+    };
+    let catalog = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new(
+            [("Memory".to_string(), "kind".to_string())],
+            [],
+            [("Memory".to_string(), "created_at".to_string())],
+            [],
+        ),
+        OptimizerCatalogStatistics::new(
+            [("Memory".to_string(), 100_000)],
+            [],
+            [],
+            [],
+            [],
+            [(("Memory".to_string(), "kind".to_string()), 2)],
+            [(
+                ("Memory".to_string(), "created_at".to_string()),
+                (0..100).map(Value::Int).collect::<Vec<_>>(),
+            )],
+        ),
+    );
+
+    let (plan, trace) = CascadesOptimizer::default().optimize_with_catalog(&logical, &catalog);
+
+    assert!(plan.instance_fingerprint().contains("IndexNodeRangeSeek"));
+    assert!(trace
+        .rule_events
+        .iter()
+        .any(|event| { event.rule() == "implementation:node_range_index_seek" }));
+    assert!(trace
+        .decisions
+        .iter()
+        .any(|decision| { decision.contains("alternatives_considered=2") }));
+    let access_path_stage = trace
+        .stage_events
+        .iter()
+        .find(|event| event.name() == "access_path_selection")
+        .expect("conjunction access path selection should emit a stage trace");
+    assert_eq!(access_path_stage.stats().input_count, 1);
+    assert_eq!(access_path_stage.stats().output_count, 2);
+    assert_eq!(access_path_stage.stats().applied_rules, 2);
+    assert_eq!(access_path_stage.stats().skipped_rules, 2);
+}

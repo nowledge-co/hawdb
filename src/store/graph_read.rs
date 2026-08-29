@@ -3021,8 +3021,10 @@ impl GraphStore {
     }
 
     /// Plans the checkpoint-published Source sidecar for the current graph
-    /// snapshot. An unavailable, corrupted, or stale sidecar is represented as
-    /// an explicit fallback so callers keep the canonical graph authoritative.
+    /// snapshot. A missing or stale sidecar is represented as an explicit
+    /// fallback before payload consumption starts. Once a streaming read has
+    /// started, corruption or canonical disagreement fails closed because a
+    /// consumer may already have observed rows.
     pub fn plan_published_source_scan(&self, predicate: &ScanPredicate) -> ScanSegmentAccessPlan {
         self.plan_checkpoint_segment_scan(self.source_scan_manifest.as_ref(), predicate)
     }
@@ -3037,12 +3039,9 @@ impl GraphStore {
         max_coalesced_bytes: NonZeroU64,
         max_wave_bytes: NonZeroU64,
     ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        self.collect_published_source_scan_candidates(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            None,
+            SourceScanCandidateLimits::unbounded(io_depth, max_coalesced_bytes, max_wave_bytes),
             None,
         )
     }
@@ -3055,53 +3054,84 @@ impl GraphStore {
         max_wave_bytes: NonZeroU64,
         task_context: &RuntimeTaskContext,
     ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        self.collect_published_source_scan_candidates(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            None,
+            SourceScanCandidateLimits::unbounded(io_depth, max_coalesced_bytes, max_wave_bytes),
             Some(task_context),
         )
     }
 
-    pub(crate) fn read_published_source_scan_candidates_bounded(
+    pub(crate) fn visit_published_source_scan_candidates_bounded(
         &self,
         predicate: &ScanPredicate,
-        io_depth: NonZeroUsize,
-        max_coalesced_bytes: NonZeroU64,
-        max_wave_bytes: NonZeroU64,
-        max_candidate_bytes: NonZeroUsize,
+        limits: SourceScanCandidateLimits,
         task_context: Option<&RuntimeTaskContext>,
-    ) -> Result<SourceScanCandidateRead> {
-        self.read_published_source_scan_candidates_internal(
+        consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
+        self.visit_published_source_scan_candidates_internal(
             predicate,
-            io_depth,
-            max_coalesced_bytes,
-            max_wave_bytes,
-            Some(max_candidate_bytes.get()),
+            limits,
             task_context,
+            consumer,
         )
     }
 
-    fn read_published_source_scan_candidates_internal(
+    fn collect_published_source_scan_candidates(
         &self,
         predicate: &ScanPredicate,
-        io_depth: NonZeroUsize,
-        max_coalesced_bytes: NonZeroU64,
-        max_wave_bytes: NonZeroU64,
-        max_candidate_bytes: Option<usize>,
+        limits: SourceScanCandidateLimits,
         task_context: Option<&RuntimeTaskContext>,
     ) -> Result<SourceScanCandidateRead> {
+        let mut rows = Vec::new();
+        let visit = self.visit_published_source_scan_candidates_internal(
+            predicate,
+            limits,
+            task_context,
+            &mut |row| {
+                rows.push(row);
+                Ok(GraphScanControl::Continue)
+            },
+        )?;
+        match visit {
+            SourceScanCandidateVisit::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                ..
+            } => Ok(SourceScanCandidateRead::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                rows,
+            }),
+            SourceScanCandidateVisit::Fallback(reason) => {
+                Ok(SourceScanCandidateRead::Fallback(reason))
+            }
+        }
+    }
+
+    fn visit_published_source_scan_candidates_internal(
+        &self,
+        predicate: &ScanPredicate,
+        limits: SourceScanCandidateLimits,
+        task_context: Option<&RuntimeTaskContext>,
+        consumer: &mut dyn FnMut(SourceScanRow) -> Result<GraphScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
+        let SourceScanCandidateLimits {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_live_candidate_bytes,
+        } = limits;
         let plan = self.plan_published_source_scan(predicate);
         let ScanSegmentAccessPlan::Read(plan) = plan else {
             let ScanSegmentAccessPlan::Fallback(reason) = plan else {
                 unreachable!("source scan plan is read or fallback")
             };
-            return Ok(SourceScanCandidateRead::Fallback(reason));
+            return Ok(SourceScanCandidateVisit::Fallback(reason));
         };
         let Some(durable) = &self.durable else {
-            return Ok(SourceScanCandidateRead::Fallback(
+            return Ok(SourceScanCandidateVisit::Fallback(
                 ScanSegmentFallback::NoManifest,
             ));
         };
@@ -3112,31 +3142,36 @@ impl GraphStore {
             .iter()
             .map(|segment| (segment.segment_id, segment.payload_range.clone()))
             .collect::<BTreeMap<_, _>>();
-        let checksums = self
+        let manifest = self
             .source_scan_manifest
             .as_ref()
-            .expect("read source scan must have a manifest")
+            .expect("read source scan must have a manifest");
+        let checksums = manifest
             .segments()
             .iter()
             .map(|segment| (segment.summary.segment_id, segment.payload_range.checksum))
             .collect::<BTreeMap<_, _>>();
+        let segment_row_counts = manifest
+            .segments()
+            .iter()
+            .map(|segment| (segment.summary.segment_id, segment.summary.row_count))
+            .collect::<BTreeMap<_, _>>();
+        let candidate_count = plan.segments.iter().fold(0usize, |count, segment| {
+            let segment_count = segment.candidates.as_ref().map_or_else(
+                || segment_row_counts[&segment.segment_id],
+                skein_storage::CandidateCursor::remaining,
+            );
+            count.saturating_add(usize::try_from(segment_count).unwrap_or(usize::MAX))
+        });
+        let graph_epoch = plan.graph_epoch;
+        let skipped_segment_count = plan.skipped_segment_count;
         let mut candidates = plan
             .segments
-            .iter()
-            .map(|segment| {
-                let positions = segment.candidates.clone().map(|mut cursor| {
-                    cursor
-                        .next_batch(usize::MAX)
-                        .into_iter()
-                        .collect::<BTreeSet<_>>()
-                });
-                (segment.segment_id, positions)
-            })
+            .into_iter()
+            .map(|segment| (segment.segment_id, segment.candidates))
             .collect::<BTreeMap<_, _>>();
         let schedule = SegmentReadScheduler::new(io_depth, max_coalesced_bytes)
             .schedule_with_wave_budget(ranges.values().cloned(), max_wave_bytes);
-        let mut rows = Vec::new();
-        let mut candidate_bytes = 0usize;
         let mut consume = |payload: SegmentReadPayload| {
             for segment_id in &payload.range.segment_ids {
                 let range = ranges.get(segment_id).ok_or_else(|| {
@@ -3173,37 +3208,49 @@ impl GraphStore {
                 }
                 let segment_rows = source_scan::decode_payload(bytes)
                     .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))?;
-                let positions = candidates.remove(segment_id).flatten();
+                let candidate_positions = candidates
+                    .remove(segment_id)
+                    .flatten()
+                    .map(|mut cursor| cursor.next_batch(usize::MAX));
+                let live_candidate_bytes = segment_rows
+                    .iter()
+                    .fold(0usize, |total, row| {
+                        total.saturating_add(
+                            std::mem::size_of::<SourceScanRow>().saturating_add(
+                                usize::try_from(estimated_properties_bytes(&row.properties))
+                                    .unwrap_or(usize::MAX),
+                            ),
+                        )
+                    })
+                    .saturating_add(candidate_positions.as_ref().map_or(0, |positions| {
+                        positions.len().saturating_mul(std::mem::size_of::<u64>())
+                    }));
+                if max_live_candidate_bytes.is_some_and(|limit| live_candidate_bytes > limit) {
+                    return Err(SkeinError::Execution(format!(
+                        "SourceSegmentScan decoded segment uses {live_candidate_bytes} bytes, exceeding blocking_operator_bytes {}",
+                        max_live_candidate_bytes.unwrap_or_default()
+                    )));
+                }
                 for (row_id, row) in segment_rows.into_iter().enumerate() {
-                    if positions
+                    if candidate_positions
                         .as_ref()
-                        .is_some_and(|positions| !positions.contains(&(row_id as u64)))
+                        .is_some_and(|positions| positions.binary_search(&(row_id as u64)).is_err())
                     {
                         continue;
                     }
-                    let row_bytes = std::mem::size_of::<SourceScanRow>().saturating_add(
-                        usize::try_from(estimated_properties_bytes(&row.properties))
-                            .unwrap_or(usize::MAX),
-                    );
-                    let next_candidate_bytes = candidate_bytes.saturating_add(row_bytes);
-                    if max_candidate_bytes.is_some_and(|limit| next_candidate_bytes > limit) {
-                        return Err(SkeinError::Execution(format!(
-                            "SourceSegmentScan candidates exceed blocking_operator_bytes {}",
-                            max_candidate_bytes.unwrap_or_default()
-                        )));
+                    if consumer(row)? == GraphScanControl::Stop {
+                        return Ok(skein_storage::SegmentReadControl::Stop);
                     }
-                    candidate_bytes = next_candidate_bytes;
-                    rows.push(row);
                 }
             }
-            Ok::<_, SkeinError>(())
+            Ok::<_, SkeinError>(skein_storage::SegmentReadControl::Continue)
         };
         let executor = SegmentReadExecutor::new(max_wave_bytes);
         let report = match task_context {
             Some(task_context) => {
-                executor.execute_with_context(reader, &schedule, task_context, &mut consume)
+                executor.execute_with_context_control(reader, &schedule, task_context, &mut consume)
             }
-            None => executor.execute(reader, &schedule, &mut consume),
+            None => executor.execute_control(reader, &schedule, &mut consume),
         }
         .map_err(|error| match error {
             SegmentReadExecutionError::Stopped(reason) => {
@@ -3211,11 +3258,11 @@ impl GraphStore {
             }
             error => SkeinError::StorageIntegrity(error.to_string()),
         })?;
-        Ok(SourceScanCandidateRead::Rows {
-            graph_epoch: plan.graph_epoch,
-            skipped_segment_count: plan.skipped_segment_count,
+        Ok(SourceScanCandidateVisit::Rows {
+            graph_epoch,
+            skipped_segment_count,
             report,
-            rows,
+            candidate_count,
         })
     }
 

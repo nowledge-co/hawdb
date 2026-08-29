@@ -22,7 +22,7 @@ pub(super) const SOURCE_SCAN_DESCRIPTOR_FILE: &str = "source_scan_segments.skein
 pub(super) const SOURCE_SCAN_PAYLOAD_FILE: &str = "source_scan_segment_payloads.skein";
 
 pub(super) const SOURCE_SCAN_ARTIFACT_ID: u64 = 1;
-const SOURCE_SCAN_TARGET_ROWS: usize = 128;
+pub(super) const SOURCE_SCAN_TARGET_ROWS: usize = 128;
 const SOURCE_SCAN_DESCRIPTOR_HEADER: &str = "SKEIN_SOURCE_SCAN_SEGMENTS_V1";
 const SOURCE_SCAN_SEGMENT_HEADER: &str = "SKEIN_SOURCE_SCAN_SEGMENT_V1";
 const UNIQUE_KEY_FIELDS: &[&str] = &["id"];

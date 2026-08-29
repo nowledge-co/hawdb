@@ -9,15 +9,12 @@ use super::value_range::{
 use super::{OptimizerCatalog, PhysicalPlan};
 use crate::{OptimizerRule, RuleApplication, RuleId, RuleKind, RulePromise, StageTrace};
 use skein_core::Value;
-use skein_plan::{CompositeRangeSeek, ExactPropertySeekBranch, LogicalPlan, Predicate};
+use skein_plan::{LogicalPlan, Predicate};
 use std::collections::BTreeMap;
 
 mod candidates;
 
-use candidates::{
-    composite_index_seek_candidate, composite_range_index_seek_candidate,
-    equality_index_seek_candidate, exact_union_index_seek_candidate, index_seek_from_conjunction,
-};
+use candidates::{exact_union_index_seek_candidate, index_seek_from_conjunction};
 
 #[derive(Debug, Clone, PartialEq)]
 enum GraphRuleExpr {
@@ -44,19 +41,7 @@ struct NodeTextSeekRule<'a> {
     catalog: &'a OptimizerCatalog,
 }
 
-struct NodeCompositeSeekRule<'a> {
-    catalog: &'a OptimizerCatalog,
-}
-
-struct NodeCompositeRangeSeekRule<'a> {
-    catalog: &'a OptimizerCatalog,
-}
-
 struct NodeUnionSeekRule<'a> {
-    catalog: &'a OptimizerCatalog,
-}
-
-struct NodeConjunctionSeekRule<'a> {
     catalog: &'a OptimizerCatalog,
 }
 
@@ -401,151 +386,6 @@ impl OptimizerRule<GraphRuleExpr> for NodeTextSeekRule<'_> {
     }
 }
 
-impl OptimizerRule<GraphRuleExpr> for NodeCompositeSeekRule<'_> {
-    fn id(&self) -> RuleId {
-        RuleId::new("node_composite_index_seek", RuleKind::Implementation)
-    }
-
-    fn promise(&self, expression: &GraphRuleExpr) -> RulePromise {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return RulePromise::NEVER;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return RulePromise::NEVER;
-        };
-        let LogicalPlan::NodeScan {
-            variable: scan_variable,
-            label,
-        } = input.as_ref()
-        else {
-            return RulePromise::NEVER;
-        };
-        if composite_index_seek_candidate(predicates, predicate, scan_variable, label, self.catalog)
-            .is_some()
-        {
-            RulePromise::new(105)
-        } else {
-            RulePromise::NEVER
-        }
-    }
-
-    fn apply(&self, expression: &GraphRuleExpr) -> Option<RuleApplication<GraphRuleExpr>> {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return None;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return None;
-        };
-        let LogicalPlan::NodeScan {
-            variable: scan_variable,
-            label,
-        } = input.as_ref()
-        else {
-            return None;
-        };
-        composite_index_seek_candidate(predicates, predicate, scan_variable, label, self.catalog)
-            .map(|(plan, decision)| {
-                RuleApplication::new(GraphRuleExpr::Physical(Box::new(plan)), decision)
-            })
-    }
-}
-
-impl OptimizerRule<GraphRuleExpr> for NodeCompositeRangeSeekRule<'_> {
-    fn id(&self) -> RuleId {
-        RuleId::new("node_composite_range_seek", RuleKind::Implementation)
-    }
-
-    fn promise(&self, expression: &GraphRuleExpr) -> RulePromise {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return RulePromise::NEVER;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return RulePromise::NEVER;
-        };
-        let LogicalPlan::NodeScan { variable, label } = input.as_ref() else {
-            return RulePromise::NEVER;
-        };
-        if composite_range_index_seek_candidate(
-            predicates,
-            predicate,
-            variable,
-            label,
-            self.catalog,
-        )
-        .is_some()
-        {
-            RulePromise::new(108)
-        } else {
-            RulePromise::NEVER
-        }
-    }
-
-    fn apply(&self, expression: &GraphRuleExpr) -> Option<RuleApplication<GraphRuleExpr>> {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return None;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return None;
-        };
-        let LogicalPlan::NodeScan { variable, label } = input.as_ref() else {
-            return None;
-        };
-        composite_range_index_seek_candidate(predicates, predicate, variable, label, self.catalog)
-            .map(|(plan, decision)| {
-                RuleApplication::new(GraphRuleExpr::Physical(Box::new(plan)), decision)
-            })
-    }
-}
-
-impl OptimizerRule<GraphRuleExpr> for NodeConjunctionSeekRule<'_> {
-    fn id(&self) -> RuleId {
-        RuleId::new("node_conjunction_index_seek", RuleKind::Implementation)
-    }
-
-    fn promise(&self, expression: &GraphRuleExpr) -> RulePromise {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return RulePromise::NEVER;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return RulePromise::NEVER;
-        };
-        let LogicalPlan::NodeScan {
-            variable: scan_variable,
-            label,
-        } = input.as_ref()
-        else {
-            return RulePromise::NEVER;
-        };
-        if equality_index_seek_candidate(predicates, predicate, scan_variable, label, self.catalog)
-            .is_some()
-        {
-            RulePromise::new(80)
-        } else {
-            RulePromise::NEVER
-        }
-    }
-
-    fn apply(&self, expression: &GraphRuleExpr) -> Option<RuleApplication<GraphRuleExpr>> {
-        let GraphRuleExpr::Filter { predicate, input } = expression else {
-            return None;
-        };
-        let Predicate::And(predicates) = predicate.as_ref() else {
-            return None;
-        };
-        let LogicalPlan::NodeScan {
-            variable: scan_variable,
-            label,
-        } = input.as_ref()
-        else {
-            return None;
-        };
-        equality_index_seek_candidate(predicates, predicate, scan_variable, label, self.catalog)
-            .map(|(_, plan, decision)| {
-                RuleApplication::new(GraphRuleExpr::Physical(Box::new(plan)), decision)
-            })
-    }
-}
-
 impl OptimizerRule<GraphRuleExpr> for NodeRangeSeekRule<'_> {
     fn id(&self) -> RuleId {
         RuleId::new("node_range_index_seek", RuleKind::Implementation)
@@ -832,51 +672,6 @@ fn union_index_seek_from_rule(
         input: Box::new(input.clone()),
     };
     let rule = NodeUnionSeekRule { catalog };
-    physical_plan_from_rule_batch(&expression, &[&rule], decisions, stage_events)
-}
-
-fn composite_index_seek_from_rule(
-    predicate: &Predicate,
-    input: &LogicalPlan,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    let expression = GraphRuleExpr::Filter {
-        predicate: Box::new(predicate.clone()),
-        input: Box::new(input.clone()),
-    };
-    let rule = NodeCompositeSeekRule { catalog };
-    physical_plan_from_rule_batch(&expression, &[&rule], decisions, stage_events)
-}
-
-fn composite_range_index_seek_from_rule(
-    predicate: &Predicate,
-    input: &LogicalPlan,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    let expression = GraphRuleExpr::Filter {
-        predicate: Box::new(predicate.clone()),
-        input: Box::new(input.clone()),
-    };
-    let rule = NodeCompositeRangeSeekRule { catalog };
-    physical_plan_from_rule_batch(&expression, &[&rule], decisions, stage_events)
-}
-
-fn conjunction_index_seek_from_rule(
-    predicate: &Predicate,
-    input: &LogicalPlan,
-    catalog: &OptimizerCatalog,
-    decisions: &mut Vec<String>,
-    stage_events: &mut Vec<StageTrace>,
-) -> Option<PhysicalPlan> {
-    let expression = GraphRuleExpr::Filter {
-        predicate: Box::new(predicate.clone()),
-        input: Box::new(input.clone()),
-    };
-    let rule = NodeConjunctionSeekRule { catalog };
     physical_plan_from_rule_batch(&expression, &[&rule], decisions, stage_events)
 }
 

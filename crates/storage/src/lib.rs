@@ -275,10 +275,10 @@ pub use scan::{
     PlannedScanSegment, PruningDecision, PruningReason, RangeBound, ReadySegmentScan,
     ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind, ScanScalar,
     ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest, ScanSegmentManifestError,
-    SegmentPayloadRange, SegmentPruner, SegmentRangeRead, SegmentRangeReader, SegmentReadError,
-    SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
-    SegmentReadPool, SegmentReadPoolError, SegmentReadRange, SegmentReadSchedule,
-    SegmentReadScheduler, SegmentReadWave, SegmentSummary,
+    SegmentPayloadRange, SegmentPruner, SegmentRangeRead, SegmentRangeReader, SegmentReadControl,
+    SegmentReadError, SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor,
+    SegmentReadPayload, SegmentReadPool, SegmentReadPoolError, SegmentReadRange,
+    SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave, SegmentSummary,
 };
 pub use snapshot::{
     SnapshotCommitError, SnapshotCoordinator, SnapshotReadGuard, VersionedSnapshot,

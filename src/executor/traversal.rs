@@ -49,8 +49,17 @@ pub(super) fn relationship_count_sum_leg(
     leg: &RelationshipCountLeg,
     memory: skein_executor::store::AdjacencyReadMemory<'_>,
     observer: &dyn skein_executor::observer::ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<usize> {
-    executor_traversal::relationship_count_sum_leg(catalog, store, source, leg, memory, observer)
+    executor_traversal::relationship_count_sum_leg(
+        catalog,
+        store,
+        source,
+        leg,
+        memory,
+        observer,
+        task_context,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -68,6 +77,7 @@ pub(super) fn thread_repair_stats_rows(
     memory_budget: NonZeroUsize,
     memory_ledger: &QueryMemoryLedger,
     observer: &dyn skein_executor::observer::ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<skein_executor::pipeline::AccountedBindingSet> {
     executor_traversal::thread_repair_stats_rows(
         catalog,
@@ -83,5 +93,6 @@ pub(super) fn thread_repair_stats_rows(
         memory_budget,
         memory_ledger,
         observer,
+        task_context,
     )
 }

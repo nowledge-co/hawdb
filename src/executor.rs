@@ -17,7 +17,7 @@ use crate::store::{
     NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, ProjectedGraphDefinition, PropertyFilter,
     RelationshipDeleteRequest, RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
     RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPruningReport, SourceScanCandidateRead,
+    ScanPruningReport, SourceScanCandidateLimits, SourceScanCandidateVisit,
 };
 use crate::value::Value;
 use skein_analytics::ProjectedGraphExecution;
@@ -62,12 +62,12 @@ use skein_executor::kernel::{
     OperatorMemoryTracker,
 };
 pub(crate) use skein_executor::memory::{
-    estimated_execution_memory, estimated_mutation_memory_bytes,
+    estimated_execution_memory, estimated_mutation_memory_bytes, ExecutionMemoryEstimate,
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
     emit_owned_binding_batches, runtime_checkpoint, AccountedBindingBatch, BatchControl,
-    BindingBatch,
+    BindingBatch, TransformBatchBuilder,
 };
 use skein_executor::predicate::{
     label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
@@ -133,6 +133,82 @@ struct ExecutionContext<'a> {
     memory_ledger: &'a QueryMemoryLedger,
     task_context: Option<&'a RuntimeTaskContext>,
     observer: &'a QueryExecutionObserver,
+}
+
+/// The execution-facing form of a physical plan.
+///
+/// Planning owns operator selection. This boundary performs the one-time
+/// recursive capability check that decides whether a read can enter the
+/// streaming batch engine, leaving mutation and schema plans on the
+/// materialized path. It deliberately borrows the planner-owned tree so plan
+/// cache templates remain the sole owner of physical plan structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparedExecutionMode {
+    Batch,
+    Materialized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparedStorageCapability {
+    InMemory,
+    OutOfCore,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PreparedPhysicalPlan<'a> {
+    plan: &'a PhysicalPlan,
+    batch_plan: Option<BatchPlanRef<'a>>,
+    execution_mode: PreparedExecutionMode,
+    storage_capability: PreparedStorageCapability,
+    required_memory: ExecutionMemoryEstimate,
+}
+
+impl<'a> PreparedPhysicalPlan<'a> {
+    pub(super) fn prepare(
+        plan: &'a PhysicalPlan,
+        store: &GraphStore,
+        memory: &ExecutionMemoryConfig,
+    ) -> Self {
+        let batch_plan = BatchPlanRef::try_new(plan);
+        Self {
+            plan,
+            execution_mode: if batch_plan.is_some() {
+                PreparedExecutionMode::Batch
+            } else {
+                PreparedExecutionMode::Materialized
+            },
+            batch_plan,
+            storage_capability: if store.is_out_of_core() {
+                PreparedStorageCapability::OutOfCore
+            } else {
+                PreparedStorageCapability::InMemory
+            },
+            required_memory: estimated_execution_memory(plan, memory),
+        }
+    }
+
+    pub(in crate::executor) fn batch(self) -> Option<BatchPlanRef<'a>> {
+        match self.execution_mode() {
+            PreparedExecutionMode::Batch => self.batch_plan,
+            PreparedExecutionMode::Materialized => None,
+        }
+    }
+
+    pub(in crate::executor) fn plan(self) -> &'a PhysicalPlan {
+        self.plan
+    }
+
+    pub(in crate::executor) fn execution_mode(self) -> PreparedExecutionMode {
+        self.execution_mode
+    }
+
+    pub(in crate::executor) fn storage_capability(self) -> PreparedStorageCapability {
+        self.storage_capability
+    }
+
+    pub(in crate::executor) fn required_memory(self) -> ExecutionMemoryEstimate {
+        self.required_memory
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -565,7 +641,20 @@ fn execute_with_row_consumer_profile_internal(
     let process_memory_start = skein_qos::ProcessMemorySnapshot::capture().ok();
     let execution_limit = ExecutionLimit::from_user_max_rows(max_rows)?;
     let mut profile = read_execution_profile(plan, max_rows)?;
-    let batch_plan = BatchPlanRef::try_new(plan);
+    let prepared_plan = PreparedPhysicalPlan::prepare(plan, store, memory);
+    debug_assert_eq!(
+        prepared_plan.storage_capability(),
+        if store.is_out_of_core() {
+            PreparedStorageCapability::OutOfCore
+        } else {
+            PreparedStorageCapability::InMemory
+        }
+    );
+    debug_assert_eq!(
+        prepared_plan.required_memory(),
+        estimated_execution_memory(plan, memory)
+    );
+    let batch_plan = prepared_plan.batch();
     let fully_streamed = batch_plan.is_some();
     let mut output_rows = 0usize;
     let mut output_payload_bytes = 0usize;

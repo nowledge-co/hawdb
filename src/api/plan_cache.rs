@@ -146,7 +146,7 @@ impl PlanCacheKey {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
-    statistics_epoch: u64,
+    statistics_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -168,6 +168,8 @@ struct CachedOptimizerCatalog {
 #[derive(Debug, Clone, Default)]
 pub(super) struct OptimizerPlanningCache {
     statistics: Option<Arc<GraphStatistics>>,
+    statistics_schema: Option<OptimizerSchemaKey>,
+    statistics_generation: u64,
     catalog: Option<CachedOptimizerCatalog>,
 }
 
@@ -217,20 +219,57 @@ impl OptimizerSchemaKey {
     }
 }
 
+impl OptimizerEnvironmentKey {
+    /// A prepared query may reuse a physical plan across data and statistics
+    /// generations because those affect cost only. Schema changes can alter an
+    /// operator's legality and therefore require re-planning.
+    pub(super) fn is_execution_compatible(&self, catalog: &Catalog) -> bool {
+        self.schema == OptimizerSchemaKey::from_catalog(catalog)
+    }
+}
+
 impl OptimizerPlanningCache {
     pub(super) fn invalidate(&mut self) {
         self.statistics = None;
+        self.statistics_schema = None;
+        self.statistics_generation = 0;
         self.catalog = None;
     }
 
     pub(super) fn environment_hint(
+        &mut self,
         catalog: &Catalog,
         store: &GraphStore,
     ) -> OptimizerEnvironmentKey {
+        // A cache lookup must retain the last published statistics generation:
+        // ordinary data commits do not make a physical plan illegal. A cache
+        // miss refreshes the snapshot before choosing a new plan instead.
+        self.ensure_statistics(catalog, store, false);
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
-            statistics_epoch: store.commit_epoch(),
+            statistics_generation: self.statistics_generation,
         }
+    }
+
+    fn ensure_statistics(
+        &mut self,
+        catalog: &Catalog,
+        store: &GraphStore,
+        refresh_for_data_change: bool,
+    ) -> bool {
+        let schema = OptimizerSchemaKey::from_catalog(catalog);
+        let refresh_statistics = self.statistics.as_ref().is_none_or(|statistics| {
+            self.statistics_schema.as_ref() != Some(&schema)
+                || (refresh_for_data_change
+                    && statistics.computed_at_commit_epoch != store.commit_epoch())
+        });
+        if refresh_statistics {
+            self.statistics = Some(Arc::new(store.statistics(catalog)));
+            self.statistics_schema = Some(schema);
+            self.statistics_generation = self.statistics_generation.saturating_add(1);
+            self.catalog = None;
+        }
+        refresh_statistics
     }
 
     fn optimizer_catalog(
@@ -239,23 +278,27 @@ impl OptimizerPlanningCache {
         store: &GraphStore,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
-        let refresh_statistics = self
-            .statistics
-            .as_ref()
-            .is_none_or(|statistics| statistics_refresh_required(statistics, store));
+        // This path is reached only after the physical-plan cache missed or
+        // was intentionally bypassed, so cost-based planning must observe the
+        // latest committed graph statistics.
+        let refresh_statistics = self.ensure_statistics(catalog, store, true);
         if refresh_statistics {
-            let statistics = Arc::new(store.statistics(catalog));
+            let statistics = self
+                .statistics
+                .as_ref()
+                .expect("statistics exist after refresh")
+                .clone();
             decisions.push(format!(
-                "optimizer statistics cache refresh: statistics_epoch={} graph_commit_epoch={}",
+                "optimizer statistics cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
                 statistics.computed_at_commit_epoch,
+                self.statistics_generation,
                 store.commit_epoch()
             ));
-            self.statistics = Some(statistics);
-            self.catalog = None;
         } else if let Some(statistics) = &self.statistics {
             decisions.push(format!(
-                "optimizer statistics cache hit: statistics_epoch={} graph_commit_epoch={}",
+                "optimizer statistics cache hit: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
                 statistics.computed_at_commit_epoch,
+                self.statistics_generation,
                 store.commit_epoch()
             ));
         }
@@ -266,14 +309,15 @@ impl OptimizerPlanningCache {
             .expect("optimizer statistics exist after refresh check");
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
-            statistics_epoch: statistics.computed_at_commit_epoch,
+            statistics_generation: self.statistics_generation,
         };
         if let Some(cached) = &self.catalog
             && cached.environment == environment
         {
             decisions.push(format!(
-                "optimizer catalog cache hit: statistics_epoch={} graph_commit_epoch={}",
+                "optimizer catalog cache hit: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
                 statistics.computed_at_commit_epoch,
+                self.statistics_generation,
                 store.commit_epoch()
             ));
             return OptimizerCatalogAccess {
@@ -285,8 +329,9 @@ impl OptimizerPlanningCache {
 
         let optimized = Arc::new(optimizer_catalog(catalog, statistics));
         decisions.push(format!(
-            "optimizer catalog cache refresh: statistics_epoch={} graph_commit_epoch={}",
+            "optimizer catalog cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
             statistics.computed_at_commit_epoch,
+            self.statistics_generation,
             store.commit_epoch()
         ));
         self.catalog = Some(CachedOptimizerCatalog {
@@ -299,10 +344,6 @@ impl OptimizerPlanningCache {
             decisions,
         }
     }
-}
-
-fn statistics_refresh_required(statistics: &GraphStatistics, store: &GraphStore) -> bool {
-    statistics.computed_at_commit_epoch != store.commit_epoch()
 }
 
 pub(super) fn optimized_query_plan_for(
@@ -332,8 +373,12 @@ pub(super) fn optimized_query_plan_for(
         optimizer_config_from_database_config(context.config).max_groups;
     let access_control_cache_key = context.access_control.map(AccessControlPlanCacheKey::from);
     let execution_parameters = parameters_with_access_control(parameters, context.access_control);
-    let environment_hint = (cache_mode == PlanCacheMode::Use)
-        .then(|| OptimizerPlanningCache::environment_hint(context.catalog, context.store));
+    let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
+        context
+            .planning_cache
+            .borrow_mut()
+            .environment_hint(context.catalog, context.store)
+    });
     if cache_mode == PlanCacheMode::Use {
         let environment = environment_hint
             .as_ref()

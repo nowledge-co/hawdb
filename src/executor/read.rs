@@ -10,7 +10,7 @@ pub(super) fn execute_bindings_with_limit(
     execution_limit: ExecutionLimit,
 ) -> Result<Vec<Binding>> {
     runtime_checkpoint(context.task_context)?;
-    if let Some(plan) = BatchPlanRef::try_new(plan) {
+    if let Some(plan) = PreparedPhysicalPlan::prepare(plan, store, context.memory).batch() {
         return collect_batch_pipeline(plan, catalog, store, context, execution_limit);
     }
     match plan {

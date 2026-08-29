@@ -2,7 +2,7 @@
 
 use crate::binding::{binding_memory_bytes, Binding};
 use crate::kernel::OperatorMemoryTracker;
-use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLedger};
+use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use skein_core::{Result, RuntimeTaskContext, SkeinError};
 use std::num::NonZeroUsize;
 
@@ -19,6 +19,77 @@ pub struct AccountedBindingBatch {
     bindings: BindingBatch,
     batch_rows: usize,
     tracker: OperatorMemoryTracker,
+}
+
+/// A transform output batch that reserves its complete configured payload
+/// budget before allocating output rows. This makes allocation failure an
+/// admission failure rather than an after-the-fact ledger observation.
+pub struct TransformBatchBuilder {
+    bindings: BindingBatch,
+    batch_rows: usize,
+    payload_bytes: usize,
+    reservation: QueryMemoryLease,
+}
+
+impl TransformBatchBuilder {
+    pub fn new(
+        operator: &'static str,
+        batch_rows: usize,
+        memory_budget: NonZeroUsize,
+        memory_ledger: &QueryMemoryLedger,
+    ) -> Result<Self> {
+        let account = memory_ledger.account(
+            QueryMemoryClass::PipelineBatch,
+            format!("{operator} output batch"),
+            memory_budget,
+        );
+        let reservation = account.reserve(memory_budget.get())?;
+        Ok(Self {
+            bindings: Vec::with_capacity(batch_rows),
+            batch_rows,
+            payload_bytes: memory_budget.get(),
+            reservation,
+        })
+    }
+
+    /// Must be called before allocating data for the next output row.
+    pub fn reserve_before_allocation(&mut self) -> Result<()> {
+        if self.reservation.bytes() == 0 {
+            self.reservation.grow(self.payload_bytes)?;
+        }
+        if self.bindings.capacity() == 0 {
+            self.bindings.reserve(self.batch_rows);
+        }
+        Ok(())
+    }
+
+    pub fn push(&mut self, binding: Binding) {
+        debug_assert!(self.reservation.bytes() >= self.payload_bytes);
+        self.bindings.push(binding);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.bindings.len()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.bindings.len() == self.batch_rows
+    }
+
+    pub fn emit(
+        &mut self,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
+        if self.bindings.is_empty() {
+            return Ok(BatchControl::Continue);
+        }
+        self.reservation.reset();
+        emit(std::mem::take(&mut self.bindings))
+    }
 }
 
 impl AccountedBindingBatch {
@@ -111,6 +182,10 @@ impl AccountedBindingBatch {
 
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.bindings.len()
     }
 
     pub fn is_full(&self) -> bool {
@@ -311,6 +386,40 @@ mod tests {
         output.emit(&mut emit).unwrap();
 
         assert_eq!(batch_sizes, vec![1, 1]);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn transform_builder_reserves_before_output_allocation_and_releases_on_emit() {
+        let budget = NonZeroUsize::new(4096).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let mut builder = TransformBatchBuilder::new("project", 2, budget, &ledger).unwrap();
+
+        assert_eq!(ledger.snapshot().used_bytes, 4096);
+        builder.push(binding(1));
+        let control = builder
+            .emit(&mut |batch| {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(ledger.snapshot().used_bytes, 0);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+
+        assert_eq!(control, BatchControl::Continue);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn transform_builder_fails_before_any_output_allocation_when_root_is_too_small() {
+        let root_budget = NonZeroUsize::new(1024).unwrap();
+        let output_budget = NonZeroUsize::new(2048).unwrap();
+        let ledger = QueryMemoryLedger::new(root_budget);
+
+        let error = TransformBatchBuilder::new("project", 1, output_budget, &ledger)
+            .err()
+            .expect("undersized root budget must reject before output allocation");
+
+        assert!(error.to_string().contains("query memory ledger would use"));
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 }

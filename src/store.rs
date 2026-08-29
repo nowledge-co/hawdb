@@ -5,9 +5,7 @@ use crate::schema::{
     IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
     SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
-use crate::search::{
-    search_projection_document_id_for_label_and_properties, search_projection_document_id_for_node,
-};
+use crate::search::search_projection_document_id_for_node;
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
@@ -1363,6 +1361,60 @@ pub enum SourceScanCandidateRead {
         rows: Vec<SourceScanRow>,
     },
     Fallback(ScanSegmentFallback),
+}
+
+/// Metadata returned after streaming checkpoint-published Source candidates.
+///
+/// Rows are intentionally consumed at the storage/executor boundary instead of
+/// being retained in a database-sized intermediate collection. `Fallback` is
+/// returned only before the first row can reach the consumer; failures after
+/// streaming starts are reported as errors so callers never duplicate output.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SourceScanCandidateVisit {
+    Rows {
+        graph_epoch: u64,
+        skipped_segment_count: usize,
+        report: SegmentReadExecutionReport,
+        candidate_count: usize,
+    },
+    Fallback(ScanSegmentFallback),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SourceScanCandidateLimits {
+    io_depth: NonZeroUsize,
+    max_coalesced_bytes: NonZeroU64,
+    max_wave_bytes: NonZeroU64,
+    max_live_candidate_bytes: Option<usize>,
+}
+
+impl SourceScanCandidateLimits {
+    const fn unbounded(
+        io_depth: NonZeroUsize,
+        max_coalesced_bytes: NonZeroU64,
+        max_wave_bytes: NonZeroU64,
+    ) -> Self {
+        Self {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_live_candidate_bytes: None,
+        }
+    }
+
+    pub(crate) const fn bounded(
+        io_depth: NonZeroUsize,
+        max_coalesced_bytes: NonZeroU64,
+        max_wave_bytes: NonZeroU64,
+        max_live_candidate_bytes: NonZeroUsize,
+    ) -> Self {
+        Self {
+            io_depth,
+            max_coalesced_bytes,
+            max_wave_bytes,
+            max_live_candidate_bytes: Some(max_live_candidate_bytes.get()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6058,7 +6110,7 @@ fn estimated_value_bytes(value: &Value) -> u64 {
 mod tests {
     use super::{
         canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,
-        checksum_bytes, compute_statistics, encode_durable_text,
+        checksum_bytes, compute_statistics, encode_durable_text, estimated_properties_bytes,
         property_projection_artifact_generation_file, property_spill_artifact_generation_file,
         read_durable_text, restore_storage_backup, retain_supported_property_statistics,
         set_checkpoint_failpoint, set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan,
@@ -6068,7 +6120,8 @@ mod tests {
         NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry,
         PersistentGraphIndexClass, ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord,
         RelTypeId, RelationshipDeleteRequest, ScanPruningStrategy, ScanPruningTargetKind,
-        SearchProjectionGraphChange, SourceScanCandidateRead, WalDoctorOptions,
+        SearchProjectionGraphChange, SkeinError, SourceScanCandidateLimits,
+        SourceScanCandidateRead, SourceScanCandidateVisit, SourceScanRow, WalDoctorOptions,
         COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD, DURABLE_COMPRESSION_HEADER,
         MANIFEST_FILE,
     };
@@ -8821,6 +8874,106 @@ mod tests {
         let second_cache = store.segment_cache_snapshot().unwrap();
         assert_eq!(second_cache.hit_count, 2);
         assert_eq!(second_cache.resident_bytes, first_cache.resident_bytes);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn source_scan_candidate_budget_tracks_one_live_segment() {
+        let path = unique_test_dir("source_scan_live_segment_budget");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 0..=source_scan::SOURCE_SCAN_TARGET_ROWS {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Source",
+                    properties([("id", Value::String(format!("source-{id}")))]),
+                )
+                .unwrap();
+        }
+        store.checkpoint(&catalog).unwrap();
+        let SourceScanCandidateRead::Rows { rows, .. } = store
+            .read_published_source_scan_candidates(
+                &ScanPredicate::True,
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroU64::new(1024 * 1024).unwrap(),
+                NonZeroU64::new(1024 * 1024).unwrap(),
+            )
+            .unwrap()
+        else {
+            panic!("expected source scan payload read");
+        };
+        let row_bytes = |row: &SourceScanRow| {
+            std::mem::size_of::<SourceScanRow>().saturating_add(
+                usize::try_from(estimated_properties_bytes(&row.properties)).unwrap_or(usize::MAX),
+            )
+        };
+        let first_segment_bytes = rows
+            .iter()
+            .take(source_scan::SOURCE_SCAN_TARGET_ROWS)
+            .fold(0usize, |total, row| total.saturating_add(row_bytes(row)));
+        let all_candidate_bytes = rows
+            .iter()
+            .fold(0usize, |total, row| total.saturating_add(row_bytes(row)));
+        assert!(all_candidate_bytes > first_segment_bytes);
+
+        let mut visited = 0usize;
+        let visit = store
+            .visit_published_source_scan_candidates_bounded(
+                &ScanPredicate::True,
+                SourceScanCandidateLimits::bounded(
+                    NonZeroUsize::new(2).unwrap(),
+                    NonZeroU64::new(1024 * 1024).unwrap(),
+                    NonZeroU64::new(1024 * 1024).unwrap(),
+                    NonZeroUsize::new(first_segment_bytes).unwrap(),
+                ),
+                None,
+                &mut |_| {
+                    visited = visited.saturating_add(1);
+                    Ok(GraphScanControl::Continue)
+                },
+            )
+            .unwrap();
+        let SourceScanCandidateVisit::Rows {
+            candidate_count, ..
+        } = visit
+        else {
+            panic!("expected bounded source scan visit");
+        };
+        assert_eq!(visited, source_scan::SOURCE_SCAN_TARGET_ROWS + 1);
+        assert_eq!(candidate_count, visited);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn source_scan_corruption_after_stream_admission_fails_closed() {
+        let path = unique_test_dir("source_scan_runtime_corruption");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Source",
+                properties([("id", Value::String("source-a".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+
+        let payload_path = path.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE);
+        let mut payload = fs::read(&payload_path).unwrap();
+        let corrupt_at = payload.len() / 2;
+        payload[corrupt_at] ^= 0xff;
+        fs::write(&payload_path, payload).unwrap();
+
+        let error = store
+            .read_published_source_scan_candidates(
+                &ScanPredicate::True,
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroU64::new(1024).unwrap(),
+                NonZeroU64::new(1024).unwrap(),
+            )
+            .expect_err("an admitted streaming read must fail closed on corruption");
+        assert!(matches!(error, SkeinError::StorageIntegrity(_)));
         std::fs::remove_dir_all(path).unwrap();
     }
 
