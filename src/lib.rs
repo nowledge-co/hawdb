@@ -108,6 +108,8 @@ pub use api::{
     NowledgeGraphStatement, NowledgeGraphTransactionOutput, PlanCacheBypassReason, PlanCacheLookup,
     PlanCacheStats, ProfiledRelationalSqlQueryOutput, QueryAccessControlContext, QueryOutput,
     QueryStreamOptions, QueryStreamReport, QuerySystemVariables, RankedBackgroundMaintenance,
+    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
     RelationalSqlIndexReadProfile, RelationalSqlReadProfile, RelationalSqlRowReadProfile,
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch,

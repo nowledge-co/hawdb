@@ -20108,6 +20108,7 @@ fn profiled_relational_sql_output(
 ) -> ProfiledRelationalSqlQueryOutput {
     let crate::relational_sql::RelationalQueryOutput {
         rows,
+        join_planning,
         intermediate_rows,
         hydration,
         index_execution_evidence,
@@ -20115,6 +20116,7 @@ fn profiled_relational_sql_output(
         ..
     } = output;
     let profile = RelationalSqlReadProfile {
+        join_planning,
         intermediate_rows,
         hydrated_rows: hydration.hydrated_rows,
         hydrated_compressed_bytes: hydration.compressed_bytes,
