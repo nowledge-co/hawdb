@@ -1071,6 +1071,50 @@ fn plan_cache_reuses_a_plan_after_data_commits_when_schema_and_statistics_genera
 }
 
 #[test]
+fn stale_out_of_core_snapshot_refresh_does_not_publish_a_new_statistics_generation() {
+    let path = unique_test_dir("plan_cache_stale_statistics_generation");
+    let config = DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        ..DatabaseConfig::default()
+    };
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query("CREATE (:Memory {id: 'first', title: 'First'})")
+            .unwrap();
+        db.checkpoint().unwrap();
+    }
+
+    {
+        let mut db = Database::open_with_config(&path, config).unwrap();
+        let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title";
+        let parameters = BTreeMap::from([("id".to_string(), Value::String("first".to_string()))]);
+        let first = db.explain_query_with_params(query, &parameters).unwrap();
+        assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
+
+        db.query("MATCH (m:Memory) WHERE m.id = 'first' SET m.note = 'updated'")
+            .unwrap();
+        let different_plan = db
+            .explain_query("MATCH (m:Memory) RETURN count(m) AS count")
+            .unwrap();
+        assert_eq!(different_plan.plan_cache_lookup, PlanCacheLookup::Miss);
+        assert!(different_plan.trace.decisions.iter().any(|decision| {
+            decision.starts_with("optimizer statistics cache refresh:")
+                && decision.contains("publication_changed=false")
+        }));
+        assert!(different_plan.trace.decisions.iter().any(|decision| {
+            decision.starts_with("optimizer advanced statistics freshness:")
+                && decision.contains("status=unavailable")
+        }));
+
+        let reused = db.explain_query_with_params(query, &parameters).unwrap();
+        assert_eq!(reused.plan_cache_lookup, PlanCacheLookup::Hit);
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn optimizer_reuses_statistics_snapshot_within_a_commit() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'first', title: 'First'})")

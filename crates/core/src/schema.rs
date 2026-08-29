@@ -200,6 +200,27 @@ pub struct BasicGraphStatistics {
     pub rel_type_counts: BTreeMap<RelTypeId, u64>,
 }
 
+/// Whether a complete advanced-statistics snapshot describes the current graph epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvancedStatisticsFreshness {
+    /// The snapshot is complete and was computed at the current graph epoch.
+    Fresh,
+    /// A complete snapshot exists, but it describes a different graph epoch.
+    Stale,
+    /// No complete advanced-statistics snapshot is available.
+    Unavailable,
+}
+
+impl AdvancedStatisticsFreshness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GraphStatistics {
     pub computed_at_commit_epoch: u64,
@@ -224,6 +245,27 @@ pub struct GraphStatistics {
     pub rel_property_histograms: BTreeMap<(RelTypeId, String), Vec<Value>>,
     pub sampled_property_histograms: BTreeMap<(LabelId, String), bool>,
     pub sampled_rel_property_histograms: BTreeMap<(RelTypeId, String), bool>,
+}
+
+impl GraphStatistics {
+    /// Classifies only advanced statistics; basic counts may be newer than this snapshot.
+    pub fn advanced_statistics_freshness(
+        &self,
+        current_commit_epoch: u64,
+    ) -> AdvancedStatisticsFreshness {
+        if !self.advanced_statistics_complete {
+            AdvancedStatisticsFreshness::Unavailable
+        } else if self.computed_at_commit_epoch == current_commit_epoch {
+            AdvancedStatisticsFreshness::Fresh
+        } else {
+            AdvancedStatisticsFreshness::Stale
+        }
+    }
+
+    /// Returns the observable lag without underflowing on an invalid future snapshot epoch.
+    pub fn advanced_statistics_commit_lag(&self, current_commit_epoch: u64) -> u64 {
+        current_commit_epoch.saturating_sub(self.computed_at_commit_epoch)
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -943,6 +985,33 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_statistics_freshness_requires_complete_current_epoch_data() {
+        let unavailable = GraphStatistics {
+            computed_at_commit_epoch: 7,
+            advanced_statistics_complete: false,
+            ..GraphStatistics::default()
+        };
+        assert_eq!(
+            unavailable.advanced_statistics_freshness(7),
+            AdvancedStatisticsFreshness::Unavailable
+        );
+
+        let complete = GraphStatistics {
+            advanced_statistics_complete: true,
+            ..unavailable
+        };
+        assert_eq!(
+            complete.advanced_statistics_freshness(7),
+            AdvancedStatisticsFreshness::Fresh
+        );
+        assert_eq!(
+            complete.advanced_statistics_freshness(8),
+            AdvancedStatisticsFreshness::Stale
+        );
+        assert_eq!(complete.advanced_statistics_commit_lag(9), 2);
+    }
 
     #[test]
     fn property_types_map_to_shared_logical_types() {
