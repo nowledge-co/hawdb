@@ -21,8 +21,14 @@ pub(crate) use append::{
 };
 
 mod index_access;
+mod planning;
 mod query;
 mod row_access;
+
+pub use planning::{
+    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+};
 
 pub(crate) use index_access::RelationalIndexReadMode;
 pub(crate) use query::{
@@ -1826,6 +1832,20 @@ mod tests {
             Value::String("ready".to_string())
         );
         assert!(profiled.profile.intermediate_rows > 0);
+        assert_eq!(
+            profiled.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::SyntaxOrder
+        );
+        assert_eq!(
+            profiled.profile.join_planning.status,
+            RelationalJoinPlanningStatus::NotEligible
+        );
+        assert_eq!(
+            profiled.profile.join_planning.reason,
+            RelationalJoinPlanningReason::NoJoin
+        );
+        assert_eq!(profiled.profile.join_planning.selected_order, ["messages"]);
+        assert!(profiled.profile.join_planning.cost.is_none());
         assert_eq!(profiled.profile.row_read.runtime_path, "canonical_memory");
         assert_eq!(profiled.profile.row_read.rows_visited, 1);
     }
@@ -2538,6 +2558,22 @@ mod tests {
             output.join_access_paths[0].index_columns[0],
             "content_doc_id"
         );
+        assert_eq!(
+            output.join_planning.strategy,
+            RelationalJoinPlanningStrategy::InnerJoinMemo
+        );
+        assert_eq!(
+            output.join_planning.status,
+            RelationalJoinPlanningStatus::Selected
+        );
+        assert_eq!(
+            output.join_planning.reason,
+            RelationalJoinPlanningReason::CostReordered
+        );
+        assert_eq!(output.join_planning.selected_order, ["d", "c"]);
+        assert!(output.join_planning.memo_groups.is_some());
+        assert!(output.join_planning.memo_expressions.is_some());
+        assert!(output.join_planning.cost.is_some());
 
         let explain_sql = format!("EXPLAIN ANALYZE {SQL}");
         let explained = execute_relational_query_sql_with_runtime(
@@ -2569,7 +2605,13 @@ mod tests {
         ));
         assert!(matches!(
             join.get("operator info"),
-            Some(Value::String(info)) if info.contains("join_order=cost_reordered")
+            Some(Value::String(info))
+                if info.contains("join_order=cost_reordered")
+                    && info.contains("planning_strategy=inner_join_memo")
+                    && info.contains("planning_status=selected")
+                    && info.contains("planning_reason=cost_reordered")
+                    && info.contains("selected_order=[d,c]")
+                    && info.contains("plan_cost=")
         ));
     }
 
@@ -2638,6 +2680,84 @@ mod tests {
         assert!(output.join_access_paths[0].unique_point);
         assert_eq!(output.join_access_paths[0].index_columns, ["owner_id"]);
         assert_eq!(output.join_access_paths[1].index_columns, ["document_id"]);
+    }
+
+    #[test]
+    fn disconnected_join_graph_reports_syntax_fallback() {
+        const SQL: &str = "SELECT a.id AS a_id, c.id AS c_id \
+            FROM planning_a AS a \
+            INNER JOIN planning_b AS b ON b.a_id = a.id \
+            INNER JOIN planning_c AS c ON b.a_id = a.id \
+            ORDER BY a.id ASC, c.id ASC";
+
+        let store = RelationalStore::default();
+        for ddl in [
+            "CREATE TABLE planning_a (id TEXT PRIMARY KEY)",
+            "CREATE TABLE planning_b (id TEXT PRIMARY KEY, a_id TEXT NOT NULL REFERENCES planning_a(id))",
+            "CREATE TABLE planning_c (id TEXT PRIMARY KEY)",
+        ] {
+            commit_sql(&store, ddl, &[]);
+        }
+        commit_sql(&store, "INSERT INTO planning_a (id) VALUES ('a-1')", &[]);
+        commit_sql(
+            &store,
+            "INSERT INTO planning_b (id, a_id) VALUES ('b-1', 'a-1')",
+            &[],
+        );
+        commit_sql(&store, "INSERT INTO planning_c (id) VALUES ('c-1')", &[]);
+
+        let snapshot = store.snapshot().expect("join fallback snapshot");
+        let output = execute_relational_query_sql_with_runtime(
+            SQL,
+            &[],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(8, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("execute syntax fallback for a disconnected join graph");
+
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            output.join_planning.strategy,
+            RelationalJoinPlanningStrategy::InnerJoinMemo
+        );
+        assert_eq!(
+            output.join_planning.status,
+            RelationalJoinPlanningStatus::Fallback
+        );
+        assert_eq!(
+            output.join_planning.reason,
+            RelationalJoinPlanningReason::DisconnectedGraph
+        );
+        assert_eq!(output.join_planning.selected_order, ["a", "b", "c"]);
+        assert!(output.join_planning.cost.is_none());
+
+        let explained = execute_relational_query_sql_with_runtime(
+            &format!("EXPLAIN {SQL}"),
+            &[],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(16, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("explain syntax fallback for a disconnected join graph");
+        assert!(explained.rows.iter().any(|row| matches!(
+            row.get("operator info"),
+            Some(Value::String(info))
+                if info.contains("join_order=syntax_fallback")
+                    && info.contains("planning_status=fallback")
+                    && info.contains("planning_reason=disconnected_graph")
+                    && info.contains("plan_cost=unavailable")
+        )));
     }
 
     #[test]

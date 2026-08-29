@@ -1,4 +1,8 @@
 use super::super::QueryOutput;
+pub use crate::relational_sql::{
+    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfiledRelationalSqlQueryOutput {
@@ -8,6 +12,7 @@ pub struct ProfiledRelationalSqlQueryOutput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalSqlReadProfile {
+    pub join_planning: RelationalJoinPlanningOutcome,
     pub intermediate_rows: usize,
     pub hydrated_rows: usize,
     pub hydrated_compressed_bytes: usize,
