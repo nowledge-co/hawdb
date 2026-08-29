@@ -1,7 +1,7 @@
 use crate::cost::{PlanCost, PlanCostBreakdown};
 use crate::properties::PhysicalProperties;
 use crate::stage::StageTrace;
-use crate::trace::OptimizerTrace;
+use crate::trace::{OperatorCardinalityEstimate, OptimizerTrace};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -46,6 +46,7 @@ pub struct SelectedPlanTrace {
     pub cost: PlanCost,
     pub cost_breakdown: PlanCostBreakdown,
     pub properties: PhysicalProperties,
+    pub cardinality_estimates: Vec<OperatorCardinalityEstimate>,
     pub operator_counts: BTreeMap<String, usize>,
     pub class_counts: BTreeMap<String, usize>,
 }
@@ -172,6 +173,7 @@ impl OptimizationSearchReport {
             selected_plan_cost: selected.cost.with_cardinality_floor(),
             selected_plan_cost_breakdown: selected.cost_breakdown.with_cardinality_floor(),
             selected_plan_properties: selected.properties,
+            selected_plan_cardinality_estimates: selected.cardinality_estimates,
             selected_plan_operator_counts: selected.operator_counts,
             selected_plan_class_counts: selected.class_counts,
             warnings: self.warnings,
@@ -431,6 +433,7 @@ mod tests {
             },
             cost_breakdown: PlanCostBreakdown::new(1, 1, 3, 0, 0),
             properties: Default::default(),
+            cardinality_estimates: Vec::new(),
             operator_counts: BTreeMap::from([("IndexNodeSeek".to_string(), 1)]),
             class_counts: BTreeMap::from([("access".to_string(), 1)]),
         });

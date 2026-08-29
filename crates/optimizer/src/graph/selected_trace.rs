@@ -1,20 +1,93 @@
 use super::{costing, properties, OptimizerCatalog, PhysicalPlan};
-use crate::{plan_class_counts, plan_operator_counts, OptimizerContext, SelectedPlanTrace};
+use crate::{
+    plan_class_counts, plan_operator_counts, visit_plan_with_ids, OperatorCardinalityEstimate,
+    OptimizerContext, SelectedPlanTrace,
+};
 
 pub(super) fn selected_plan_trace(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
 ) -> SelectedPlanTrace {
-    let selected_plan_cost = costing::estimate_physical_plan_cost(plan, catalog);
+    let cost_breakdown = costing::estimate_physical_plan_cost_breakdown(plan, catalog);
     SelectedPlanTrace {
         query_digest: context.query_digest().map(str::to_string),
         explain: plan.explain(0),
         fingerprint: plan.fingerprint(),
-        cost: selected_plan_cost,
-        cost_breakdown: costing::estimate_physical_plan_cost_breakdown(plan, catalog),
+        cost: cost_breakdown.as_plan_cost(),
+        cost_breakdown,
         properties: properties::selected_plan_properties(plan),
+        cardinality_estimates: operator_cardinality_estimates(plan, catalog),
         operator_counts: plan_operator_counts(plan),
         class_counts: plan_class_counts(plan),
+    }
+}
+
+fn operator_cardinality_estimates(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+) -> Vec<OperatorCardinalityEstimate> {
+    let mut estimates = Vec::new();
+    visit_plan_with_ids(plan, &mut |operator_id, operator| {
+        estimates.push(OperatorCardinalityEstimate {
+            operator_id,
+            operator: operator.kind(),
+            estimated_rows: costing::estimate_physical_plan_cost(operator, catalog).estimated_rows,
+        });
+    });
+    estimates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OptimizerContext;
+    use skein_plan::{PhysicalOperatorId, PhysicalPlanKind};
+
+    #[test]
+    fn selected_trace_assigns_estimates_to_stable_operator_ids() {
+        let plan = PhysicalPlan::ProjectExec {
+            items: Vec::new(),
+            input: Box::new(PhysicalPlan::FilterExec {
+                predicate: skein_plan::Predicate::ConstantBool(false),
+                input: Box::new(PhysicalPlan::SeqNodeScan {
+                    variable: "n".to_string(),
+                    label: "Node".to_string(),
+                }),
+            }),
+        };
+
+        let trace = selected_plan_trace(
+            &plan,
+            &OptimizerCatalog::default(),
+            &OptimizerContext::default(),
+        );
+
+        assert_eq!(trace.cardinality_estimates.len(), 3);
+        assert_eq!(
+            trace
+                .cardinality_estimates
+                .iter()
+                .map(|estimate| (estimate.operator_id, estimate.operator))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    PhysicalOperatorId::from_ordinal(0),
+                    PhysicalPlanKind::ProjectExec,
+                ),
+                (
+                    PhysicalOperatorId::from_ordinal(1),
+                    PhysicalPlanKind::FilterExec,
+                ),
+                (
+                    PhysicalOperatorId::from_ordinal(2),
+                    PhysicalPlanKind::SeqNodeScan,
+                ),
+            ]
+        );
+        assert_eq!(
+            trace.cardinality_estimates[0].estimated_rows,
+            trace.cost.estimated_rows
+        );
     }
 }

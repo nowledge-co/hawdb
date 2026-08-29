@@ -601,6 +601,7 @@ impl GraphStore {
                 );
                 self.apply_create_node(catalog, id, label_id, properties);
                 self.record_node_index_sample_updates(affected_indexes);
+                self.advanced_statistics_dirty.mark_node_topology();
             }
             WalOp::CreateRelationship {
                 id,
@@ -611,6 +612,7 @@ impl GraphStore {
             } => {
                 let rel_type_id = catalog.get_or_create_rel_type(&rel_type);
                 self.apply_create_relationship(id, source, target, rel_type_id, properties);
+                self.advanced_statistics_dirty.mark_relationship_topology();
             }
             WalOp::SetNodeProperty {
                 id,
@@ -623,6 +625,7 @@ impl GraphStore {
                 });
                 self.apply_set_node_property(catalog, id, property, value);
                 self.record_node_index_sample_updates(affected_indexes);
+                self.advanced_statistics_dirty.mark_node_properties();
             }
             WalOp::SetRelationshipProperty {
                 id,
@@ -631,6 +634,8 @@ impl GraphStore {
             } => {
                 self.materialize_relationship_for_write(id)?;
                 self.apply_set_relationship_property(id, property, value);
+                self.advanced_statistics_dirty
+                    .mark_relationship_properties();
             }
             WalOp::DeleteNode { id } => {
                 let base_exists = self
@@ -649,6 +654,7 @@ impl GraphStore {
                 if base_exists {
                     self.node_tombstones.insert(id);
                 }
+                self.advanced_statistics_dirty.mark_node_topology();
             }
             WalOp::DeleteRelationship { id } => {
                 let base_exists = self
@@ -663,6 +669,7 @@ impl GraphStore {
                 if base_exists {
                     self.relationship_tombstones.insert(id);
                 }
+                self.advanced_statistics_dirty.mark_relationship_topology();
             }
             WalOp::ProjectGraph {
                 name,

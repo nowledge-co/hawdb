@@ -17,8 +17,9 @@ use super::{
     SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
     SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions, SearchResultSet,
     SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, FULL_REINDEX_MARKER,
-    METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
+    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorSearchExecutionOptions,
+    FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::error::{Result, SkeinError};
 use crate::{RuntimeCapabilities, RuntimeCapability};
@@ -244,15 +245,15 @@ struct SearchVectorDocument {
 struct SearchOutOfCoreExecutionContext<'a> {
     access_control: Option<&'a SearchAccessControlContext>,
     compressed_vector_search_mode: CompressedVectorSearchMode,
-    task_context: Option<&'a crate::RuntimeTaskContext>,
+    vector_execution_options: VectorSearchExecutionOptions<'a>,
 }
 
 impl SearchOutOfCoreExecutionContext<'_> {
-    const fn scalar() -> Self {
+    fn scalar() -> Self {
         Self {
             access_control: None,
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
-            task_context: None,
+            vector_execution_options: VectorSearchExecutionOptions::default(),
         }
     }
 }
@@ -833,7 +834,7 @@ impl SearchOutOfCoreReader {
             SearchOutOfCoreExecutionContext {
                 access_control: None,
                 compressed_vector_search_mode,
-                task_context: None,
+                vector_execution_options: VectorSearchExecutionOptions::default(),
             },
         )
     }
@@ -855,7 +856,39 @@ impl SearchOutOfCoreReader {
             SearchOutOfCoreExecutionContext {
                 access_control: None,
                 compressed_vector_search_mode,
-                task_context: Some(task_context),
+                vector_execution_options: VectorSearchExecutionOptions::bounded(
+                    NonZeroUsize::new(
+                        self.config
+                            .max_vector_search_parallelism
+                            .get()
+                            .min(task_context.admitted_parallelism().get()),
+                    )
+                    .expect("out-of-core vector parallelism is non-zero"),
+                    self.config.max_vector_search_working_bytes.get(),
+                    Some(task_context),
+                ),
+            },
+        )
+    }
+
+    pub fn search_with_options_compressed_vector_projection_execution_options(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        compressed_vector_search_mode: CompressedVectorSearchMode,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+    ) -> Result<SearchOutOfCoreOutput> {
+        self.search_with_options_internal(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            SearchOutOfCoreExecutionContext {
+                access_control: None,
+                compressed_vector_search_mode,
+                vector_execution_options,
             },
         )
     }
@@ -876,7 +909,7 @@ impl SearchOutOfCoreReader {
             SearchOutOfCoreExecutionContext {
                 access_control: Some(&access_control),
                 compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
-                task_context: None,
+                vector_execution_options: VectorSearchExecutionOptions::default(),
             },
         )
     }
@@ -931,8 +964,14 @@ impl SearchOutOfCoreReader {
         let SearchOutOfCoreExecutionContext {
             access_control,
             compressed_vector_search_mode,
-            task_context,
+            vector_execution_options,
         } = execution;
+        let task_context = vector_execution_options.task_context;
+        if let Some(task_context) = task_context {
+            task_context.checkpoint().map_err(|reason| {
+                SkeinError::Execution(format!("search out-of-core task {reason}"))
+            })?;
+        }
         if access_control.is_some() {
             self.runtime_capabilities
                 .require(RuntimeCapability::AccessControl)?;
@@ -1083,7 +1122,7 @@ impl SearchOutOfCoreReader {
                 &candidate_set,
                 retained_vector_limit,
                 compressed_vector_search_mode,
-                task_context,
+                vector_execution_options,
                 &mut metrics,
             )?
         } else {
@@ -3215,6 +3254,45 @@ mod tests {
         assert!(vector.metrics.vector_segment_bytes_read > 0);
         assert_eq!(vector.metrics.hydration_segment_bytes_read, 0);
         assert_eq!(vector.metrics.peak_segment_document_bytes, 0);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn out_of_core_vector_execution_options_enforce_memory_and_cancellation() {
+        let path = test_dir("vector-execution-options");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+
+        let memory_error = reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Disabled,
+                VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, 64, None),
+            )
+            .unwrap_err();
+        assert!(memory_error
+            .to_string()
+            .contains("admitted 0 score entries"));
+
+        let cancellation = crate::RuntimeCancellationToken::new();
+        let task_context = crate::RuntimeTaskContext::without_deadline(cancellation.clone());
+        assert!(cancellation.cancel());
+        let cancellation_error = reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Disabled,
+                VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, 1024, Some(&task_context)),
+            )
+            .unwrap_err();
+        assert!(cancellation_error.to_string().contains("cancelled"));
         fs::remove_dir_all(path).unwrap();
     }
 

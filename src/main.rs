@@ -5045,6 +5045,15 @@ fn explain_diagnostics_json(input: ExplainDiagnosticsJsonInput<'_>) -> serde_jso
             "output_rows": input.trace.selected_plan_cost_breakdown.output_rows,
         },
         "selected_plan_properties": physical_properties_json(&input.trace.selected_plan_properties),
+        "selected_plan_cardinality_estimates": input.trace
+            .selected_plan_cardinality_estimates
+            .iter()
+            .map(|estimate| serde_json::json!({
+                "operator_id": estimate.operator_id.ordinal(),
+                "operator": estimate.operator.as_str(),
+                "estimated_rows": estimate.estimated_rows,
+            }))
+            .collect::<Vec<_>>(),
         "selected_plan_operator_counts": input.trace.selected_plan_operator_counts,
         "selected_plan_class_counts": input.trace.selected_plan_class_counts,
         "optimizer_stages": input.trace
@@ -5092,6 +5101,11 @@ fn read_execution_profile_json(
         "detection_row_cap": profile.detection_row_cap,
         "row_limit_enforced_before_output": profile.row_limit_enforced_before_output,
         "operator_row_cap_enabled": profile.operator_row_cap_enabled,
+        "operator_cardinality_profiles": profile.operator_cardinality_profiles.iter().map(|cardinality| serde_json::json!({
+            "operator_id": cardinality.operator_id.ordinal(),
+            "operator": cardinality.operator.as_str(),
+            "actual_rows": cardinality.actual_rows,
+        })).collect::<Vec<_>>(),
         "blocking_operator_kinds": profile.blocking_operator_kinds,
         "blocking_operator_memory_reports": profile.blocking_operator_memory_reports.iter().map(|report| serde_json::json!({
             "operator": report.operator,
@@ -5402,7 +5416,10 @@ mod tests {
     };
     use skein::{
         api::ExplainOutput,
-        optimizer::{OptimizerTrace, PhysicalPlan, PlanCost, PlanCostBreakdown},
+        optimizer::{
+            OperatorCardinalityEstimate, OptimizerTrace, PhysicalOperatorId, PhysicalPlan,
+            PhysicalPlanKind, PlanCost, PlanCostBreakdown,
+        },
     };
     use skein::{
         BackgroundMaintenanceOptions, CanonicalGraphSnapshotValidation,
@@ -6668,6 +6685,11 @@ mod tests {
                     vector_precision: skein::optimizer::VectorPrecision::NotVector,
                     memory_budget: skein::optimizer::MemoryBudgetClass::RowLinear,
                 },
+                selected_plan_cardinality_estimates: vec![OperatorCardinalityEstimate {
+                    operator_id: PhysicalOperatorId::from_ordinal(0),
+                    operator: PhysicalPlanKind::SeqNodeScan,
+                    estimated_rows: 42,
+                }],
                 selected_plan_operator_counts: operator_counts,
                 selected_plan_class_counts: class_counts,
                 warnings: vec!["diagnostic warning".to_string()],
@@ -6715,6 +6737,18 @@ mod tests {
         assert_eq!(json["selected_plan_cost_breakdown"]["cpu"], 10);
         assert_eq!(json["selected_plan_cost_breakdown"]["random_io"], 20);
         assert_eq!(json["selected_plan_cost_breakdown"]["sequential_io"], 12);
+        assert_eq!(
+            json["selected_plan_cardinality_estimates"][0]["operator_id"],
+            0
+        );
+        assert_eq!(
+            json["selected_plan_cardinality_estimates"][0]["operator"],
+            "SeqNodeScan"
+        );
+        assert_eq!(
+            json["selected_plan_cardinality_estimates"][0]["estimated_rows"],
+            42
+        );
         assert_eq!(
             json["selected_plan_properties"]["distribution"]["kind"],
             "single"

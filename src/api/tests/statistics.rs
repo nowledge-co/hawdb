@@ -304,6 +304,62 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
 }
 
 #[test]
+fn optimizer_uses_advanced_statistics_only_at_the_current_graph_epoch() {
+    let path = unique_test_dir("optimizer_advanced_statistics_freshness");
+    let spill_root = path.join("statistics-spill");
+    let config = DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    db.query("CREATE (:Memory {id: 1})-[:MENTIONS {weight: 1}]->(:Entity {id: 2})")
+        .unwrap();
+    db.checkpoint().unwrap();
+    db.refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
+        memory_budget_bytes: 4096,
+        max_spill_bytes: 1024 * 1024,
+        max_spill_runs: 64,
+        max_input_records: 1_000,
+        max_generated_facts: 10_000,
+        max_path_expansions: 1_000,
+        spill_directory: spill_root,
+    })
+    .unwrap();
+
+    let fresh = db
+        .explain_query("MATCH (m:Memory)-[:MENTIONS*1..1]->(e:Entity) RETURN e.id AS entity_id")
+        .unwrap();
+    assert!(fresh.trace.decisions.iter().any(|decision| {
+        decision.starts_with("optimizer advanced statistics freshness:")
+            && decision.contains("status=fresh")
+    }));
+    assert!(fresh.trace.decisions.iter().any(|decision| {
+        decision.contains("estimate AdjacencyExpand")
+            && decision.contains("path_count=1")
+            && decision.contains("hop_rows=[1:exact:1]")
+    }));
+
+    db.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 2")
+        .unwrap();
+    let stale = db
+        .explain_query("MATCH (m:Memory)-[:MENTIONS*1..1]->(e:Entity) RETURN e.id AS id")
+        .unwrap();
+    assert!(stale.trace.decisions.iter().any(|decision| {
+        decision.starts_with("optimizer advanced statistics freshness:")
+            && decision.contains("status=stale")
+    }));
+    assert!(stale.trace.decisions.iter().any(|decision| {
+        decision.contains("estimate AdjacencyExpand")
+            && decision.contains("path_count=unknown")
+            && decision.contains("hop_rows=[1:fallback:1]")
+    }));
+
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn checkpoint_persists_index_descriptors_and_statistics() {
     let path = unique_test_dir("catalog_stats_checkpoint");
     {

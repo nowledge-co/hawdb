@@ -86,3 +86,13 @@ fn vector_plan_embedding_dimension(plan: &skein_plan::VectorPhysicalPlan) -> usi
         skein_plan::VectorPhysicalPlan::Filter { .. } => 0,
     }
 }
+
+pub(super) fn vector_plan_top_k(plan: &skein_plan::VectorPhysicalPlan) -> Option<usize> {
+    match plan {
+        skein_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
+        skein_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | skein_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. } => vector_plan_top_k(input),
+        skein_plan::VectorPhysicalPlan::Filter { .. } => None,
+    }
+}

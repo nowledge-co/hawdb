@@ -1,6 +1,6 @@
 use super::{ExplainAnalyzeOutput, ExplainOutput};
 use crate::executor::ReadExecutionProfile;
-use crate::optimizer::{PhysicalPlan, PhysicalPlanChildren};
+use crate::optimizer::{PhysicalOperatorId, PhysicalPlan, PhysicalPlanChildren};
 use std::fmt::{Display, Formatter, Write};
 use unicode_width::UnicodeWidthStr;
 
@@ -8,17 +8,18 @@ const NOT_AVAILABLE: &str = "N/A";
 
 impl Display for ExplainOutput {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        let rows = plan_rows(&self.physical_plan, |node, is_root| ExplainRow {
-            id: String::new(),
-            estimated_rows: is_root
-                .then(|| format_estimated_rows(self.trace.selected_plan_cost.estimated_rows)),
-            actual_rows: None,
-            task: "root".to_string(),
-            access_object: access_object(node),
-            execution_info: None,
-            operator_info: operator_info(node),
-            memory: None,
-            disk: None,
+        let rows = plan_rows(&self.physical_plan, |node, operator_id, _is_root| {
+            ExplainRow {
+                id: String::new(),
+                estimated_rows: estimated_rows(&self.trace, operator_id, node.kind()),
+                actual_rows: None,
+                task: "root".to_string(),
+                access_object: access_object(node),
+                execution_info: None,
+                operator_info: operator_info(node),
+                memory: None,
+                disk: None,
+            }
         });
         write_table(
             formatter,
@@ -51,7 +52,7 @@ impl Display for ExplainOutput {
 
 impl Display for ExplainAnalyzeOutput {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        let rows = plan_rows(&self.physical_plan, |node, is_root| {
+        let rows = plan_rows(&self.physical_plan, |node, operator_id, is_root| {
             let blocking = self
                 .execution_profile
                 .blocking_operator_memory_reports
@@ -59,9 +60,8 @@ impl Display for ExplainAnalyzeOutput {
                 .find(|report| report.operator == node.kind().as_str());
             ExplainRow {
                 id: String::new(),
-                estimated_rows: is_root
-                    .then(|| format_estimated_rows(self.trace.selected_plan_cost.estimated_rows)),
-                actual_rows: is_root.then(|| self.output.rows.len().to_string()),
+                estimated_rows: estimated_rows(&self.trace, operator_id, node.kind()),
+                actual_rows: actual_rows(&self.execution_profile, operator_id, node.kind()),
                 task: "root".to_string(),
                 access_object: access_object(node),
                 execution_info: if is_root {
@@ -160,17 +160,22 @@ struct ExplainRow {
 
 fn plan_rows(
     plan: &PhysicalPlan,
-    mut make_row: impl FnMut(&PhysicalPlan, bool) -> ExplainRow,
+    mut make_row: impl FnMut(&PhysicalPlan, PhysicalOperatorId, bool) -> ExplainRow,
 ) -> Vec<ExplainRow> {
     fn visit(
         plan: &PhysicalPlan,
         is_root: bool,
+        next_operator_ordinal: &mut usize,
         ancestors_have_sibling: &mut Vec<bool>,
         is_last: bool,
-        make_row: &mut dyn FnMut(&PhysicalPlan, bool) -> ExplainRow,
+        make_row: &mut dyn FnMut(&PhysicalPlan, PhysicalOperatorId, bool) -> ExplainRow,
         rows: &mut Vec<ExplainRow>,
     ) {
-        let mut row = make_row(plan, is_root);
+        let operator_id = PhysicalOperatorId::from_ordinal(*next_operator_ordinal);
+        *next_operator_ordinal = next_operator_ordinal
+            .checked_add(1)
+            .expect("physical plan operator count exceeds usize");
+        let mut row = make_row(plan, operator_id, is_root);
         row.id = tree_identifier(
             plan.kind().as_str(),
             is_root,
@@ -183,23 +188,83 @@ fn plan_rows(
             PhysicalPlanChildren::None => {}
             PhysicalPlanChildren::Unary(child) => {
                 ancestors_have_sibling.push(false);
-                visit(child, false, ancestors_have_sibling, true, make_row, rows);
+                visit(
+                    child,
+                    false,
+                    next_operator_ordinal,
+                    ancestors_have_sibling,
+                    true,
+                    make_row,
+                    rows,
+                );
                 ancestors_have_sibling.pop();
             }
             PhysicalPlanChildren::Binary(left, right) => {
                 ancestors_have_sibling.push(true);
-                visit(left, false, ancestors_have_sibling, false, make_row, rows);
+                visit(
+                    left,
+                    false,
+                    next_operator_ordinal,
+                    ancestors_have_sibling,
+                    false,
+                    make_row,
+                    rows,
+                );
                 ancestors_have_sibling.pop();
                 ancestors_have_sibling.push(false);
-                visit(right, false, ancestors_have_sibling, true, make_row, rows);
+                visit(
+                    right,
+                    false,
+                    next_operator_ordinal,
+                    ancestors_have_sibling,
+                    true,
+                    make_row,
+                    rows,
+                );
                 ancestors_have_sibling.pop();
             }
         }
     }
 
     let mut rows = Vec::new();
-    visit(plan, true, &mut Vec::new(), true, &mut make_row, &mut rows);
+    let mut next_operator_ordinal = 0;
+    visit(
+        plan,
+        true,
+        &mut next_operator_ordinal,
+        &mut Vec::new(),
+        true,
+        &mut make_row,
+        &mut rows,
+    );
     rows
+}
+
+fn estimated_rows(
+    trace: &crate::optimizer::OptimizerTrace,
+    operator_id: PhysicalOperatorId,
+    operator: crate::optimizer::PhysicalPlanKind,
+) -> Option<String> {
+    trace
+        .selected_plan_cardinality_estimates
+        .iter()
+        .find(|estimate| estimate.operator_id == operator_id && estimate.operator == operator)
+        .map(|estimate| format_estimated_rows(estimate.estimated_rows))
+}
+
+fn actual_rows(
+    profile: &ReadExecutionProfile,
+    operator_id: PhysicalOperatorId,
+    operator: crate::optimizer::PhysicalPlanKind,
+) -> Option<String> {
+    profile
+        .operator_cardinality_profiles
+        .iter()
+        .find(|cardinality| {
+            cardinality.operator_id == operator_id && cardinality.operator == operator
+        })
+        .and_then(|cardinality| cardinality.actual_rows)
+        .map(|rows| rows.to_string())
 }
 
 fn tree_identifier(
@@ -449,6 +514,13 @@ mod tests {
         assert!(rendered.contains("optimizer: mode=memo"));
         assert!(rendered.contains("query digest:"));
         assert!(rendered.contains("plan shape:"));
+        for line in rendered
+            .lines()
+            .filter(|line| line.starts_with('|') && line.contains("Exec"))
+        {
+            let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+            assert_ne!(cells[2], super::NOT_AVAILABLE);
+        }
     }
 
     #[test]
@@ -462,6 +534,15 @@ mod tests {
             .explain_analyze_query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
             .unwrap();
         assert_eq!(output.output.rows[0].get("id"), Some(&Value::Int(1)));
+        assert_eq!(
+            output.trace.selected_plan_cardinality_estimates.len(),
+            output.execution_profile.operator_cardinality_profiles.len()
+        );
+        assert!(output
+            .execution_profile
+            .operator_cardinality_profiles
+            .iter()
+            .all(|cardinality| cardinality.actual_rows.is_some()));
         let rendered = output.to_string();
 
         assert!(rendered.contains("| actRows"));
@@ -471,6 +552,14 @@ mod tests {
         assert!(rendered.contains("peak="));
         assert!(rendered.contains("/budget="));
         assert!(rendered.contains("query_memory="));
+        for line in rendered
+            .lines()
+            .filter(|line| line.starts_with('|') && line.contains("Exec"))
+        {
+            let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+            assert_ne!(cells[2], super::NOT_AVAILABLE);
+            assert_ne!(cells[3], super::NOT_AVAILABLE);
+        }
     }
 
     #[test]

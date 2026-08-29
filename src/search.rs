@@ -700,17 +700,29 @@ pub struct VectorSearchExecutionOptions<'a> {
 }
 
 impl<'a> VectorSearchExecutionOptions<'a> {
+    pub fn bounded(
+        max_parallelism: NonZeroUsize,
+        max_working_bytes: usize,
+        task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    ) -> Self {
+        Self {
+            max_parallelism,
+            max_working_bytes,
+            kernel: VectorSearchKernelPreference::Auto,
+            task_context,
+            capture_candidate_ids: false,
+        }
+    }
+
     pub fn admitted(
         max_working_bytes: usize,
         task_context: &'a skein_core::RuntimeTaskContext,
     ) -> Self {
-        Self {
-            max_parallelism: task_context.admitted_parallelism(),
+        Self::bounded(
+            task_context.admitted_parallelism(),
             max_working_bytes,
-            kernel: VectorSearchKernelPreference::Auto,
-            task_context: Some(task_context),
-            capture_candidate_ids: false,
-        }
+            Some(task_context),
+        )
     }
 
     pub fn with_kernel(mut self, kernel: VectorSearchKernelPreference) -> Self {

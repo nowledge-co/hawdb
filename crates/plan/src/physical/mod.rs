@@ -16,8 +16,8 @@ mod plan_node;
 
 pub use fingerprint::write_projection_expression;
 pub use metadata::{
-    plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
-    PhysicalPlanNode, PlanChildren,
+    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
+    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
 };
 pub use plan_node::PhysicalPlanChildren;
 
@@ -193,6 +193,7 @@ pub enum PhysicalPlan {
         output_external_id: bool,
         metadata_filters: BTreeMap<String, String>,
         vector_plan: crate::VectorPhysicalPlan,
+        resource_profile: crate::VectorExecutionResourceProfile,
     },
     CreateNode {
         label: String,

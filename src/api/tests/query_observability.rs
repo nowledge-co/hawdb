@@ -721,6 +721,19 @@ fn cypher_explain_returns_structured_plan_row() {
     assert!(selected_plan_cost_breakdown.contains_key("random_io"));
     assert!(selected_plan_cost_breakdown.contains_key("sequential_io"));
     assert!(selected_plan_cost_breakdown.contains_key("output_rows"));
+    let Some(Value::List(operator_cardinalities)) = row.get("operator_cardinalities") else {
+        panic!("expected operator cardinalities");
+    };
+    assert!(!operator_cardinalities.is_empty());
+    assert!(operator_cardinalities.iter().enumerate().all(|(ordinal, value)| {
+        matches!(
+            value,
+            Value::Map(cardinality)
+                if cardinality.get("operator_id") == Some(&Value::Int(ordinal as i64))
+                    && matches!(cardinality.get("estimated_rows"), Some(Value::Int(rows)) if *rows > 0)
+                    && cardinality.get("actual_rows") == Some(&Value::Null)
+        )
+    }));
     let Some(Value::Map(selected_plan_properties)) = row.get("selected_plan_properties") else {
         panic!("expected selected plan properties map");
     };
@@ -851,6 +864,18 @@ fn cypher_explain_analyze_returns_execution_profile_row() {
         )
     }));
     assert_eq!(row.get("row_count"), Some(&Value::Int(2)));
+    let Some(Value::List(operator_cardinalities)) = row.get("operator_cardinalities") else {
+        panic!("expected operator cardinalities");
+    };
+    let Value::Map(root_cardinality) = &operator_cardinalities[0] else {
+        panic!("expected root operator cardinality map");
+    };
+    assert_eq!(root_cardinality.get("operator_id"), Some(&Value::Int(0)));
+    assert!(matches!(
+        root_cardinality.get("estimated_rows"),
+        Some(Value::Int(rows)) if *rows > 0
+    ));
+    assert_eq!(root_cardinality.get("actual_rows"), Some(&Value::Int(2)));
     assert_eq!(row.get("scan_pruning_report_count"), Some(&Value::Int(1)));
     let Some(Value::List(scan_reports)) = row.get("scan_pruning_reports") else {
         panic!("expected scan pruning reports");
@@ -1068,6 +1093,50 @@ fn plan_cache_reuses_a_plan_after_data_commits_when_schema_and_statistics_genera
 
     assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
     assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Hit);
+}
+
+#[test]
+fn stale_out_of_core_snapshot_refresh_does_not_publish_a_new_statistics_generation() {
+    let path = unique_test_dir("plan_cache_stale_statistics_generation");
+    let config = DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        ..DatabaseConfig::default()
+    };
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query("CREATE (:Memory {id: 'first', title: 'First'})")
+            .unwrap();
+        db.checkpoint().unwrap();
+    }
+
+    {
+        let mut db = Database::open_with_config(&path, config).unwrap();
+        let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title";
+        let parameters = BTreeMap::from([("id".to_string(), Value::String("first".to_string()))]);
+        let first = db.explain_query_with_params(query, &parameters).unwrap();
+        assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
+
+        db.query("MATCH (m:Memory) WHERE m.id = 'first' SET m.note = 'updated'")
+            .unwrap();
+        let different_plan = db
+            .explain_query("MATCH (m:Memory) RETURN count(m) AS count")
+            .unwrap();
+        assert_eq!(different_plan.plan_cache_lookup, PlanCacheLookup::Miss);
+        assert!(different_plan.trace.decisions.iter().any(|decision| {
+            decision.starts_with("optimizer statistics cache refresh:")
+                && decision.contains("publication_changed=false")
+        }));
+        assert!(different_plan.trace.decisions.iter().any(|decision| {
+            decision.starts_with("optimizer advanced statistics freshness:")
+                && decision.contains("status=unavailable")
+        }));
+
+        let reused = db.explain_query_with_params(query, &parameters).unwrap();
+        assert_eq!(reused.plan_cache_lookup, PlanCacheLookup::Hit);
+    }
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]

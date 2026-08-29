@@ -148,8 +148,13 @@ impl CascadesOptimizer {
         {
             let mut decisions = Vec::new();
             let mut stage_events = Vec::new();
-            let plan =
-                logical_to_physical_direct(logical, catalog, &mut decisions, &mut stage_events);
+            let plan = logical_to_physical_direct(
+                logical,
+                catalog,
+                &self.context,
+                &mut decisions,
+                &mut stage_events,
+            );
             let plan = finalize_physical_plan(plan, &mut decisions, &mut stage_events);
             let mut report = if directive == OptimizerSearchDirective::DirectFallback {
                 OptimizationSearchReport::forced_direct_fallback(required_groups)
@@ -176,7 +181,14 @@ impl CascadesOptimizer {
         let root = insert_logical_group(&mut memo, logical);
         let mut decisions = Vec::new();
         let mut stage_events = Vec::new();
-        let plan = best_physical(&memo, root, catalog, &mut decisions, &mut stage_events);
+        let plan = best_physical(
+            &memo,
+            root,
+            catalog,
+            &self.context,
+            &mut decisions,
+            &mut stage_events,
+        );
         let plan = finalize_physical_plan(plan, &mut decisions, &mut stage_events);
         let mut report = OptimizationSearchReport::memo(memo.group_count());
         record_logical_rewrite(&mut report, &rewrite);
@@ -216,6 +228,7 @@ fn best_physical(
     memo: &GraphMemo,
     root: GroupId,
     catalog: &OptimizerCatalog,
+    optimizer_context: &OptimizerContext,
     decisions: &mut Vec<String>,
     stage_events: &mut Vec<StageTrace>,
 ) -> PhysicalPlan {
@@ -223,7 +236,7 @@ fn best_physical(
     group
         .first_expression()
         .expect("memo group should contain at least one expression")
-        .to_physical(memo, catalog, decisions, stage_events)
+        .to_physical(memo, catalog, optimizer_context, decisions, stage_events)
 }
 
 fn select_bounded_sort_plan(
@@ -365,19 +378,34 @@ impl GroupExpr {
         &self,
         memo: &GraphMemo,
         catalog: &OptimizerCatalog,
+        optimizer_context: &OptimizerContext,
         decisions: &mut Vec<String>,
         stage_events: &mut Vec<StageTrace>,
     ) -> PhysicalPlan {
         if let Some(plan) = select_exact_count_fast_path(&self.logical, decisions, stage_events) {
             return plan;
         }
-        if let Some(plan) = simple::lower_simple_logical(&self.logical) {
+        if let Some(plan) = simple::lower_simple_logical(&self.logical, optimizer_context) {
             return plan;
         }
         match &self.logical {
             LogicalPlan::NodeCartesianProduct { .. } => {
-                let left = best_physical(memo, self.children[0], catalog, decisions, stage_events);
-                let right = best_physical(memo, self.children[1], catalog, decisions, stage_events);
+                let left = best_physical(
+                    memo,
+                    self.children[0],
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
+                let right = best_physical(
+                    memo,
+                    self.children[1],
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
                 let (left, right) =
                     order_single_row_cartesian_product_children(catalog, decisions, left, right);
                 push_cartesian_product_cost_decision(catalog, decisions, &left, &right);
@@ -403,6 +431,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -433,7 +462,14 @@ impl GroupExpr {
                         max_hops: *max_hops,
                     },
                 );
-                let input = best_physical(memo, self.children[0], catalog, decisions, stage_events);
+                let input = best_physical(
+                    memo,
+                    self.children[0],
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
                 let graph_budget =
                     vector_seed_top_k(&input).map(|top_k| graph_expansion_budget(top_k, *max_hops));
                 if let Some(graph_budget) = graph_budget {
@@ -479,6 +515,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -516,8 +553,14 @@ impl GroupExpr {
                         input: Box::new(plan),
                     }
                 } else {
-                    let mut input =
-                        best_physical(memo, self.children[0], catalog, decisions, stage_events);
+                    let mut input = best_physical(
+                        memo,
+                        self.children[0],
+                        catalog,
+                        optimizer_context,
+                        decisions,
+                        stage_events,
+                    );
                     push_vector_seed_metadata_filter(&mut input, predicate, decisions);
                     PhysicalPlan::FilterExec {
                         predicate: predicate.clone(),
@@ -531,6 +574,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -544,6 +588,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -553,6 +598,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -563,6 +609,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -576,7 +623,14 @@ impl GroupExpr {
                 let LogicalPlan::Sort { items, .. } = input.as_ref() else {
                     unreachable!("guard requires a sort input");
                 };
-                let input = best_physical(memo, self.children[0], catalog, decisions, stage_events);
+                let input = best_physical(
+                    memo,
+                    self.children[0],
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
                 select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
             }
             LogicalPlan::Limit { offset, limit, .. } => PhysicalPlan::LimitExec {
@@ -586,6 +640,7 @@ impl GroupExpr {
                     memo,
                     self.children[0],
                     catalog,
+                    optimizer_context,
                     decisions,
                     stage_events,
                 )),
@@ -808,19 +863,32 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
 fn logical_to_physical_direct(
     logical: &LogicalPlan,
     catalog: &OptimizerCatalog,
+    optimizer_context: &OptimizerContext,
     decisions: &mut Vec<String>,
     stage_events: &mut Vec<StageTrace>,
 ) -> PhysicalPlan {
     if let Some(plan) = select_exact_count_fast_path(logical, decisions, stage_events) {
         return plan;
     }
-    if let Some(plan) = simple::lower_simple_logical(logical) {
+    if let Some(plan) = simple::lower_simple_logical(logical, optimizer_context) {
         return plan;
     }
     match logical {
         LogicalPlan::NodeCartesianProduct { left, right } => {
-            let left = logical_to_physical_direct(left, catalog, decisions, stage_events);
-            let right = logical_to_physical_direct(right, catalog, decisions, stage_events);
+            let left = logical_to_physical_direct(
+                left,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            );
+            let right = logical_to_physical_direct(
+                right,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            );
             let (left, right) =
                 order_single_row_cartesian_product_children(catalog, decisions, left, right);
             push_cartesian_product_cost_decision(catalog, decisions, &left, &right);
@@ -845,6 +913,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -875,7 +944,13 @@ fn logical_to_physical_direct(
                     max_hops: *max_hops,
                 },
             );
-            let input = logical_to_physical_direct(input, catalog, decisions, stage_events);
+            let input = logical_to_physical_direct(
+                input,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            );
             let graph_budget =
                 vector_seed_top_k(&input).map(|top_k| graph_expansion_budget(top_k, *max_hops));
             if let Some(graph_budget) = graph_budget {
@@ -920,6 +995,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -956,7 +1032,13 @@ fn logical_to_physical_direct(
                     input: Box::new(plan),
                 }
             } else {
-                let mut input = logical_to_physical_direct(input, catalog, decisions, stage_events);
+                let mut input = logical_to_physical_direct(
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
                 push_vector_seed_metadata_filter(&mut input, predicate, decisions);
                 PhysicalPlan::FilterExec {
                     predicate: predicate.clone(),
@@ -969,6 +1051,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -983,6 +1066,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -991,6 +1075,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -1000,6 +1085,7 @@ fn logical_to_physical_direct(
             input: Box::new(logical_to_physical_direct(
                 input,
                 catalog,
+                optimizer_context,
                 decisions,
                 stage_events,
             )),
@@ -1014,7 +1100,13 @@ fn logical_to_physical_direct(
             } else if let (Some(limit), LogicalPlan::Sort { items, input }) =
                 (limit, input.as_ref())
             {
-                let input = logical_to_physical_direct(input, catalog, decisions, stage_events);
+                let input = logical_to_physical_direct(
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                );
                 select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
             } else {
                 PhysicalPlan::LimitExec {
@@ -1023,6 +1115,7 @@ fn logical_to_physical_direct(
                     input: Box::new(logical_to_physical_direct(
                         input,
                         catalog,
+                        optimizer_context,
                         decisions,
                         stage_events,
                     )),

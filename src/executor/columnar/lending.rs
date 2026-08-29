@@ -302,6 +302,7 @@ mod tests {
             property_type: crate::schema::PropertyType::Int,
             op: skein_plan::ComparisonOp::Gte,
             expected: skein_executor::columnar::NumericLiteral::Int(0),
+            fused_operators: None,
         };
         let mut cursor = NumericNodeBatchCursor::new(nodes.iter(), fragment, 2, true);
 
@@ -352,6 +353,7 @@ mod tests {
             property_type: crate::schema::PropertyType::Float,
             op: skein_plan::ComparisonOp::Gt,
             expected: skein_executor::columnar::NumericLiteral::Float(1.0),
+            fused_operators: None,
         };
         let mut cursor = NumericNodeBatchCursor::new(nodes.iter(), fragment, 8, false);
 
@@ -372,6 +374,7 @@ mod tests {
             property_type: crate::schema::PropertyType::Int,
             op: skein_plan::ComparisonOp::Gte,
             expected: skein_executor::columnar::NumericLiteral::Int(2),
+            fused_operators: None,
         };
         let mut buffer = OwnedNumericBatchBuffer::new(fragment, 3, true);
         for id in 0..3 {

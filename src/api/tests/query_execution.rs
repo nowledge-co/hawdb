@@ -14,8 +14,36 @@ fn numeric_scan_filter_project_is_default_morsel_eligible() {
         )
         .unwrap();
 
-    assert!(admission.parallel_morsel_eligible);
-    assert_eq!(admission.morsel_parallelism, 1);
+    assert!(admission.parallel_execution_eligible);
+    assert_eq!(admission.max_parallelism, 1);
+}
+
+#[test]
+fn vector_seed_admission_uses_optimizer_resource_contract() {
+    let db = Database::new();
+    let parameters = BTreeMap::from([(
+        "embedding".to_string(),
+        Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+    )]);
+
+    let admission = db
+        .runtime_admission_plan(
+            "CALL vector_search($embedding, topK := 4) RETURN id, score",
+            &parameters,
+        )
+        .unwrap();
+
+    assert!(admission.parallel_execution_eligible);
+    assert_eq!(
+        admission.max_parallelism,
+        crate::executor::MAX_MORSEL_PARALLELISM
+    );
+    assert!(
+        admission.estimated_memory_bytes
+            >= u64::try_from(db.config.execution_memory.blocking_operator_bytes.get())
+                .unwrap()
+                .saturating_mul(3)
+    );
 }
 
 #[test]

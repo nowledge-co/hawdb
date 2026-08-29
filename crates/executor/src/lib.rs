@@ -45,8 +45,8 @@ pub use columnar::{
 };
 pub use concurrent::{BoundedExecutor, SharedExecutorPool, SharedExecutorPoolError};
 pub use external::{
-    ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
-    VectorSeedExecutionRow,
+    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 pub use graph::{GraphExpansionExecutionReport, GraphExpansionTruncationReason};
 pub use limit::ExecutionLimit;
@@ -61,9 +61,10 @@ pub use morsel::{
     MorselStreamResources, PipelineId, SequentialMorselScheduler, SharedPoolMorselScheduler,
 };
 pub use profile::{
-    BlockingOperatorMemoryReport, PipelineMemoryReport, ProfiledQueryRows, ProfiledQueryStream,
-    QueryRow, QueryRowRef, QueryRows, QueryRowsBuilder, QueryRowsIntoIter, QueryRowsIter,
-    QuerySchema, QueryValueRows, ReadExecutionProfile, Row, RowRef, RowRefIter,
+    BlockingOperatorMemoryReport, OperatorCardinalityProfile, PipelineMemoryReport,
+    ProfiledQueryRows, ProfiledQueryStream, QueryRow, QueryRowRef, QueryRows, QueryRowsBuilder,
+    QueryRowsIntoIter, QueryRowsIter, QuerySchema, QueryValueRows, ReadExecutionProfile, Row,
+    RowRef, RowRefIter,
 };
 pub use spill::SpillPoolSnapshot;
 pub use vector::{

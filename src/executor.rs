@@ -64,7 +64,8 @@ use skein_executor::kernel::{
     OperatorMemoryTracker,
 };
 pub(crate) use skein_executor::memory::{
-    estimated_execution_memory, estimated_mutation_memory_bytes, ExecutionMemoryEstimate,
+    estimated_execution_memory, estimated_mutation_memory_bytes, external_read_memory_budget,
+    max_external_read_parallelism, ExecutionMemoryEstimate,
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
@@ -82,7 +83,8 @@ use skein_executor::scan::{
 };
 pub use skein_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
 pub use skein_executor::{
-    ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
+    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    OperatorCardinalityProfile, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
     VectorSeedExecutionRow,
 };
 use skein_executor::{QueryMemoryClass, QueryMemoryLedger};
@@ -547,6 +549,7 @@ pub fn read_execution_profile(
         detection_row_cap: execution_limit.output_rows,
         row_limit_enforced_before_output: max_rows.is_some(),
         operator_row_cap_enabled: execution_limit.output_rows.is_some(),
+        operator_cardinality_profiles: Vec::new(),
         blocking_operator_kinds: blocking_operator_kinds(plan),
         scan_pruning_reports: Vec::new(),
         vector_execution_reports: Vec::new(),
