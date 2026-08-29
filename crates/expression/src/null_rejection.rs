@@ -17,7 +17,7 @@ impl BindingId {
 }
 
 /// A set of bindings used by predicates and null-extension proofs.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BindingSet(BTreeSet<BindingId>);
 
 impl BindingSet {
@@ -33,12 +33,34 @@ impl BindingSet {
         self.0.contains(&binding)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_subset(&self, other: &Self) -> bool {
+        self.0.is_subset(&other.0)
+    }
+
     pub fn intersects(&self, other: &Self) -> bool {
         self.0.iter().any(|binding| other.contains(*binding))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = BindingId> + '_ {
         self.0.iter().copied()
+    }
+
+    pub fn without(&self, binding: BindingId) -> Self {
+        Self(
+            self.0
+                .iter()
+                .copied()
+                .filter(|candidate| *candidate != binding)
+                .collect(),
+        )
     }
 
     fn extend(&mut self, other: &Self) {

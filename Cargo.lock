@@ -1725,6 +1725,7 @@ dependencies = [
  "serde_json",
  "skein-core",
  "skein-cypher",
+ "skein-expression",
  "skein-plan",
 ]
 
