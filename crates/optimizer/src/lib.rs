@@ -8,6 +8,7 @@ pub mod predicate;
 pub mod properties;
 pub mod relational;
 pub mod relational_join;
+pub mod relational_join_rewrite;
 pub mod rule;
 pub mod search;
 pub mod stage;
@@ -45,6 +46,13 @@ pub use relational_join::{
     RelationalJoinAccessApplicability, RelationalJoinAccessPath, RelationalJoinEnumerationConfig,
     RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
     RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
+};
+pub use relational_join_rewrite::{
+    analyze_relational_join_conflicts, enumerate_relational_join_rewrites,
+    RelationalJoinConflictAnalysis, RelationalJoinConflictDescriptor, RelationalJoinConflictRule,
+    RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
+    RelationalJoinRewriteEnumeration, RelationalJoinRewriteError, RelationalJoinRewritePlan,
+    RelationalJoinRewriteProblem, RelationalJoinRewriteStep, RelationalJoinTree,
 };
 pub use rule::{
     apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,

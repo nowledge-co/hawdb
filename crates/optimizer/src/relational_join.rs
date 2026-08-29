@@ -87,7 +87,7 @@ impl RelationalJoinAccessPath {
         self
     }
 
-    fn supports_base(&self) -> bool {
+    pub(crate) fn supports_base(&self) -> bool {
         matches!(
             self.applicability,
             RelationalJoinAccessApplicability::Base
@@ -95,12 +95,27 @@ impl RelationalJoinAccessPath {
         )
     }
 
-    fn supports_probe(&self) -> bool {
+    pub(crate) fn supports_probe(&self) -> bool {
         matches!(
             self.applicability,
             RelationalJoinAccessApplicability::Probe
                 | RelationalJoinAccessApplicability::BaseAndProbe
         )
+    }
+
+    pub(crate) fn validate_usage(&self) -> Result<(), &'static str> {
+        match self.applicability {
+            RelationalJoinAccessApplicability::Base
+            | RelationalJoinAccessApplicability::BaseAndProbe
+                if !self.required_bindings.is_empty() =>
+            {
+                Err("base access path cannot require another binding")
+            }
+            RelationalJoinAccessApplicability::Probe if self.required_bindings.is_empty() => {
+                Err("probe access path must require another binding")
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -415,6 +430,12 @@ fn validate_graph(
         }
         for access in &relation.access_paths {
             access.descriptor.validate().map_err(|reason| {
+                RelationalJoinEnumerationError::InvalidAccessPath {
+                    binding: relation.binding,
+                    reason,
+                }
+            })?;
+            access.validate_usage().map_err(|reason| {
                 RelationalJoinEnumerationError::InvalidAccessPath {
                     binding: relation.binding,
                     reason,

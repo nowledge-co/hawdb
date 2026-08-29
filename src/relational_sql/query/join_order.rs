@@ -8,11 +8,16 @@ use crate::sql::{
     SqlJoinKind, SqlPredicate, SqlTableName,
 };
 use crate::Value;
-use skein_expression::{BindingId, BindingSet};
+use skein_expression::{
+    BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
+};
 use skein_optimizer::{
-    enumerate_relational_inner_joins, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RelationalJoinAccessPath, RelationalJoinEnumerationConfig, RelationalJoinGraph,
-    RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RequiredProperties,
+    enumerate_relational_inner_joins, enumerate_relational_join_rewrites,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinAccessPath,
+    RelationalJoinEnumerationConfig, RelationalJoinGraph, RelationalJoinOperator,
+    RelationalJoinOperatorId, RelationalJoinOperatorKind, RelationalJoinPredicate,
+    RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewritePlan,
+    RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
 };
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,54 +41,101 @@ struct BoundJoinPredicate {
     bindings: BindingSet,
 }
 
+struct BoundJoinOperator {
+    operator: RelationalJoinOperator,
+    right_binding: BindingId,
+}
+
+struct BoundJoinInputs {
+    predicates: Vec<BoundJoinPredicate>,
+    operators: Vec<BoundJoinOperator>,
+}
+
 pub(super) fn plan_select_join_order(
     select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
     limits: RelationalQueryLimits,
 ) -> Result<PlannedSelectStatement> {
-    if !supports_inner_join_enumeration(&select) {
+    if !supports_join_enumeration(&select) {
         return Ok(unchanged(select));
     }
     let relations = bind_relations(&select, state)?;
     if !select_columns_resolve(&select, &relations) {
         return Ok(unchanged(select));
     }
-    let Some(predicates) = bind_join_predicates(&select, &relations) else {
+    let Some(bound_joins) = bind_join_inputs(&select, &relations) else {
         return Ok(unchanged(select));
     };
+    let predicates = &bound_joins.predicates;
     let Some(graph_relations) =
-        build_graph_relations(&select, parameters, state, limits, &relations, &predicates)?
+        build_graph_relations(&select, parameters, state, limits, &relations, predicates)?
     else {
         return Ok(unchanged(select));
     };
-    let graph = RelationalJoinGraph {
-        relations: graph_relations,
-        predicates: predicates
+    if bound_joins
+        .operators
+        .iter()
+        .all(|operator| operator.operator.kind == RelationalJoinOperatorKind::Inner)
+    {
+        let graph = RelationalJoinGraph {
+            relations: graph_relations,
+            predicates: predicates
+                .iter()
+                .map(|predicate| RelationalJoinPredicate {
+                    id: predicate.id,
+                    bindings: predicate.bindings.clone(),
+                })
+                .collect(),
+        };
+        let Ok(enumeration) = enumerate_relational_inner_joins(
+            &graph,
+            &RequiredProperties::default(),
+            RelationalJoinEnumerationConfig::default(),
+        ) else {
+            return Ok(unchanged(select));
+        };
+        let selected_order = enumeration.plan.binding_order();
+        let syntax_order = relations
             .iter()
-            .map(|predicate| RelationalJoinPredicate {
-                id: predicate.id,
-                bindings: predicate.bindings.clone(),
-            })
-            .collect(),
+            .map(|relation| relation.binding)
+            .collect::<Vec<_>>();
+        if selected_order == syntax_order {
+            return Ok(unchanged(select));
+        }
+        return rebuild_inner_select(select, &relations, predicates, enumeration.plan);
+    }
+
+    let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
+        return Ok(unchanged(select));
     };
-    let Ok(enumeration) = enumerate_relational_inner_joins(
-        &graph,
+    let post_join_filter = match select.selection.as_ref() {
+        Some(predicate) => {
+            let Some(predicate) = qualify_predicate(predicate, &relations)
+                .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations))
+            else {
+                return Ok(unchanged(select));
+            };
+            Some(predicate)
+        }
+        None => None,
+    };
+    let problem = RelationalJoinRewriteProblem {
+        relations: graph_relations,
+        initial_tree,
+        post_join_filter,
+    };
+    let Ok(enumeration) = enumerate_relational_join_rewrites(
+        &problem,
         &RequiredProperties::default(),
         RelationalJoinEnumerationConfig::default(),
     ) else {
         return Ok(unchanged(select));
     };
-    let selected_order = enumeration.plan.binding_order();
-    let syntax_order = relations
-        .iter()
-        .map(|relation| relation.binding)
-        .collect::<Vec<_>>();
-    if selected_order == syntax_order {
+    if rewrite_plan_matches_syntax(&enumeration.plan, &bound_joins.operators) {
         return Ok(unchanged(select));
     }
-
-    rebuild_select(select, &relations, &predicates, enumeration.plan)
+    rebuild_outer_select(select, &relations, predicates, enumeration.plan)
 }
 
 fn unchanged(statement: SelectStatement) -> PlannedSelectStatement {
@@ -93,12 +145,12 @@ fn unchanged(statement: SelectStatement) -> PlannedSelectStatement {
     }
 }
 
-fn supports_inner_join_enumeration(select: &SelectStatement) -> bool {
+fn supports_join_enumeration(select: &SelectStatement) -> bool {
     !select.joins.is_empty()
         && select
             .joins
             .iter()
-            .all(|join| join.kind == SqlJoinKind::Inner)
+            .all(|join| matches!(join.kind, SqlJoinKind::Inner | SqlJoinKind::Left))
         && select.lock_strength.is_none()
         && !select
             .projection
@@ -136,29 +188,63 @@ fn bind_relations<'a>(
         .collect()
 }
 
-fn bind_join_predicates(
+fn bind_join_inputs(
     select: &SelectStatement,
     relations: &[BoundRelation<'_>],
-) -> Option<Vec<BoundJoinPredicate>> {
+) -> Option<BoundJoinInputs> {
     let mut predicates = Vec::new();
-    for join in &select.joins {
+    let mut operators = Vec::new();
+    for (ordinal, join) in select.joins.iter().enumerate() {
         let predicate = qualify_predicate(&join.on, relations)?;
         let mut conjuncts = Vec::new();
         collect_conjuncts(&predicate, &mut conjuncts);
+        let mut predicate_ids = Vec::with_capacity(conjuncts.len());
         for conjunct in conjuncts {
             let bindings = predicate_bindings(&conjunct, relations)?;
             if bindings.len() < 2 {
                 return None;
             }
             let id = RelationalJoinPredicateId::new(u32::try_from(predicates.len()).ok()?);
+            predicate_ids.push(id);
             predicates.push(BoundJoinPredicate {
                 id,
                 predicate: conjunct,
                 bindings,
             });
         }
+        let operator_id = RelationalJoinOperatorId::new(u32::try_from(ordinal).ok()?);
+        operators.push(BoundJoinOperator {
+            operator: RelationalJoinOperator {
+                id: operator_id,
+                kind: match join.kind {
+                    SqlJoinKind::Inner => RelationalJoinOperatorKind::Inner,
+                    SqlJoinKind::Left => RelationalJoinOperatorKind::LeftOuter,
+                },
+                predicate_ids,
+                predicate: bind_null_rejection_predicate(&predicate, relations)?,
+            },
+            right_binding: relations.get(ordinal + 1)?.binding,
+        });
     }
-    Some(predicates)
+    Some(BoundJoinInputs {
+        predicates,
+        operators,
+    })
+}
+
+fn build_initial_join_tree(
+    relations: &[BoundRelation<'_>],
+    operators: &[BoundJoinOperator],
+) -> Option<RelationalJoinTree> {
+    let mut tree = RelationalJoinTree::Relation(relations.first()?.binding);
+    for operator in operators {
+        tree = RelationalJoinTree::join(
+            operator.operator.clone(),
+            tree,
+            RelationalJoinTree::Relation(operator.right_binding),
+        );
+    }
+    Some(tree)
 }
 
 fn build_graph_relations(
@@ -295,7 +381,7 @@ fn join_access_bindings(
     (!bindings.contains(target) && !bindings.is_empty()).then_some(bindings)
 }
 
-fn rebuild_select(
+fn rebuild_inner_select(
     mut select: SelectStatement,
     relations: &[BoundRelation<'_>],
     predicates: &[BoundJoinPredicate],
@@ -331,6 +417,59 @@ fn rebuild_select(
         statement: select,
         join_order_reordered: true,
     })
+}
+
+fn rebuild_outer_select(
+    mut select: SelectStatement,
+    relations: &[BoundRelation<'_>],
+    predicates: &[BoundJoinPredicate],
+    plan: RelationalJoinRewritePlan,
+) -> Result<PlannedSelectStatement> {
+    let base = relation_by_binding(relations, plan.base_binding);
+    select.from = base.table.clone();
+    select.from_alias = base.alias.clone();
+    let predicate_by_id = predicates
+        .iter()
+        .map(|predicate| (predicate.id, predicate.predicate.clone()))
+        .collect::<BTreeMap<_, _>>();
+    select.joins = plan
+        .steps
+        .into_iter()
+        .map(|step| {
+            let relation = relation_by_binding(relations, step.binding);
+            let on = combine_predicates(step.predicate_ids.into_iter().map(|id| {
+                predicate_by_id
+                    .get(&id)
+                    .expect("enumerated predicate id came from the bound join operator")
+                    .clone()
+            }));
+            SqlJoin {
+                kind: match step.operator_kind {
+                    RelationalJoinOperatorKind::Inner => SqlJoinKind::Inner,
+                    RelationalJoinOperatorKind::LeftOuter => SqlJoinKind::Left,
+                },
+                table: relation.table.clone(),
+                alias: relation.alias.clone(),
+                on,
+            }
+        })
+        .collect();
+    Ok(PlannedSelectStatement {
+        statement: select,
+        join_order_reordered: true,
+    })
+}
+
+fn rewrite_plan_matches_syntax(
+    plan: &RelationalJoinRewritePlan,
+    operators: &[BoundJoinOperator],
+) -> bool {
+    plan.steps.len() == operators.len()
+        && plan.steps.iter().zip(operators).all(|(step, operator)| {
+            step.operator_id == operator.operator.id
+                && step.operator_kind == operator.operator.kind
+                && step.binding == operator.right_binding
+        })
 }
 
 fn relation_by_binding<'relations, 'schema>(
@@ -400,6 +539,77 @@ fn qualify_predicate(
             negated: *negated,
         },
     })
+}
+
+fn bind_null_rejection_predicate(
+    predicate: &SqlPredicate,
+    relations: &[BoundRelation<'_>],
+) -> Option<BoundPredicate> {
+    Some(match predicate {
+        SqlPredicate::And(left, right) => BoundPredicate::And(vec![
+            bind_null_rejection_predicate(left, relations)?,
+            bind_null_rejection_predicate(right, relations)?,
+        ]),
+        SqlPredicate::Or(left, right) => BoundPredicate::Or(vec![
+            bind_null_rejection_predicate(left, relations)?,
+            bind_null_rejection_predicate(right, relations)?,
+        ]),
+        SqlPredicate::Not(predicate) => BoundPredicate::Not(Box::new(
+            bind_null_rejection_predicate(predicate, relations)?,
+        )),
+        SqlPredicate::Compare { left, right, .. } => BoundPredicate::Comparison {
+            left: bind_null_rejection_column(left, relations)?,
+            right: bind_null_rejection_value(right),
+        },
+        SqlPredicate::CompareColumns { left, right, .. } => BoundPredicate::Comparison {
+            left: bind_null_rejection_column(left, relations)?,
+            right: bind_null_rejection_column(right, relations)?,
+        },
+        SqlPredicate::InList {
+            left,
+            values,
+            negated,
+        } => BoundPredicate::InList {
+            expression: bind_null_rejection_column(left, relations)?,
+            values: values.iter().map(bind_null_rejection_value).collect(),
+            negated: *negated,
+        },
+        SqlPredicate::IsNull { column, negated } => {
+            let column = bind_null_rejection_column(column, relations)?;
+            if *negated {
+                BoundPredicate::IsNotNull(column)
+            } else {
+                BoundPredicate::IsNull(column)
+            }
+        }
+    })
+}
+
+fn bind_null_rejection_column(
+    column: &SqlColumnRef,
+    relations: &[BoundRelation<'_>],
+) -> Option<BoundScalarExpression> {
+    let binding = resolve_column_binding(column, relations)?;
+    let relation = relation_by_binding(relations, binding);
+    let position = relation.schema.column_position(&column.name)?;
+    Some(BoundScalarExpression::BindingValue {
+        binding,
+        nullability: if relation.schema.columns[position].nullable {
+            ScalarNullability::MaybeNull
+        } else {
+            ScalarNullability::AlwaysNonNull
+        },
+    })
+}
+
+fn bind_null_rejection_value(value: &crate::sql::SqlValue) -> BoundScalarExpression {
+    match value {
+        crate::sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
+        crate::sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
+        crate::sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
+            nullability: ScalarNullability::MaybeNull,
+        },
+    }
 }
 
 fn qualify_column(column: &SqlColumnRef, relations: &[BoundRelation<'_>]) -> Option<SqlColumnRef> {
@@ -500,25 +710,25 @@ mod tests {
     }
 
     #[test]
-    fn inner_join_enumeration_accepts_multi_join_stable_shapes() {
+    fn join_enumeration_accepts_multi_join_stable_shapes() {
         for sql in [
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
             "SELECT COUNT(*) FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id INNER JOIN owners AS o ON o.id = d.owner_id ORDER BY c.id",
+            "SELECT c.id FROM chunks AS c LEFT JOIN documents AS d ON d.id = c.document_id WHERE d.id IS NOT NULL ORDER BY c.id",
         ] {
-            assert!(supports_inner_join_enumeration(&select(sql)), "{sql}");
+            assert!(supports_join_enumeration(&select(sql)), "{sql}");
         }
     }
 
     #[test]
-    fn inner_join_enumeration_rejects_semantically_unstable_shapes() {
+    fn join_enumeration_rejects_semantically_unstable_shapes() {
         for sql in [
-            "SELECT c.id FROM chunks AS c LEFT JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
             "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id",
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id FOR UPDATE",
         ] {
-            assert!(!supports_inner_join_enumeration(&select(sql)), "{sql}");
+            assert!(!supports_join_enumeration(&select(sql)), "{sql}");
         }
     }
 }

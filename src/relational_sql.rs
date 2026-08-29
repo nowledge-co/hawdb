@@ -2641,6 +2641,187 @@ mod tests {
     }
 
     #[test]
+    fn mixed_join_rewrite_preserves_left_rows_through_left_asscom() {
+        const SQL: &str = "SELECT a.id AS a_id, b.id AS b_id \
+            FROM rewrite_a AS a \
+            LEFT JOIN rewrite_b AS b ON a.id = b.a_id \
+            INNER JOIN rewrite_c AS c ON a.c_id = c.id \
+            WHERE c.external_id = $1 \
+            ORDER BY a.id ASC";
+
+        let store = RelationalStore::default();
+        for ddl in [
+            "CREATE TABLE rewrite_c (id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE)",
+            "CREATE TABLE rewrite_a (id TEXT PRIMARY KEY, c_id TEXT NOT NULL REFERENCES rewrite_c(id))",
+            "CREATE INDEX idx_rewrite_a_c ON rewrite_a (c_id)",
+            "CREATE TABLE rewrite_b (id TEXT PRIMARY KEY, a_id TEXT NOT NULL REFERENCES rewrite_a(id), c_id TEXT NOT NULL REFERENCES rewrite_c(id))",
+            "CREATE INDEX idx_rewrite_b_a ON rewrite_b (a_id)",
+            "CREATE INDEX idx_rewrite_b_c ON rewrite_b (c_id)",
+        ] {
+            commit_sql(&store, ddl, &[]);
+        }
+        for (id, external_id) in [("c-target", "target"), ("c-other", "other")] {
+            commit_sql(
+                &store,
+                "INSERT INTO rewrite_c (id, external_id) VALUES ($1, $2)",
+                &[text(id), text(external_id)],
+            );
+        }
+        for (id, c_id) in [("a-1", "c-target"), ("a-2", "c-target"), ("a-3", "c-other")] {
+            commit_sql(
+                &store,
+                "INSERT INTO rewrite_a (id, c_id) VALUES ($1, $2)",
+                &[text(id), text(c_id)],
+            );
+        }
+        for (id, a_id, c_id) in [("b-1", "a-1", "c-target"), ("b-3", "a-3", "c-other")] {
+            commit_sql(
+                &store,
+                "INSERT INTO rewrite_b (id, a_id, c_id) VALUES ($1, $2, $3)",
+                &[text(id), text(a_id), text(c_id)],
+            );
+        }
+
+        let snapshot = store.snapshot().expect("mixed join rewrite snapshot");
+        let output = execute_relational_query_sql_with_runtime(
+            SQL,
+            &[text("target")],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(8, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("execute CD-C left-asscom rewrite");
+
+        assert_eq!(output.rows.len(), 2);
+        assert_eq!(output.rows[0]["a_id"], text("a-1"));
+        assert_eq!(output.rows[0]["b_id"], text("b-1"));
+        assert_eq!(output.rows[1]["a_id"], text("a-2"));
+        assert_eq!(output.rows[1]["b_id"], Value::Null);
+        assert_eq!(output.access_path.index_columns, ["external_id"]);
+        assert_eq!(output.join_access_paths[0].index_columns, ["c_id"]);
+        assert_eq!(output.join_access_paths[1].index_columns, ["a_id"]);
+    }
+
+    #[test]
+    fn null_rejecting_filter_converts_left_join_before_memo_rewrite() {
+        const SQL: &str = "SELECT a.id AS a_id, b.id AS b_id \
+            FROM rewrite_nr_a AS a \
+            LEFT JOIN rewrite_nr_b AS b ON a.id = b.a_id \
+            INNER JOIN rewrite_nr_c AS c ON b.c_id = c.id \
+            WHERE c.external_id = $1 AND b.id IS NOT NULL \
+            ORDER BY a.id ASC";
+
+        let store = RelationalStore::default();
+        for ddl in [
+            "CREATE TABLE rewrite_nr_c (id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE)",
+            "CREATE TABLE rewrite_nr_a (id TEXT PRIMARY KEY)",
+            "CREATE TABLE rewrite_nr_b (id TEXT PRIMARY KEY, a_id TEXT NOT NULL REFERENCES rewrite_nr_a(id), c_id TEXT NOT NULL REFERENCES rewrite_nr_c(id))",
+            "CREATE INDEX idx_rewrite_nr_b_a ON rewrite_nr_b (a_id)",
+            "CREATE INDEX idx_rewrite_nr_b_c ON rewrite_nr_b (c_id)",
+        ] {
+            commit_sql(&store, ddl, &[]);
+        }
+        commit_sql(
+            &store,
+            "INSERT INTO rewrite_nr_c (id, external_id) VALUES ('c-target', 'target')",
+            &[],
+        );
+        commit_sql(
+            &store,
+            "INSERT INTO rewrite_nr_c (id, external_id) VALUES ('c-other', 'other')",
+            &[],
+        );
+        for id in ["a-1", "a-2"] {
+            commit_sql(
+                &store,
+                "INSERT INTO rewrite_nr_a (id) VALUES ($1)",
+                &[text(id)],
+            );
+        }
+        commit_sql(
+            &store,
+            "INSERT INTO rewrite_nr_b (id, a_id, c_id) VALUES ('b-1', 'a-1', 'c-target')",
+            &[],
+        );
+
+        let snapshot = store
+            .snapshot()
+            .expect("null-rejecting join rewrite snapshot");
+        let output = execute_relational_query_sql_with_runtime(
+            SQL,
+            &[text("target")],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(8, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("execute null-rejection-authorized join rewrite");
+
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["a_id"], text("a-1"));
+        assert_eq!(output.rows[0]["b_id"], text("b-1"));
+        assert_eq!(output.access_path.name, "__full_scan");
+        assert!(output.join_access_paths[0].unique_point);
+        assert!(output.join_access_paths[1].unique_point);
+
+        let explained = execute_relational_query_sql_with_runtime(
+            &format!("EXPLAIN ANALYZE {SQL}"),
+            &[text("target")],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            query_limits(16, 64 * 1024),
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect("explain null-rejection-authorized join rewrite");
+        let join_operators = explained
+            .rows
+            .iter()
+            .filter_map(|row| match row.get("id") {
+                Some(Value::String(id)) if id.contains("JoinExec") => Some(id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(join_operators.len(), 2);
+        assert!(join_operators
+            .iter()
+            .all(|operator| operator.contains("IndexNestedLoopJoinExec")));
+        assert!(join_operators
+            .iter()
+            .all(|operator| !operator.contains("LeftJoin")));
+        let base = explained
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.get("id"),
+                    Some(Value::String(id)) if id.contains("TableFullScanExec")
+                )
+            })
+            .expect("rewritten base table scan in explain");
+        assert!(matches!(
+            base.get("access object"),
+            Some(Value::String(access)) if access.contains("rewrite_nr_b")
+        ));
+        assert!(explained.rows.iter().any(|row| matches!(
+            row.get("operator info"),
+            Some(Value::String(info)) if info.contains("join_order=cost_reordered")
+        )));
+    }
+
+    #[test]
     fn relational_sort_and_distinct_spill_and_pipeline_cancellation_are_bounded() {
         let store = RelationalStore::default();
         let rows = (0..256)
