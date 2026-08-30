@@ -59,16 +59,19 @@ values, and floating-point bit patterns remain distinct in oracle comparisons.
 Run a deterministic campaign with:
 
 ```console
-cargo run -p skein-fuzz -- --seed 7 --cases 128
-cargo run -p skein-fuzz -- --seed 7 --case-index 19
-bazel test //crates/fuzz:skein_fuzz_relational_join_rewrite_tests
+make fuzz-optimizer FUZZ_SEED=7 FUZZ_CASES=128
+make fuzz-optimizer FUZZ_SEED=7 FUZZ_CASE_INDEX=19
+make fuzz-optimizer-resume FUZZ_SEED=7 FUZZ_CASES=1024 \
+  FUZZ_SHARD_INDEX=0 FUZZ_SHARD_COUNT=4
 ```
 
-The command prints a multi-oracle JSON report. Any mismatch exits non-zero and contains the exact
-mutations, typed parameters, rendered query AST metadata, all query variants, result semantics,
-plan fingerprints, optimizer stages, predicate rewrites, metamorphic transforms, and a direct
-reproduction command. Every failure carries a stable oracle-specific signature; reducers retain
-only candidates that reproduce that signature.
+Successful campaigns keep stdout quiet and refresh a multi-oracle JSON report under
+`target/fuzz-logs`. Set `FUZZ_PRINT_REPORT=1` to also print it to stdout. Any mismatch exits
+non-zero and preserves a failure report containing the exact mutations, typed parameters,
+rendered query AST metadata, all query variants, result semantics, plan fingerprints, optimizer
+stages, predicate rewrites, metamorphic transforms, and a direct reproduction command. Every
+failure carries a stable oracle-specific signature; reducers retain only candidates that
+reproduce that signature.
 Plan-fingerprint novelty is reported as coverage telemetry and never changes a correctness verdict.
 The differential reducer first minimizes graph mutations and then typed query AST nodes. It accepts
 a candidate only when the same failure signature still triggers, so a setup, parse, or execution
@@ -83,8 +86,8 @@ case. A clean open or a typed storage error are both valid outcomes; a panic is 
 include the target artifact, mutation, case seed, and exact replay command:
 
 ```console
-cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed 7 --cases 256
-cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed 7 --case-index 19
+make fuzz-storage FUZZ_SEED=7 FUZZ_CASES=256
+make fuzz-storage FUZZ_SEED=7 FUZZ_CASE_INDEX=19
 ```
 
 The storage fixture includes a checkpointed Strict Append segment and manifest
@@ -99,6 +102,6 @@ reads, payload-budget failure, checkpoint reopen, and WAL replay. Every rejected
 operation must leave the commit epoch and visible state unchanged.
 
 ```console
-cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed 7 --cases 128 --steps 256
-cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed 7 --case-index 19 --steps 256
+make fuzz-append FUZZ_SEED=7 FUZZ_CASES=128 FUZZ_STEPS=256
+make fuzz-append FUZZ_SEED=7 FUZZ_CASE_INDEX=19 FUZZ_STEPS=256
 ```

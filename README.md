@@ -111,10 +111,18 @@ runtime inputs.
 
 ### Local fuzzing
 
-Run the deterministic fuzz regression and CLI contracts with Bazel:
+Run every native fuzz campaign or inspect the available campaign controls:
 
 ```console
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+make fuzz
+make fuzz-help
+```
+
+Run the deterministic fuzz regression and CLI contracts through their Bazel
+targets with:
+
+```console
+make fuzz-test
 ```
 
 Fuzz campaigns keep successful console output quiet and write detailed JSON to
