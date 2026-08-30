@@ -25,21 +25,21 @@ pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROT
 pub use coverage::PlanCoverageReport;
 pub use output::{emit_fuzz_report, FuzzReportPaths, DEFAULT_FUZZ_LOG_DIRECTORY};
 pub use sql_oracle::{
-    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinRewriteCase,
-    SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation, SqlPredicateRewriteCase,
-    SqlPredicateRewriteEvidence, SqlPredicateRewriteFailureReport, SqlQueryInvocation,
-    SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence, SQL_JOIN_REWRITE_PROTOCOL,
-    SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL, SQL_TLP_AGGREGATE_PROTOCOL,
-    SQL_TLP_PROTOCOL,
+    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
+    SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
+    SqlPredicateRewriteCase, SqlPredicateRewriteEvidence, SqlPredicateRewriteFailureReport,
+    SqlQueryInvocation, SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence,
+    SQL_JOIN_REWRITE_PROTOCOL, SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL,
+    SQL_TLP_AGGREGATE_PROTOCOL, SQL_TLP_PROTOCOL,
 };
 
-pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v1";
+pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v7";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "skein-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "skein-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "skein-graph-tlp-fuzz-v1";
 pub const METAMORPHIC_PROTOCOL: &str = "skein-graph-metamorphic-fuzz-v1";
 pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "skein-plan-differential-fuzz-v1";
-pub const REPLAY_BUNDLE_PROTOCOL: &str = "skein-multi-oracle-replay-v1";
+pub const REPLAY_BUNDLE_PROTOCOL: &str = "skein-multi-oracle-replay-v5";
 pub(crate) const QUERY_SHAPE_COUNT: usize = 12;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
