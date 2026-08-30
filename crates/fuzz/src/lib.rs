@@ -23,7 +23,11 @@ use query_ast::QueryAst;
 
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
 pub use coverage::PlanCoverageReport;
-pub use output::{emit_fuzz_report, FuzzReportPaths, DEFAULT_FUZZ_LOG_DIRECTORY};
+pub use output::{
+    emit_fuzz_report, fuzz_current_report_path, read_fuzz_current_report,
+    write_fuzz_current_report, FuzzReportPaths, DEFAULT_FUZZ_LOG_DIRECTORY,
+    DEFAULT_FUZZ_PROGRESS_INTERVAL,
+};
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinRewriteCase,
     SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation, SqlPredicateRewriteCase,
@@ -1575,6 +1579,60 @@ impl Default for CampaignOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CampaignExecutionOptions {
+    pub shard_index: usize,
+    pub shard_count: usize,
+    pub resume_after_case: Option<usize>,
+}
+
+impl Default for CampaignExecutionOptions {
+    fn default() -> Self {
+        Self {
+            shard_index: 0,
+            shard_count: 1,
+            resume_after_case: None,
+        }
+    }
+}
+
+impl CampaignExecutionOptions {
+    pub fn validate(self, campaign: CampaignOptions) -> Result<(), FuzzError> {
+        if self.shard_count == 0 {
+            return Err(FuzzError::new("shard_count must be greater than zero"));
+        }
+        if self.shard_index >= self.shard_count {
+            return Err(FuzzError::new("shard_index must be less than shard_count"));
+        }
+        if campaign.case_index.is_some()
+            && (self.shard_count != 1 || self.resume_after_case.is_some())
+        {
+            return Err(FuzzError::new(
+                "exact case replay cannot be combined with sharding or resume",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn selected_case_count(self, campaign: CampaignOptions) -> usize {
+        campaign.case_index.map_or_else(
+            || {
+                (0..campaign.case_count)
+                    .filter(|index| index % self.shard_count == self.shard_index)
+                    .count()
+            },
+            |_| 1,
+        )
+    }
+
+    fn selects(self, index: usize) -> bool {
+        index % self.shard_count == self.shard_index
+            && self
+                .resume_after_case
+                .is_none_or(|completed| index > completed)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CampaignCaseReport {
     pub index: usize,
@@ -1604,7 +1662,7 @@ pub struct CampaignCaseReport {
 }
 
 impl CampaignCaseReport {
-    fn json(&self) -> JsonValue {
+    pub fn json(&self) -> JsonValue {
         json!({
             "index": self.index,
             "seed": self.seed,
@@ -1696,6 +1754,14 @@ impl CampaignReport {
 }
 
 pub fn run_campaign(options: CampaignOptions) -> Result<CampaignReport, FuzzError> {
+    run_campaign_with_case_observer(options, CampaignExecutionOptions::default(), |_| Ok(()))
+}
+
+pub fn run_campaign_with_case_observer(
+    options: CampaignOptions,
+    execution: CampaignExecutionOptions,
+    mut observer: impl FnMut(&CampaignCaseReport) -> Result<(), FuzzError>,
+) -> Result<CampaignReport, FuzzError> {
     if options.case_index.is_none() && options.case_count == 0 {
         return Err(FuzzError::new("case_count must be greater than zero"));
     }
@@ -1713,6 +1779,11 @@ pub fn run_campaign(options: CampaignOptions) -> Result<CampaignReport, FuzzErro
             MAX_CASE_COUNT - 1
         )));
     }
+    execution.validate(options)?;
+    let selected_case_count = execution.selected_case_count(options);
+    if selected_case_count == 0 {
+        return Err(FuzzError::new("campaign shard selects no cases"));
+    }
 
     let plan_oracle = PlanDifferentialOracle;
     let graph_tlp_oracle = GraphTlpOracle;
@@ -1723,16 +1794,15 @@ pub fn run_campaign(options: CampaignOptions) -> Result<CampaignReport, FuzzErro
     let generation_case_count = options
         .case_index
         .map_or(options.case_count, |index| index + 1);
-    let requested_case_count = if options.case_index.is_some() {
-        1
-    } else {
-        options.case_count
-    };
+    let requested_case_count = selected_case_count;
     let mut cases = Vec::with_capacity(requested_case_count);
     let mut plan_coverage = PlanCoverageTracker::default();
     for index in 0..generation_case_count {
         let case = generator.case(index);
         if options.case_index.is_some_and(|target| target != index) {
+            continue;
+        }
+        if options.case_index.is_none() && !execution.selects(index) {
             continue;
         }
         let (
@@ -1815,6 +1885,7 @@ pub fn run_campaign(options: CampaignOptions) -> Result<CampaignReport, FuzzErro
             graph_predicate_rewrite_failure,
             metamorphic_failure,
         });
+        observer(cases.last().expect("campaign case was just appended"))?;
     }
 
     let failed_case_count = cases.iter().filter(|case| !case.success).count();
@@ -1829,6 +1900,129 @@ pub fn run_campaign(options: CampaignOptions) -> Result<CampaignReport, FuzzErro
         plan_coverage: plan_coverage.report(),
         cases,
     })
+}
+
+pub fn campaign_progress_json(
+    campaign: CampaignOptions,
+    execution: CampaignExecutionOptions,
+    cases: &[JsonValue],
+) -> JsonValue {
+    let failed_case_count = cases.iter().filter(|case| case["success"] == false).count();
+    json!({
+        "protocol": CAMPAIGN_PROTOCOL,
+        "complete": false,
+        "success": false,
+        "seed": campaign.seed,
+        "configured_case_count": campaign.case_count,
+        "requested_case_count": execution.selected_case_count(campaign),
+        "executed_case_count": cases.len(),
+        "passed_case_count": cases.len().saturating_sub(failed_case_count),
+        "failed_case_count": failed_case_count,
+        "current_case_index": cases.last().and_then(|case| case["index"].as_u64()),
+        "shard_index": execution.shard_index,
+        "shard_count": execution.shard_count,
+        "cases": cases,
+    })
+}
+
+pub fn merge_campaign_report_json(
+    report: &CampaignReport,
+    prior_cases: &[JsonValue],
+    campaign: CampaignOptions,
+    execution: CampaignExecutionOptions,
+) -> JsonValue {
+    let mut indexed = BTreeMap::<usize, JsonValue>::new();
+    for case in prior_cases
+        .iter()
+        .cloned()
+        .chain(report.cases.iter().map(CampaignCaseReport::json))
+    {
+        if let Some(index) = case["index"]
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+        {
+            indexed.insert(index, case);
+        }
+    }
+
+    let mut plan_coverage = PlanCoverageTracker::default();
+    for case in indexed.values_mut() {
+        let novel = plan_coverage.observe(
+            case["memo_plan_fingerprint"].as_str(),
+            case["direct_fallback_plan_fingerprint"].as_str(),
+        );
+        case["plan_coverage_novel"] = JsonValue::Bool(novel);
+    }
+    let cases = indexed.into_values().collect::<Vec<_>>();
+    let failed_case_count = cases.iter().filter(|case| case["success"] == false).count();
+    let requested_case_count = execution.selected_case_count(campaign);
+    let complete = cases.len() == requested_case_count;
+    let mut json = report.json();
+    json["complete"] = JsonValue::Bool(complete);
+    json["success"] = JsonValue::Bool(complete && failed_case_count == 0 && !cases.is_empty());
+    json["configured_case_count"] = JsonValue::from(campaign.case_count);
+    json["requested_case_count"] = JsonValue::from(requested_case_count);
+    json["executed_case_count"] = JsonValue::from(cases.len());
+    json["passed_case_count"] = JsonValue::from(cases.len().saturating_sub(failed_case_count));
+    json["failed_case_count"] = JsonValue::from(failed_case_count);
+    json["current_case_index"] = cases
+        .last()
+        .and_then(|case| case["index"].as_u64())
+        .map_or(JsonValue::Null, JsonValue::from);
+    json["shard_index"] = JsonValue::from(execution.shard_index);
+    json["shard_count"] = JsonValue::from(execution.shard_count);
+    json["resumed_case_count"] = JsonValue::from(prior_cases.len());
+    json["complete_shape_coverage"] = JsonValue::Bool(
+        complete && campaign.case_index.is_none() && has_complete_shape_coverage_json(&cases),
+    );
+    json["plan_coverage"] = plan_coverage.report().json();
+    json["cases"] = JsonValue::Array(cases);
+    json
+}
+
+fn has_complete_shape_coverage_json(cases: &[JsonValue]) -> bool {
+    json_observes_all(
+        cases,
+        &["shape"],
+        &CapabilityProfile::plan_differential_v1().shapes,
+    ) && json_observes_all(
+        cases,
+        &["graph_tlp_shape"],
+        &CapabilityProfile::graph_tlp_v1().shapes,
+    ) && json_observes_all(
+        cases,
+        &["graph_tlp_aggregate_shape"],
+        &CapabilityProfile::graph_tlp_aggregate_v1().shapes,
+    ) && json_observes_all(
+        cases,
+        &["graph_predicate_rewrite_shape"],
+        &CapabilityProfile::graph_predicate_rewrite_v1().shapes,
+    ) && json_observes_all(cases, &["sql", "shape"], &sql_oracle::SQL_QUERY_SHAPES)
+        && json_observes_all(
+            cases,
+            &["sql", "predicate_rewrite_shape"],
+            &PREDICATE_REWRITE_SHAPES,
+        )
+        && json_observes_all(
+            cases,
+            &["sql", "join_rewrite_shape"],
+            &sql_oracle::SQL_JOIN_REWRITE_SHAPES,
+        )
+        && cases
+            .iter()
+            .any(|case| case["direction_reversal_applicable"] == true)
+}
+
+fn json_observes_all(cases: &[JsonValue], path: &[&str], expected: &[&str]) -> bool {
+    let observed = cases
+        .iter()
+        .filter_map(|case| {
+            path.iter()
+                .try_fold(case, |value, key| value.get(*key))
+                .and_then(JsonValue::as_str)
+        })
+        .collect::<BTreeSet<_>>();
+    expected.iter().all(|shape| observed.contains(shape))
 }
 
 fn has_complete_shape_coverage(cases: &[CampaignCaseReport]) -> bool {
@@ -2448,6 +2642,58 @@ mod tests {
     }
 
     #[test]
+    fn sharded_campaign_resumes_without_reexecuting_completed_cases() {
+        let campaign = CampaignOptions {
+            seed: 17,
+            case_count: 12,
+            case_index: None,
+        };
+        let execution = CampaignExecutionOptions {
+            shard_index: 1,
+            shard_count: 3,
+            resume_after_case: None,
+        };
+        let full = run_campaign_with_case_observer(campaign, execution, |_| Ok(())).unwrap();
+        assert_eq!(
+            full.cases.iter().map(|case| case.index).collect::<Vec<_>>(),
+            [1, 4, 7, 10]
+        );
+
+        let prior_cases = full.cases[..2]
+            .iter()
+            .map(CampaignCaseReport::json)
+            .collect::<Vec<_>>();
+        let resumed_execution = CampaignExecutionOptions {
+            resume_after_case: Some(4),
+            ..execution
+        };
+        let mut observed = Vec::new();
+        let resumed = run_campaign_with_case_observer(campaign, resumed_execution, |case| {
+            observed.push(case.index);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(observed, [7, 10]);
+
+        let merged =
+            merge_campaign_report_json(&resumed, &prior_cases, campaign, resumed_execution);
+        assert_eq!(merged["complete"], true);
+        assert_eq!(merged["success"], true);
+        assert_eq!(merged["requested_case_count"], 4);
+        assert_eq!(merged["executed_case_count"], 4);
+        assert_eq!(merged["current_case_index"], 10);
+        assert_eq!(
+            merged["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|case| case["index"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [1, 4, 7, 10]
+        );
+    }
+
+    #[test]
     fn exact_case_replay_preserves_generated_case_and_oracle_results() {
         let full = run_campaign(CampaignOptions {
             seed: 17,
@@ -2499,6 +2745,20 @@ mod tests {
             case_count: DEFAULT_CASE_COUNT,
             case_index: Some(MAX_CASE_COUNT),
         })
+        .is_err());
+        assert!(run_campaign_with_case_observer(
+            CampaignOptions {
+                seed: 1,
+                case_count: 4,
+                case_index: None,
+            },
+            CampaignExecutionOptions {
+                shard_index: 2,
+                shard_count: 2,
+                resume_after_case: None,
+            },
+            |_| Ok(()),
+        )
         .is_err());
     }
 }
