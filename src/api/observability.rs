@@ -149,7 +149,7 @@ impl Database {
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+        let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
         super::reject_locking_select_without_manager(&prepared.statement, false)?;
         if crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement) {
             return Err(SkeinError::Semantic(
@@ -226,24 +226,25 @@ impl Database {
         }
 
         if matches!(
-            prepared.statement,
+            &prepared.statement,
             crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
         ) {
-            let query_result = crate::relational_sql::execute_relational_query_sql_with_resources(
-                sql_text,
-                parameters,
-                self.store.relational_state(),
-                crate::relational_sql::RelationalQueryReadModes::new(
-                    super::relational_index_read_mode(&self.config, &self.store),
-                    crate::relational_sql::RelationalRowReadMode::Store(&self.store),
-                ),
-                super::relational_query_resource_context(
-                    &self.config,
-                    max_rows,
-                    max_payload_bytes,
-                    None,
-                ),
-            );
+            let query_result =
+                crate::relational_sql::execute_prepared_relational_query_with_resources(
+                    prepared,
+                    parameters,
+                    self.store.relational_state(),
+                    crate::relational_sql::RelationalQueryReadModes::new(
+                        super::relational_index_read_mode(&self.config, &self.store),
+                        crate::relational_sql::RelationalRowReadMode::Store(&self.store),
+                    ),
+                    super::relational_query_resource_context(
+                        &self.config,
+                        max_rows,
+                        max_payload_bytes,
+                        None,
+                    ),
+                );
             self.store.poison_on_storage_error(&query_result);
             let output = query_result?;
             return Ok(QueryOutput { rows: output.rows });
