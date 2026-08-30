@@ -3131,6 +3131,103 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
 }
 
 #[test]
+fn relational_index_shadow_publishes_skew_aware_leading_prefix_statistics() {
+    let rows = [
+        ("row-1", "A", Some("x")),
+        ("row-2", "A", Some("x")),
+        ("row-3", "A", Some("x")),
+        ("row-4", "A", Some("x")),
+        ("row-5", "A", Some("y")),
+        ("row-6", "A", None),
+        ("row-7", "A", None),
+        ("row-8", "B", Some("x")),
+    ];
+    let state = RelationalState::default()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![
+                    RelationalWrite::CreateTable(RelationalTableSchema {
+                        name: "events".to_string(),
+                        columns: vec![
+                            text_column("id", false),
+                            text_column("tenant", false),
+                            text_column("category", true),
+                        ],
+                        primary_key: vec!["id".to_string()],
+                        unique_constraints: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        indexes: vec![RelationalIndexSchema {
+                            name: "events_tenant_category_idx".to_string(),
+                            columns: vec!["tenant".to_string(), "category".to_string()],
+                            unique: false,
+                        }],
+                    }),
+                    RelationalWrite::Insert {
+                        table: "events".to_string(),
+                        rows: rows
+                            .into_iter()
+                            .map(|(id, tenant, category)| {
+                                RelationalRow::new(vec![
+                                    RelationalValue::Text(id.to_string()),
+                                    RelationalValue::Text(tenant.to_string()),
+                                    category.map_or(RelationalValue::Null, |category| {
+                                        RelationalValue::Text(category.to_string())
+                                    }),
+                                ])
+                            })
+                            .collect(),
+                        mode: RelationalInsertMode::Error,
+                    },
+                ],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("build skewed relational index source");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "skein-relational-index-statistics-{}-{nonce}",
+        std::process::id()
+    ));
+    let config = RelationalIndexShadowConfig::default();
+    let report = RelationalIndexShadowWriter::new(config)
+        .publish_generation(&directory, &state, 1, 40)
+        .expect("publish relational index statistics");
+    let reader = RelationalIndexShadowReader::open_bound_generation(
+        &directory,
+        report.generation_artifacts,
+        config,
+    )
+    .expect("open relational index statistics");
+    let statistics = &reader
+        .manifest()
+        .root("events", "events_tenant_category_idx")
+        .expect("composite index root")
+        .statistics;
+
+    assert_eq!(
+        statistics.leading_prefixes,
+        [
+            RelationalIndexPrefixStatistics {
+                distinct_non_null_values: 2,
+                non_null_rows: 8,
+                fanout: 7,
+            },
+            RelationalIndexPrefixStatistics {
+                distinct_non_null_values: 3,
+                non_null_rows: 6,
+                fanout: 4,
+            },
+        ]
+    );
+
+    std::fs::remove_dir_all(directory).expect("remove relational index statistics fixture");
+}
+
+#[test]
 fn relational_index_bound_open_verifies_one_canonical_manifest_image() {
     let state = RelationalState::default()
         .stage_transaction(
