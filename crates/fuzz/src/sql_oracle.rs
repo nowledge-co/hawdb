@@ -7,6 +7,7 @@ use skein::{
     QueryStreamOptions, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
     RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, SkeinError, Value,
 };
+use std::collections::BTreeMap;
 
 mod generator;
 
@@ -15,8 +16,8 @@ use generator::generate_sql_case;
 pub const SQL_TLP_PROTOCOL: &str = "skein-sql-tlp-fuzz-v1";
 pub const SQL_TLP_AGGREGATE_PROTOCOL: &str = "skein-sql-tlp-aggregate-fuzz-v1";
 pub const SQL_PREDICATE_REWRITE_PROTOCOL: &str = "skein-sql-predicate-rewrite-fuzz-v1";
-pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "skein-sql-join-rewrite-fuzz-v1";
-pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v3";
+pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "skein-sql-join-rewrite-fuzz-v2";
+pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v4";
 
 const MAX_SQL_REDUCTION_ATTEMPTS: usize = 64;
 pub(crate) const SQL_QUERY_SHAPES: [&str; 8] = [
@@ -30,11 +31,19 @@ pub(crate) const SQL_QUERY_SHAPES: [&str; 8] = [
     "nullable_disjunction",
 ];
 const SQL_QUERY_SHAPE_COUNT: usize = SQL_QUERY_SHAPES.len();
-pub(crate) const SQL_JOIN_REWRITE_SHAPES: [&str; 4] = [
+pub(crate) const SQL_JOIN_REWRITE_SHAPES: [&str; 12] = [
     "three_inner_chain",
+    "three_inner_reverse_chain",
     "four_inner_chain",
-    "four_mixed_left_preserved",
-    "four_mixed_left_null_rejected",
+    "four_inner_star",
+    "four_inner_cycle",
+    "five_inner_tree",
+    "five_inner_cycle",
+    "five_mixed_left_preserved",
+    "six_inner_tree",
+    "six_inner_cycle",
+    "six_mixed_left_preserved",
+    "six_mixed_left_null_rejected",
 ];
 const SQL_JOIN_REWRITE_SHAPE_COUNT: usize = SQL_JOIN_REWRITE_SHAPES.len();
 
@@ -139,6 +148,7 @@ pub struct SqlJoinRewriteCase {
     pub optimized: SqlQueryInvocation,
     pub syntax_reference: SqlQueryInvocation,
     pub expected_strategy: RelationalJoinPlanningStrategy,
+    pub generator_profile: SqlJoinGeneratorProfile,
 }
 
 impl SqlJoinRewriteCase {
@@ -148,6 +158,36 @@ impl SqlJoinRewriteCase {
             "optimized": self.optimized.json(),
             "syntax_reference": self.syntax_reference.json(),
             "expected_strategy": self.expected_strategy.as_str(),
+            "generator_profile": self.generator_profile.json(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlJoinGeneratorProfile {
+    pub relation_count: usize,
+    pub join_graph: String,
+    pub null_rejection: String,
+    pub selectivity: String,
+    pub index_profile: String,
+    pub statistics_profile: String,
+    pub table_cardinalities: BTreeMap<String, usize>,
+    pub dimension_distinct_count: usize,
+    pub skewed_join_keys: bool,
+}
+
+impl SqlJoinGeneratorProfile {
+    fn json(&self) -> JsonValue {
+        json!({
+            "relation_count": self.relation_count,
+            "join_graph": self.join_graph,
+            "null_rejection": self.null_rejection,
+            "selectivity": self.selectivity,
+            "index_profile": self.index_profile,
+            "statistics_profile": self.statistics_profile,
+            "table_cardinalities": self.table_cardinalities,
+            "dimension_distinct_count": self.dimension_distinct_count,
+            "skewed_join_keys": self.skewed_join_keys,
         })
     }
 }
@@ -377,6 +417,9 @@ pub struct SqlCaseReport {
     pub aggregate_tlp_success: bool,
     pub predicate_rewrite_success: bool,
     pub join_rewrite_success: bool,
+    pub join_rewrite_profile: SqlJoinGeneratorProfile,
+    pub join_rewrite_plan_signature: Option<String>,
+    pub join_rewrite_planning: Option<Box<RelationalJoinPlanningOutcome>>,
     pub row_tlp_failure: Option<SqlFailureReport>,
     pub aggregate_tlp_failure: Option<SqlFailureReport>,
     pub predicate_rewrite_failure: Option<SqlPredicateRewriteFailureReport>,
@@ -412,7 +455,7 @@ pub(crate) fn sql_predicate_rewrite_capability_profile_json() -> JsonValue {
 pub(crate) fn sql_join_rewrite_capability_profile_json() -> JsonValue {
     json!({
         "shapes": SQL_JOIN_REWRITE_SHAPES,
-        "relation_counts": [3, 4],
+        "relation_counts": [3, 4, 5, 6],
         "duplicate_values": true,
         "null_values": true,
         "inner_join": true,
@@ -420,6 +463,10 @@ pub(crate) fn sql_join_rewrite_capability_profile_json() -> JsonValue {
         "null_rejection": true,
         "pinned_snapshot": true,
         "optimized_strategy": ["csg_cmp_memo"],
+        "join_graphs": ["chain", "reverse_chain", "star", "tree", "cycle"],
+        "selectivity_profiles": ["rare", "medium", "broad"],
+        "index_profiles": ["none", "join_keys", "filter", "composite"],
+        "statistics_profiles": ["compact", "skewed", "wide"],
         "reference_strategy": "syntax_order",
         "result_semantics": "bag",
     })
@@ -437,6 +484,9 @@ impl SqlCaseReport {
             "aggregate_tlp_success": self.aggregate_tlp_success,
             "predicate_rewrite_success": self.predicate_rewrite_success,
             "join_rewrite_success": self.join_rewrite_success,
+            "join_rewrite_profile": self.join_rewrite_profile.json(),
+            "join_rewrite_plan_signature": self.join_rewrite_plan_signature,
+            "join_rewrite_planning": self.join_rewrite_planning.as_deref().map(join_planning_json),
             "row_tlp_failure": self.row_tlp_failure.as_ref().map(SqlFailureReport::json),
             "aggregate_tlp_failure": self.aggregate_tlp_failure.as_ref().map(SqlFailureReport::json),
             "predicate_rewrite_failure": self.predicate_rewrite_failure.as_ref().map(SqlPredicateRewriteFailureReport::json),
@@ -533,6 +583,13 @@ pub(crate) fn evaluate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
     let aggregate_tlp_success = aggregate_failure.is_none();
     let predicate_rewrite_success = predicate_rewrite_failure.is_none();
     let join_rewrite_success = join_rewrite_failure.is_none();
+    let join_rewrite_profile = case.join_rewrite.generator_profile.clone();
+    let join_rewrite_plan_signature = join_rewrite_evidence
+        .optimized
+        .plan
+        .as_deref()
+        .map(sql_plan_signature);
+    let join_rewrite_planning = join_rewrite_evidence.optimized.join_planning.clone();
 
     SqlCaseReport {
         shape: case.shape.clone(),
@@ -547,6 +604,9 @@ pub(crate) fn evaluate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
         aggregate_tlp_success,
         predicate_rewrite_success,
         join_rewrite_success,
+        join_rewrite_profile,
+        join_rewrite_plan_signature,
+        join_rewrite_planning,
         row_tlp_failure: row_failure
             .map(|failure| failure_report(&case, SqlOracleKind::RowTlp, failure, row_evidence)),
         aggregate_tlp_failure: aggregate_failure.map(|failure| {
@@ -860,7 +920,6 @@ fn classify_sql_join_rewrite_failure(
     if !optimized.is_some_and(|outcome| {
         outcome.strategy == case.expected_strategy
             && outcome.status == RelationalJoinPlanningStatus::Selected
-            && outcome.join_order_reordered()
             && outcome.memo_groups.is_some()
             && outcome.memo_expressions.is_some()
             && outcome.cost.is_some()
@@ -868,7 +927,7 @@ fn classify_sql_join_rewrite_failure(
         return Some(join_planning_failure(
             "optimized",
             format!(
-                "expected selected {} cost-reordered plan with memo and cost evidence, got {optimized:?}",
+                "expected selected {} plan with memo and cost evidence, got {optimized:?}",
                 case.expected_strategy.as_str()
             ),
         ));
@@ -1086,6 +1145,11 @@ fn values_json(values: &[Value]) -> Vec<JsonValue> {
     values.iter().map(typed_value_json).collect()
 }
 
+fn sql_plan_signature(rows: &[skein::executor::Row]) -> String {
+    serde_json::to_string(&rows.iter().map(row_json).collect::<Vec<_>>())
+        .expect("SQL EXPLAIN rows contain JSON-serializable values")
+}
+
 fn join_planning_json(outcome: &RelationalJoinPlanningOutcome) -> JsonValue {
     json!({
         "strategy": outcome.strategy.as_str(),
@@ -1183,8 +1247,70 @@ mod tests {
     }
 
     #[test]
+    fn join_generator_covers_costing_dimensions() {
+        let mut relation_counts = std::collections::BTreeSet::new();
+        let mut join_graphs = std::collections::BTreeSet::new();
+        let mut null_rejections = std::collections::BTreeSet::new();
+        let mut selectivities = std::collections::BTreeSet::new();
+        let mut index_profiles = std::collections::BTreeSet::new();
+        let mut statistics_profiles = std::collections::BTreeSet::new();
+
+        for index in 0..SQL_JOIN_REWRITE_SHAPE_COUNT * 8 {
+            let case = generate_sql_case(211 + index as u64, index, index.is_multiple_of(2));
+            let profile = case.join_rewrite.generator_profile;
+            relation_counts.insert(profile.relation_count);
+            join_graphs.insert(profile.join_graph);
+            null_rejections.insert(profile.null_rejection);
+            selectivities.insert(profile.selectivity);
+            index_profiles.insert(profile.index_profile);
+            statistics_profiles.insert(profile.statistics_profile);
+        }
+
+        assert_eq!(relation_counts, [3, 4, 5, 6].into_iter().collect());
+        assert_eq!(
+            join_graphs,
+            ["chain", "cycle", "reverse_chain", "star", "tree"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            null_rejections,
+            ["none", "preserved", "rejected"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            selectivities,
+            ["broad", "medium", "rare"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            index_profiles,
+            ["composite", "filter", "join_keys", "none"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            statistics_profiles,
+            ["compact", "skewed", "wide"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+    }
+
+    #[test]
     fn relational_join_rewrite_differential_campaign_covers_every_shape() {
         let mut observed = std::collections::BTreeSet::new();
+        let mut selected_orders = std::collections::BTreeSet::new();
+        let mut plan_signatures = std::collections::BTreeSet::new();
+        let mut memo_profiles = std::collections::BTreeSet::new();
+        let mut reordered = false;
         for index in 0..SQL_JOIN_REWRITE_SHAPE_COUNT * 8 {
             let case = generate_sql_case(101 + index as u64, index, index.is_multiple_of(2));
             let (snapshot, snapshot_epoch) = prepare_sql_case(&case).unwrap();
@@ -1197,6 +1323,13 @@ mod tests {
                 SqlReplayBundle::from_case(&case).json()
             );
             observed.insert(case.join_rewrite.name);
+            let planning = evidence.optimized.join_planning.as_deref().unwrap();
+            selected_orders.insert(planning.selected_order.clone());
+            memo_profiles.insert((planning.memo_groups, planning.memo_expressions));
+            reordered |= planning.join_order_reordered();
+            plan_signatures.insert(sql_plan_signature(
+                evidence.optimized.plan.as_deref().unwrap(),
+            ));
         }
         assert_eq!(
             observed,
@@ -1205,6 +1338,10 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         );
+        assert!(reordered);
+        assert!(selected_orders.len() >= 6, "{selected_orders:?}");
+        assert!(memo_profiles.len() >= 4, "{memo_profiles:?}");
+        assert!(plan_signatures.len() >= 8, "{plan_signatures:?}");
     }
 
     #[test]

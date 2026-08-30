@@ -23,12 +23,12 @@ use query_ast::QueryAst;
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
 pub use coverage::PlanCoverageReport;
 pub use sql_oracle::{
-    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinRewriteCase,
-    SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation, SqlPredicateRewriteCase,
-    SqlPredicateRewriteEvidence, SqlPredicateRewriteFailureReport, SqlQueryInvocation,
-    SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence, SQL_JOIN_REWRITE_PROTOCOL,
-    SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL, SQL_TLP_AGGREGATE_PROTOCOL,
-    SQL_TLP_PROTOCOL,
+    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
+    SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
+    SqlPredicateRewriteCase, SqlPredicateRewriteEvidence, SqlPredicateRewriteFailureReport,
+    SqlQueryInvocation, SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence,
+    SQL_JOIN_REWRITE_PROTOCOL, SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL,
+    SQL_TLP_AGGREGATE_PROTOCOL, SQL_TLP_PROTOCOL,
 };
 
 pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v7";
