@@ -1,6 +1,7 @@
 use super::authoritative::{map_constraint_read_error, AuthoritativeReadLedger};
 use super::{
-    GraphStore, RelationalIndexReadSelector, RelationalIndexReadView, RelationalIndexReadViewReport,
+    GraphStore, RelationalIndexProbeStatistics, RelationalIndexReadSelector,
+    RelationalIndexReadView, RelationalIndexReadViewReport,
 };
 use skein_storage::{
     RelationalConstraintIndex, RelationalError, RelationalIndexChange,
@@ -207,6 +208,18 @@ impl RelationalTransactionIndexView {
 
     pub(crate) fn capture_limits(&self) -> RelationalIndexChangeCaptureLimits {
         self.overlay.limits
+    }
+
+    pub(crate) fn fresh_probe_statistics(
+        &self,
+        table: &str,
+        index: &str,
+        prefix_len: usize,
+    ) -> Option<RelationalIndexProbeStatistics> {
+        if self.overlay.entry_count != 0 {
+            return None;
+        }
+        self.base.fresh_probe_statistics(table, index, prefix_len)
     }
 
     pub(crate) fn append(

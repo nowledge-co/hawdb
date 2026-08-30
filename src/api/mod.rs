@@ -389,9 +389,11 @@ fn relational_index_read_mode<'a>(
     store: &'a GraphStore,
 ) -> crate::relational_sql::RelationalIndexReadMode<'a> {
     match config.relational_index_mode {
-        skein_storage::RelationalIndexMode::Materialized
-        | skein_storage::RelationalIndexMode::Shadow => {
+        skein_storage::RelationalIndexMode::Materialized => {
             crate::relational_sql::RelationalIndexReadMode::Materialized
+        }
+        skein_storage::RelationalIndexMode::Shadow => {
+            crate::relational_sql::RelationalIndexReadMode::Shadow(store)
         }
         skein_storage::RelationalIndexMode::DemandPaged => {
             crate::relational_sql::RelationalIndexReadMode::DemandPaged(store)

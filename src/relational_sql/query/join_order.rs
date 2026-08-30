@@ -1,8 +1,8 @@
 use super::{
     choose_base_access, choose_join_access, projection_contains_aggregate,
     PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
-    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalJoinAccess,
-    RelationalJoinAccessCandidate, RelationalQueryLimits,
+    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalIndexReadMode,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalQueryLimits,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
@@ -67,6 +67,7 @@ pub(super) fn plan_select_join_order(
     select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
 ) -> Result<PlannedSelectStatement> {
     let config = RelationalJoinEnumerationConfig::default();
@@ -93,8 +94,15 @@ pub(super) fn plan_select_join_order(
         return Ok(unchanged(select, outcome));
     };
     let predicates = &bound_joins.predicates;
-    let Some(graph_relations) =
-        build_graph_relations(&select, parameters, state, limits, &relations, predicates)?
+    let Some(graph_relations) = build_graph_relations(
+        &select,
+        parameters,
+        state,
+        index_read_mode,
+        limits,
+        &relations,
+        predicates,
+    )?
     else {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(
             RelationalJoinPlanningReason::UnavailableAccessBinding,
@@ -376,6 +384,7 @@ fn build_graph_relations(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     predicates: &[BoundJoinPredicate],
@@ -383,7 +392,14 @@ fn build_graph_relations(
     let mut graph_relations = Vec::with_capacity(relations.len());
     for relation in relations {
         let Some(graph_relation) = build_graph_relation(
-            select, parameters, state, limits, relations, relation, predicates,
+            select,
+            parameters,
+            state,
+            index_read_mode,
+            limits,
+            relations,
+            relation,
+            predicates,
         )?
         else {
             return Ok(None);
@@ -398,6 +414,7 @@ fn build_graph_relation(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     relation: &BoundRelation<'_>,
@@ -469,6 +486,7 @@ fn build_graph_relation(
             relation.schema,
             &relation.table.name,
             &relation.qualifier,
+            index_read_mode,
         )?;
         if candidate.descriptor.kind == RelationalAccessPathKind::FullScan {
             continue;

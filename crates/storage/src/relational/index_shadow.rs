@@ -1,5 +1,6 @@
 use super::ordered_key::{
-    encode_ordered_relational_key, encode_ordered_relational_value, OrderedRelationalKeyError,
+    encode_ordered_relational_key, encode_ordered_relational_value,
+    ordered_relational_key_prefix_ends, OrderedRelationalKeyError,
 };
 use super::{
     RelationalError, RelationalForeignKeySchema, RelationalIndexRole, RelationalKey,
@@ -47,7 +48,7 @@ pub use recovery::{
 };
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRIDXM1";
-const MANIFEST_VERSION: u16 = 1;
+const MANIFEST_VERSION: u16 = 2;
 const MANIFEST_INTEGRITY_OFFSET: usize = 120;
 const MANIFEST_HEADER_BYTES: usize = 156;
 const RELATIONAL_INDEX_SHADOW_LOCK_FILE: &str = "relational-index-shadow.lock";
@@ -138,6 +139,31 @@ impl Default for RelationalIndexShadowConfig {
     }
 }
 
+/// Exact cardinalities for one leading index-key prefix at the manifest epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalIndexPrefixStatistics {
+    /// Distinct prefixes whose components are all non-null.
+    pub distinct_non_null_values: u64,
+    /// Indexed rows whose prefix components are all non-null.
+    pub non_null_rows: u64,
+    /// Maximum rows observed for one non-null leading-prefix value.
+    pub fanout: u64,
+}
+
+/// Prefix statistics published atomically with one immutable index root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelationalIndexStatistics {
+    pub leading_prefixes: Vec<RelationalIndexPrefixStatistics>,
+}
+
+impl RelationalIndexStatistics {
+    pub fn leading_prefix(&self, prefix_len: usize) -> Option<&RelationalIndexPrefixStatistics> {
+        prefix_len
+            .checked_sub(1)
+            .and_then(|ordinal| self.leading_prefixes.get(ordinal))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalIndexRootDescriptor {
     pub identity: IndexIdentity,
@@ -145,6 +171,7 @@ pub struct RelationalIndexRootDescriptor {
     pub schema_digest: Sha256Digest,
     pub root_page_id: IndexPageId,
     pub height: u32,
+    pub statistics: RelationalIndexStatistics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +231,16 @@ impl RelationalIndexShadowManifest {
             payload.extend_from_slice(root.schema_digest.as_bytes());
             payload.extend_from_slice(&root.root_page_id.get().to_le_bytes());
             payload.extend_from_slice(&root.height.to_le_bytes());
+            encode_count(
+                &mut payload,
+                root.statistics.leading_prefixes.len(),
+                "leading-prefix statistics",
+            )?;
+            for statistics in &root.statistics.leading_prefixes {
+                payload.extend_from_slice(&statistics.distinct_non_null_values.to_le_bytes());
+                payload.extend_from_slice(&statistics.non_null_rows.to_le_bytes());
+                payload.extend_from_slice(&statistics.fanout.to_le_bytes());
+            }
             if MANIFEST_HEADER_BYTES.saturating_add(payload.len()) > config.max_manifest_bytes.get()
             {
                 return Err(RelationalIndexShadowError::Admission(format!(
@@ -342,6 +379,31 @@ impl RelationalIndexShadowManifest {
             let digest_bytes = take(payload, &mut offset, SHA256_BYTES, "schema digest")?;
             let root_id_bytes = take(payload, &mut offset, 8, "root page id")?;
             let height_bytes = take(payload, &mut offset, 4, "root height")?;
+            let prefix_count = read_u32(take(
+                payload,
+                &mut offset,
+                4,
+                "leading-prefix statistics count",
+            )?) as usize;
+            let statistics_bytes = prefix_count.checked_mul(3 * 8).ok_or_else(|| {
+                RelationalIndexShadowError::Corrupt(
+                    "leading-prefix statistics length overflow".to_string(),
+                )
+            })?;
+            let statistics_bytes = take(
+                payload,
+                &mut offset,
+                statistics_bytes,
+                "leading-prefix statistics",
+            )?;
+            let leading_prefixes = statistics_bytes
+                .chunks_exact(3 * 8)
+                .map(|encoded| RelationalIndexPrefixStatistics {
+                    distinct_non_null_values: read_u64(&encoded[..8]),
+                    non_null_rows: read_u64(&encoded[8..16]),
+                    fanout: read_u64(&encoded[16..24]),
+                })
+                .collect();
             roots.push(RelationalIndexRootDescriptor {
                 identity: IndexIdentity {
                     namespace: decode_utf8(namespace, "index namespace")?,
@@ -355,6 +417,7 @@ impl RelationalIndexShadowManifest {
                 ),
                 root_page_id: page_id(read_u64(root_id_bytes), "root page id")?,
                 height: read_u32(height_bytes),
+                statistics: RelationalIndexStatistics { leading_prefixes },
             });
         }
         if offset != payload.len() {
@@ -651,6 +714,7 @@ impl RelationalIndexShadowWriter {
                     identity,
                     definition.role,
                     schema_digest,
+                    definition.columns.len(),
                     self.config.max_build_metadata_bytes.get(),
                 );
                 if definition.role == RelationalIndexRole::Primary {
@@ -1413,6 +1477,112 @@ struct ChildPage {
     page_id: IndexPageId,
 }
 
+struct LeadingPrefixStatisticsBuilder {
+    statistics: Vec<RelationalIndexPrefixStatistics>,
+    active_rows: Vec<u64>,
+    previous_prefix_ends: Vec<usize>,
+    current_prefix_ends: Vec<usize>,
+}
+
+impl LeadingPrefixStatisticsBuilder {
+    fn new(prefix_count: usize) -> Self {
+        Self {
+            statistics: vec![
+                RelationalIndexPrefixStatistics {
+                    distinct_non_null_values: 0,
+                    non_null_rows: 0,
+                    fanout: 0,
+                };
+                prefix_count
+            ],
+            active_rows: vec![0; prefix_count],
+            previous_prefix_ends: Vec::with_capacity(prefix_count),
+            current_prefix_ends: Vec::with_capacity(prefix_count),
+        }
+    }
+
+    fn push(
+        &mut self,
+        key: &[u8],
+        rows: u64,
+        previous_key: Option<&[u8]>,
+    ) -> Result<(), RelationalIndexShadowError> {
+        if rows == 0 {
+            return Err(RelationalIndexShadowError::Corrupt(
+                "relational index contains an empty posting list".to_string(),
+            ));
+        }
+        let leading_non_null =
+            ordered_relational_key_prefix_ends(key, &mut self.current_prefix_ends)?;
+        if self.current_prefix_ends.len() != self.statistics.len() {
+            return Err(RelationalIndexShadowError::Corrupt(format!(
+                "relational index key contains {} values, expected {}",
+                self.current_prefix_ends.len(),
+                self.statistics.len()
+            )));
+        }
+        for ordinal in 0..self.statistics.len() {
+            if ordinal >= leading_non_null {
+                self.finish_group(ordinal);
+                continue;
+            }
+            let statistics = &mut self.statistics[ordinal];
+            statistics.non_null_rows =
+                statistics.non_null_rows.checked_add(rows).ok_or_else(|| {
+                    RelationalIndexShadowError::Admission(
+                        "leading-prefix non-null row count overflow".to_string(),
+                    )
+                })?;
+            let same_prefix = self.active_rows[ordinal] != 0
+                && previous_key.is_some_and(|previous_key| {
+                    let previous_end = self.previous_prefix_ends[ordinal];
+                    let current_end = self.current_prefix_ends[ordinal];
+                    previous_key[..previous_end] == key[..current_end]
+                });
+            if same_prefix {
+                self.active_rows[ordinal] =
+                    self.active_rows[ordinal].checked_add(rows).ok_or_else(|| {
+                        RelationalIndexShadowError::Admission(
+                            "leading-prefix fanout count overflow".to_string(),
+                        )
+                    })?;
+            } else {
+                self.finish_group(ordinal);
+                self.statistics[ordinal].distinct_non_null_values = self.statistics[ordinal]
+                    .distinct_non_null_values
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        RelationalIndexShadowError::Admission(
+                            "leading-prefix distinct count overflow".to_string(),
+                        )
+                    })?;
+                self.active_rows[ordinal] = rows;
+            }
+        }
+        std::mem::swap(
+            &mut self.previous_prefix_ends,
+            &mut self.current_prefix_ends,
+        );
+        Ok(())
+    }
+
+    fn finish_group(&mut self, ordinal: usize) {
+        self.statistics[ordinal].fanout = self.statistics[ordinal]
+            .fanout
+            .max(self.active_rows[ordinal]);
+        self.active_rows[ordinal] = 0;
+    }
+
+    fn finish(mut self) -> RelationalIndexStatistics {
+        for ordinal in 0..self.statistics.len() {
+            self.finish_group(ordinal);
+        }
+        RelationalIndexStatistics {
+            leading_prefixes: self.statistics,
+        }
+    }
+}
+
 struct TreeWriter<'a> {
     pages: &'a mut SlotWriter,
     identity: IndexIdentity,
@@ -1425,6 +1595,7 @@ struct TreeWriter<'a> {
     peak_metadata_bytes: usize,
     max_metadata_bytes: usize,
     last_key: Option<Vec<u8>>,
+    statistics: LeadingPrefixStatisticsBuilder,
 }
 
 impl<'a> TreeWriter<'a> {
@@ -1433,6 +1604,7 @@ impl<'a> TreeWriter<'a> {
         identity: IndexIdentity,
         role: RelationalIndexRole,
         schema_digest: Sha256Digest,
+        prefix_count: usize,
         max_metadata_bytes: usize,
     ) -> Self {
         Self {
@@ -1447,6 +1619,7 @@ impl<'a> TreeWriter<'a> {
             peak_metadata_bytes: 0,
             max_metadata_bytes,
             last_key: None,
+            statistics: LeadingPrefixStatisticsBuilder::new(prefix_count),
         }
     }
 
@@ -1469,6 +1642,11 @@ impl<'a> TreeWriter<'a> {
                 self.identity.namespace, self.identity.name
             )));
         }
+        self.statistics.push(
+            &entry.key,
+            index_leaf_posting_rows(&entry.posting)?,
+            self.last_key.as_deref(),
+        )?;
         if !self.leaf_entries.is_empty()
             && (self.leaf_entries.len() >= self.pages.limits.max_entries.get()
                 || self.leaf_payload_bytes.saturating_add(entry_bytes) > max_payload)
@@ -1640,6 +1818,7 @@ impl<'a> TreeWriter<'a> {
                 height,
             }),
         )?;
+        let statistics = self.statistics.finish();
         Ok((
             RelationalIndexRootDescriptor {
                 identity: self.identity,
@@ -1647,9 +1826,21 @@ impl<'a> TreeWriter<'a> {
                 schema_digest: self.schema_digest,
                 root_page_id,
                 height,
+                statistics,
             },
             self.peak_metadata_bytes,
         ))
+    }
+}
+
+fn index_leaf_posting_rows(posting: &IndexLeafPosting) -> Result<u64, RelationalIndexShadowError> {
+    match posting {
+        IndexLeafPosting::Inline(row_ids) => u64::try_from(row_ids.len()).map_err(|_| {
+            RelationalIndexShadowError::Admission(
+                "inline posting row count does not fit u64".to_string(),
+            )
+        }),
+        IndexLeafPosting::Page { total_rows, .. } => Ok(*total_rows),
     }
 }
 
@@ -1880,6 +2071,7 @@ struct RelationalIndexLogicalRoot {
     identity: IndexIdentity,
     role: RelationalIndexRole,
     schema_digest: Sha256Digest,
+    column_count: usize,
 }
 
 fn logical_roots(roots: &[RelationalIndexRootDescriptor]) -> Vec<RelationalIndexLogicalRoot> {
@@ -1889,6 +2081,7 @@ fn logical_roots(roots: &[RelationalIndexRootDescriptor]) -> Vec<RelationalIndex
             identity: root.identity.clone(),
             role: root.role,
             schema_digest: root.schema_digest,
+            column_count: root.statistics.leading_prefixes.len(),
         })
         .collect()
 }
@@ -1913,6 +2106,7 @@ fn required_logical_roots(
                     },
                     role: definition.role,
                     schema_digest,
+                    column_count: definition.columns.len(),
                 }),
         );
     }
@@ -1988,13 +2182,14 @@ fn catalog_schema_digest(
 
 fn root_set_digest(roots: &[RelationalIndexLogicalRoot]) -> Sha256Digest {
     let mut hasher = IntegrityHasher::new();
-    hasher.update(b"skein-relational-index-required-roots-v1\0");
+    hasher.update(b"skein-relational-index-required-roots-v2\0");
     hasher.update(&(roots.len() as u64).to_le_bytes());
     for root in roots {
         hash_manifest_bytes(&mut hasher, root.identity.namespace.as_bytes());
         hash_manifest_bytes(&mut hasher, root.identity.name.as_bytes());
         hasher.update(&[relational_index_role_tag(root.role)]);
         hasher.update(root.schema_digest.as_bytes());
+        hasher.update(&(root.column_count as u64).to_le_bytes());
     }
     hasher.finish().sha256
 }
@@ -2134,6 +2329,7 @@ fn validate_manifest(
                 "manifest contains an invalid root descriptor",
             ));
         }
+        validate_index_statistics(&root.statistics, error_class)?;
         if previous.is_some_and(|previous| previous >= identity) {
             return Err(invalid(
                 error_class,
@@ -2150,6 +2346,48 @@ fn validate_manifest(
             error_class,
             "manifest catalog schema or root-set digest mismatch",
         ));
+    }
+    Ok(())
+}
+
+fn validate_index_statistics(
+    statistics: &RelationalIndexStatistics,
+    error_class: ErrorClass,
+) -> Result<(), RelationalIndexShadowError> {
+    if statistics.leading_prefixes.is_empty() {
+        return Err(invalid(
+            error_class,
+            "index statistics must describe at least one leading prefix",
+        ));
+    }
+    for prefix in &statistics.leading_prefixes {
+        if prefix.non_null_rows == 0 {
+            if prefix.distinct_non_null_values != 0 || prefix.fanout != 0 {
+                return Err(invalid(
+                    error_class,
+                    "empty leading-prefix statistics must contain only zero counts",
+                ));
+            }
+            continue;
+        }
+        if prefix.distinct_non_null_values == 0
+            || prefix.distinct_non_null_values > prefix.non_null_rows
+            || prefix.fanout == 0
+            || prefix.fanout > prefix.non_null_rows
+        {
+            return Err(invalid(
+                error_class,
+                "leading-prefix statistics contain inconsistent counts",
+            ));
+        }
+        let minimum_fanout = prefix.non_null_rows / prefix.distinct_non_null_values
+            + u64::from(prefix.non_null_rows % prefix.distinct_non_null_values != 0);
+        if prefix.fanout < minimum_fanout {
+            return Err(invalid(
+                error_class,
+                "leading-prefix fanout is smaller than its exact average",
+            ));
+        }
     }
     Ok(())
 }
@@ -2333,6 +2571,16 @@ impl From<RelationalError> for RelationalIndexShadowError {
 mod tests {
     use super::*;
 
+    fn one_prefix_statistics() -> RelationalIndexStatistics {
+        RelationalIndexStatistics {
+            leading_prefixes: vec![RelationalIndexPrefixStatistics {
+                distinct_non_null_values: 1,
+                non_null_rows: 1,
+                fanout: 1,
+            }],
+        }
+    }
+
     #[test]
     fn manifest_checksum_covers_generation_fence() {
         let config = RelationalIndexShadowConfig::default();
@@ -2350,6 +2598,7 @@ mod tests {
                 schema_digest: integrity_digest(b"documents schema").sha256,
                 root_page_id: page_id(1, "test root").unwrap(),
                 height: 1,
+                statistics: one_prefix_statistics(),
             }],
         )
         .unwrap();
@@ -2382,6 +2631,7 @@ mod tests {
                     schema_digest,
                     root_page_id: page_id(1, "test primary root").unwrap(),
                     height: 1,
+                    statistics: one_prefix_statistics(),
                 },
                 RelationalIndexRootDescriptor {
                     identity: IndexIdentity {
@@ -2392,6 +2642,20 @@ mod tests {
                     schema_digest,
                     root_page_id: page_id(2, "test secondary root").unwrap(),
                     height: 1,
+                    statistics: RelationalIndexStatistics {
+                        leading_prefixes: vec![
+                            RelationalIndexPrefixStatistics {
+                                distinct_non_null_values: 2,
+                                non_null_rows: 5,
+                                fanout: 3,
+                            },
+                            RelationalIndexPrefixStatistics {
+                                distinct_non_null_values: 4,
+                                non_null_rows: 4,
+                                fanout: 1,
+                            },
+                        ],
+                    },
                 },
             ],
         )
@@ -2423,6 +2687,7 @@ mod tests {
                 schema_digest: integrity_digest(b"documents schema").sha256,
                 root_page_id: page_id(1, "test root").unwrap(),
                 height: 1,
+                statistics: one_prefix_statistics(),
             }],
         )
         .unwrap();
@@ -2447,6 +2712,7 @@ mod tests {
                 schema_digest: integrity_digest(b"documents schema").sha256,
                 root_page_id: page_id(1, "test root").unwrap(),
                 height: 1,
+                statistics: one_prefix_statistics(),
             }],
         )
         .unwrap();
@@ -2457,5 +2723,35 @@ mod tests {
                 if message.contains("root-set digest mismatch")
         ));
         assert!(decode_relational_index_role(0).is_err());
+    }
+
+    #[test]
+    fn manifest_rejects_inconsistent_leading_prefix_statistics() {
+        let config = RelationalIndexShadowConfig::default();
+        let mut manifest = RelationalIndexShadowManifest::from_roots(
+            1,
+            1,
+            config.page_limits.max_page_bytes.get() as u64,
+            1,
+            vec![RelationalIndexRootDescriptor {
+                identity: IndexIdentity {
+                    namespace: "documents".to_string(),
+                    name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
+                },
+                role: RelationalIndexRole::Primary,
+                schema_digest: integrity_digest(b"documents schema").sha256,
+                root_page_id: page_id(1, "test root").unwrap(),
+                height: 1,
+                statistics: one_prefix_statistics(),
+            }],
+        )
+        .unwrap();
+        manifest.roots[0].statistics.leading_prefixes[0].fanout = 0;
+
+        assert!(matches!(
+            manifest.encode(config),
+            Err(RelationalIndexShadowError::Admission(message))
+                if message.contains("inconsistent counts")
+        ));
     }
 }

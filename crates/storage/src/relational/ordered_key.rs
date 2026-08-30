@@ -82,7 +82,7 @@ pub(super) fn validate_ordered_relational_key(
     let mut decoder = OrderedKeyDecoder::new(encoded);
     let mut values = 0usize;
     while !decoder.is_empty() {
-        decoder.skip_value()?;
+        let _ = decoder.skip_value()?;
         values = values.checked_add(1).ok_or_else(|| {
             OrderedRelationalKeyError::Corrupt("value count overflow".to_string())
         })?;
@@ -93,6 +93,31 @@ pub(super) fn validate_ordered_relational_key(
         ));
     }
     Ok(())
+}
+
+pub(super) fn ordered_relational_key_prefix_ends(
+    encoded: &[u8],
+    prefix_ends: &mut Vec<usize>,
+) -> Result<usize, OrderedRelationalKeyError> {
+    prefix_ends.clear();
+    let mut decoder = OrderedKeyDecoder::new(encoded);
+    let mut leading_non_null_values = 0usize;
+    let mut saw_null = false;
+    while !decoder.is_empty() {
+        saw_null |= decoder.skip_value()?;
+        if !saw_null {
+            leading_non_null_values = leading_non_null_values.checked_add(1).ok_or_else(|| {
+                OrderedRelationalKeyError::Corrupt("value count overflow".to_string())
+            })?;
+        }
+        prefix_ends.push(decoder.offset);
+    }
+    if prefix_ends.is_empty() {
+        return Err(OrderedRelationalKeyError::Corrupt(
+            "key contains no values".to_string(),
+        ));
+    }
+    Ok(leading_non_null_values)
 }
 
 pub(super) fn decode_ordered_relational_key(
@@ -252,18 +277,18 @@ impl<'a> OrderedKeyDecoder<'a> {
         Ok(())
     }
 
-    fn skip_value(&mut self) -> Result<(), OrderedRelationalKeyError> {
+    fn skip_value(&mut self) -> Result<bool, OrderedRelationalKeyError> {
         match self.byte("value tag")? {
-            0 => Ok(()),
+            0 => Ok(true),
             1 => match self.byte("boolean value")? {
-                0 | 1 => Ok(()),
+                0 | 1 => Ok(false),
                 tag => Err(OrderedRelationalKeyError::Corrupt(format!(
                     "invalid boolean tag {tag}"
                 ))),
             },
-            2 => self.skip_fixed(8, "BIGINT value"),
-            3 => self.skip_fixed(8, "DOUBLE PRECISION value"),
-            4 | 5 => self.escaped_bytes(false).map(|_| ()),
+            2 => self.skip_fixed(8, "BIGINT value").map(|()| false),
+            3 => self.skip_fixed(8, "DOUBLE PRECISION value").map(|()| false),
+            4 | 5 => self.escaped_bytes(false).map(|_| false),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
                 "invalid value tag {tag}"
             ))),
@@ -407,6 +432,31 @@ mod tests {
             validate_ordered_relational_key(encoded).unwrap();
             assert_eq!(decode_ordered_relational_key(encoded).unwrap(), *expected);
         }
+    }
+
+    #[test]
+    fn prefix_boundaries_report_only_leading_non_null_values() {
+        let key = RelationalKey(vec![
+            RelationalValue::Text("tenant-a".to_string()),
+            RelationalValue::Null,
+            RelationalValue::BigInt(7),
+        ]);
+        let encoded = encode_ordered_relational_key(&key).unwrap();
+        let mut prefix_ends = Vec::new();
+
+        let leading_non_null =
+            ordered_relational_key_prefix_ends(&encoded, &mut prefix_ends).unwrap();
+
+        assert_eq!(leading_non_null, 1);
+        assert_eq!(prefix_ends.len(), 3);
+        assert_eq!(
+            &encoded[..prefix_ends[0]],
+            encode_ordered_relational_key(&RelationalKey(vec![RelationalValue::Text(
+                "tenant-a".to_string()
+            )]))
+            .unwrap()
+        );
+        assert_eq!(prefix_ends[2], encoded.len());
     }
 
     #[test]

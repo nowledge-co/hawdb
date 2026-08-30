@@ -130,9 +130,10 @@ pub fn select_relational_access_path(
 
 /// Estimates row visits for an index nested-loop join.
 ///
-/// Non-unique join descriptors currently carry a table-cardinality upper
-/// bound. Keeping that bound here makes join reordering conservative until the
-/// relational statistics contract exposes distinct-prefix estimates.
+/// The planning boundary is responsible for supplying a conservative
+/// per-outer-row estimate in the inner descriptor. This keeps the join cost
+/// independent of where that estimate came from (fresh statistics or a
+/// table-cardinality fallback).
 pub fn estimate_relational_nested_loop_join_cost(
     outer: &RelationalAccessPathDescriptor,
     inner: &RelationalAccessPathDescriptor,

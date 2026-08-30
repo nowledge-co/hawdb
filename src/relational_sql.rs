@@ -1974,6 +1974,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn relational_join_probe_fanout_tracks_checkpoint_epoch_and_wal_delta() {
+        const PREFIX_ONE_SELECT: &str = "SELECT e.id \
+            FROM probe_keys AS p \
+            INNER JOIN events AS e ON e.tenant = p.tenant";
+        const PREFIX_TWO_SELECT: &str = "SELECT e.id \
+            FROM probe_keys AS p \
+            INNER JOIN events AS e \
+              ON e.tenant = p.tenant AND e.category = p.category";
+
+        fn estimated_join_rows(database: &Database, sql: &str) -> usize {
+            let read = database.begin_read_transaction();
+            let profiled = read
+                .query_sql_with_params_options_profiled(
+                    sql,
+                    &[],
+                    crate::QueryStreamOptions::default(),
+                )
+                .expect("profile composite index join");
+            assert_eq!(profiled.profile.operator_cardinality_profiles.len(), 2);
+            assert_eq!(
+                profiled.profile.operator_cardinality_profiles[1].operator,
+                RelationalOperatorKind::IndexNestedLoopJoin
+            );
+            assert_eq!(
+                profiled.profile.operator_cardinality_profiles[1].table,
+                "events"
+            );
+            profiled.profile.operator_cardinality_profiles[1].estimated_rows
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-probe-fanout-{}-{nonce}",
+            std::process::id()
+        ));
+        let config = DatabaseConfig {
+            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            ..DatabaseConfig::default()
+        };
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                config.clone(),
+            )
+            .expect("open probe-fanout database");
+            database
+                .query_sql(
+                    "CREATE TABLE probe_keys (\
+                       id TEXT PRIMARY KEY, \
+                       tenant TEXT NOT NULL, \
+                       category TEXT NOT NULL\
+                     )",
+                )
+                .expect("create probe keys");
+            database
+                .query_sql(
+                    "CREATE TABLE events (\
+                       id TEXT PRIMARY KEY, \
+                       tenant TEXT NOT NULL, \
+                       category TEXT\
+                     )",
+                )
+                .expect("create events");
+            database
+                .query_sql("CREATE INDEX events_tenant_category_idx ON events (tenant, category)")
+                .expect("create composite event index");
+            database
+                .query_sql(
+                    "INSERT INTO probe_keys (id, tenant, category) \
+                     VALUES ('probe', 'A', 'x')",
+                )
+                .expect("insert probe key");
+            database
+                .query_sql(
+                    "INSERT INTO events (id, tenant, category) VALUES \
+                       ('row-1', 'A', 'x'), \
+                       ('row-2', 'A', 'x'), \
+                       ('row-3', 'A', 'x'), \
+                       ('row-4', 'A', 'x'), \
+                       ('row-5', 'A', 'y'), \
+                       ('row-6', 'A', NULL), \
+                       ('row-7', 'A', NULL), \
+                       ('row-8', 'B', 'x')",
+                )
+                .expect("insert skewed events");
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 8);
+            database
+                .checkpoint()
+                .expect("publish fresh index statistics");
+
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 7);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 4);
+
+            database
+                .query_sql(
+                    "INSERT INTO events (id, tenant, category) \
+                     VALUES ('row-9', 'A', 'x')",
+                )
+                .expect("append WAL delta");
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 9);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 9);
+        }
+
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                config.clone(),
+            )
+            .expect("reopen with recovered WAL delta");
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 9);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 9);
+
+            database
+                .checkpoint()
+                .expect("refresh index statistics after WAL recovery");
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+        }
+
+        {
+            let database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .expect("reopen fresh index statistics");
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+        }
+
+        std::fs::remove_dir_all(path).expect("remove probe-fanout fixture");
+    }
+
     fn relational_explain_access_row<'a>(
         output: &'a crate::QueryOutput,
         table: &str,
