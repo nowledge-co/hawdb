@@ -229,7 +229,7 @@ impl Database {
             prepared.statement,
             crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
         ) {
-            let query_result = crate::relational_sql::execute_relational_query_sql_with_runtime(
+            let query_result = crate::relational_sql::execute_relational_query_sql_with_resources(
                 sql_text,
                 parameters,
                 self.store.relational_state(),
@@ -237,13 +237,12 @@ impl Database {
                     super::relational_index_read_mode(&self.config, &self.store),
                     crate::relational_sql::RelationalRowReadMode::Store(&self.store),
                 ),
-                super::relational_query_limits_with_payload(
+                super::relational_query_resource_context(
                     &self.config,
                     max_rows,
                     max_payload_bytes,
+                    None,
                 ),
-                &self.config.execution_memory,
-                None,
             );
             self.store.poison_on_storage_error(&query_result);
             let output = query_result?;

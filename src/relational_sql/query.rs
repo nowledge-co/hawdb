@@ -36,7 +36,7 @@ use skein_expression::BindingId;
 use skein_optimizer::{
     estimate_relational_access_cost, estimate_relational_probe_join_cost,
     select_relational_access_path, PlanCostBreakdown, RelationalAccessPathDescriptor,
-    RelationalAccessPathKind, RelationalJoinCardinality,
+    RelationalAccessPathKind, RelationalJoinCardinality, RelationalJoinEnumerationConfig,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -64,11 +64,33 @@ pub(crate) struct RelationalQueryLimits {
     pub max_output_rows: usize,
     pub max_output_payload_bytes: usize,
     pub max_intermediate_rows: usize,
-    pub batch_rows: NonZeroUsize,
-    pub blocking_operator_bytes: NonZeroUsize,
     pub hydration: RelationalHydrationBudget,
     pub index_read: skein_storage::RelationalIndexReadLimits,
     pub row_read: skein_storage::RelationalRowPageSnapshotReadLimits,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RelationalQueryResourceContext<'a> {
+    join_enumeration: RelationalJoinEnumerationConfig,
+    limits: RelationalQueryLimits,
+    execution_memory: &'a skein_executor::ExecutionMemoryConfig,
+    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+}
+
+impl<'a> RelationalQueryResourceContext<'a> {
+    pub(crate) const fn new(
+        join_enumeration: RelationalJoinEnumerationConfig,
+        limits: RelationalQueryLimits,
+        execution_memory: &'a skein_executor::ExecutionMemoryConfig,
+        task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    ) -> Self {
+        Self {
+            join_enumeration,
+            limits,
+            execution_memory,
+            task_context,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,13 +107,13 @@ pub(crate) struct RelationalQueryOutput {
     pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
 }
 
-#[derive(Clone, Copy)]
-struct RelationalSelectExecution<'state, 'runtime> {
+struct AdmittedRelationalExecution<'state, 'runtime> {
     state: &'state RelationalState,
     index_read_mode: RelationalIndexReadMode<'state>,
     row_read_mode: RelationalRowReadMode<'state>,
     limits: RelationalQueryLimits,
     execution_memory: &'runtime skein_executor::ExecutionMemoryConfig,
+    memory_ledger: QueryMemoryLedger,
     task_context: Option<&'runtime skein_core::RuntimeTaskContext>,
 }
 
@@ -110,14 +132,12 @@ impl<'a> RelationalQueryReadModes<'a> {
     }
 }
 
-pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
+pub(crate) fn execute_relational_query_sql_with_resources<'a>(
     sql: &str,
     parameters: &[Value],
     state: &'a RelationalState,
     read_modes: RelationalQueryReadModes<'a>,
-    limits: RelationalQueryLimits,
-    execution_memory: &skein_executor::ExecutionMemoryConfig,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    resources: RelationalQueryResourceContext<'_>,
 ) -> Result<RelationalQueryOutput> {
     let prepared = skein_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
@@ -127,19 +147,18 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
             parameters.len()
         )));
     }
-    let execution = RelationalSelectExecution {
-        state,
-        index_read_mode: read_modes.index,
-        row_read_mode: read_modes.row,
-        limits,
-        execution_memory,
-        task_context,
-    };
     match prepared.statement {
         SqlStatement::Select(select) => {
-            let prepared =
-                prepare_relational_select(select, parameters, state, read_modes.index, limits)?;
-            execute_select(&prepared, parameters, execution, false)
+            let prepared = prepare_relational_select(
+                select,
+                parameters,
+                state,
+                read_modes.index,
+                resources.limits,
+                resources.join_enumeration,
+            )?;
+            let execution = prepared.execution.admit(state, read_modes, resources)?;
+            execute_select(&prepared, parameters, execution)
         }
         SqlStatement::Explain(explain) => {
             let SqlStatement::Select(select) = *explain.statement else {
@@ -147,19 +166,55 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
-            let prepared =
-                prepare_relational_select(select, parameters, state, read_modes.index, limits)?;
-            let output = execute_select(&prepared, parameters, execution, !explain.analyze)?;
-            if explain.analyze {
-                format_relational_explain(&prepared.statement, parameters, output, true, limits)
-            } else {
-                Ok(output)
+            let prepared = prepare_relational_select(
+                select,
+                parameters,
+                state,
+                read_modes.index,
+                resources.limits,
+                resources.join_enumeration,
+            )?;
+            if !explain.analyze {
+                return explain_select(&prepared, parameters, resources.limits);
             }
+            let execution = prepared.execution.admit(state, read_modes, resources)?;
+            let output = execute_select(&prepared, parameters, execution)?;
+            format_relational_explain(
+                &prepared.statement,
+                parameters,
+                output,
+                true,
+                resources.limits,
+            )
         }
         _ => Err(SkeinError::Semantic(
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
+    sql: &str,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    read_modes: RelationalQueryReadModes<'a>,
+    limits: RelationalQueryLimits,
+    execution_memory: &skein_executor::ExecutionMemoryConfig,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
+) -> Result<RelationalQueryOutput> {
+    execute_relational_query_sql_with_resources(
+        sql,
+        parameters,
+        state,
+        read_modes,
+        RelationalQueryResourceContext::new(
+            RelationalJoinEnumerationConfig::default(),
+            limits,
+            execution_memory,
+            task_context,
+        ),
+    )
 }
 
 #[derive(Clone)]
@@ -231,11 +286,124 @@ struct PreparedRelationalAccessPlan {
     join_selection: Option<PreparedRelationalJoinSelection>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparedRelationalExecutionMode {
+    OrderedIndexProjection,
+    StreamingProjection,
+    BlockingProjection,
+    Aggregate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelationalExecutionMemoryShape {
+    /// Maximum concurrently retained executor transfer batches.
+    pipeline_batch_count: usize,
+    /// Maximum concurrently retained blocking operator states.
+    blocking_operator_count: usize,
+}
+
+impl RelationalExecutionMemoryShape {
+    fn estimated_bytes(self, memory: &skein_executor::ExecutionMemoryConfig) -> usize {
+        self.pipeline_batch_count
+            .saturating_mul(memory.batch_payload_bytes.get())
+            .saturating_add(
+                self.blocking_operator_count
+                    .saturating_mul(memory.blocking_operator_bytes.get()),
+            )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreparedRelationalExecutionDescriptor {
+    /// The execution path selected during preparation. Execution must not
+    /// independently infer a different path from the SQL statement.
+    mode: PreparedRelationalExecutionMode,
+    /// Plan-derived peak shape resolved against runtime memory ceilings during
+    /// admission.
+    memory_shape: RelationalExecutionMemoryShape,
+}
+
+impl PreparedRelationalExecutionDescriptor {
+    fn prepare(select: &SelectStatement, access_plan: &PreparedRelationalAccessPlan) -> Self {
+        let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+        let ordered_index_projection = !select.order_by.is_empty()
+            && access_plan.base_access.descriptor.order_prefix_len == select.order_by.len()
+            && select.joins.is_empty()
+            && !select.distinct
+            && !has_aggregate
+            && select.group_by.is_empty()
+            && predicate_is_covered_by_access(
+                select.selection.as_ref(),
+                &access_plan.base_access.descriptor,
+                &select.from.name,
+                select.from_alias.as_deref().unwrap_or(&select.from.name),
+            );
+        let mode = if ordered_index_projection {
+            PreparedRelationalExecutionMode::OrderedIndexProjection
+        } else if has_aggregate || !select.group_by.is_empty() {
+            PreparedRelationalExecutionMode::Aggregate
+        } else if !select.order_by.is_empty() || select.distinct {
+            PreparedRelationalExecutionMode::BlockingProjection
+        } else {
+            PreparedRelationalExecutionMode::StreamingProjection
+        };
+        let blocking_operator_count = match mode {
+            PreparedRelationalExecutionMode::OrderedIndexProjection
+            | PreparedRelationalExecutionMode::StreamingProjection => 0,
+            PreparedRelationalExecutionMode::BlockingProjection => {
+                usize::from(select.distinct) + usize::from(!select.order_by.is_empty())
+            }
+            PreparedRelationalExecutionMode::Aggregate => {
+                if !select.group_by.is_empty() {
+                    2
+                } else {
+                    1
+                }
+            }
+        };
+        Self {
+            mode,
+            memory_shape: RelationalExecutionMemoryShape {
+                pipeline_batch_count: 1,
+                blocking_operator_count,
+            },
+        }
+    }
+
+    fn admit<'state, 'runtime>(
+        self,
+        state: &'state RelationalState,
+        read_modes: RelationalQueryReadModes<'state>,
+        resources: RelationalQueryResourceContext<'runtime>,
+    ) -> Result<AdmittedRelationalExecution<'state, 'runtime>> {
+        skein_executor::pipeline::runtime_checkpoint(resources.task_context)?;
+        let estimated_bytes = self
+            .memory_shape
+            .estimated_bytes(resources.execution_memory);
+        if estimated_bytes > resources.execution_memory.query_memory_bytes.get() {
+            return Err(SkeinError::Execution(format!(
+                "prepared relational query requires {estimated_bytes} estimated bytes, exceeding query_memory_bytes {}",
+                resources.execution_memory.query_memory_bytes
+            )));
+        }
+        Ok(AdmittedRelationalExecution {
+            state,
+            index_read_mode: read_modes.index,
+            row_read_mode: read_modes.row,
+            limits: resources.limits,
+            execution_memory: resources.execution_memory,
+            memory_ledger: QueryMemoryLedger::new(resources.execution_memory.query_memory_bytes),
+            task_context: resources.task_context,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct PreparedRelationalSelect {
     statement: SelectStatement,
     access_plan: PreparedRelationalAccessPlan,
     join_planning: RelationalJoinPlanningOutcome,
+    execution: PreparedRelationalExecutionDescriptor,
 }
 
 impl PreparedRelationalSelect {
@@ -291,6 +459,13 @@ impl PreparedRelationalSelect {
                     "prepared relational join selection has an invalid cost breakdown".to_string(),
                 ));
             }
+        }
+        if self.execution
+            != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)
+        {
+            return Err(SkeinError::Execution(
+                "prepared relational SELECT has an inconsistent execution descriptor".to_string(),
+            ));
         }
         Ok(())
     }
@@ -530,9 +705,10 @@ impl<'a> RelationalPipelineState<'a> {
     fn new(
         task_context: Option<&'a skein_core::RuntimeTaskContext>,
         limits: RelationalQueryLimits,
+        batch_rows: NonZeroUsize,
         operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     ) -> Self {
-        let batch_rows = limits.batch_rows.get();
+        let batch_rows = batch_rows.get();
         Self {
             task_context,
             batch_rows,
@@ -598,13 +774,20 @@ fn prepare_relational_select(
     state: &RelationalState,
     index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
+    join_enumeration: RelationalJoinEnumerationConfig,
 ) -> Result<PreparedRelationalSelect> {
     reject_non_public_schema(select.from.schema.as_deref())?;
     for join in &select.joins {
         reject_non_public_schema(join.table.schema.as_deref())?;
     }
-    let planned =
-        join_order::plan_select_join_order(select, parameters, state, index_read_mode, limits)?;
+    let planned = join_order::plan_select_join_order(
+        select,
+        parameters,
+        state,
+        index_read_mode,
+        limits,
+        join_enumeration,
+    )?;
     let access_plan = match planned.access_plan {
         Some(access_plan) => access_plan,
         None => prepare_syntax_access_plan(
@@ -615,10 +798,13 @@ fn prepare_relational_select(
             limits,
         )?,
     };
+    let execution =
+        PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
     let prepared = PreparedRelationalSelect {
         statement: planned.statement,
         access_plan,
         join_planning: planned.join_planning,
+        execution,
     };
     prepared.validate()?;
     Ok(prepared)
@@ -680,21 +866,56 @@ fn prepare_syntax_access_plan(
     })
 }
 
+fn explain_select(
+    prepared: &PreparedRelationalSelect,
+    parameters: &[Value],
+    limits: RelationalQueryLimits,
+) -> Result<RelationalQueryOutput> {
+    let access_path = prepared.access_plan.base_access.descriptor.clone();
+    let join_access_paths = prepared
+        .access_plan
+        .join_accesses
+        .iter()
+        .map(|access| access.descriptor.clone())
+        .collect();
+    format_relational_explain(
+        &prepared.statement,
+        parameters,
+        RelationalQueryOutput {
+            rows: QueryRows::empty(),
+            join_planning: prepared.join_planning.clone(),
+            operator_cardinality_profiles: planned_operator_cardinality_profiles(prepared)?,
+            intermediate_rows: 0,
+            hydration: limits.hydration,
+            access_path,
+            join_access_paths,
+            index_execution_evidence: Vec::new(),
+            row_execution_evidence: RelationalRowExecutionEvidence {
+                runtime_path: "not_executed",
+                ..RelationalRowExecutionEvidence::default()
+            },
+            blocking_operator_memory_reports: Vec::new(),
+        },
+        false,
+        limits,
+    )
+}
+
 fn execute_select<'state>(
     prepared: &PreparedRelationalSelect,
     parameters: &[Value],
-    execution: RelationalSelectExecution<'state, '_>,
-    explain_only: bool,
+    execution: AdmittedRelationalExecution<'state, '_>,
 ) -> Result<RelationalQueryOutput> {
     let select = &prepared.statement;
     let join_planning = &prepared.join_planning;
     let operator_cardinality_profiles = planned_operator_cardinality_profiles(prepared)?;
-    let RelationalSelectExecution {
+    let AdmittedRelationalExecution {
         state,
         index_read_mode,
         row_read_mode,
         limits,
         execution_memory,
+        memory_ledger,
         task_context,
     } = execution;
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
@@ -729,45 +950,6 @@ fn execute_select<'state>(
             access: join_access.access.clone(),
         });
     }
-    let ordered_index_projection = !select.order_by.is_empty()
-        && base_access.descriptor.order_prefix_len == select.order_by.len()
-        && select.joins.is_empty()
-        && !select.distinct
-        && !has_aggregate
-        && select.group_by.is_empty()
-        && predicate_is_covered_by_access(
-            select.selection.as_ref(),
-            &base_access.descriptor,
-            &select.from.name,
-            &base_qualifier,
-        );
-    let has_blocking_operator = has_aggregate
-        || !select.group_by.is_empty()
-        || (!select.order_by.is_empty() && !ordered_index_projection)
-        || select.distinct;
-    if explain_only {
-        return format_relational_explain(
-            select,
-            parameters,
-            RelationalQueryOutput {
-                rows: QueryRows::empty(),
-                join_planning: join_planning.clone(),
-                operator_cardinality_profiles,
-                intermediate_rows: 0,
-                hydration: limits.hydration,
-                access_path,
-                join_access_paths,
-                index_execution_evidence: Vec::new(),
-                row_execution_evidence: RelationalRowExecutionEvidence {
-                    runtime_path: "not_executed",
-                    ..RelationalRowExecutionEvidence::default()
-                },
-                blocking_operator_memory_reports: Vec::new(),
-            },
-            false,
-            limits,
-        );
-    }
     let default_task = skein_core::RuntimeTaskContext::default();
     let row_task = task_context.unwrap_or(&default_task);
     let output_fields = plan_requested_fields(select, state)?;
@@ -788,10 +970,14 @@ fn execute_select<'state>(
         limits.hydration,
         row_task,
     )?;
-    let mut pipeline =
-        RelationalPipelineState::new(task_context, limits, operator_cardinality_profiles);
+    let mut pipeline = RelationalPipelineState::new(
+        task_context,
+        limits,
+        execution_memory.batch_rows,
+        operator_cardinality_profiles,
+    );
     let index_runtime = RelationalIndexRuntime::new(index_read_mode, limits.index_read);
-    if ordered_index_projection {
+    if prepared.execution.mode == PreparedRelationalExecutionMode::OrderedIndexProjection {
         let output = execute_ordered_index_projection(
             select,
             parameters,
@@ -804,6 +990,7 @@ fn execute_select<'state>(
             &row_runtime,
             limits,
             execution_memory,
+            &memory_ledger,
         )?;
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
@@ -819,7 +1006,7 @@ fn execute_select<'state>(
             blocking_operator_memory_reports: output.blocking_operator_memory_reports,
         });
     }
-    if !has_blocking_operator {
+    if prepared.execution.mode == PreparedRelationalExecutionMode::StreamingProjection {
         let output = execute_streaming_projection(
             select,
             parameters,
@@ -848,7 +1035,7 @@ fn execute_select<'state>(
         });
     }
 
-    if has_aggregate || !select.group_by.is_empty() {
+    if prepared.execution.mode == PreparedRelationalExecutionMode::Aggregate {
         return execute_aggregate_select(
             select,
             parameters,
@@ -862,6 +1049,7 @@ fn execute_select<'state>(
             &row_runtime,
             limits,
             execution_memory,
+            &memory_ledger,
             access_path,
             join_access_paths,
             join_planning,
@@ -881,6 +1069,7 @@ fn execute_select<'state>(
         &row_runtime,
         limits,
         execution_memory,
+        &memory_ledger,
     )?;
     pipeline.finish()?;
     Ok(RelationalQueryOutput {
@@ -2345,6 +2534,7 @@ fn execute_blocking_projection<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     memory: &skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &QueryMemoryLedger,
 ) -> Result<StreamingProjectionOutput> {
     let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
         .map_err(|_| SkeinError::Semantic("SQL OFFSET is too large".to_string()))?;
@@ -2359,7 +2549,6 @@ fn execute_blocking_projection<'a>(
     let input_plan = relational_input_plan();
     let catalog = Catalog::default();
     let observer = RelationalBlockingObserver::default();
-    let memory_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
     let task_context = pipeline.task_context;
     let mut output = Vec::with_capacity(detection_limit.min(limits.max_output_rows));
     let mut payload_bytes = 0usize;
@@ -2383,14 +2572,14 @@ fn execute_blocking_projection<'a>(
             pipeline,
             index_runtime,
             row_runtime,
-            batch_rows: limits.batch_rows.get(),
+            batch_rows: memory.batch_rows.get(),
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
             input_plan: &input_plan,
             catalog: &catalog,
             memory,
-            memory_ledger: &memory_ledger,
+            memory_ledger,
             task_context,
             observer: &observer,
         };
@@ -2402,7 +2591,7 @@ fn execute_blocking_projection<'a>(
                 BlockingExecutionContext {
                     catalog: &catalog,
                     memory,
-                    memory_ledger: &memory_ledger,
+                    memory_ledger,
                     task_context,
                     observer: &observer,
                 },
@@ -2444,7 +2633,7 @@ fn execute_blocking_projection<'a>(
                 detection_limit,
                 &catalog,
                 memory,
-                &memory_ledger,
+                memory_ledger,
                 task_context,
                 &observer,
                 &mut |batch| {
@@ -2467,7 +2656,7 @@ fn execute_blocking_projection<'a>(
             offset,
             detection_limit,
             memory,
-            &memory_ledger,
+            memory_ledger,
             task_context,
         );
         visit_relational_rows(
@@ -2765,6 +2954,7 @@ fn execute_ordered_index_projection<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &QueryMemoryLedger,
 ) -> Result<StreamingProjectionOutput> {
     let RelationalBaseAccess::Index { name, prefix } = base_access else {
         return Err(SkeinError::Execution(
@@ -2782,11 +2972,10 @@ fn execute_ordered_index_projection<'a>(
         .unwrap_or(usize::MAX);
     let mut output = Vec::with_capacity(requested.min(limits.max_output_rows));
     let mut payload_bytes = 0usize;
-    let memory_ledger = QueryMemoryLedger::new(execution_memory.query_memory_bytes);
     let mut locator_batch = AccountedRelationalLocatorBatch::new(
-        limits.batch_rows.get(),
+        execution_memory.batch_rows.get(),
         execution_memory.batch_payload_bytes,
-        &memory_ledger,
+        memory_ledger,
     )?;
     let mut hydrate = |batch: ColumnarBatch| -> Result<BatchControl> {
         let locators = batch.column(RELATIONAL_ROW_LOCATOR_SLOT).ok_or_else(|| {
@@ -3056,6 +3245,7 @@ fn execute_aggregate_select<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
@@ -3076,6 +3266,7 @@ fn execute_aggregate_select<'a>(
             row_runtime,
             limits,
             execution_memory,
+            memory_ledger,
             access_path,
             join_access_paths,
             join_planning,
@@ -3095,6 +3286,7 @@ fn execute_aggregate_select<'a>(
             row_runtime,
             limits,
             execution_memory,
+            memory_ledger,
             access_path,
             join_access_paths,
             join_planning,
@@ -3105,23 +3297,22 @@ fn execute_aggregate_select<'a>(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
-    let memory_ledger = QueryMemoryLedger::new(execution_memory.query_memory_bytes);
     if let Some(mut aggregate) = ColumnarAggregateExecutor::try_new(
         select,
         base_schema,
         &select.from.name,
         base_qualifier,
         joins.is_empty(),
-        limits.batch_rows.get(),
+        execution_memory.batch_rows.get(),
         execution_memory.batch_payload_bytes,
-        &memory_ledger,
+        memory_ledger,
     )? {
         let mut memory_tracker = OperatorMemoryTracker::with_account(
-            limits.blocking_operator_bytes,
+            execution_memory.blocking_operator_bytes,
             memory_ledger.account(
                 QueryMemoryClass::BlockingState,
                 "RelationalColumnarAggregate",
-                limits.blocking_operator_bytes,
+                execution_memory.blocking_operator_bytes,
             ),
         );
         charge_aggregate_memory(aggregate.blocking_state_bytes(), &mut memory_tracker)?;
@@ -3193,11 +3384,11 @@ fn execute_aggregate_select<'a>(
         .collect::<Result<Vec<_>>>()?;
     let mut groups = BTreeMap::<Vec<RelationalValue>, Vec<AggregateProjectionState>>::new();
     let mut memory_tracker = OperatorMemoryTracker::with_account(
-        limits.blocking_operator_bytes,
+        execution_memory.blocking_operator_bytes,
         memory_ledger.account(
             QueryMemoryClass::BlockingState,
             "RelationalAggregate",
-            limits.blocking_operator_bytes,
+            execution_memory.blocking_operator_bytes,
         ),
     );
     let mut aggregate_input_rows = 0usize;
@@ -3348,6 +3539,7 @@ fn execute_single_count_distinct<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
@@ -3355,7 +3547,6 @@ fn execute_single_count_distinct<'a>(
     let input_plan = relational_input_plan();
     let catalog = Catalog::default();
     let observer = RelationalBlockingObserver::default();
-    let memory_ledger = QueryMemoryLedger::new(execution_memory.query_memory_bytes);
     let task_context = pipeline.task_context;
     let mut source = DistinctAggregateValueBatchSource {
         select,
@@ -3369,7 +3560,7 @@ fn execute_single_count_distinct<'a>(
         pipeline,
         index_runtime,
         row_runtime,
-        batch_rows: limits.batch_rows.get(),
+        batch_rows: execution_memory.batch_rows.get(),
     };
     let mut count = 0usize;
     stream_distinct_batches(
@@ -3378,7 +3569,7 @@ fn execute_single_count_distinct<'a>(
         BlockingExecutionContext {
             catalog: &catalog,
             memory: execution_memory,
-            memory_ledger: &memory_ledger,
+            memory_ledger,
             task_context,
             observer: &observer,
         },
@@ -3432,6 +3623,7 @@ fn execute_grouped_aggregate<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
@@ -3457,7 +3649,6 @@ fn execute_grouped_aggregate<'a>(
         .unwrap_or(usize::MAX);
     let detection_limit = requested.min(limits.max_output_rows.saturating_add(1));
     let observer = RelationalBlockingObserver::default();
-    let memory_ledger = QueryMemoryLedger::new(execution_memory.query_memory_bytes);
     let task_context = pipeline.task_context;
     let locator_layout =
         relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?;
@@ -3467,7 +3658,7 @@ fn execute_grouped_aggregate<'a>(
         0,
         usize::MAX,
         execution_memory,
-        &memory_ledger,
+        memory_ledger,
         task_context,
     );
     let mut input_rows = 0usize;
@@ -3505,11 +3696,11 @@ fn execute_grouped_aggregate<'a>(
     let mut current_key = None::<Vec<RelationalValue>>;
     let mut current_group = None::<Vec<AggregateProjectionState>>;
     let mut tracker = OperatorMemoryTracker::with_account(
-        limits.blocking_operator_bytes,
+        execution_memory.blocking_operator_bytes,
         memory_ledger.account(
             QueryMemoryClass::BlockingState,
             "RelationalGroupedAggregate",
-            limits.blocking_operator_bytes,
+            execution_memory.blocking_operator_bytes,
         ),
     );
     let mut output = Vec::new();

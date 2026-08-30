@@ -35,9 +35,11 @@ pub use planning::{
 };
 
 pub(crate) use index_access::RelationalIndexReadMode;
+#[cfg(test)]
+pub(crate) use query::execute_relational_query_sql_with_runtime;
 pub(crate) use query::{
-    execute_relational_query_sql_with_runtime, RelationalQueryLimits, RelationalQueryOutput,
-    RelationalQueryReadModes,
+    execute_relational_query_sql_with_resources, RelationalQueryLimits, RelationalQueryOutput,
+    RelationalQueryReadModes, RelationalQueryResourceContext,
 };
 pub(crate) use row_access::RelationalRowReadMode;
 
@@ -1087,6 +1089,96 @@ mod tests {
             .rows
             .iter()
             .all(|row| { matches!(row.get("estRows"), Some(Value::Int(rows)) if *rows >= 1) }));
+    }
+
+    fn explain_join_with_search_budgets(max_groups: usize, max_expressions: usize) -> String {
+        let mut database = Database::new_with_config(DatabaseConfig {
+            max_optimizer_groups: Some(max_groups),
+            max_relational_join_expressions: Some(max_expressions),
+            ..DatabaseConfig::default()
+        });
+        database
+            .query_sql("CREATE TABLE join_left (id BIGINT PRIMARY KEY)")
+            .expect("create left join table");
+        database
+            .query_sql("CREATE TABLE join_right (id BIGINT PRIMARY KEY, left_id BIGINT NOT NULL)")
+            .expect("create right join table");
+
+        let explain = database
+            .query_sql(
+                "EXPLAIN SELECT l.id FROM join_left AS l \
+                 INNER JOIN join_right AS r ON r.left_id = l.id \
+                 ORDER BY l.id",
+            )
+            .expect("explain join with configured search budgets");
+        let join = explain
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.get("id"),
+                    Some(Value::String(id)) if id.contains("IndexNestedLoopJoinExec")
+                )
+            })
+            .expect("join explain row");
+        match join.get("operator info") {
+            Some(Value::String(info)) => info.clone(),
+            value => panic!("expected join operator info, got {value:?}"),
+        }
+    }
+
+    #[test]
+    fn database_config_injects_relational_join_search_budgets() {
+        let group_limited = explain_join_with_search_budgets(2, 5);
+        assert!(matches!(
+            group_limited.as_str(),
+            info if info.contains("planning_status=fallback")
+                && info.contains("planning_reason=group_budget_exceeded")
+                && info.contains("max_groups=2")
+                && info.contains("max_expressions=5")
+        ));
+
+        let expression_limited = explain_join_with_search_budgets(3, 1);
+        assert!(matches!(
+            expression_limited.as_str(),
+            info if info.contains("planning_status=fallback")
+                && info.contains("planning_reason=expression_budget_exceeded")
+                && info.contains("max_groups=3")
+                && info.contains("max_expressions=1")
+        ));
+    }
+
+    #[test]
+    fn prepared_relational_execution_is_admitted_before_scanning() {
+        let mut config = DatabaseConfig::default();
+        config.execution_memory.query_memory_bytes =
+            std::num::NonZeroUsize::new(1_024).expect("non-zero query memory budget");
+        config.execution_memory.batch_payload_bytes =
+            std::num::NonZeroUsize::new(768).expect("non-zero batch memory budget");
+        config.execution_memory.blocking_operator_bytes =
+            std::num::NonZeroUsize::new(512).expect("non-zero blocking memory budget");
+        let mut database = Database::new_with_config(config);
+        database
+            .query_sql("CREATE TABLE admission_rows (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+            .expect("create admission table");
+        database
+            .query_sql("INSERT INTO admission_rows (id, value) VALUES (1, 2)")
+            .expect("insert admission row");
+
+        let streaming = database
+            .query_sql("SELECT id FROM admission_rows")
+            .expect("streaming descriptor fits the query memory budget");
+        assert_eq!(streaming.rows.len(), 1);
+
+        database
+            .query_sql("EXPLAIN SELECT id FROM admission_rows ORDER BY value")
+            .expect("plain explain does not admit execution resources");
+        let error = database
+            .query_sql("SELECT id FROM admission_rows ORDER BY value")
+            .expect_err("blocking descriptor must be rejected before execution");
+        assert!(error.to_string().contains(
+            "prepared relational query requires 1280 estimated bytes, exceeding query_memory_bytes 1024"
+        ));
     }
 
     #[test]
@@ -2723,9 +2815,11 @@ mod tests {
             .to_string()
             .contains("relational columnar aggregate cannot fit one row"));
 
-        let mut constrained = query_limits(1, 4 * 1024);
-        constrained.blocking_operator_bytes =
-            std::num::NonZeroUsize::new(1).expect("non-zero aggregate memory budget");
+        let constrained_memory = skein_executor::ExecutionMemoryConfig {
+            blocking_operator_bytes: std::num::NonZeroUsize::new(1)
+                .expect("non-zero aggregate memory budget"),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
         let error = execute_relational_query_sql_with_runtime(
             summary_sql,
             &[text("stream-1")],
@@ -2734,8 +2828,8 @@ mod tests {
                 RelationalIndexReadMode::Materialized,
                 RelationalRowReadMode::CanonicalMemory,
             ),
-            constrained,
-            &skein_executor::ExecutionMemoryConfig::default(),
+            query_limits(1, 4 * 1024),
+            &constrained_memory,
             None,
         )
         .expect_err("aggregate must honor its memory budget");
@@ -2763,9 +2857,6 @@ mod tests {
             max_output_rows,
             max_output_payload_bytes,
             max_intermediate_rows: 10_000,
-            batch_rows: std::num::NonZeroUsize::new(256).expect("non-zero batch row budget"),
-            blocking_operator_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024)
-                .expect("non-zero aggregate memory budget"),
             hydration: skein_storage::RelationalHydrationBudget::default(),
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
@@ -3328,13 +3419,11 @@ mod tests {
             &[Value::Int(0), text("zero")],
         );
         let snapshot = store.snapshot().expect("spill fixture snapshot");
-        let mut limits = query_limits(256, 64 * 1024);
-        limits.batch_rows = std::num::NonZeroUsize::new(8).expect("non-zero batch rows");
-        limits.blocking_operator_bytes =
-            std::num::NonZeroUsize::new(16 * 1_024).expect("non-zero blocking memory");
+        let limits = query_limits(256, 64 * 1024);
         let memory = skein_executor::ExecutionMemoryConfig {
-            batch_rows: limits.batch_rows,
-            blocking_operator_bytes: limits.blocking_operator_bytes,
+            batch_rows: std::num::NonZeroUsize::new(8).expect("non-zero batch rows"),
+            blocking_operator_bytes: std::num::NonZeroUsize::new(16 * 1_024)
+                .expect("non-zero blocking memory"),
             min_spill_free_bytes: std::num::NonZeroU64::MIN,
             spill_directory: std::env::temp_dir().join(format!(
                 "skein-relational-spill-{}-{}",
