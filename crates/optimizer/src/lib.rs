@@ -49,6 +49,9 @@ pub use relational_join::{
     RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
     RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
 };
+pub use relational_join_cost::{
+    estimate_relational_access_cost, estimate_relational_probe_join_cost, RelationalJoinCardinality,
+};
 pub use relational_join_hypergraph::{
     enumerate_relational_csg_cmp_joins, RelationalCsgCmpAlternative, RelationalCsgCmpEnumeration,
     RelationalCsgCmpPlan, RelationalCsgCmpPlanNode,
