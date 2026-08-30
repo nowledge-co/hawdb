@@ -5,6 +5,9 @@ use super::{
     RelationalJoinAccessCandidate, RelationalQueryLimits,
 };
 use crate::error::{Result, SkeinError};
+use crate::relational_sql::{
+    RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStrategy,
+};
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlJoin,
     SqlJoinKind, SqlPredicate, SqlTableName,
@@ -27,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) struct PlannedSelectStatement {
     pub(super) statement: SelectStatement,
     pub(super) access_plan: Option<PreparedRelationalAccessPlan>,
-    pub(super) join_order_reordered: bool,
+    pub(super) join_planning: RelationalJoinPlanningOutcome,
 }
 
 struct BoundRelation<'a> {
@@ -66,21 +69,39 @@ pub(super) fn plan_select_join_order(
     state: &RelationalState,
     limits: RelationalQueryLimits,
 ) -> Result<PlannedSelectStatement> {
-    if !supports_join_enumeration(&select) {
-        return Ok(unchanged(select));
+    let config = RelationalJoinEnumerationConfig::default();
+    let syntax_order = select_relation_order(&select);
+    if let Err(reason) = join_enumeration_eligibility(&select) {
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(reason, syntax_order, config);
+        return Ok(unchanged(select, outcome));
     }
     let relations = bind_relations(&select, state)?;
     if !select_columns_resolve(&select, &relations) {
-        return Ok(unchanged(select));
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::UnresolvedColumns,
+            syntax_order,
+            config,
+        );
+        return Ok(unchanged(select, outcome));
     }
     let Some(bound_joins) = bind_join_inputs(&select, &relations) else {
-        return Ok(unchanged(select));
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::UnsupportedJoinPredicate,
+            syntax_order,
+            config,
+        );
+        return Ok(unchanged(select, outcome));
     };
     let predicates = &bound_joins.predicates;
     let Some(graph_relations) =
         build_graph_relations(&select, parameters, state, limits, &relations, predicates)?
     else {
-        return Ok(unchanged(select));
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::UnavailableAccessBinding,
+            syntax_order,
+            config,
+        );
+        return Ok(unchanged(select, outcome));
     };
     if bound_joins
         .operators
@@ -100,37 +121,67 @@ pub(super) fn plan_select_join_order(
                 })
                 .collect(),
         };
-        let Ok(enumeration) = enumerate_relational_inner_joins(
+        let enumeration = match enumerate_relational_inner_joins(
             &graph,
             &RequiredProperties::default(),
-            RelationalJoinEnumerationConfig::default(),
-        ) else {
-            return Ok(unchanged(select));
+            config,
+        ) {
+            Ok(enumeration) => enumeration,
+            Err(error) => {
+                let outcome = RelationalJoinPlanningOutcome::fallback_from_enumeration(
+                    RelationalJoinPlanningStrategy::InnerJoinMemo,
+                    &error,
+                    syntax_order,
+                    config,
+                );
+                return Ok(unchanged(select, outcome));
+            }
         };
-        let selected_order = enumeration.plan.binding_order();
-        let syntax_order = relations
+        let selected_bindings = enumeration.plan.binding_order();
+        let syntax_bindings = relations
             .iter()
             .map(|relation| relation.binding)
             .collect::<Vec<_>>();
+        let reordered = selected_bindings != syntax_bindings;
+        let selected_order = binding_order_names(&selected_bindings, &relations);
+        let outcome = RelationalJoinPlanningOutcome::selected(
+            RelationalJoinPlanningStrategy::InnerJoinMemo,
+            reordered,
+            enumeration.memo_groups,
+            enumeration.memo_expressions,
+            selected_order,
+            enumeration.plan.cost_breakdown,
+            config,
+        );
         return prepare_inner_select(
             select,
             &relations,
             predicates,
             &graph_relations,
             enumeration.plan,
-            selected_order != syntax_order,
+            outcome,
         );
     }
 
     let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
-        return Ok(unchanged(select));
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::InvalidJoinTree,
+            syntax_order,
+            config,
+        );
+        return Ok(unchanged(select, outcome));
     };
     let post_join_filter = match select.selection.as_ref() {
         Some(predicate) => {
             let Some(predicate) = qualify_predicate(predicate, &relations)
                 .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations))
             else {
-                return Ok(unchanged(select));
+                let outcome = RelationalJoinPlanningOutcome::not_eligible(
+                    RelationalJoinPlanningReason::UnsupportedPostJoinFilter,
+                    syntax_order,
+                    config,
+                );
+                return Ok(unchanged(select, outcome));
             };
             Some(predicate)
         }
@@ -144,47 +195,96 @@ pub(super) fn plan_select_join_order(
         initial_tree,
         post_join_filter,
     };
-    let Ok(enumeration) = enumerate_relational_join_rewrites(
+    let enumeration = match enumerate_relational_join_rewrites(
         &problem,
         &RequiredProperties::default(),
-        RelationalJoinEnumerationConfig::default(),
-    ) else {
-        return Ok(unchanged(select));
+        config,
+    ) {
+        Ok(enumeration) => enumeration,
+        Err(error) => {
+            let outcome =
+                RelationalJoinPlanningOutcome::fallback_from_rewrite(&error, syntax_order, config);
+            return Ok(unchanged(select, outcome));
+        }
     };
     let reordered = !rewrite_plan_matches_syntax(&enumeration.plan, &bound_joins.operators);
+    let selected_order = binding_order_names(&enumeration.plan.binding_order(), &relations);
+    let outcome = RelationalJoinPlanningOutcome::selected(
+        RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+        reordered,
+        enumeration.memo_groups,
+        enumeration.memo_expressions,
+        selected_order,
+        enumeration.plan.cost_breakdown,
+        config,
+    );
     prepare_outer_select(
         select,
         &relations,
         predicates,
         &graph_relations,
         enumeration.plan,
-        reordered,
+        outcome,
     )
 }
 
-fn unchanged(statement: SelectStatement) -> PlannedSelectStatement {
+fn unchanged(
+    statement: SelectStatement,
+    join_planning: RelationalJoinPlanningOutcome,
+) -> PlannedSelectStatement {
     PlannedSelectStatement {
         statement,
         access_plan: None,
-        join_order_reordered: false,
+        join_planning,
     }
 }
 
-fn supports_join_enumeration(select: &SelectStatement) -> bool {
-    !select.joins.is_empty()
-        && select
-            .joins
-            .iter()
-            .all(|join| matches!(join.kind, SqlJoinKind::Inner | SqlJoinKind::Left))
-        && select.lock_strength.is_none()
-        && !select
-            .projection
-            .iter()
-            .any(|projection| matches!(projection, SelectProjection::Wildcard))
-        && (select.distinct
-            || !select.order_by.is_empty()
-            || !select.group_by.is_empty()
-            || select.projection.iter().any(projection_contains_aggregate))
+fn join_enumeration_eligibility(
+    select: &SelectStatement,
+) -> std::result::Result<(), RelationalJoinPlanningReason> {
+    if select.joins.is_empty() {
+        return Err(RelationalJoinPlanningReason::NoJoin);
+    }
+    if !select
+        .joins
+        .iter()
+        .all(|join| matches!(join.kind, SqlJoinKind::Inner | SqlJoinKind::Left))
+    {
+        return Err(RelationalJoinPlanningReason::UnsupportedJoinKind);
+    }
+    if select.lock_strength.is_some() {
+        return Err(RelationalJoinPlanningReason::LockingSelect);
+    }
+    if select
+        .projection
+        .iter()
+        .any(|projection| matches!(projection, SelectProjection::Wildcard))
+    {
+        return Err(RelationalJoinPlanningReason::WildcardProjection);
+    }
+    if !(select.distinct
+        || !select.order_by.is_empty()
+        || !select.group_by.is_empty()
+        || select.projection.iter().any(projection_contains_aggregate))
+    {
+        return Err(RelationalJoinPlanningReason::UnstableOutputOrder);
+    }
+    Ok(())
+}
+
+fn select_relation_order(select: &SelectStatement) -> Vec<String> {
+    std::iter::once(
+        select
+            .from_alias
+            .clone()
+            .unwrap_or_else(|| select.from.name.clone()),
+    )
+    .chain(select.joins.iter().map(|join| {
+        join.alias
+            .clone()
+            .unwrap_or_else(|| join.table.name.clone())
+    }))
+    .collect()
 }
 
 fn bind_relations<'a>(
@@ -434,8 +534,9 @@ fn prepare_inner_select(
     predicates: &[BoundJoinPredicate],
     prepared_relations: &[PreparedGraphRelation],
     plan: skein_optimizer::RelationalJoinPlan,
-    reordered: bool,
+    join_planning: RelationalJoinPlanningOutcome,
 ) -> Result<PlannedSelectStatement> {
+    let reordered = join_planning.join_order_reordered();
     let access_plan = prepare_selected_access_plan(
         prepared_relations,
         plan.base_binding,
@@ -476,7 +577,7 @@ fn prepare_inner_select(
     Ok(PlannedSelectStatement {
         statement: select,
         access_plan: Some(access_plan),
-        join_order_reordered: reordered,
+        join_planning,
     })
 }
 
@@ -486,8 +587,9 @@ fn prepare_outer_select(
     predicates: &[BoundJoinPredicate],
     prepared_relations: &[PreparedGraphRelation],
     plan: RelationalJoinRewritePlan,
-    reordered: bool,
+    join_planning: RelationalJoinPlanningOutcome,
 ) -> Result<PlannedSelectStatement> {
+    let reordered = join_planning.join_order_reordered();
     let access_plan = prepare_selected_access_plan(
         prepared_relations,
         plan.base_binding,
@@ -531,7 +633,7 @@ fn prepare_outer_select(
     Ok(PlannedSelectStatement {
         statement: select,
         access_plan: Some(access_plan),
-        join_order_reordered: reordered,
+        join_planning,
     })
 }
 
@@ -633,6 +735,13 @@ fn relation_by_binding<'relations, 'schema>(
         .iter()
         .find(|relation| relation.binding == binding)
         .expect("enumerated binding came from the bound relation set")
+}
+
+fn binding_order_names(bindings: &[BindingId], relations: &[BoundRelation<'_>]) -> Vec<String> {
+    bindings
+        .iter()
+        .map(|binding| relation_by_binding(relations, *binding).qualifier.clone())
+        .collect()
 }
 
 fn combine_predicates(predicates: impl IntoIterator<Item = SqlPredicate>) -> SqlPredicate {
@@ -870,19 +979,36 @@ mod tests {
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id INNER JOIN owners AS o ON o.id = d.owner_id ORDER BY c.id",
             "SELECT c.id FROM chunks AS c LEFT JOIN documents AS d ON d.id = c.document_id WHERE d.id IS NOT NULL ORDER BY c.id",
         ] {
-            assert!(supports_join_enumeration(&select(sql)), "{sql}");
+            assert!(join_enumeration_eligibility(&select(sql)).is_ok(), "{sql}");
         }
     }
 
     #[test]
     fn join_enumeration_rejects_semantically_unstable_shapes() {
-        for sql in [
-            "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id",
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
-            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id FOR UPDATE",
+        for (sql, expected) in [
+            (
+                "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id",
+                RelationalJoinPlanningReason::WildcardProjection,
+            ),
+            (
+                "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
+                RelationalJoinPlanningReason::UnstableOutputOrder,
+            ),
+            (
+                "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id FOR UPDATE",
+                RelationalJoinPlanningReason::LockingSelect,
+            ),
         ] {
-            assert!(!supports_join_enumeration(&select(sql)), "{sql}");
+            assert_eq!(join_enumeration_eligibility(&select(sql)), Err(expected), "{sql}");
         }
+    }
+
+    #[test]
+    fn join_enumeration_reports_no_join() {
+        assert_eq!(
+            join_enumeration_eligibility(&select("SELECT id FROM chunks ORDER BY id")),
+            Err(RelationalJoinPlanningReason::NoJoin)
+        );
     }
 
     #[test]
