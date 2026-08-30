@@ -2931,7 +2931,7 @@ mod tests {
         );
         assert_eq!(
             output.join_planning.strategy,
-            RelationalJoinPlanningStrategy::InnerJoinMemo
+            RelationalJoinPlanningStrategy::CsgCmpMemo
         );
         assert_eq!(
             output.join_planning.status,
@@ -2978,7 +2978,7 @@ mod tests {
             join.get("operator info"),
             Some(Value::String(info))
                 if info.contains("join_order=cost_reordered")
-                    && info.contains("planning_strategy=inner_join_memo")
+                    && info.contains("planning_strategy=csg_cmp_memo")
                     && info.contains("planning_status=selected")
                     && info.contains("planning_reason=cost_reordered")
                     && info.contains("selected_order=[d,c]")

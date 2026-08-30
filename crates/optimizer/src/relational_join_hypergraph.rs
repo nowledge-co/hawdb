@@ -525,6 +525,12 @@ fn compare_probe_plans(
                 .descriptor
                 .unique_point
                 .cmp(&left.descriptor.unique_point)
+                .then_with(|| {
+                    right
+                        .descriptor
+                        .equality_prefix_len
+                        .cmp(&left.descriptor.equality_prefix_len)
+                })
                 .then_with(|| left.descriptor.name.cmp(&right.descriptor.name)),
             _ => std::cmp::Ordering::Equal,
         })
@@ -721,6 +727,51 @@ mod tests {
         assert_eq!(left.bindings(), A.into());
         let RelationalCsgCmpPlanNode::Relation { access_path, .. } = *right else {
             panic!("expected singleton probe on the right");
+        };
+        assert_eq!(access_path.descriptor.name, "by_outer");
+    }
+
+    #[test]
+    fn csg_cmp_probe_tie_prefers_the_longer_equality_prefix() {
+        let tree = RelationalJoinTree::join(
+            operator(1, RelationalJoinOperatorKind::Inner, &[A, B]),
+            RelationalJoinTree::Relation(A),
+            RelationalJoinTree::Relation(B),
+        );
+        let mut inner = relation(B, 10);
+        inner.access_paths.push(RelationalJoinAccessPath::probe(
+            RelationalAccessPathDescriptor {
+                kind: RelationalAccessPathKind::Index,
+                name: "by_outer".to_string(),
+                index_columns: vec!["outer_id".to_string()],
+                access_columns: BTreeSet::from(["outer_id".to_string()]),
+                equality_prefix_len: 1,
+                order_prefix_len: 0,
+                unique_point: false,
+                covering: false,
+                requires_row_fetch: true,
+                estimated_rows: 10,
+            },
+            A.into(),
+        ));
+        let problem = RelationalJoinRewriteProblem {
+            relations: vec![relation(A, 1), inner],
+            initial_tree: tree,
+            post_join_filter: None,
+        };
+
+        let result = enumerate_relational_csg_cmp_joins(
+            &problem,
+            &RequiredProperties::default(),
+            RelationalJoinEnumerationConfig::default(),
+        )
+        .unwrap();
+
+        let RelationalCsgCmpPlanNode::Join { right, .. } = result.plan.root else {
+            panic!("expected a join root");
+        };
+        let RelationalCsgCmpPlanNode::Relation { access_path, .. } = *right else {
+            panic!("expected a singleton probe");
         };
         assert_eq!(access_path.descriptor.name, "by_outer");
     }

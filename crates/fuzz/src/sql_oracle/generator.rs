@@ -147,7 +147,7 @@ fn sql_join_rewrite_case(seed: u64, index: usize) -> SqlJoinRewriteCase {
                 "r.bucket AS bucket, r.tag AS row_tag, g.priority AS group_priority, x.rank AS region_rank",
                 "x.rank = $1",
                 "r.id ASC, g.id ASC, x.id ASC",
-                RelationalJoinPlanningStrategy::InnerJoinMemo,
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
             ),
             1 => (
                 "four_inner_chain",
@@ -158,7 +158,7 @@ fn sql_join_rewrite_case(seed: u64, index: usize) -> SqlJoinRewriteCase {
                 "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
                 "x.rank = $1",
                 "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
-                RelationalJoinPlanningStrategy::InnerJoinMemo,
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
             ),
             2 => (
                 "four_mixed_left_preserved",
@@ -169,7 +169,7 @@ fn sql_join_rewrite_case(seed: u64, index: usize) -> SqlJoinRewriteCase {
                 "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
                 "x.rank = $1",
                 "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
-                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
             ),
             _ => (
                 "four_mixed_left_null_rejected",
@@ -180,7 +180,7 @@ fn sql_join_rewrite_case(seed: u64, index: usize) -> SqlJoinRewriteCase {
                 "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
                 "x.rank = $1 AND g.id IS NOT NULL AND x.id IS NOT NULL",
                 "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
-                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
             ),
         };
     let base_sql = format!("SELECT {projection} FROM {from} WHERE {predicate}");

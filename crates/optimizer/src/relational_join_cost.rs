@@ -9,7 +9,7 @@ pub enum RelationalJoinCardinality {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelationalJoinRightInput {
+pub enum RelationalJoinRightInput {
     /// The right access runs once per outer row, so its component costs scale
     /// with the outer cardinality instead of being charged as a subtree.
     Probe,
@@ -37,7 +37,7 @@ pub fn estimate_relational_probe_join_cost(
     )
 }
 
-pub(crate) fn estimate_relational_join_cost(
+pub fn estimate_relational_join_cost(
     left: PlanCostBreakdown,
     right: PlanCostBreakdown,
     cardinality: RelationalJoinCardinality,

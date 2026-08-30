@@ -419,7 +419,7 @@ pub(crate) fn sql_join_rewrite_capability_profile_json() -> JsonValue {
         "left_join": true,
         "null_rejection": true,
         "pinned_snapshot": true,
-        "optimized_strategy": ["inner_join_memo", "inner_left_join_rewrite_memo"],
+        "optimized_strategy": ["csg_cmp_memo"],
         "reference_strategy": "syntax_order",
         "result_semantics": "bag",
     })

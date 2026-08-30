@@ -1,8 +1,10 @@
 use super::{
     choose_base_access, choose_join_access, projection_contains_aggregate,
-    PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
-    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalIndexReadMode,
-    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalQueryLimits,
+    PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, PreparedRelationalJoinTree,
+    PreparedRelationalJoinTreeNode, PreparedRelationalTreeAccess, PreparedRelationalTreeRelation,
+    RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
+    RelationalIndexReadMode, RelationalJoinAccess, RelationalJoinAccessCandidate,
+    RelationalOperatorId, RelationalQueryLimits,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
@@ -17,8 +19,9 @@ use skein_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
 use skein_optimizer::{
-    enumerate_relational_inner_joins, enumerate_relational_join_rewrites,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinAccessPath,
+    enumerate_relational_csg_cmp_joins, enumerate_relational_inner_joins,
+    enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalJoinAccessPath,
     RelationalJoinEnumerationConfig, RelationalJoinGraph, RelationalJoinOperator,
     RelationalJoinOperatorId, RelationalJoinOperatorKind, RelationalJoinPredicate,
     RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewritePlan,
@@ -111,11 +114,19 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     };
-    if bound_joins
+    let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
+        let outcome = RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::InvalidJoinTree,
+            syntax_order,
+            config,
+        );
+        return Ok(unchanged(select, outcome));
+    };
+    let all_inner = bound_joins
         .operators
         .iter()
-        .all(|operator| operator.operator.kind == RelationalJoinOperatorKind::Inner)
-    {
+        .all(|operator| operator.operator.kind == RelationalJoinOperatorKind::Inner);
+    let inner_enumeration = if all_inner {
         let graph = RelationalJoinGraph {
             relations: graph_relations
                 .iter()
@@ -129,22 +140,68 @@ pub(super) fn plan_select_join_order(
                 })
                 .collect(),
         };
-        let enumeration = match enumerate_relational_inner_joins(
-            &graph,
-            &RequiredProperties::default(),
-            config,
-        ) {
-            Ok(enumeration) => enumeration,
-            Err(error) => {
-                let outcome = RelationalJoinPlanningOutcome::fallback_from_enumeration(
-                    RelationalJoinPlanningStrategy::InnerJoinMemo,
-                    &error,
-                    syntax_order,
-                    config,
-                );
-                return Ok(unchanged(select, outcome));
-            }
+        Some(
+            match enumerate_relational_inner_joins(&graph, &RequiredProperties::default(), config) {
+                Ok(enumeration) => enumeration,
+                Err(error) => {
+                    let outcome = RelationalJoinPlanningOutcome::fallback_from_enumeration(
+                        RelationalJoinPlanningStrategy::InnerJoinMemo,
+                        &error,
+                        syntax_order,
+                        config,
+                    );
+                    return Ok(unchanged(select, outcome));
+                }
+            },
+        )
+    } else {
+        None
+    };
+    let post_join_filter = select
+        .selection
+        .as_ref()
+        .and_then(|predicate| qualify_predicate(predicate, &relations))
+        .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations));
+    if select.selection.is_none() || post_join_filter.is_some() {
+        let problem = RelationalJoinRewriteProblem {
+            relations: graph_relations
+                .iter()
+                .map(|relation| relation.optimizer_relation.clone())
+                .collect(),
+            initial_tree: initial_tree.clone(),
+            post_join_filter: post_join_filter.clone(),
         };
+        if let Ok(enumeration) =
+            enumerate_relational_csg_cmp_joins(&problem, &RequiredProperties::default(), config)
+        {
+            let selected_bindings = csg_cmp_binding_order(&enumeration.plan.root);
+            let selected_order = binding_order_names(&selected_bindings, &relations);
+            let syntax_bindings = relations
+                .iter()
+                .map(|relation| relation.binding)
+                .collect::<Vec<_>>();
+            let outcome = RelationalJoinPlanningOutcome::selected(
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
+                selected_bindings != syntax_bindings
+                    || plan_has_materialized_right(&enumeration.plan.root),
+                enumeration.memo_groups,
+                enumeration.memo_expressions,
+                selected_order,
+                enumeration.plan.cost_breakdown,
+                config,
+            );
+            return prepare_csg_cmp_select(
+                select,
+                &relations,
+                predicates,
+                &graph_relations,
+                enumeration.plan,
+                outcome,
+            );
+        }
+    }
+    if all_inner {
+        let enumeration = inner_enumeration.expect("inner join graph was prevalidated");
         let selected_bindings = enumeration.plan.binding_order();
         let syntax_bindings = relations
             .iter()
@@ -171,14 +228,6 @@ pub(super) fn plan_select_join_order(
         );
     }
 
-    let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
-        let outcome = RelationalJoinPlanningOutcome::not_eligible(
-            RelationalJoinPlanningReason::InvalidJoinTree,
-            syntax_order,
-            config,
-        );
-        return Ok(unchanged(select, outcome));
-    };
     let post_join_filter = match select.selection.as_ref() {
         Some(predicate) => {
             let Some(predicate) = qualify_predicate(predicate, &relations)
@@ -234,6 +283,33 @@ pub(super) fn plan_select_join_order(
         enumeration.plan,
         outcome,
     )
+}
+
+fn plan_has_materialized_right(node: &RelationalCsgCmpPlanNode) -> bool {
+    match node {
+        RelationalCsgCmpPlanNode::Relation { .. } => false,
+        RelationalCsgCmpPlanNode::Join { left, right, .. } => {
+            matches!(right.as_ref(), RelationalCsgCmpPlanNode::Join { .. })
+                || plan_has_materialized_right(left)
+                || plan_has_materialized_right(right)
+        }
+    }
+}
+
+fn csg_cmp_binding_order(node: &RelationalCsgCmpPlanNode) -> Vec<BindingId> {
+    fn collect(node: &RelationalCsgCmpPlanNode, bindings: &mut Vec<BindingId>) {
+        match node {
+            RelationalCsgCmpPlanNode::Relation { binding, .. } => bindings.push(*binding),
+            RelationalCsgCmpPlanNode::Join { left, right, .. } => {
+                collect(left, bindings);
+                collect(right, bindings);
+            }
+        }
+    }
+
+    let mut bindings = Vec::new();
+    collect(node, &mut bindings);
+    bindings
 }
 
 fn unchanged(
@@ -546,6 +622,174 @@ fn join_access_bindings(
     (!bindings.contains(target) && !bindings.is_empty()).then_some(bindings)
 }
 
+#[derive(Clone, Copy)]
+enum PreparedTreeRelationRole {
+    Base,
+    Probe,
+}
+
+fn prepare_csg_cmp_select(
+    select: SelectStatement,
+    relations: &[BoundRelation<'_>],
+    predicates: &[BoundJoinPredicate],
+    prepared_relations: &[PreparedGraphRelation],
+    plan: RelationalCsgCmpPlan,
+    join_planning: RelationalJoinPlanningOutcome,
+) -> Result<PlannedSelectStatement> {
+    let predicate_by_id = predicates
+        .iter()
+        .map(|predicate| (predicate.id, predicate.predicate.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut next_join_plan_index = 1usize;
+    let root = prepare_csg_cmp_node(
+        &plan.root,
+        PreparedTreeRelationRole::Base,
+        relations,
+        prepared_relations,
+        &predicate_by_id,
+        &mut next_join_plan_index,
+    )?;
+    let mut leaves = Vec::new();
+    root.visit_relations(&mut |relation| leaves.push(relation.clone()));
+    let Some(first) = leaves.first() else {
+        return Err(SkeinError::Execution(
+            "CSG-CMP selected an empty relational join tree".to_string(),
+        ));
+    };
+    let PreparedRelationalTreeAccess::Base(base_access) = &first.access else {
+        return Err(SkeinError::Execution(
+            "CSG-CMP join tree does not start with a base access".to_string(),
+        ));
+    };
+    let join_accesses = leaves
+        .iter()
+        .skip(1)
+        .map(|relation| match &relation.access {
+            PreparedRelationalTreeAccess::Probe(access) => Ok(access.clone()),
+            PreparedRelationalTreeAccess::Base(_) => {
+                selected_materialized_join_display_access(prepared_relations, relation.binding)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PlannedSelectStatement {
+        statement: select,
+        access_plan: Some(PreparedRelationalAccessPlan {
+            base_access: base_access.clone(),
+            join_accesses,
+            join_selection: None,
+            join_tree: Some(PreparedRelationalJoinTree {
+                root,
+                cost_breakdown: plan.cost_breakdown,
+            }),
+        }),
+        join_planning,
+    })
+}
+
+fn prepare_csg_cmp_node(
+    node: &RelationalCsgCmpPlanNode,
+    role: PreparedTreeRelationRole,
+    relations: &[BoundRelation<'_>],
+    prepared_relations: &[PreparedGraphRelation],
+    predicates: &BTreeMap<RelationalJoinPredicateId, SqlPredicate>,
+    next_join_plan_index: &mut usize,
+) -> Result<PreparedRelationalJoinTreeNode> {
+    match node {
+        RelationalCsgCmpPlanNode::Relation {
+            binding,
+            access_path,
+        } => {
+            let relation = relation_by_binding(relations, *binding);
+            let access = match role {
+                PreparedTreeRelationRole::Base => PreparedRelationalTreeAccess::Base(
+                    selected_base_access(prepared_relations, *binding, access_path)?,
+                ),
+                PreparedTreeRelationRole::Probe => PreparedRelationalTreeAccess::Probe(
+                    selected_join_access(prepared_relations, *binding, access_path)?,
+                ),
+            };
+            Ok(PreparedRelationalJoinTreeNode::Relation(
+                PreparedRelationalTreeRelation {
+                    binding: *binding,
+                    table: relation.table.name.clone(),
+                    qualifier: relation.qualifier.clone(),
+                    access,
+                },
+            ))
+        }
+        RelationalCsgCmpPlanNode::Join {
+            operator_id: _,
+            operator_kind,
+            predicate_ids,
+            left,
+            right,
+        } => {
+            let left = prepare_csg_cmp_node(
+                left,
+                PreparedTreeRelationRole::Base,
+                relations,
+                prepared_relations,
+                predicates,
+                next_join_plan_index,
+            )?;
+            let right_role = if matches!(right.as_ref(), RelationalCsgCmpPlanNode::Relation { .. })
+            {
+                PreparedTreeRelationRole::Probe
+            } else {
+                PreparedTreeRelationRole::Base
+            };
+            let right = prepare_csg_cmp_node(
+                right,
+                right_role,
+                relations,
+                prepared_relations,
+                predicates,
+                next_join_plan_index,
+            )?;
+            let predicates = predicate_ids
+                .iter()
+                .map(|id| {
+                    predicates.get(id).cloned().ok_or_else(|| {
+                        SkeinError::Execution(format!(
+                            "CSG-CMP selected unknown relational predicate {}",
+                            id.get()
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let prepared_operator_id = RelationalOperatorId::from_plan_index(*next_join_plan_index);
+            *next_join_plan_index = next_join_plan_index.saturating_add(1);
+            Ok(PreparedRelationalJoinTreeNode::Join {
+                operator_id: prepared_operator_id,
+                kind: match operator_kind {
+                    RelationalJoinOperatorKind::Inner => SqlJoinKind::Inner,
+                    RelationalJoinOperatorKind::LeftOuter => SqlJoinKind::Left,
+                },
+                predicates,
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        }
+    }
+}
+
+fn selected_materialized_join_display_access(
+    prepared_relations: &[PreparedGraphRelation],
+    binding: BindingId,
+) -> Result<RelationalJoinAccessCandidate> {
+    prepared_relation(prepared_relations, binding)?
+        .join_accesses
+        .iter()
+        .find(|(path, _)| path.descriptor.kind == RelationalAccessPathKind::FullScan)
+        .map(|(_, access)| access.clone())
+        .ok_or_else(|| {
+            SkeinError::Execution(format!(
+                "CSG-CMP materialized binding {} has no full-scan display access",
+                binding.get()
+            ))
+        })
+}
+
 fn prepare_inner_select(
     mut select: SelectStatement,
     relations: &[BoundRelation<'_>],
@@ -679,6 +923,7 @@ fn prepare_selected_access_plan<'a>(
                 .collect(),
             cost_breakdown,
         }),
+        join_tree: None,
     })
 }
 

@@ -8,6 +8,7 @@ pub enum RelationalJoinPlanningStrategy {
     SyntaxOrder,
     InnerJoinMemo,
     InnerLeftJoinRewriteMemo,
+    CsgCmpMemo,
 }
 
 impl RelationalJoinPlanningStrategy {
@@ -16,6 +17,7 @@ impl RelationalJoinPlanningStrategy {
             Self::SyntaxOrder => "syntax_order",
             Self::InnerJoinMemo => "inner_join_memo",
             Self::InnerLeftJoinRewriteMemo => "inner_left_join_rewrite_memo",
+            Self::CsgCmpMemo => "csg_cmp_memo",
         }
     }
 }
@@ -281,6 +283,10 @@ mod tests {
         assert_eq!(
             RelationalJoinPlanningStrategy::InnerJoinMemo.as_str(),
             "inner_join_memo"
+        );
+        assert_eq!(
+            RelationalJoinPlanningStrategy::CsgCmpMemo.as_str(),
+            "csg_cmp_memo"
         );
         assert_eq!(RelationalJoinPlanningStatus::Fallback.as_str(), "fallback");
         assert_eq!(

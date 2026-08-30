@@ -34,9 +34,10 @@ use skein_executor::{
 };
 use skein_expression::BindingId;
 use skein_optimizer::{
-    estimate_relational_access_cost, estimate_relational_probe_join_cost,
-    select_relational_access_path, PlanCostBreakdown, RelationalAccessPathDescriptor,
-    RelationalAccessPathKind, RelationalJoinCardinality, RelationalJoinEnumerationConfig,
+    estimate_relational_access_cost, estimate_relational_join_cost,
+    estimate_relational_probe_join_cost, select_relational_access_path, PlanCostBreakdown,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
+    RelationalJoinEnumerationConfig, RelationalJoinRightInput,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -279,11 +280,100 @@ struct PreparedRelationalJoinSelection {
     cost_breakdown: PlanCostBreakdown,
 }
 
+#[derive(Debug, Clone)]
+enum PreparedRelationalTreeAccess {
+    Base(RelationalAccessCandidate),
+    Probe(RelationalJoinAccessCandidate),
+}
+
+impl PreparedRelationalTreeAccess {
+    fn descriptor(&self) -> &RelationalAccessPathDescriptor {
+        match self {
+            Self::Base(access) => &access.descriptor,
+            Self::Probe(access) => &access.descriptor,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRelationalTreeRelation {
+    binding: BindingId,
+    table: String,
+    qualifier: String,
+    access: PreparedRelationalTreeAccess,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedRelationalJoinTreeNode {
+    Relation(PreparedRelationalTreeRelation),
+    Join {
+        operator_id: RelationalOperatorId,
+        kind: SqlJoinKind,
+        predicates: Vec<SqlPredicate>,
+        left: Box<Self>,
+        right: Box<Self>,
+    },
+}
+
+impl PreparedRelationalJoinTreeNode {
+    fn first_relation(&self) -> &PreparedRelationalTreeRelation {
+        match self {
+            Self::Relation(relation) => relation,
+            Self::Join { left, .. } => left.first_relation(),
+        }
+    }
+
+    fn visit_relations<'a>(&'a self, visit: &mut impl FnMut(&'a PreparedRelationalTreeRelation)) {
+        match self {
+            Self::Relation(relation) => visit(relation),
+            Self::Join { left, right, .. } => {
+                left.visit_relations(visit);
+                right.visit_relations(visit);
+            }
+        }
+    }
+
+    fn relation_count(&self) -> usize {
+        let mut count = 0usize;
+        self.visit_relations(&mut |_| count = count.saturating_add(1));
+        count
+    }
+
+    fn visit_join_right_relations<'a>(
+        &'a self,
+        visit: &mut impl FnMut(&'a PreparedRelationalTreeRelation),
+    ) {
+        if let Self::Join { left, right, .. } = self {
+            left.visit_join_right_relations(visit);
+            right.visit_join_right_relations(visit);
+            visit(right.first_relation());
+        }
+    }
+
+    fn materialized_right_count(&self) -> usize {
+        match self {
+            Self::Relation(_) => 0,
+            Self::Join { left, right, .. } => {
+                usize::from(matches!(right.as_ref(), Self::Join { .. }))
+                    .saturating_add(left.materialized_right_count())
+                    .saturating_add(right.materialized_right_count())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRelationalJoinTree {
+    root: PreparedRelationalJoinTreeNode,
+    cost_breakdown: PlanCostBreakdown,
+}
+
 #[derive(Debug)]
 struct PreparedRelationalAccessPlan {
     base_access: RelationalAccessCandidate,
     join_accesses: Vec<RelationalJoinAccessCandidate>,
     join_selection: Option<PreparedRelationalJoinSelection>,
+    join_tree: Option<PreparedRelationalJoinTree>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,7 +450,13 @@ impl PreparedRelationalExecutionDescriptor {
                     1
                 }
             }
-        };
+        }
+        .saturating_add(
+            access_plan
+                .join_tree
+                .as_ref()
+                .map_or(0, |tree| tree.root.materialized_right_count()),
+        );
         Self {
             mode,
             memory_shape: RelationalExecutionMemoryShape {
@@ -430,6 +526,30 @@ impl PreparedRelationalSelect {
                 "prepared relational SELECT has an inconsistent join access path".to_string(),
             ));
         }
+        if let Some(tree) = &self.access_plan.join_tree {
+            if tree.root.relation_count() != self.statement.joins.len().saturating_add(1) {
+                return Err(SkeinError::Execution(format!(
+                    "prepared CSG-CMP tree has {} relations for a {}-join SELECT",
+                    tree.root.relation_count(),
+                    self.statement.joins.len()
+                )));
+            }
+            let mut bindings = BTreeSet::new();
+            let mut duplicate = None;
+            tree.root.visit_relations(&mut |relation| {
+                if !bindings.insert(relation.binding) {
+                    duplicate = Some(relation.binding);
+                }
+            });
+            if let Some(binding) = duplicate {
+                return Err(SkeinError::Execution(format!(
+                    "prepared CSG-CMP tree repeats binding {}",
+                    binding.get()
+                )));
+            }
+            validate_prepared_join_tree_accesses(&tree.root, true)?;
+            planned_tree_operator_cardinality_profiles(tree)?;
+        }
         if let Some(selection) = &self.access_plan.join_selection {
             if selection.join_bindings.len() != self.statement.joins.len() {
                 return Err(SkeinError::Execution(format!(
@@ -468,6 +588,47 @@ impl PreparedRelationalSelect {
             ));
         }
         Ok(())
+    }
+}
+
+fn validate_prepared_join_tree_accesses(
+    node: &PreparedRelationalJoinTreeNode,
+    requires_base: bool,
+) -> Result<()> {
+    match node {
+        PreparedRelationalJoinTreeNode::Relation(relation) => match &relation.access {
+            PreparedRelationalTreeAccess::Base(access)
+                if requires_base && base_access_matches_descriptor(access) =>
+            {
+                Ok(())
+            }
+            PreparedRelationalTreeAccess::Probe(access)
+                if !requires_base && join_access_matches_descriptor(access) =>
+            {
+                Ok(())
+            }
+            _ => Err(SkeinError::Execution(format!(
+                "prepared CSG-CMP relation {} has an invalid access role",
+                relation.qualifier
+            ))),
+        },
+        PreparedRelationalJoinTreeNode::Join {
+            predicates,
+            left,
+            right,
+            ..
+        } => {
+            if predicates.is_empty() {
+                return Err(SkeinError::Execution(
+                    "prepared CSG-CMP join has no predicate".to_string(),
+                ));
+            }
+            validate_prepared_join_tree_accesses(left, true)?;
+            validate_prepared_join_tree_accesses(
+                right,
+                !matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Relation(_)),
+            )
+        }
     }
 }
 
@@ -512,6 +673,9 @@ fn join_access_matches_descriptor(candidate: &RelationalJoinAccessCandidate) -> 
 fn planned_operator_cardinality_profiles(
     prepared: &PreparedRelationalSelect,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
+    if let Some(tree) = &prepared.access_plan.join_tree {
+        return planned_tree_operator_cardinality_profiles(tree);
+    }
     let mut cost =
         estimate_relational_access_cost(prepared.access_plan.base_access.descriptor.estimated_rows);
     let mut profiles = Vec::with_capacity(prepared.statement.joins.len().saturating_add(1));
@@ -566,6 +730,107 @@ fn planned_operator_cardinality_profiles(
     Ok(profiles)
 }
 
+fn planned_tree_operator_cardinality_profiles(
+    tree: &PreparedRelationalJoinTree,
+) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
+    fn plan_node(
+        node: &PreparedRelationalJoinTreeNode,
+        profiles: &mut [Option<RelationalOperatorCardinalityProfile>],
+    ) -> Result<PlanCostBreakdown> {
+        match node {
+            PreparedRelationalJoinTreeNode::Relation(relation) => Ok(
+                estimate_relational_access_cost(relation.access.descriptor().estimated_rows),
+            ),
+            PreparedRelationalJoinTreeNode::Join {
+                operator_id,
+                kind,
+                left,
+                right,
+                ..
+            } => {
+                let left_cost = plan_node(left, profiles)?;
+                let right_cost = plan_node(right, profiles)?;
+                let cardinality = match kind {
+                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
+                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
+                };
+                let cost = estimate_relational_join_cost(
+                    left_cost,
+                    right_cost,
+                    cardinality,
+                    if matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Relation(_)) {
+                        RelationalJoinRightInput::Probe
+                    } else {
+                        RelationalJoinRightInput::Materialized
+                    },
+                );
+                let index = operator_id.get().checked_sub(1).ok_or_else(|| {
+                    SkeinError::Execution(
+                        "prepared CSG-CMP join has an invalid operator id".to_string(),
+                    )
+                })?;
+                let slot = profiles.get_mut(index).ok_or_else(|| {
+                    SkeinError::Execution(format!(
+                        "prepared CSG-CMP join operator {} is outside the plan profile",
+                        operator_id.get()
+                    ))
+                })?;
+                if slot.is_some() {
+                    return Err(SkeinError::Execution(format!(
+                        "prepared CSG-CMP join repeats operator {}",
+                        operator_id.get()
+                    )));
+                }
+                *slot = Some(RelationalOperatorCardinalityProfile {
+                    operator_id: *operator_id,
+                    operator: match kind {
+                        SqlJoinKind::Inner => RelationalOperatorKind::IndexNestedLoopJoin,
+                        SqlJoinKind::Left => RelationalOperatorKind::IndexNestedLoopLeftJoin,
+                    },
+                    table: right.first_relation().table.clone(),
+                    estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
+                    actual_rows: None,
+                    fully_consumed: false,
+                });
+                Ok(cost)
+            }
+        }
+    }
+
+    let relation_count = tree.root.relation_count();
+    let mut profiles = vec![None; relation_count];
+    let base = tree.root.first_relation();
+    profiles[0] = Some(RelationalOperatorCardinalityProfile {
+        operator_id: RelationalOperatorId::from_plan_index(0),
+        operator: match base.access.descriptor().kind {
+            RelationalAccessPathKind::FullScan => RelationalOperatorKind::TableFullScan,
+            RelationalAccessPathKind::PrimaryKey => RelationalOperatorKind::TablePointGet,
+            RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
+        },
+        table: base.table.clone(),
+        estimated_rows: base.access.descriptor().estimated_rows,
+        actual_rows: None,
+        fully_consumed: false,
+    });
+    let cost = plan_node(&tree.root, &mut profiles)?;
+    if cost != tree.cost_breakdown {
+        return Err(SkeinError::Execution(
+            "prepared CSG-CMP operator estimates diverge from the selected join cost".to_string(),
+        ));
+    }
+    profiles
+        .into_iter()
+        .enumerate()
+        .map(|(index, profile)| {
+            profile.ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "prepared CSG-CMP plan has no operator profile at index {index}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn estimated_rows_as_usize(rows: u64) -> usize {
     usize::try_from(rows).unwrap_or(usize::MAX)
 }
@@ -594,6 +859,34 @@ fn relational_locator_layout<'a>(
             },
         )),
     )
+}
+
+fn relational_join_tree_locator_layout<'a>(
+    state: &'a RelationalState,
+    tree: &'a PreparedRelationalJoinTree,
+) -> Result<RelationalLocatorLayout<'a>> {
+    let mut bindings = Vec::with_capacity(tree.root.relation_count());
+    let mut error = None;
+    tree.root.visit_relations(&mut |relation| {
+        if error.is_some() {
+            return;
+        }
+        match state.table_schema(&relation.table) {
+            Some(schema) => {
+                bindings.push((relation.table.as_str(), relation.qualifier.as_str(), schema))
+            }
+            None => {
+                error = Some(SkeinError::Semantic(format!(
+                    "unknown relational table {}",
+                    relation.table
+                )));
+            }
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    RelationalLocatorLayout::from_bindings(bindings)
 }
 
 struct RelationalPipelineState<'a> {
@@ -751,6 +1044,16 @@ impl<'a> RelationalPipelineState<'a> {
         Ok(())
     }
 
+    fn account_unprofiled_row(&mut self) -> Result<()> {
+        account_intermediate(&mut self.intermediate_rows, 1, self.max_intermediate_rows)?;
+        self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
+        if self.rows_until_checkpoint == 0 {
+            skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
+            self.rows_until_checkpoint = self.batch_rows;
+        }
+        Ok(())
+    }
+
     fn finish_operator_pipeline(&mut self, fully_consumed: bool) {
         if self.operator_pipeline_started {
             for profile in &mut self.operator_cardinality_profiles {
@@ -863,7 +1166,31 @@ fn prepare_syntax_access_plan(
         base_access,
         join_accesses,
         join_selection: None,
+        join_tree: None,
     })
+}
+
+fn prepared_access_descriptors(
+    plan: &PreparedRelationalAccessPlan,
+) -> (
+    RelationalAccessPathDescriptor,
+    Vec<RelationalAccessPathDescriptor>,
+) {
+    if let Some(tree) = &plan.join_tree {
+        let base = tree.root.first_relation().access.descriptor().clone();
+        let mut joins = Vec::with_capacity(tree.root.relation_count().saturating_sub(1));
+        tree.root.visit_join_right_relations(&mut |relation| {
+            joins.push(relation.access.descriptor().clone());
+        });
+        return (base, joins);
+    }
+    (
+        plan.base_access.descriptor.clone(),
+        plan.join_accesses
+            .iter()
+            .map(|access| access.descriptor.clone())
+            .collect(),
+    )
 }
 
 fn explain_select(
@@ -871,13 +1198,7 @@ fn explain_select(
     parameters: &[Value],
     limits: RelationalQueryLimits,
 ) -> Result<RelationalQueryOutput> {
-    let access_path = prepared.access_plan.base_access.descriptor.clone();
-    let join_access_paths = prepared
-        .access_plan
-        .join_accesses
-        .iter()
-        .map(|access| access.descriptor.clone())
-        .collect();
+    let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     format_relational_explain(
         &prepared.statement,
         parameters,
@@ -902,7 +1223,7 @@ fn explain_select(
 }
 
 fn execute_select<'state>(
-    prepared: &PreparedRelationalSelect,
+    prepared: &'state PreparedRelationalSelect,
     parameters: &[Value],
     execution: AdmittedRelationalExecution<'state, '_>,
 ) -> Result<RelationalQueryOutput> {
@@ -927,14 +1248,8 @@ fn execute_select<'state>(
         .unwrap_or_else(|| select.from.name.clone());
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let base_access = &prepared.access_plan.base_access;
-    let access_path = base_access.descriptor.clone();
+    let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     let mut planned_joins = Vec::with_capacity(select.joins.len());
-    let join_access_paths = prepared
-        .access_plan
-        .join_accesses
-        .iter()
-        .map(|access| access.descriptor.clone())
-        .collect::<Vec<_>>();
     for (join, join_access) in select.joins.iter().zip(&prepared.access_plan.join_accesses) {
         let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
             SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
@@ -977,6 +1292,17 @@ fn execute_select<'state>(
         operator_cardinality_profiles,
     );
     let index_runtime = RelationalIndexRuntime::new(index_read_mode, limits.index_read);
+    let tree_execution =
+        prepared
+            .access_plan
+            .join_tree
+            .as_ref()
+            .map(|tree| PreparedJoinTreeExecution {
+                tree,
+                memory: execution_memory,
+                memory_ledger: &memory_ledger,
+                reports: RefCell::new(Vec::new()),
+            });
     if prepared.execution.mode == PreparedRelationalExecutionMode::OrderedIndexProjection {
         let output = execute_ordered_index_projection(
             select,
@@ -1007,7 +1333,7 @@ fn execute_select<'state>(
         });
     }
     if prepared.execution.mode == PreparedRelationalExecutionMode::StreamingProjection {
-        let output = execute_streaming_projection(
+        let mut output = execute_streaming_projection(
             select,
             parameters,
             state,
@@ -1015,11 +1341,17 @@ fn execute_select<'state>(
             &base_qualifier,
             &base_access.access,
             &planned_joins,
+            tree_execution.as_ref(),
             &mut pipeline,
             &index_runtime,
             &row_runtime,
             limits,
         )?;
+        if let Some(execution) = &tree_execution {
+            output
+                .blocking_operator_memory_reports
+                .extend(execution.take_reports());
+        }
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
             rows: output.rows,
@@ -1036,7 +1368,7 @@ fn execute_select<'state>(
     }
 
     if prepared.execution.mode == PreparedRelationalExecutionMode::Aggregate {
-        return execute_aggregate_select(
+        let mut output = execute_aggregate_select(
             select,
             parameters,
             state,
@@ -1044,6 +1376,7 @@ fn execute_select<'state>(
             &base_qualifier,
             &base_access.access,
             &planned_joins,
+            tree_execution.as_ref(),
             &mut pipeline,
             &index_runtime,
             &row_runtime,
@@ -1053,10 +1386,16 @@ fn execute_select<'state>(
             access_path,
             join_access_paths,
             join_planning,
-        );
+        )?;
+        if let Some(execution) = &tree_execution {
+            output
+                .blocking_operator_memory_reports
+                .extend(execution.take_reports());
+        }
+        return Ok(output);
     }
 
-    let output = execute_blocking_projection(
+    let mut output = execute_blocking_projection(
         select,
         parameters,
         state,
@@ -1064,6 +1403,7 @@ fn execute_select<'state>(
         &base_qualifier,
         &base_access.access,
         &planned_joins,
+        tree_execution.as_ref(),
         &mut pipeline,
         &index_runtime,
         &row_runtime,
@@ -1071,6 +1411,11 @@ fn execute_select<'state>(
         execution_memory,
         &memory_ledger,
     )?;
+    if let Some(execution) = &tree_execution {
+        output
+            .blocking_operator_memory_reports
+            .extend(execution.take_reports());
+    }
     pipeline.finish()?;
     Ok(RelationalQueryOutput {
         rows: output.rows,
@@ -1206,30 +1551,24 @@ fn format_relational_explain(
             report_operator: None,
         });
     }
-    for (index, (join, descriptor)) in select
-        .joins
+    for (cardinality, descriptor) in output
+        .operator_cardinality_profiles
         .iter()
+        .skip(1)
         .zip(&output.join_access_paths)
-        .enumerate()
     {
-        let operator_id = RelationalOperatorId::from_plan_index(index.saturating_add(1));
-        let cardinality = relational_operator_cardinality_profile(&output, operator_id);
+        let operator_id = cardinality.operator_id;
+        let table = &cardinality.table;
         let access_path = explain_access_path(
             descriptor,
-            relational_index_evidence(&output, &join.table.name, descriptor),
+            relational_index_evidence(&output, table, descriptor),
             &output.row_execution_evidence,
         );
         nodes.push(RelationalExplainNode {
-            operator: cardinality.map_or_else(
-                || match join.kind {
-                    SqlJoinKind::Inner => "IndexNestedLoopJoinExec",
-                    SqlJoinKind::Left => "IndexNestedLoopLeftJoinExec",
-                },
-                |profile| profile.operator.as_str(),
-            ),
+            operator: cardinality.operator.as_str(),
             operator_id: Some(operator_id),
-            estimated_rows: cardinality.map(|profile| profile.estimated_rows),
-            access_object: explain_access_object(&join.table.name, descriptor),
+            estimated_rows: Some(cardinality.estimated_rows),
+            access_object: explain_access_object(table, descriptor),
             operator_info: format!(
                 "{}, {access_path}",
                 explain_join_planning(&output.join_planning)
@@ -1239,6 +1578,9 @@ fn format_relational_explain(
     }
     let base_operator_id = RelationalOperatorId::from_plan_index(0);
     let base_cardinality = relational_operator_cardinality_profile(&output, base_operator_id);
+    let base_table = base_cardinality
+        .map(|profile| profile.table.as_str())
+        .unwrap_or(&select.from.name);
     nodes.push(RelationalExplainNode {
         operator: base_cardinality.map_or_else(
             || match output.access_path.kind {
@@ -1250,10 +1592,10 @@ fn format_relational_explain(
         ),
         operator_id: Some(base_operator_id),
         estimated_rows: base_cardinality.map(|profile| profile.estimated_rows),
-        access_object: explain_access_object(&select.from.name, &output.access_path),
+        access_object: explain_access_object(base_table, &output.access_path),
         operator_info: explain_access_path(
             &output.access_path,
-            relational_index_evidence(&output, &select.from.name, &output.access_path),
+            relational_index_evidence(&output, base_table, &output.access_path),
             &output.row_execution_evidence,
         ),
         report_operator: None,
@@ -2183,6 +2525,289 @@ fn visit_base_entries<'a>(
     }
 }
 
+struct PreparedJoinTreeExecution<'a> {
+    tree: &'a PreparedRelationalJoinTree,
+    memory: &'a skein_executor::ExecutionMemoryConfig,
+    memory_ledger: &'a QueryMemoryLedger,
+    reports: RefCell<Vec<BlockingOperatorMemoryReport>>,
+}
+
+impl PreparedJoinTreeExecution<'_> {
+    fn take_reports(&self) -> Vec<BlockingOperatorMemoryReport> {
+        std::mem::take(&mut *self.reports.borrow_mut())
+    }
+}
+
+fn bound_row_resident_bytes(row: &BoundRow<'_>) -> usize {
+    std::mem::size_of::<BoundRow<'_>>()
+        .saturating_add(
+            row.bindings
+                .len()
+                .saturating_mul(std::mem::size_of::<Binding<'_>>()),
+        )
+        .saturating_add(
+            row.bindings
+                .iter()
+                .filter_map(|binding| binding.row.as_ref())
+                .map(RelationalReadRow::resident_bytes)
+                .sum::<usize>(),
+        )
+}
+
+fn visit_tree_relation_entries<'a>(
+    state: &'a RelationalState,
+    index_runtime: &RelationalIndexRuntime<'_>,
+    row_runtime: &RelationalRowRuntime<'a>,
+    relation: &'a PreparedRelationalTreeRelation,
+    outer: Option<&BoundRow<'a>>,
+    visit: &mut dyn FnMut(RelationalReadRow) -> Result<bool>,
+) -> Result<bool> {
+    match &relation.access {
+        PreparedRelationalTreeAccess::Base(access) => visit_base_entries(
+            state,
+            index_runtime,
+            row_runtime,
+            &relation.table,
+            &access.access,
+            visit,
+        ),
+        PreparedRelationalTreeAccess::Probe(access) => {
+            let outer = outer.ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "prepared CSG-CMP probe for {} has no outer row",
+                    relation.qualifier
+                ))
+            })?;
+            match &access.access {
+                RelationalJoinAccess::PrimaryKey(columns) => {
+                    let schema = state.table_schema(&relation.table).ok_or_else(|| {
+                        SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                    })?;
+                    let Some(key) = bound_join_key(outer, schema, columns)? else {
+                        return Ok(true);
+                    };
+                    match row_runtime.read_point(&relation.table, &key)? {
+                        Some(row) => visit(row),
+                        None => Ok(true),
+                    }
+                }
+                RelationalJoinAccess::Index { name, columns } => {
+                    let schema = state.table_schema(&relation.table).ok_or_else(|| {
+                        SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                    })?;
+                    let Some(prefix) = bound_join_key(outer, schema, columns)? else {
+                        return Ok(true);
+                    };
+                    index_runtime.visit_prefix(state, &relation.table, name, &prefix, |key| {
+                        match row_runtime.read_point(&relation.table, key)? {
+                            Some(row) => visit(row),
+                            None => Err(SkeinError::StorageIntegrity(format!(
+                                "relational index {name} on table {} points to missing row {key:?}",
+                                relation.table
+                            ))),
+                        }
+                    })
+                }
+                RelationalJoinAccess::FullScan => row_runtime.visit_all(&relation.table, visit),
+            }
+        }
+    }
+}
+
+fn null_extended_tree_row<'a>(
+    node: &'a PreparedRelationalJoinTreeNode,
+    state: &'a RelationalState,
+) -> Result<BoundRow<'a>> {
+    let mut bindings = Vec::new();
+    let mut error = None;
+    node.visit_relations(&mut |relation| {
+        if error.is_some() {
+            return;
+        }
+        match state.table_schema(&relation.table) {
+            Some(schema) => bindings.push(Binding {
+                table: &relation.table,
+                qualifier: &relation.qualifier,
+                schema,
+                row: None,
+            }),
+            None => {
+                error = Some(SkeinError::Semantic(format!(
+                    "unknown relational table {}",
+                    relation.table
+                )));
+            }
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(BoundRow { bindings })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_prepared_join_tree_node<'a>(
+    node: &'a PreparedRelationalJoinTreeNode,
+    outer: Option<&BoundRow<'a>>,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    profiled_base_binding: BindingId,
+    execution: &PreparedJoinTreeExecution<'a>,
+    pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
+    index_runtime: &RelationalIndexRuntime<'_>,
+    row_runtime: &RelationalRowRuntime<'a>,
+    visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
+) -> Result<bool> {
+    match node {
+        PreparedRelationalJoinTreeNode::Relation(relation) => visit_tree_relation_entries(
+            state,
+            index_runtime,
+            row_runtime,
+            relation,
+            outer,
+            &mut |row| {
+                if relation.binding == profiled_base_binding {
+                    pipeline
+                        .borrow_mut()
+                        .account_operator_row(RelationalOperatorId::from_plan_index(0))?;
+                } else if matches!(relation.access, PreparedRelationalTreeAccess::Base(_)) {
+                    pipeline.borrow_mut().account_unprofiled_row()?;
+                }
+                let schema = state.table_schema(&relation.table).ok_or_else(|| {
+                    SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                })?;
+                visit(BoundRow {
+                    bindings: vec![Binding {
+                        table: &relation.table,
+                        qualifier: &relation.qualifier,
+                        schema,
+                        row: Some(row),
+                    }],
+                })
+            },
+        ),
+        PreparedRelationalJoinTreeNode::Join {
+            operator_id,
+            kind,
+            predicates,
+            left,
+            right,
+        } => {
+            let materialized_right =
+                matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Join { .. });
+            let mut right_rows = Vec::new();
+            let mut right_tracker = materialized_right.then(|| {
+                OperatorMemoryTracker::with_account(
+                    execution.memory.blocking_operator_bytes,
+                    execution.memory_ledger.account(
+                        QueryMemoryClass::BlockingState,
+                        "RelationalBushyJoinMaterialize",
+                        execution.memory.blocking_operator_bytes,
+                    ),
+                )
+            });
+            if let Some(tracker) = right_tracker.as_mut() {
+                visit_prepared_join_tree_node(
+                    right,
+                    None,
+                    parameters,
+                    state,
+                    profiled_base_binding,
+                    execution,
+                    pipeline,
+                    index_runtime,
+                    row_runtime,
+                    &mut |row| {
+                        let bytes = bound_row_resident_bytes(&row);
+                        if tracker.would_exceed(bytes) {
+                            return Err(SkeinError::Execution(format!(
+                                "RelationalBushyJoinMaterialize state exceeds blocking_operator_bytes {}",
+                                execution.memory.blocking_operator_bytes
+                            )));
+                        }
+                        tracker.try_charge(bytes)?;
+                        right_rows.push(row);
+                        Ok(true)
+                    },
+                )?;
+                execution
+                    .reports
+                    .borrow_mut()
+                    .push(skein_executor::blocking::in_memory_report(
+                        "RelationalBushyJoinMaterialize",
+                        tracker,
+                        tracker.peak_bytes,
+                        right_rows.len(),
+                        execution.memory,
+                    ));
+            }
+
+            let null_right = (*kind == SqlJoinKind::Left)
+                .then(|| null_extended_tree_row(right, state))
+                .transpose()?;
+            visit_prepared_join_tree_node(
+                left,
+                outer,
+                parameters,
+                state,
+                profiled_base_binding,
+                execution,
+                pipeline,
+                index_runtime,
+                row_runtime,
+                &mut |left_row| {
+                    let mut matched = false;
+                    let mut visit_right = |right_row: BoundRow<'a>| -> Result<bool> {
+                        let mut combined = left_row.clone();
+                        combined.bindings.extend(right_row.bindings);
+                        for predicate in predicates {
+                            if predicate_truth(predicate, &combined, parameters)? != Some(true) {
+                                return Ok(true);
+                            }
+                        }
+                        matched = true;
+                        pipeline.borrow_mut().account_operator_row(*operator_id)?;
+                        visit(combined)
+                    };
+                    let completed = if materialized_right {
+                        let mut completed = true;
+                        for right_row in &right_rows {
+                            if !visit_right(right_row.clone())? {
+                                completed = false;
+                                break;
+                            }
+                        }
+                        completed
+                    } else {
+                        visit_prepared_join_tree_node(
+                            right,
+                            Some(&left_row),
+                            parameters,
+                            state,
+                            profiled_base_binding,
+                            execution,
+                            pipeline,
+                            index_runtime,
+                            row_runtime,
+                            &mut visit_right,
+                        )?
+                    };
+                    if !completed {
+                        return Ok(false);
+                    }
+                    if !matched && let Some(null_right) = &null_right {
+                        let mut combined = left_row;
+                        combined.bindings.extend(null_right.bindings.clone());
+                        pipeline.borrow_mut().account_operator_row(*operator_id)?;
+                        return visit(combined);
+                    }
+                    Ok(true)
+                },
+            )
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn visit_relational_rows<'a>(
     select: &'a SelectStatement,
@@ -2192,12 +2817,44 @@ fn visit_relational_rows<'a>(
     base_qualifier: &'a str,
     base_access: &RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
     index_runtime: &RelationalIndexRuntime<'_>,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     pipeline.begin_operator_pipeline();
+    if let Some(execution) = tree_execution {
+        let profiled_base_binding = execution.tree.root.first_relation().binding;
+        let fully_consumed = {
+            let tree_pipeline = RefCell::new(&mut *pipeline);
+            visit_prepared_join_tree_node(
+                &execution.tree.root,
+                None,
+                parameters,
+                state,
+                profiled_base_binding,
+                execution,
+                &tree_pipeline,
+                index_runtime,
+                row_runtime,
+                &mut |row| {
+                    if select
+                        .selection
+                        .as_ref()
+                        .map(|selection| predicate_truth(selection, &row, parameters))
+                        .transpose()?
+                        .is_some_and(|truth| truth != Some(true))
+                    {
+                        return Ok(true);
+                    }
+                    visit(row)
+                },
+            )?
+        };
+        pipeline.finish_operator_pipeline(fully_consumed);
+        return Ok(fully_consumed);
+    }
     let fully_consumed = visit_base_entries(
         state,
         index_runtime,
@@ -2349,6 +3006,7 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&'pipeline PreparedJoinTreeExecution<'a>>,
     pipeline: &'pipeline mut RelationalPipelineState<'a>,
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
@@ -2364,6 +3022,7 @@ struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&'pipeline PreparedJoinTreeExecution<'a>>,
     pipeline: &'pipeline mut RelationalPipelineState<'a>,
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
@@ -2387,6 +3046,7 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
             self.base_qualifier,
             self.base_access,
             self.joins,
+            self.tree_execution,
             self.pipeline,
             self.index_runtime,
             self.row_runtime,
@@ -2432,6 +3092,7 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.base_qualifier,
             self.base_access,
             self.joins,
+            self.tree_execution,
             self.pipeline,
             self.index_runtime,
             self.row_runtime,
@@ -2529,6 +3190,7 @@ fn execute_blocking_projection<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -2569,6 +3231,7 @@ fn execute_blocking_projection<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -2648,8 +3311,12 @@ fn execute_blocking_projection<'a>(
             )?;
         }
     } else {
-        let locator_layout =
-            relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?;
+        let locator_layout = match tree_execution {
+            Some(execution) => relational_join_tree_locator_layout(state, execution.tree)?,
+            None => {
+                relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?
+            }
+        };
         let mut order = ExternalTopN::new(
             "TopNExec",
             "relational-topn",
@@ -2667,6 +3334,7 @@ fn execute_blocking_projection<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -3078,12 +3746,16 @@ fn execute_streaming_projection<'a>(
     base_qualifier: &'a str,
     base_access: &RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
 ) -> Result<StreamingProjectionOutput> {
-    if joins.is_empty() && matches!(base_access, RelationalBaseAccess::FullScan) {
+    if tree_execution.is_none()
+        && joins.is_empty()
+        && matches!(base_access, RelationalBaseAccess::FullScan)
+    {
         return execute_borrowed_streaming_full_scan(
             select,
             parameters,
@@ -3114,6 +3786,7 @@ fn execute_streaming_projection<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -3240,6 +3913,7 @@ fn execute_aggregate_select<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -3261,6 +3935,7 @@ fn execute_aggregate_select<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -3281,6 +3956,7 @@ fn execute_aggregate_select<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -3325,6 +4001,7 @@ fn execute_aggregate_select<'a>(
             base_qualifier,
             base_access,
             joins,
+            tree_execution,
             pipeline,
             index_runtime,
             row_runtime,
@@ -3407,6 +4084,7 @@ fn execute_aggregate_select<'a>(
         base_qualifier,
         base_access,
         joins,
+        tree_execution,
         pipeline,
         index_runtime,
         row_runtime,
@@ -3534,6 +4212,7 @@ fn execute_single_count_distinct<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -3557,6 +4236,7 @@ fn execute_single_count_distinct<'a>(
         base_qualifier,
         base_access,
         joins,
+        tree_execution,
         pipeline,
         index_runtime,
         row_runtime,
@@ -3618,6 +4298,7 @@ fn execute_grouped_aggregate<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
+    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -3650,8 +4331,10 @@ fn execute_grouped_aggregate<'a>(
     let detection_limit = requested.min(limits.max_output_rows.saturating_add(1));
     let observer = RelationalBlockingObserver::default();
     let task_context = pipeline.task_context;
-    let locator_layout =
-        relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?;
+    let locator_layout = match tree_execution {
+        Some(execution) => relational_join_tree_locator_layout(state, execution.tree)?,
+        None => relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?,
+    };
     let mut order = ExternalTopN::new(
         "SortExec",
         "relational-group-sort",
@@ -3670,6 +4353,7 @@ fn execute_grouped_aggregate<'a>(
         base_qualifier,
         base_access,
         joins,
+        tree_execution,
         pipeline,
         index_runtime,
         row_runtime,
@@ -4594,8 +5278,10 @@ fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{optional_estimated_rows_explain_value, optional_usize_explain_value};
+    use super::*;
+    use crate::relational_sql::{compile_relational_statement_sql, RelationalJoinPlanningStrategy};
     use crate::Value;
+    use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 
     #[test]
     fn explain_estimated_rows_never_render_zero() {
@@ -4605,5 +5291,225 @@ mod tests {
         );
         assert_eq!(optional_estimated_rows_explain_value(None), Value::Null);
         assert_eq!(optional_usize_explain_value(Some(0)), Value::Int(0));
+    }
+
+    #[test]
+    fn prepared_bushy_join_tree_materializes_the_composite_right_input_once() {
+        const SQL: &str = "SELECT a.id AS a_id, d.id AS d_id \
+            FROM bushy_a AS a \
+            INNER JOIN bushy_b AS b ON b.a_id = a.id \
+            INNER JOIN bushy_c AS c ON c.bridge = b.bridge \
+            INNER JOIN bushy_d AS d ON d.c_id = c.id \
+            ORDER BY a.id ASC, d.id ASC";
+
+        let mut state = RelationalState::default();
+        for sql in [
+            "CREATE TABLE bushy_a (id TEXT PRIMARY KEY)",
+            "CREATE TABLE bushy_b (id TEXT PRIMARY KEY, a_id TEXT NOT NULL, bridge TEXT NOT NULL)",
+            "CREATE TABLE bushy_c (id TEXT PRIMARY KEY, bridge TEXT NOT NULL)",
+            "CREATE TABLE bushy_d (id TEXT PRIMARY KEY, c_id TEXT NOT NULL)",
+            "INSERT INTO bushy_a (id) VALUES ('a-1'), ('a-2')",
+            "INSERT INTO bushy_b (id, a_id, bridge) VALUES ('b-1', 'a-1', 'x'), ('b-2', 'a-2', 'y')",
+            "INSERT INTO bushy_c (id, bridge) VALUES ('c-1', 'x'), ('c-2', 'y')",
+            "INSERT INTO bushy_d (id, c_id) VALUES ('d-1', 'c-1'), ('d-2', 'c-2')",
+        ] {
+            let transaction = compile_relational_statement_sql(sql, &[], &state)
+                .unwrap_or_else(|error| panic!("failed to compile SQL '{sql}': {error}"));
+            state = state
+                .stage_transaction(
+                    transaction,
+                    RelationalMutationLimits::default(),
+                    RelationalOverflowConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("failed to apply SQL '{sql}': {error}"));
+        }
+
+        let prepared_sql = skein_sql::prepare_postgres_sql(SQL).expect("valid bushy SELECT");
+        let SqlStatement::Select(select) = prepared_sql.statement else {
+            panic!("expected SELECT statement");
+        };
+        let limits = RelationalQueryLimits {
+            max_output_rows: 8,
+            max_output_payload_bytes: 64 * 1024,
+            max_intermediate_rows: 128,
+            hydration: RelationalHydrationBudget::default(),
+            index_read: skein_storage::RelationalIndexReadLimits::default(),
+            row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        };
+        let syntax_plan = prepare_syntax_access_plan(
+            &select,
+            &[],
+            &state,
+            RelationalIndexReadMode::Materialized,
+            limits,
+        )
+        .expect("prepare syntax access plan");
+        let c_schema = state.table_schema("bushy_c").expect("bushy_c schema");
+        let c_base = choose_base_access(RelationalBaseAccessPlanning {
+            predicate: None,
+            order_by: &[],
+            prefer_ordered_access: false,
+            parameters: &[],
+            state: &state,
+            schema: c_schema,
+            table: "bushy_c",
+            qualifier: "c",
+            cardinality_limit: limits.max_intermediate_rows.saturating_add(1),
+        })
+        .expect("prepare bushy_c materialized base access");
+
+        let relation =
+            |binding: u32, table: &str, qualifier: &str, access: PreparedRelationalTreeAccess| {
+                PreparedRelationalJoinTreeNode::Relation(PreparedRelationalTreeRelation {
+                    binding: BindingId::new(binding),
+                    table: table.to_string(),
+                    qualifier: qualifier.to_string(),
+                    access,
+                })
+            };
+        let left = PreparedRelationalJoinTreeNode::Join {
+            operator_id: RelationalOperatorId::from_plan_index(1),
+            kind: SqlJoinKind::Inner,
+            predicates: vec![select.joins[0].on.clone()],
+            left: Box::new(relation(
+                0,
+                "bushy_a",
+                "a",
+                PreparedRelationalTreeAccess::Base(syntax_plan.base_access.clone()),
+            )),
+            right: Box::new(relation(
+                1,
+                "bushy_b",
+                "b",
+                PreparedRelationalTreeAccess::Probe(syntax_plan.join_accesses[0].clone()),
+            )),
+        };
+        let right = PreparedRelationalJoinTreeNode::Join {
+            operator_id: RelationalOperatorId::from_plan_index(2),
+            kind: SqlJoinKind::Inner,
+            predicates: vec![select.joins[2].on.clone()],
+            left: Box::new(relation(
+                2,
+                "bushy_c",
+                "c",
+                PreparedRelationalTreeAccess::Base(c_base),
+            )),
+            right: Box::new(relation(
+                3,
+                "bushy_d",
+                "d",
+                PreparedRelationalTreeAccess::Probe(syntax_plan.join_accesses[2].clone()),
+            )),
+        };
+        let left_cost = estimate_relational_probe_join_cost(
+            estimate_relational_access_cost(syntax_plan.base_access.descriptor.estimated_rows),
+            syntax_plan.join_accesses[0].descriptor.estimated_rows,
+            RelationalJoinCardinality::Inner,
+        );
+        let right_cost = estimate_relational_probe_join_cost(
+            estimate_relational_access_cost(
+                right.first_relation().access.descriptor().estimated_rows,
+            ),
+            syntax_plan.join_accesses[2].descriptor.estimated_rows,
+            RelationalJoinCardinality::Inner,
+        );
+        let cost = estimate_relational_join_cost(
+            left_cost,
+            right_cost,
+            RelationalJoinCardinality::Inner,
+            RelationalJoinRightInput::Materialized,
+        );
+        let root = PreparedRelationalJoinTreeNode::Join {
+            operator_id: RelationalOperatorId::from_plan_index(3),
+            kind: SqlJoinKind::Inner,
+            predicates: vec![select.joins[1].on.clone()],
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+        let mut access_plan = syntax_plan;
+        access_plan.join_selection = None;
+        access_plan.join_tree = Some(PreparedRelationalJoinTree {
+            root,
+            cost_breakdown: cost,
+        });
+        let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan);
+        let prepared = PreparedRelationalSelect {
+            statement: select,
+            access_plan,
+            join_planning: RelationalJoinPlanningOutcome::selected(
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
+                true,
+                7,
+                8,
+                vec!["a".into(), "b".into(), "c".into(), "d".into()],
+                cost,
+                RelationalJoinEnumerationConfig::default(),
+            ),
+            execution,
+        };
+        prepared.validate().expect("validate prepared bushy plan");
+
+        let memory = skein_executor::ExecutionMemoryConfig::default();
+        let resources = RelationalQueryResourceContext::new(
+            RelationalJoinEnumerationConfig::default(),
+            limits,
+            &memory,
+            None,
+        );
+        let admitted = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                resources,
+            )
+            .expect("admit prepared bushy plan");
+        let output = execute_select(&prepared, &[], admitted).expect("execute prepared bushy plan");
+
+        assert_eq!(output.rows.len(), 2);
+        assert_eq!(output.rows[0]["a_id"], Value::String("a-1".to_string()));
+        assert_eq!(output.rows[1]["d_id"], Value::String("d-2".to_string()));
+        assert_eq!(
+            output.join_planning.strategy,
+            RelationalJoinPlanningStrategy::CsgCmpMemo
+        );
+        assert!(output
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| {
+                report.operator == "RelationalBushyJoinMaterialize"
+                    && report.input_rows == 2
+                    && report.peak_tracked_bytes > 0
+            }));
+
+        let constrained_memory = skein_executor::ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(64).expect("non-zero memory budget"),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
+        let constrained_resources = RelationalQueryResourceContext::new(
+            RelationalJoinEnumerationConfig::default(),
+            limits,
+            &constrained_memory,
+            None,
+        );
+        let constrained_execution = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                constrained_resources,
+            )
+            .expect("admit constrained bushy plan");
+        let error = execute_select(&prepared, &[], constrained_execution)
+            .expect_err("bushy materialization must honor its memory budget");
+        assert!(error
+            .to_string()
+            .contains("RelationalBushyJoinMaterialize state exceeds blocking_operator_bytes"));
     }
 }

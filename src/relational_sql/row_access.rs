@@ -84,6 +84,29 @@ impl RelationalReadRow {
             })?;
         Ok(&field.value)
     }
+
+    pub(super) fn resident_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(std::mem::size_of::<RelationalProjectedRow>())
+            .saturating_add(
+                self.row
+                    .primary_key
+                    .0
+                    .iter()
+                    .map(skein_storage::RelationalValue::estimated_payload_bytes)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.row
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        std::mem::size_of::<skein_storage::RelationalProjectedField>()
+                            .saturating_add(field.value.estimated_payload_bytes())
+                    })
+                    .sum::<usize>(),
+            )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
