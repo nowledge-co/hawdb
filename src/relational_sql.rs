@@ -25,6 +25,7 @@ mod index_access;
 mod planning;
 mod query;
 mod row_access;
+mod template_cache;
 
 pub use cardinality::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
@@ -38,10 +39,11 @@ pub(crate) use index_access::RelationalIndexReadMode;
 #[cfg(test)]
 pub(crate) use query::execute_relational_query_sql_with_runtime;
 pub(crate) use query::{
-    execute_relational_query_sql_with_resources, RelationalQueryLimits, RelationalQueryOutput,
+    execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
     RelationalQueryReadModes, RelationalQueryResourceContext,
 };
 pub(crate) use row_access::RelationalRowReadMode;
+pub(crate) use template_cache::RelationalPlanTemplateCache;
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,
@@ -2250,6 +2252,97 @@ mod tests {
                 output.rows
             ),
         }
+    }
+
+    #[test]
+    fn relational_plan_template_cache_replans_with_runtime_parameters_and_state() {
+        let mut database = Database::new_with_config(DatabaseConfig {
+            max_plan_cache_entries: Some(32),
+            ..DatabaseConfig::default()
+        });
+        database
+            .query_sql(
+                "CREATE TABLE template_rows (\
+                 id BIGINT PRIMARY KEY, left_key TEXT NOT NULL, right_key TEXT NOT NULL)",
+            )
+            .expect("create template rows table");
+        database
+            .query_sql("CREATE INDEX idx_template_left ON template_rows (left_key)")
+            .expect("create left template index");
+        database
+            .query_sql("CREATE INDEX idx_template_right ON template_rows (right_key)")
+            .expect("create right template index");
+        database
+            .query_sql(
+                "INSERT INTO template_rows (id, left_key, right_key) VALUES \
+                 (1, 'hot', 'rare'), \
+                 (2, 'hot', 'other-1'), \
+                 (3, 'hot', 'other-2'), \
+                 (4, 'rare', 'hot'), \
+                 (5, 'other-1', 'hot'), \
+                 (6, 'other-2', 'hot')",
+            )
+            .expect("insert parameter-sensitive template rows");
+
+        const EXPLAIN: &str = "EXPLAIN SELECT id FROM template_rows \
+                               WHERE left_key = $1 AND right_key = $2";
+        let graph_cache_before = database.plan_cache_stats();
+        let before = database.relational_plan_template_cache_stats();
+        assert_eq!(before.entries, 0, "DDL and DML must bypass the query cache");
+        let right_selective = database
+            .query_sql_with_params(EXPLAIN, &[text("hot"), text("rare")])
+            .expect("plan with a selective right index");
+        assert_eq!(
+            relational_explain_access_row(&right_selective, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_right".to_string()
+            ))
+        );
+        let after_miss = database.relational_plan_template_cache_stats();
+        assert_eq!(after_miss.misses, before.misses + 1);
+        assert_eq!(after_miss.admissions, before.admissions + 1);
+        assert_eq!(after_miss.entries, before.entries + 1);
+
+        let left_selective = database
+            .query_sql_with_params(EXPLAIN, &[text("rare"), text("hot")])
+            .expect("rebind the cached template before access planning");
+        assert_eq!(
+            relational_explain_access_row(&left_selective, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_left".to_string()
+            ))
+        );
+        let after_parameter_hit = database.relational_plan_template_cache_stats();
+        assert_eq!(after_parameter_hit.hits, after_miss.hits + 1);
+        assert_eq!(after_parameter_hit.misses, after_miss.misses);
+        assert_eq!(after_parameter_hit.admissions, after_miss.admissions);
+        assert_eq!(after_parameter_hit.entries, after_miss.entries);
+
+        database
+            .query_sql(
+                "INSERT INTO template_rows (id, left_key, right_key) VALUES \
+                 (7, 'other-3', 'rare'), \
+                 (8, 'other-4', 'rare'), \
+                 (9, 'other-5', 'rare'), \
+                 (10, 'other-6', 'rare')",
+            )
+            .expect("change the current index cardinalities");
+        let before_state_hit = database.relational_plan_template_cache_stats();
+        let replanned = database
+            .query_sql_with_params(EXPLAIN, &[text("hot"), text("rare")])
+            .expect("replan the cached template against current state");
+        assert_eq!(
+            relational_explain_access_row(&replanned, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_left".to_string()
+            ))
+        );
+        let after_state_hit = database.relational_plan_template_cache_stats();
+        assert_eq!(after_state_hit.hits, before_state_hit.hits + 1);
+        assert_eq!(after_state_hit.misses, before_state_hit.misses);
+        assert_eq!(after_state_hit.admissions, before_state_hit.admissions);
+        assert_eq!(after_state_hit.entries, before_state_hit.entries);
+        assert_eq!(database.plan_cache_stats(), graph_cache_before);
     }
 
     #[test]

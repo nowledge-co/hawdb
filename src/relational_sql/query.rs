@@ -132,14 +132,14 @@ impl<'a> RelationalQueryReadModes<'a> {
     }
 }
 
-pub(crate) fn execute_relational_query_sql_with_resources<'a>(
-    sql: &str,
+pub(crate) fn execute_prepared_relational_query_with_resources<'a>(
+    prepared: Arc<skein_sql::PreparedPostgresStatement>,
     parameters: &[Value],
     state: &'a RelationalState,
     read_modes: RelationalQueryReadModes<'a>,
     resources: RelationalQueryResourceContext<'_>,
 ) -> Result<RelationalQueryOutput> {
-    let prepared = skein_sql::prepare_postgres_sql(sql)?;
+    let prepared = Arc::unwrap_or_clone(prepared);
     if prepared.parameters.len() != parameters.len() {
         return Err(SkeinError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
@@ -203,8 +203,9 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
     execution_memory: &skein_executor::ExecutionMemoryConfig,
     task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<RelationalQueryOutput> {
-    execute_relational_query_sql_with_resources(
-        sql,
+    let prepared = Arc::new(skein_sql::prepare_postgres_sql(sql)?);
+    execute_prepared_relational_query_with_resources(
+        prepared,
         parameters,
         state,
         read_modes,
