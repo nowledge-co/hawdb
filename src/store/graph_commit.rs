@@ -134,7 +134,6 @@ impl GraphStore {
         self.commit_mutations_internal(catalog, mutations, limits, MutationCommitOptions::default())
     }
 
-    #[cfg(test)]
     pub(crate) fn commit_relational_transaction(
         &mut self,
         catalog: &mut Catalog,
@@ -148,7 +147,6 @@ impl GraphStore {
         )
     }
 
-    #[cfg(test)]
     pub(crate) fn commit_mutations_and_relational(
         &mut self,
         catalog: &mut Catalog,
