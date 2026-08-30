@@ -66,6 +66,7 @@ test_suite(
         ":skein_fuzz_append_seed_7_tests",
         ":skein_fuzz_fast_tests",
         ":skein_fuzz_relational_join_rewrite_tests",
+        ":skein_storage_fuzz_tests",
     ],
 )
 
@@ -77,6 +78,21 @@ rust_binary(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + ["//:skein"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_storage_fuzz_tests",
+    crate_root = "src/storage_main.rs",
+    srcs = ["src/storage_main.rs"],
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + ["//:skein"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_binary(

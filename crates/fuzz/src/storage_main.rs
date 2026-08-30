@@ -1,7 +1,8 @@
 use serde_json::{json, Value as JsonValue};
 use skein::{
     AppendTableSchema, AppendTransaction, AppendWrite, Database, RelationalColumnSchema,
-    RelationalRow, RelationalScalarType, RelationalValue, SearchDocument, SearchIndex,
+    RelationalKey, RelationalRow, RelationalScalarType, RelationalValue, SearchDocument,
+    SearchIndex, SearchMode, Value, ValueRef,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -84,34 +85,36 @@ fn run_case(
         .and_then(|component| component.as_os_str().to_str())
         .ok_or_else(|| "parser target has no subsystem".to_string())?;
     let outcome = catch_unwind(AssertUnwindSafe(|| match subsystem {
-        "graph" => Database::open(case_root.join("graph"))
-            .map(|database| format!("opened graph at epoch {}", database.commit_epoch()))
-            .map_err(|error| error.to_string()),
-        "search" => SearchIndex::open(case_root.join("search"))
-            .map(|index| {
-                format!(
-                    "opened search with {} documents",
-                    index.projection_freshness().document_count
-                )
-            })
-            .map_err(|error| error.to_string()),
-        _ => Err(format!("unknown parser target subsystem '{subsystem}'")),
+        "graph" => validate_graph_fixture(&case_root.join("graph")),
+        "search" => validate_search_fixture(&case_root.join("search")),
+        _ => Err(ValidationError::Rejected(format!(
+            "unknown parser target subsystem '{subsystem}'"
+        ))),
     }));
-    let (case_success, result_kind, detail) = match outcome {
-        Ok(Ok(_)) => (
+    let (case_success, result_kind, detail, validation) = match outcome {
+        Ok(Ok(validation)) => (
             true,
-            "accepted",
-            "parser accepted mutated artifact".to_string(),
+            "accepted_valid",
+            "mutated artifact opened and the fixture hydrated exactly".to_string(),
+            Some(validation),
         ),
-        Ok(Err(_)) => (
+        Ok(Err(ValidationError::Rejected(error))) => (
             true,
             "rejected",
-            "parser rejected mutated artifact".to_string(),
+            format!("storage rejected the mutated artifact: {error}"),
+            None,
+        ),
+        Ok(Err(ValidationError::Mismatch(error))) => (
+            false,
+            "silent_corruption",
+            format!("storage returned data that did not match the fixture: {error}"),
+            None,
         ),
         Err(_) => (
             false,
             "panic",
-            "persistent-format parser panicked".to_string(),
+            "persistent-format open or hydration panicked".to_string(),
+            None,
         ),
     };
     let _ = fs::remove_dir_all(case_root);
@@ -123,11 +126,146 @@ fn run_case(
         "mutation": mutation,
         "result_kind": result_kind,
         "detail": detail,
+        "validation": validation,
         "success": case_success,
         "reproduction_command": format!(
-            "cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed {campaign_seed} --case-index {index}"
+            "bazel run //crates/fuzz:skein_storage_fuzz -- --seed {campaign_seed} --case-index {index}"
         ),
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValidationError {
+    Rejected(String),
+    Mismatch(String),
+}
+
+fn validate_graph_fixture(path: &Path) -> Result<JsonValue, ValidationError> {
+    let mut database = Database::open(path)
+        .map_err(|error| ValidationError::Rejected(format!("graph open failed: {error}")))?;
+    let scrub = database.scrub_storage().map_err(|error| {
+        ValidationError::Rejected(format!("graph integrity scrub failed: {error}"))
+    })?;
+    if scrub.checked_file_count == 0 || scrub.checked_bytes == 0 {
+        return Err(ValidationError::Mismatch(
+            "graph integrity scrub checked no persistent bytes".to_string(),
+        ));
+    }
+
+    validate_memory_title(&mut database, "checkpoint", "checkpoint payload")?;
+    validate_memory_title(&mut database, "wal", "wal payload")?;
+
+    let partition = RelationalKey(vec![RelationalValue::Text("alpha".to_string())]);
+    let append = database
+        .read_append_partition("events", &partition, None, 73)
+        .map_err(|error| {
+            ValidationError::Rejected(format!("append partition hydration failed: {error}"))
+        })?;
+    if append.rows.len() != 72 {
+        return Err(ValidationError::Mismatch(format!(
+            "append partition returned {} rows instead of 72",
+            append.rows.len()
+        )));
+    }
+    for (sequence, row) in append.rows.iter().enumerate() {
+        let sequence = sequence as i64;
+        let expected_partition = RelationalKey(vec![RelationalValue::Text("alpha".to_string())]);
+        let expected_order = RelationalKey(vec![RelationalValue::BigInt(sequence)]);
+        let expected_row = RelationalRow::new(vec![
+            RelationalValue::Text("alpha".to_string()),
+            RelationalValue::BigInt(sequence),
+            RelationalValue::Text(format!("payload-{sequence:04}")),
+        ]);
+        if row.partition_key != expected_partition
+            || row.order_key != expected_order
+            || row.row != expected_row
+        {
+            return Err(ValidationError::Mismatch(format!(
+                "append row {sequence} did not match the fixture"
+            )));
+        }
+    }
+
+    Ok(json!({
+        "graph": {
+            "memory_count": 2,
+            "append_row_count": append.rows.len(),
+            "commit_epoch": database.commit_epoch(),
+        },
+        "integrity": {
+            "checked_file_count": scrub.checked_file_count,
+            "checked_bytes": scrub.checked_bytes,
+            "sha256_verified_file_count": scrub.sha256_verified_file_count,
+            "wal_record_count": scrub.wal_record_count,
+            "wal_bytes": scrub.wal_bytes,
+        },
+    }))
+}
+
+fn validate_memory_title(
+    database: &mut Database,
+    id: &str,
+    expected_title: &str,
+) -> Result<(), ValidationError> {
+    let parameters = BTreeMap::from([("id".to_string(), Value::String(id.to_string()))]);
+    let output = database
+        .query_with_params(
+            "MATCH (memory:Memory {id: $id}) RETURN memory.title AS title",
+            &parameters,
+        )
+        .map_err(|error| {
+            ValidationError::Rejected(format!("Memory '{id}' hydration failed: {error}"))
+        })?;
+    if output.rows.len() != 1 {
+        return Err(ValidationError::Mismatch(format!(
+            "Memory '{id}' returned {} rows instead of 1",
+            output.rows.len()
+        )));
+    }
+    match output.rows.get(0, "title") {
+        Some(ValueRef::String(title)) if title == expected_title => Ok(()),
+        Some(value) => Err(ValidationError::Mismatch(format!(
+            "Memory '{id}' returned unexpected title {value:?}"
+        ))),
+        None => Err(ValidationError::Mismatch(format!(
+            "Memory '{id}' omitted the title column"
+        ))),
+    }
+}
+
+fn validate_search_fixture(path: &Path) -> Result<JsonValue, ValidationError> {
+    let index = SearchIndex::open(path)
+        .map_err(|error| ValidationError::Rejected(format!("search open failed: {error}")))?;
+    let freshness = index.projection_freshness();
+    if freshness.document_count != 1 {
+        return Err(ValidationError::Mismatch(format!(
+            "search projection reported {} documents instead of 1",
+            freshness.document_count
+        )));
+    }
+
+    let text_hits = index.search("persistent search payload", None, SearchMode::Text, 2);
+    validate_search_hits("text", &text_hits)?;
+    let vector_hits = index.search("", Some(&[0.25, -0.5, 0.75, 1.0]), SearchMode::Vector, 2);
+    validate_search_hits("vector", &vector_hits)?;
+
+    Ok(json!({
+        "search": {
+            "document_count": freshness.document_count,
+            "text_hit_count": text_hits.len(),
+            "vector_hit_count": vector_hits.len(),
+        },
+    }))
+}
+
+fn validate_search_hits(mode: &str, hits: &[skein::SearchHit]) -> Result<(), ValidationError> {
+    if hits.len() == 1 && hits[0].id == "memory:checkpoint" {
+        return Ok(());
+    }
+    Err(ValidationError::Mismatch(format!(
+        "{mode} search returned ids {:?} instead of [\"memory:checkpoint\"]",
+        hits.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>()
+    )))
 }
 
 fn create_fixture(root: &Path) -> Result<(), String> {
@@ -413,5 +551,34 @@ mod tests {
     #[test]
     fn parser_rejects_excessive_campaigns() {
         assert!(Options::parse(["--cases".to_string(), "10001".to_string()]).is_err());
+    }
+
+    #[test]
+    fn clean_fixture_passes_targeted_hydration() {
+        let workspace = unique_workspace();
+        create_fixture(&workspace).unwrap();
+
+        assert!(validate_graph_fixture(&workspace.join("graph")).is_ok());
+        assert!(validate_search_fixture(&workspace.join("search")).is_ok());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn targeted_hydration_detects_wrong_fixture_content() {
+        let workspace = unique_workspace();
+        create_fixture(&workspace).unwrap();
+        let mut database = Database::open(workspace.join("graph")).unwrap();
+        database
+            .query("CREATE (:Memory {id: 'checkpoint', title: 'duplicate payload'})")
+            .unwrap();
+        drop(database);
+
+        assert!(matches!(
+            validate_graph_fixture(&workspace.join("graph")),
+            Err(ValidationError::Mismatch(_))
+        ));
+
+        let _ = fs::remove_dir_all(workspace);
     }
 }
