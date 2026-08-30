@@ -69,8 +69,8 @@ pub(super) fn plan_select_join_order(
     state: &RelationalState,
     index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
+    config: RelationalJoinEnumerationConfig,
 ) -> Result<PlannedSelectStatement> {
-    let config = RelationalJoinEnumerationConfig::default();
     let syntax_order = select_relation_order(&select);
     if let Err(reason) = join_enumeration_eligibility(&select) {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(reason, syntax_order, config);
