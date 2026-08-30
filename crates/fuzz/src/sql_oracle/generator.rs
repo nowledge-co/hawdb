@@ -1,31 +1,56 @@
 use super::{
-    SqlFuzzCase, SqlMutation, SqlPredicateRewriteCase, SqlQueryInvocation, SqlTlpCase,
-    SQL_QUERY_SHAPE_COUNT,
+    SqlFuzzCase, SqlJoinRewriteCase, SqlMutation, SqlPredicateRewriteCase, SqlQueryInvocation,
+    SqlTlpCase, SQL_JOIN_REWRITE_SHAPE_COUNT, SQL_QUERY_SHAPE_COUNT,
 };
 use crate::predicate_rewrite::PredicateRewriteKind;
 use crate::ResultSemantics;
-use skein::Value;
+use skein::{RelationalJoinPlanningStrategy, Value};
 
 pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) -> SqlFuzzCase {
     let mut setup = vec![
         SqlMutation::required(
-            "CREATE TABLE sql_fuzz_groups (id BIGINT PRIMARY KEY, priority BIGINT, label TEXT)",
+            "CREATE TABLE sql_fuzz_regions (id BIGINT PRIMARY KEY, rank BIGINT UNIQUE, label TEXT)",
+        ),
+        SqlMutation::required(
+            "CREATE TABLE sql_fuzz_groups (id BIGINT PRIMARY KEY, region_id BIGINT UNIQUE REFERENCES sql_fuzz_regions(id), priority BIGINT, label TEXT)",
         ),
         SqlMutation::required(
             "CREATE TABLE sql_fuzz_rows (id BIGINT PRIMARY KEY, group_id BIGINT REFERENCES sql_fuzz_groups(id), bucket BIGINT NOT NULL, score BIGINT, tag TEXT)",
         ),
+        SqlMutation::required(
+            "CREATE TABLE sql_fuzz_notes (id BIGINT PRIMARY KEY, row_id BIGINT NOT NULL REFERENCES sql_fuzz_rows(id), value TEXT)",
+        ),
     ];
+    for region in 0..4_i64 {
+        setup.push(SqlMutation::data(
+            "INSERT INTO sql_fuzz_regions (id, rank, label) VALUES ($1, $2, $3)",
+            vec![
+                Value::Int(region),
+                match region {
+                    0 => Value::Null,
+                    1 => Value::Int(10),
+                    _ => Value::Int(region * 10),
+                },
+                Value::String(format!("region-{}", region % 2)),
+            ],
+        ));
+    }
     for group in 0..4_i64 {
         setup.push(SqlMutation::data(
-            "INSERT INTO sql_fuzz_groups (id, priority, label) VALUES ($1, $2, $3)",
+            "INSERT INTO sql_fuzz_groups (id, region_id, priority, label) VALUES ($1, $2, $3, $4)",
             vec![
                 Value::Int(group),
                 if group == 0 {
                     Value::Null
                 } else {
-                    Value::Int(group * 10)
+                    Value::Int(group)
                 },
-                Value::String(format!("group-{group}")),
+                if group == 1 {
+                    Value::Null
+                } else {
+                    Value::Int((group % 2) * 10)
+                },
+                Value::String(format!("group-{}", group % 2)),
             ],
         ));
     }
@@ -53,8 +78,35 @@ pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
             ],
         ));
     }
+    let mut note_id = 0_i64;
+    for row in 0..row_count {
+        if row % 5 == 1 {
+            continue;
+        }
+        for duplicate in 0..=row % 2 {
+            setup.push(SqlMutation::data(
+                "INSERT INTO sql_fuzz_notes (id, row_id, value) VALUES ($1, $2, $3)",
+                vec![
+                    Value::Int(note_id),
+                    Value::Int(row as i64),
+                    if (row + duplicate).is_multiple_of(3) {
+                        Value::Null
+                    } else {
+                        Value::String(format!("note-{}", row % 2))
+                    },
+                ],
+            ));
+            note_id += 1;
+        }
+    }
     if index_enabled {
         setup.extend([
+            SqlMutation::index(
+                "CREATE INDEX sql_fuzz_regions_rank_idx ON sql_fuzz_regions (rank, id)",
+            ),
+            SqlMutation::index(
+                "CREATE INDEX sql_fuzz_groups_region_idx ON sql_fuzz_groups (region_id, id)",
+            ),
             SqlMutation::index("CREATE INDEX sql_fuzz_rows_score_idx ON sql_fuzz_rows (score, id)"),
             SqlMutation::index("CREATE INDEX sql_fuzz_rows_tag_idx ON sql_fuzz_rows (tag, id)"),
             SqlMutation::index(
@@ -62,6 +114,9 @@ pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
             ),
             SqlMutation::index(
                 "CREATE INDEX sql_fuzz_groups_priority_idx ON sql_fuzz_groups (priority, id)",
+            ),
+            SqlMutation::index(
+                "CREATE INDEX sql_fuzz_notes_row_idx ON sql_fuzz_notes (row_id, id)",
             ),
         ]);
     }
@@ -75,7 +130,73 @@ pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
         row_tlp: specification.build(false),
         aggregate_tlp: specification.build(true),
         predicate_rewrite: specification.build_predicate_rewrite(rewrite_kind),
+        join_rewrite: sql_join_rewrite_case(seed, index),
         index_enabled,
+    }
+}
+
+fn sql_join_rewrite_case(seed: u64, index: usize) -> SqlJoinRewriteCase {
+    let rank = Value::Int(if seed & 1 == 0 { 10 } else { 20 });
+    let (name, from, projection, predicate, order_by, expected_strategy) =
+        match index % SQL_JOIN_REWRITE_SHAPE_COUNT {
+            0 => (
+                "three_inner_chain",
+                "sql_fuzz_rows AS r \
+                 INNER JOIN sql_fuzz_groups AS g ON g.id = r.group_id \
+                 INNER JOIN sql_fuzz_regions AS x ON x.id = g.region_id",
+                "r.bucket AS bucket, r.tag AS row_tag, g.priority AS group_priority, x.rank AS region_rank",
+                "x.rank = $1",
+                "r.id ASC, g.id ASC, x.id ASC",
+                RelationalJoinPlanningStrategy::InnerJoinMemo,
+            ),
+            1 => (
+                "four_inner_chain",
+                "sql_fuzz_rows AS r \
+                 INNER JOIN sql_fuzz_groups AS g ON g.id = r.group_id \
+                 INNER JOIN sql_fuzz_regions AS x ON x.id = g.region_id \
+                 INNER JOIN sql_fuzz_notes AS n ON n.row_id = r.id",
+                "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
+                "x.rank = $1",
+                "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
+                RelationalJoinPlanningStrategy::InnerJoinMemo,
+            ),
+            2 => (
+                "four_mixed_left_preserved",
+                "sql_fuzz_rows AS r \
+                 LEFT JOIN sql_fuzz_notes AS n ON n.row_id = r.id \
+                 INNER JOIN sql_fuzz_groups AS g ON g.id = r.group_id \
+                 INNER JOIN sql_fuzz_regions AS x ON x.id = g.region_id",
+                "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
+                "x.rank = $1",
+                "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
+                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+            ),
+            _ => (
+                "four_mixed_left_null_rejected",
+                "sql_fuzz_rows AS r \
+                 LEFT JOIN sql_fuzz_groups AS g ON g.id = r.group_id \
+                 LEFT JOIN sql_fuzz_regions AS x ON x.id = g.region_id \
+                 INNER JOIN sql_fuzz_notes AS n ON n.row_id = r.id",
+                "r.bucket AS bucket, g.priority AS group_priority, x.rank AS region_rank, n.value AS note_value",
+                "x.rank = $1 AND g.id IS NOT NULL AND x.id IS NOT NULL",
+                "r.id ASC, g.id ASC, x.id ASC, n.id ASC",
+                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+            ),
+        };
+    let base_sql = format!("SELECT {projection} FROM {from} WHERE {predicate}");
+    SqlJoinRewriteCase {
+        name: name.to_string(),
+        optimized: SqlQueryInvocation {
+            sql: format!("{base_sql} ORDER BY {order_by}"),
+            parameters: vec![rank.clone()],
+            result_semantics: ResultSemantics::Bag,
+        },
+        syntax_reference: SqlQueryInvocation {
+            sql: base_sql,
+            parameters: vec![rank],
+            result_semantics: ResultSemantics::Bag,
+        },
+        expected_strategy,
     }
 }
 
