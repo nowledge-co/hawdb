@@ -5,7 +5,7 @@ production `skein` crate does not depend on it.
 
 The generator first creates a deterministic graph state, then chooses query shapes and typed
 predicate and query AST nodes that are validated against the generated schema before rendering. A
-campaign runs eight complementary oracles:
+campaign runs nine complementary oracles:
 
 - The plan-differential oracle applies mutations once, pins one read snapshot, and executes the
   same parameterized Cypher query through memo search and deterministic direct fallback. Direct
@@ -45,6 +45,12 @@ campaign runs eight complementary oracles:
   generated PostgreSQL-style predicates. Positional parameters in the unknown partition are
   deterministically rebased before composition. Both variants retain their `EXPLAIN` rows and run
   against the same relational snapshot.
+- The SQL join-rewrite oracle generates three- and four-relation INNER/LEFT trees over duplicate
+  and nullable values. It compares an optimizer-eligible ordered query with the same query without
+  ordering, which deliberately selects syntax-order planning, on one pinned snapshot under bag
+  semantics. Planning evidence must prove memo selection for the optimized variant and an
+  `unstable_output_order` eligibility decision for the reference. Shapes include preserved outer
+  rows and null-rejection that permits LEFT-to-INNER conversion.
 
 The TLP relations rely on Cypher and SQL three-valued predicate logic: missing or null operands
 evaluate to unknown, and `NOT unknown` remains unknown. Duplicate rows, missing values, null
@@ -55,6 +61,7 @@ Run a deterministic campaign with:
 ```console
 cargo run -p skein-fuzz -- --seed 7 --cases 128
 cargo run -p skein-fuzz -- --seed 7 --case-index 19
+bazel test //crates/fuzz:skein_fuzz_relational_join_rewrite_tests
 ```
 
 The command prints a multi-oracle JSON report. Any mismatch exits non-zero and contains the exact
