@@ -90,7 +90,7 @@ assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
-assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v1"
+assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v7"
 assert optimizer["seed"] == 7
 assert optimizer["requested_case_count"] == 12
 assert optimizer["failed_case_count"] == 0
