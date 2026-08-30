@@ -1,4 +1,7 @@
-use super::{RelationalJoinPlanningOutcome, RelationalJoinPlanningStatus};
+use super::{
+    RelationalJoinPlanningOutcome, RelationalJoinPlanningStatus,
+    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
+};
 use crate::error::{Result, SkeinError};
 use crate::executor::{map_payload_bytes, Row};
 use crate::relational_sql::index_access::{
@@ -31,8 +34,9 @@ use skein_executor::{
 };
 use skein_expression::BindingId;
 use skein_optimizer::{
+    estimate_relational_access_cost, estimate_relational_probe_join_cost,
     select_relational_access_path, PlanCostBreakdown, RelationalAccessPathDescriptor,
-    RelationalAccessPathKind,
+    RelationalAccessPathKind, RelationalJoinCardinality,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -71,6 +75,7 @@ pub(crate) struct RelationalQueryLimits {
 pub(crate) struct RelationalQueryOutput {
     pub rows: QueryRows,
     pub join_planning: RelationalJoinPlanningOutcome,
+    pub operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     pub intermediate_rows: usize,
     pub hydration: RelationalHydrationBudget,
     pub access_path: RelationalAccessPathDescriptor,
@@ -327,6 +332,67 @@ fn join_access_matches_descriptor(candidate: &RelationalJoinAccessCandidate) -> 
     }
 }
 
+fn planned_operator_cardinality_profiles(
+    prepared: &PreparedRelationalSelect,
+) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
+    let mut cost =
+        estimate_relational_access_cost(prepared.access_plan.base_access.descriptor.estimated_rows);
+    let mut profiles = Vec::with_capacity(prepared.statement.joins.len().saturating_add(1));
+    profiles.push(RelationalOperatorCardinalityProfile {
+        operator_id: RelationalOperatorId::from_plan_index(0),
+        operator: match prepared.access_plan.base_access.descriptor.kind {
+            RelationalAccessPathKind::FullScan => RelationalOperatorKind::TableFullScan,
+            RelationalAccessPathKind::PrimaryKey => RelationalOperatorKind::TablePointGet,
+            RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
+        },
+        table: prepared.statement.from.name.clone(),
+        estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
+        actual_rows: None,
+        fully_consumed: false,
+    });
+    for (index, (join, access)) in prepared
+        .statement
+        .joins
+        .iter()
+        .zip(&prepared.access_plan.join_accesses)
+        .enumerate()
+    {
+        let cardinality = match join.kind {
+            SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
+            SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
+        };
+        cost = estimate_relational_probe_join_cost(
+            cost,
+            access.descriptor.estimated_rows,
+            cardinality,
+        );
+        profiles.push(RelationalOperatorCardinalityProfile {
+            operator_id: RelationalOperatorId::from_plan_index(index.saturating_add(1)),
+            operator: match join.kind {
+                SqlJoinKind::Inner => RelationalOperatorKind::IndexNestedLoopJoin,
+                SqlJoinKind::Left => RelationalOperatorKind::IndexNestedLoopLeftJoin,
+            },
+            table: join.table.name.clone(),
+            estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
+            actual_rows: None,
+            fully_consumed: false,
+        });
+    }
+    if let Some(selection) = &prepared.access_plan.join_selection
+        && cost != selection.cost_breakdown
+    {
+        return Err(SkeinError::Execution(
+            "prepared relational operator estimates diverge from the selected join cost"
+                .to_string(),
+        ));
+    }
+    Ok(profiles)
+}
+
+fn estimated_rows_as_usize(rows: u64) -> usize {
+    usize::try_from(rows).unwrap_or(usize::MAX)
+}
+
 struct PlannedJoin<'a> {
     join: &'a crate::sql::SqlJoin,
     schema: &'a RelationalTableSchema,
@@ -359,6 +425,8 @@ struct RelationalPipelineState<'a> {
     rows_until_checkpoint: usize,
     intermediate_rows: usize,
     max_intermediate_rows: usize,
+    operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
+    operator_pipeline_started: bool,
 }
 
 const RELATIONAL_ROW_LOCATOR_SLOT: SlotId = SlotId(0);
@@ -460,6 +528,7 @@ impl<'a> RelationalPipelineState<'a> {
     fn new(
         task_context: Option<&'a skein_core::RuntimeTaskContext>,
         limits: RelationalQueryLimits,
+        operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     ) -> Self {
         let batch_rows = limits.batch_rows.get();
         Self {
@@ -468,17 +537,52 @@ impl<'a> RelationalPipelineState<'a> {
             rows_until_checkpoint: batch_rows,
             intermediate_rows: 0,
             max_intermediate_rows: limits.max_intermediate_rows,
+            operator_cardinality_profiles,
+            operator_pipeline_started: false,
         }
     }
 
-    fn account_row(&mut self) -> Result<()> {
+    fn begin_operator_pipeline(&mut self) {
+        let first_invocation = !self.operator_pipeline_started;
+        self.operator_pipeline_started = true;
+        for profile in &mut self.operator_cardinality_profiles {
+            profile.actual_rows.get_or_insert(0);
+            if first_invocation {
+                profile.fully_consumed = true;
+            }
+        }
+    }
+
+    fn account_operator_row(&mut self, operator_id: RelationalOperatorId) -> Result<()> {
         account_intermediate(&mut self.intermediate_rows, 1, self.max_intermediate_rows)?;
+        let profile = self
+            .operator_cardinality_profiles
+            .get_mut(operator_id.get().saturating_sub(1))
+            .ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "relational operator {} has no cardinality profile",
+                    operator_id.get()
+                ))
+            })?;
+        profile.actual_rows = Some(profile.actual_rows.unwrap_or(0).saturating_add(1));
         self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
         if self.rows_until_checkpoint == 0 {
             skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
             self.rows_until_checkpoint = self.batch_rows;
         }
         Ok(())
+    }
+
+    fn finish_operator_pipeline(&mut self, fully_consumed: bool) {
+        if self.operator_pipeline_started {
+            for profile in &mut self.operator_cardinality_profiles {
+                profile.fully_consumed &= fully_consumed;
+            }
+        }
+    }
+
+    fn operator_cardinality_profiles(&self) -> Vec<RelationalOperatorCardinalityProfile> {
+        self.operator_cardinality_profiles.clone()
     }
 
     fn finish(&self) -> Result<()> {
@@ -566,6 +670,7 @@ fn execute_select<'state>(
 ) -> Result<RelationalQueryOutput> {
     let select = &prepared.statement;
     let join_planning = &prepared.join_planning;
+    let operator_cardinality_profiles = planned_operator_cardinality_profiles(prepared)?;
     let RelationalSelectExecution {
         state,
         index_read_mode,
@@ -629,6 +734,7 @@ fn execute_select<'state>(
             RelationalQueryOutput {
                 rows: QueryRows::empty(),
                 join_planning: join_planning.clone(),
+                operator_cardinality_profiles,
                 intermediate_rows: 0,
                 hydration: limits.hydration,
                 access_path,
@@ -664,7 +770,8 @@ fn execute_select<'state>(
         limits.hydration,
         row_task,
     )?;
-    let mut pipeline = RelationalPipelineState::new(task_context, limits);
+    let mut pipeline =
+        RelationalPipelineState::new(task_context, limits, operator_cardinality_profiles);
     let index_runtime = RelationalIndexRuntime::new(index_read_mode, limits.index_read);
     if ordered_index_projection {
         let output = execute_ordered_index_projection(
@@ -684,6 +791,7 @@ fn execute_select<'state>(
         return Ok(RelationalQueryOutput {
             rows: output.rows,
             join_planning: join_planning.clone(),
+            operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows: pipeline.intermediate_rows,
             hydration: row_runtime.hydration(),
             access_path,
@@ -711,6 +819,7 @@ fn execute_select<'state>(
         return Ok(RelationalQueryOutput {
             rows: output.rows,
             join_planning: join_planning.clone(),
+            operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows: pipeline.intermediate_rows,
             hydration: row_runtime.hydration(),
             access_path,
@@ -759,6 +868,7 @@ fn execute_select<'state>(
     Ok(RelationalQueryOutput {
         rows: output.rows,
         join_planning: join_planning.clone(),
+        operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
         hydration: row_runtime.hydration(),
         access_path,
@@ -772,6 +882,7 @@ fn execute_select<'state>(
 #[derive(Debug)]
 struct RelationalExplainNode {
     operator: &'static str,
+    operator_id: Option<RelationalOperatorId>,
     estimated_rows: Option<usize>,
     access_object: String,
     operator_info: String,
@@ -792,6 +903,7 @@ fn format_relational_explain(
     if select.limit.is_some() || select.offset.is_some() {
         nodes.push(RelationalExplainNode {
             operator: "LimitExec",
+            operator_id: None,
             estimated_rows: bound_limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
             access_object: String::new(),
             operator_info: format!(
@@ -807,6 +919,7 @@ fn format_relational_explain(
     if !select.order_by.is_empty() && output.access_path.order_prefix_len != select.order_by.len() {
         nodes.push(RelationalExplainNode {
             operator: "TopNExec",
+            operator_id: None,
             estimated_rows: bound_limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
             access_object: String::new(),
             operator_info: format!(
@@ -821,6 +934,7 @@ fn format_relational_explain(
     if has_aggregate || !select.group_by.is_empty() {
         nodes.push(RelationalExplainNode {
             operator: "RelationalAggregateExec",
+            operator_id: None,
             estimated_rows: (!select.group_by.is_empty()).then_some(
                 output
                     .access_path
@@ -839,6 +953,7 @@ fn format_relational_explain(
     if !select.group_by.is_empty() {
         nodes.push(RelationalExplainNode {
             operator: "SortExec",
+            operator_id: None,
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
             operator_info: format!("group_keys=[{}]", explain_columns(&select.group_by)),
@@ -848,6 +963,7 @@ fn format_relational_explain(
     if select.distinct || single_count_distinct_column(select).is_some() {
         nodes.push(RelationalExplainNode {
             operator: "DistinctExec",
+            operator_id: None,
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
             operator_info: if select.distinct {
@@ -860,6 +976,7 @@ fn format_relational_explain(
     }
     nodes.push(RelationalExplainNode {
         operator: "ProjectionExec",
+        operator_id: None,
         estimated_rows: Some(output.access_path.estimated_rows),
         access_object: String::new(),
         operator_info: format!("columns={}", select.projection.len()),
@@ -875,24 +992,36 @@ fn format_relational_explain(
     {
         nodes.push(RelationalExplainNode {
             operator: "SelectionExec",
+            operator_id: None,
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
             operator_info: "residual_predicate=true".to_string(),
             report_operator: None,
         });
     }
-    for (join, descriptor) in select.joins.iter().zip(&output.join_access_paths) {
+    for (index, (join, descriptor)) in select
+        .joins
+        .iter()
+        .zip(&output.join_access_paths)
+        .enumerate()
+    {
+        let operator_id = RelationalOperatorId::from_plan_index(index.saturating_add(1));
+        let cardinality = relational_operator_cardinality_profile(&output, operator_id);
         let access_path = explain_access_path(
             descriptor,
             relational_index_evidence(&output, &join.table.name, descriptor),
             &output.row_execution_evidence,
         );
         nodes.push(RelationalExplainNode {
-            operator: match join.kind {
-                SqlJoinKind::Inner => "IndexNestedLoopJoinExec",
-                SqlJoinKind::Left => "IndexNestedLoopLeftJoinExec",
-            },
-            estimated_rows: Some(descriptor.estimated_rows),
+            operator: cardinality.map_or_else(
+                || match join.kind {
+                    SqlJoinKind::Inner => "IndexNestedLoopJoinExec",
+                    SqlJoinKind::Left => "IndexNestedLoopLeftJoinExec",
+                },
+                |profile| profile.operator.as_str(),
+            ),
+            operator_id: Some(operator_id),
+            estimated_rows: cardinality.map(|profile| profile.estimated_rows),
             access_object: explain_access_object(&join.table.name, descriptor),
             operator_info: format!(
                 "{}, {access_path}",
@@ -901,13 +1030,19 @@ fn format_relational_explain(
             report_operator: None,
         });
     }
+    let base_operator_id = RelationalOperatorId::from_plan_index(0);
+    let base_cardinality = relational_operator_cardinality_profile(&output, base_operator_id);
     nodes.push(RelationalExplainNode {
-        operator: match output.access_path.kind {
-            RelationalAccessPathKind::FullScan => "TableFullScanExec",
-            RelationalAccessPathKind::PrimaryKey => "TablePointGetExec",
-            RelationalAccessPathKind::Index => "IndexRangeScanExec",
-        },
-        estimated_rows: Some(output.access_path.estimated_rows),
+        operator: base_cardinality.map_or_else(
+            || match output.access_path.kind {
+                RelationalAccessPathKind::FullScan => "TableFullScanExec",
+                RelationalAccessPathKind::PrimaryKey => "TablePointGetExec",
+                RelationalAccessPathKind::Index => "IndexRangeScanExec",
+            },
+            |profile| profile.operator.as_str(),
+        ),
+        operator_id: Some(base_operator_id),
+        estimated_rows: base_cardinality.map(|profile| profile.estimated_rows),
         access_object: explain_access_object(&select.from.name, &output.access_path),
         operator_info: explain_access_path(
             &output.access_path,
@@ -919,6 +1054,7 @@ fn format_relational_explain(
 
     let mut rows = Vec::with_capacity(nodes.len());
     let mut payload_bytes = 0usize;
+    let mut next_unprofiled_id = output.operator_cardinality_profiles.len().saturating_add(1);
     for (index, node) in nodes.iter().enumerate() {
         let report = node.report_operator.and_then(|operator| {
             output
@@ -926,10 +1062,21 @@ fn format_relational_explain(
                 .iter()
                 .find(|report| report.operator == operator)
         });
+        let cardinality = node
+            .operator_id
+            .and_then(|operator_id| relational_operator_cardinality_profile(&output, operator_id));
+        let display_id = node.operator_id.map_or_else(
+            || {
+                let display_id = next_unprofiled_id;
+                next_unprofiled_id = next_unprofiled_id.saturating_add(1);
+                display_id
+            },
+            RelationalOperatorId::get,
+        );
         let mut row = Row::from([
             (
                 "id".to_string(),
-                Value::String(explain_tree_id(node.operator, index)),
+                Value::String(explain_tree_id(node.operator, index, display_id)),
             ),
             (
                 "estRows".to_string(),
@@ -948,7 +1095,9 @@ fn format_relational_explain(
         if analyze {
             row.insert(
                 "actRows".to_string(),
-                if index == 0 {
+                if let Some(cardinality) = cardinality {
+                    optional_usize_explain_value(cardinality.actual_rows)
+                } else if index == 0 {
                     optional_usize_explain_value(Some(actual_output_rows))
                 } else {
                     optional_usize_explain_value(report.map(|report| report.input_rows))
@@ -956,7 +1105,13 @@ fn format_relational_explain(
             );
             row.insert(
                 "execution info".to_string(),
-                if index == 0 {
+                if let Some(cardinality) = cardinality {
+                    Value::String(format!(
+                        "operator_id={}, fully_consumed={}",
+                        cardinality.operator_id.get(),
+                        cardinality.fully_consumed
+                    ))
+                } else if index == 0 {
                     Value::String(format!(
                         "intermediate_rows={}, hydrated_rows={}, compressed_bytes={}, decompressed_bytes={}",
                         output.intermediate_rows,
@@ -1043,11 +1198,11 @@ fn explain_join_planning(outcome: &RelationalJoinPlanningOutcome) -> String {
     )
 }
 
-fn explain_tree_id(operator: &str, index: usize) -> String {
+fn explain_tree_id(operator: &str, index: usize, display_id: usize) -> String {
     if index == 0 {
-        format!("{operator}_1")
+        format!("{operator}_{display_id}")
     } else {
-        format!("{}└─{operator}_{}", "  ".repeat(index - 1), index + 1)
+        format!("{}└─{operator}_{display_id}", "  ".repeat(index - 1))
     }
 }
 
@@ -1069,6 +1224,16 @@ fn explain_access_object(table: &str, descriptor: &RelationalAccessPathDescripto
             format!("table:{table}, index:{}", descriptor.name)
         }
     }
+}
+
+fn relational_operator_cardinality_profile(
+    output: &RelationalQueryOutput,
+    operator_id: RelationalOperatorId,
+) -> Option<&RelationalOperatorCardinalityProfile> {
+    output
+        .operator_cardinality_profiles
+        .iter()
+        .find(|profile| profile.operator_id == operator_id)
 }
 
 fn relational_index_evidence<'a>(
@@ -1808,14 +1973,15 @@ fn visit_relational_rows<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
-    visit_base_entries(
+    pipeline.begin_operator_pipeline();
+    let fully_consumed = visit_base_entries(
         state,
         index_runtime,
         row_runtime,
         &select.from.name,
         base_access,
         &mut |row| {
-            pipeline.account_row()?;
+            pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
             visit_joined_row(
                 select,
                 parameters,
@@ -1836,7 +2002,9 @@ fn visit_relational_rows<'a>(
                 visit,
             )
         },
-    )
+    )?;
+    pipeline.finish_operator_pipeline(fully_consumed);
+    Ok(fully_consumed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1884,7 +2052,9 @@ fn visit_joined_row<'a>(
                 return Ok(true);
             }
             matched = true;
-            pipeline.account_row()?;
+            pipeline.account_operator_row(RelationalOperatorId::from_plan_index(
+                join_index.saturating_add(1),
+            ))?;
             visit_joined_row(
                 select,
                 parameters,
@@ -1910,7 +2080,9 @@ fn visit_joined_row<'a>(
             schema: planned.schema,
             row: None,
         });
-        pipeline.account_row()?;
+        pipeline.account_operator_row(RelationalOperatorId::from_plan_index(
+            join_index.saturating_add(1),
+        ))?;
         return visit_joined_row(
             select,
             parameters,
@@ -2635,13 +2807,14 @@ fn execute_ordered_index_projection<'a>(
     };
     let mut selected_rows = 0usize;
     if requested != 0 {
-        index_runtime.visit_prefix_entries(
+        pipeline.begin_operator_pipeline();
+        let fully_consumed = index_runtime.visit_prefix_entries(
             state,
             &select.from.name,
             name,
             prefix,
             |_, primary_key| {
-                pipeline.account_row()?;
+                pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
                 if offset != 0 {
                     offset -= 1;
                     return Ok(true);
@@ -2663,6 +2836,7 @@ fn execute_ordered_index_projection<'a>(
                 Ok(true)
             },
         )?;
+        pipeline.finish_operator_pipeline(fully_consumed);
         locator_batch.emit(&mut hydrate)?;
     }
     Ok(StreamingProjectionOutput {
@@ -2792,8 +2966,9 @@ fn execute_borrowed_streaming_full_scan(
     let mut output_rows = 0usize;
     let mut payload_bytes = 0usize;
     if requested != 0 {
-        row_runtime.visit_all_ref(&select.from.name, |row| {
-            pipeline.account_row()?;
+        pipeline.begin_operator_pipeline();
+        let fully_consumed = row_runtime.visit_all_ref(&select.from.name, |row| {
+            pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
             if predicate
                 .as_ref()
                 .map(|predicate| predicate.truth(row))
@@ -2824,6 +2999,7 @@ fn execute_borrowed_streaming_full_scan(
             output_rows = output_rows.saturating_add(1);
             Ok(output_rows < requested)
         })?;
+        pipeline.finish_operator_pipeline(fully_consumed);
     }
     Ok(StreamingProjectionOutput {
         rows: output.finish(),
@@ -2959,6 +3135,7 @@ fn execute_aggregate_select<'a>(
         return Ok(RelationalQueryOutput {
             rows: rows.into(),
             join_planning: join_planning.clone(),
+            operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows,
             hydration: row_runtime.hydration(),
             access_path,
@@ -3083,6 +3260,7 @@ fn execute_aggregate_select<'a>(
     Ok(RelationalQueryOutput {
         rows: output.into(),
         join_planning: join_planning.clone(),
+        operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows,
         hydration: row_runtime.hydration(),
         access_path,
@@ -3194,6 +3372,7 @@ fn execute_single_count_distinct<'a>(
     Ok(RelationalQueryOutput {
         rows: vec![row].into(),
         join_planning: join_planning.clone(),
+        operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
         hydration: row_runtime.hydration(),
         access_path,
@@ -3369,6 +3548,7 @@ fn execute_grouped_aggregate<'a>(
     Ok(RelationalQueryOutput {
         rows: output.into(),
         join_planning: join_planning.clone(),
+        operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
         hydration: row_runtime.hydration(),
         access_path,

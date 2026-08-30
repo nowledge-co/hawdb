@@ -110,6 +110,7 @@ pub use api::{
     QueryStreamOptions, QueryStreamReport, QuerySystemVariables, RankedBackgroundMaintenance,
     RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
     RelationalSqlIndexReadProfile, RelationalSqlReadProfile, RelationalSqlRowReadProfile,
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch,
