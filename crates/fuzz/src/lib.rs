@@ -23,14 +23,15 @@ use query_ast::QueryAst;
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
 pub use coverage::PlanCoverageReport;
 pub use sql_oracle::{
-    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlMutation, SqlPredicateRewriteCase,
+    SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinRewriteCase,
+    SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation, SqlPredicateRewriteCase,
     SqlPredicateRewriteEvidence, SqlPredicateRewriteFailureReport, SqlQueryInvocation,
-    SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence,
+    SqlReductionReport, SqlReplayBundle, SqlTlpCase, SqlTlpEvidence, SQL_JOIN_REWRITE_PROTOCOL,
     SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL, SQL_TLP_AGGREGATE_PROTOCOL,
     SQL_TLP_PROTOCOL,
 };
 
-pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v6";
+pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v7";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "skein-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "skein-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "skein-graph-tlp-fuzz-v1";
@@ -1664,7 +1665,7 @@ impl CampaignReport {
             "failed_case_count": self.failed_case_count,
             "complete_shape_coverage": self.complete_shape_coverage,
             "plan_coverage": self.plan_coverage.json(),
-            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite"],
+            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite", "sql_join_rewrite"],
             "oracle_protocols": {
                 "plan_differential": PLAN_DIFFERENTIAL_PROTOCOL,
                 "graph_tlp": GRAPH_TLP_PROTOCOL,
@@ -1674,6 +1675,7 @@ impl CampaignReport {
                 "sql_tlp": SQL_TLP_PROTOCOL,
                 "sql_tlp_aggregate": SQL_TLP_AGGREGATE_PROTOCOL,
                 "sql_predicate_rewrite": SQL_PREDICATE_REWRITE_PROTOCOL,
+                "sql_join_rewrite": SQL_JOIN_REWRITE_PROTOCOL,
             },
             "capability_profiles": {
                 "plan_differential": capability_profile_json(&plan_profile),
@@ -1684,6 +1686,7 @@ impl CampaignReport {
                 "sql_tlp": sql_oracle::sql_capability_profile_json(false),
                 "sql_tlp_aggregate": sql_oracle::sql_capability_profile_json(true),
                 "sql_predicate_rewrite": sql_oracle::sql_predicate_rewrite_capability_profile_json(),
+                "sql_join_rewrite": sql_oracle::sql_join_rewrite_capability_profile_json(),
             },
             "cases": self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>(),
         })
@@ -1856,6 +1859,11 @@ fn has_complete_shape_coverage(cases: &[CampaignCaseReport]) -> bool {
             .iter()
             .map(|case| case.sql.predicate_rewrite_shape.as_str()),
         &PREDICATE_REWRITE_SHAPES,
+    ) && observes_all_shapes(
+        cases
+            .iter()
+            .map(|case| case.sql.join_rewrite_shape.as_str()),
+        &sql_oracle::SQL_JOIN_REWRITE_SHAPES,
     ) && !cases.is_empty()
         && cases.iter().any(|case| case.direction_reversal_applicable)
 }
@@ -2101,6 +2109,10 @@ mod tests {
         assert!(report
             .cases
             .iter()
+            .all(|case| case.sql.join_rewrite_success));
+        assert!(report
+            .cases
+            .iter()
             .any(|case| case.direction_reversal_applicable));
         assert!(report.cases.iter().any(|case| case.index_enabled));
         assert!(report.cases.iter().any(|case| !case.index_enabled));
@@ -2114,6 +2126,7 @@ mod tests {
         assert_eq!(json["oracles"][5], "sql_tlp");
         assert_eq!(json["oracles"][6], "sql_tlp_aggregate");
         assert_eq!(json["oracles"][7], "sql_predicate_rewrite");
+        assert_eq!(json["oracles"][8], "sql_join_rewrite");
         assert_eq!(
             json["oracle_protocols"]["plan_differential"],
             PLAN_DIFFERENTIAL_PROTOCOL
@@ -2139,6 +2152,10 @@ mod tests {
         assert_eq!(
             json["oracle_protocols"]["sql_predicate_rewrite"],
             SQL_PREDICATE_REWRITE_PROTOCOL
+        );
+        assert_eq!(
+            json["oracle_protocols"]["sql_join_rewrite"],
+            SQL_JOIN_REWRITE_PROTOCOL
         );
     }
 

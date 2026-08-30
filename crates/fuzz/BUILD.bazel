@@ -19,6 +19,7 @@ rust_library(
 
 _APPEND_STATE_MACHINE_SEED_7_TEST = "append_oracle::tests::append_state_machine_matches_reference_model_across_reopen"
 _APPEND_STATE_MACHINE_REPLAY_TEST = "append_oracle::tests::append_state_machine_is_replayable_for_another_seed"
+_RELATIONAL_JOIN_REWRITE_DIFFERENTIAL_TEST = "sql_oracle::tests::relational_join_rewrite_differential_campaign_covers_every_shape"
 
 rust_test(
     name = "skein_fuzz_fast_tests",
@@ -27,6 +28,8 @@ rust_test(
         _APPEND_STATE_MACHINE_SEED_7_TEST,
         "--skip",
         _APPEND_STATE_MACHINE_REPLAY_TEST,
+        "--skip",
+        _RELATIONAL_JOIN_REWRITE_DIFFERENTIAL_TEST,
     ],
     crate = ":skein_fuzz",
     edition = "2024",
@@ -52,6 +55,7 @@ rust_test(
     for name, test_filter in [
         ("skein_fuzz_append_seed_7_tests", _APPEND_STATE_MACHINE_SEED_7_TEST),
         ("skein_fuzz_append_replay_tests", _APPEND_STATE_MACHINE_REPLAY_TEST),
+        ("skein_fuzz_relational_join_rewrite_tests", _RELATIONAL_JOIN_REWRITE_DIFFERENTIAL_TEST),
     ]
 ]
 
@@ -61,6 +65,7 @@ test_suite(
         ":skein_fuzz_append_replay_tests",
         ":skein_fuzz_append_seed_7_tests",
         ":skein_fuzz_fast_tests",
+        ":skein_fuzz_relational_join_rewrite_tests",
     ],
 )
 
