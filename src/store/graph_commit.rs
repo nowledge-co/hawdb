@@ -134,6 +134,7 @@ impl GraphStore {
         self.commit_mutations_internal(catalog, mutations, limits, MutationCommitOptions::default())
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_relational_transaction(
         &mut self,
         catalog: &mut Catalog,
@@ -147,6 +148,7 @@ impl GraphStore {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_mutations_and_relational(
         &mut self,
         catalog: &mut Catalog,
@@ -1755,6 +1757,7 @@ impl GraphStore {
         let mut staged_relational_index_capture = None;
         let mut staged_relational_row_capture = None;
         let mut staged_relational_primary_key_changes = None;
+        let mut relational_mutation_outcomes = Vec::new();
         let mut staged_append_state = None;
         let next_commit_epoch = self
             .commit_epoch
@@ -1826,6 +1829,7 @@ impl GraphStore {
             staged_relational_state = Some(staged.state);
             staged_relational_index_capture = staged.index_capture;
             staged_relational_row_capture = staged.row_capture;
+            relational_mutation_outcomes = staged.mutation_outcomes;
             let replay_access = staged.replay_access.filter(|_| {
                 matches!(
                     staged_relational_row_capture.as_ref(),
@@ -1857,7 +1861,10 @@ impl GraphStore {
             });
         }
         if ops.is_empty() {
-            return Ok(MutationSummary { rows });
+            return Ok(MutationSummary {
+                rows,
+                relational_mutation_outcomes,
+            });
         }
         let staged_relational_index_publication = self.stage_relational_index_live_publication(
             next_commit_epoch,
@@ -1914,7 +1921,10 @@ impl GraphStore {
         self.commit_epoch = next_commit_epoch;
         self.publish_relational_index_live_view(staged_relational_index_publication);
         self.publish_relational_row_live_view(staged_relational_row_publication);
-        Ok(MutationSummary { rows })
+        Ok(MutationSummary {
+            rows,
+            relational_mutation_outcomes,
+        })
     }
 
     fn apply_pending_node_assignments(

@@ -333,6 +333,38 @@ fn parses_insert_on_conflict_update() {
 }
 
 #[test]
+fn parses_insert_on_conflict_do_nothing_returning() {
+    let statement = parse_postgres_sql(
+        "INSERT INTO raw_turns (org_id, request_id, raw_turn_id) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (org_id, request_id) DO NOTHING \
+         RETURNING raw_turn_id",
+    )
+    .expect("supported idempotent insert statement");
+    let SqlStatement::Insert(insert) = statement else {
+        panic!("expected INSERT statement");
+    };
+    assert!(matches!(
+        insert.on_conflict.map(|conflict| conflict.action),
+        Some(SqlConflictAction::DoNothing)
+    ));
+    assert_eq!(insert.returning.len(), 1);
+    assert_eq!(insert.returning[0].name, "raw_turn_id");
+    assert_eq!(insert.returning[0].qualifier, None);
+}
+
+#[test]
+fn rejects_insert_returning_expression() {
+    let error = parse_postgres_sql(
+        "INSERT INTO raw_turns (raw_turn_id) VALUES ($1) RETURNING upper(raw_turn_id)",
+    )
+    .expect_err("RETURNING expressions must fail closed");
+    assert!(error
+        .to_string()
+        .contains("INSERT RETURNING supports column references only"));
+}
+
+#[test]
 fn prepares_dense_repeated_postgres_parameters() {
     let prepared = prepare_postgres_sql(
         "SELECT * FROM thread_messages \

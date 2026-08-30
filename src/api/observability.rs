@@ -5,7 +5,7 @@ use super::{
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
-    compile_relational_statement_sql, format_append_explain, project_append_rows,
+    format_append_explain, project_append_rows,
 };
 use crate::telemetry::QueryTelemetry;
 use crate::value::Value;
@@ -285,15 +285,9 @@ impl Database {
                 create.table.name
             )));
         }
-        let transaction =
-            compile_relational_statement_sql(sql_text, parameters, self.store.relational_state())?;
-        let summary = self
-            .store
-            .commit_relational_transaction(&mut self.catalog, transaction)?;
-        self.complete_required_relational_row_checkpoint("SQL commit")?;
-        Ok(QueryOutput {
-            rows: summary.rows.into(),
-        })
+        let mut transaction = self.begin_transaction();
+        transaction.query_sql_with_result_and_params(sql_text, parameters)?;
+        transaction.commit_with_result().map(|result| result.output)
     }
 
     pub fn slow_query_log_jsonl(&self) -> Result<String> {

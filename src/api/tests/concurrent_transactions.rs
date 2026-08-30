@@ -69,6 +69,69 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer() 
 }
 
 #[test]
+fn optimistic_conflict_noop_commits_converge_to_inserted_and_conflict_results() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.raw_turns (\
+            raw_turn_id TEXT PRIMARY KEY, \
+            org_id TEXT NOT NULL, \
+            request_id TEXT NOT NULL, \
+            UNIQUE (org_id, request_id)\
+        )",
+    )
+    .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = (1..=2)
+        .map(|id| {
+            let db = db.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut tx = db
+                    .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                    .unwrap();
+                let staged = tx
+                    .query_sql_with_result(&format!(
+                        "INSERT INTO public.raw_turns (raw_turn_id, org_id, request_id) \
+                         VALUES ('turn-{id}', 'org-1', 'request-1') \
+                         ON CONFLICT (org_id, request_id) DO NOTHING \
+                         RETURNING raw_turn_id"
+                    ))
+                    .unwrap();
+                assert_eq!(staged.mutation.unwrap().affected_rows, 1);
+                barrier.wait();
+                tx.commit_with_result()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].affected_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].conflict_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        db.query_sql("SELECT raw_turn_id FROM public.raw_turns")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn optimistic_transaction_reads_its_private_workspace() {
     let db = Database::new().into_concurrent();
     let mut tx = db

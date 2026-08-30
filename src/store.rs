@@ -502,6 +502,7 @@ pub struct ScanPrunedRelationshipScan<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
+    pub relational_mutation_outcomes: Vec<skein_storage::RelationalMutationOutcome>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1500,6 +1501,10 @@ impl RelationshipScanPruningCandidate {
 }
 
 impl GraphMutationTransaction {
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.ops.is_empty()
+    }
+
     pub(crate) fn catalog(&self) -> &Catalog {
         &self.catalog
     }

@@ -5,7 +5,8 @@ use super::{
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, Expr, FromTable, OnConflictAction, OnInsert, SetExpr, TableObject,
+    Assignment, AssignmentTarget, Expr, FromTable, OnConflictAction, OnInsert, SelectItem, SetExpr,
+    TableObject,
 };
 
 pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<SqlStatement> {
@@ -19,7 +20,6 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
         || insert.partitioned.is_some()
         || !insert.after_columns.is_empty()
         || insert.has_table_keyword
-        || insert.returning.is_some()
         || insert.replace_into
         || insert.priority.is_some()
         || insert.insert_alias.is_some()
@@ -88,6 +88,23 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
         columns,
         rows,
         on_conflict: insert.on.as_ref().map(lower_on_conflict).transpose()?,
+        returning: insert
+            .returning
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|item| match item {
+                SelectItem::UnnamedExpr(
+                    expr @ (Expr::Identifier(_) | Expr::CompoundIdentifier(_)),
+                ) => super::lower_column_expr(expr),
+                SelectItem::UnnamedExpr(_)
+                | SelectItem::ExprWithAlias { .. }
+                | SelectItem::QualifiedWildcard(_, _)
+                | SelectItem::Wildcard(_) => Err(SkeinError::Semantic(
+                    "INSERT RETURNING supports column references only".to_string(),
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?,
     }))
 }
 

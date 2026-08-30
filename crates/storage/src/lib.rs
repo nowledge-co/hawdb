@@ -160,6 +160,7 @@ pub use property_spill::{
     PropertySpillReader, PropertySpillScrubReport, PropertySpillWriteOptions,
     PropertySpillWriteOutput, PropertySpillWriter,
 };
+pub use relational::RelationalMutationOutcome;
 pub use relational::{
     decode_relational_checkpoint, decode_relational_checkpoint_file,
     decode_relational_checkpoint_file_with_index_load,

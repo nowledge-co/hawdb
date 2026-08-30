@@ -13,6 +13,13 @@ executed through `Database`, `DatabaseReadTransaction`,
 `NowledgeMemGraph` query surface. Relational behavior MUST be expressed as
 PostgreSQL-dialect SQL through the corresponding SQL entry points.
 
+Idempotent ingestion uses PostgreSQL-style `INSERT ... ON CONFLICT (...) DO
+NOTHING RETURNING ...`. `query_sql_with_result` exposes the statement's
+provisional affected/conflict counts and returned rows; `commit_with_result`
+exposes the outcomes recomputed at the durable commit boundary. These typed
+result envelopes coordinate transaction state and do not replace SQL as the
+mutation interface.
+
 Strict Append tables use the same SQL boundary. The storage mode is declared
 with PostgreSQL `CREATE TABLE ... WITH (...)` storage-parameter syntax; the
 parameter names and values are Skein extensions:
