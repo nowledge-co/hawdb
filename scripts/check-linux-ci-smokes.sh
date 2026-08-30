@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 25 ]]; then
-  echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ BENCHMARK..." >&2
+if [[ "$#" -ne 26 ]]; then
+  echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ OPTIMIZER_FUZZ BENCHMARK..." >&2
   exit 2
 fi
 
@@ -13,7 +13,8 @@ readonly skein_shadow_self="$2"
 readonly previous_wrapper_adapter="$3"
 readonly append_fuzz="$4"
 readonly storage_fuzz="$5"
-shift 5
+readonly optimizer_fuzz="$6"
+shift 6
 readonly -a benchmark_smokes=("$@")
 readonly optimizer_smoke="${benchmark_smokes[0]}"
 
@@ -23,6 +24,7 @@ for executable in \
   "$previous_wrapper_adapter" \
   "$append_fuzz" \
   "$storage_fuzz" \
+  "$optimizer_fuzz" \
   "${benchmark_smokes[@]}"; do
   if [[ ! -x "$executable" ]]; then
     echo "required Bazel executable is missing: $executable" >&2
@@ -36,9 +38,38 @@ export SKEIN_ENABLE_COMPATIBILITY_TOOLS=1
 run_fuzz_smokes() {
   local root="$work_root/fuzz-smokes"
   mkdir -p "$root"
-  "$append_fuzz" --seed 7 --cases 8 --steps 64 > "$root/append.json"
-  "$storage_fuzz" --seed 7 --cases 32 > "$root/storage.json"
-  python3 - "$root/append.json" "$root/storage.json" <<'PY'
+  "$append_fuzz" \
+    --seed 7 \
+    --cases 8 \
+    --steps 64 \
+    --log-directory "$root" \
+    > "$root/append.stdout" \
+    2> "$root/append.stderr"
+  "$storage_fuzz" \
+    --seed 7 \
+    --cases 32 \
+    --log-directory "$root" \
+    > "$root/storage.stdout" \
+    2> "$root/storage.stderr"
+  "$optimizer_fuzz" \
+    --seed 7 \
+    --cases 12 \
+    --log-directory "$root" \
+    > "$root/optimizer.stdout" \
+    2> "$root/optimizer.stderr"
+  for stream in \
+    "$root/append.stdout" \
+    "$root/append.stderr" \
+    "$root/storage.stdout" \
+    "$root/storage.stderr" \
+    "$root/optimizer.stdout" \
+    "$root/optimizer.stderr"; do
+    test ! -s "$stream"
+  done
+  python3 - \
+    "$root/skein-append-fuzz-seed-7-cases-8-steps-64-cur.json" \
+    "$root/skein-storage-fuzz-seed-7-cases-32-cur.json" \
+    "$root/skein-optimizer-fuzz-seed-7-cases-12-cur.json" <<'PY'
 import json
 import sys
 
@@ -46,6 +77,8 @@ with open(sys.argv[1], encoding="utf-8") as file:
     append = json.load(file)
 with open(sys.argv[2], encoding="utf-8") as file:
     storage = json.load(file)
+with open(sys.argv[3], encoding="utf-8") as file:
+    optimizer = json.load(file)
 
 assert append["protocol"] == "skein-append-state-machine-fuzz-v1"
 assert append["campaign_seed"] == 7
@@ -57,6 +90,11 @@ assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
+assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v1"
+assert optimizer["seed"] == 7
+assert optimizer["requested_case_count"] == 12
+assert optimizer["failed_case_count"] == 0
+assert optimizer["success"] is True
 PY
 }
 

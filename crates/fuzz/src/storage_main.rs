@@ -3,8 +3,10 @@ use skein::{
     AppendTableSchema, AppendTransaction, AppendWrite, Database, RelationalColumnSchema,
     RelationalRow, RelationalScalarType, RelationalValue, SearchDocument, SearchIndex,
 };
+use skein_fuzz::{emit_fuzz_report, DEFAULT_FUZZ_LOG_DIRECTORY};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -56,11 +58,22 @@ fn run() -> Result<bool, String> {
         "success": success,
         "cases": cases,
     });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report)
-            .map_err(|error| format!("failed to encode report: {error}"))?
-    );
+    let failed_case_count = report["failed_case_count"].as_u64().unwrap_or_default();
+    let paths = emit_fuzz_report(
+        &options.log_directory,
+        "skein-storage-fuzz",
+        &run_id(&options),
+        &report,
+        success,
+        options.print_report,
+        &mut io::stdout().lock(),
+    )?;
+    if let Some(path) = paths.failure {
+        eprintln!(
+            "skein-storage-fuzz: {failed_case_count} failing case(s); reproduction report: {}",
+            path.display()
+        );
+    }
     Ok(success)
 }
 
@@ -125,7 +138,7 @@ fn run_case(
         "detail": detail,
         "success": case_success,
         "reproduction_command": format!(
-            "cargo run -p skein-fuzz --bin skein-storage-fuzz -- --seed {campaign_seed} --case-index {index}"
+            "bazel run //crates/fuzz:skein_storage_fuzz -- --seed {campaign_seed} --case-index {index}"
         ),
     }))
 }
@@ -341,11 +354,13 @@ impl DeterministicRng {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Options {
     seed: u64,
     cases: usize,
     case_index: Option<usize>,
+    log_directory: PathBuf,
+    print_report: bool,
 }
 
 impl Options {
@@ -354,6 +369,8 @@ impl Options {
             seed: 0,
             cases: DEFAULT_CASES,
             case_index: None,
+            log_directory: PathBuf::from(DEFAULT_FUZZ_LOG_DIRECTORY),
+            print_report: false,
         };
         let mut args = args.into_iter();
         while let Some(argument) = args.next() {
@@ -377,6 +394,11 @@ impl Options {
                             })?,
                     );
                 }
+                "--log-directory" => {
+                    options.log_directory =
+                        PathBuf::from(next_value(&mut args, "--log-directory")?);
+                }
+                "--print-report" => options.print_report = true,
                 "--help" | "-h" => return Err(usage().to_string()),
                 _ => return Err(format!("unknown argument '{argument}'\n{}", usage())),
             }
@@ -397,7 +419,14 @@ fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<S
 }
 
 fn usage() -> &'static str {
-    "usage: skein-storage-fuzz [--seed <u64>] [--cases <usize>] [--case-index <usize>]"
+    "usage: skein-storage-fuzz [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
+}
+
+fn run_id(options: &Options) -> String {
+    options.case_index.map_or_else(
+        || format!("seed-{}-cases-{}", options.seed, options.cases),
+        |index| format!("seed-{}-case-{index}", options.seed),
+    )
 }
 
 #[cfg(test)]

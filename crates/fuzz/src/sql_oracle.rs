@@ -16,7 +16,7 @@ pub const SQL_TLP_PROTOCOL: &str = "skein-sql-tlp-fuzz-v1";
 pub const SQL_TLP_AGGREGATE_PROTOCOL: &str = "skein-sql-tlp-aggregate-fuzz-v1";
 pub const SQL_PREDICATE_REWRITE_PROTOCOL: &str = "skein-sql-predicate-rewrite-fuzz-v1";
 pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "skein-sql-join-rewrite-fuzz-v1";
-pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v3";
+pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v1";
 
 const MAX_SQL_REDUCTION_ATTEMPTS: usize = 64;
 pub(crate) const SQL_QUERY_SHAPES: [&str; 8] = [

@@ -75,7 +75,10 @@ rust_binary(
     srcs = ["src/storage_main.rs"],
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + ["//:skein"],
+    deps = all_crate_deps(normal = True) + [
+        ":skein_fuzz",
+        "//:skein",
+    ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 

@@ -109,6 +109,20 @@ ignored resource-profile, Loom, scheduled fuzz, and release soak jobs. Those
 remain separate gates because they require different features, platforms, or
 runtime inputs.
 
+### Local fuzzing
+
+Run the deterministic fuzz regression and CLI contracts with Bazel:
+
+```console
+bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+```
+
+Fuzz campaigns keep successful console output quiet and write detailed JSON to
+`target/fuzz-logs/*-cur.json`. A failure also preserves a
+`*-failure.json` reproduction report and prints its path to stderr. Use
+`--log-directory <path>` to select another artifact directory or
+`--print-report` to explicitly copy the machine-readable report to stdout.
+
 The default `vector-search` implementation keeps raw embeddings canonical and
 publishes an immutable, checksummed `search_turboquant.<generation>.skein`
 candidate projection. Projection construction is segment-bounded, filtered

@@ -1,6 +1,11 @@
 use serde_json::json;
-use skein_fuzz::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
+use skein_fuzz::{
+    emit_fuzz_report, run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL,
+    DEFAULT_FUZZ_LOG_DIRECTORY,
+};
+use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const DEFAULT_CASES: usize = 64;
@@ -60,23 +65,39 @@ fn run() -> Result<bool, String> {
             "case_seed": case_seed,
             "report": report,
             "reproduction_command": format!(
-                "cargo run -p skein-fuzz --bin skein-append-fuzz -- --seed {} --steps {} --case-index {index}",
-                options.seed, options.steps
+                "bazel run //crates/fuzz:skein_append_fuzz -- --seed {} --cases {} --steps {} --case-index {index}",
+                options.seed, options.cases, options.steps
             ),
         }));
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "protocol": APPEND_STATE_MACHINE_PROTOCOL,
-            "campaign_seed": options.seed,
-            "steps_per_case": options.steps,
-            "case_count": reports.len(),
-            "success": success,
-            "cases": reports,
-        }))
-        .map_err(|error| error.to_string())?
-    );
+    let failed_case_count = reports
+        .iter()
+        .filter(|case| case["report"]["success"] == false)
+        .count();
+    let report = json!({
+        "protocol": APPEND_STATE_MACHINE_PROTOCOL,
+        "campaign_seed": options.seed,
+        "steps_per_case": options.steps,
+        "case_count": reports.len(),
+        "failed_case_count": failed_case_count,
+        "success": success,
+        "cases": reports,
+    });
+    let paths = emit_fuzz_report(
+        &options.log_directory,
+        "skein-append-fuzz",
+        &run_id(&options),
+        &report,
+        success,
+        options.print_report,
+        &mut io::stdout().lock(),
+    )?;
+    if let Some(path) = paths.failure {
+        eprintln!(
+            "skein-append-fuzz: {failed_case_count} failing case(s); reproduction report: {}",
+            path.display()
+        );
+    }
     Ok(success)
 }
 
@@ -85,6 +106,8 @@ struct Options {
     cases: usize,
     steps: usize,
     case_index: Option<usize>,
+    log_directory: PathBuf,
+    print_report: bool,
 }
 
 impl Options {
@@ -93,6 +116,8 @@ impl Options {
         let mut cases = DEFAULT_CASES;
         let mut steps = DEFAULT_STEPS;
         let mut case_index = None;
+        let mut log_directory = PathBuf::from(DEFAULT_FUZZ_LOG_DIRECTORY);
+        let mut print_report = false;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -100,6 +125,13 @@ impl Options {
                 "--cases" => cases = parse_value(&mut args, "--cases")?,
                 "--steps" => steps = parse_value(&mut args, "--steps")?,
                 "--case-index" => case_index = Some(parse_value(&mut args, "--case-index")?),
+                "--log-directory" => {
+                    log_directory = PathBuf::from(
+                        args.next()
+                            .ok_or_else(|| "--log-directory requires a value".to_string())?,
+                    );
+                }
+                "--print-report" => print_report = true,
                 "--help" | "-h" => return Err(usage().to_string()),
                 _ => return Err(format!("unknown argument {arg}; {}", usage())),
             }
@@ -118,6 +150,8 @@ impl Options {
             cases,
             steps,
             case_index,
+            log_directory,
+            print_report,
         })
     }
 }
@@ -133,7 +167,19 @@ fn parse_value<T: std::str::FromStr>(
 }
 
 fn usage() -> &'static str {
-    "usage: skein-append-fuzz [--seed <u64>] [--cases <usize>] [--steps <usize>] [--case-index <usize>]"
+    "usage: skein-append-fuzz [--seed <u64>] [--cases <usize>] [--steps <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
+}
+
+fn run_id(options: &Options) -> String {
+    options.case_index.map_or_else(
+        || {
+            format!(
+                "seed-{}-cases-{}-steps-{}",
+                options.seed, options.cases, options.steps
+            )
+        },
+        |index| format!("seed-{}-case-{index}-steps-{}", options.seed, options.steps),
+    )
 }
 
 fn mix_seed(seed: u64, index: u64) -> u64 {

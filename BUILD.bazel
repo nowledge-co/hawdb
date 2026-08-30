@@ -308,6 +308,7 @@ _SKEIN_LINUX_CI_SMOKE_ARGS = [
     "$(location :nowledge_previous_wrapper_shadow_adapter)",
     "$(location //crates/fuzz:skein_append_fuzz)",
     "$(location //crates/fuzz:skein_storage_fuzz)",
+    "$(location //crates/fuzz:skein_optimizer_fuzz)",
 ] + [
     "$(location %s)" % target
     for target in SKEIN_BENCHMARK_TARGETS
@@ -318,6 +319,7 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
     ":skein_cli",
     ":skein_shadow_self",
     "//crates/fuzz:skein_append_fuzz",
+    "//crates/fuzz:skein_optimizer_fuzz",
     "//crates/fuzz:skein_storage_fuzz",
 ] + SKEIN_BENCHMARK_TARGETS
 
