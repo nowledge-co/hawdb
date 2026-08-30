@@ -3,7 +3,7 @@
 use crate::cost::PlanCostBreakdown;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelationalJoinCardinality {
+pub enum RelationalJoinCardinality {
     Inner,
     PreserveLeft,
 }
@@ -17,9 +17,24 @@ pub(crate) enum RelationalJoinRightInput {
     Materialized,
 }
 
-pub(crate) fn estimate_relational_access_cost(estimated_rows: usize) -> PlanCostBreakdown {
+pub fn estimate_relational_access_cost(estimated_rows: usize) -> PlanCostBreakdown {
     let rows = u64::try_from(estimated_rows).unwrap_or(u64::MAX).max(1);
     PlanCostBreakdown::new(rows, rows, 0, 0, 0)
+}
+
+/// Extends a left-deep plan with one probe join using the canonical
+/// relational cost model.
+pub fn estimate_relational_probe_join_cost(
+    left: PlanCostBreakdown,
+    inner_estimated_rows: usize,
+    cardinality: RelationalJoinCardinality,
+) -> PlanCostBreakdown {
+    estimate_relational_join_cost(
+        left,
+        estimate_relational_access_cost(inner_estimated_rows),
+        cardinality,
+        RelationalJoinRightInput::Probe,
+    )
 }
 
 pub(crate) fn estimate_relational_join_cost(
@@ -59,14 +74,7 @@ mod tests {
     #[test]
     fn probe_join_preserves_the_existing_scalar_cost() {
         let left = estimate_relational_access_cost(5);
-        let right = estimate_relational_access_cost(2);
-
-        let cost = estimate_relational_join_cost(
-            left,
-            right,
-            RelationalJoinCardinality::Inner,
-            RelationalJoinRightInput::Probe,
-        );
+        let cost = estimate_relational_probe_join_cost(left, 2, RelationalJoinCardinality::Inner);
 
         assert_eq!(
             cost.as_plan_cost(),

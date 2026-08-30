@@ -20109,6 +20109,7 @@ fn profiled_relational_sql_output(
     let crate::relational_sql::RelationalQueryOutput {
         rows,
         join_planning,
+        operator_cardinality_profiles,
         intermediate_rows,
         hydration,
         index_execution_evidence,
@@ -20117,6 +20118,7 @@ fn profiled_relational_sql_output(
     } = output;
     let profile = RelationalSqlReadProfile {
         join_planning,
+        operator_cardinality_profiles,
         intermediate_rows,
         hydrated_rows: hydration.hydrated_rows,
         hydrated_compressed_bytes: hydration.compressed_bytes,
@@ -20765,9 +20767,9 @@ impl DatabaseReadTransaction {
     }
 
     /// Executes one bounded relational `SELECT` against this pinned snapshot
-    /// and returns result rows together with the storage accounting from that
-    /// exact execution. Virtual system-catalog queries and `EXPLAIN` are kept
-    /// on their dedicated output paths.
+    /// and returns result rows together with operator cardinality and storage
+    /// accounting from that exact execution. Virtual system-catalog queries
+    /// and `EXPLAIN` are kept on their dedicated output paths.
     pub fn query_sql_with_params_options_profiled(
         &self,
         sql_text: &str,

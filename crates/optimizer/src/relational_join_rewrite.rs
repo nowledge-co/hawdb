@@ -2,8 +2,8 @@
 
 use crate::{
     relational_join_cost::{
-        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
-        RelationalJoinRightInput,
+        estimate_relational_access_cost, estimate_relational_probe_join_cost,
+        RelationalJoinCardinality,
     },
     GroupId, Memo, PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
     RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinPredicateId,
@@ -869,11 +869,10 @@ fn best_rewrite_join_plan(
         RelationalJoinOperatorKind::Inner => RelationalJoinCardinality::Inner,
         RelationalJoinOperatorKind::LeftOuter => RelationalJoinCardinality::PreserveLeft,
     };
-    left_plan.cost_breakdown = estimate_relational_join_cost(
+    left_plan.cost_breakdown = estimate_relational_probe_join_cost(
         left_plan.cost_breakdown,
-        estimate_relational_access_cost(access.descriptor.estimated_rows),
+        access.descriptor.estimated_rows,
         cardinality,
-        RelationalJoinRightInput::Probe,
     );
     left_plan.steps.push(RelationalJoinRewriteStep {
         operator_id,

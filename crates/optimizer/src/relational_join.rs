@@ -2,8 +2,8 @@
 
 use crate::{
     relational_join_cost::{
-        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
-        RelationalJoinRightInput,
+        estimate_relational_access_cost, estimate_relational_probe_join_cost,
+        RelationalJoinCardinality,
     },
     Distribution, GroupId, Memo, MemoryBudgetClass, PhysicalProperties, PlanCost,
     PlanCostBreakdown, RelationalAccessPathDescriptor, RelationalAccessPathKind,
@@ -695,12 +695,10 @@ fn best_join_plan(
         })
         .min_by(|left, right| compare_access_paths(left, right))?
         .clone();
-    let inner_cost = estimate_relational_access_cost(access.descriptor.estimated_rows);
-    left_plan.cost_breakdown = estimate_relational_join_cost(
+    left_plan.cost_breakdown = estimate_relational_probe_join_cost(
         left_plan.cost_breakdown,
-        inner_cost,
+        access.descriptor.estimated_rows,
         RelationalJoinCardinality::Inner,
-        RelationalJoinRightInput::Probe,
     );
     left_plan.steps.push(RelationalJoinStep {
         binding: right,
