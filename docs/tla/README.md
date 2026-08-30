@@ -931,6 +931,26 @@ recovery that ignores the replay floor reports
 modeled; the model treats a below-floor cursor as
 requiring rebuild, which over-approximates the implementation conservatively.
 
+## Owner-scoped Projection Generation Replacement
+
+`SkeinProjectionGenerationReplacement.tla` models the publish-last owner head
+defined by
+[`../specs/PROJECTION_GENERATION_REPLACEMENT_SPEC.md`](../specs/PROJECTION_GENERATION_REPLACEMENT_SPEC.md).
+A candidate artifact remains invisible while staging and after sealing. The
+owner head can select it only after the complete artifact is sealed and only
+when the publisher's expected head still matches. Publication therefore
+changes visibility from one complete immutable generation to another without
+an in-place delete phase or an unbounded keep-ID set.
+
+Readers pin the selected generation. Incremental reclamation can remove an
+inactive artifact only when no modeled reader pins it and it is not the active
+writer candidate. Crash recovery clears volatile writer and reader state but
+retains the last durable owner head and all durable artifacts, including an
+abandoned candidate that may be resumed or reclaimed. The model checks that
+the active generation is always sealed, staged candidates stay invisible,
+pinned readers remain readable, and a sealed writer always names a complete
+artifact.
+
 ## Derived Columnar Visibility and Compaction Identity
 
 `SkeinCompactionVisibility.tla` models a derived column-group read path

@@ -35,6 +35,7 @@ STORAGE_MODELS = [
     "SkeinPageCacheAdmission",
     "SkeinProjectionChangefeed",
     "SkeinProjectionDurability",
+    "SkeinProjectionGenerationReplacement",
     "SkeinPropertyIndexPruning",
     "SkeinQueryMemoryLedger",
     "SkeinRelationalIndexDemandRead",

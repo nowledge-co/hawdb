@@ -1017,6 +1017,7 @@ pub struct GraphStore {
     columnar_shadow: ColumnarShadowState,
     relational_index_shadow: RelationalIndexShadowState,
     relational_row_pages: RelationalRowPageState,
+    projection_generations: Option<skein_storage::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
     /// layer (`SkeinEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
@@ -1893,6 +1894,16 @@ impl GraphStore {
         self.post_wal_apply_poisoned
     }
 
+    pub(crate) fn projection_generation_store(
+        &self,
+    ) -> Result<skein_storage::ProjectionGenerationStore> {
+        self.projection_generations.clone().ok_or_else(|| {
+            SkeinError::Storage(
+                "projection generation catalog requires a durable database".to_string(),
+            )
+        })
+    }
+
     pub fn storage_handle_poisoned(&self) -> bool {
         self.post_wal_apply_poisoned || self.integrity_poisoned.load(AtomicOrdering::Acquire)
     }
@@ -2050,6 +2061,24 @@ impl GraphStore {
         replay_config: WalReplayConfig,
         durable_manifest_open_micros: u64,
     ) -> Result<(Self, Catalog)> {
+        let projection_generation_root = durable.root_path.join("projection-generations");
+        let projection_generations = if durable.read_only {
+            if projection_generation_root.exists() {
+                Some(
+                    skein_storage::ProjectionGenerationStore::open_existing(
+                        &projection_generation_root,
+                    )
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+                )
+            } else {
+                None
+            }
+        } else {
+            Some(
+                skein_storage::ProjectionGenerationStore::open(&projection_generation_root)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            )
+        };
         let mut store = Self {
             next_node_id: 0,
             next_rel_id: 0,
@@ -2101,6 +2130,7 @@ impl GraphStore {
                 replay_config.relational_index_mode,
             ),
             relational_row_pages: RelationalRowPageState::default(),
+            projection_generations,
             runtime_governor: None,
             durable: Some(durable),
         };
@@ -2472,6 +2502,7 @@ impl GraphStore {
             relational_row_pages: self
                 .relational_row_pages
                 .snapshot_at_epoch(self.commit_epoch),
+            projection_generations: None,
             runtime_governor: self.runtime_governor.clone(),
             durable: None,
         }

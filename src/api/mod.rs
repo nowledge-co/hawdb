@@ -787,6 +787,14 @@ impl Default for Database {
 }
 
 impl Database {
+    /// Returns the durable, owner-scoped projection generation catalog.
+    ///
+    /// Candidate construction and publication stay on the embedded library
+    /// path. In-memory databases do not expose a durable generation catalog.
+    pub fn projection_generation_store(&self) -> Result<skein_storage::ProjectionGenerationStore> {
+        self.store.projection_generation_store()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

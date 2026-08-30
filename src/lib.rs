@@ -474,6 +474,15 @@ pub use skein_runtime_tokio::{
     TokioTaskError,
 };
 pub use skein_storage::ScanPredicate;
+pub use skein_storage::{
+    ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
+    ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
+    ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,
+    ProjectionGenerationMember, ProjectionGenerationPage, ProjectionGenerationPublishReport,
+    ProjectionGenerationReadLimits, ProjectionGenerationReadReport, ProjectionGenerationReader,
+    ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
+    ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
+};
 #[cfg(feature = "vector-search")]
 pub use skein_vector_projection::{
     KernelPreference as TurboQuantKernelPreference,

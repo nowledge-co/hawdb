@@ -15,6 +15,7 @@ pub mod mutation;
 mod ownership;
 pub mod pressure;
 pub mod projection;
+pub mod projection_generation;
 pub mod property_projection;
 pub mod property_spill;
 pub mod relational;
@@ -141,6 +142,15 @@ pub use projection::{
     SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus,
     SearchProjectionGraphChange, SearchProjectionMutationId, StorageOpenTimings,
     StorageReclamationWatermark, StorageRecoveryReport, StoreStableIdMapping,
+};
+pub use projection_generation::{
+    ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
+    ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
+    ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,
+    ProjectionGenerationMember, ProjectionGenerationPage, ProjectionGenerationPublishReport,
+    ProjectionGenerationReadLimits, ProjectionGenerationReadReport, ProjectionGenerationReader,
+    ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
+    ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
 };
 pub use property_projection::{
     persistent_composite_property_identity, property_projection_descriptor_page_file,
