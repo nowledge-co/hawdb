@@ -106,7 +106,6 @@ use graph_index_metrics::GraphIndexReadMetrics;
 pub use graph_index_metrics::{GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass};
 pub use read_view::PublishedReadView;
 use relational_index_shadow::RelationalIndexShadowState;
-pub(crate) use relational_index_shadow::RelationalTransactionIndexView;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
     RelationalConstraintQualificationUse, RelationalIndexQualificationProbeKind,
@@ -115,6 +114,9 @@ pub use relational_index_shadow::{
     RelationalIndexShadowCheckpointStatus, RelationalIndexShadowRecoveryStatus,
     RelationalIndexViewQualificationOptions, RelationalIndexViewQualificationReport,
     RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
+};
+pub(crate) use relational_index_shadow::{
+    RelationalIndexProbeStatistics, RelationalTransactionIndexView,
 };
 pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;

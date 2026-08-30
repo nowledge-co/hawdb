@@ -137,7 +137,8 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
     };
     match prepared.statement {
         SqlStatement::Select(select) => {
-            let prepared = prepare_relational_select(select, parameters, state, limits)?;
+            let prepared =
+                prepare_relational_select(select, parameters, state, read_modes.index, limits)?;
             execute_select(&prepared, parameters, execution, false)
         }
         SqlStatement::Explain(explain) => {
@@ -146,7 +147,8 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
-            let prepared = prepare_relational_select(select, parameters, state, limits)?;
+            let prepared =
+                prepare_relational_select(select, parameters, state, read_modes.index, limits)?;
             let output = execute_select(&prepared, parameters, execution, !explain.analyze)?;
             if explain.analyze {
                 format_relational_explain(&prepared.statement, parameters, output, true, limits)
@@ -594,16 +596,24 @@ fn prepare_relational_select(
     select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
 ) -> Result<PreparedRelationalSelect> {
     reject_non_public_schema(select.from.schema.as_deref())?;
     for join in &select.joins {
         reject_non_public_schema(join.table.schema.as_deref())?;
     }
-    let planned = join_order::plan_select_join_order(select, parameters, state, limits)?;
+    let planned =
+        join_order::plan_select_join_order(select, parameters, state, index_read_mode, limits)?;
     let access_plan = match planned.access_plan {
         Some(access_plan) => access_plan,
-        None => prepare_syntax_access_plan(&planned.statement, parameters, state, limits)?,
+        None => prepare_syntax_access_plan(
+            &planned.statement,
+            parameters,
+            state,
+            index_read_mode,
+            limits,
+        )?,
     };
     let prepared = PreparedRelationalSelect {
         statement: planned.statement,
@@ -618,6 +628,7 @@ fn prepare_syntax_access_plan(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
 ) -> Result<PreparedRelationalAccessPlan> {
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
@@ -652,7 +663,14 @@ fn prepare_syntax_access_plan(
                 .alias
                 .clone()
                 .unwrap_or_else(|| join.table.name.clone());
-            choose_join_access(&join.on, state, join_schema, &join.table.name, &qualifier)
+            choose_join_access(
+                &join.on,
+                state,
+                join_schema,
+                &join.table.name,
+                &qualifier,
+                index_read_mode,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(PreparedRelationalAccessPlan {
@@ -1690,6 +1708,7 @@ fn choose_join_access(
     schema: &RelationalTableSchema,
     table: &str,
     qualifier: &str,
+    index_read_mode: RelationalIndexReadMode<'_>,
 ) -> Result<RelationalJoinAccessCandidate> {
     let mut bound = BTreeMap::<String, SqlColumnRef>::new();
     collect_conjunctive_join_equalities(predicate, table, qualifier, &mut bound);
@@ -1735,6 +1754,8 @@ fn choose_join_access(
             true,
             &bound,
             row_count,
+            table,
+            index_read_mode,
         ) {
             candidates.push(candidate);
         }
@@ -1746,6 +1767,8 @@ fn choose_join_access(
             index.unique,
             &bound,
             row_count,
+            table,
+            index_read_mode,
         ) {
             candidates.push(candidate);
         }
@@ -1829,6 +1852,8 @@ fn join_index_access_candidate(
     unique: bool,
     bound: &BTreeMap<String, SqlColumnRef>,
     row_count: usize,
+    table: &str,
+    index_read_mode: RelationalIndexReadMode<'_>,
 ) -> Option<RelationalJoinAccessCandidate> {
     let access_columns = columns
         .iter()
@@ -1844,6 +1869,21 @@ fn join_index_access_candidate(
     }
     let equality_prefix_len = access_columns.len();
     let unique_point = unique && equality_prefix_len == columns.len();
+    let estimated_rows = if unique_point {
+        usize::from(row_count != 0)
+    } else {
+        index_read_mode
+            .probe_statistics(table, &name, equality_prefix_len)
+            .map(|statistics| {
+                debug_assert!(statistics.distinct_non_null_values <= statistics.non_null_rows);
+                debug_assert!(statistics.fanout <= statistics.non_null_rows);
+                usize::try_from(statistics.fanout)
+                    .unwrap_or(usize::MAX)
+                    .min(row_count)
+            })
+            .unwrap_or(row_count)
+    }
+    .max(1);
     Some(RelationalJoinAccessCandidate {
         descriptor: RelationalAccessPathDescriptor {
             kind: RelationalAccessPathKind::Index,
@@ -1855,12 +1895,7 @@ fn join_index_access_candidate(
             unique_point,
             covering: false,
             requires_row_fetch: true,
-            estimated_rows: if unique_point {
-                usize::from(row_count != 0)
-            } else {
-                row_count
-            }
-            .max(1),
+            estimated_rows,
         },
         access: RelationalJoinAccess::Index {
             name,

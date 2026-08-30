@@ -1,7 +1,8 @@
 use crate::error::{Result, SkeinError};
 use crate::store::{
-    GraphStore, RelationalIndexReadLimits, RelationalIndexReadViewBackendReport,
-    RelationalIndexReadViewReport, RelationalTransactionIndexView,
+    GraphStore, RelationalIndexProbeStatistics, RelationalIndexReadLimits,
+    RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
+    RelationalTransactionIndexView,
 };
 use skein_storage::{RelationalIndexShadowError, RelationalKey, RelationalState};
 use std::cell::RefCell;
@@ -11,10 +12,30 @@ use std::num::NonZeroUsize;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RelationalIndexReadMode<'a> {
     Materialized,
+    Shadow(&'a GraphStore),
     DemandPaged(&'a GraphStore),
     Authoritative(&'a GraphStore),
     TransactionWorkspace,
     AuthoritativeTransaction(&'a RelationalTransactionIndexView),
+}
+
+impl RelationalIndexReadMode<'_> {
+    pub(crate) fn probe_statistics(
+        self,
+        table: &str,
+        index: &str,
+        prefix_len: usize,
+    ) -> Option<RelationalIndexProbeStatistics> {
+        match self {
+            Self::Materialized | Self::TransactionWorkspace => None,
+            Self::Shadow(store) | Self::DemandPaged(store) | Self::Authoritative(store) => {
+                store.relational_index_probe_statistics(table, index, prefix_len)
+            }
+            Self::AuthoritativeTransaction(view) => {
+                view.fresh_probe_statistics(table, index, prefix_len)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -122,7 +143,10 @@ impl<'a> RelationalIndexRuntime<'a> {
         prefix: &RelationalKey,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
     ) -> Result<bool> {
-        if matches!(self.mode, RelationalIndexReadMode::Materialized) {
+        if matches!(
+            self.mode,
+            RelationalIndexReadMode::Materialized | RelationalIndexReadMode::Shadow(_)
+        ) {
             return visit_materialized_prefix_entries(state, table, index, prefix, &mut visit);
         }
         let fallback = |visit: &mut dyn FnMut(&RelationalKey, &RelationalKey) -> Result<bool>| {
@@ -158,7 +182,9 @@ impl<'a> RelationalIndexRuntime<'a> {
         }
 
         let (target, authoritative) = match self.mode {
-            RelationalIndexReadMode::Materialized => unreachable!("handled by the caller"),
+            RelationalIndexReadMode::Materialized | RelationalIndexReadMode::Shadow(_) => {
+                unreachable!("handled by the caller")
+            }
             RelationalIndexReadMode::TransactionWorkspace => {
                 self.record_fallback(table, index, "transaction_workspace")?;
                 return fallback(visit);
@@ -382,6 +408,7 @@ impl<'a> RelationalIndexRuntime<'a> {
                 )?;
             }
             RelationalIndexReadMode::Materialized
+            | RelationalIndexReadMode::Shadow(_)
             | RelationalIndexReadMode::TransactionWorkspace => {
                 unreachable!("materialized paths cannot record a persistent-index success")
             }

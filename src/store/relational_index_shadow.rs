@@ -157,6 +157,15 @@ pub(crate) struct RelationalIndexReadViewIdentity {
     pub root_set_digest: Sha256Digest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RelationalIndexProbeStatistics {
+    /// Checkpoint epoch that produced every count in this snapshot.
+    pub source_commit_epoch: u64,
+    pub distinct_non_null_values: u64,
+    pub non_null_rows: u64,
+    pub fanout: u64,
+}
+
 #[derive(Clone)]
 enum RelationalIndexReadBackend {
     Base(Arc<RelationalIndexShadowReader>),
@@ -516,6 +525,31 @@ impl RelationalIndexReadView {
             RelationalIndexReadBackend::Base(reader) => reader.is_poisoned(),
             RelationalIndexReadBackend::Recovered(reader) => reader.is_poisoned(),
         }
+    }
+
+    pub(crate) fn fresh_probe_statistics(
+        &self,
+        table: &str,
+        index: &str,
+        prefix_len: usize,
+    ) -> Option<RelationalIndexProbeStatistics> {
+        if self.identity.base_commit_epoch != self.identity.visible_commit_epoch {
+            return None;
+        }
+        let manifest = match &self.backend {
+            RelationalIndexReadBackend::Base(reader) => reader.manifest(),
+            RelationalIndexReadBackend::Recovered(reader) => reader.base_manifest(),
+        };
+        let statistics = manifest
+            .root(table, index)?
+            .statistics
+            .leading_prefix(prefix_len)?;
+        Some(RelationalIndexProbeStatistics {
+            source_commit_epoch: manifest.source_commit_epoch,
+            distinct_non_null_values: statistics.distinct_non_null_values,
+            non_null_rows: statistics.non_null_rows,
+            fanout: statistics.fanout,
+        })
     }
 
     fn advance(
@@ -1756,6 +1790,17 @@ impl GraphStore {
 
     pub fn relational_index_recovery_report(&self) -> Option<&RelationalIndexRecoveryReport> {
         self.relational_index_shadow.recovery_report.as_ref()
+    }
+
+    pub(crate) fn relational_index_probe_statistics(
+        &self,
+        table: &str,
+        index: &str,
+        prefix_len: usize,
+    ) -> Option<RelationalIndexProbeStatistics> {
+        self.relational_index_shadow
+            .current_read_view(self.commit_epoch)?
+            .fresh_probe_statistics(table, index, prefix_len)
     }
 
     #[cfg(test)]
