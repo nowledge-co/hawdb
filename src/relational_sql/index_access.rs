@@ -66,6 +66,10 @@ pub(crate) struct RelationalIndexExecutionEvidence {
     pub live_entries_matched: usize,
     pub live_bytes_visited: usize,
     pub rows_visited: usize,
+    pub range_lookups: usize,
+    pub exclusive_seek_lookups: usize,
+    pub backward_lookups: usize,
+    pub early_stop_lookups: usize,
 }
 
 impl RelationalIndexExecutionEvidence {
@@ -103,7 +107,13 @@ struct RelationalIndexRuntimeState {
 struct RelationalIndexProbe<'input> {
     table: &'input str,
     index: &'input str,
-    prefix: &'input RelationalKey,
+    selector: RelationalIndexProbeSelector<'input>,
+}
+
+#[derive(Clone, Copy)]
+enum RelationalIndexProbeSelector<'input> {
+    Prefix(&'input RelationalKey),
+    Range(&'input skein_storage::RelationalIndexRangeScan),
 }
 
 impl<'a> RelationalIndexRuntime<'a> {
@@ -156,7 +166,35 @@ impl<'a> RelationalIndexRuntime<'a> {
             RelationalIndexProbe {
                 table,
                 index,
-                prefix,
+                selector: RelationalIndexProbeSelector::Prefix(prefix),
+            },
+            &mut visit,
+            fallback,
+        )
+    }
+
+    pub(crate) fn visit_range_entries(
+        &self,
+        state: &RelationalState,
+        table: &str,
+        index: &str,
+        scan: &skein_storage::RelationalIndexRangeScan,
+        mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
+    ) -> Result<bool> {
+        if matches!(
+            self.mode,
+            RelationalIndexReadMode::Materialized | RelationalIndexReadMode::Shadow(_)
+        ) {
+            return visit_materialized_range_entries(state, table, index, scan, &mut visit);
+        }
+        let fallback = |visit: &mut dyn FnMut(&RelationalKey, &RelationalKey) -> Result<bool>| {
+            visit_materialized_range_entries(state, table, index, scan, visit)
+        };
+        self.visit_demand_or_fallback(
+            RelationalIndexProbe {
+                table,
+                index,
+                selector: RelationalIndexProbeSelector::Range(scan),
             },
             &mut visit,
             fallback,
@@ -174,7 +212,7 @@ impl<'a> RelationalIndexRuntime<'a> {
         let RelationalIndexProbe {
             table,
             index,
-            prefix,
+            selector,
         } = probe;
         enum PersistentTarget<'a> {
             Store(&'a GraphStore),
@@ -221,24 +259,39 @@ impl<'a> RelationalIndexRuntime<'a> {
             }
         };
         let attempt = match target {
-            PersistentTarget::Store(store) => store
-                .visit_relational_index_read_view_prefix_entries(
-                    table,
-                    index,
-                    prefix,
-                    remaining,
-                    &mut visit_locator,
-                ),
-            PersistentTarget::Transaction(view) => {
-                Some(view.visit_prefix_entries(table, index, prefix, remaining, &mut visit_locator))
-            }
+            PersistentTarget::Store(store) => match selector {
+                RelationalIndexProbeSelector::Prefix(prefix) => store
+                    .visit_relational_index_read_view_prefix_entries(
+                        table,
+                        index,
+                        prefix,
+                        remaining,
+                        &mut visit_locator,
+                    ),
+                RelationalIndexProbeSelector::Range(scan) => store
+                    .visit_relational_index_read_view_range_entries(
+                        table,
+                        index,
+                        scan,
+                        remaining,
+                        &mut visit_locator,
+                    ),
+            },
+            PersistentTarget::Transaction(view) => Some(match selector {
+                RelationalIndexProbeSelector::Prefix(prefix) => {
+                    view.visit_prefix_entries(table, index, prefix, remaining, &mut visit_locator)
+                }
+                RelationalIndexProbeSelector::Range(scan) => {
+                    view.visit_range_entries(table, index, scan, remaining, &mut visit_locator)
+                }
+            }),
         };
         if let Some(error) = callback_error {
             return Err(error);
         }
         match attempt {
             Some(Ok(report)) => {
-                self.record_success(table, index, &report)?;
+                self.record_success(table, index, &report, selector)?;
                 Ok(keep_going)
             }
             Some(Err(RelationalIndexShadowError::Admission(_))) => {
@@ -347,6 +400,7 @@ impl<'a> RelationalIndexRuntime<'a> {
         table: &str,
         index: &str,
         report: &RelationalIndexReadViewReport,
+        selector: RelationalIndexProbeSelector<'_>,
     ) -> Result<()> {
         let metrics = IndexReadMetrics::from_report(report)?;
         let mut state = self.state.borrow_mut();
@@ -439,6 +493,21 @@ impl<'a> RelationalIndexRuntime<'a> {
             report.rows_visited,
             "index result row count",
         )?;
+        if let RelationalIndexProbeSelector::Range(scan) = selector {
+            evidence.range_lookups = checked_add(evidence.range_lookups, 1, "range lookup count")?;
+            if scan.exclusive_bound.is_some() {
+                evidence.exclusive_seek_lookups =
+                    checked_add(evidence.exclusive_seek_lookups, 1, "exclusive seek count")?;
+            }
+            if scan.direction == skein_storage::RelationalIndexScanDirection::Backward {
+                evidence.backward_lookups =
+                    checked_add(evidence.backward_lookups, 1, "backward lookup count")?;
+            }
+        }
+        if report.stopped_early {
+            evidence.early_stop_lookups =
+                checked_add(evidence.early_stop_lookups, 1, "early-stop lookup count")?;
+        }
         Ok(())
     }
 }
@@ -454,6 +523,39 @@ fn visit_materialized_prefix_entries<'state>(
     let mut keep_going = true;
     state
         .visit_index_prefix_entries(table, index, prefix, |index_key, primary_key| {
+            match visit(index_key, primary_key) {
+                Ok(continue_scan) => {
+                    keep_going = continue_scan;
+                    continue_scan
+                }
+                Err(candidate_error) => {
+                    error = Some(candidate_error);
+                    false
+                }
+            }
+        })
+        .ok_or_else(|| {
+            SkeinError::Execution(format!(
+                "relational index {index} on table {table} is not materialized"
+            ))
+        })?;
+    match error {
+        Some(error) => Err(error),
+        None => Ok(keep_going),
+    }
+}
+
+fn visit_materialized_range_entries<'state>(
+    state: &'state RelationalState,
+    table: &str,
+    index: &str,
+    scan: &skein_storage::RelationalIndexRangeScan,
+    visit: &mut dyn FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
+) -> Result<bool> {
+    let mut error = None;
+    let mut keep_going = true;
+    state
+        .visit_index_range_entries(table, index, scan, |index_key, primary_key| {
             match visit(index_key, primary_key) {
                 Ok(continue_scan) => {
                     keep_going = continue_scan;

@@ -630,6 +630,322 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn relational_keyset_pagination_uses_exclusive_forward_and_backward_index_seeks() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE sessions (\
+                    id TEXT PRIMARY KEY, \
+                    org_id TEXT NOT NULL, \
+                    last_seen_at BIGINT NOT NULL, \
+                    payload TEXT NOT NULL\
+                )",
+            )
+            .expect("create sessions table");
+        database
+            .query_sql(
+                "CREATE INDEX sessions_org_last_seen_id_idx \
+                 ON sessions (org_id, last_seen_at, id)",
+            )
+            .expect("create sessions keyset index");
+        for (id, last_seen_at) in [
+            ("session-a", 10),
+            ("session-b", 20),
+            ("session-c", 20),
+            ("session-d", 30),
+        ] {
+            database
+                .query_sql_with_params(
+                    "INSERT INTO sessions (id, org_id, last_seen_at, payload) \
+                     VALUES ($1, 'org-1', $2, $1)",
+                    &[Value::String(id.to_string()), Value::Int(last_seen_at)],
+                )
+                .expect("insert session");
+        }
+
+        let ascending = database
+            .query_sql_with_params(
+                "SELECT id, last_seen_at FROM sessions \
+                 WHERE org_id = $1 \
+                   AND (last_seen_at > $2 OR (last_seen_at = $2 AND id > $3)) \
+                 ORDER BY last_seen_at ASC, id ASC LIMIT $4",
+                &[
+                    Value::String("org-1".to_string()),
+                    Value::Int(20),
+                    Value::String("session-b".to_string()),
+                    Value::Int(2),
+                ],
+            )
+            .expect("read ascending keyset page");
+        assert_eq!(
+            ascending
+                .rows
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            [
+                Value::String("session-c".to_string()),
+                Value::String("session-d".to_string()),
+            ]
+        );
+        let ascending_first = database
+            .query_sql(
+                "SELECT id FROM sessions WHERE org_id = 'org-1' \
+                 ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+            )
+            .expect("read first ascending keyset page");
+        let walked_ascending = ascending_first
+            .rows
+            .iter()
+            .chain(&ascending.rows)
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            walked_ascending,
+            [
+                Value::String("session-a".to_string()),
+                Value::String("session-b".to_string()),
+                Value::String("session-c".to_string()),
+                Value::String("session-d".to_string()),
+            ]
+        );
+
+        let descending = database
+            .query_sql_with_params(
+                "SELECT id, last_seen_at FROM sessions \
+                 WHERE org_id = $1 \
+                   AND (last_seen_at < $2 OR (last_seen_at = $2 AND id < $3)) \
+                 ORDER BY last_seen_at DESC, id DESC LIMIT $4",
+                &[
+                    Value::String("org-1".to_string()),
+                    Value::Int(20),
+                    Value::String("session-c".to_string()),
+                    Value::Int(2),
+                ],
+            )
+            .expect("read descending keyset page");
+        assert_eq!(
+            descending
+                .rows
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            [
+                Value::String("session-b".to_string()),
+                Value::String("session-a".to_string()),
+            ]
+        );
+        let descending_first = database
+            .query_sql(
+                "SELECT id FROM sessions WHERE org_id = 'org-1' \
+                 ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+            )
+            .expect("read first descending keyset page");
+        let walked_descending = descending_first
+            .rows
+            .iter()
+            .chain(&descending.rows)
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            walked_descending,
+            [
+                Value::String("session-d".to_string()),
+                Value::String("session-c".to_string()),
+                Value::String("session-b".to_string()),
+                Value::String("session-a".to_string()),
+            ]
+        );
+
+        let explained = database
+            .query_sql_with_params(
+                "EXPLAIN ANALYZE SELECT id FROM sessions \
+                 WHERE org_id = $1 \
+                   AND (last_seen_at < $2 OR (last_seen_at = $2 AND id < $3)) \
+                 ORDER BY last_seen_at DESC, id DESC LIMIT $4",
+                &[
+                    Value::String("org-1".to_string()),
+                    Value::Int(30),
+                    Value::String("session-d".to_string()),
+                    Value::Int(1),
+                ],
+            )
+            .expect("explain descending keyset page");
+        assert!(explained.rows.iter().all(|row| {
+            !matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec") || id.contains("SelectionExec"))
+        }));
+        let info = relational_explain_operator_info(&explained, "IndexRangeScanExec");
+        assert!(info.contains("order_prefix=2"));
+        assert!(info.contains("exclusive_seek=true"));
+        assert!(info.contains("direction=backward"));
+
+        let mixed_direction = database
+            .query_sql(
+                "EXPLAIN SELECT id FROM sessions WHERE org_id = 'org-1' \
+                 ORDER BY last_seen_at DESC, id ASC LIMIT 2",
+            )
+            .expect("explain mixed-direction fallback");
+        assert!(mixed_direction.rows.iter().any(|row| {
+            matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec"))
+        }));
+
+        database
+            .query_sql(
+                "CREATE TABLE nullable_sessions (\
+                    id TEXT PRIMARY KEY, \
+                    org_id TEXT NOT NULL, \
+                    last_seen_at BIGINT\
+                )",
+            )
+            .expect("create nullable sessions table");
+        database
+            .query_sql(
+                "CREATE INDEX nullable_sessions_keyset_idx \
+                 ON nullable_sessions (org_id, last_seen_at, id)",
+            )
+            .expect("create nullable sessions index");
+        let nullable = database
+            .query_sql(
+                "EXPLAIN SELECT id FROM nullable_sessions \
+                 WHERE org_id = 'org-1' \
+                   AND (last_seen_at > 20 OR (last_seen_at = 20 AND id > 'session-c')) \
+                 ORDER BY last_seen_at ASC NULLS FIRST, id ASC LIMIT 2",
+            )
+            .expect("explain nullable keyset fallback");
+        assert!(nullable.rows.iter().any(|row| {
+            matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec"))
+        }));
+    }
+
+    #[test]
+    fn persistent_keyset_pagination_merges_base_live_transaction_and_recovery_entries() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-keyset-{}-{nonce}",
+            std::process::id()
+        ));
+        let config = DatabaseConfig {
+            relational_index_mode: skein_storage::RelationalIndexMode::DemandPaged,
+            ..DatabaseConfig::default()
+        };
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                config.clone(),
+            )
+            .expect("open keyset database");
+            database
+                .query_sql(
+                    "CREATE TABLE sessions (\
+                        id TEXT PRIMARY KEY, \
+                        org_id TEXT NOT NULL, \
+                        last_seen_at BIGINT NOT NULL\
+                    )",
+                )
+                .expect("create sessions table");
+            database
+                .query_sql(
+                    "CREATE INDEX sessions_org_last_seen_id_idx \
+                     ON sessions (org_id, last_seen_at, id)",
+                )
+                .expect("create sessions index");
+            for (id, last_seen_at) in [("session-a", 10), ("session-b", 20), ("session-d", 30)] {
+                database
+                    .query_sql_with_params(
+                        "INSERT INTO sessions (id, org_id, last_seen_at) \
+                         VALUES ($1, 'org-1', $2)",
+                        &[Value::String(id.to_string()), Value::Int(last_seen_at)],
+                    )
+                    .expect("insert base session");
+            }
+            database.checkpoint().expect("publish keyset index base");
+            database
+                .query_sql(
+                    "INSERT INTO sessions (id, org_id, last_seen_at) \
+                     VALUES ('session-c', 'org-1', 20), ('session-e', 'org-1', 40)",
+                )
+                .expect("insert live sessions");
+            database
+                .query_sql("DELETE FROM sessions WHERE id = 'session-b'")
+                .expect("delete one base session");
+
+            let live = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at < 40 OR (last_seen_at = 40 AND id < 'session-e')) \
+                     ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+                )
+                .expect("read backward keyset page over base and live entries");
+            let info = relational_explain_operator_info(&live, "IndexRangeScanExec");
+            assert!(info.contains("runtime_path=demand_paged"));
+            assert!(info.contains("exclusive_seek_lookups=1"));
+            assert!(info.contains("backward_lookups=1"));
+            assert!(info.contains("early_stop_lookups=1"));
+
+            let mut transaction = database.begin_transaction();
+            transaction
+                .query_sql(
+                    "INSERT INTO sessions (id, org_id, last_seen_at) \
+                     VALUES ('session-bb', 'org-1', 20)",
+                )
+                .expect("insert transaction-private session");
+            let private = transaction
+                .query_sql(
+                    "SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at < 30 OR (last_seen_at = 30 AND id < 'session-d')) \
+                     ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+                )
+                .expect("read transaction-private keyset page");
+            assert_eq!(
+                private
+                    .rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                [
+                    Value::String("session-c".to_string()),
+                    Value::String("session-bb".to_string()),
+                ]
+            );
+            transaction.rollback();
+        }
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .expect("reopen keyset database");
+            let recovered = database
+                .query_sql(
+                    "SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at > 10 OR (last_seen_at = 10 AND id > 'session-a')) \
+                     ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+                )
+                .expect("read forward keyset page over recovery delta");
+            assert_eq!(
+                recovered
+                    .rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                [
+                    Value::String("session-c".to_string()),
+                    Value::String("session-d".to_string()),
+                ]
+            );
+        }
+        std::fs::remove_dir_all(path).expect("remove keyset database");
+    }
+
+    #[test]
     fn database_sql_entrypoint_executes_strict_append_ddl_insert_and_bounded_select() {
         let mut database = Database::new();
         database
@@ -1759,6 +2075,13 @@ mod tests {
                     "INSERT INTO parents (id, code, body) VALUES ('parent-1', 'code-1', 'body-1')",
                 )
                 .expect("insert a transaction-local unique key");
+            transaction
+                .query_sql(
+                    "INSERT INTO parents (id, code, body) VALUES \
+                     ('page-2', 'code-2', 'body-1'), \
+                     ('page-3', 'code-3', 'body-1')",
+                )
+                .expect("insert transaction-local keyset entries");
 
             let explain = transaction
                 .query_sql("EXPLAIN ANALYZE SELECT id FROM parents WHERE code = 'code-1'")
@@ -1779,6 +2102,19 @@ mod tests {
             assert!(ordered.rows.iter().all(|row| {
                 !matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec"))
             }));
+
+            let keyset = transaction
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT id FROM parents \
+                     WHERE body = 'body-1' \
+                       AND (code > 'code-1' OR (code = 'code-1' AND id > 'parent-1')) \
+                     ORDER BY code ASC, id ASC LIMIT 2",
+                )
+                .expect("read transaction-local keyset page");
+            let keyset_info = relational_explain_operator_info(&keyset, "IndexRangeScanExec");
+            assert!(keyset_info.contains("runtime_path=transaction_workspace"));
+            assert!(keyset_info.contains("exclusive_seek_lookups=1"));
+            assert!(keyset_info.contains("early_stop_lookups=1"));
 
             transaction
                 .query_sql("UPDATE parents SET code = 'base-code-2' WHERE id = 'base'")

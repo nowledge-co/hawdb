@@ -805,6 +805,8 @@ mod tests {
             equality_prefix_len: index_columns.len(),
             index_columns,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point: unique,
             covering: false,
             requires_row_fetch: kind == RelationalAccessPathKind::Index,

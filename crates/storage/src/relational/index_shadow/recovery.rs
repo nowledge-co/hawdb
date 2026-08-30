@@ -5,8 +5,9 @@
 
 use super::super::{
     RelationalIndexChange, RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
-    RelationalIndexChangeKind, RelationalKey, RelationalRecoveryFence,
-    RelationalRecoverySourceIdentity, RelationalState, RELATIONAL_RECOVERY_SOURCE_BYTES,
+    RelationalIndexChangeKind, RelationalIndexRangeScan, RelationalIndexScanDirection,
+    RelationalKey, RelationalRecoveryFence, RelationalRecoverySourceIdentity, RelationalState,
+    RELATIONAL_RECOVERY_SOURCE_BYTES,
 };
 use super::{
     decode_bytes, decode_utf8, encode_relational_key, read_bounded_file, read_u16, read_u32,
@@ -589,6 +590,7 @@ struct RecoveryOrderedMerge<'a, F> {
     rows_visited: usize,
     stopped_early: bool,
     error: Option<RelationalIndexShadowError>,
+    direction: RelationalIndexScanDirection,
 }
 
 impl<F> RecoveryOrderedMerge<'_, F>
@@ -617,13 +619,21 @@ where
 
     fn visit_base(&mut self, index_key: &RelationalKey, primary_key: &RelationalKey) -> bool {
         let base_entry = (index_key.clone(), primary_key.clone());
-        while self
-            .pending
-            .first_key_value()
-            .is_some_and(|(entry, _)| entry < &base_entry)
-        {
-            let Some(((pending_index_key, pending_primary_key), kind)) = self.pending.pop_first()
-            else {
+        while match self.direction {
+            RelationalIndexScanDirection::Forward => self
+                .pending
+                .first_key_value()
+                .is_some_and(|(entry, _)| entry < &base_entry),
+            RelationalIndexScanDirection::Backward => self
+                .pending
+                .last_key_value()
+                .is_some_and(|(entry, _)| entry > &base_entry),
+        } {
+            let pending = match self.direction {
+                RelationalIndexScanDirection::Forward => self.pending.pop_first(),
+                RelationalIndexScanDirection::Backward => self.pending.pop_last(),
+            };
+            let Some(((pending_index_key, pending_primary_key), kind)) = pending else {
                 break;
             };
             if kind == RelationalIndexChangeKind::Insert
@@ -640,7 +650,11 @@ where
 
     fn finish(&mut self) {
         while !self.stopped_early && self.error.is_none() {
-            let Some(((index_key, primary_key), kind)) = self.pending.pop_first() else {
+            let pending = match self.direction {
+                RelationalIndexScanDirection::Forward => self.pending.pop_first(),
+                RelationalIndexScanDirection::Backward => self.pending.pop_last(),
+            };
+            let Some(((index_key, primary_key), kind)) = pending else {
                 break;
             };
             if kind == RelationalIndexChangeKind::Insert && !self.emit(&index_key, &primary_key) {
@@ -878,9 +892,35 @@ impl RelationalIndexRecoveryReader {
         index: &str,
         prefix: &RelationalKey,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_range_entries(
+            table,
+            index,
+            &RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            limits,
+            visit,
+        )
+    }
+
+    pub fn visit_range_entries(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
-        let encoded_prefix = encode_relational_key(prefix)?;
+        let encoded_prefix = encode_relational_key(&scan.prefix)?;
+        let encoded_bound = scan
+            .exclusive_bound
+            .as_ref()
+            .map(encode_relational_key)
+            .transpose()?;
         if self.is_poisoned() {
             return Err(RelationalIndexShadowError::Corrupt(
                 "relational index recovery reader is poisoned".to_string(),
@@ -927,6 +967,12 @@ impl RelationalIndexRecoveryReader {
                 if entry.key.table != table
                     || entry.key.index != index
                     || !entry.key.index_key.starts_with(&encoded_prefix)
+                    || encoded_bound
+                        .as_ref()
+                        .is_some_and(|bound| match scan.direction {
+                            RelationalIndexScanDirection::Forward => entry.key.index_key <= *bound,
+                            RelationalIndexScanDirection::Backward => entry.key.index_key >= *bound,
+                        })
                 {
                     return Ok(());
                 }
@@ -990,11 +1036,12 @@ impl RelationalIndexRecoveryReader {
             rows_visited: 0,
             stopped_early: false,
             error: None,
+            direction: scan.direction,
         };
-        report.base = self.base.visit_prefix_entries(
+        report.base = self.base.visit_range_entries(
             table,
             index,
-            prefix,
+            scan,
             base_limits,
             |index_key, primary_key| merge.visit_base(index_key, primary_key),
         )?;

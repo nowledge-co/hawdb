@@ -1,3 +1,4 @@
+use super::super::{RelationalIndexRangeScan, RelationalIndexScanDirection};
 use super::{
     encode_relational_key, IndexLeafPosting, IndexPageId, RelationalIndexRootDescriptor,
     RelationalIndexShadowError, RelationalIndexShadowReader,
@@ -128,6 +129,62 @@ impl RelationalIndexShadowReader {
         let root = context.read_root(&descriptor)?;
         let outcome =
             context.visit_prefix_subtree(root.child, root.height, None, &encoded, &mut visit)?;
+        context.report.stopped_early = outcome == VisitOutcome::Stopped;
+        Ok(context.report)
+    }
+
+    /// Visits an ordered exclusive range within one leading index-key prefix.
+    pub fn visit_range_entries(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        let descriptor = self.root_descriptor(table, index)?.clone();
+        let encoded_prefix = self.encode_lookup_key(&scan.prefix)?;
+        let encoded_bound = scan
+            .exclusive_bound
+            .as_ref()
+            .map(|bound| self.encode_lookup_key(bound))
+            .transpose()?;
+        let mut context = ReadContext::new(self, limits);
+        let root = context.read_root(&descriptor)?;
+        let outcome = match scan.direction {
+            RelationalIndexScanDirection::Forward => context.visit_forward_range_subtree(
+                root.child,
+                root.height,
+                None,
+                &encoded_prefix,
+                encoded_bound.as_deref(),
+                &mut visit,
+            )?,
+            RelationalIndexScanDirection::Backward => {
+                let prefix_successor;
+                let upper = match encoded_bound.as_deref() {
+                    Some(bound) => bound,
+                    None => {
+                        prefix_successor =
+                            encoded_prefix_successor(&encoded_prefix).ok_or_else(|| {
+                                RelationalIndexShadowError::Admission(
+                                    "relational index prefix has no finite exclusive upper bound"
+                                        .to_string(),
+                                )
+                            })?;
+                        &prefix_successor
+                    }
+                };
+                context.visit_backward_range_subtree(
+                    root.child,
+                    root.height,
+                    None,
+                    &encoded_prefix,
+                    upper,
+                    &mut visit,
+                )?
+            }
+        };
         context.report.stopped_early = outcome == VisitOutcome::Stopped;
         Ok(context.report)
     }
@@ -288,6 +345,164 @@ impl<'a> ReadContext<'a> {
                 height - 1,
                 Some(&entry.upper_bound),
                 prefix,
+                visit,
+            )? {
+                VisitOutcome::Continue => {}
+                outcome => return Ok(outcome),
+            }
+        }
+        Ok(VisitOutcome::Continue)
+    }
+
+    fn visit_forward_range_subtree(
+        &mut self,
+        page_id: IndexPageId,
+        height: u32,
+        expected_upper_bound: Option<&[u8]>,
+        prefix: &[u8],
+        exclusive_bound: Option<&[u8]>,
+        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<VisitOutcome, RelationalIndexShadowError> {
+        let page = self.read_page(page_id)?;
+        if let Some(expected) = expected_upper_bound {
+            self.validate_page_upper_bound(&page, expected)?;
+        }
+        if height == 1 {
+            let ImmutableIndexPageBody::Leaf(leaf) = page.body else {
+                return Err(self.corrupt("index traversal expected a leaf page"));
+            };
+            let start = match exclusive_bound {
+                Some(bound) => leaf
+                    .entries
+                    .partition_point(|entry| entry.key.as_slice() <= bound),
+                None => leaf
+                    .entries
+                    .partition_point(|entry| entry.key.as_slice() < prefix),
+            };
+            return self.visit_forward_range_leaf(leaf.entries, start, prefix, visit);
+        }
+        let ImmutableIndexPageBody::Interior(interior) = page.body else {
+            return Err(self.corrupt("index traversal expected an interior page"));
+        };
+        let start = match exclusive_bound {
+            Some(bound) => interior
+                .entries
+                .partition_point(|entry| entry.upper_bound.as_slice() <= bound),
+            None => interior
+                .entries
+                .partition_point(|entry| entry.upper_bound.as_slice() < prefix),
+        };
+        for entry in interior.entries.into_iter().skip(start) {
+            match self.visit_forward_range_subtree(
+                entry.child,
+                height - 1,
+                Some(&entry.upper_bound),
+                prefix,
+                exclusive_bound,
+                visit,
+            )? {
+                VisitOutcome::Continue => {}
+                outcome => return Ok(outcome),
+            }
+        }
+        Ok(VisitOutcome::Continue)
+    }
+
+    fn visit_forward_range_leaf(
+        &mut self,
+        entries: Vec<crate::IndexLeafEntry>,
+        start: usize,
+        prefix: &[u8],
+        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<VisitOutcome, RelationalIndexShadowError> {
+        for entry in entries.into_iter().skip(start) {
+            self.report.leaf_entries_visited = self
+                .report
+                .leaf_entries_visited
+                .checked_add(1)
+                .ok_or_else(|| self.admission("leaf-entry counter overflow"))?;
+            if !entry.key.starts_with(prefix) {
+                return Ok(VisitOutcome::PastPrefix);
+            }
+            self.report.matched_index_keys = self
+                .report
+                .matched_index_keys
+                .checked_add(1)
+                .ok_or_else(|| self.admission("matched-key counter overflow"))?;
+            let index_key = decode_relational_key(&entry.key).inspect_err(|_| {
+                self.reader.poison();
+            })?;
+            if self.visit_ordered_posting(&index_key, &entry.posting, visit)?
+                == VisitOutcome::Stopped
+            {
+                return Ok(VisitOutcome::Stopped);
+            }
+        }
+        Ok(VisitOutcome::Continue)
+    }
+
+    fn visit_backward_range_subtree(
+        &mut self,
+        page_id: IndexPageId,
+        height: u32,
+        expected_upper_bound: Option<&[u8]>,
+        prefix: &[u8],
+        exclusive_upper: &[u8],
+        visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<VisitOutcome, RelationalIndexShadowError> {
+        let page = self.read_page(page_id)?;
+        if let Some(expected) = expected_upper_bound {
+            self.validate_page_upper_bound(&page, expected)?;
+        }
+        if height == 1 {
+            let ImmutableIndexPageBody::Leaf(leaf) = page.body else {
+                return Err(self.corrupt("index traversal expected a leaf page"));
+            };
+            let end = leaf
+                .entries
+                .partition_point(|entry| entry.key.as_slice() < exclusive_upper);
+            for entry in leaf.entries.into_iter().take(end).rev() {
+                self.report.leaf_entries_visited = self
+                    .report
+                    .leaf_entries_visited
+                    .checked_add(1)
+                    .ok_or_else(|| self.admission("leaf-entry counter overflow"))?;
+                if !entry.key.starts_with(prefix) {
+                    if entry.key.as_slice() < prefix {
+                        return Ok(VisitOutcome::PastPrefix);
+                    }
+                    continue;
+                }
+                self.report.matched_index_keys = self
+                    .report
+                    .matched_index_keys
+                    .checked_add(1)
+                    .ok_or_else(|| self.admission("matched-key counter overflow"))?;
+                let index_key = decode_relational_key(&entry.key).inspect_err(|_| {
+                    self.reader.poison();
+                })?;
+                if self.visit_ordered_posting(&index_key, &entry.posting, visit)?
+                    == VisitOutcome::Stopped
+                {
+                    return Ok(VisitOutcome::Stopped);
+                }
+            }
+            return Ok(VisitOutcome::Continue);
+        }
+        let ImmutableIndexPageBody::Interior(interior) = page.body else {
+            return Err(self.corrupt("index traversal expected an interior page"));
+        };
+        let end = interior
+            .entries
+            .partition_point(|entry| entry.upper_bound.as_slice() < exclusive_upper);
+        let inclusive_end = end.saturating_add(1).min(interior.entries.len());
+        for entry in interior.entries.into_iter().take(inclusive_end).rev() {
+            match self.visit_backward_range_subtree(
+                entry.child,
+                height - 1,
+                Some(&entry.upper_bound),
+                prefix,
+                exclusive_upper,
                 visit,
             )? {
                 VisitOutcome::Continue => {}
@@ -496,6 +711,18 @@ impl<'a> ReadContext<'a> {
     fn admission(&self, message: impl Into<String>) -> RelationalIndexShadowError {
         RelationalIndexShadowError::Admission(message.into())
     }
+}
+
+fn encoded_prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut successor = prefix.to_vec();
+    for index in (0..successor.len()).rev() {
+        if successor[index] != u8::MAX {
+            successor[index] += 1;
+            successor.truncate(index + 1);
+            return Some(successor);
+        }
+    }
+    None
 }
 
 pub(super) fn decode_relational_key(
