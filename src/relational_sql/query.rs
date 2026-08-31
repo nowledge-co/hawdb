@@ -48,6 +48,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Instant;
+
+use super::template_cache::PreparedRelationalSql;
+use super::timing::{elapsed_nanos, measure_nanos};
+use super::RelationalSqlStageTimings;
 
 mod columnar_aggregate;
 mod join_order;
@@ -97,6 +102,7 @@ impl<'a> RelationalQueryResourceContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelationalQueryOutput {
     pub rows: QueryRows,
+    pub stage_timings: RelationalSqlStageTimings,
     pub join_planning: RelationalJoinPlanningOutcome,
     pub operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     pub intermediate_rows: usize,
@@ -133,14 +139,16 @@ impl<'a> RelationalQueryReadModes<'a> {
     }
 }
 
-pub(crate) fn execute_relational_query_sql_with_resources<'a>(
-    sql: &str,
+pub(crate) fn execute_prepared_relational_query_with_resources<'a>(
+    prepared_sql: PreparedRelationalSql,
     parameters: &[Value],
     state: &'a RelationalState,
     read_modes: RelationalQueryReadModes<'a>,
     resources: RelationalQueryResourceContext<'_>,
 ) -> Result<RelationalQueryOutput> {
-    let prepared = skein_sql::prepare_postgres_sql(sql)?;
+    let bind_started = Instant::now();
+    let parse_nanos = prepared_sql.parse_nanos;
+    let prepared = Arc::unwrap_or_clone(prepared_sql.template);
     if prepared.parameters.len() != parameters.len() {
         return Err(SkeinError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
@@ -148,6 +156,11 @@ pub(crate) fn execute_relational_query_sql_with_resources<'a>(
             parameters.len()
         )));
     }
+    let initial_stage_timings = RelationalSqlStageTimings {
+        parse_nanos,
+        bind_nanos: elapsed_nanos(bind_started),
+        ..RelationalSqlStageTimings::default()
+    };
     match prepared.statement {
         SqlStatement::Select(select) => {
             let prepared = prepare_relational_select(
@@ -157,9 +170,10 @@ pub(crate) fn execute_relational_query_sql_with_resources<'a>(
                 read_modes.index,
                 resources.limits,
                 resources.join_enumeration,
+                initial_stage_timings,
             )?;
             let execution = prepared.execution.admit(state, read_modes, resources)?;
-            execute_select(&prepared, parameters, execution)
+            execute_select_timed(&prepared, parameters, execution)
         }
         SqlStatement::Explain(explain) => {
             let SqlStatement::Select(select) = *explain.statement else {
@@ -174,12 +188,13 @@ pub(crate) fn execute_relational_query_sql_with_resources<'a>(
                 read_modes.index,
                 resources.limits,
                 resources.join_enumeration,
+                initial_stage_timings,
             )?;
             if !explain.analyze {
                 return explain_select(&prepared, parameters, resources.limits);
             }
             let execution = prepared.execution.admit(state, read_modes, resources)?;
-            let output = execute_select(&prepared, parameters, execution)?;
+            let output = execute_select_timed(&prepared, parameters, execution)?;
             format_relational_explain(
                 &prepared.statement,
                 parameters,
@@ -204,8 +219,14 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
     execution_memory: &skein_executor::ExecutionMemoryConfig,
     task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<RelationalQueryOutput> {
-    execute_relational_query_sql_with_resources(
-        sql,
+    let started = Instant::now();
+    let template = Arc::new(skein_sql::prepare_postgres_sql(sql)?);
+    let prepared_sql = PreparedRelationalSql {
+        template,
+        parse_nanos: elapsed_nanos(started),
+    };
+    execute_prepared_relational_query_with_resources(
+        prepared_sql,
         parameters,
         state,
         read_modes,
@@ -500,6 +521,7 @@ struct PreparedRelationalSelect {
     access_plan: PreparedRelationalAccessPlan,
     join_planning: RelationalJoinPlanningOutcome,
     execution: PreparedRelationalExecutionDescriptor,
+    stage_timings: RelationalSqlStageTimings,
 }
 
 impl PreparedRelationalSelect {
@@ -1078,11 +1100,29 @@ fn prepare_relational_select(
     index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
     join_enumeration: RelationalJoinEnumerationConfig,
+    initial_stage_timings: RelationalSqlStageTimings,
 ) -> Result<PreparedRelationalSelect> {
-    reject_non_public_schema(select.from.schema.as_deref())?;
-    for join in &select.joins {
-        reject_non_public_schema(join.table.schema.as_deref())?;
-    }
+    let prepare_started = Instant::now();
+    let mut current_state_bind_nanos = 0;
+    measure_nanos(&mut current_state_bind_nanos, || -> Result<()> {
+        reject_non_public_schema(select.from.schema.as_deref())?;
+        if state.table_schema(&select.from.name).is_none() {
+            return Err(SkeinError::Semantic(format!(
+                "unknown relational table {}",
+                select.from.name
+            )));
+        }
+        for join in &select.joins {
+            reject_non_public_schema(join.table.schema.as_deref())?;
+            if state.table_schema(&join.table.name).is_none() {
+                return Err(SkeinError::Semantic(format!(
+                    "unknown relational table {}",
+                    join.table.name
+                )));
+            }
+        }
+        Ok(())
+    })?;
     let planned = join_order::plan_select_join_order(
         select,
         parameters,
@@ -1090,6 +1130,7 @@ fn prepare_relational_select(
         index_read_mode,
         limits,
         join_enumeration,
+        &mut current_state_bind_nanos,
     )?;
     let access_plan = match planned.access_plan {
         Some(access_plan) => access_plan,
@@ -1103,11 +1144,20 @@ fn prepare_relational_select(
     };
     let execution =
         PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
+    let prepare_nanos = elapsed_nanos(prepare_started);
     let prepared = PreparedRelationalSelect {
         statement: planned.statement,
         access_plan,
         join_planning: planned.join_planning,
         execution,
+        stage_timings: RelationalSqlStageTimings {
+            parse_nanos: initial_stage_timings.parse_nanos,
+            bind_nanos: initial_stage_timings
+                .bind_nanos
+                .saturating_add(current_state_bind_nanos),
+            plan_nanos: prepare_nanos.saturating_sub(current_state_bind_nanos),
+            execute_nanos: 0,
+        },
     };
     prepared.validate()?;
     Ok(prepared)
@@ -1204,6 +1254,7 @@ fn explain_select(
         parameters,
         RelationalQueryOutput {
             rows: QueryRows::empty(),
+            stage_timings: prepared.stage_timings,
             join_planning: prepared.join_planning.clone(),
             operator_cardinality_profiles: planned_operator_cardinality_profiles(prepared)?,
             intermediate_rows: 0,
@@ -1220,6 +1271,18 @@ fn explain_select(
         false,
         limits,
     )
+}
+
+fn execute_select_timed<'state>(
+    prepared: &'state PreparedRelationalSelect,
+    parameters: &[Value],
+    execution: AdmittedRelationalExecution<'state, '_>,
+) -> Result<RelationalQueryOutput> {
+    let started = Instant::now();
+    let mut output = execute_select(prepared, parameters, execution)?;
+    output.stage_timings = prepared.stage_timings;
+    output.stage_timings.execute_nanos = elapsed_nanos(started);
+    Ok(output)
 }
 
 fn execute_select<'state>(
@@ -1321,6 +1384,7 @@ fn execute_select<'state>(
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
             rows: output.rows,
+            stage_timings: RelationalSqlStageTimings::default(),
             join_planning: join_planning.clone(),
             operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows: pipeline.intermediate_rows,
@@ -1355,6 +1419,7 @@ fn execute_select<'state>(
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
             rows: output.rows,
+            stage_timings: RelationalSqlStageTimings::default(),
             join_planning: join_planning.clone(),
             operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows: pipeline.intermediate_rows,
@@ -1419,6 +1484,7 @@ fn execute_select<'state>(
     pipeline.finish()?;
     Ok(RelationalQueryOutput {
         rows: output.rows,
+        stage_timings: RelationalSqlStageTimings::default(),
         join_planning: join_planning.clone(),
         operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
@@ -1571,7 +1637,7 @@ fn format_relational_explain(
             access_object: explain_access_object(table, descriptor),
             operator_info: format!(
                 "{}, {access_path}",
-                explain_join_planning(&output.join_planning)
+                explain_join_planning(&output.join_planning, output.stage_timings)
             ),
             report_operator: None,
         });
@@ -1706,7 +1772,10 @@ fn format_relational_explain(
     Ok(output)
 }
 
-fn explain_join_planning(outcome: &RelationalJoinPlanningOutcome) -> String {
+fn explain_join_planning(
+    outcome: &RelationalJoinPlanningOutcome,
+    stage_timings: RelationalSqlStageTimings,
+) -> String {
     let join_order = if outcome.join_order_reordered() {
         "cost_reordered"
     } else if outcome.status == RelationalJoinPlanningStatus::Fallback {
@@ -1737,13 +1806,47 @@ fn explain_join_planning(outcome: &RelationalJoinPlanningOutcome) -> String {
             )
         },
     );
+    let attempts = outcome
+        .attempts
+        .iter()
+        .enumerate()
+        .map(|(index, attempt)| {
+            let fallback_class = attempt
+                .fallback_class
+                .map(|class| class.as_str())
+                .unwrap_or("none");
+            let memo_groups = attempt
+                .memo_groups
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".to_string());
+            let memo_expressions = attempt
+                .memo_expressions
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".to_string());
+            let cost = attempt
+                .cost
+                .map(|cost| cost.cost.to_string())
+                .unwrap_or_else(|| "unavailable".to_string());
+            format!(
+                "{index}:{}:{}:{}:fallback_class={fallback_class}:memo_groups={memo_groups}:memo_expressions={memo_expressions}:cost={cost}",
+                attempt.strategy.as_str(),
+                attempt.status.as_str(),
+                attempt.reason.as_str(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";");
     format!(
-        "join_order={join_order}, planning_strategy={}, planning_status={}, planning_reason={}, memo_groups={memo_groups}, memo_expressions={memo_expressions}, max_groups={}, max_expressions={}, selected_order=[{selected_order}], {cost}",
+        "join_order={join_order}, planning_strategy={}, planning_status={}, planning_reason={}, memo_groups={memo_groups}, memo_expressions={memo_expressions}, max_groups={}, max_expressions={}, selected_order=[{selected_order}], attempts=[{attempts}], parse_nanos={}, bind_nanos={}, plan_nanos={}, execute_nanos={}, {cost}",
         outcome.strategy.as_str(),
         outcome.status.as_str(),
         outcome.reason.as_str(),
         outcome.budget.max_groups,
         outcome.budget.max_expressions,
+        stage_timings.parse_nanos,
+        stage_timings.bind_nanos,
+        stage_timings.plan_nanos,
+        stage_timings.execute_nanos,
     )
 }
 
@@ -4037,6 +4140,7 @@ fn execute_aggregate_select<'a>(
         }
         return Ok(RelationalQueryOutput {
             rows: rows.into(),
+            stage_timings: RelationalSqlStageTimings::default(),
             join_planning: join_planning.clone(),
             operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
             intermediate_rows,
@@ -4163,6 +4267,7 @@ fn execute_aggregate_select<'a>(
     }
     Ok(RelationalQueryOutput {
         rows: output.into(),
+        stage_timings: RelationalSqlStageTimings::default(),
         join_planning: join_planning.clone(),
         operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows,
@@ -4277,6 +4382,7 @@ fn execute_single_count_distinct<'a>(
     }
     Ok(RelationalQueryOutput {
         rows: vec![row].into(),
+        stage_timings: RelationalSqlStageTimings::default(),
         join_planning: join_planning.clone(),
         operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
@@ -4457,6 +4563,7 @@ fn execute_grouped_aggregate<'a>(
     ));
     Ok(RelationalQueryOutput {
         rows: output.into(),
+        stage_timings: RelationalSqlStageTimings::default(),
         join_planning: join_planning.clone(),
         operator_cardinality_profiles: pipeline.operator_cardinality_profiles(),
         intermediate_rows: pipeline.intermediate_rows,
@@ -5279,7 +5386,10 @@ fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relational_sql::{compile_relational_statement_sql, RelationalJoinPlanningStrategy};
+    use crate::relational_sql::{
+        compile_relational_statement_sql, RelationalJoinPlanningAttempt,
+        RelationalJoinPlanningStrategy,
+    };
     use crate::Value;
     use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 
@@ -5437,15 +5547,19 @@ mod tests {
             statement: select,
             access_plan,
             join_planning: RelationalJoinPlanningOutcome::selected(
-                RelationalJoinPlanningStrategy::CsgCmpMemo,
-                true,
-                7,
-                8,
+                RelationalJoinPlanningAttempt::selected(
+                    RelationalJoinPlanningStrategy::CsgCmpMemo,
+                    true,
+                    7,
+                    8,
+                    cost,
+                ),
                 vec!["a".into(), "b".into(), "c".into(), "d".into()],
-                cost,
                 RelationalJoinEnumerationConfig::default(),
+                Vec::new(),
             ),
             execution,
+            stage_timings: RelationalSqlStageTimings::default(),
         };
         prepared.validate().expect("validate prepared bushy plan");
 

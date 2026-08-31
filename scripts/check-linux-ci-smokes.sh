@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 26 ]]; then
+if [[ "$#" -ne 27 ]]; then
   echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ OPTIMIZER_FUZZ BENCHMARK..." >&2
   exit 2
 fi
@@ -678,7 +678,7 @@ case "$smoke" in
   optimizer_summary) run_optimizer_summary_smoke ;;
   optimizer_group_1) run_optimizer_benchmark_group_smoke 1 6 ;;
   optimizer_group_2) run_optimizer_benchmark_group_smoke 7 6 ;;
-  optimizer_group_3) run_optimizer_benchmark_group_smoke 13 6 ;;
+  optimizer_group_3) run_optimizer_benchmark_group_smoke 13 7 ;;
   fixture_contract) run_fixture_contract_smoke ;;
   storage_recovery) run_storage_recovery_smoke ;;
   background_maintenance) run_background_maintenance_smoke ;;

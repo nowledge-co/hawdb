@@ -27,7 +27,7 @@ FUZZ_COMMON_ARGS = $(strip \
 	$(FUZZ_CASE_INDEX_ARG) \
 	--log-directory "$(FUZZ_LOG_DIRECTORY)" \
 	$(FUZZ_PRINT_REPORT_ARG))
-FUZZ_OPTIMIZER_EXECUTION_ARGS = $(strip \
+FUZZ_CAMPAIGN_EXECUTION_ARGS = $(strip \
 	--shard-index $(FUZZ_SHARD_INDEX) \
 	--shard-count $(FUZZ_SHARD_COUNT) \
 	--progress-interval $(FUZZ_PROGRESS_INTERVAL) \
@@ -36,6 +36,7 @@ FUZZ_OPTIMIZER_EXECUTION_ARGS = $(strip \
 .PHONY: \
 	fuzz \
 	fuzz-append \
+	fuzz-append-resume \
 	fuzz-help \
 	fuzz-optimizer \
 	fuzz-optimizer-resume \
@@ -46,7 +47,7 @@ FUZZ_OPTIMIZER_EXECUTION_ARGS = $(strip \
 fuzz: fuzz-optimizer fuzz-storage fuzz-append
 
 fuzz-optimizer:
-	$(BAZEL) run //crates/fuzz:skein_optimizer_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_OPTIMIZER_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
+	$(BAZEL) run //crates/fuzz:skein_optimizer_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
 
 fuzz-optimizer-resume: FUZZ_RESUME := 1
 fuzz-optimizer-resume: fuzz-optimizer
@@ -55,7 +56,10 @@ fuzz-storage:
 	$(BAZEL) run //crates/fuzz:skein_storage_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
 
 fuzz-append:
-	$(BAZEL) run //crates/fuzz:skein_append_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_APPEND_ARGS)
+	$(BAZEL) run //crates/fuzz:skein_append_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
+
+fuzz-append-resume: FUZZ_RESUME := 1
+fuzz-append-resume: fuzz-append
 
 fuzz-smoke:
 	$(BAZEL) test //:skein_linux_ci_fuzz_smoke_test
@@ -74,6 +78,7 @@ fuzz-help:
 		'  make fuzz-optimizer-resume   Resume the matching optimizer campaign.' \
 		'  make fuzz-storage            Run the storage corruption campaign.' \
 		'  make fuzz-append             Run the Strict Append state-machine campaign.' \
+		'  make fuzz-append-resume      Resume the matching Strict Append campaign.' \
 		'  make fuzz-smoke              Run the Bazel fuzz smoke test.' \
 		'  make fuzz-test               Run the Bazel fuzz regression suite.' \
 		'' \
