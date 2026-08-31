@@ -28,16 +28,17 @@ use skein_storage::{
     relational_index_shadow_manifest_generation_file, RelationalCheckpointIndexLoad,
     RelationalHydrationBudget, RelationalIndexChange, RelationalIndexChangeCapture,
     RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind,
-    RelationalIndexGenerationArtifacts, RelationalIndexMode, RelationalIndexReadLimits,
-    RelationalIndexReadReport, RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
-    RelationalIndexRecoveryReadReport, RelationalIndexRecoveryReader,
-    RelationalIndexRecoveryReport, RelationalIndexRole, RelationalIndexRowSource,
-    RelationalIndexShadowBuildReport, RelationalIndexShadowConfig, RelationalIndexShadowError,
-    RelationalIndexShadowManifest, RelationalIndexShadowReader, RelationalIndexShadowWriter,
-    RelationalKey, RelationalOverflowPublicationConfig, RelationalOverflowRootReader,
-    RelationalRecoveryFence, RelationalRecoverySourceIdentity, RelationalReplayAccessSet,
-    RelationalRow, RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig,
-    RelationalRowPageReadView, RelationalRowPageRootReader, RelationalRowPageSnapshotReadError,
+    RelationalIndexGenerationArtifacts, RelationalIndexMode, RelationalIndexRangeScan,
+    RelationalIndexReadLimits, RelationalIndexReadReport, RelationalIndexRecoveryBuilder,
+    RelationalIndexRecoveryConfig, RelationalIndexRecoveryReadReport,
+    RelationalIndexRecoveryReader, RelationalIndexRecoveryReport, RelationalIndexRole,
+    RelationalIndexRowSource, RelationalIndexScanDirection, RelationalIndexShadowBuildReport,
+    RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowManifest,
+    RelationalIndexShadowReader, RelationalIndexShadowWriter, RelationalKey,
+    RelationalOverflowPublicationConfig, RelationalOverflowRootReader, RelationalRecoveryFence,
+    RelationalRecoverySourceIdentity, RelationalReplayAccessSet, RelationalRow,
+    RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig, RelationalRowPageReadView,
+    RelationalRowPageRootReader, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader, RelationalScalarType,
     RelationalSparseRecoveryStage, RelationalState, RelationalTableSchema, RelationalTransaction,
     RelationalValue, StorageResidencyMode, RELATIONAL_PRIMARY_INDEX_NAME,
@@ -255,6 +256,7 @@ struct RelationalIndexQualificationProbe {
 enum RelationalIndexReadSelector<'a> {
     Exact(&'a RelationalKey),
     Prefix(&'a RelationalKey),
+    Range(&'a RelationalIndexRangeScan),
 }
 
 impl RelationalIndexReadSelector<'_> {
@@ -262,6 +264,7 @@ impl RelationalIndexReadSelector<'_> {
         match self {
             Self::Exact(expected) => key == *expected,
             Self::Prefix(prefix) => key.0.starts_with(&prefix.0),
+            Self::Range(scan) => scan.matches(key),
         }
     }
 }
@@ -273,6 +276,7 @@ struct OrderedIndexEntryMerge<'a, F> {
     rows_visited: usize,
     stopped_early: bool,
     error: Option<RelationalIndexShadowError>,
+    direction: RelationalIndexScanDirection,
 }
 
 impl<F> OrderedIndexEntryMerge<'_, F>
@@ -301,13 +305,21 @@ where
 
     fn visit_base(&mut self, index_key: &RelationalKey, primary_key: &RelationalKey) -> bool {
         let base_entry = (index_key.clone(), primary_key.clone());
-        while self
-            .pending
-            .first_key_value()
-            .is_some_and(|(entry, _)| entry < &base_entry)
-        {
-            let Some(((pending_index_key, pending_primary_key), kind)) = self.pending.pop_first()
-            else {
+        while match self.direction {
+            RelationalIndexScanDirection::Forward => self
+                .pending
+                .first_key_value()
+                .is_some_and(|(entry, _)| entry < &base_entry),
+            RelationalIndexScanDirection::Backward => self
+                .pending
+                .last_key_value()
+                .is_some_and(|(entry, _)| entry > &base_entry),
+        } {
+            let pending = match self.direction {
+                RelationalIndexScanDirection::Forward => self.pending.pop_first(),
+                RelationalIndexScanDirection::Backward => self.pending.pop_last(),
+            };
+            let Some(((pending_index_key, pending_primary_key), kind)) = pending else {
                 break;
             };
             if kind == RelationalIndexChangeKind::Insert
@@ -324,7 +336,11 @@ where
 
     fn finish(&mut self) {
         while !self.stopped_early && self.error.is_none() {
-            let Some(((index_key, primary_key), kind)) = self.pending.pop_first() else {
+            let pending = match self.direction {
+                RelationalIndexScanDirection::Forward => self.pending.pop_first(),
+                RelationalIndexScanDirection::Backward => self.pending.pop_last(),
+            };
+            let Some(((index_key, primary_key), kind)) = pending else {
                 break;
             };
             if kind == RelationalIndexChangeKind::Insert && !self.emit(&index_key, &primary_key) {
@@ -662,6 +678,27 @@ impl RelationalIndexReadView {
         index: &str,
         prefix: &RelationalKey,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_range_entries(
+            table,
+            index,
+            &RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            limits,
+            visit,
+        )
+    }
+
+    fn visit_range_entries(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         if self.is_poisoned() {
@@ -669,7 +706,7 @@ impl RelationalIndexReadView {
                 "relational index read view is poisoned".to_string(),
             ));
         }
-        let selector = RelationalIndexReadSelector::Prefix(prefix);
+        let selector = RelationalIndexReadSelector::Range(scan);
         let mut live_entries_visited = 0usize;
         let mut live_entries_matched = 0usize;
         let mut live_bytes_visited = 0usize;
@@ -745,6 +782,7 @@ impl RelationalIndexReadView {
             rows_visited: 0,
             stopped_early: false,
             error: None,
+            direction: scan.direction,
         };
         let backend = {
             let mut emit_backend = |index_key: &RelationalKey, primary_key: &RelationalKey| {
@@ -752,19 +790,19 @@ impl RelationalIndexReadView {
             };
             match &self.backend {
                 RelationalIndexReadBackend::Base(reader) => {
-                    RelationalIndexReadViewBackendReport::Base(reader.visit_prefix_entries(
+                    RelationalIndexReadViewBackendReport::Base(reader.visit_range_entries(
                         table,
                         index,
-                        prefix,
+                        scan,
                         backend_limits,
                         &mut emit_backend,
                     )?)
                 }
                 RelationalIndexReadBackend::Recovered(reader) => {
-                    RelationalIndexReadViewBackendReport::Recovered(reader.visit_prefix_entries(
+                    RelationalIndexReadViewBackendReport::Recovered(reader.visit_range_entries(
                         table,
                         index,
-                        prefix,
+                        scan,
                         backend_limits,
                         &mut emit_backend,
                     )?)
@@ -957,6 +995,11 @@ impl RelationalIndexReadView {
                         backend_limits,
                         &mut emit_backend,
                     )?)
+                }
+                (_, RelationalIndexReadSelector::Range(_)) => {
+                    return Err(RelationalIndexShadowError::Admission(
+                        "range selectors require ordered entry traversal".to_string(),
+                    ));
                 }
             }
         };
@@ -1839,6 +1882,27 @@ impl GraphStore {
             .current_read_view(self.commit_epoch)
         {
             Some(view) => Some(view.visit_prefix_entries(table, index, prefix, limits, visit)),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    pub(crate) fn visit_relational_index_read_view_range_entries(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => Some(view.visit_range_entries(table, index, scan, limits, visit)),
             None => self
                 .relational_index_shadow
                 .selected_read_failure()

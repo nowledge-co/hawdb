@@ -23,6 +23,8 @@ pub struct RelationalAccessPathDescriptor {
     pub access_columns: BTreeSet<String>,
     pub equality_prefix_len: usize,
     pub order_prefix_len: usize,
+    pub exclusive_range: bool,
+    pub reverse_order: bool,
     pub unique_point: bool,
     pub covering: bool,
     pub requires_row_fetch: bool,
@@ -46,6 +48,11 @@ impl RelationalAccessPathDescriptor {
             > self.index_columns.len()
         {
             return Err("relational order prefix exceeds remaining index columns");
+        }
+        if (self.exclusive_range || self.reverse_order)
+            && (self.kind != RelationalAccessPathKind::Index || self.order_prefix_len == 0)
+        {
+            return Err("relational range metadata requires an ordered index access");
         }
         let expected_access_columns = self.index_columns[..self.equality_prefix_len]
             .iter()
@@ -71,6 +78,7 @@ impl RelationalAccessPathDescriptor {
         let no_worse = access_is_superset
             && self.equality_prefix_len >= other.equality_prefix_len
             && self.order_prefix_len >= other.order_prefix_len
+            && (self.exclusive_range || !other.exclusive_range)
             && (self.unique_point || !other.unique_point)
             && (self.covering || !other.covering)
             && (!self.requires_row_fetch || other.requires_row_fetch)
@@ -78,6 +86,7 @@ impl RelationalAccessPathDescriptor {
         let strictly_better = self.access_columns != other.access_columns
             || self.equality_prefix_len > other.equality_prefix_len
             || self.order_prefix_len > other.order_prefix_len
+            || (self.exclusive_range && !other.exclusive_range)
             || (self.unique_point && !other.unique_point)
             || (self.covering && !other.covering)
             || (!self.requires_row_fetch && other.requires_row_fetch)
@@ -121,6 +130,7 @@ pub fn select_relational_access_path(
             .then_with(|| right.unique_point.cmp(&left.unique_point))
             .then_with(|| right.equality_prefix_len.cmp(&left.equality_prefix_len))
             .then_with(|| right.order_prefix_len.cmp(&left.order_prefix_len))
+            .then_with(|| right.exclusive_range.cmp(&left.exclusive_range))
             .then_with(|| right.covering.cmp(&left.covering))
             .then_with(|| left.requires_row_fetch.cmp(&right.requires_row_fetch))
             .then_with(|| left.index_columns.len().cmp(&right.index_columns.len()))
@@ -168,6 +178,8 @@ mod tests {
                 .collect(),
             equality_prefix_len,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point,
             covering: false,
             requires_row_fetch: true,
@@ -257,6 +269,8 @@ mod tests {
             access_columns: BTreeSet::new(),
             equality_prefix_len: 0,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point: false,
             covering: false,
             requires_row_fetch: false,

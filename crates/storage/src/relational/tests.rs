@@ -3204,6 +3204,135 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
 }
 
 #[test]
+fn relational_index_shadow_range_seek_traverses_multiple_pages_in_both_directions() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![
+                    RelationalWrite::CreateTable(RelationalTableSchema {
+                        name: "documents".to_string(),
+                        columns: vec![text_column("id", false), text_column("owner", false)],
+                        primary_key: vec!["id".to_string()],
+                        unique_constraints: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        indexes: vec![RelationalIndexSchema {
+                            name: "documents_owner_id_idx".to_string(),
+                            columns: vec!["owner".to_string(), "id".to_string()],
+                            unique: false,
+                        }],
+                    }),
+                    RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: (0..12)
+                            .map(|ordinal| {
+                                RelationalRow::new(vec![
+                                    RelationalValue::Text(format!("doc-{ordinal:02}")),
+                                    RelationalValue::Text("owner-1".to_string()),
+                                ])
+                            })
+                            .collect(),
+                        mode: RelationalInsertMode::Error,
+                    },
+                ],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("build range-seek source");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "skein-relational-index-range-{}-{nonce}",
+        std::process::id()
+    ));
+    let config = RelationalIndexShadowConfig {
+        page_limits: crate::ImmutableIndexPageLimits {
+            max_page_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
+            max_entries: std::num::NonZeroUsize::new(2).unwrap(),
+            ..crate::ImmutableIndexPageLimits::default()
+        },
+        ..RelationalIndexShadowConfig::default()
+    };
+    let report = RelationalIndexShadowWriter::new(config)
+        .publish_generation(&directory, &state, 1, 9)
+        .expect("publish range-seek index");
+    assert!(report.pages_written > 4);
+    let reader = RelationalIndexShadowReader::open_bound_generation(
+        &directory,
+        report.generation_artifacts,
+        config,
+    )
+    .expect("open range-seek index");
+    let prefix = RelationalKey(vec![RelationalValue::Text("owner-1".to_string())]);
+
+    let mut forward = Vec::new();
+    let forward_report = reader
+        .visit_range_entries(
+            "documents",
+            "documents_owner_id_idx",
+            &RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: Some(RelationalKey(vec![
+                    RelationalValue::Text("owner-1".to_string()),
+                    RelationalValue::Text("doc-03".to_string()),
+                ])),
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            RelationalIndexReadLimits::default(),
+            |index_key, _| {
+                forward.push(index_key.clone());
+                forward.len() < 3
+            },
+        )
+        .expect("seek forward across leaf pages");
+    assert_eq!(
+        forward
+            .iter()
+            .map(|key| key.0[1].clone())
+            .collect::<Vec<_>>(),
+        [
+            RelationalValue::Text("doc-04".to_string()),
+            RelationalValue::Text("doc-05".to_string()),
+            RelationalValue::Text("doc-06".to_string()),
+        ]
+    );
+    assert!(forward_report.stopped_early);
+
+    let mut backward = Vec::new();
+    let backward_report = reader
+        .visit_range_entries(
+            "documents",
+            "documents_owner_id_idx",
+            &RelationalIndexRangeScan {
+                prefix,
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Backward,
+            },
+            RelationalIndexReadLimits::default(),
+            |index_key, _| {
+                backward.push(index_key.clone());
+                backward.len() < 3
+            },
+        )
+        .expect("scan backward across leaf pages");
+    assert_eq!(
+        backward
+            .iter()
+            .map(|key| key.0[1].clone())
+            .collect::<Vec<_>>(),
+        [
+            RelationalValue::Text("doc-11".to_string()),
+            RelationalValue::Text("doc-10".to_string()),
+            RelationalValue::Text("doc-09".to_string()),
+        ]
+    );
+    assert!(backward_report.stopped_early);
+    std::fs::remove_dir_all(directory).expect("remove range-seek fixture");
+}
+
+#[test]
 fn relational_index_shadow_publishes_skew_aware_leading_prefix_statistics() {
     let rows = [
         ("row-1", "A", Some("x")),

@@ -41,8 +41,9 @@ use skein_optimizer::{
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
-    relational_unique_index_name, RelationalHydrationBudget, RelationalKey, RelationalState,
-    RelationalTableSchema, RelationalValue, RelationalValueRef,
+    relational_unique_index_name, RelationalHydrationBudget, RelationalIndexRangeScan,
+    RelationalIndexScanDirection, RelationalKey, RelationalState, RelationalTableSchema,
+    RelationalValue, RelationalValueRef,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -268,7 +269,10 @@ struct BoundRow<'a> {
 #[derive(Debug, Clone)]
 enum RelationalBaseAccess {
     PrimaryKey(RelationalKey),
-    Index { name: String, prefix: RelationalKey },
+    Index {
+        name: String,
+        scan: RelationalIndexRangeScan,
+    },
     FullScan,
 }
 
@@ -446,6 +450,7 @@ impl PreparedRelationalExecutionDescriptor {
             && predicate_is_covered_by_access(
                 select.selection.as_ref(),
                 &access_plan.base_access.descriptor,
+                &select.order_by,
                 &select.from.name,
                 select.from_alias.as_deref().unwrap_or(&select.from.name),
             );
@@ -661,9 +666,9 @@ fn base_access_matches_descriptor(candidate: &RelationalAccessCandidate) -> bool
                 && candidate.descriptor.access_columns
                     == candidate.descriptor.index_columns.iter().cloned().collect()
         }
-        (RelationalAccessPathKind::Index, RelationalBaseAccess::Index { name, prefix }) => {
+        (RelationalAccessPathKind::Index, RelationalBaseAccess::Index { name, scan }) => {
             candidate.descriptor.name == *name
-                && candidate.descriptor.equality_prefix_len == prefix.0.len()
+                && candidate.descriptor.equality_prefix_len == scan.prefix.0.len()
         }
         (RelationalAccessPathKind::FullScan, RelationalBaseAccess::FullScan) => {
             candidate.descriptor.equality_prefix_len == 0
@@ -1602,6 +1607,7 @@ fn format_relational_explain(
         && !predicate_is_covered_by_access(
             select.selection.as_ref(),
             &output.access_path,
+            &select.order_by,
             &select.from.name,
             select.from_alias.as_deref().unwrap_or(&select.from.name),
         )
@@ -1908,9 +1914,15 @@ fn explain_access_path(
     row_evidence: &RelationalRowExecutionEvidence,
 ) -> String {
     let planned = format!(
-        "equality_prefix={}, order_prefix={}, unique_point={}, row_fetch={}",
+        "equality_prefix={}, order_prefix={}, exclusive_seek={}, direction={}, unique_point={}, row_fetch={}",
         descriptor.equality_prefix_len,
         descriptor.order_prefix_len,
+        descriptor.exclusive_range,
+        if descriptor.reverse_order {
+            "backward"
+        } else {
+            "forward"
+        },
         descriptor.unique_point,
         descriptor.requires_row_fetch
     );
@@ -1957,9 +1969,13 @@ fn explain_access_path(
             .join("|")
     };
     format!(
-        "{planned}, runtime_path={}, lookups={}, demand_paged={}, authoritative={}, transaction_workspace={}, canonical_fallback={}, fallback_reasons={}, base_generation={}, delta_generation={}, base_epoch={}, visible_epoch={}, root_set_digest={}, logical_pages={}, logical_bytes={}, physical_pages={}, physical_bytes={}, cache_hits={}, cache_misses={}, cache_admission_rejections={}, delta_entries={}, live_batches={}, live_entries={}, live_matches={}, live_bytes={}, index_rows={}, {row}",
+        "{planned}, runtime_path={}, lookups={}, range_lookups={}, exclusive_seek_lookups={}, backward_lookups={}, early_stop_lookups={}, demand_paged={}, authoritative={}, transaction_workspace={}, canonical_fallback={}, fallback_reasons={}, base_generation={}, delta_generation={}, base_epoch={}, visible_epoch={}, root_set_digest={}, logical_pages={}, logical_bytes={}, physical_pages={}, physical_bytes={}, cache_hits={}, cache_misses={}, cache_admission_rejections={}, delta_entries={}, live_batches={}, live_entries={}, live_matches={}, live_bytes={}, index_rows={}, {row}",
         evidence.runtime_path(),
         evidence.lookups,
+        evidence.range_lookups,
+        evidence.exclusive_seek_lookups,
+        evidence.backward_lookups,
+        evidence.early_stop_lookups,
         evidence.demand_paged_lookups,
         evidence.authoritative_lookups,
         evidence.transaction_workspace_lookups,
@@ -2117,6 +2133,8 @@ fn choose_base_access(
             access_columns: BTreeSet::new(),
             equality_prefix_len: 0,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point: false,
             covering: false,
             requires_row_fetch: false,
@@ -2136,6 +2154,8 @@ fn choose_base_access(
                     access_columns: schema.primary_key.iter().cloned().collect(),
                     equality_prefix_len: schema.primary_key.len(),
                     order_prefix_len: 0,
+                    exclusive_range: false,
+                    reverse_order: false,
                     unique_point: true,
                     covering: false,
                     requires_row_fetch: false,
@@ -2177,6 +2197,7 @@ fn choose_base_access(
                 && predicate_is_covered_by_access(
                     predicate,
                     &candidate.descriptor,
+                    order_by,
                     table,
                     qualifier,
                 )
@@ -2236,9 +2257,28 @@ fn index_access_candidate(
         return Ok(None);
     }
     let prefix_len = prefix.len();
-    let order_prefix_len =
-        index_order_prefix_len(order_by, columns, prefix_len, schema, table, qualifier);
+    let (mut order_prefix_len, mut direction) =
+        index_order_prefix(order_by, columns, prefix_len, schema, table, qualifier);
     let key = RelationalKey(prefix);
+    let access_columns = columns[..prefix_len]
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let equality_covered =
+        predicate_is_covered_by_equalities(planning.predicate, &access_columns, table, qualifier);
+    let exclusive_bound = if equality_covered {
+        None
+    } else if order_prefix_len == order_by.len()
+        && prefix_len.saturating_add(order_by.len()) == columns.len()
+    {
+        bind_canonical_keyset_bound(planning, &key, &access_columns)?
+    } else {
+        None
+    };
+    if !equality_covered && exclusive_bound.is_none() {
+        order_prefix_len = 0;
+        direction = RelationalIndexScanDirection::Forward;
+    }
     let estimated_rows =
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
@@ -2261,33 +2301,46 @@ fn index_access_candidate(
             kind: RelationalAccessPathKind::Index,
             name: name.clone(),
             index_columns: columns.to_vec(),
-            access_columns: columns[..prefix_len].iter().cloned().collect(),
+            access_columns,
             equality_prefix_len: prefix_len,
             order_prefix_len,
+            exclusive_range: exclusive_bound.is_some(),
+            reverse_order: direction == RelationalIndexScanDirection::Backward,
             unique_point: unique && prefix_len == columns.len(),
             covering: false,
             requires_row_fetch: true,
             estimated_rows,
         },
-        access: RelationalBaseAccess::Index { name, prefix: key },
+        access: RelationalBaseAccess::Index {
+            name,
+            scan: RelationalIndexRangeScan {
+                prefix: key,
+                exclusive_bound,
+                direction,
+            },
+        },
     }))
 }
 
-fn index_order_prefix_len(
+fn index_order_prefix(
     order_by: &[crate::sql::SqlOrderItem],
     index_columns: &[String],
     equality_prefix_len: usize,
     schema: &RelationalTableSchema,
     table: &str,
     qualifier: &str,
-) -> usize {
+) -> (usize, RelationalIndexScanDirection) {
     if order_by.is_empty()
         || equality_prefix_len.saturating_add(order_by.len()) > index_columns.len()
     {
-        return 0;
+        return (0, RelationalIndexScanDirection::Forward);
     }
+    let direction = match order_by[0].direction {
+        SqlOrderDirection::Asc => RelationalIndexScanDirection::Forward,
+        SqlOrderDirection::Desc => RelationalIndexScanDirection::Backward,
+    };
     for (ordinal, item) in order_by.iter().enumerate() {
-        if item.direction != SqlOrderDirection::Asc
+        if item.direction != order_by[0].direction
             || item
                 .column
                 .qualifier
@@ -2295,53 +2348,259 @@ fn index_order_prefix_len(
                 .is_some_and(|candidate| candidate != table && candidate != qualifier)
             || item.column.name != index_columns[equality_prefix_len + ordinal]
         {
-            return 0;
+            return (0, RelationalIndexScanDirection::Forward);
         }
         let Some(position) = schema.column_position(&item.column.name) else {
-            return 0;
+            return (0, RelationalIndexScanDirection::Forward);
         };
-        if schema.columns[position].nullable && !matches!(item.nulls, SqlNullOrder::First) {
-            return 0;
+        if schema.columns[position].nullable
+            && (direction == RelationalIndexScanDirection::Backward
+                || !matches!(item.nulls, SqlNullOrder::First))
+        {
+            return (0, RelationalIndexScanDirection::Forward);
         }
     }
-    order_by.len()
+    (order_by.len(), direction)
 }
 
 fn predicate_is_covered_by_access(
     predicate: Option<&SqlPredicate>,
     access: &RelationalAccessPathDescriptor,
+    order_by: &[crate::sql::SqlOrderItem],
+    table: &str,
+    qualifier: &str,
+) -> bool {
+    predicate_is_covered_by_equalities(predicate, &access.access_columns, table, qualifier)
+        || (access.order_prefix_len == order_by.len()
+            && canonical_keyset_values(
+                predicate,
+                &access.access_columns,
+                order_by,
+                table,
+                qualifier,
+            )
+            .is_some())
+}
+
+fn predicate_is_covered_by_equalities(
+    predicate: Option<&SqlPredicate>,
+    access_columns: &BTreeSet<String>,
     table: &str,
     qualifier: &str,
 ) -> bool {
     fn covered(
         predicate: &SqlPredicate,
-        access: &RelationalAccessPathDescriptor,
+        access_columns: &BTreeSet<String>,
         table: &str,
         qualifier: &str,
         columns: &mut BTreeSet<String>,
     ) -> bool {
         match predicate {
             SqlPredicate::And(left, right) => {
-                covered(left, access, table, qualifier, columns)
-                    && covered(right, access, table, qualifier, columns)
+                covered(left, access_columns, table, qualifier, columns)
+                    && covered(right, access_columns, table, qualifier, columns)
             }
             SqlPredicate::Compare {
                 left,
                 op: SqlComparisonOp::Eq,
                 ..
             } => {
-                left.qualifier
-                    .as_deref()
-                    .is_none_or(|candidate| candidate == table || candidate == qualifier)
-                    && access.access_columns.contains(&left.name)
+                column_matches(left, table, qualifier)
+                    && access_columns.contains(&left.name)
                     && columns.insert(left.name.clone())
             }
             _ => false,
         }
     }
 
-    predicate
-        .is_none_or(|predicate| covered(predicate, access, table, qualifier, &mut BTreeSet::new()))
+    predicate.is_none_or(|predicate| {
+        let mut columns = BTreeSet::new();
+        covered(predicate, access_columns, table, qualifier, &mut columns)
+            && columns == *access_columns
+    })
+}
+
+fn bind_canonical_keyset_bound(
+    planning: &RelationalBaseAccessPlanning<'_>,
+    prefix: &RelationalKey,
+    access_columns: &BTreeSet<String>,
+) -> Result<Option<RelationalKey>> {
+    let RelationalBaseAccessPlanning {
+        predicate,
+        order_by,
+        schema,
+        table,
+        qualifier,
+        parameters,
+        ..
+    } = planning;
+    let Some((first, second)) =
+        canonical_keyset_values(*predicate, access_columns, order_by, table, qualifier)
+    else {
+        return Ok(None);
+    };
+    let mut bound = prefix.0.clone();
+    for (value, item) in [(first, &order_by[0]), (second, &order_by[1])] {
+        let value = value_to_relational(bind_sql_value(value, parameters)?)?;
+        let Some(position) = schema.column_position(&item.column.name) else {
+            return Ok(None);
+        };
+        if schema.columns[position].nullable
+            || matches!(value, RelationalValue::Null)
+            || value.scalar_type() != Some(schema.columns[position].scalar_type)
+        {
+            return Ok(None);
+        }
+        bound.push(value);
+    }
+    Ok(Some(RelationalKey(bound)))
+}
+
+fn canonical_keyset_values<'a>(
+    predicate: Option<&'a SqlPredicate>,
+    access_columns: &BTreeSet<String>,
+    order_by: &[crate::sql::SqlOrderItem],
+    table: &str,
+    qualifier: &str,
+) -> Option<(&'a SqlValue, &'a SqlValue)> {
+    let predicate = predicate?;
+    if order_by.len() != 2 || order_by[0].direction != order_by[1].direction {
+        return None;
+    }
+    let expected = match order_by[0].direction {
+        SqlOrderDirection::Asc => SqlComparisonOp::Gt,
+        SqlOrderDirection::Desc => SqlComparisonOp::Lt,
+    };
+    let mut terms = Vec::new();
+    collect_conjuncts(predicate, &mut terms);
+    let mut equality_columns = BTreeSet::new();
+    let mut cursor = None;
+    for term in terms {
+        if let SqlPredicate::Compare {
+            left,
+            op: SqlComparisonOp::Eq,
+            ..
+        } = term
+            && column_matches(left, table, qualifier)
+            && access_columns.contains(&left.name)
+        {
+            if !equality_columns.insert(left.name.clone()) {
+                return None;
+            }
+            continue;
+        }
+        if cursor.is_some() {
+            return None;
+        }
+        cursor = match_keyset_or(
+            term,
+            &order_by[0].column,
+            &order_by[1].column,
+            expected,
+            table,
+            qualifier,
+        );
+        cursor?;
+    }
+    if equality_columns != *access_columns {
+        return None;
+    }
+    cursor
+}
+
+fn collect_conjuncts<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlPredicate>) {
+    match predicate {
+        SqlPredicate::And(left, right) => {
+            collect_conjuncts(left, output);
+            collect_conjuncts(right, output);
+        }
+        predicate => output.push(predicate),
+    }
+}
+
+fn match_keyset_or<'a>(
+    predicate: &'a SqlPredicate,
+    first_column: &SqlColumnRef,
+    second_column: &SqlColumnRef,
+    comparison: SqlComparisonOp,
+    table: &str,
+    qualifier: &str,
+) -> Option<(&'a SqlValue, &'a SqlValue)> {
+    let SqlPredicate::Or(left, right) = predicate else {
+        return None;
+    };
+    match_keyset_branches(
+        left,
+        right,
+        first_column,
+        second_column,
+        comparison,
+        table,
+        qualifier,
+    )
+    .or_else(|| {
+        match_keyset_branches(
+            right,
+            left,
+            first_column,
+            second_column,
+            comparison,
+            table,
+            qualifier,
+        )
+    })
+}
+
+fn match_keyset_branches<'a>(
+    first_branch: &'a SqlPredicate,
+    tie_branch: &'a SqlPredicate,
+    first_column: &SqlColumnRef,
+    second_column: &SqlColumnRef,
+    comparison: SqlComparisonOp,
+    table: &str,
+    qualifier: &str,
+) -> Option<(&'a SqlValue, &'a SqlValue)> {
+    let first = match_column_comparison(first_branch, first_column, comparison, table, qualifier)?;
+    let SqlPredicate::And(left, right) = tie_branch else {
+        return None;
+    };
+    let tie = match_column_comparison(left, first_column, SqlComparisonOp::Eq, table, qualifier)
+        .zip(match_column_comparison(
+            right,
+            second_column,
+            comparison,
+            table,
+            qualifier,
+        ))
+        .or_else(|| {
+            match_column_comparison(right, first_column, SqlComparisonOp::Eq, table, qualifier).zip(
+                match_column_comparison(left, second_column, comparison, table, qualifier),
+            )
+        })?;
+    (first == tie.0).then_some((first, tie.1))
+}
+
+fn match_column_comparison<'a>(
+    predicate: &'a SqlPredicate,
+    expected_column: &SqlColumnRef,
+    expected_op: SqlComparisonOp,
+    table: &str,
+    qualifier: &str,
+) -> Option<&'a SqlValue> {
+    let SqlPredicate::Compare { left, op, right } = predicate else {
+        return None;
+    };
+    (*op == expected_op
+        && left.name == expected_column.name
+        && column_matches(left, table, qualifier))
+    .then_some(right)
+}
+
+fn column_matches(column: &SqlColumnRef, table: &str, qualifier: &str) -> bool {
+    column
+        .qualifier
+        .as_deref()
+        .is_none_or(|candidate| candidate == table || candidate == qualifier)
 }
 
 fn collect_conjunctive_equalities<'a>(
@@ -2384,6 +2643,8 @@ fn choose_join_access(
             access_columns: BTreeSet::new(),
             equality_prefix_len: 0,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point: false,
             covering: false,
             requires_row_fetch: false,
@@ -2402,6 +2663,8 @@ fn choose_join_access(
                     access_columns: schema.primary_key.iter().cloned().collect(),
                     equality_prefix_len: schema.primary_key.len(),
                     order_prefix_len: 0,
+                    exclusive_range: false,
+                    reverse_order: false,
                     unique_point: true,
                     covering: false,
                     requires_row_fetch: false,
@@ -2556,6 +2819,8 @@ fn join_index_access_candidate(
             access_columns: columns[..equality_prefix_len].iter().cloned().collect(),
             equality_prefix_len,
             order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
             unique_point,
             covering: false,
             requires_row_fetch: true,
@@ -2644,14 +2909,15 @@ fn visit_base_entries<'a>(
             Some(row) => visit(row),
             None => Ok(true),
         },
-        RelationalBaseAccess::Index { name, prefix } => {
-            index_runtime.visit_prefix(state, table, name, prefix, |key| {
-                match row_runtime.read_point(table, key)? {
-                    Some(row) => visit(row),
-                    None => Err(SkeinError::StorageIntegrity(format!(
-                        "relational index {name} on table {table} points to missing row {key:?}"
-                    ))),
-                }
+        RelationalBaseAccess::Index { name, scan } => {
+            index_runtime.visit_range_entries(state, table, name, scan, |_, key| match row_runtime
+                .read_point(
+                table, key,
+            )? {
+                Some(row) => visit(row),
+                None => Err(SkeinError::StorageIntegrity(format!(
+                    "relational index {name} on table {table} points to missing row {key:?}"
+                ))),
             })
         }
         RelationalBaseAccess::FullScan => row_runtime.visit_all(table, visit),
@@ -3757,7 +4023,7 @@ fn execute_ordered_index_projection<'a>(
     execution_memory: &skein_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
 ) -> Result<StreamingProjectionOutput> {
-    let RelationalBaseAccess::Index { name, prefix } = base_access else {
+    let RelationalBaseAccess::Index { name, scan } = base_access else {
         return Err(SkeinError::Execution(
             "ordered relational projection requires an index range access".to_string(),
         ));
@@ -3833,11 +4099,11 @@ fn execute_ordered_index_projection<'a>(
     let mut selected_rows = 0usize;
     if requested != 0 {
         pipeline.begin_operator_pipeline();
-        let fully_consumed = index_runtime.visit_prefix_entries(
+        let fully_consumed = index_runtime.visit_range_entries(
             state,
             &select.from.name,
             name,
-            prefix,
+            scan,
             |_, primary_key| {
                 pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
                 if offset != 0 {

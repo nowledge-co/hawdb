@@ -4,20 +4,21 @@ use skein_optimizer::{
 };
 use skein_qos::ProcessMemorySnapshot;
 use skein_storage::{
-    RelationalColumnSchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-    RelationalRow, RelationalScalarType, RelationalStore, RelationalTableSchema,
-    RelationalTransaction, RelationalValue, RelationalWrite,
+    RelationalColumnSchema, RelationalIndexRangeScan, RelationalIndexScanDirection,
+    RelationalIndexSchema, RelationalInsertMode, RelationalKey, RelationalRow,
+    RelationalScalarType, RelationalStore, RelationalTableSchema, RelationalTransaction,
+    RelationalValue, RelationalWrite,
 };
 use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::Instant;
 
-const DATASET_ROWS: [usize; 3] = [1_000, 10_000, 50_000];
+const DATASET_ROWS: [usize; 4] = [1_000, 10_000, 50_000, 100_000];
 const SAMPLES: usize = 31;
-const SPACE_COUNT: usize = 10;
-const THREAD_COUNT: usize = 100;
-const TARGET_SPACE: usize = 3;
-const TARGET_THREAD: usize = 42;
+const KEYSET_PAGE_ROWS: usize = 25;
+const TARGET_SPACE: &str = "space-target";
+const TARGET_THREAD: &str = "thread-target";
+const DISTRACTOR_THREAD: &str = "thread-distractor";
 
 fn main() {
     let results = DATASET_ROWS.into_iter().map(measure).collect::<Vec<_>>();
@@ -30,14 +31,14 @@ fn main() {
     );
 }
 
-fn measure(dataset_rows: usize) -> serde_json::Value {
+fn measure(target_prefix_rows: usize) -> serde_json::Value {
     let memory_before = ProcessMemorySnapshot::capture().ok();
-    let store = seeded_store(dataset_rows);
+    let store = seeded_store(target_prefix_rows);
     let memory_after = ProcessMemorySnapshot::capture().ok();
     let snapshot = store.snapshot().expect("benchmark snapshot");
     let state = snapshot.value();
-    let space = text(&format!("space-{TARGET_SPACE:02}"));
-    let thread = text(&format!("thread-{TARGET_THREAD:03}"));
+    let space = text(TARGET_SPACE);
+    let thread = text(TARGET_THREAD);
     let space_prefix = RelationalKey(vec![space.clone()]);
     let composite_prefix = RelationalKey(vec![space.clone(), thread.clone()]);
     let space_rows = state
@@ -58,7 +59,7 @@ fn measure(dataset_rows: usize) -> serde_json::Value {
             0,
             false,
             false,
-            dataset_rows,
+            target_prefix_rows.saturating_mul(2),
         ),
         access_path(
             RelationalAccessPathKind::Index,
@@ -72,7 +73,7 @@ fn measure(dataset_rows: usize) -> serde_json::Value {
         access_path(
             RelationalAccessPathKind::Index,
             "idx_messages_space_thread_order",
-            &["space_id", "thread_id", "order_index"],
+            &["space_id", "thread_id", "order_index", "id"],
             2,
             false,
             true,
@@ -114,11 +115,91 @@ fn measure(dataset_rows: usize) -> serde_json::Value {
     }
     full_scan_samples.sort_unstable();
     streaming_prefix_samples.sort_unstable();
+
+    let cursor_positions = [
+        ("first", KEYSET_PAGE_ROWS),
+        ("middle", target_prefix_rows / 2),
+        (
+            "deep",
+            target_prefix_rows
+                .saturating_sub(KEYSET_PAGE_ROWS)
+                .saturating_sub(1),
+        ),
+    ];
+    let mut keyset_results = Vec::with_capacity(cursor_positions.len());
+    for (position, cursor_order) in cursor_positions {
+        let cursor = RelationalKey(vec![
+            space.clone(),
+            thread.clone(),
+            RelationalValue::BigInt(i64::try_from(cursor_order).expect("cursor order fits i64")),
+            text(&format!("message-target-{cursor_order:08}")),
+        ]);
+        let mut forward_samples = Vec::with_capacity(SAMPLES);
+        let mut backward_samples = Vec::with_capacity(SAMPLES);
+        let expected_forward_rows = KEYSET_PAGE_ROWS.min(
+            target_prefix_rows
+                .saturating_sub(cursor_order)
+                .saturating_sub(1),
+        );
+        let expected_backward_rows = KEYSET_PAGE_ROWS.min(cursor_order);
+
+        for (direction, samples) in [
+            (RelationalIndexScanDirection::Forward, &mut forward_samples),
+            (
+                RelationalIndexScanDirection::Backward,
+                &mut backward_samples,
+            ),
+        ] {
+            for _ in 0..SAMPLES {
+                let started = Instant::now();
+                let mut visited_rows = 0usize;
+                state
+                    .visit_index_range_entries(
+                        "messages",
+                        "idx_messages_space_thread_order",
+                        &RelationalIndexRangeScan {
+                            prefix: composite_prefix.clone(),
+                            exclusive_bound: Some(cursor.clone()),
+                            direction,
+                        },
+                        |index_key, primary_key| {
+                            black_box((index_key, primary_key));
+                            visited_rows = visited_rows.saturating_add(1);
+                            visited_rows < KEYSET_PAGE_ROWS
+                        },
+                    )
+                    .expect("exclusive keyset index lookup");
+                samples.push(started.elapsed().as_nanos());
+                let expected_rows = match direction {
+                    RelationalIndexScanDirection::Forward => expected_forward_rows,
+                    RelationalIndexScanDirection::Backward => expected_backward_rows,
+                };
+                assert_eq!(visited_rows, expected_rows);
+                assert!(visited_rows <= KEYSET_PAGE_ROWS);
+                black_box(visited_rows);
+            }
+        }
+        forward_samples.sort_unstable();
+        backward_samples.sort_unstable();
+        keyset_results.push(json!({
+            "position": position,
+            "cursor_order": cursor_order,
+            "forward_rows_visited": expected_forward_rows,
+            "backward_rows_visited": expected_backward_rows,
+            "exclusive_forward_ns_p50": percentile(&forward_samples, 50),
+            "exclusive_forward_ns_p95": percentile(&forward_samples, 95),
+            "exclusive_forward_ns_p99": percentile(&forward_samples, 99),
+            "exclusive_backward_ns_p50": percentile(&backward_samples, 50),
+            "exclusive_backward_ns_p95": percentile(&backward_samples, 95),
+            "exclusive_backward_ns_p99": percentile(&backward_samples, 99),
+        }));
+    }
     let full_scan_p50 = percentile(&full_scan_samples, 50);
     let streaming_prefix_p50 = percentile(&streaming_prefix_samples, 50);
 
     json!({
-        "dataset_rows": dataset_rows,
+        "target_prefix_rows": target_prefix_rows,
+        "total_rows": target_prefix_rows.saturating_mul(2),
         "space_prefix_rows": space_rows,
         "matched_rows": matched_rows,
         "selected_path": selected.name,
@@ -129,6 +210,8 @@ fn measure(dataset_rows: usize) -> serde_json::Value {
         "streaming_composite_prefix_ns_p50": streaming_prefix_p50,
         "streaming_composite_prefix_ns_p95": percentile(&streaming_prefix_samples, 95),
         "streaming_composite_prefix_ns_p99": percentile(&streaming_prefix_samples, 99),
+        "keyset_page_rows": KEYSET_PAGE_ROWS,
+        "keyset_cursors": keyset_results,
         "p50_speedup": full_scan_p50 as f64 / streaming_prefix_p50.max(1) as f64,
         "resident_delta_bytes": memory_before.zip(memory_after).map(|(before, after)| {
             after.resident_bytes.saturating_sub(before.resident_bytes)
@@ -136,7 +219,7 @@ fn measure(dataset_rows: usize) -> serde_json::Value {
     })
 }
 
-fn seeded_store(dataset_rows: usize) -> RelationalStore {
+fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
     let store = RelationalStore::default();
     store
         .commit(
@@ -171,6 +254,7 @@ fn seeded_store(dataset_rows: usize) -> RelationalStore {
                                 "space_id".to_string(),
                                 "thread_id".to_string(),
                                 "order_index".to_string(),
+                                "id".to_string(),
                             ],
                             unique: false,
                         },
@@ -180,39 +264,39 @@ fn seeded_store(dataset_rows: usize) -> RelationalStore {
             |_, _| Ok(()),
         )
         .expect("benchmark schema");
-    let rows_per_thread = dataset_rows / (SPACE_COUNT * THREAD_COUNT);
-    let rows = (0..dataset_rows)
-        .map(|offset| {
-            let space = offset % SPACE_COUNT;
-            let thread = (offset / SPACE_COUNT) % THREAD_COUNT;
-            let order = offset / (SPACE_COUNT * THREAD_COUNT);
-            RelationalRow::new(vec![
-                text(&format!("message-{offset:08}")),
-                text(&format!("space-{space:02}")),
-                text(&format!("thread-{thread:03}")),
-                RelationalValue::BigInt(i64::try_from(order).expect("benchmark order fits i64")),
-            ])
-        })
-        .collect::<Vec<_>>();
-    store
-        .commit(
-            RelationalTransaction {
-                writes: vec![RelationalWrite::Insert {
-                    table: "messages".to_string(),
-                    rows,
-                    mode: RelationalInsertMode::Error,
-                }],
-            },
-            |_, _| Ok(()),
-        )
-        .expect("benchmark rows");
+    for (thread, id_prefix) in [(TARGET_THREAD, "target"), (DISTRACTOR_THREAD, "distractor")] {
+        let rows = (0..target_prefix_rows)
+            .map(|order| {
+                RelationalRow::new(vec![
+                    text(&format!("message-{id_prefix}-{order:08}")),
+                    text(TARGET_SPACE),
+                    text(thread),
+                    RelationalValue::BigInt(
+                        i64::try_from(order).expect("benchmark order fits i64"),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        store
+            .commit(
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "messages".to_string(),
+                        rows,
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+                |_, _| Ok(()),
+            )
+            .expect("benchmark rows");
+    }
     assert_eq!(
         store
             .snapshot()
             .expect("seeded snapshot")
             .value()
             .row_count("messages"),
-        rows_per_thread * SPACE_COUNT * THREAD_COUNT
+        target_prefix_rows.saturating_mul(2)
     );
     store
 }
@@ -236,6 +320,8 @@ fn access_path(
             .collect::<BTreeSet<_>>(),
         equality_prefix_len,
         order_prefix_len: 0,
+        exclusive_range: false,
+        reverse_order: false,
         unique_point,
         covering: false,
         requires_row_fetch,

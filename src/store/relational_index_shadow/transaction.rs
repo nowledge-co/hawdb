@@ -6,7 +6,8 @@ use super::{
 use skein_storage::{
     RelationalConstraintIndex, RelationalError, RelationalIndexChange,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind,
-    RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey,
+    RelationalIndexRangeScan, RelationalIndexReadLimits, RelationalIndexScanDirection,
+    RelationalIndexShadowError, RelationalKey,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -237,27 +238,48 @@ impl RelationalTransactionIndexView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_range_entries(
+            table,
+            index,
+            &RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            limits,
+            visit,
+        )
+    }
+
+    pub(crate) fn visit_range_entries(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         let transaction_remaining = self
             .read_ledger
             .remaining_limits()
             .map_err(relational_read_error)?;
         let limits = intersect_read_limits(limits, transaction_remaining);
-        let report = self.visit_prefix_entries_with_overlay(table, index, prefix, limits, visit)?;
+        let report = self.visit_range_entries_with_overlay(table, index, scan, limits, visit)?;
         self.read_ledger
             .record(&report)
             .map_err(relational_read_error)?;
         Ok(report)
     }
 
-    fn visit_prefix_entries_with_overlay(
+    fn visit_range_entries_with_overlay(
         &self,
         table: &str,
         index: &str,
-        prefix: &RelationalKey,
+        scan: &RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
-        let selector = RelationalIndexReadSelector::Prefix(prefix);
+        let selector = RelationalIndexReadSelector::Range(scan);
         let mut posting_states =
             BTreeMap::<(RelationalKey, RelationalKey), TransactionPostingState>::new();
         let mut entries_visited = 0usize;
@@ -333,13 +355,14 @@ impl RelationalTransactionIndexView {
             rows_visited: 0,
             stopped_early: false,
             error: None,
+            direction: scan.direction,
         };
         let mut report = {
             let mut emit_base = |index_key: &RelationalKey, primary_key: &RelationalKey| {
                 merge.visit_base(index_key, primary_key)
             };
             self.base
-                .visit_prefix_entries(table, index, prefix, backend_limits, &mut emit_base)?
+                .visit_range_entries(table, index, scan, backend_limits, &mut emit_base)?
         };
         if let Some(error) = merge.error.take() {
             return Err(error);
@@ -471,6 +494,11 @@ impl RelationalTransactionIndexView {
                     backend_limits,
                     &mut emit_base,
                 )?,
+                RelationalIndexReadSelector::Range(_) => {
+                    return Err(RelationalIndexShadowError::Admission(
+                        "range selectors require ordered entry traversal".to_string(),
+                    ));
+                }
             }
         };
         merge.finish();

@@ -599,6 +599,36 @@ pub fn relational_foreign_key_index_name(ordinal: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelationalKey(pub Vec<RelationalValue>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalIndexScanDirection {
+    Forward,
+    Backward,
+}
+
+/// One ordered composite-index range constrained by a leading equality prefix.
+///
+/// `exclusive_bound`, when present, is a complete index key. Forward scans
+/// visit keys greater than the bound; backward scans visit keys less than it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalIndexRangeScan {
+    pub prefix: RelationalKey,
+    pub exclusive_bound: Option<RelationalKey>,
+    pub direction: RelationalIndexScanDirection,
+}
+
+impl RelationalIndexRangeScan {
+    pub fn matches(&self, key: &RelationalKey) -> bool {
+        relational_key_has_prefix(key, &self.prefix)
+            && self
+                .exclusive_bound
+                .as_ref()
+                .is_none_or(|bound| match self.direction {
+                    RelationalIndexScanDirection::Forward => key > bound,
+                    RelationalIndexScanDirection::Backward => key < bound,
+                })
+    }
+}
+
 pub fn encode_relational_primary_key(key: &RelationalKey) -> Result<Vec<u8>, RelationalError> {
     ordered_key::encode_ordered_relational_key(key)
         .map_err(|error| RelationalError::Corruption(error.to_string()))
@@ -1612,6 +1642,79 @@ impl RelationalIndexPages {
                 for primary_key in postings.iter() {
                     if !visit(index_key, primary_key) {
                         break 'pages;
+                    }
+                }
+            }
+        }
+    }
+
+    fn visit_range_entries<'a>(
+        &'a self,
+        scan: &RelationalIndexRangeScan,
+        mut visit: impl FnMut(&'a RelationalKey, &'a RelationalKey) -> bool,
+    ) {
+        let seek = scan.exclusive_bound.as_ref().unwrap_or(&scan.prefix);
+        let Some(mut start) = self.page_index(seek) else {
+            return;
+        };
+        if scan.direction == RelationalIndexScanDirection::Backward
+            && scan.exclusive_bound.is_none()
+        {
+            while self.pages.get(start + 1).is_some_and(|page| {
+                page.first_key_value()
+                    .is_some_and(|(key, _)| relational_key_has_prefix(key, &scan.prefix))
+            }) {
+                start += 1;
+            }
+        }
+        match scan.direction {
+            RelationalIndexScanDirection::Forward => {
+                'pages: for (page_ordinal, page) in self.pages[start..].iter().enumerate() {
+                    let lower = if page_ordinal == 0 {
+                        match &scan.exclusive_bound {
+                            Some(bound) => std::ops::Bound::Excluded(bound.clone()),
+                            None => std::ops::Bound::Included(scan.prefix.clone()),
+                        }
+                    } else {
+                        std::ops::Bound::Unbounded
+                    };
+                    for (index_key, postings) in page.range((lower, std::ops::Bound::Unbounded)) {
+                        if !relational_key_has_prefix(index_key, &scan.prefix) {
+                            break 'pages;
+                        }
+                        for primary_key in postings.iter() {
+                            if !visit(index_key, primary_key) {
+                                break 'pages;
+                            }
+                        }
+                    }
+                }
+            }
+            RelationalIndexScanDirection::Backward => {
+                'pages: for (page_ordinal, page) in self.pages[..=start].iter().rev().enumerate() {
+                    let upper = if page_ordinal == 0 {
+                        scan.exclusive_bound
+                            .as_ref()
+                            .map_or(std::ops::Bound::Unbounded, |bound| {
+                                std::ops::Bound::Excluded(bound.clone())
+                            })
+                    } else {
+                        std::ops::Bound::Unbounded
+                    };
+                    for (index_key, postings) in
+                        page.range((std::ops::Bound::Unbounded, upper)).rev()
+                    {
+                        if !relational_key_has_prefix(index_key, &scan.prefix) {
+                            if index_key < &scan.prefix {
+                                break 'pages;
+                            }
+                            continue;
+                        }
+                        for primary_key in postings.iter() {
+                            if !visit(index_key, primary_key) {
+                                break 'pages;
+                            }
+                        }
                     }
                 }
             }
@@ -3635,6 +3738,20 @@ impl RelationalState {
         index.visit_prefix_entries(prefix, |index_key, primary_key| {
             visit(index_key, primary_key)
         });
+        Some(())
+    }
+
+    /// Visits an exclusive ordered index range without materializing postings.
+    pub fn visit_index_range_entries<'a>(
+        &'a self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        visit: impl FnMut(&'a RelationalKey, &'a RelationalKey) -> bool,
+    ) -> Option<()> {
+        let segment = self.segments.get(table)?;
+        let index = segment.indexes.get(index)?;
+        index.visit_range_entries(scan, visit);
         Some(())
     }
 

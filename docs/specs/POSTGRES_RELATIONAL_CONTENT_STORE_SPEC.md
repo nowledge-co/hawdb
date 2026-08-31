@@ -350,6 +350,17 @@ accepted. Each locator batch is bounded by both `batch_rows` and
 payload values enter neither the locator column nor an intermediate `Binding`;
 only the selected locator batch may perform final projection hydration.
 
+A canonical two-column keyset predicate MAY continue that ordered index path
+from an exclusive cursor. The accepted shape is one leading equality prefix
+followed by `(sort > cursor OR (sort = cursor AND id > cursor_id))` for uniform
+ascending order, or the corresponding `<` predicate for uniform descending
+order. The cursor values must complete the composite index key, and both order
+columns must be non-null. Mixed directions, nullable order columns, incomplete
+index suffixes, and non-canonical predicates MUST retain the blocking fallback.
+Descending pages traverse the same ascending index in reverse; neither
+direction may hydrate rows beyond the bounded locator page. Planned and runtime
+explain evidence must distinguish exclusive seek, direction, and early stop.
+
 Blocking relational rows MUST carry a typed `sort_keys + locator + stable
 ordinal` record and MUST NOT materialize an executor `Binding`, public `Value`,
 or `BTreeMap`. One immutable query-local locator layout owns the table,
@@ -694,10 +705,13 @@ hydration P50/P95/P99 for repetitive, varied, and high-entropy payloads from
 NOT be used as file-backed RSS, page-fault, or end-to-end query evidence.
 
 `cargo bench --bench relational_index_access` compares a full scan with the
-selected composite-prefix path at 1,000, 10,000, and 50,000 rows. It reports
-P50/P95/P99 latency, matched and one-column-prefix cardinalities, selected
-index, selected equality-prefix length, speedup, and process RSS delta. This is
-an in-memory access-path microbenchmark; it does not qualify file-backed cache,
+selected composite-prefix path at 1,000, 10,000, 50,000, and 100,000 rows in
+one target equality prefix, plus an equally sized distractor prefix. It reports
+P50/P95/P99 latency and visited-row counts for bounded 25-row forward and
+backward pages at first, middle, and deep exclusive cursors. The output includes
+target, total, matched, and one-column-prefix cardinalities, selected index,
+selected equality-prefix length, speedup, and process RSS delta. This is an
+in-memory access-path microbenchmark; it does not qualify file-backed cache,
 page-fault, concurrent writer, or end-to-end SQL behavior.
 
 Production qualification still requires the differential SQLite oracle,
