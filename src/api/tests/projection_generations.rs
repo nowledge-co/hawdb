@@ -326,6 +326,17 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
     let pinned_generation_two = database
         .begin_projection_read_transaction(community_binding())
         .expect("pin replacement generation");
+    let version_mismatch = ProjectionRelationalReadBinding::new(
+        COMMUNITY_PROJECTION,
+        COMMUNITY_OWNER,
+        2,
+        ["communities", "community_entities"],
+    )
+    .expect("valid mismatched binding");
+    assert!(matches!(
+        database.begin_projection_read_transaction(version_mismatch),
+        Err(SkeinError::StorageIntegrity(_))
+    ));
 
     let parameters = [
         Value::String("workspace-1".to_string()),
@@ -436,5 +447,42 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
     drop(before_publish);
     drop(pinned_generation_one);
     drop(database);
+
+    let constrained = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            max_read_result_rows: Some(2),
+            ..DatabaseConfig::default()
+        },
+    )
+    .expect("reopen projection database with a constrained row budget");
+    let constrained_reader = constrained
+        .begin_projection_read_transaction(community_binding())
+        .expect("pin generation with a constrained row budget");
+    let row_budget_error = constrained_reader
+        .query_sql("SELECT COUNT(*) AS count FROM community_entities")
+        .expect_err("projection scan row exhaustion must fail the whole statement");
+    assert!(matches!(row_budget_error, SkeinError::Execution(_)));
+    drop(constrained_reader);
+    drop(constrained);
+
+    let mut mixed_source = Database::open(&path).expect("reopen writable projection database");
+    mixed_source
+        .query_sql(
+            "INSERT INTO communities (\
+                workspace_id, space_id, id, stable_key, name, member_count\
+             ) VALUES (\
+                'workspace-1', 'space-1', 'canonical', 'canonical', 'canonical', 1\
+             )",
+        )
+        .expect("insert canonical row into a bound table");
+    let mixed_source_error = mixed_source
+        .begin_projection_read_transaction(community_binding())
+        .expect_err("bound projection tables must reject canonical rows");
+    assert!(matches!(
+        mixed_source_error,
+        SkeinError::StorageIntegrity(message) if message.contains("canonical rows")
+    ));
+    drop(mixed_source);
     std::fs::remove_dir_all(path).expect("remove relational projection fixture");
 }
