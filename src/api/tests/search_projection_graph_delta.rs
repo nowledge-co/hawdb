@@ -284,6 +284,39 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
 }
 
 #[test]
+fn conflict_noop_returning_does_not_emit_a_relational_changefeed_mutation() {
+    let mut db = Database::new();
+    db.query_sql(
+        "CREATE TABLE public.raw_turns (\
+            raw_turn_id TEXT PRIMARY KEY, \
+            request_id TEXT UNIQUE NOT NULL\
+        )",
+    )
+    .unwrap();
+    db.query_sql(
+        "INSERT INTO public.raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-1', 'request-1')",
+    )
+    .unwrap();
+    let source_epoch = db.store.commit_epoch();
+
+    let duplicate = db
+        .query_sql(
+            "INSERT INTO public.raw_turns (raw_turn_id, request_id) \
+             VALUES ('turn-duplicate', 'request-1') \
+             ON CONFLICT (request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .unwrap();
+    assert!(duplicate.rows.is_empty());
+
+    let batch = db
+        .build_search_projection_change_batch_after(source_epoch, Some(4))
+        .unwrap();
+    assert!(batch.is_none_or(|batch| !batch.has_relational_changes()));
+}
+
+#[test]
 fn relational_changefeed_overflow_requires_rebuild_without_rejecting_commit() {
     let mut db = Database::new_with_config(DatabaseConfig {
         search_projection_relational_change_limits:
