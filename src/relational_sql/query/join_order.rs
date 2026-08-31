@@ -1,10 +1,10 @@
 use super::{
-    choose_base_access, choose_join_access, projection_contains_aggregate,
-    PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, PreparedRelationalJoinTree,
-    PreparedRelationalJoinTreeNode, PreparedRelationalTreeAccess, PreparedRelationalTreeRelation,
-    RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
-    RelationalIndexReadMode, RelationalJoinAccess, RelationalJoinAccessCandidate,
-    RelationalOperatorId, RelationalQueryLimits,
+    choose_base_access, choose_join_access, projection_access_planning,
+    projection_contains_aggregate, PreparedRelationalAccessPlan, PreparedRelationalJoinSelection,
+    PreparedRelationalJoinTree, PreparedRelationalJoinTreeNode, PreparedRelationalTreeAccess,
+    PreparedRelationalTreeRelation, RelationalAccessCandidate, RelationalBaseAccess,
+    RelationalBaseAccessPlanning, RelationalJoinAccess, RelationalJoinAccessCandidate,
+    RelationalOperatorId, RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
@@ -70,7 +70,7 @@ pub(super) fn plan_select_join_order(
     select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    read_modes: RelationalQueryReadModes<'_>,
     limits: RelationalQueryLimits,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<PlannedSelectStatement> {
@@ -98,13 +98,7 @@ pub(super) fn plan_select_join_order(
     };
     let predicates = &bound_joins.predicates;
     let Some(graph_relations) = build_graph_relations(
-        &select,
-        parameters,
-        state,
-        index_read_mode,
-        limits,
-        &relations,
-        predicates,
+        &select, parameters, state, read_modes, limits, &relations, predicates,
     )?
     else {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(
@@ -460,7 +454,7 @@ fn build_graph_relations(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    read_modes: RelationalQueryReadModes<'_>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     predicates: &[BoundJoinPredicate],
@@ -468,14 +462,7 @@ fn build_graph_relations(
     let mut graph_relations = Vec::with_capacity(relations.len());
     for relation in relations {
         let Some(graph_relation) = build_graph_relation(
-            select,
-            parameters,
-            state,
-            index_read_mode,
-            limits,
-            relations,
-            relation,
-            predicates,
+            select, parameters, state, read_modes, limits, relations, relation, predicates,
         )?
         else {
             return Ok(None);
@@ -490,7 +477,7 @@ fn build_graph_relation(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    read_modes: RelationalQueryReadModes<'_>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     relation: &BoundRelation<'_>,
@@ -506,8 +493,15 @@ fn build_graph_relation(
         table: &relation.table.name,
         qualifier: &relation.qualifier,
         cardinality_limit: limits.max_intermediate_rows.saturating_add(1),
+        projection: projection_access_planning(read_modes.row, &relation.table.name),
     })?;
-    let full_scan = full_scan_descriptor(state, &relation.table.name);
+    let full_scan = full_scan_descriptor(
+        state,
+        &relation.table.name,
+        read_modes
+            .row
+            .projection_estimated_rows(&relation.table.name),
+    );
     let full_scan_path = RelationalJoinAccessPath::base_and_probe(full_scan.clone());
     let mut access_paths = vec![full_scan_path.clone()];
     let mut base_accesses = vec![(
@@ -562,7 +556,8 @@ fn build_graph_relation(
             relation.schema,
             &relation.table.name,
             &relation.qualifier,
-            index_read_mode,
+            read_modes.index,
+            projection_access_planning(read_modes.row, &relation.table.name),
         )?;
         if candidate.descriptor.kind == RelationalAccessPathKind::FullScan {
             continue;
@@ -588,7 +583,11 @@ fn build_graph_relation(
     }))
 }
 
-fn full_scan_descriptor(state: &RelationalState, table: &str) -> RelationalAccessPathDescriptor {
+fn full_scan_descriptor(
+    state: &RelationalState,
+    table: &str,
+    row_count_override: Option<usize>,
+) -> RelationalAccessPathDescriptor {
     RelationalAccessPathDescriptor {
         kind: RelationalAccessPathKind::FullScan,
         name: "__full_scan".to_string(),
@@ -599,7 +598,9 @@ fn full_scan_descriptor(state: &RelationalState, table: &str) -> RelationalAcces
         unique_point: false,
         covering: false,
         requires_row_fetch: false,
-        estimated_rows: state.row_count(table).max(1),
+        estimated_rows: row_count_override
+            .unwrap_or_else(|| state.row_count(table))
+            .max(1),
     }
 }
 

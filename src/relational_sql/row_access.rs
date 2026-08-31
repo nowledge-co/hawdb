@@ -6,14 +6,15 @@ use crate::sql::{
 use crate::store::{GraphStore, RelationalTransactionRowView};
 use skein_core::RuntimeTaskContext;
 use skein_storage::{
-    RelationalError, RelationalHydrationBudget, RelationalKey, RelationalProjectedField,
-    RelationalProjectedRow, RelationalProjectedRowView, RelationalRow,
-    RelationalRowPageDemandReadError, RelationalRowPageProjectedFields,
-    RelationalRowPageProjectedRangeFields, RelationalRowPageReadViewIdentity,
-    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotRangeReport,
-    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
-    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
-    RelationalTableSchema, RelationalValueRef,
+    decode_projection_relational_member, encode_relational_primary_key, ProjectionGenerationError,
+    ProjectionGenerationReadLimits, ProjectionGenerationReader, RelationalError,
+    RelationalHydrationBudget, RelationalKey, RelationalProjectedField, RelationalProjectedRow,
+    RelationalProjectedRowView, RelationalRow, RelationalRowPageDemandReadError,
+    RelationalRowPageProjectedFields, RelationalRowPageProjectedRangeFields,
+    RelationalRowPageReadViewIdentity, RelationalRowPageSnapshotPointReport,
+    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
+    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
+    RelationalRowPageSnapshotRowSource, RelationalState, RelationalTableSchema, RelationalValueRef,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +30,29 @@ pub(crate) enum RelationalRowReadMode<'a> {
         store: &'a GraphStore,
         rows: &'a RelationalTransactionRowView,
     },
+    ProjectionGeneration {
+        store: &'a GraphStore,
+        reader: &'a ProjectionGenerationReader,
+        tables: &'a BTreeSet<String>,
+    },
+}
+
+impl RelationalRowReadMode<'_> {
+    pub(crate) fn is_projection_table(self, table: &str) -> bool {
+        matches!(
+            self,
+            Self::ProjectionGeneration { tables, .. } if tables.contains(table)
+        )
+    }
+
+    pub(crate) fn projection_estimated_rows(self, table: &str) -> Option<usize> {
+        match self {
+            Self::ProjectionGeneration { reader, tables, .. } if tables.contains(table) => {
+                Some(usize::try_from(reader.manifest().member_count).unwrap_or(usize::MAX))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,6 +76,10 @@ pub(crate) struct RelationalRowExecutionEvidence {
     pub owned_rows_visited: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
+    pub projection_generation: Option<String>,
+    pub projection_source_watermark: Option<u64>,
+    pub projection_version: Option<u64>,
+    pub projection_publication_commit_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +182,10 @@ impl RelationalFieldPlan {
             output_fields,
         }
     }
+
+    fn uses_any_table(&self, tables: &BTreeSet<String>) -> bool {
+        self.scan_fields.keys().any(|table| tables.contains(table))
+    }
 }
 
 pub(crate) struct RelationalRowRuntime<'a> {
@@ -164,17 +196,31 @@ pub(crate) struct RelationalRowRuntime<'a> {
     hydration: RefCell<RelationalHydrationBudget>,
     evidence: RefCell<RelationalRowExecutionEvidence>,
     task: &'a RuntimeTaskContext,
+    projection: Option<ProjectionRelationalRuntime<'a>>,
+}
+
+struct ProjectionRelationalRuntime<'a> {
+    reader: &'a ProjectionGenerationReader,
+    tables: &'a BTreeSet<String>,
 }
 
 impl<'a> RelationalRowRuntime<'a> {
     pub(crate) fn new(
         state: &'a RelationalState,
-        mode: RelationalRowReadMode<'_>,
+        mode: RelationalRowReadMode<'a>,
         fields: RelationalFieldPlan,
         limits: RelationalRowPageSnapshotReadLimits,
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Result<Self> {
+        let projection = match mode {
+            RelationalRowReadMode::ProjectionGeneration { reader, tables, .. }
+                if fields.uses_any_table(tables) =>
+            {
+                Some(ProjectionRelationalRuntime { reader, tables })
+            }
+            _ => None,
+        };
         let backend = match mode {
             RelationalRowReadMode::CanonicalMemory => RelationalRowBackend::CanonicalMemory,
             RelationalRowReadMode::Store(store) => {
@@ -186,11 +232,32 @@ impl<'a> RelationalRowRuntime<'a> {
             RelationalRowReadMode::Transaction { store, rows } => RelationalRowBackend::Snapshot(
                 store.open_relational_transaction_row_snapshot_reader(rows)?,
             ),
+            RelationalRowReadMode::ProjectionGeneration { store, .. } => {
+                store.open_relational_row_snapshot_reader()?.map_or(
+                    RelationalRowBackend::CanonicalMemory,
+                    RelationalRowBackend::Snapshot,
+                )
+            }
         };
-        let runtime_path = match &backend {
-            RelationalRowBackend::CanonicalMemory => "canonical_memory",
-            RelationalRowBackend::Snapshot(_) => "snapshot_rows",
+        let runtime_path = match (&backend, &projection) {
+            (_, Some(_)) => "projection_generation",
+            (RelationalRowBackend::CanonicalMemory, None) => "canonical_memory",
+            (RelationalRowBackend::Snapshot(_), None) => "snapshot_rows",
         };
+        let projection_evidence = projection.as_ref().map(|projection| {
+            (
+                projection
+                    .reader
+                    .manifest()
+                    .begin
+                    .identity
+                    .generation
+                    .clone(),
+                projection.reader.manifest().begin.source_watermark,
+                projection.reader.manifest().begin.projection_version,
+                projection.reader.publication_commit_epoch(),
+            )
+        });
         Ok(Self {
             state,
             backend,
@@ -199,9 +266,20 @@ impl<'a> RelationalRowRuntime<'a> {
             hydration: RefCell::new(hydration),
             evidence: RefCell::new(RelationalRowExecutionEvidence {
                 runtime_path,
+                projection_generation: projection_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.0.clone()),
+                projection_source_watermark: projection_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.1),
+                projection_version: projection_evidence.as_ref().map(|evidence| evidence.2),
+                projection_publication_commit_epoch: projection_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.3),
                 ..RelationalRowExecutionEvidence::default()
             }),
             task,
+            projection,
         })
     }
 
@@ -239,6 +317,13 @@ impl<'a> RelationalRowRuntime<'a> {
         fields: &[usize],
         hydration_fields: &[usize],
     ) -> Result<Option<RelationalReadRow>> {
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.tables.contains(table))
+        {
+            return self.read_projection_point(table, key, fields, hydration_fields);
+        }
         match &self.backend {
             RelationalRowBackend::CanonicalMemory => {
                 let Some((key, row)) = self.state.row_entry(table, key) else {
@@ -293,6 +378,13 @@ impl<'a> RelationalRowRuntime<'a> {
     ) -> Result<bool> {
         let fields = self.fields(&self.fields.scan_fields, table)?;
         let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.tables.contains(table))
+        {
+            return self.visit_projection_rows(table, fields, hydration_fields, &mut visit);
+        }
         match &self.backend {
             RelationalRowBackend::CanonicalMemory => {
                 for (key, row) in self.state.rows(table) {
@@ -375,6 +467,15 @@ impl<'a> RelationalRowRuntime<'a> {
     ) -> Result<bool> {
         let fields = self.fields(&self.fields.scan_fields, table)?;
         let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.tables.contains(table))
+        {
+            return self.visit_projection_rows(table, fields, hydration_fields, &mut |row| {
+                visit(row.as_ref())
+            });
+        }
         match &self.backend {
             RelationalRowBackend::CanonicalMemory => {
                 for (key, row) in self.state.rows(table) {
@@ -444,6 +545,201 @@ impl<'a> RelationalRowRuntime<'a> {
                 }
             }
         }
+    }
+
+    fn read_projection_point(
+        &self,
+        table: &str,
+        key: &RelationalKey,
+        fields: &[usize],
+        hydration_fields: &[usize],
+    ) -> Result<Option<RelationalReadRow>> {
+        let encoded_key = encode_relational_primary_key(key).map_err(|error| {
+            SkeinError::StorageIntegrity(format!(
+                "projection lookup key for {table} cannot be encoded: {error}"
+            ))
+        })?;
+        let mut found = None;
+        self.visit_projection_members(table, &mut |member| match member
+            .key
+            .as_slice()
+            .cmp(encoded_key.as_slice())
+        {
+            std::cmp::Ordering::Less => Ok(true),
+            std::cmp::Ordering::Equal => {
+                found = Some(self.project_projection_member(
+                    table,
+                    member,
+                    fields,
+                    hydration_fields,
+                )?);
+                Ok(false)
+            }
+            std::cmp::Ordering::Greater => Ok(false),
+        })?;
+        Ok(found)
+    }
+
+    fn visit_projection_rows(
+        &self,
+        table: &str,
+        fields: &[usize],
+        hydration_fields: &[usize],
+        visit: &mut dyn FnMut(RelationalReadRow) -> Result<bool>,
+    ) -> Result<bool> {
+        self.visit_projection_members(table, &mut |member| {
+            visit(self.project_projection_member(table, member, fields, hydration_fields)?)
+        })
+    }
+
+    fn visit_projection_members(
+        &self,
+        table: &str,
+        visit: &mut dyn FnMut(&skein_storage::ProjectionGenerationMember) -> Result<bool>,
+    ) -> Result<bool> {
+        let projection = self.projection.as_ref().ok_or_else(|| {
+            SkeinError::StorageIntegrity(
+                "projection row path was selected without a pinned generation".to_string(),
+            )
+        })?;
+        let mut cursor = None;
+        loop {
+            self.task.checkpoint().map_err(|reason| {
+                SkeinError::Execution(format!("runtime task stopped: {reason}"))
+            })?;
+            let page = projection
+                .reader
+                .read_page(cursor.as_ref(), self.projection_page_limits()?)
+                .map_err(map_projection_read_error)?;
+            self.record_projection_page(&page.report)?;
+            for member in &page.members {
+                if !projection.tables.contains(&member.collection) {
+                    return Err(SkeinError::StorageIntegrity(format!(
+                        "projection generation contains unbound collection {}",
+                        member.collection
+                    )));
+                }
+                match member.collection.as_str().cmp(table) {
+                    std::cmp::Ordering::Less => continue,
+                    std::cmp::Ordering::Equal => {
+                        if !visit(member)? {
+                            return Ok(false);
+                        }
+                    }
+                    std::cmp::Ordering::Greater => return Ok(true),
+                }
+            }
+            let Some(next) = page.next else {
+                return Ok(true);
+            };
+            cursor = Some(next);
+        }
+    }
+
+    fn project_projection_member(
+        &self,
+        table: &str,
+        member: &skein_storage::ProjectionGenerationMember,
+        fields: &[usize],
+        hydration_fields: &[usize],
+    ) -> Result<RelationalReadRow> {
+        let schema = self
+            .state
+            .table_schema(table)
+            .ok_or_else(|| SkeinError::Semantic(format!("unknown relational table {table}")))?;
+        let (primary_key, row) =
+            decode_projection_relational_member(schema, member, member.payload.len())
+                .map_err(map_projection_read_error)?;
+        let mut required = fields.iter().copied().collect::<BTreeSet<_>>();
+        required.extend(hydration_fields.iter().copied());
+        let projected = required
+            .into_iter()
+            .map(|ordinal| {
+                row.values()
+                    .get(ordinal)
+                    .cloned()
+                    .map(|value| RelationalProjectedField { ordinal, value })
+                    .ok_or_else(|| {
+                        SkeinError::StorageIntegrity(format!(
+                            "projection row field {ordinal} is outside table {table}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(RelationalReadRow {
+            row: Arc::new(RelationalProjectedRow {
+                primary_key,
+                fields: projected,
+            }),
+        })
+    }
+
+    fn projection_page_limits(&self) -> Result<ProjectionGenerationReadLimits> {
+        let evidence = self.evidence.borrow();
+        let rows = self
+            .limits
+            .demand
+            .max_rows
+            .get()
+            .checked_sub(evidence.rows_visited)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "projection generation row budget is exhausted at {}",
+                    self.limits.demand.max_rows
+                ))
+            })?;
+        let bytes = self
+            .limits
+            .demand
+            .max_bytes
+            .get()
+            .checked_sub(evidence.logical_bytes)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "projection generation payload budget is exhausted at {} bytes",
+                    self.limits.demand.max_bytes
+                ))
+            })?;
+        Ok(ProjectionGenerationReadLimits {
+            max_rows: NonZeroUsize::new(rows.get().min(256)).expect("bounded rows are non-zero"),
+            max_payload_bytes: bytes,
+            max_record_bytes: bytes,
+        })
+    }
+
+    fn record_projection_page(
+        &self,
+        report: &skein_storage::ProjectionGenerationReadReport,
+    ) -> Result<()> {
+        let mut evidence = self.evidence.borrow_mut();
+        if evidence.projection_generation.as_deref() != Some(report.generation.as_str())
+            || evidence.projection_source_watermark != Some(report.source_watermark)
+            || evidence.projection_version != Some(report.projection_version)
+            || evidence.projection_publication_commit_epoch != Some(report.publication_commit_epoch)
+        {
+            return Err(SkeinError::StorageIntegrity(
+                "projection generation identity changed within one SQL transaction".to_string(),
+            ));
+        }
+        add_counter(&mut evidence.logical_pages, 1, "projection page")?;
+        add_counter(
+            &mut evidence.logical_bytes,
+            report.payload_bytes,
+            "projection payload byte",
+        )?;
+        add_counter(
+            &mut evidence.rows_visited,
+            report.rows_returned,
+            "projection row",
+        )?;
+        add_counter(
+            &mut evidence.owned_rows_visited,
+            report.rows_returned,
+            "projection owned row",
+        )?;
+        Ok(())
     }
 
     fn fields<'fields>(
@@ -669,6 +965,18 @@ impl<'a> RelationalRowRuntime<'a> {
             "overlay byte",
         )?;
         Ok(())
+    }
+}
+
+fn map_projection_read_error(error: ProjectionGenerationError) -> SkeinError {
+    match error {
+        ProjectionGenerationError::Admission(message) => SkeinError::Execution(message),
+        ProjectionGenerationError::Io(error) => SkeinError::StorageIntegrity(error.to_string()),
+        error @ (ProjectionGenerationError::Conflict(_)
+        | ProjectionGenerationError::Corruption(_)
+        | ProjectionGenerationError::NotFound(_)) => {
+            SkeinError::StorageIntegrity(error.to_string())
+        }
     }
 }
 

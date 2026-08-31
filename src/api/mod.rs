@@ -526,6 +526,76 @@ pub struct QueryStreamOptions {
     pub max_payload_bytes: Option<usize>,
 }
 
+/// Declares the relational tables exposed by one owner-scoped projection
+/// generation inside a pinned read transaction.
+///
+/// The binding is generic rather than route-specific. The application owns the
+/// PostgreSQL DDL for the named tables and the projection version. Skein owns
+/// active-generation resolution, pin lifetime, row decoding, and query
+/// admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionRelationalReadBinding {
+    projection: String,
+    owner_key: Vec<u8>,
+    projection_version: u64,
+    tables: BTreeSet<String>,
+}
+
+impl ProjectionRelationalReadBinding {
+    pub fn new(
+        projection: impl Into<String>,
+        owner_key: impl Into<Vec<u8>>,
+        projection_version: u64,
+        tables: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let projection = projection.into();
+        let owner_key = owner_key.into();
+        let tables = tables.into_iter().map(Into::into).collect::<BTreeSet<_>>();
+        if projection.trim().is_empty() {
+            return Err(SkeinError::Semantic(
+                "projection relational binding requires a non-empty projection name".to_string(),
+            ));
+        }
+        if owner_key.is_empty() {
+            return Err(SkeinError::Semantic(
+                "projection relational binding requires a non-empty owner key".to_string(),
+            ));
+        }
+        if projection_version == 0 {
+            return Err(SkeinError::Semantic(
+                "projection relational binding requires a non-zero projection version".to_string(),
+            ));
+        }
+        if tables.is_empty() || tables.iter().any(|table| table.trim().is_empty()) {
+            return Err(SkeinError::Semantic(
+                "projection relational binding requires non-empty table names".to_string(),
+            ));
+        }
+        Ok(Self {
+            projection,
+            owner_key,
+            projection_version,
+            tables,
+        })
+    }
+
+    pub fn projection(&self) -> &str {
+        &self.projection
+    }
+
+    pub fn owner_key(&self) -> &[u8] {
+        &self.owner_key
+    }
+
+    pub const fn projection_version(&self) -> u64 {
+        self.projection_version
+    }
+
+    pub fn tables(&self) -> &BTreeSet<String> {
+        &self.tables
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryStreamReport {
     pub fully_streamed: bool,
@@ -717,7 +787,14 @@ pub struct DatabaseReadTransaction {
     slow_query_snapshot: Vec<system_sql::SlowQueryRecord>,
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
+    projection_relational: Option<ProjectionRelationalReadSnapshot>,
     _pin: ReaderPin,
+}
+
+#[derive(Debug)]
+struct ProjectionRelationalReadSnapshot {
+    binding: ProjectionRelationalReadBinding,
+    reader: skein_storage::ProjectionGenerationReader,
 }
 
 struct ReadStreamingExecutionContext<'a> {
@@ -793,6 +870,31 @@ impl Database {
     /// path. In-memory databases do not expose a durable generation catalog.
     pub fn projection_generation_store(&self) -> Result<skein_storage::ProjectionGenerationStore> {
         self.store.projection_generation_store()
+    }
+
+    /// Encodes a row for a relational projection table using the durable
+    /// PostgreSQL schema registered in this database.
+    pub fn encode_projection_relational_row(
+        &self,
+        table: &str,
+        row: skein_storage::RelationalRow,
+    ) -> Result<skein_storage::ProjectionGenerationMember> {
+        let schema = self
+            .store
+            .relational_state()
+            .table_schema(table)
+            .ok_or_else(|| {
+                SkeinError::Semantic(format!(
+                    "projection relational table {table} has no durable PostgreSQL schema"
+                ))
+            })?;
+        skein_storage::encode_projection_relational_member(schema, row).map_err(|error| match error
+        {
+            skein_storage::ProjectionGenerationError::Corruption(message) => {
+                SkeinError::StorageIntegrity(message)
+            }
+            error => SkeinError::Execution(error.to_string()),
+        })
     }
 
     pub fn new() -> Self {
@@ -1088,6 +1190,54 @@ impl Database {
     }
 
     pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
+        self.begin_read_transaction_inner(None)
+    }
+
+    /// Pins both the database read view and one active projection generation.
+    /// PostgreSQL SQL issued through the returned transaction reads the bound
+    /// tables from that generation and all other tables from the same database
+    /// snapshot.
+    pub fn begin_projection_read_transaction(
+        &self,
+        binding: ProjectionRelationalReadBinding,
+    ) -> Result<DatabaseReadTransaction> {
+        let reader = self
+            .projection_generation_store()?
+            .open_active(binding.projection(), binding.owner_key())
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        if reader.manifest().begin.projection_version != binding.projection_version() {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "projection {} version {} does not match required version {}",
+                binding.projection(),
+                reader.manifest().begin.projection_version,
+                binding.projection_version()
+            )));
+        }
+        for table in binding.tables() {
+            if self.store.relational_state().table_schema(table).is_none() {
+                return Err(SkeinError::Semantic(format!(
+                    "projection relational table {table} has no durable PostgreSQL schema"
+                )));
+            }
+            let canonical_rows = self.store.relational_state().row_count(table);
+            if canonical_rows != 0 {
+                return Err(SkeinError::StorageIntegrity(format!(
+                    "projection relational table {table} contains {canonical_rows} canonical rows"
+                )));
+            }
+        }
+        Ok(
+            self.begin_read_transaction_inner(Some(ProjectionRelationalReadSnapshot {
+                binding,
+                reader,
+            })),
+        )
+    }
+
+    fn begin_read_transaction_inner(
+        &self,
+        projection_relational: Option<ProjectionRelationalReadSnapshot>,
+    ) -> DatabaseReadTransaction {
         let published_read_view = self.store.published_read_view();
         let pin = {
             let mut pins = self
@@ -1111,6 +1261,7 @@ impl Database {
             slow_query_snapshot: self.slow_query_log.borrow().snapshot(),
             statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
             config: self.config.clone(),
+            projection_relational,
             _pin: pin,
         }
     }
@@ -20178,6 +20329,11 @@ fn profiled_relational_sql_output(
             .collect(),
         row_read: RelationalSqlRowReadProfile {
             runtime_path: row_execution_evidence.runtime_path.to_string(),
+            projection_generation: row_execution_evidence.projection_generation,
+            projection_source_watermark: row_execution_evidence.projection_source_watermark,
+            projection_version: row_execution_evidence.projection_version,
+            projection_publication_commit_epoch: row_execution_evidence
+                .projection_publication_commit_epoch,
             base_generation: row_execution_evidence.base_generation,
             delta_generation: row_execution_evidence.delta_generation,
             base_commit_epoch: row_execution_evidence.base_commit_epoch,
@@ -20963,13 +21119,23 @@ impl DatabaseReadTransaction {
         max_payload_bytes: Option<usize>,
         task_context: &skein_core::RuntimeTaskContext,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        let row_read_mode = match &self.projection_relational {
+            Some(projection) => {
+                crate::relational_sql::RelationalRowReadMode::ProjectionGeneration {
+                    store: &self.store,
+                    reader: &projection.reader,
+                    tables: projection.binding.tables(),
+                }
+            }
+            None => crate::relational_sql::RelationalRowReadMode::Store(&self.store),
+        };
         let query_result = crate::relational_sql::execute_relational_query_sql_with_resources(
             sql_text,
             parameters,
             self.store.relational_state(),
             crate::relational_sql::RelationalQueryReadModes::new(
                 relational_index_read_mode(&self.config, &self.store),
-                crate::relational_sql::RelationalRowReadMode::Store(&self.store),
+                row_read_mode,
             ),
             relational_query_resource_context(
                 &self.config,

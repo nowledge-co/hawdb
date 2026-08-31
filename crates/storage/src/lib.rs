@@ -144,6 +144,7 @@ pub use projection::{
     StorageReclamationWatermark, StorageRecoveryReport, StoreStableIdMapping,
 };
 pub use projection_generation::{
+    decode_projection_relational_member, encode_projection_relational_member,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
     ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
     ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,

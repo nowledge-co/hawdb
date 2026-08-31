@@ -106,10 +106,11 @@ pub use api::{
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
     KnowledgeTruncationReasonCode, NowledgeGraphAdapter, NowledgeGraphExplainOutput,
     NowledgeGraphStatement, NowledgeGraphTransactionOutput, PlanCacheBypassReason, PlanCacheLookup,
-    PlanCacheStats, ProfiledRelationalSqlQueryOutput, QueryAccessControlContext, QueryOutput,
-    QueryStreamOptions, QueryStreamReport, QuerySystemVariables, RankedBackgroundMaintenance,
-    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
-    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+    PlanCacheStats, ProfiledRelationalSqlQueryOutput, ProjectionRelationalReadBinding,
+    QueryAccessControlContext, QueryOutput, QueryStreamOptions, QueryStreamReport,
+    QuerySystemVariables, RankedBackgroundMaintenance, RelationalJoinPlanningBudget,
+    RelationalJoinPlanningCost, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
+    RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
     RelationalSqlIndexReadProfile, RelationalSqlReadProfile, RelationalSqlRowReadProfile,
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
@@ -475,6 +476,7 @@ pub use skein_runtime_tokio::{
 };
 pub use skein_storage::ScanPredicate;
 pub use skein_storage::{
+    decode_projection_relational_member, encode_projection_relational_member,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
     ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
     ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,

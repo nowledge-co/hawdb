@@ -42,6 +42,10 @@ pub struct RelationalSqlIndexReadProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalSqlRowReadProfile {
     pub runtime_path: String,
+    pub projection_generation: Option<String>,
+    pub projection_source_watermark: Option<u64>,
+    pub projection_version: Option<u64>,
+    pub projection_publication_commit_epoch: Option<u64>,
     pub base_generation: Option<u64>,
     pub delta_generation: Option<u64>,
     pub base_commit_epoch: Option<u64>,
