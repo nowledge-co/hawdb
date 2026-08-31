@@ -818,6 +818,184 @@ mod tests {
     }
 
     #[test]
+    fn relational_keyset_pagination_walks_every_boundary_without_gaps() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE sessions (\
+                    id TEXT PRIMARY KEY, \
+                    org_id TEXT NOT NULL, \
+                    last_seen_at BIGINT NOT NULL\
+                )",
+            )
+            .expect("create sessions table");
+        database
+            .query_sql(
+                "CREATE INDEX sessions_org_last_seen_id_idx \
+                 ON sessions (org_id, last_seen_at, id)",
+            )
+            .expect("create sessions keyset index");
+        database
+            .query_sql(
+                "INSERT INTO sessions (id, org_id, last_seen_at) VALUES \
+                    ('session-a', 'org-1', 10), \
+                    ('session-b', 'org-1', 20), \
+                    ('session-c', 'org-1', 20), \
+                    ('session-d', 'org-1', 30), \
+                    ('session-e', 'org-1', 30), \
+                    ('session-f', 'org-1', 30), \
+                    ('session-g', 'org-1', 40)",
+            )
+            .expect("insert sessions with duplicate sort keys");
+        let expected = [
+            "session-a",
+            "session-b",
+            "session-c",
+            "session-d",
+            "session-e",
+            "session-f",
+            "session-g",
+        ];
+
+        let mut forward = Vec::new();
+        let mut cursor: Option<(i64, String)> = None;
+        loop {
+            let page = match &cursor {
+                None => database.query_sql(
+                    "SELECT id, last_seen_at FROM sessions WHERE org_id = 'org-1' \
+                     ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+                ),
+                Some((last_seen_at, id)) => database.query_sql_with_params(
+                    "SELECT id, last_seen_at FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at > $1 OR (last_seen_at = $1 AND id > $2)) \
+                     ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+                    &[Value::Int(*last_seen_at), Value::String(id.clone())],
+                ),
+            }
+            .expect("read forward keyset page");
+            let Some(last) = page.rows.last() else {
+                break;
+            };
+            let Value::Int(last_seen_at) = last["last_seen_at"] else {
+                panic!("last_seen_at must be BIGINT");
+            };
+            let Value::String(id) = &last["id"] else {
+                panic!("id must be TEXT");
+            };
+            cursor = Some((last_seen_at, id.clone()));
+            forward.extend(page.rows.into_iter().map(|row| row["id"].clone()));
+            assert!(forward.len() <= expected.len());
+        }
+        assert_eq!(
+            forward,
+            expected
+                .iter()
+                .map(|id| Value::String((*id).to_string()))
+                .collect::<Vec<_>>()
+        );
+
+        let mut backward = Vec::new();
+        let mut cursor: Option<(i64, String)> = None;
+        loop {
+            let page = match &cursor {
+                None => database.query_sql(
+                    "SELECT id, last_seen_at FROM sessions WHERE org_id = 'org-1' \
+                     ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+                ),
+                Some((last_seen_at, id)) => database.query_sql_with_params(
+                    "SELECT id, last_seen_at FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at < $1 OR (last_seen_at = $1 AND id < $2)) \
+                     ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+                    &[Value::Int(*last_seen_at), Value::String(id.clone())],
+                ),
+            }
+            .expect("read backward keyset page");
+            let Some(last) = page.rows.last() else {
+                break;
+            };
+            let Value::Int(last_seen_at) = last["last_seen_at"] else {
+                panic!("last_seen_at must be BIGINT");
+            };
+            let Value::String(id) = &last["id"] else {
+                panic!("id must be TEXT");
+            };
+            cursor = Some((last_seen_at, id.clone()));
+            backward.extend(page.rows.into_iter().map(|row| row["id"].clone()));
+            assert!(backward.len() <= expected.len());
+        }
+        assert_eq!(
+            backward,
+            expected
+                .iter()
+                .rev()
+                .map(|id| Value::String((*id).to_string()))
+                .collect::<Vec<_>>()
+        );
+
+        for (cursor_time, cursor_id, expected_ids) in [
+            (-1, "", vec!["session-a", "session-b"]),
+            (20, "session-b", vec!["session-c", "session-d"]),
+            (20, "session-bb", vec!["session-c", "session-d"]),
+            (40, "session-g", vec![]),
+        ] {
+            let page = database
+                .query_sql_with_params(
+                    "SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at > $1 OR (last_seen_at = $1 AND id > $2)) \
+                     ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+                    &[
+                        Value::Int(cursor_time),
+                        Value::String(cursor_id.to_string()),
+                    ],
+                )
+                .expect("read forward boundary page");
+            assert_eq!(
+                page.rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                expected_ids
+                    .into_iter()
+                    .map(|id| Value::String(id.to_string()))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        for (cursor_time, cursor_id, expected_ids) in [
+            (50, "", vec!["session-g", "session-f"]),
+            (30, "session-e", vec!["session-d", "session-c"]),
+            (30, "session-ee", vec!["session-e", "session-d"]),
+            (10, "session-a", vec![]),
+        ] {
+            let page = database
+                .query_sql_with_params(
+                    "SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at < $1 OR (last_seen_at = $1 AND id < $2)) \
+                     ORDER BY last_seen_at DESC, id DESC LIMIT 2",
+                    &[
+                        Value::Int(cursor_time),
+                        Value::String(cursor_id.to_string()),
+                    ],
+                )
+                .expect("read backward boundary page");
+            assert_eq!(
+                page.rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                expected_ids
+                    .into_iter()
+                    .map(|id| Value::String(id.to_string()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn persistent_keyset_pagination_merges_base_live_transaction_and_recovery_entries() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
