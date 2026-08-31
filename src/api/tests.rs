@@ -8952,6 +8952,60 @@ fn relational_insert_returning_conflicts_remain_deterministic_after_recovery() {
 }
 
 #[test]
+fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() {
+    let path = unique_test_dir("relational_insert_returning_base_and_delta");
+    let mut db = Database::open(&path).expect("open durable database");
+    db.query_sql(
+        "CREATE TABLE raw_turns (\
+            raw_turn_id TEXT PRIMARY KEY, \
+            request_id TEXT UNIQUE NOT NULL\
+        )",
+    )
+    .expect("create raw turn table");
+    db.query_sql(
+        "INSERT INTO raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-base', 'request-base')",
+    )
+    .expect("insert checkpoint base row");
+    db.checkpoint().expect("checkpoint base row");
+    db.query_sql(
+        "INSERT INTO raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-delta', 'request-delta')",
+    )
+    .expect("insert live delta row");
+
+    let mut duplicate = db.begin_transaction();
+    for (raw_turn_id, request_id) in [
+        ("turn-base-duplicate", "request-base"),
+        ("turn-delta-duplicate", "request-delta"),
+    ] {
+        let staged = duplicate
+            .query_sql_with_result(&format!(
+                "INSERT INTO raw_turns (raw_turn_id, request_id) \
+                 VALUES ('{raw_turn_id}', '{request_id}') \
+                 ON CONFLICT (request_id) DO NOTHING \
+                 RETURNING raw_turn_id"
+            ))
+            .expect("stage conflict no-op");
+        let mutation = staged.mutation.expect("provisional mutation result");
+        assert_eq!(mutation.affected_rows, 0);
+        assert_eq!(mutation.conflict_rows, 1);
+        assert!(mutation.rows.is_empty());
+    }
+    let committed = duplicate
+        .commit_with_result()
+        .expect("commit base and delta conflict no-ops");
+    assert_eq!(committed.mutations.len(), 2);
+    assert!(committed
+        .mutations
+        .iter()
+        .all(|mutation| mutation.affected_rows == 0 && mutation.conflict_rows == 1));
+
+    drop(db);
+    std::fs::remove_dir_all(path).expect("remove base and delta fixture");
+}
+
+#[test]
 fn relational_insert_returning_result_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
         mutation_limits: skein_storage::MutationLimits {
@@ -8973,6 +9027,33 @@ fn relational_insert_returning_result_budget_fails_before_staging() {
         )
         .expect_err("oversized RETURNING result must fail closed");
     assert!(error.to_string().contains("max_result_rows 1"));
+    assert!(tx
+        .query_sql("SELECT id FROM messages")
+        .expect("failed mutation leaves transaction state unchanged")
+        .rows
+        .is_empty());
+    tx.rollback();
+}
+
+#[test]
+fn relational_insert_returning_payload_budget_fails_before_staging() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        mutation_limits: skein_storage::MutationLimits {
+            max_result_payload_bytes: NonZeroUsize::new(4).unwrap(),
+            ..skein_storage::MutationLimits::default()
+        },
+        ..DatabaseConfig::default()
+    });
+    db.query_sql("CREATE TABLE messages (id TEXT PRIMARY KEY)")
+        .expect("create messages table");
+
+    let mut tx = db.begin_transaction();
+    let error = tx
+        .query_sql_with_result(
+            "INSERT INTO messages (id) VALUES ('message-oversized') RETURNING id",
+        )
+        .expect_err("oversized RETURNING payload must fail closed");
+    assert!(error.to_string().contains("max_result_payload_bytes 4"));
     assert!(tx
         .query_sql("SELECT id FROM messages")
         .expect("failed mutation leaves transaction state unchanged")
