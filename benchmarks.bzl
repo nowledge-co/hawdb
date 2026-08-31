@@ -3,6 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 SKEIN_BENCHMARKS = [
     "optimizer_smoke",
+    "relational_join_planning",
     "aggregate_partial_spill",
     "canonical_point_lookup",
     "executor_vectorization",

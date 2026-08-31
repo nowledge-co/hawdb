@@ -50,13 +50,12 @@ pub enum RelationalJoinPlanningReason {
     UnsupportedJoinPredicate,
     UnavailableAccessBinding,
     UnsupportedPostJoinFilter,
-    InvalidJoinTree,
     GroupBudgetExceeded,
     ExpressionBudgetExceeded,
     DisconnectedGraph,
     RequiredPropertiesUnsatisfied,
     NoLegalPlan,
-    InvalidJoinProblem,
+    SyntaxFallback,
     SyntaxOrderOptimal,
     CostReordered,
 }
@@ -73,15 +72,29 @@ impl RelationalJoinPlanningReason {
             Self::UnsupportedJoinPredicate => "unsupported_join_predicate",
             Self::UnavailableAccessBinding => "unavailable_access_binding",
             Self::UnsupportedPostJoinFilter => "unsupported_post_join_filter",
-            Self::InvalidJoinTree => "invalid_join_tree",
             Self::GroupBudgetExceeded => "group_budget_exceeded",
             Self::ExpressionBudgetExceeded => "expression_budget_exceeded",
             Self::DisconnectedGraph => "disconnected_graph",
             Self::RequiredPropertiesUnsatisfied => "required_properties_unsatisfied",
             Self::NoLegalPlan => "no_legal_plan",
-            Self::InvalidJoinProblem => "invalid_join_problem",
+            Self::SyntaxFallback => "syntax_fallback",
             Self::SyntaxOrderOptimal => "syntax_order_optimal",
             Self::CostReordered => "cost_reordered",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalJoinPlanningFallbackClass {
+    Budget,
+    Unsupported,
+}
+
+impl RelationalJoinPlanningFallbackClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Budget => "budget",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -125,31 +138,28 @@ impl From<PlanCostBreakdown> for RelationalJoinPlanningCost {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationalJoinPlanningOutcome {
+pub struct RelationalJoinPlanningAttempt {
     pub strategy: RelationalJoinPlanningStrategy,
     pub status: RelationalJoinPlanningStatus,
     pub reason: RelationalJoinPlanningReason,
+    pub fallback_class: Option<RelationalJoinPlanningFallbackClass>,
     pub memo_groups: Option<usize>,
     pub memo_expressions: Option<usize>,
-    pub budget: RelationalJoinPlanningBudget,
-    pub selected_order: Vec<String>,
     pub cost: Option<RelationalJoinPlanningCost>,
 }
 
-impl RelationalJoinPlanningOutcome {
+impl RelationalJoinPlanningAttempt {
     pub(crate) fn not_eligible(
+        strategy: RelationalJoinPlanningStrategy,
         reason: RelationalJoinPlanningReason,
-        selected_order: Vec<String>,
-        config: RelationalJoinEnumerationConfig,
     ) -> Self {
         Self {
-            strategy: RelationalJoinPlanningStrategy::SyntaxOrder,
+            strategy,
             status: RelationalJoinPlanningStatus::NotEligible,
             reason,
+            fallback_class: None,
             memo_groups: None,
             memo_expressions: None,
-            budget: config.into(),
-            selected_order,
             cost: None,
         }
     }
@@ -159,9 +169,7 @@ impl RelationalJoinPlanningOutcome {
         reordered: bool,
         memo_groups: usize,
         memo_expressions: usize,
-        selected_order: Vec<String>,
         cost: PlanCostBreakdown,
-        config: RelationalJoinEnumerationConfig,
     ) -> Self {
         Self {
             strategy,
@@ -171,25 +179,35 @@ impl RelationalJoinPlanningOutcome {
             } else {
                 RelationalJoinPlanningReason::SyntaxOrderOptimal
             },
+            fallback_class: None,
             memo_groups: Some(memo_groups),
             memo_expressions: Some(memo_expressions),
-            budget: config.into(),
-            selected_order,
             cost: Some(cost.into()),
+        }
+    }
+
+    pub(crate) fn syntax_fallback() -> Self {
+        Self {
+            strategy: RelationalJoinPlanningStrategy::SyntaxOrder,
+            status: RelationalJoinPlanningStatus::Selected,
+            reason: RelationalJoinPlanningReason::SyntaxFallback,
+            fallback_class: None,
+            memo_groups: None,
+            memo_expressions: None,
+            cost: None,
         }
     }
 
     pub(crate) fn fallback_from_enumeration(
         strategy: RelationalJoinPlanningStrategy,
         error: &RelationalJoinEnumerationError,
-        selected_order: Vec<String>,
-        config: RelationalJoinEnumerationConfig,
-    ) -> Self {
-        let (reason, memo_groups, memo_expressions) = match error {
+    ) -> Option<Self> {
+        let (reason, fallback_class, memo_groups, memo_expressions) = match error {
             RelationalJoinEnumerationError::GroupBudgetExceeded {
                 required_groups, ..
             } => (
                 RelationalJoinPlanningReason::GroupBudgetExceeded,
+                RelationalJoinPlanningFallbackClass::Budget,
                 Some(*required_groups),
                 None,
             ),
@@ -198,74 +216,165 @@ impl RelationalJoinPlanningOutcome {
                 ..
             } => (
                 RelationalJoinPlanningReason::ExpressionBudgetExceeded,
+                RelationalJoinPlanningFallbackClass::Budget,
                 None,
                 Some(*required_expressions),
             ),
-            RelationalJoinEnumerationError::Disconnected => {
-                (RelationalJoinPlanningReason::DisconnectedGraph, None, None)
-            }
-            RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied => (
-                RelationalJoinPlanningReason::RequiredPropertiesUnsatisfied,
+            RelationalJoinEnumerationError::Disconnected => (
+                RelationalJoinPlanningReason::DisconnectedGraph,
+                RelationalJoinPlanningFallbackClass::Unsupported,
                 None,
                 None,
             ),
-            _ => (RelationalJoinPlanningReason::InvalidJoinProblem, None, None),
+            RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied => (
+                RelationalJoinPlanningReason::RequiredPropertiesUnsatisfied,
+                RelationalJoinPlanningFallbackClass::Unsupported,
+                None,
+                None,
+            ),
+            RelationalJoinEnumerationError::EmptyGraph
+            | RelationalJoinEnumerationError::DuplicateBinding(_)
+            | RelationalJoinEnumerationError::DuplicatePredicate(_)
+            | RelationalJoinEnumerationError::PredicateHasFewerThanTwoBindings(_)
+            | RelationalJoinEnumerationError::UnknownPredicateBinding { .. }
+            | RelationalJoinEnumerationError::UnknownAccessBinding { .. }
+            | RelationalJoinEnumerationError::AccessWithoutPredicate { .. }
+            | RelationalJoinEnumerationError::SelfDependentAccess(_)
+            | RelationalJoinEnumerationError::MissingBaseAccess(_)
+            | RelationalJoinEnumerationError::InvalidAccessPath { .. } => return None,
         };
-        Self::fallback(
+        Some(Self {
             strategy,
+            status: RelationalJoinPlanningStatus::Fallback,
             reason,
+            fallback_class: Some(fallback_class),
             memo_groups,
             memo_expressions,
-            selected_order,
-            config,
-        )
+            cost: None,
+        })
     }
 
     pub(crate) fn fallback_from_rewrite(
+        strategy: RelationalJoinPlanningStrategy,
         error: &RelationalJoinRewriteError,
+    ) -> Option<Self> {
+        match error {
+            RelationalJoinRewriteError::Enumeration(error) => {
+                Self::fallback_from_enumeration(strategy, error)
+            }
+            RelationalJoinRewriteError::NoLegalRewrite => Some(Self {
+                strategy,
+                status: RelationalJoinPlanningStatus::Fallback,
+                reason: RelationalJoinPlanningReason::NoLegalPlan,
+                fallback_class: Some(RelationalJoinPlanningFallbackClass::Unsupported),
+                memo_groups: None,
+                memo_expressions: None,
+                cost: None,
+            }),
+            RelationalJoinRewriteError::DuplicateTreeBinding(_)
+            | RelationalJoinRewriteError::DuplicateOperator(_)
+            | RelationalJoinRewriteError::PredicateOutsideOperatorSubtree { .. }
+            | RelationalJoinRewriteError::RelationSetMismatch
+            | RelationalJoinRewriteError::OperatorCountMismatch { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalJoinPlanningOutcome {
+    pub strategy: RelationalJoinPlanningStrategy,
+    pub status: RelationalJoinPlanningStatus,
+    pub reason: RelationalJoinPlanningReason,
+    pub memo_groups: Option<usize>,
+    pub memo_expressions: Option<usize>,
+    pub budget: RelationalJoinPlanningBudget,
+    pub selected_order: Vec<String>,
+    pub cost: Option<RelationalJoinPlanningCost>,
+    pub attempts: Vec<RelationalJoinPlanningAttempt>,
+}
+
+impl RelationalJoinPlanningOutcome {
+    pub(crate) fn not_eligible(
+        reason: RelationalJoinPlanningReason,
         selected_order: Vec<String>,
         config: RelationalJoinEnumerationConfig,
     ) -> Self {
-        if let RelationalJoinRewriteError::Enumeration(error) = error {
-            return Self::fallback_from_enumeration(
-                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
-                error,
-                selected_order,
-                config,
-            );
-        }
-        let reason = match error {
-            RelationalJoinRewriteError::NoLegalRewrite => RelationalJoinPlanningReason::NoLegalPlan,
-            _ => RelationalJoinPlanningReason::InvalidJoinProblem,
-        };
-        Self::fallback(
-            RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
-            reason,
-            None,
-            None,
-            selected_order,
-            config,
-        )
+        Self::not_eligible_after_attempts(reason, selected_order, config, Vec::new())
     }
 
-    fn fallback(
-        strategy: RelationalJoinPlanningStrategy,
+    pub(crate) fn not_eligible_after_attempts(
         reason: RelationalJoinPlanningReason,
-        memo_groups: Option<usize>,
-        memo_expressions: Option<usize>,
         selected_order: Vec<String>,
         config: RelationalJoinEnumerationConfig,
+        mut attempts: Vec<RelationalJoinPlanningAttempt>,
     ) -> Self {
+        let attempt = RelationalJoinPlanningAttempt::not_eligible(
+            RelationalJoinPlanningStrategy::SyntaxOrder,
+            reason,
+        );
+        attempts.push(attempt);
+        Self {
+            strategy: RelationalJoinPlanningStrategy::SyntaxOrder,
+            status: RelationalJoinPlanningStatus::NotEligible,
+            reason,
+            memo_groups: None,
+            memo_expressions: None,
+            budget: config.into(),
+            selected_order,
+            cost: None,
+            attempts,
+        }
+    }
+
+    pub(crate) fn selected(
+        attempt: RelationalJoinPlanningAttempt,
+        selected_order: Vec<String>,
+        config: RelationalJoinEnumerationConfig,
+        mut attempts: Vec<RelationalJoinPlanningAttempt>,
+    ) -> Self {
+        debug_assert_eq!(attempt.status, RelationalJoinPlanningStatus::Selected);
+        debug_assert!(attempt.fallback_class.is_none());
+        let strategy = attempt.strategy;
+        let reason = attempt.reason;
+        let memo_groups = attempt.memo_groups;
+        let memo_expressions = attempt.memo_expressions;
+        let cost = attempt.cost;
+        attempts.push(attempt);
         Self {
             strategy,
-            status: RelationalJoinPlanningStatus::Fallback,
+            status: RelationalJoinPlanningStatus::Selected,
             reason,
             memo_groups,
             memo_expressions,
             budget: config.into(),
             selected_order,
-            cost: None,
+            cost,
+            attempts,
         }
+    }
+
+    pub(crate) fn fallback_to_syntax(
+        mut attempts: Vec<RelationalJoinPlanningAttempt>,
+        selected_order: Vec<String>,
+        config: RelationalJoinEnumerationConfig,
+    ) -> Option<Self> {
+        let failed = attempts
+            .iter()
+            .rev()
+            .find(|attempt| attempt.status == RelationalJoinPlanningStatus::Fallback)
+            .cloned()?;
+        attempts.push(RelationalJoinPlanningAttempt::syntax_fallback());
+        Some(Self {
+            strategy: failed.strategy,
+            status: RelationalJoinPlanningStatus::Fallback,
+            reason: failed.reason,
+            memo_groups: failed.memo_groups,
+            memo_expressions: failed.memo_expressions,
+            budget: config.into(),
+            selected_order,
+            cost: None,
+            attempts,
+        })
     }
 
     pub fn join_order_reordered(&self) -> bool {
@@ -301,19 +410,48 @@ mod tests {
             max_groups: 8,
             max_expressions: 16,
         };
-        let outcome = RelationalJoinPlanningOutcome::fallback_from_enumeration(
+        let attempt = RelationalJoinPlanningAttempt::fallback_from_enumeration(
             RelationalJoinPlanningStrategy::InnerJoinMemo,
             &RelationalJoinEnumerationError::ExpressionBudgetExceeded {
                 required_expressions: 17,
                 max_expressions: 16,
             },
+        )
+        .expect("budget exhaustion is fallback eligible");
+        let outcome = RelationalJoinPlanningOutcome::fallback_to_syntax(
+            vec![attempt],
             vec!["a".to_string(), "b".to_string()],
             config,
-        );
+        )
+        .expect("budget exhaustion produces a syntax fallback outcome");
 
         assert_eq!(outcome.status, RelationalJoinPlanningStatus::Fallback);
         assert_eq!(outcome.memo_expressions, Some(17));
         assert_eq!(outcome.budget.max_expressions, 16);
+        assert_eq!(outcome.attempts.len(), 2);
+        assert_eq!(
+            outcome.attempts[0].fallback_class,
+            Some(RelationalJoinPlanningFallbackClass::Budget)
+        );
+        assert_eq!(
+            outcome.attempts[1].strategy,
+            RelationalJoinPlanningStrategy::SyntaxOrder
+        );
         assert!(!outcome.join_order_reordered());
+    }
+
+    #[test]
+    fn invalid_join_graph_is_not_fallback_eligible() {
+        let attempt = RelationalJoinPlanningAttempt::fallback_from_enumeration(
+            RelationalJoinPlanningStrategy::CsgCmpMemo,
+            &RelationalJoinEnumerationError::EmptyGraph,
+        );
+        assert!(attempt.is_none());
+
+        let rewrite = RelationalJoinPlanningAttempt::fallback_from_rewrite(
+            RelationalJoinPlanningStrategy::CsgCmpMemo,
+            &RelationalJoinRewriteError::RelationSetMismatch,
+        );
+        assert!(rewrite.is_none());
     }
 }

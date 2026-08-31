@@ -7,8 +7,10 @@ use super::{
     RelationalOperatorId, RelationalQueryLimits,
 };
 use crate::error::{Result, SkeinError};
+use crate::relational_sql::timing::measure_nanos;
 use crate::relational_sql::{
-    RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStrategy,
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
+    RelationalJoinPlanningStrategy,
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlJoin,
@@ -22,10 +24,11 @@ use skein_optimizer::{
     enumerate_relational_csg_cmp_joins, enumerate_relational_inner_joins,
     enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalJoinAccessPath,
-    RelationalJoinEnumerationConfig, RelationalJoinGraph, RelationalJoinOperator,
-    RelationalJoinOperatorId, RelationalJoinOperatorKind, RelationalJoinPredicate,
-    RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewritePlan,
-    RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
+    RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinGraph,
+    RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
+    RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation,
+    RelationalJoinRewriteError, RelationalJoinRewritePlan, RelationalJoinRewriteProblem,
+    RelationalJoinTree, RequiredProperties,
 };
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -73,14 +76,17 @@ pub(super) fn plan_select_join_order(
     index_read_mode: RelationalIndexReadMode<'_>,
     limits: RelationalQueryLimits,
     config: RelationalJoinEnumerationConfig,
+    binding_nanos: &mut u64,
 ) -> Result<PlannedSelectStatement> {
     let syntax_order = select_relation_order(&select);
     if let Err(reason) = join_enumeration_eligibility(&select) {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(reason, syntax_order, config);
         return Ok(unchanged(select, outcome));
     }
-    let relations = bind_relations(&select, state)?;
-    if !select_columns_resolve(&select, &relations) {
+    let relations = measure_nanos(binding_nanos, || bind_relations(&select, state))?;
+    if !measure_nanos(binding_nanos, || {
+        select_columns_resolve(&select, &relations)
+    }) {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(
             RelationalJoinPlanningReason::UnresolvedColumns,
             syntax_order,
@@ -88,7 +94,8 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     }
-    let Some(bound_joins) = bind_join_inputs(&select, &relations) else {
+    let Some(bound_joins) = measure_nanos(binding_nanos, || bind_join_inputs(&select, &relations))
+    else {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(
             RelationalJoinPlanningReason::UnsupportedJoinPredicate,
             syntax_order,
@@ -115,18 +122,76 @@ pub(super) fn plan_select_join_order(
         return Ok(unchanged(select, outcome));
     };
     let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
-        let outcome = RelationalJoinPlanningOutcome::not_eligible(
-            RelationalJoinPlanningReason::InvalidJoinTree,
-            syntax_order,
-            config,
-        );
-        return Ok(unchanged(select, outcome));
+        return Err(SkeinError::Execution(
+            "relational join planner invariant violated while building the initial join tree"
+                .to_string(),
+        ));
     };
     let all_inner = bound_joins
         .operators
         .iter()
         .all(|operator| operator.operator.kind == RelationalJoinOperatorKind::Inner);
-    let inner_enumeration = if all_inner {
+    let post_join_filter = select.selection.as_ref().and_then(|predicate| {
+        measure_nanos(binding_nanos, || {
+            qualify_predicate(predicate, &relations)
+                .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations))
+        })
+    });
+    let problem = (select.selection.is_none() || post_join_filter.is_some()).then(|| {
+        RelationalJoinRewriteProblem {
+            relations: graph_relations
+                .iter()
+                .map(|relation| relation.optimizer_relation.clone())
+                .collect(),
+            initial_tree: initial_tree.clone(),
+            post_join_filter: post_join_filter.clone(),
+        }
+    });
+    let mut attempts = Vec::new();
+    if let Some(problem) = &problem {
+        match enumerate_relational_csg_cmp_joins(problem, &RequiredProperties::default(), config) {
+            Ok(enumeration) => {
+                let selected_bindings = csg_cmp_binding_order(&enumeration.plan.root);
+                let selected_order = binding_order_names(&selected_bindings, &relations);
+                let syntax_bindings = relations
+                    .iter()
+                    .map(|relation| relation.binding)
+                    .collect::<Vec<_>>();
+                let attempt = RelationalJoinPlanningAttempt::selected(
+                    RelationalJoinPlanningStrategy::CsgCmpMemo,
+                    selected_bindings != syntax_bindings
+                        || plan_has_materialized_right(&enumeration.plan.root),
+                    enumeration.memo_groups,
+                    enumeration.memo_expressions,
+                    enumeration.plan.cost_breakdown,
+                );
+                let outcome = RelationalJoinPlanningOutcome::selected(
+                    attempt,
+                    selected_order,
+                    config,
+                    attempts,
+                );
+                return prepare_csg_cmp_select(
+                    select,
+                    &relations,
+                    predicates,
+                    &graph_relations,
+                    enumeration.plan,
+                    outcome,
+                );
+            }
+            Err(error) => attempts.push(fallback_rewrite_attempt(
+                RelationalJoinPlanningStrategy::CsgCmpMemo,
+                &error,
+            )?),
+        }
+    } else {
+        attempts.push(RelationalJoinPlanningAttempt::not_eligible(
+            RelationalJoinPlanningStrategy::CsgCmpMemo,
+            RelationalJoinPlanningReason::UnsupportedPostJoinFilter,
+        ));
+    }
+    if all_inner {
         let graph = RelationalJoinGraph {
             relations: graph_relations
                 .iter()
@@ -140,117 +205,54 @@ pub(super) fn plan_select_join_order(
                 })
                 .collect(),
         };
-        Some(
-            match enumerate_relational_inner_joins(&graph, &RequiredProperties::default(), config) {
-                Ok(enumeration) => enumeration,
-                Err(error) => {
-                    let outcome = RelationalJoinPlanningOutcome::fallback_from_enumeration(
-                        RelationalJoinPlanningStrategy::InnerJoinMemo,
-                        &error,
-                        syntax_order,
-                        config,
-                    );
-                    return Ok(unchanged(select, outcome));
-                }
-            },
-        )
-    } else {
-        None
-    };
-    let post_join_filter = select
-        .selection
-        .as_ref()
-        .and_then(|predicate| qualify_predicate(predicate, &relations))
-        .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations));
-    if select.selection.is_none() || post_join_filter.is_some() {
-        let problem = RelationalJoinRewriteProblem {
-            relations: graph_relations
-                .iter()
-                .map(|relation| relation.optimizer_relation.clone())
-                .collect(),
-            initial_tree: initial_tree.clone(),
-            post_join_filter: post_join_filter.clone(),
-        };
-        if let Ok(enumeration) =
-            enumerate_relational_csg_cmp_joins(&problem, &RequiredProperties::default(), config)
-        {
-            let selected_bindings = csg_cmp_binding_order(&enumeration.plan.root);
-            let selected_order = binding_order_names(&selected_bindings, &relations);
-            let syntax_bindings = relations
-                .iter()
-                .map(|relation| relation.binding)
-                .collect::<Vec<_>>();
-            let outcome = RelationalJoinPlanningOutcome::selected(
-                RelationalJoinPlanningStrategy::CsgCmpMemo,
-                selected_bindings != syntax_bindings
-                    || plan_has_materialized_right(&enumeration.plan.root),
-                enumeration.memo_groups,
-                enumeration.memo_expressions,
-                selected_order,
-                enumeration.plan.cost_breakdown,
-                config,
-            );
-            return prepare_csg_cmp_select(
-                select,
-                &relations,
-                predicates,
-                &graph_relations,
-                enumeration.plan,
-                outcome,
-            );
+        match enumerate_relational_inner_joins(&graph, &RequiredProperties::default(), config) {
+            Ok(enumeration) => {
+                let selected_bindings = enumeration.plan.binding_order();
+                let syntax_bindings = relations
+                    .iter()
+                    .map(|relation| relation.binding)
+                    .collect::<Vec<_>>();
+                let reordered = selected_bindings != syntax_bindings;
+                let selected_order = binding_order_names(&selected_bindings, &relations);
+                let attempt = RelationalJoinPlanningAttempt::selected(
+                    RelationalJoinPlanningStrategy::InnerJoinMemo,
+                    reordered,
+                    enumeration.memo_groups,
+                    enumeration.memo_expressions,
+                    enumeration.plan.cost_breakdown,
+                );
+                let outcome = RelationalJoinPlanningOutcome::selected(
+                    attempt,
+                    selected_order,
+                    config,
+                    attempts,
+                );
+                return prepare_inner_select(
+                    select,
+                    &relations,
+                    predicates,
+                    &graph_relations,
+                    enumeration.plan,
+                    outcome,
+                );
+            }
+            Err(error) => attempts.push(fallback_enumeration_attempt(
+                RelationalJoinPlanningStrategy::InnerJoinMemo,
+                &error,
+            )?),
         }
-    }
-    if all_inner {
-        let enumeration = inner_enumeration.expect("inner join graph was prevalidated");
-        let selected_bindings = enumeration.plan.binding_order();
-        let syntax_bindings = relations
-            .iter()
-            .map(|relation| relation.binding)
-            .collect::<Vec<_>>();
-        let reordered = selected_bindings != syntax_bindings;
-        let selected_order = binding_order_names(&selected_bindings, &relations);
-        let outcome = RelationalJoinPlanningOutcome::selected(
-            RelationalJoinPlanningStrategy::InnerJoinMemo,
-            reordered,
-            enumeration.memo_groups,
-            enumeration.memo_expressions,
-            selected_order,
-            enumeration.plan.cost_breakdown,
-            config,
-        );
-        return prepare_inner_select(
-            select,
-            &relations,
-            predicates,
-            &graph_relations,
-            enumeration.plan,
-            outcome,
-        );
+        let outcome = syntax_fallback_outcome(attempts, syntax_order, config)?;
+        return Ok(unchanged(select, outcome));
     }
 
-    let post_join_filter = match select.selection.as_ref() {
-        Some(predicate) => {
-            let Some(predicate) = qualify_predicate(predicate, &relations)
-                .and_then(|predicate| bind_null_rejection_predicate(&predicate, &relations))
-            else {
-                let outcome = RelationalJoinPlanningOutcome::not_eligible(
-                    RelationalJoinPlanningReason::UnsupportedPostJoinFilter,
-                    syntax_order,
-                    config,
-                );
-                return Ok(unchanged(select, outcome));
-            };
-            Some(predicate)
-        }
-        None => None,
-    };
-    let problem = RelationalJoinRewriteProblem {
-        relations: graph_relations
-            .iter()
-            .map(|relation| relation.optimizer_relation.clone())
-            .collect(),
-        initial_tree,
-        post_join_filter,
+    let Some(problem) = problem else {
+        let outcome = RelationalJoinPlanningOutcome::not_eligible_after_attempts(
+            RelationalJoinPlanningReason::UnsupportedPostJoinFilter,
+            syntax_order,
+            config,
+            attempts,
+        );
+        return Ok(unchanged(select, outcome));
     };
     let enumeration = match enumerate_relational_join_rewrites(
         &problem,
@@ -259,22 +261,25 @@ pub(super) fn plan_select_join_order(
     ) {
         Ok(enumeration) => enumeration,
         Err(error) => {
-            let outcome =
-                RelationalJoinPlanningOutcome::fallback_from_rewrite(&error, syntax_order, config);
+            attempts.push(fallback_rewrite_attempt(
+                RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
+                &error,
+            )?);
+            let outcome = syntax_fallback_outcome(attempts, syntax_order, config)?;
             return Ok(unchanged(select, outcome));
         }
     };
     let reordered = !rewrite_plan_matches_syntax(&enumeration.plan, &bound_joins.operators);
     let selected_order = binding_order_names(&enumeration.plan.binding_order(), &relations);
-    let outcome = RelationalJoinPlanningOutcome::selected(
+    let attempt = RelationalJoinPlanningAttempt::selected(
         RelationalJoinPlanningStrategy::InnerLeftJoinRewriteMemo,
         reordered,
         enumeration.memo_groups,
         enumeration.memo_expressions,
-        selected_order,
         enumeration.plan.cost_breakdown,
-        config,
     );
+    let outcome =
+        RelationalJoinPlanningOutcome::selected(attempt, selected_order, config, attempts);
     prepare_outer_select(
         select,
         &relations,
@@ -283,6 +288,47 @@ pub(super) fn plan_select_join_order(
         enumeration.plan,
         outcome,
     )
+}
+
+fn fallback_enumeration_attempt(
+    strategy: RelationalJoinPlanningStrategy,
+    error: &RelationalJoinEnumerationError,
+) -> Result<RelationalJoinPlanningAttempt> {
+    RelationalJoinPlanningAttempt::fallback_from_enumeration(strategy, error)
+        .ok_or_else(|| invariant_planning_error(strategy, error))
+}
+
+fn fallback_rewrite_attempt(
+    strategy: RelationalJoinPlanningStrategy,
+    error: &RelationalJoinRewriteError,
+) -> Result<RelationalJoinPlanningAttempt> {
+    RelationalJoinPlanningAttempt::fallback_from_rewrite(strategy, error)
+        .ok_or_else(|| invariant_planning_error(strategy, error))
+}
+
+fn syntax_fallback_outcome(
+    attempts: Vec<RelationalJoinPlanningAttempt>,
+    selected_order: Vec<String>,
+    config: RelationalJoinEnumerationConfig,
+) -> Result<RelationalJoinPlanningOutcome> {
+    RelationalJoinPlanningOutcome::fallback_to_syntax(attempts, selected_order, config).ok_or_else(
+        || {
+            SkeinError::Execution(
+                "relational join planner invariant violated: syntax fallback has no fallback-eligible attempt"
+                    .to_string(),
+            )
+        },
+    )
+}
+
+fn invariant_planning_error(
+    strategy: RelationalJoinPlanningStrategy,
+    error: &dyn std::fmt::Display,
+) -> SkeinError {
+    SkeinError::Execution(format!(
+        "relational join planner invariant violated in {}: {error}",
+        strategy.as_str()
+    ))
 }
 
 fn plan_has_materialized_right(node: &RelationalCsgCmpPlanNode) -> bool {
@@ -1272,6 +1318,33 @@ mod tests {
             join_enumeration_eligibility(&select("SELECT id FROM chunks ORDER BY id")),
             Err(RelationalJoinPlanningReason::NoJoin)
         );
+    }
+
+    #[test]
+    fn invariant_enumeration_failure_is_not_a_fallback_attempt() {
+        let error = fallback_enumeration_attempt(
+            RelationalJoinPlanningStrategy::InnerJoinMemo,
+            &RelationalJoinEnumerationError::EmptyGraph,
+        )
+        .expect_err("invalid optimizer state must fail closed");
+        assert!(matches!(
+            error,
+            SkeinError::Execution(message)
+                if message.contains("relational join planner invariant violated")
+                    && message.contains("inner_join_memo")
+        ));
+
+        let error = syntax_fallback_outcome(
+            Vec::new(),
+            vec!["a".to_string(), "b".to_string()],
+            RelationalJoinEnumerationConfig::default(),
+        )
+        .expect_err("syntax fallback requires an eligible failed attempt");
+        assert!(matches!(
+            error,
+            SkeinError::Execution(message)
+                if message.contains("syntax fallback has no fallback-eligible attempt")
+        ));
     }
 
     #[test]
