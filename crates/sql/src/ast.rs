@@ -45,6 +45,7 @@ pub struct InsertStatement {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<SqlValue>>,
     pub on_conflict: Option<SqlOnConflict>,
+    pub returning: Vec<SqlColumnRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

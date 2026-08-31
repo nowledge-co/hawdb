@@ -53,6 +53,27 @@ pub(crate) fn compile_relational_statement_sql(
     parameters: &[Value],
     state: &RelationalState,
 ) -> Result<RelationalTransaction> {
+    compile_relational_statement_sql_with_result(sql, parameters, state)
+        .map(|compiled| compiled.transaction)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledRelationalStatement {
+    pub transaction: RelationalTransaction,
+    pub returning: Option<RelationalReturningProjection>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RelationalReturningProjection {
+    pub table: String,
+    pub columns: Vec<String>,
+}
+
+pub(crate) fn compile_relational_statement_sql_with_result(
+    sql: &str,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<CompiledRelationalStatement> {
     let prepared = skein_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
         return Err(SkeinError::Semantic(format!(
@@ -64,8 +85,11 @@ pub(crate) fn compile_relational_statement_sql(
     match prepared.statement {
         statement @ (SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_)) => Ok(RelationalTransaction {
-            writes: compile_schema_statement(statement)?,
+        | SqlStatement::AlterTableAddColumn(_)) => Ok(CompiledRelationalStatement {
+            transaction: RelationalTransaction {
+                writes: compile_schema_statement(statement)?,
+            },
+            returning: None,
         }),
         statement => compile_relational_mutation(statement, parameters, state),
     }
@@ -96,13 +120,50 @@ fn compile_relational_mutation(
     statement: SqlStatement,
     parameters: &[Value],
     state: &RelationalState,
-) -> Result<RelationalTransaction> {
+) -> Result<CompiledRelationalStatement> {
+    let mut returning = None;
     let write = match statement {
         SqlStatement::Insert(insert) => {
             reject_non_public_schema(insert.table.schema.as_deref())?;
             let schema = state.table_schema(&insert.table.name).ok_or_else(|| {
                 SkeinError::Semantic(format!("unknown relational table {}", insert.table.name))
             })?;
+            if !insert.returning.is_empty() {
+                for column in &insert.returning {
+                    if column
+                        .qualifier
+                        .as_deref()
+                        .is_some_and(|qualifier| qualifier != insert.table.name)
+                    {
+                        return Err(SkeinError::Semantic(format!(
+                            "INSERT RETURNING has unknown qualifier {qualifier}",
+                            qualifier = column.qualifier.as_deref().unwrap_or_default()
+                        )));
+                    }
+                    if schema.column_position(&column.name).is_none() {
+                        return Err(SkeinError::Semantic(format!(
+                            "table {} has no column {}",
+                            schema.name, column.name
+                        )));
+                    }
+                }
+                if matches!(
+                    insert.on_conflict.as_ref().map(|conflict| &conflict.action),
+                    Some(SqlConflictAction::DoUpdate(_))
+                ) {
+                    return Err(SkeinError::Semantic(
+                        "INSERT RETURNING with ON CONFLICT DO UPDATE is not supported".to_string(),
+                    ));
+                }
+                returning = Some(RelationalReturningProjection {
+                    table: insert.table.name.clone(),
+                    columns: insert
+                        .returning
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect(),
+                });
+            }
             let mut positions = Vec::with_capacity(insert.columns.len());
             let mut unique = std::collections::BTreeSet::new();
             for column in &insert.columns {
@@ -270,8 +331,11 @@ fn compile_relational_mutation(
             ));
         }
     };
-    Ok(RelationalTransaction {
-        writes: vec![write],
+    Ok(CompiledRelationalStatement {
+        transaction: RelationalTransaction {
+            writes: vec![write],
+        },
+        returning,
     })
 }
 

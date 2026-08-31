@@ -18,7 +18,7 @@ use super::transaction_locks::{
 use super::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_query,
     execute_database_transaction_prepared_sql, Database, DatabaseConfig, DatabaseReadTransaction,
-    DatabaseTransactionRuntime, DatabaseTransactionState, QueryOutput,
+    DatabaseTransactionRuntime, DatabaseTransactionState, QueryOutput, TransactionCommitResult,
 };
 use crate::error::{Result, SkeinError};
 use crate::sql::{
@@ -377,6 +377,21 @@ impl ConcurrentDatabaseTransaction {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
+        self.query_sql_with_result_and_params(sql_text, parameters)
+            .map(|result| result.output)
+    }
+
+    /// Executes SQL and returns both PostgreSQL rows and a provisional mutation outcome.
+    pub fn query_sql_with_result(&mut self, sql_text: &str) -> Result<super::SqlStatementResult> {
+        self.query_sql_with_result_and_params(sql_text, &[])
+    }
+
+    /// Parameterized form of [`Self::query_sql_with_result`].
+    pub fn query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<super::SqlStatementResult> {
         self.ensure_active()?;
         let prepared = self
             .runtime
@@ -411,7 +426,12 @@ impl ConcurrentDatabaseTransaction {
         result
     }
 
-    pub fn commit(mut self) -> Result<QueryOutput> {
+    pub fn commit(self) -> Result<QueryOutput> {
+        self.commit_with_result().map(|result| result.output)
+    }
+
+    /// Commits and returns outcomes recomputed by the serialized commit sequencer.
+    pub fn commit_with_result(mut self) -> Result<TransactionCommitResult> {
         self.ensure_active()?;
         let started = Instant::now();
         if self.options.mode == ConcurrentTransactionMode::Optimistic
@@ -426,18 +446,49 @@ impl ConcurrentDatabaseTransaction {
             return Err(error);
         }
 
-        let allow_stale_rebase = self.options.mode == ConcurrentTransactionMode::Pessimistic;
+        let retry_safe_conflict_noop = self.options.mode == ConcurrentTransactionMode::Optimistic
+            && self.successful_statements == self.state.relational_transaction.writes.len()
+            && self
+                .state
+                .graph_transaction
+                .as_ref()
+                .is_some_and(crate::store::GraphMutationTransaction::is_read_only)
+            && self.state.append_transaction.writes.is_empty()
+            && self.state.relational_transaction.is_conflict_noop_only();
+        let allow_stale_rebase =
+            self.options.mode == ConcurrentTransactionMode::Pessimistic || retry_safe_conflict_noop;
         let inner = Arc::clone(&self.inner);
         let mut state = self.state.take_for_commit();
+        let committed_result = Arc::new(Mutex::new(None));
+        let result_slot = Arc::clone(&committed_result);
         let result = inner
             .commits
             .execute_grouped(move |database| {
-                commit_database_transaction_state(database, &mut state, allow_stale_rebase)
+                let result =
+                    commit_database_transaction_state(database, &mut state, allow_stale_rebase)?;
+                let output = result.output.clone();
+                *result_slot.lock().map_err(|_| {
+                    SkeinError::Execution(
+                        "concurrent transaction result slot is poisoned".to_string(),
+                    )
+                })? = Some(result);
+                Ok(output)
             })
             .map_err(|error| self.map_commit_error(error));
         self.inner.locks.release(self.transaction_id);
         self.finished = true;
-        result
+        result?;
+        committed_result
+            .lock()
+            .map_err(|_| {
+                SkeinError::Execution("concurrent transaction result slot is poisoned".to_string())
+            })?
+            .take()
+            .ok_or_else(|| {
+                SkeinError::Execution(
+                    "concurrent transaction completed without a commit result".to_string(),
+                )
+            })
     }
 
     pub fn rollback(mut self) {

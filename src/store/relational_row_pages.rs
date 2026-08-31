@@ -4,7 +4,7 @@ use super::{GraphStore, RelationalOverflowCompactionConfig, RelationalRowStorage
 use skein_storage::{
     RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
-    RelationalMonotonicAppendHydration, RelationalOverflowReferenceSet,
+    RelationalMonotonicAppendHydration, RelationalMutationOutcome, RelationalOverflowReferenceSet,
     RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortReport,
     RelationalOverflowRootReader, RelationalProjectedRow, RelationalRecoveryFence,
     RelationalRecoverySourceIdentity, RelationalReplayAccess, RelationalReplayAccessSet,
@@ -1492,6 +1492,7 @@ impl GraphStore {
             RelationalState,
             RelationalIndexChangeCapture,
             RelationalRowChangeCapture,
+            Vec<RelationalMutationOutcome>,
         ),
         RelationalError,
     > {
@@ -1523,16 +1524,20 @@ impl GraphStore {
             &proven_absent_primary_keys,
         );
         state
-            .stage_sparse_transaction_with_authoritative_replay_access(RelationalSparseLiveStage {
-                transaction,
-                hydrated_workspace,
-                mutation_limits: self.relational_mutation_limits,
-                overflow_config: self.relational_overflow_config,
-                index_capture_limits,
-                row_capture_limits,
-                constraint_index: &proven_constraint_index,
+            .stage_sparse_transaction_with_authoritative_replay_access_and_outcomes(
+                RelationalSparseLiveStage {
+                    transaction,
+                    hydrated_workspace,
+                    mutation_limits: self.relational_mutation_limits,
+                    overflow_config: self.relational_overflow_config,
+                    index_capture_limits,
+                    row_capture_limits,
+                    constraint_index: &proven_constraint_index,
+                },
+            )
+            .map(|(next, index_capture, row_capture, _, outcomes)| {
+                (next, index_capture, row_capture, outcomes)
             })
-            .map(|(next, index_capture, row_capture, _)| (next, index_capture, row_capture))
     }
 
     fn hydrate_sparse_relational_workspace_with_report(
