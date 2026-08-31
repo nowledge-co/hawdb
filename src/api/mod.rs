@@ -215,6 +215,7 @@ pub struct Database {
     store: GraphStore,
     optimizer: CascadesOptimizer,
     plan_cache: SharedState<PlanCache>,
+    relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
     optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
     slow_query_log: SharedState<system_sql::SlowQueryLog>,
     statement_summary: SharedState<system_sql::StatementSummary>,
@@ -298,6 +299,7 @@ pub struct DatabaseConfig {
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
         skein_storage::RelationalPrimaryKeyChangeCaptureLimits,
+    /// Maximum entries per graph physical-plan or relational SQL-template cache.
     pub max_plan_cache_entries: Option<usize>,
     pub slow_query_log_capacity: usize,
     pub slow_query_log_threshold_micros: u128,
@@ -402,6 +404,14 @@ fn relational_query_resource_context<'a>(
         &config.execution_memory,
         task_context,
     )
+}
+
+fn relational_plan_template_cache_from_database_config(
+    config: &DatabaseConfig,
+) -> Arc<crate::relational_sql::RelationalPlanTemplateCache> {
+    Arc::new(crate::relational_sql::RelationalPlanTemplateCache::new(
+        config.max_plan_cache_entries,
+    ))
 }
 
 fn relational_index_read_mode<'a>(
@@ -744,6 +754,7 @@ pub struct DatabaseTransaction<'a> {
 pub(super) struct DatabaseTransactionRuntime {
     optimizer: CascadesOptimizer,
     plan_cache: SharedState<PlanCache>,
+    relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
     optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
     config: DatabaseConfig,
     system_variables: QuerySystemVariables,
@@ -783,6 +794,7 @@ pub struct DatabaseReadTransaction {
     published_read_view: PublishedReadView,
     optimizer: CascadesOptimizer,
     plan_cache: SharedState<PlanCache>,
+    relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
     optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
     slow_query_snapshot: Vec<system_sql::SlowQueryRecord>,
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
@@ -846,6 +858,9 @@ impl Default for Database {
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
+                &config,
+            ),
             optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
@@ -916,6 +931,9 @@ impl Database {
             store,
             optimizer,
             plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
+                &config,
+            ),
             optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
@@ -1035,6 +1053,9 @@ impl Database {
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
+                &config,
+            ),
             optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
@@ -1255,6 +1276,7 @@ impl Database {
             published_read_view,
             optimizer: self.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
+            relational_plan_template_cache: Arc::clone(&self.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
                 self.optimizer_planning_cache.borrow().clone(),
             ),
@@ -1392,6 +1414,10 @@ impl Database {
 
     pub fn plan_cache_stats(&self) -> PlanCacheStats {
         self.plan_cache.borrow().stats()
+    }
+
+    pub fn relational_plan_template_cache_stats(&self) -> PlanCacheStats {
+        self.relational_plan_template_cache.stats()
     }
 
     fn optimized_query_plan(
@@ -19360,6 +19386,7 @@ impl DatabaseTransactionRuntime {
         Self {
             optimizer: db.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(db.config.max_plan_cache_entries)),
+            relational_plan_template_cache: Arc::clone(&db.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
                 db.optimizer_planning_cache.borrow().clone(),
             ),
@@ -19675,17 +19702,37 @@ fn execute_database_transaction_sql(
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
 ) -> Result<QueryOutput> {
-    let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-    reject_locking_select_without_manager(&prepared.statement, allow_locking_select)?;
+    let prepared = runtime.relational_plan_template_cache.prepare(sql_text)?;
+    execute_database_transaction_prepared_sql(
+        runtime,
+        state,
+        sql_text,
+        prepared,
+        parameters,
+        allow_system_schema_registry_write,
+        allow_locking_select,
+    )
+}
+
+pub(super) fn execute_database_transaction_prepared_sql(
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    sql_text: &str,
+    prepared: crate::relational_sql::PreparedRelationalSql,
+    parameters: &[Value],
+    allow_system_schema_registry_write: bool,
+    allow_locking_select: bool,
+) -> Result<QueryOutput> {
+    reject_locking_select_without_manager(prepared.statement(), allow_locking_select)?;
     if !allow_system_schema_registry_write
-        && crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement)
+        && crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
     {
         return Err(SkeinError::Semantic(
             "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
         ));
     }
     if matches!(
-        &prepared.statement,
+        prepared.statement(),
         crate::sql::SqlStatement::Select(select)
             if system_sql::is_virtual_catalog_select(select)
     ) {
@@ -19772,7 +19819,7 @@ fn execute_database_transaction_sql(
         });
     }
     if matches!(
-        prepared.statement,
+        prepared.statement(),
         crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
     ) {
         let index_read_mode = if runtime
@@ -19808,8 +19855,8 @@ fn execute_database_transaction_sql(
                 )));
             }
         };
-        let output = crate::relational_sql::execute_relational_query_sql_with_resources(
-            sql_text,
+        let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
+            prepared,
             parameters,
             &state.relational_state,
             crate::relational_sql::RelationalQueryReadModes::new(index_read_mode, row_read_mode),
@@ -19835,7 +19882,7 @@ fn execute_database_transaction_sql(
         parameters,
         &state.append_state,
     )? {
-        if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+        if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
             && state
                 .relational_state
                 .table_schema(&create.table.name)
@@ -19855,7 +19902,7 @@ fn execute_database_transaction_sql(
             rows: Vec::new().into(),
         });
     }
-    if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+    if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
         && state.append_state.schema(&create.table.name).is_some()
     {
         return Err(SkeinError::Semantic(format!(
@@ -20293,6 +20340,7 @@ fn profiled_relational_sql_output(
 ) -> ProfiledRelationalSqlQueryOutput {
     let crate::relational_sql::RelationalQueryOutput {
         rows,
+        stage_timings,
         join_planning,
         operator_cardinality_profiles,
         intermediate_rows,
@@ -20302,6 +20350,7 @@ fn profiled_relational_sql_output(
         ..
     } = output;
     let profile = RelationalSqlReadProfile {
+        stage_timings,
         join_planning,
         operator_cardinality_profiles,
         intermediate_rows,
@@ -20991,9 +21040,9 @@ impl DatabaseReadTransaction {
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-        reject_locking_select_without_manager(&prepared.statement, false)?;
-        let crate::sql::SqlStatement::Select(select) = &prepared.statement else {
+        let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        reject_locking_select_without_manager(prepared.statement(), false)?;
+        let crate::sql::SqlStatement::Select(select) = prepared.statement() else {
             return Err(SkeinError::Semantic(
                 "profiled relational SQL requires SELECT".to_string(),
             ));
@@ -21004,7 +21053,7 @@ impl DatabaseReadTransaction {
             ));
         }
         self.execute_profiled_relational_sql(
-            sql_text,
+            prepared,
             parameters,
             max_rows,
             max_payload_bytes,
@@ -21029,10 +21078,10 @@ impl DatabaseReadTransaction {
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-        reject_locking_select_without_manager(&prepared.statement, false)?;
+        let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        reject_locking_select_without_manager(prepared.statement(), false)?;
         if matches!(
-            &prepared.statement,
+            prepared.statement(),
             crate::sql::SqlStatement::Select(select)
                 if system_sql::is_virtual_catalog_select(select)
         ) {
@@ -21102,7 +21151,7 @@ impl DatabaseReadTransaction {
         }
 
         self.execute_profiled_relational_sql(
-            sql_text,
+            prepared,
             parameters,
             max_rows,
             max_payload_bytes,
@@ -21113,7 +21162,7 @@ impl DatabaseReadTransaction {
 
     fn execute_profiled_relational_sql(
         &self,
-        sql_text: &str,
+        prepared: crate::relational_sql::PreparedRelationalSql,
         parameters: &[Value],
         max_rows: Option<usize>,
         max_payload_bytes: Option<usize>,
@@ -21129,8 +21178,8 @@ impl DatabaseReadTransaction {
             }
             None => crate::relational_sql::RelationalRowReadMode::Store(&self.store),
         };
-        let query_result = crate::relational_sql::execute_relational_query_sql_with_resources(
-            sql_text,
+        let query_result = crate::relational_sql::execute_prepared_relational_query_with_resources(
+            prepared,
             parameters,
             self.store.relational_state(),
             crate::relational_sql::RelationalQueryReadModes::new(
@@ -21180,6 +21229,10 @@ impl DatabaseReadTransaction {
 
     pub fn plan_cache_stats(&self) -> PlanCacheStats {
         self.plan_cache.borrow().stats()
+    }
+
+    pub fn relational_plan_template_cache_stats(&self) -> PlanCacheStats {
+        self.relational_plan_template_cache.stats()
     }
 
     fn optimized_query_plan(

@@ -1146,8 +1146,39 @@ fn values_json(values: &[Value]) -> Vec<JsonValue> {
 }
 
 fn sql_plan_signature(rows: &[skein::executor::Row]) -> String {
-    serde_json::to_string(&rows.iter().map(row_json).collect::<Vec<_>>())
-        .expect("SQL EXPLAIN rows contain JSON-serializable values")
+    let mut rows = rows.iter().map(row_json).collect::<Vec<_>>();
+    for row in &mut rows {
+        let Some(JsonValue::String(operator_info)) = row
+            .get_mut("operator info")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|value| value.get_mut("value"))
+        else {
+            continue;
+        };
+        *operator_info = normalize_sql_plan_operator_info(operator_info);
+    }
+
+    serde_json::to_string(&rows).expect("SQL EXPLAIN rows contain JSON-serializable values")
+}
+
+fn normalize_sql_plan_operator_info(operator_info: &str) -> String {
+    const VOLATILE_FIELDS: [&str; 4] = ["parse_nanos", "bind_nanos", "plan_nanos", "execute_nanos"];
+
+    operator_info
+        .split(", ")
+        .map(|field| {
+            VOLATILE_FIELDS
+                .iter()
+                .find_map(|name| {
+                    field
+                        .strip_prefix(name)
+                        .and_then(|value| value.strip_prefix('='))
+                        .map(|_| format!("{name}=<volatile>"))
+                })
+                .unwrap_or_else(|| field.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn join_planning_json(outcome: &RelationalJoinPlanningOutcome) -> JsonValue {
@@ -1162,6 +1193,22 @@ fn join_planning_json(outcome: &RelationalJoinPlanningOutcome) -> JsonValue {
             "max_expressions": outcome.budget.max_expressions,
         },
         "selected_order": outcome.selected_order,
+        "attempts": outcome.attempts.iter().map(|attempt| json!({
+            "strategy": attempt.strategy.as_str(),
+            "status": attempt.status.as_str(),
+            "reason": attempt.reason.as_str(),
+            "fallback_class": attempt.fallback_class.map(|class| class.as_str()),
+            "memo_groups": attempt.memo_groups,
+            "memo_expressions": attempt.memo_expressions,
+            "cost": attempt.cost.map(|cost| json!({
+                "estimated_rows": cost.estimated_rows,
+                "cost": cost.cost,
+                "cpu": cost.cpu,
+                "random_io": cost.random_io,
+                "sequential_io": cost.sequential_io,
+                "output_rows": cost.output_rows,
+            })),
+        })).collect::<Vec<_>>(),
         "cost": outcome.cost.map(|cost| json!({
             "estimated_rows": cost.estimated_rows,
             "cost": cost.cost,
@@ -1176,6 +1223,21 @@ fn join_planning_json(outcome: &RelationalJoinPlanningOutcome) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_plan_signature_normalizes_stage_timings() {
+        let normalized = normalize_sql_plan_operator_info(
+            "planning_strategy=csg_cmp_memo, parse_nanos=123, bind_nanos=456, \
+             plan_nanos=789, execute_nanos=10, memo_groups=6",
+        );
+
+        assert_eq!(
+            normalized,
+            "planning_strategy=csg_cmp_memo, parse_nanos=<volatile>, \
+             bind_nanos=<volatile>, plan_nanos=<volatile>, execute_nanos=<volatile>, \
+             memo_groups=6"
+        );
+    }
 
     #[test]
     fn generated_sql_cases_cover_all_shapes_and_oracles() {

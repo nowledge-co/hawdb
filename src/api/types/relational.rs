@@ -1,8 +1,10 @@
 use super::super::QueryOutput;
 pub use crate::relational_sql::{
-    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
+    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
+    RelationalSqlStageTimings,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +15,7 @@ pub struct ProfiledRelationalSqlQueryOutput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalSqlReadProfile {
+    pub stage_timings: RelationalSqlStageTimings,
     pub join_planning: RelationalJoinPlanningOutcome,
     /// Base access followed by join operators in plan execution order.
     pub operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,

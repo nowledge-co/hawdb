@@ -136,6 +136,10 @@ name = "optimizer_smoke"
 harness = false
 
 [[bench]]
+name = "relational_join_planning"
+harness = false
+
+[[bench]]
 name = "store_cow_feasibility"
 harness = false
 

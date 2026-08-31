@@ -25,23 +25,28 @@ mod index_access;
 mod planning;
 mod query;
 mod row_access;
+mod template_cache;
+mod timing;
 
 pub use cardinality::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
 pub use planning::{
-    RelationalJoinPlanningBudget, RelationalJoinPlanningCost, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
+    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
 };
+pub use timing::RelationalSqlStageTimings;
 
 pub(crate) use index_access::RelationalIndexReadMode;
 #[cfg(test)]
 pub(crate) use query::execute_relational_query_sql_with_runtime;
 pub(crate) use query::{
-    execute_relational_query_sql_with_resources, RelationalQueryLimits, RelationalQueryOutput,
+    execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
     RelationalQueryReadModes, RelationalQueryResourceContext,
 };
 pub(crate) use row_access::RelationalRowReadMode;
+pub(crate) use template_cache::{PreparedRelationalSql, RelationalPlanTemplateCache};
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,
@@ -1136,6 +1141,9 @@ mod tests {
                 && info.contains("planning_reason=group_budget_exceeded")
                 && info.contains("max_groups=2")
                 && info.contains("max_expressions=5")
+                && info.contains("0:csg_cmp_memo:fallback:group_budget_exceeded")
+                && info.contains("1:inner_join_memo:fallback:group_budget_exceeded")
+                && info.contains("2:syntax_order:selected:syntax_fallback")
         ));
 
         let expression_limited = explain_join_with_search_budgets(3, 1);
@@ -1145,6 +1153,9 @@ mod tests {
                 && info.contains("planning_reason=expression_budget_exceeded")
                 && info.contains("max_groups=3")
                 && info.contains("max_expressions=1")
+                && info.contains("0:csg_cmp_memo:fallback:expression_budget_exceeded")
+                && info.contains("1:inner_join_memo:fallback:expression_budget_exceeded")
+                && info.contains("2:syntax_order:selected:syntax_fallback")
         ));
     }
 
@@ -1952,6 +1963,28 @@ mod tests {
         assert!(scan.fully_consumed);
         assert_eq!(profiled.profile.row_read.runtime_path, "canonical_memory");
         assert_eq!(profiled.profile.row_read.rows_visited, 1);
+        assert!(profiled.profile.stage_timings.parse_nanos > 0);
+        assert!(profiled.profile.stage_timings.bind_nanos > 0);
+        assert!(profiled.profile.stage_timings.plan_nanos > 0);
+        assert!(profiled.profile.stage_timings.execute_nanos > 0);
+
+        let cache_after_miss = read.relational_plan_template_cache_stats();
+        let cached = read
+            .query_sql_with_params_options_profiled(
+                "SELECT body FROM messages WHERE id = $1",
+                &[Value::Int(1)],
+                crate::QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: Some(4096),
+                },
+            )
+            .expect("profile a relational template-cache hit");
+        assert_eq!(cached.profile.stage_timings.parse_nanos, 0);
+        assert!(cached.profile.stage_timings.bind_nanos > 0);
+        assert!(cached.profile.stage_timings.plan_nanos > 0);
+        assert!(cached.profile.stage_timings.execute_nanos > 0);
+        let cache_after_hit = read.relational_plan_template_cache_stats();
+        assert_eq!(cache_after_hit.hits, cache_after_miss.hits + 1);
     }
 
     #[test]
@@ -2250,6 +2283,138 @@ mod tests {
                 output.rows
             ),
         }
+    }
+
+    #[test]
+    fn relational_plan_template_cache_rebinds_current_parameters_state_schema_and_snapshot() {
+        let mut database = Database::new_with_config(DatabaseConfig {
+            max_plan_cache_entries: Some(32),
+            ..DatabaseConfig::default()
+        });
+        database
+            .query_sql(
+                "CREATE TABLE template_rows (\
+                 id BIGINT PRIMARY KEY, left_key TEXT NOT NULL, right_key TEXT NOT NULL)",
+            )
+            .expect("create template rows table");
+        database
+            .query_sql("CREATE INDEX idx_template_left ON template_rows (left_key)")
+            .expect("create left template index");
+        database
+            .query_sql("CREATE INDEX idx_template_right ON template_rows (right_key)")
+            .expect("create right template index");
+        database
+            .query_sql(
+                "INSERT INTO template_rows (id, left_key, right_key) VALUES \
+                 (1, 'hot', 'rare'), \
+                 (2, 'hot', 'other-1'), \
+                 (3, 'hot', 'other-2'), \
+                 (4, 'rare', 'hot'), \
+                 (5, 'other-1', 'hot'), \
+                 (6, 'other-2', 'hot')",
+            )
+            .expect("insert parameter-sensitive template rows");
+
+        const EXPLAIN: &str = "EXPLAIN SELECT id FROM template_rows \
+                               WHERE left_key = $1 AND right_key = $2";
+        let graph_cache_before = database.plan_cache_stats();
+        let before = database.relational_plan_template_cache_stats();
+        assert_eq!(before.entries, 0, "DDL and DML must bypass the query cache");
+        let right_selective = database
+            .query_sql_with_params(EXPLAIN, &[text("hot"), text("rare")])
+            .expect("plan with a selective right index");
+        assert_eq!(
+            relational_explain_access_row(&right_selective, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_right".to_string()
+            ))
+        );
+        let after_miss = database.relational_plan_template_cache_stats();
+        assert_eq!(after_miss.misses, before.misses + 1);
+        assert_eq!(after_miss.admissions, before.admissions + 1);
+        assert_eq!(after_miss.entries, before.entries + 1);
+
+        let left_selective = database
+            .query_sql_with_params(EXPLAIN, &[text("rare"), text("hot")])
+            .expect("rebind the cached template before access planning");
+        assert_eq!(
+            relational_explain_access_row(&left_selective, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_left".to_string()
+            ))
+        );
+        let after_parameter_hit = database.relational_plan_template_cache_stats();
+        assert_eq!(after_parameter_hit.hits, after_miss.hits + 1);
+        assert_eq!(after_parameter_hit.misses, after_miss.misses);
+
+        database
+            .query_sql(
+                "INSERT INTO template_rows (id, left_key, right_key) VALUES \
+                 (7, 'other-3', 'rare'), \
+                 (8, 'other-4', 'rare'), \
+                 (9, 'other-5', 'rare'), \
+                 (10, 'other-6', 'rare')",
+            )
+            .expect("change the current index cardinalities");
+        let replanned = database
+            .query_sql_with_params(EXPLAIN, &[text("hot"), text("rare")])
+            .expect("replan the cached template against current state");
+        assert_eq!(
+            relational_explain_access_row(&replanned, "template_rows").get("access object"),
+            Some(&Value::String(
+                "table:template_rows, index:idx_template_left".to_string()
+            ))
+        );
+
+        const WILDCARD: &str = "SELECT * FROM template_rows WHERE id = 1";
+        let before_schema_change = database
+            .query_sql(WILDCARD)
+            .expect("execute wildcard template before schema change");
+        assert!(!before_schema_change.rows[0].contains_key("kind"));
+        database
+            .query_sql("ALTER TABLE template_rows ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown'")
+            .expect("extend template rows schema");
+        let after_schema_change = database
+            .query_sql(WILDCARD)
+            .expect("rebind wildcard template after schema change");
+        assert_eq!(after_schema_change.rows[0]["kind"], text("unknown"));
+
+        const SNAPSHOT_SELECT: &str = "SELECT id FROM template_rows ORDER BY id";
+        let pinned = database.begin_read_transaction();
+        let pinned_before = pinned
+            .query_sql_with_params_options(
+                SNAPSHOT_SELECT,
+                &[],
+                crate::QueryStreamOptions {
+                    max_rows: Some(32),
+                    max_payload_bytes: Some(64 * 1024),
+                },
+            )
+            .expect("read cached template from pinned snapshot");
+        assert_eq!(pinned_before.rows.len(), 10);
+        database
+            .query_sql(
+                "INSERT INTO template_rows (id, left_key, right_key) \
+                 VALUES (11, 'new', 'new')",
+            )
+            .expect("advance current relational state");
+        let current = database
+            .query_sql(SNAPSHOT_SELECT)
+            .expect("read current state with shared template");
+        assert_eq!(current.rows.len(), 11);
+        let pinned_after = pinned
+            .query_sql_with_params_options(
+                SNAPSHOT_SELECT,
+                &[],
+                crate::QueryStreamOptions {
+                    max_rows: Some(32),
+                    max_payload_bytes: Some(64 * 1024),
+                },
+            )
+            .expect("reuse shared template without changing the pinned snapshot");
+        assert_eq!(pinned_after.rows.len(), 10);
+
+        assert_eq!(database.plan_cache_stats(), graph_cache_before);
     }
 
     #[test]
@@ -2945,6 +3110,15 @@ mod tests {
         assert!(output.join_planning.memo_groups.is_some());
         assert!(output.join_planning.memo_expressions.is_some());
         assert!(output.join_planning.cost.is_some());
+        assert_eq!(output.join_planning.attempts.len(), 1);
+        assert_eq!(
+            output.join_planning.attempts[0].strategy,
+            RelationalJoinPlanningStrategy::CsgCmpMemo
+        );
+        assert_eq!(
+            output.join_planning.attempts[0].status,
+            RelationalJoinPlanningStatus::Selected
+        );
 
         let explain_sql = format!("EXPLAIN ANALYZE {SQL}");
         let explained = execute_relational_query_sql_with_runtime(
@@ -2982,6 +3156,11 @@ mod tests {
                     && info.contains("planning_status=selected")
                     && info.contains("planning_reason=cost_reordered")
                     && info.contains("selected_order=[d,c]")
+                    && info.contains("attempts=[0:csg_cmp_memo:selected")
+                    && info.contains("parse_nanos=")
+                    && info.contains("bind_nanos=")
+                    && info.contains("plan_nanos=")
+                    && info.contains("execute_nanos=")
                     && info.contains("plan_cost=")
         ));
     }
@@ -3083,7 +3262,7 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_join_graph_reports_syntax_fallback() {
+    fn degenerate_inner_join_uses_csg_cmp_without_legacy_preflight() {
         const SQL: &str = "SELECT a.id AS a_id, c.id AS c_id \
             FROM planning_a AS a \
             INNER JOIN planning_b AS b ON b.a_id = a.id \
@@ -3119,23 +3298,33 @@ mod tests {
             &skein_executor::ExecutionMemoryConfig::default(),
             None,
         )
-        .expect("execute syntax fallback for a disconnected join graph");
+        .expect("execute a degenerate inner join through CSG-CMP");
 
         assert_eq!(output.rows.len(), 1);
         assert_eq!(
             output.join_planning.strategy,
-            RelationalJoinPlanningStrategy::InnerJoinMemo
+            RelationalJoinPlanningStrategy::CsgCmpMemo
         );
         assert_eq!(
             output.join_planning.status,
-            RelationalJoinPlanningStatus::Fallback
+            RelationalJoinPlanningStatus::Selected
         );
         assert_eq!(
             output.join_planning.reason,
-            RelationalJoinPlanningReason::DisconnectedGraph
+            RelationalJoinPlanningReason::SyntaxOrderOptimal
         );
         assert_eq!(output.join_planning.selected_order, ["a", "b", "c"]);
-        assert!(output.join_planning.cost.is_none());
+        assert!(output.join_planning.cost.is_some());
+        assert_eq!(output.join_planning.attempts.len(), 1);
+        assert_eq!(
+            output
+                .join_planning
+                .attempts
+                .iter()
+                .map(|attempt| attempt.strategy)
+                .collect::<Vec<_>>(),
+            [RelationalJoinPlanningStrategy::CsgCmpMemo]
+        );
 
         let explained = execute_relational_query_sql_with_runtime(
             &format!("EXPLAIN {SQL}"),
@@ -3149,14 +3338,15 @@ mod tests {
             &skein_executor::ExecutionMemoryConfig::default(),
             None,
         )
-        .expect("explain syntax fallback for a disconnected join graph");
+        .expect("explain the degenerate CSG-CMP plan");
         assert!(explained.rows.iter().any(|row| matches!(
             row.get("operator info"),
             Some(Value::String(info))
-                if info.contains("join_order=syntax_fallback")
-                    && info.contains("planning_status=fallback")
-                    && info.contains("planning_reason=disconnected_graph")
-                    && info.contains("plan_cost=unavailable")
+                if info.contains("join_order=syntax")
+                    && info.contains("planning_status=selected")
+                    && info.contains("planning_reason=syntax_order_optimal")
+                    && info.contains("0:csg_cmp_memo:selected:syntax_order_optimal")
+                    && info.contains("plan_cost=")
         )));
     }
 

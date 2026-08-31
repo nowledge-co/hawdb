@@ -149,15 +149,15 @@ impl Database {
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-        super::reject_locking_select_without_manager(&prepared.statement, false)?;
-        if crate::relational_sql::statement_writes_system_schema_registry(&prepared.statement) {
+        let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        super::reject_locking_select_without_manager(prepared.statement(), false)?;
+        if crate::relational_sql::statement_writes_system_schema_registry(prepared.statement()) {
             return Err(SkeinError::Semantic(
                 "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
             ));
         }
         if matches!(
-            &prepared.statement,
+            prepared.statement(),
             crate::sql::SqlStatement::Select(select)
                 if system_sql::is_virtual_catalog_select(select)
         ) {
@@ -226,24 +226,25 @@ impl Database {
         }
 
         if matches!(
-            prepared.statement,
+            prepared.statement(),
             crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
         ) {
-            let query_result = crate::relational_sql::execute_relational_query_sql_with_resources(
-                sql_text,
-                parameters,
-                self.store.relational_state(),
-                crate::relational_sql::RelationalQueryReadModes::new(
-                    super::relational_index_read_mode(&self.config, &self.store),
-                    crate::relational_sql::RelationalRowReadMode::Store(&self.store),
-                ),
-                super::relational_query_resource_context(
-                    &self.config,
-                    max_rows,
-                    max_payload_bytes,
-                    None,
-                ),
-            );
+            let query_result =
+                crate::relational_sql::execute_prepared_relational_query_with_resources(
+                    prepared,
+                    parameters,
+                    self.store.relational_state(),
+                    crate::relational_sql::RelationalQueryReadModes::new(
+                        super::relational_index_read_mode(&self.config, &self.store),
+                        crate::relational_sql::RelationalRowReadMode::Store(&self.store),
+                    ),
+                    super::relational_query_resource_context(
+                        &self.config,
+                        max_rows,
+                        max_payload_bytes,
+                        None,
+                    ),
+                );
             self.store.poison_on_storage_error(&query_result);
             let output = query_result?;
             return Ok(QueryOutput { rows: output.rows });
@@ -253,7 +254,7 @@ impl Database {
         if let Some(transaction) =
             compile_append_statement_sql(sql_text, parameters, self.store.append_state())?
         {
-            if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+            if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
                 && self
                     .store
                     .relational_state()
@@ -277,7 +278,7 @@ impl Database {
                 rows: summary.rows.into(),
             });
         }
-        if let crate::sql::SqlStatement::CreateTable(create) = &prepared.statement
+        if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
             && self.store.append_table_schema(&create.table.name).is_some()
         {
             return Err(SkeinError::Semantic(format!(

@@ -164,6 +164,20 @@ These variables are runtime state only: they do not write WAL, are rejected
 inside graph transactions and read snapshots, and are meant to guide resource
 scheduling rather than change query semantics.
 
+Relational SQL uses a separate bounded template cache from the Cypher physical
+plan cache. Its exact raw-SQL key admits only unbound `SELECT` and `EXPLAIN
+SELECT` syntax plus parameter-slot metadata. DDL and DML parse normally but
+bypass admission. Every cache hit clones the bound-neutral template and repeats
+current-schema binding, statistics and index-cardinality reads, access-path
+selection, join enumeration, and execution-descriptor construction against the
+active transaction or pinned snapshot. `RelationalSqlReadProfile` exposes
+non-overlapping parse, bind, plan, and execute durations; a cache hit reports
+zero parse duration. Join planning retains its ordered strategy attempts with
+typed status, reason, budget/unsupported fallback class, memo size, and
+canonical cost. Only budget and unsupported-shape failures may continue to a
+fallback strategy. Invalid memo or join-tree state fails closed as an execution
+error instead of becoming a syntax-order plan.
+
 The `skein-fuzz` package is intentionally outside the production dependency
 graph. Its state-aware generator creates a deterministic graph before selecting
 valid query shapes and typed predicates. The plan-differential oracle applies
