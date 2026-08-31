@@ -1120,6 +1120,29 @@ mod tests {
                 ]
             );
         }
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                DatabaseConfig {
+                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .expect("open authoritative keyset database");
+            let authoritative = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT id FROM sessions \
+                     WHERE org_id = 'org-1' \
+                       AND (last_seen_at > 10 OR (last_seen_at = 10 AND id > 'session-a')) \
+                     ORDER BY last_seen_at ASC, id ASC LIMIT 2",
+                )
+                .expect("read authoritative forward keyset page");
+            let info = relational_explain_operator_info(&authoritative, "IndexRangeScanExec");
+            assert!(info.contains("runtime_path=authoritative"));
+            assert!(info.contains("exclusive_seek_lookups=1"));
+            assert!(info.contains("early_stop_lookups=1"));
+        }
         std::fs::remove_dir_all(path).expect("remove keyset database");
     }
 

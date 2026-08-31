@@ -697,13 +697,14 @@ hydration P50/P95/P99 for repetitive, varied, and high-entropy payloads from
 NOT be used as file-backed RSS, page-fault, or end-to-end query evidence.
 
 `cargo bench --bench relational_index_access` compares a full scan with the
-selected composite-prefix path at 1,000, 10,000, 50,000, and 100,000 rows. It
-also reports P50/P95/P99 latency for bounded 25-row forward and backward
-keyset pages that start from an exclusive composite-index cursor. The output
-includes matched and one-column-prefix cardinalities, selected index, selected
-equality-prefix length, speedup, and process RSS delta. This is an in-memory
-access-path microbenchmark; it does not qualify file-backed cache, page-fault,
-concurrent writer, or end-to-end SQL behavior.
+selected composite-prefix path at 1,000, 10,000, 50,000, and 100,000 rows in
+one target equality prefix, plus an equally sized distractor prefix. It reports
+P50/P95/P99 latency and visited-row counts for bounded 25-row forward and
+backward pages at first, middle, and deep exclusive cursors. The output includes
+target, total, matched, and one-column-prefix cardinalities, selected index,
+selected equality-prefix length, speedup, and process RSS delta. This is an
+in-memory access-path microbenchmark; it does not qualify file-backed cache,
+page-fault, concurrent writer, or end-to-end SQL behavior.
 
 Production qualification still requires the differential SQLite oracle,
 50,000-message and large-source workloads, shadow traffic, and retained green
