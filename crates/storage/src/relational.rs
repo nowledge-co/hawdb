@@ -4940,7 +4940,7 @@ fn validate_column_list(
     Ok(())
 }
 
-fn validate_row(
+pub(crate) fn validate_row(
     schema: &RelationalTableSchema,
     row: &RelationalRow,
 ) -> Result<(), RelationalError> {

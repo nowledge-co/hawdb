@@ -6,6 +6,11 @@
 //! partial logical changes.
 
 use crate::durability::{durable_replace_file, sync_directory, sync_parent_directory};
+use crate::relational::{
+    decode_relational_row_payload, encode_relational_row_payload, validate_row, RelationalKey,
+    RelationalRow, RelationalTableSchema,
+};
+use crate::{decode_relational_primary_key, encode_relational_primary_key};
 use skein_integrity::{crc32c, Crc32c, IntegrityDigest, IntegrityHasher, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
@@ -91,6 +96,109 @@ pub struct ProjectionGenerationMember {
     pub collection: String,
     pub key: Vec<u8>,
     pub payload: Vec<u8>,
+}
+
+/// Encodes one relational row as a storage-neutral projection member.
+///
+/// The collection is the relational table name, the member key is the
+/// canonical ordered primary-key encoding, and the payload uses Skein's
+/// versioned relational row codec. Query bindings decode the same member
+/// against the durable table schema before exposing it to PostgreSQL SQL.
+pub fn encode_projection_relational_member(
+    schema: &RelationalTableSchema,
+    row: RelationalRow,
+) -> Result<ProjectionGenerationMember, ProjectionGenerationError> {
+    validate_row(schema, &row).map_err(|error| {
+        ProjectionGenerationError::Admission(format!(
+            "projection row for {} is invalid: {error}",
+            schema.name
+        ))
+    })?;
+    let key = schema
+        .primary_key
+        .iter()
+        .map(|column| {
+            let position = schema.column_position(column).ok_or_else(|| {
+                ProjectionGenerationError::Corruption(format!(
+                    "projection table {} has an unknown primary-key column {column}",
+                    schema.name
+                ))
+            })?;
+            Ok(row.values()[position].clone())
+        })
+        .collect::<Result<Vec<_>, ProjectionGenerationError>>()?;
+    let key = encode_relational_primary_key(&RelationalKey(key)).map_err(|error| {
+        ProjectionGenerationError::Admission(format!(
+            "projection primary key for {} cannot be encoded: {error}",
+            schema.name
+        ))
+    })?;
+    let payload = encode_relational_row_payload(&row).map_err(|error| {
+        ProjectionGenerationError::Admission(format!(
+            "projection row for {} cannot be encoded: {error}",
+            schema.name
+        ))
+    })?;
+    Ok(ProjectionGenerationMember {
+        collection: schema.name.clone(),
+        key,
+        payload,
+    })
+}
+
+/// Decodes and verifies one relational projection member against a table
+/// schema. Both the row shape and the independently encoded primary key must
+/// agree, so a corrupt payload cannot be attached to another logical row.
+pub fn decode_projection_relational_member(
+    schema: &RelationalTableSchema,
+    member: &ProjectionGenerationMember,
+    max_value_bytes: usize,
+) -> Result<(RelationalKey, RelationalRow), ProjectionGenerationError> {
+    if member.collection != schema.name {
+        return Err(ProjectionGenerationError::Corruption(format!(
+            "projection collection {} does not match relational table {}",
+            member.collection, schema.name
+        )));
+    }
+    let row = decode_relational_row_payload(&member.payload, schema.columns.len(), max_value_bytes)
+        .map_err(|error| {
+            ProjectionGenerationError::Corruption(format!(
+                "projection row for {} cannot be decoded: {error}",
+                schema.name
+            ))
+        })?;
+    validate_row(schema, &row).map_err(|error| {
+        ProjectionGenerationError::Corruption(format!(
+            "projection row for {} is invalid: {error}",
+            schema.name
+        ))
+    })?;
+    let key = decode_relational_primary_key(&member.key).map_err(|error| {
+        ProjectionGenerationError::Corruption(format!(
+            "projection primary key for {} cannot be decoded: {error}",
+            schema.name
+        ))
+    })?;
+    let expected = schema
+        .primary_key
+        .iter()
+        .map(|column| {
+            let position = schema.column_position(column).ok_or_else(|| {
+                ProjectionGenerationError::Corruption(format!(
+                    "projection table {} has an unknown primary-key column {column}",
+                    schema.name
+                ))
+            })?;
+            Ok(row.values()[position].clone())
+        })
+        .collect::<Result<Vec<_>, ProjectionGenerationError>>()?;
+    if key.0 != expected {
+        return Err(ProjectionGenerationError::Corruption(format!(
+            "projection member key does not match the decoded row for table {}",
+            schema.name
+        )));
+    }
+    Ok((key, row))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -882,6 +990,7 @@ impl Drop for ProjectionGenerationWriter {
     }
 }
 
+#[derive(Debug)]
 pub struct ProjectionGenerationReader {
     store: ProjectionGenerationStore,
     publication_commit_epoch: u64,

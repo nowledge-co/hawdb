@@ -93,16 +93,38 @@ idempotent while it remains the selected head.
 
 `ProjectionGenerationReader` is a bounded, generation-pinned kernel read
 contract. It is not permission for an application route to perform its own
-graph or relational scan. A query-runtime binding MUST resolve one active
-generation per transaction and expose members through readable parameterized
-SQL or Cypher. The binding MUST retain the reader pin for the transaction,
-charge every page to query row and payload budgets, and expose the generation
-identity and publication commit epoch in its query report.
+graph or relational scan.
 
-Until such a binding is selected for a concrete projection schema, the typed
-reader is appropriate for import, verification, background materialization,
-and storage qualification. It MUST NOT be wrapped in route-specific typed CRUD
-APIs.
+`ProjectionRelationalReadBinding` binds a projection name, owner key, required
+projection version, and a non-empty set of durable relational table names.
+`Database::begin_projection_read_transaction` resolves the active generation
+once and retains both its reader pin and the database read view for the whole
+transaction. PostgreSQL-dialect SQL reads bound tables from that generation;
+unbound tables continue to use the same canonical database snapshot. Bound
+tables MUST have durable DDL and MUST contain no canonical rows, preventing a
+query from silently mixing generation and canonical ownership.
+
+Relational members use the durable table name as the collection, the canonical
+ordered primary-key encoding as the member key, and Skein's versioned
+relational row codec as the payload. Encoding validates the row against the
+durable schema. Decoding independently validates the row shape, scalar types,
+nullability, primary-key encoding, and agreement between the member key and
+decoded row.
+
+The initial planner contract deliberately exposes bound tables as bounded full
+scans. It does not advertise canonical primary-key or secondary-index access
+for data that lives in generation artifacts. Every projection page is charged
+to the SQL row and payload budgets, and exhaustion fails the statement instead
+of returning a partial result. A future generation-native index may replace
+this access path only when it preserves the same pinned-generation and
+admission contract.
+
+The SQL execution profile and `EXPLAIN ANALYZE` expose the
+`projection_generation` runtime path, generation identity, source watermark,
+projection version, publication commit epoch, and page accounting. Applications
+therefore express projection reads as parameterized PostgreSQL SQL while the
+typed Rust API remains limited to publication and transaction coordination; a
+route-specific typed CRUD API remains out of scope.
 
 ## Observability
 
@@ -124,4 +146,6 @@ Targeted Rust tests cover bounded staging, digest and count validation,
 idempotent publication, expected-head and watermark conflicts, prune by
 omission, multiple pins, independent owners, abandoned-candidate GC, torn-tail
 resume, generation-bound paging, complete scrub, and durable `Database`
-reopen.
+reopen. Relational query tests additionally cover candidate invisibility,
+old-reader pinning after publication, prune-by-omission visibility, multi-table
+PostgreSQL joins, canonical-source isolation, and query-profile evidence.
