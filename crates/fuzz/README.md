@@ -104,4 +104,12 @@ operation must leave the commit epoch and visible state unchanged.
 ```console
 make fuzz-append FUZZ_SEED=7 FUZZ_CASES=128 FUZZ_STEPS=256
 make fuzz-append FUZZ_SEED=7 FUZZ_CASE_INDEX=19 FUZZ_STEPS=256
+make fuzz-append-resume FUZZ_SEED=7 FUZZ_CASES=1024 FUZZ_STEPS=256 \
+  FUZZ_SHARD_INDEX=0 FUZZ_SHARD_COUNT=4
 ```
+
+Long append campaigns use the same shard selection and periodic `*-cur.json`
+checkpoint contract as optimizer campaigns. Resume validates the protocol,
+seed, configured case count, steps per case, shard identity, and the exact
+completed case prefix before continuing, so it cannot silently combine cases
+from different campaigns.

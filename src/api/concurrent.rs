@@ -17,7 +17,7 @@ use super::transaction_locks::{
 };
 use super::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_query,
-    execute_database_transaction_sql, Database, DatabaseConfig, DatabaseReadTransaction,
+    execute_database_transaction_prepared_sql, Database, DatabaseConfig, DatabaseReadTransaction,
     DatabaseTransactionRuntime, DatabaseTransactionState, QueryOutput,
 };
 use crate::error::{Result, SkeinError};
@@ -378,9 +378,14 @@ impl ConcurrentDatabaseTransaction {
         parameters: &[Value],
     ) -> Result<QueryOutput> {
         self.ensure_active()?;
+        let prepared = self
+            .runtime
+            .relational_plan_template_cache
+            .prepare(sql_text)?;
         if self.options.mode == ConcurrentTransactionMode::Pessimistic {
             let requests = sql_lock_requests(
                 sql_text,
+                &prepared,
                 parameters,
                 &self.state.relational_state,
                 &self.state.append_state,
@@ -389,12 +394,13 @@ impl ConcurrentDatabaseTransaction {
                 self.acquire_locks(&requests)?;
             }
         } else {
-            reject_optimistic_locking_select(sql_text)?;
+            reject_optimistic_locking_select(&prepared)?;
         }
-        let result = execute_database_transaction_sql(
+        let result = execute_database_transaction_prepared_sql(
             &self.runtime,
             &mut self.state,
             sql_text,
+            prepared,
             parameters,
             false,
             true,
@@ -575,12 +581,13 @@ impl ConcurrentDatabaseTransaction {
     }
 }
 
-fn reject_optimistic_locking_select(sql_text: &str) -> Result<()> {
-    let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-    let locking_select = match prepared.statement {
+fn reject_optimistic_locking_select(
+    prepared: &crate::relational_sql::PreparedRelationalSql,
+) -> Result<()> {
+    let locking_select = match prepared.statement() {
         SqlStatement::Select(select) => select.lock_strength.is_some(),
         SqlStatement::Explain(explain) => {
-            matches!(*explain.statement, SqlStatement::Select(select) if select.lock_strength.is_some())
+            matches!(explain.statement.as_ref(), SqlStatement::Select(select) if select.lock_strength.is_some())
         }
         _ => false,
     };
@@ -690,19 +697,19 @@ impl Drop for ConcurrentDatabaseTransaction {
 
 fn sql_lock_requests(
     sql_text: &str,
+    prepared: &crate::relational_sql::PreparedRelationalSql,
     parameters: &[Value],
     state: &RelationalState,
     append_state: &skein_storage::AppendState,
 ) -> Result<Vec<LockRequest>> {
-    let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
-    if prepared.parameters.len() != parameters.len() {
+    if prepared.template.parameters.len() != parameters.len() {
         return Err(SkeinError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
-            prepared.parameters.len(),
+            prepared.template.parameters.len(),
             parameters.len()
         )));
     }
-    let append_lock_mode = match &prepared.statement {
+    let append_lock_mode = match prepared.statement() {
         SqlStatement::Select(select) if append_state.schema(&select.from.name).is_some() => {
             Some(LockMode::Shared)
         }
@@ -746,23 +753,23 @@ fn sql_lock_requests(
     if let Some(mode) = append_lock_mode {
         return Ok(vec![LockRequest::database(mode)]);
     }
-    match prepared.statement {
+    match prepared.statement() {
         SqlStatement::Select(select) => {
-            if select.lock_strength.is_some() && system_sql::is_virtual_catalog_select(&select) {
+            if select.lock_strength.is_some() && system_sql::is_virtual_catalog_select(select) {
                 return Err(SkeinError::Semantic(
                     "system SQL does not support locking clauses".to_string(),
                 ));
             }
-            Ok(select_lock_requests(&select, parameters, state))
+            Ok(select_lock_requests(select, parameters, state))
         }
         SqlStatement::Explain(explain) => {
             if !explain.analyze {
                 return Ok(Vec::new());
             }
-            let SqlStatement::Select(select) = *explain.statement else {
+            let SqlStatement::Select(select) = explain.statement.as_ref() else {
                 return Ok(Vec::new());
             };
-            Ok(select_lock_requests(&select, parameters, state))
+            Ok(select_lock_requests(select, parameters, state))
         }
         SqlStatement::Insert(_) => {
             let transaction = crate::relational_sql::compile_relational_statement_sql(
@@ -773,11 +780,11 @@ fn sql_lock_requests(
         }
         SqlStatement::Update(update) => {
             crate::relational_sql::compile_relational_statement_sql(sql_text, parameters, state)?;
-            Ok(update_lock_requests(&update, parameters, state))
+            Ok(update_lock_requests(update, parameters, state))
         }
         SqlStatement::Delete(delete) => {
             crate::relational_sql::compile_relational_statement_sql(sql_text, parameters, state)?;
-            Ok(delete_lock_requests(&delete, parameters, state))
+            Ok(delete_lock_requests(delete, parameters, state))
         }
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
@@ -1395,9 +1402,13 @@ mod tests {
             )
             .expect("stage append schema");
 
+        const SQL: &str = "EXPLAIN ANALYZE SELECT * FROM events \
+                           WHERE stream = 'alpha' ORDER BY sequence LIMIT 10";
+        let cache = crate::relational_sql::RelationalPlanTemplateCache::new(Some(4));
+        let prepared = cache.prepare(SQL).expect("prepare append explain analyze");
         let requests = sql_lock_requests(
-            "EXPLAIN ANALYZE SELECT * FROM events \
-             WHERE stream = 'alpha' ORDER BY sequence LIMIT 10",
+            SQL,
+            &prepared,
             &[],
             &RelationalState::default(),
             &append_state,
