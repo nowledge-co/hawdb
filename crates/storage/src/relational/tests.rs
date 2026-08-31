@@ -1021,16 +1021,18 @@ fn sparse_live_staging_hydrates_authoritative_unique_conflicts() {
             row: None,
         },
     ];
-    let (staged, index_capture, row_capture, replay_access) = metadata
-        .stage_sparse_transaction_with_authoritative_replay_access(RelationalSparseLiveStage {
-            transaction: transaction.clone(),
-            hydrated_workspace: hydrated_workspace.clone(),
-            mutation_limits: RelationalMutationLimits::default(),
-            overflow_config: RelationalOverflowConfig::default(),
-            index_capture_limits: RelationalIndexChangeCaptureLimits::default(),
-            row_capture_limits: RelationalRowChangeCaptureLimits::default(),
-            constraint_index: &constraint_index,
-        })
+    let (staged, index_capture, row_capture, replay_access, mutation_outcomes) = metadata
+        .stage_sparse_transaction_with_authoritative_replay_access_and_outcomes(
+            RelationalSparseLiveStage {
+                transaction: transaction.clone(),
+                hydrated_workspace: hydrated_workspace.clone(),
+                mutation_limits: RelationalMutationLimits::default(),
+                overflow_config: RelationalOverflowConfig::default(),
+                index_capture_limits: RelationalIndexChangeCaptureLimits::default(),
+                row_capture_limits: RelationalRowChangeCaptureLimits::default(),
+                constraint_index: &constraint_index,
+            },
+        )
         .expect("sparse live staging resolves the unique conflict");
     assert_eq!(
         staged.row_count("documents"),
@@ -1040,6 +1042,9 @@ fn sparse_live_staging_hydrates_authoritative_unique_conflicts() {
     assert_eq!(index_capture, expected_index_capture);
     assert_eq!(row_capture, expected_row_capture);
     assert_eq!(replay_access, expected_access);
+    assert_eq!(mutation_outcomes.len(), 1);
+    assert_eq!(mutation_outcomes[0].affected_rows, 1);
+    assert_eq!(mutation_outcomes[0].conflict_rows, 1);
     assert_eq!(
         replay_access.entries(),
         &[RelationalReplayAccess {
@@ -1556,6 +1561,74 @@ fn authoritative_constraint_staging_merges_transaction_local_unique_changes() {
     let id_2 = RelationalKey(vec![RelationalValue::Text("id-2".to_string())]);
     assert_eq!(replaced.row_count("documents"), 1);
     assert!(replaced.row("documents", &id_2).is_some());
+}
+
+#[test]
+fn conflict_noop_reports_outcome_without_recording_a_row_change() {
+    let seeded = RelationalState::default()
+        .stage_transaction(
+            create_upsert_table(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create upsert table")
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "documents".to_string(),
+                    rows: vec![upsert_row("id-1", "owner-1", "old")],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("seed conflict row");
+
+    let staged = seeded
+        .stage_transaction_with_primary_key_changes(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Upsert {
+                    table: "documents".to_string(),
+                    rows: vec![upsert_row("id-2", "owner-1", "new")],
+                    conflict_columns: vec!["owner".to_string()],
+                    action: RelationalConflictAction::DoNothing,
+                }],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+            Some(RelationalIndexChangeCaptureLimits::default()),
+            Some(RelationalRowChangeCaptureLimits::default()),
+            RelationalPrimaryKeyChangeCaptureLimits::default(),
+            None,
+        )
+        .expect("stage conflict no-op");
+
+    assert_eq!(staged.state.row_count("documents"), 1);
+    assert_eq!(
+        staged
+            .state
+            .row(
+                "documents",
+                &RelationalKey(vec![RelationalValue::Text("id-1".to_string())]),
+            )
+            .expect("conflicting row remains unchanged")
+            .values()[2],
+        RelationalValue::Text("old".to_string())
+    );
+    assert_eq!(staged.primary_key_changes.operation_count(), 0);
+    assert!(matches!(
+        staged.index_capture,
+        Some(RelationalIndexChangeCapture::Captured { ref changes, .. }) if changes.is_empty()
+    ));
+    assert!(matches!(
+        staged.row_capture,
+        Some(RelationalRowChangeCapture::Captured { ref changes, .. }) if changes.is_empty()
+    ));
+    assert_eq!(staged.mutation_outcomes.len(), 1);
+    assert_eq!(staged.mutation_outcomes[0].affected_rows, 0);
+    assert_eq!(staged.mutation_outcomes[0].conflict_rows, 1);
+    assert!(staged.mutation_outcomes[0].rows.is_empty());
 }
 
 #[test]

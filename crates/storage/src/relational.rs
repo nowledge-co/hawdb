@@ -781,6 +781,20 @@ pub struct RelationalTransactionStageResult {
     pub row_capture: Option<RelationalRowChangeCapture>,
     pub replay_access: Option<RelationalReplayAccessSet>,
     pub primary_key_changes: RelationalPrimaryKeyChangeCapture,
+    pub mutation_outcomes: Vec<RelationalMutationOutcome>,
+}
+
+/// Deterministic result of one relational write after it has been staged.
+///
+/// Rows contain the logical values accepted by INSERT before overflow
+/// externalization. Conflict no-ops contribute to `conflict_rows`, never to
+/// `rows` or `affected_rows`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalMutationOutcome {
+    pub table: String,
+    pub affected_rows: usize,
+    pub conflict_rows: usize,
+    pub rows: Vec<RelationalRow>,
 }
 
 /// The exact primary-key working set used by one durable relational DML
@@ -2041,6 +2055,7 @@ impl RelationalState {
             row_capture,
             replay_access,
             primary_key_changes,
+            mutation_outcomes,
         } = apply_transaction_inner(
             self,
             transaction,
@@ -2053,6 +2068,7 @@ impl RelationalState {
                 primary_key_capture_limits: Some(primary_key_capture_limits),
                 constraint_index,
                 index_mode,
+                capture_mutation_outcomes: true,
             },
         )?;
         Ok(RelationalTransactionStageResult {
@@ -2062,7 +2078,29 @@ impl RelationalState {
             replay_access,
             primary_key_changes: primary_key_changes
                 .expect("primary-key change capture was requested for this transaction"),
+            mutation_outcomes,
         })
+    }
+
+    pub fn stage_transaction_with_outcomes(
+        &self,
+        transaction: RelationalTransaction,
+        limits: RelationalMutationLimits,
+        overflow_config: RelationalOverflowConfig,
+    ) -> Result<(Self, Vec<RelationalMutationOutcome>), RelationalError> {
+        self.require_materialized_rows("relational transaction")?;
+        admit_transaction(&transaction, limits)?;
+        let result = apply_transaction_inner(
+            self,
+            transaction,
+            limits,
+            overflow_config,
+            TransactionApplyOptions {
+                capture_mutation_outcomes: true,
+                ..TransactionApplyOptions::materialized()
+            },
+        )?;
+        Ok((result.state, result.mutation_outcomes))
     }
 
     pub fn stage_transaction(
@@ -2313,6 +2351,7 @@ impl RelationalState {
                 primary_key_capture_limits: None,
                 constraint_index: None,
                 index_mode: TransactionIndexMode::AuthoritativeRecovery,
+                capture_mutation_outcomes: false,
             },
         )?;
         Ok((
@@ -2350,6 +2389,54 @@ impl RelationalState {
             Some(constraint_index),
             TransactionIndexMode::Authoritative,
         )
+    }
+
+    pub fn stage_transaction_with_authoritative_index_and_outcomes(
+        &self,
+        transaction: RelationalTransaction,
+        limits: RelationalMutationLimits,
+        overflow_config: RelationalOverflowConfig,
+        capture_limits: RelationalIndexChangeCaptureLimits,
+        constraint_index: &dyn RelationalConstraintIndex,
+    ) -> Result<
+        (
+            Self,
+            RelationalIndexChangeCapture,
+            Vec<RelationalMutationOutcome>,
+        ),
+        RelationalError,
+    > {
+        self.require_materialized_rows("relational transaction")?;
+        admit_transaction(&transaction, limits)?;
+        if transaction.changes_index_schema() {
+            return Err(RelationalError::Admission(
+                "authoritative relational indexes reject schema-changing transactions until a new canonical index generation is published"
+                    .to_string(),
+            ));
+        }
+        let TransactionApplyResult {
+            state,
+            index_capture,
+            mutation_outcomes,
+            ..
+        } = apply_transaction_inner(
+            self,
+            transaction,
+            limits,
+            overflow_config,
+            TransactionApplyOptions {
+                index_capture_limits: Some(capture_limits),
+                constraint_index: Some(constraint_index),
+                index_mode: TransactionIndexMode::Authoritative,
+                capture_mutation_outcomes: true,
+                ..TransactionApplyOptions::materialized()
+            },
+        )?;
+        Ok((
+            state,
+            index_capture.expect("index change capture was requested for this transaction"),
+            mutation_outcomes,
+        ))
     }
 
     /// Stages one transaction against a pinned constraint index while deriving
@@ -2396,6 +2483,7 @@ impl RelationalState {
                 primary_key_capture_limits: None,
                 constraint_index: Some(constraint_index),
                 index_mode: TransactionIndexMode::Authoritative,
+                capture_mutation_outcomes: false,
             },
         )?;
         Ok((
@@ -2450,6 +2538,7 @@ impl RelationalState {
                 primary_key_capture_limits: None,
                 constraint_index: Some(constraint_index),
                 index_mode: TransactionIndexMode::Authoritative,
+                capture_mutation_outcomes: false,
             },
         )?;
         Ok((
@@ -2457,6 +2546,63 @@ impl RelationalState {
             index_capture.expect("index change capture was requested for this transaction"),
             row_capture.expect("row change capture was requested for this transaction"),
             replay_access.expect("replay access capture was requested for this transaction"),
+        ))
+    }
+
+    pub fn stage_transaction_with_authoritative_replay_access_and_outcomes(
+        &self,
+        transaction: RelationalTransaction,
+        limits: RelationalMutationLimits,
+        overflow_config: RelationalOverflowConfig,
+        index_capture_limits: RelationalIndexChangeCaptureLimits,
+        row_capture_limits: RelationalRowChangeCaptureLimits,
+        constraint_index: &dyn RelationalConstraintIndex,
+    ) -> Result<
+        (
+            Self,
+            RelationalIndexChangeCapture,
+            RelationalRowChangeCapture,
+            RelationalReplayAccessSet,
+            Vec<RelationalMutationOutcome>,
+        ),
+        RelationalError,
+    > {
+        self.require_materialized_rows("relational transaction")?;
+        admit_transaction(&transaction, limits)?;
+        if transaction.changes_index_schema() {
+            return Err(RelationalError::Admission(
+                "authoritative relational replay access rejects schema-changing transactions until new canonical row and index generations are published"
+                    .to_string(),
+            ));
+        }
+        let TransactionApplyResult {
+            state,
+            index_capture,
+            row_capture,
+            replay_access,
+            mutation_outcomes,
+            ..
+        } = apply_transaction_inner(
+            self,
+            transaction,
+            limits,
+            overflow_config,
+            TransactionApplyOptions {
+                index_capture_limits: Some(index_capture_limits),
+                row_capture_limits: Some(row_capture_limits),
+                replay_access_limits: Some(row_capture_limits),
+                primary_key_capture_limits: None,
+                constraint_index: Some(constraint_index),
+                index_mode: TransactionIndexMode::Authoritative,
+                capture_mutation_outcomes: true,
+            },
+        )?;
+        Ok((
+            state,
+            index_capture.expect("index change capture was requested for this transaction"),
+            row_capture.expect("row change capture was requested for this transaction"),
+            replay_access.expect("replay access capture was requested for this transaction"),
+            mutation_outcomes,
         ))
     }
 
@@ -2504,6 +2650,7 @@ impl RelationalState {
                 primary_key_capture_limits: None,
                 constraint_index: None,
                 index_mode: TransactionIndexMode::AuthoritativeRecovery,
+                capture_mutation_outcomes: false,
             },
         )?;
         let replay_access =
@@ -2813,6 +2960,63 @@ impl RelationalState {
         Ok((metadata, index_capture, row_capture, replay_access))
     }
 
+    pub fn stage_sparse_transaction_with_authoritative_replay_access_and_outcomes(
+        &self,
+        stage: RelationalSparseLiveStage<'_>,
+    ) -> Result<
+        (
+            Self,
+            RelationalIndexChangeCapture,
+            RelationalRowChangeCapture,
+            RelationalReplayAccessSet,
+            Vec<RelationalMutationOutcome>,
+        ),
+        RelationalError,
+    > {
+        let RelationalSparseLiveStage {
+            transaction,
+            hydrated_workspace,
+            mutation_limits,
+            overflow_config,
+            index_capture_limits,
+            row_capture_limits,
+            constraint_index,
+        } = stage;
+        self.require_sparse_workspace_source("sparse relational live staging")?;
+        let (workspace, supplied_access) = self.sparse_workspace(
+            hydrated_workspace,
+            row_capture_limits,
+            "sparse relational live staging",
+        )?;
+        let (staged, index_capture, row_capture, replay_access, mutation_outcomes) = workspace
+            .stage_transaction_with_authoritative_replay_access_and_outcomes(
+                transaction,
+                mutation_limits,
+                overflow_config,
+                index_capture_limits,
+                row_capture_limits,
+                constraint_index,
+            )?;
+        if let Some(missing) = replay_access
+            .entries
+            .iter()
+            .find(|entry| supplied_access.binary_search(entry).is_err())
+        {
+            return Err(RelationalError::Corruption(format!(
+                "sparse relational live staging did not hydrate replay access {:?} in table {}",
+                missing.primary_key, missing.table
+            )));
+        }
+        let metadata = self.merge_sparse_recovery_workspace(&workspace, &staged)?;
+        Ok((
+            metadata,
+            index_capture,
+            row_capture,
+            replay_access,
+            mutation_outcomes,
+        ))
+    }
+
     pub fn stage_sparse_transaction_with_primary_key_changes(
         &self,
         stage: RelationalSparseLiveStage<'_>,
@@ -2839,6 +3043,7 @@ impl RelationalState {
             row_capture,
             replay_access,
             primary_key_changes,
+            mutation_outcomes,
         } = workspace.stage_transaction_with_primary_key_changes(
             transaction,
             mutation_limits,
@@ -2867,6 +3072,7 @@ impl RelationalState {
             row_capture,
             replay_access: Some(replay_access),
             primary_key_changes,
+            mutation_outcomes,
         })
     }
 
@@ -3068,6 +3274,7 @@ impl RelationalState {
                 primary_key_capture_limits: None,
                 constraint_index: None,
                 index_mode: TransactionIndexMode::AuthoritativeRecovery,
+                capture_mutation_outcomes: false,
             },
         )?;
         Ok((
@@ -3887,6 +4094,19 @@ pub struct RelationalTransaction {
 }
 
 impl RelationalTransaction {
+    pub fn is_conflict_noop_only(&self) -> bool {
+        !self.writes.is_empty()
+            && self.writes.iter().all(|write| {
+                matches!(
+                    write,
+                    RelationalWrite::Upsert {
+                        action: RelationalConflictAction::DoNothing,
+                        ..
+                    }
+                )
+            })
+    }
+
     pub fn changes_schema(&self) -> bool {
         self.writes.iter().any(|write| {
             matches!(
@@ -4145,6 +4365,7 @@ struct TransactionApplyOptions<'a> {
     primary_key_capture_limits: Option<RelationalPrimaryKeyChangeCaptureLimits>,
     constraint_index: Option<&'a dyn RelationalConstraintIndex>,
     index_mode: TransactionIndexMode,
+    capture_mutation_outcomes: bool,
 }
 
 impl TransactionApplyOptions<'_> {
@@ -4156,6 +4377,7 @@ impl TransactionApplyOptions<'_> {
             primary_key_capture_limits: None,
             constraint_index: None,
             index_mode: TransactionIndexMode::Materialized,
+            capture_mutation_outcomes: false,
         }
     }
 }
@@ -4185,6 +4407,7 @@ fn apply_transaction_with_index_changes(
             primary_key_capture_limits: None,
             constraint_index,
             index_mode,
+            capture_mutation_outcomes: false,
         },
     )?;
     Ok((
@@ -4199,6 +4422,7 @@ struct TransactionApplyResult {
     row_capture: Option<RelationalRowChangeCapture>,
     replay_access: Option<RelationalReplayAccessSet>,
     primary_key_changes: Option<RelationalPrimaryKeyChangeCapture>,
+    mutation_outcomes: Vec<RelationalMutationOutcome>,
 }
 
 fn apply_transaction_inner(
@@ -4215,6 +4439,7 @@ fn apply_transaction_inner(
         primary_key_capture_limits,
         constraint_index,
         index_mode,
+        capture_mutation_outcomes,
     } = options;
     let mut next = state.clone();
     match index_mode {
@@ -4235,6 +4460,7 @@ fn apply_transaction_inner(
     let mut replay_access_tracker = replay_access_limits.map(RelationalReplayAccessTracker::new);
     let mut full_index_rebuild = BTreeSet::new();
     let mut projection_rebuild_tables = BTreeSet::new();
+    let mut mutation_outcomes = Vec::new();
     for write in transaction.writes {
         match write {
             RelationalWrite::CreateTable(schema) => {
@@ -4347,6 +4573,8 @@ fn apply_transaction_inner(
                         RelationalError::Schema(format!("unknown table {table}"))
                     })?);
                 let primary_key = column_positions(&schema, &schema.primary_key)?;
+                let affected_rows = rows.len();
+                let logical_rows = capture_mutation_outcomes.then(|| rows.clone());
                 let mut prepared_rows = Vec::with_capacity(rows.len());
                 for mut row in rows {
                     validate_row(&schema, &row)?;
@@ -4367,7 +4595,15 @@ fn apply_transaction_inner(
                     segment.rows.insert(key.clone(), row);
                     changed_keys.entry(table.clone()).or_default().insert(key);
                 }
-                touched.insert(table);
+                touched.insert(table.clone());
+                if let Some(logical_rows) = logical_rows {
+                    mutation_outcomes.push(RelationalMutationOutcome {
+                        table,
+                        affected_rows,
+                        conflict_rows: 0,
+                        rows: logical_rows,
+                    });
+                }
             }
             RelationalWrite::Upsert {
                 table,
@@ -4375,7 +4611,7 @@ fn apply_transaction_inner(
                 conflict_columns,
                 action,
             } => {
-                apply_upsert(
+                let outcome = apply_upsert(
                     &mut next,
                     &table,
                     rows,
@@ -4385,9 +4621,14 @@ fn apply_transaction_inner(
                     UpsertIndexContext {
                         changed_keys: changed_keys.entry(table.clone()).or_default(),
                         constraint_index,
+                        replay_access_tracker: replay_access_tracker.as_mut(),
+                        capture_mutation_outcome: capture_mutation_outcomes,
                     },
                 )?;
-                touched.insert(table);
+                touched.insert(table.clone());
+                if capture_mutation_outcomes {
+                    mutation_outcomes.push(outcome);
+                }
             }
             RelationalWrite::DeleteByPrimaryKey { table, keys } => {
                 let segment = next
@@ -4536,12 +4777,15 @@ fn apply_transaction_inner(
         row_capture,
         replay_access,
         primary_key_changes,
+        mutation_outcomes,
     })
 }
 
 struct UpsertIndexContext<'a> {
     changed_keys: &'a mut BTreeSet<RelationalKey>,
     constraint_index: Option<&'a dyn RelationalConstraintIndex>,
+    replay_access_tracker: Option<&'a mut RelationalReplayAccessTracker>,
+    capture_mutation_outcome: bool,
 }
 
 fn apply_upsert(
@@ -4552,10 +4796,12 @@ fn apply_upsert(
     action: &RelationalConflictAction,
     overflow_config: RelationalOverflowConfig,
     index_context: UpsertIndexContext<'_>,
-) -> Result<(), RelationalError> {
+) -> Result<RelationalMutationOutcome, RelationalError> {
     let UpsertIndexContext {
         changed_keys,
         constraint_index,
+        mut replay_access_tracker,
+        capture_mutation_outcome,
     } = index_context;
     let schema = Arc::clone(
         state
@@ -4600,6 +4846,9 @@ fn apply_upsert(
             .collect::<Result<Vec<_>, RelationalError>>()?,
     };
     let mut staged_conflicts = BTreeMap::<RelationalKey, Option<RelationalKey>>::new();
+    let mut affected_rows = 0usize;
+    let mut conflict_rows = 0usize;
+    let mut returned_rows = Vec::new();
     for primary_key in changed_keys.iter() {
         let Some(row) = state.row(table, primary_key) else {
             continue;
@@ -4620,6 +4869,7 @@ fn apply_upsert(
 
     for mut excluded in rows {
         validate_row(&schema, &excluded)?;
+        let logical_excluded = capture_mutation_outcome.then(|| excluded.clone());
         overflow::externalize_row(state, &schema, &mut excluded, overflow_config)?;
         let conflict_key = row_key(&excluded, &conflict_positions);
         let conflict_has_null = conflict_key
@@ -4648,8 +4898,11 @@ fn apply_upsert(
             .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
         let segment = Arc::make_mut(segment);
         if let Some(existing_primary_key) = existing_primary_key {
+            conflict_rows = conflict_rows.saturating_add(1);
+            if let Some(tracker) = replay_access_tracker.as_deref_mut() {
+                tracker.record(table, &existing_primary_key)?;
+            }
             if matches!(action, RelationalConflictAction::DoNothing) {
-                changed_keys.insert(existing_primary_key);
                 continue;
             }
             let existing = segment
@@ -4678,6 +4931,7 @@ fn apply_upsert(
             if !key_contains_null(&updated_conflict_key) {
                 staged_conflicts.insert(updated_conflict_key, Some(updated_primary_key));
             }
+            affected_rows = affected_rows.saturating_add(1);
         } else {
             let primary_key = row_key(&excluded, &primary_key_positions);
             changed_keys.insert(primary_key.clone());
@@ -4689,9 +4943,18 @@ fn apply_upsert(
             if !conflict_has_null {
                 staged_conflicts.insert(conflict_key, Some(primary_key));
             }
+            affected_rows = affected_rows.saturating_add(1);
+            if let Some(logical_excluded) = logical_excluded {
+                returned_rows.push(logical_excluded);
+            }
         }
     }
-    Ok(())
+    Ok(RelationalMutationOutcome {
+        table: table.to_string(),
+        affected_rows,
+        conflict_rows,
+        rows: returned_rows,
+    })
 }
 
 fn conflict_primary_key(

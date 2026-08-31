@@ -69,6 +69,163 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer() 
 }
 
 #[test]
+fn optimistic_conflict_noop_commits_converge_to_inserted_and_conflict_results() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.raw_turns (\
+            raw_turn_id TEXT PRIMARY KEY, \
+            org_id TEXT NOT NULL, \
+            request_id TEXT NOT NULL, \
+            UNIQUE (org_id, request_id)\
+        )",
+    )
+    .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = (1..=2)
+        .map(|id| {
+            let db = db.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut tx = db
+                    .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                    .unwrap();
+                let staged = tx
+                    .query_sql_with_result(&format!(
+                        "INSERT INTO public.raw_turns (raw_turn_id, org_id, request_id) \
+                         VALUES ('turn-{id}', 'org-1', 'request-1') \
+                         ON CONFLICT (org_id, request_id) DO NOTHING \
+                         RETURNING raw_turn_id"
+                    ))
+                    .unwrap();
+                assert_eq!(staged.mutation.unwrap().affected_rows, 1);
+                barrier.wait();
+                tx.commit_with_result()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].affected_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].conflict_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        db.query_sql("SELECT raw_turn_id FROM public.raw_turns")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn pessimistic_group_commit_preserves_inserted_and_conflict_results() {
+    const WRITERS: usize = 2;
+    let path = super::unique_test_dir("idempotent_group_commit_results");
+    let mut database = Database::open(&path).unwrap();
+    database
+        .query_sql(
+            "CREATE TABLE public.raw_turns (\
+                raw_turn_id TEXT PRIMARY KEY, \
+                request_id TEXT UNIQUE NOT NULL\
+            )",
+        )
+        .unwrap();
+    database
+        .query_sql(
+            "INSERT INTO public.raw_turns (raw_turn_id, request_id) \
+             VALUES ('turn-1', 'request-1')",
+        )
+        .unwrap();
+    let group_commit = WalGroupCommitConfig::benchmark_candidate(
+        NonZeroUsize::new(WRITERS).unwrap(),
+        NonZeroU64::new(1024 * 1024).unwrap(),
+        Duration::from_millis(5),
+    )
+    .unwrap();
+    let db = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+    db.set_group_commit_post_enqueue_barrier(Arc::new(Barrier::new(WRITERS)))
+        .unwrap();
+
+    let writers = [("turn-duplicate", "request-1"), ("turn-2", "request-2")]
+        .into_iter()
+        .map(|(raw_turn_id, request_id)| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                let mut transaction = db
+                    .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+                        Duration::from_secs(1),
+                    ))
+                    .unwrap();
+                transaction
+                    .query_sql_with_result(&format!(
+                        "INSERT INTO public.raw_turns (raw_turn_id, request_id) \
+                         VALUES ('{raw_turn_id}', '{request_id}') \
+                         ON CONFLICT (request_id) DO NOTHING \
+                         RETURNING raw_turn_id"
+                    ))
+                    .unwrap();
+                transaction.commit_with_result().unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].affected_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.mutations[0].conflict_rows == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .flat_map(|result| result.output.rows.iter())
+            .filter(|row| row.get("raw_turn_id") == Some(&Value::String("turn-2".to_string())))
+            .count(),
+        1
+    );
+    let snapshot = db.wal_group_commit_snapshot().unwrap();
+    assert_eq!(snapshot.submitted_commits, WRITERS as u64);
+    assert_eq!(snapshot.completed_commits, WRITERS as u64);
+    assert_eq!(snapshot.shared_sync_count, 1);
+    assert_eq!(snapshot.grouped_wal_entries, WRITERS as u64);
+    drop(db);
+
+    let mut reopened = Database::open(&path).unwrap();
+    let rows = reopened
+        .query_sql("SELECT raw_turn_id FROM public.raw_turns ORDER BY raw_turn_id")
+        .unwrap();
+    assert_eq!(rows.rows.len(), 2);
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn optimistic_transaction_reads_its_private_workspace() {
     let db = Database::new().into_concurrent();
     let mut tx = db

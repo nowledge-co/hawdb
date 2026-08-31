@@ -215,8 +215,13 @@ live store.
 coordinator while transaction planning and COW workspace mutation remain outside
 the publication critical section. Optimistic transactions use first-committer-
 wins validation against their base commit epoch and return an explicit conflict
-instead of replaying a stale write set. Pessimistic transactions acquire locks
-on first use rather than at `BEGIN`. The lock table supports compatible shared
+instead of replaying a stale write set. The one exception is a transaction made
+only of `ON CONFLICT DO NOTHING` statements, with no reads and no graph or
+Strict Append mutation: the commit sequencer may safely restage it so
+concurrent idempotent writers converge to one inserted result and deterministic
+conflict no-ops. Pessimistic
+transactions acquire locks on first use rather than at `BEGIN`. The lock table
+supports compatible shared
 locks, conflicting exclusive locks, inclusive point locks, bounded ranges with
 inclusive or exclusive endpoints, and an unbounded database target that
 overlaps every finer-grained resource.

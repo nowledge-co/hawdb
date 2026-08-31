@@ -8801,6 +8801,371 @@ fn test_thread_compaction_links(db: &Database, thread_id: &str) -> QueryOutput {
     .unwrap()
 }
 
+#[test]
+fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
+    let mut db = Database::new();
+    let mut schema = db.begin_transaction();
+    schema
+        .query_sql(
+            "CREATE TABLE raw_turns (\
+                raw_turn_id TEXT PRIMARY KEY, \
+                org_id TEXT, \
+                request_id TEXT, \
+                UNIQUE (org_id, request_id)\
+            )",
+        )
+        .expect("stage raw turn table");
+    schema.commit().expect("commit raw turn table");
+
+    let mut inserted = db.begin_transaction();
+    let provisional = inserted
+        .query_sql_with_result(
+            "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
+             VALUES ('turn-1', 'org-1', 'request-1') \
+             ON CONFLICT (org_id, request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .expect("stage idempotent raw turn insert");
+    let mutation = provisional.mutation.expect("provisional mutation result");
+    assert!(mutation.provisional);
+    assert_eq!(mutation.affected_rows, 1);
+    assert_eq!(mutation.conflict_rows, 0);
+    assert_eq!(mutation.rows.len(), 1);
+    assert_eq!(
+        mutation.rows.first().and_then(|row| row.get("raw_turn_id")),
+        Some(&Value::String("turn-1".to_string()))
+    );
+    let committed = inserted
+        .commit_with_result()
+        .expect("commit idempotent raw turn insert");
+    assert_eq!(committed.mutations.len(), 1);
+    assert!(!committed.mutations[0].provisional);
+    assert_eq!(committed.mutations[0].affected_rows, 1);
+    assert_eq!(committed.output.rows.len(), 1);
+
+    let mut duplicate = db.begin_transaction();
+    let provisional = duplicate
+        .query_sql_with_result(
+            "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
+             VALUES ('turn-2', 'org-1', 'request-1') \
+             ON CONFLICT (org_id, request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .expect("stage duplicate raw turn insert");
+    let mutation = provisional.mutation.expect("duplicate mutation result");
+    assert_eq!(mutation.affected_rows, 0);
+    assert_eq!(mutation.conflict_rows, 1);
+    assert!(mutation.rows.is_empty());
+    let committed = duplicate
+        .commit_with_result()
+        .expect("commit duplicate raw turn no-op");
+    assert_eq!(committed.mutations[0].affected_rows, 0);
+    assert_eq!(committed.mutations[0].conflict_rows, 1);
+    assert!(committed.output.rows.is_empty());
+
+    let mut local_duplicate = db.begin_transaction();
+    let staged = local_duplicate
+        .query_sql_with_result(
+            "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
+             VALUES \
+                ('turn-3', 'org-2', 'request-2'), \
+                ('turn-4', 'org-2', 'request-2') \
+             ON CONFLICT (org_id, request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .expect("resolve a transaction-local duplicate");
+    let mutation = staged.mutation.expect("transaction-local mutation result");
+    assert_eq!(mutation.affected_rows, 1);
+    assert_eq!(mutation.conflict_rows, 1);
+    assert_eq!(mutation.rows.len(), 1);
+    local_duplicate.rollback();
+    assert!(db
+        .begin_read_transaction()
+        .query_sql("SELECT raw_turn_id FROM raw_turns WHERE org_id = 'org-2'")
+        .expect("read after rollback")
+        .rows
+        .is_empty());
+
+    let mut nullable = db.begin_transaction();
+    let staged = nullable
+        .query_sql_with_result(
+            "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
+             VALUES \
+                ('turn-5', NULL, 'request-3'), \
+                ('turn-6', NULL, 'request-3') \
+             ON CONFLICT (org_id, request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .expect("NULL unique keys do not conflict");
+    let mutation = staged.mutation.expect("nullable mutation result");
+    assert_eq!(mutation.affected_rows, 2);
+    assert_eq!(mutation.conflict_rows, 0);
+    assert_eq!(mutation.rows.len(), 2);
+    nullable.commit().expect("commit nullable unique rows");
+}
+
+#[test]
+fn relational_insert_returning_conflicts_remain_deterministic_after_recovery() {
+    let path = unique_test_dir("relational_insert_returning_recovery");
+    {
+        let mut db = Database::open(&path).expect("open durable database");
+        let mut schema = db.begin_transaction();
+        schema
+            .query_sql(
+                "CREATE TABLE raw_turns (\
+                    raw_turn_id TEXT PRIMARY KEY, \
+                    request_id TEXT UNIQUE NOT NULL\
+                )",
+            )
+            .expect("stage raw turn table");
+        schema.commit().expect("commit raw turn table");
+        let mut insert = db.begin_transaction();
+        insert
+            .query_sql(
+                "INSERT INTO raw_turns (raw_turn_id, request_id) \
+                 VALUES ('turn-1', 'request-1') \
+                 ON CONFLICT (request_id) DO NOTHING \
+                 RETURNING raw_turn_id",
+            )
+            .expect("stage durable raw turn");
+        insert.commit().expect("commit durable raw turn");
+    }
+    {
+        let mut db = Database::open(&path).expect("recover durable database");
+        let mut duplicate = db.begin_transaction();
+        let staged = duplicate
+            .query_sql_with_result(
+                "INSERT INTO raw_turns (raw_turn_id, request_id) \
+                 VALUES ('turn-2', 'request-1') \
+                 ON CONFLICT (request_id) DO NOTHING \
+                 RETURNING raw_turn_id",
+            )
+            .expect("stage recovered duplicate");
+        assert_eq!(staged.mutation.unwrap().conflict_rows, 1);
+        let committed = duplicate
+            .commit_with_result()
+            .expect("commit recovered duplicate no-op");
+        assert_eq!(committed.mutations[0].affected_rows, 0);
+        assert_eq!(committed.mutations[0].conflict_rows, 1);
+    }
+    std::fs::remove_dir_all(path).expect("remove durable returning fixture");
+}
+
+#[test]
+fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() {
+    let path = unique_test_dir("relational_insert_returning_base_and_delta");
+    let mut db = Database::open(&path).expect("open durable database");
+    db.query_sql(
+        "CREATE TABLE raw_turns (\
+            raw_turn_id TEXT PRIMARY KEY, \
+            request_id TEXT UNIQUE NOT NULL\
+        )",
+    )
+    .expect("create raw turn table");
+    db.query_sql(
+        "INSERT INTO raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-base', 'request-base')",
+    )
+    .expect("insert checkpoint base row");
+    db.checkpoint().expect("checkpoint base row");
+    db.query_sql(
+        "INSERT INTO raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-delta', 'request-delta')",
+    )
+    .expect("insert live delta row");
+
+    let mut duplicate = db.begin_transaction();
+    for (raw_turn_id, request_id) in [
+        ("turn-base-duplicate", "request-base"),
+        ("turn-delta-duplicate", "request-delta"),
+    ] {
+        let staged = duplicate
+            .query_sql_with_result(&format!(
+                "INSERT INTO raw_turns (raw_turn_id, request_id) \
+                 VALUES ('{raw_turn_id}', '{request_id}') \
+                 ON CONFLICT (request_id) DO NOTHING \
+                 RETURNING raw_turn_id"
+            ))
+            .expect("stage conflict no-op");
+        let mutation = staged.mutation.expect("provisional mutation result");
+        assert_eq!(mutation.affected_rows, 0);
+        assert_eq!(mutation.conflict_rows, 1);
+        assert!(mutation.rows.is_empty());
+    }
+    let committed = duplicate
+        .commit_with_result()
+        .expect("commit base and delta conflict no-ops");
+    assert_eq!(committed.mutations.len(), 2);
+    assert!(committed
+        .mutations
+        .iter()
+        .all(|mutation| mutation.affected_rows == 0 && mutation.conflict_rows == 1));
+
+    drop(db);
+    std::fs::remove_dir_all(path).expect("remove base and delta fixture");
+}
+
+#[test]
+fn relational_insert_returning_result_budget_fails_before_staging() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        mutation_limits: skein_storage::MutationLimits {
+            max_result_rows: NonZeroUsize::new(1).unwrap(),
+            ..skein_storage::MutationLimits::default()
+        },
+        ..DatabaseConfig::default()
+    });
+    let mut schema = db.begin_transaction();
+    schema
+        .query_sql("CREATE TABLE messages (id TEXT PRIMARY KEY)")
+        .expect("stage messages table");
+    schema.commit().expect("commit messages table");
+
+    let mut tx = db.begin_transaction();
+    let error = tx
+        .query_sql_with_result(
+            "INSERT INTO messages (id) VALUES ('message-1'), ('message-2') RETURNING id",
+        )
+        .expect_err("oversized RETURNING result must fail closed");
+    assert!(error.to_string().contains("max_result_rows 1"));
+    assert!(tx
+        .query_sql("SELECT id FROM messages")
+        .expect("failed mutation leaves transaction state unchanged")
+        .rows
+        .is_empty());
+    tx.rollback();
+}
+
+#[test]
+fn relational_insert_returning_payload_budget_fails_before_staging() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        mutation_limits: skein_storage::MutationLimits {
+            max_result_payload_bytes: NonZeroUsize::new(4).unwrap(),
+            ..skein_storage::MutationLimits::default()
+        },
+        ..DatabaseConfig::default()
+    });
+    db.query_sql("CREATE TABLE messages (id TEXT PRIMARY KEY)")
+        .expect("create messages table");
+
+    let mut tx = db.begin_transaction();
+    let error = tx
+        .query_sql_with_result(
+            "INSERT INTO messages (id) VALUES ('message-oversized') RETURNING id",
+        )
+        .expect_err("oversized RETURNING payload must fail closed");
+    assert!(error.to_string().contains("max_result_payload_bytes 4"));
+    assert!(tx
+        .query_sql("SELECT id FROM messages")
+        .expect("failed mutation leaves transaction state unchanged")
+        .rows
+        .is_empty());
+    tx.rollback();
+}
+
+#[test]
+fn autocommit_insert_returning_exposes_only_inserted_rows() {
+    let mut db = Database::new();
+    db.query_sql(
+        "CREATE TABLE requests (\
+            id TEXT PRIMARY KEY, \
+            idempotency_key TEXT UNIQUE NOT NULL\
+        )",
+    )
+    .expect("create request table");
+    let inserted = db
+        .query_sql(
+            "INSERT INTO requests (id, idempotency_key) \
+             VALUES ('request-1', 'key-1') \
+             ON CONFLICT (idempotency_key) DO NOTHING \
+             RETURNING id",
+        )
+        .expect("autocommit inserted request");
+    assert_eq!(inserted.rows.len(), 1);
+    assert_eq!(
+        inserted.rows[0].get("id"),
+        Some(&Value::String("request-1".to_string()))
+    );
+    let conflict = db
+        .query_sql(
+            "INSERT INTO requests (id, idempotency_key) \
+             VALUES ('request-2', 'key-1') \
+             ON CONFLICT (idempotency_key) DO NOTHING \
+             RETURNING id",
+        )
+        .expect("autocommit duplicate request");
+    assert!(conflict.rows.is_empty());
+}
+
+#[test]
+fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
+    let mut db = Database::new();
+    let mut schema = db.begin_transaction();
+    schema
+        .query_sql(
+            "CREATE TABLE raw_turns (\
+                raw_turn_id TEXT PRIMARY KEY, \
+                request_id TEXT UNIQUE NOT NULL\
+            )",
+        )
+        .expect("stage raw turn table");
+    schema
+        .query_sql(
+            "CREATE TABLE dirty_queue (\
+                org_id TEXT PRIMARY KEY, \
+                dirty BOOLEAN NOT NULL\
+            )",
+        )
+        .expect("stage dirty queue table");
+    schema.commit().expect("commit ingestion schema");
+
+    let mut seed = db.begin_transaction();
+    seed.query_sql(
+        "INSERT INTO raw_turns (raw_turn_id, request_id) \
+         VALUES ('turn-1', 'request-1') \
+         ON CONFLICT (request_id) DO NOTHING \
+         RETURNING raw_turn_id",
+    )
+    .expect("stage initial raw turn");
+    seed.query_sql(
+        "INSERT INTO dirty_queue (org_id, dirty) VALUES ('org-1', FALSE) \
+         ON CONFLICT (org_id) DO UPDATE SET dirty = EXCLUDED.dirty",
+    )
+    .expect("stage initial dirty marker");
+    seed.commit().expect("commit initial ingestion");
+
+    let mut duplicate = db.begin_transaction();
+    let raw = duplicate
+        .query_sql_with_result(
+            "INSERT INTO raw_turns (raw_turn_id, request_id) \
+             VALUES ('turn-2', 'request-1') \
+             ON CONFLICT (request_id) DO NOTHING \
+             RETURNING raw_turn_id",
+        )
+        .expect("stage duplicate raw turn");
+    assert_eq!(raw.mutation.unwrap().conflict_rows, 1);
+    duplicate
+        .query_sql(
+            "INSERT INTO dirty_queue (org_id, dirty) VALUES ('org-1', TRUE) \
+             ON CONFLICT (org_id) DO UPDATE SET dirty = EXCLUDED.dirty",
+        )
+        .expect("stage dirty marker on duplicate path");
+    let committed = duplicate
+        .commit_with_result()
+        .expect("commit duplicate ingestion atomically");
+    assert_eq!(committed.mutations.len(), 2);
+    assert_eq!(committed.mutations[0].conflict_rows, 1);
+    assert_eq!(committed.mutations[1].affected_rows, 1);
+    assert_eq!(committed.mutations[1].conflict_rows, 1);
+    assert_eq!(
+        db.begin_read_transaction()
+            .query_sql("SELECT dirty FROM dirty_queue WHERE org_id = 'org-1'")
+            .expect("read committed dirty marker")
+            .rows[0]
+            .get("dirty"),
+        Some(&Value::Bool(true))
+    );
+}
+
 fn unique_test_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

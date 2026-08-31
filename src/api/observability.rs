@@ -3,9 +3,10 @@ use super::{
     SlowQueryLogRecordSummary, StatementExecutionContext,
 };
 use crate::error::{Result, SkeinError};
+use crate::executor;
 use crate::relational_sql::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
-    compile_relational_statement_sql, format_append_explain, project_append_rows,
+    compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
 };
 use crate::telemetry::QueryTelemetry;
 use crate::value::Value;
@@ -286,15 +287,40 @@ impl Database {
                 create.table.name
             )));
         }
-        let transaction =
-            compile_relational_statement_sql(sql_text, parameters, self.store.relational_state())?;
+        let compiled = compile_relational_statement_sql_with_result(
+            sql_text,
+            parameters,
+            self.store.relational_state(),
+        )?;
         let summary = self
             .store
-            .commit_relational_transaction(&mut self.catalog, transaction)?;
+            .commit_relational_transaction(&mut self.catalog, compiled.transaction)?;
         self.complete_required_relational_row_checkpoint("SQL commit")?;
-        Ok(QueryOutput {
-            rows: summary.rows.into(),
-        })
+        if summary.relational_mutation_outcomes.len() > 1 {
+            return Err(SkeinError::StorageIntegrity(
+                "one SQL statement produced multiple relational mutation outcomes".to_string(),
+            ));
+        }
+        let mutation = summary
+            .relational_mutation_outcomes
+            .first()
+            .map(|outcome| {
+                super::project_relational_mutation_outcome(
+                    outcome,
+                    compiled.returning.as_ref(),
+                    self.store.relational_state(),
+                    self.config.mutation_limits,
+                    false,
+                )
+            })
+            .transpose()?;
+        let mut rows: executor::QueryRows = summary.rows.into();
+        if rows.is_empty()
+            && let Some(mutation) = mutation
+        {
+            rows = mutation.rows;
+        }
+        Ok(QueryOutput { rows })
     }
 
     pub fn slow_query_log_jsonl(&self) -> Result<String> {

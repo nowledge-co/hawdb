@@ -491,6 +491,33 @@ pub struct QueryOutput {
     pub rows: executor::QueryRows,
 }
 
+/// Deterministic outcome for one relational INSERT statement.
+///
+/// A staged statement is provisional until its enclosing transaction commits.
+/// Conflict no-ops increment `conflict_rows`, never `affected_rows`, and never
+/// contribute a `RETURNING` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalMutationResult {
+    pub affected_rows: usize,
+    pub conflict_rows: usize,
+    pub rows: executor::QueryRows,
+    pub provisional: bool,
+}
+
+/// Result of one SQL statement executed inside a database transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlStatementResult {
+    pub output: QueryOutput,
+    pub mutation: Option<RelationalMutationResult>,
+}
+
+/// Confirmed results produced by the durable transaction commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionCommitResult {
+    pub output: QueryOutput,
+    pub mutations: Vec<RelationalMutationResult>,
+}
+
 #[cfg(test)]
 pub(super) trait QueryRowLookup: Copy {
     fn get(&self, column: &str) -> Option<&Value>;
@@ -697,10 +724,18 @@ pub(super) struct DatabaseTransactionState {
     relational_state: skein_storage::RelationalState,
     append_transaction: skein_storage::AppendTransaction,
     append_state: skein_storage::AppendState,
+    relational_returning: Vec<Option<crate::relational_sql::RelationalReturningProjection>>,
     relational_index:
         std::result::Result<Option<crate::store::RelationalTransactionIndexView>, String>,
     relational_rows:
         std::result::Result<Option<crate::store::RelationalTransactionRowView>, String>,
+}
+
+struct SparseRelationalStatementStage {
+    state: skein_storage::RelationalState,
+    mutation_outcomes: Vec<skein_storage::RelationalMutationOutcome>,
+    index_capture: skein_storage::RelationalIndexChangeCapture,
+    row_capture: skein_storage::RelationalRowChangeCapture,
 }
 
 pub(super) struct GraphTransactionStatementOutcome {
@@ -19255,6 +19290,7 @@ impl DatabaseTransactionState {
             relational_state: db.store.relational_state().clone(),
             append_transaction: skein_storage::AppendTransaction::default(),
             append_state: db.store.append_state().clone(),
+            relational_returning: Vec::new(),
             relational_index: db
                 .store
                 .begin_authoritative_relational_transaction_index()
@@ -19270,6 +19306,7 @@ impl DatabaseTransactionState {
         self.graph_transaction.take();
         self.relational_transaction.writes.clear();
         self.append_transaction.writes.clear();
+        self.relational_returning.clear();
         self.relational_index = Ok(None);
         self.relational_rows = Ok(None);
     }
@@ -19288,6 +19325,7 @@ impl DatabaseTransactionState {
             relational_state: std::mem::take(&mut self.relational_state),
             append_transaction: std::mem::take(&mut self.append_transaction),
             append_state: std::mem::take(&mut self.append_state),
+            relational_returning: std::mem::take(&mut self.relational_returning),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
         }
@@ -19308,9 +19346,9 @@ impl DatabaseTransactionState {
     }
 
     fn stage_sparse_authoritative_relational_statement(
-        &mut self,
+        &self,
         transaction: skein_storage::RelationalTransaction,
-    ) -> Result<Option<skein_storage::RelationalState>> {
+    ) -> Result<Option<SparseRelationalStatementStage>> {
         let rows = match &self.relational_rows {
             Ok(Some(rows)) => rows,
             Ok(None) => return Ok(None),
@@ -19320,7 +19358,7 @@ impl DatabaseTransactionState {
                 )));
             }
         };
-        let index = match &mut self.relational_index {
+        let index = match &self.relational_index {
             Ok(Some(index)) => index,
             Ok(None) => {
                 return Err(SkeinError::StorageIntegrity(
@@ -19338,7 +19376,7 @@ impl DatabaseTransactionState {
             .as_ref()
             .expect("database transaction must own a graph workspace")
             .store();
-        let (next, index_capture, row_capture) = store
+        let (next, index_capture, row_capture, mutation_outcomes) = store
             .stage_sparse_relational_transaction_statement(
                 &self.relational_state,
                 rows,
@@ -19346,14 +19384,12 @@ impl DatabaseTransactionState {
                 index,
             )
             .map_err(map_transaction_relational_error)?;
-        let next_rows = rows
-            .stage_advance(row_capture)
-            .map_err(map_transaction_relational_error)?;
-        index
-            .append(index_capture)
-            .map_err(map_transaction_relational_error)?;
-        self.relational_rows = Ok(Some(next_rows));
-        Ok(Some(next))
+        Ok(Some(SparseRelationalStatementStage {
+            state: next,
+            mutation_outcomes,
+            index_capture,
+            row_capture,
+        }))
     }
 }
 
@@ -19542,7 +19578,7 @@ fn execute_database_transaction_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
-) -> Result<QueryOutput> {
+) -> Result<SqlStatementResult> {
     let prepared = runtime.relational_plan_template_cache.prepare(sql_text)?;
     execute_database_transaction_prepared_sql(
         runtime,
@@ -19563,7 +19599,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
-) -> Result<QueryOutput> {
+) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), allow_locking_select)?;
     if !allow_system_schema_registry_write
         && crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
@@ -19597,7 +19633,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 slow_queries: &[],
                 statement_summaries: &[],
             },
-        );
+        )
+        .map(sql_query_result);
     }
     if let Some(plan) = crate::relational_sql::compile_append_select_sql(
         sql_text,
@@ -19621,9 +19658,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 .max_read_result_payload_bytes
                 .unwrap_or(usize::MAX),
         )?;
-        return Ok(QueryOutput {
+        return Ok(sql_query_result(QueryOutput {
             rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
-        });
+        }));
     }
     if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
         sql_text,
@@ -19655,9 +19692,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
         } else {
             None
         };
-        return Ok(QueryOutput {
+        return Ok(sql_query_result(QueryOutput {
             rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
-        });
+        }));
     }
     if matches!(
         prepared.statement(),
@@ -19708,7 +19745,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 None,
             ),
         )?;
-        return Ok(QueryOutput { rows: output.rows });
+        return Ok(sql_query_result(QueryOutput { rows: output.rows }));
     }
 
     runtime.ensure_writable(
@@ -19739,9 +19776,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .stage_transaction(&transaction, skein_storage::AppendMutationLimits::default())
             .map_err(map_transaction_append_error)?;
         state.append_transaction.writes.extend(transaction.writes);
-        return Ok(QueryOutput {
+        return Ok(sql_query_result(QueryOutput {
             rows: Vec::new().into(),
-        });
+        }));
     }
     if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
         && state.append_state.schema(&create.table.name).is_some()
@@ -19751,20 +19788,25 @@ pub(super) fn execute_database_transaction_prepared_sql(
             create.table.name
         )));
     }
-    let transaction = crate::relational_sql::compile_relational_statement_sql(
+    let compiled = crate::relational_sql::compile_relational_statement_sql_with_result(
         sql_text,
         parameters,
         &state.relational_state,
     )?;
-    let next_relational_state = if runtime
+    let transaction = compiled.transaction;
+    let mut pending_index_capture = None;
+    let mut pending_row_capture = None;
+    let (next_relational_state, mutation_outcomes) = if runtime
         .config
         .relational_index_mode
         .requires_authoritative_indexes()
     {
-        if let Some(next) =
+        if let Some(staged) =
             state.stage_sparse_authoritative_relational_statement(transaction.clone())?
         {
-            next
+            pending_index_capture = Some(staged.index_capture);
+            pending_row_capture = Some(staged.row_capture);
+            (staged.state, staged.mutation_outcomes)
         } else {
             let index = match &mut state.relational_index {
                 Ok(Some(index)) => index,
@@ -19779,9 +19821,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
                     )));
                 }
             };
-            let (next, capture) = state
+            let (next, capture, outcomes) = state
                 .relational_state
-                .stage_transaction_with_authoritative_index(
+                .stage_transaction_with_authoritative_index_and_outcomes(
                     transaction.clone(),
                     skein_storage::RelationalMutationLimits::default(),
                     skein_storage::RelationalOverflowConfig::default(),
@@ -19789,29 +19831,188 @@ pub(super) fn execute_database_transaction_prepared_sql(
                     index,
                 )
                 .map_err(map_transaction_relational_error)?;
-            index
-                .append(capture)
-                .map_err(map_transaction_relational_error)?;
-            next
+            pending_index_capture = Some(capture);
+            (next, outcomes)
         }
     } else {
         state
             .relational_state
-            .stage_transaction(
+            .stage_transaction_with_outcomes(
                 transaction.clone(),
                 skein_storage::RelationalMutationLimits::default(),
                 skein_storage::RelationalOverflowConfig::default(),
             )
             .map_err(map_transaction_relational_error)?
     };
+    if mutation_outcomes.len() > 1 {
+        return Err(SkeinError::StorageIntegrity(
+            "one SQL statement produced multiple relational mutation outcomes".to_string(),
+        ));
+    }
+    let mutation = mutation_outcomes
+        .first()
+        .map(|outcome| {
+            project_relational_mutation_outcome(
+                outcome,
+                compiled.returning.as_ref(),
+                &next_relational_state,
+                runtime.config.mutation_limits,
+                true,
+            )
+        })
+        .transpose()?;
+    let next_relational_rows = if let Some(row_capture) = pending_row_capture {
+        let rows = match &state.relational_rows {
+            Ok(Some(rows)) => rows,
+            Ok(None) => {
+                return Err(SkeinError::StorageIntegrity(
+                    "relational row transaction view is unavailable".to_string(),
+                ));
+            }
+            Err(error) => {
+                return Err(SkeinError::StorageIntegrity(format!(
+                    "relational transaction row view could not be pinned: {error}"
+                )));
+            }
+        };
+        Some(
+            rows.stage_advance(row_capture)
+                .map_err(map_transaction_relational_error)?,
+        )
+    } else {
+        None
+    };
+    if let Some(index_capture) = pending_index_capture {
+        state
+            .relational_index
+            .as_mut()
+            .map_err(|error| {
+                SkeinError::StorageIntegrity(format!(
+                    "authoritative transaction index view could not be pinned: {error}"
+                ))
+            })?
+            .as_mut()
+            .ok_or_else(|| {
+                SkeinError::StorageIntegrity(
+                    "authoritative transaction index view is unavailable".to_string(),
+                )
+            })?
+            .append(index_capture)
+            .map_err(map_transaction_relational_error)?;
+    }
+    if let Some(next_relational_rows) = next_relational_rows {
+        state.relational_rows = Ok(Some(next_relational_rows));
+    }
     state.relational_state = next_relational_state;
     state
         .relational_transaction
         .writes
         .extend(transaction.writes);
-    Ok(QueryOutput {
-        rows: Vec::new().into(),
+    state
+        .relational_returning
+        .extend(mutation_outcomes.iter().map(|_| compiled.returning.clone()));
+    let rows = mutation
+        .as_ref()
+        .map(|mutation| mutation.rows.clone())
+        .unwrap_or_default();
+    Ok(SqlStatementResult {
+        output: QueryOutput { rows },
+        mutation,
     })
+}
+
+fn sql_query_result(output: QueryOutput) -> SqlStatementResult {
+    SqlStatementResult {
+        output,
+        mutation: None,
+    }
+}
+
+fn project_relational_mutation_outcome(
+    outcome: &skein_storage::RelationalMutationOutcome,
+    returning: Option<&crate::relational_sql::RelationalReturningProjection>,
+    state: &skein_storage::RelationalState,
+    limits: skein_storage::MutationLimits,
+    provisional: bool,
+) -> Result<RelationalMutationResult> {
+    if outcome.affected_rows > limits.max_affected_rows.get() {
+        return Err(SkeinError::Execution(format!(
+            "relational mutation affects {} rows, exceeding max_affected_rows {}",
+            outcome.affected_rows, limits.max_affected_rows
+        )));
+    }
+    let rows = if let Some(returning) = returning {
+        if returning.table != outcome.table {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "relational mutation outcome for table {} was paired with RETURNING for table {}",
+                outcome.table, returning.table
+            )));
+        }
+        if outcome.rows.len() > limits.max_result_rows.get() {
+            return Err(SkeinError::Execution(format!(
+                "relational mutation returns {} rows, exceeding max_result_rows {}",
+                outcome.rows.len(),
+                limits.max_result_rows
+            )));
+        }
+        let schema = state.table_schema(&outcome.table).ok_or_else(|| {
+            SkeinError::StorageIntegrity(format!(
+                "relational mutation outcome references unknown table {}",
+                outcome.table
+            ))
+        })?;
+        let positions = returning
+            .columns
+            .iter()
+            .map(|column| {
+                schema.column_position(column).ok_or_else(|| {
+                    SkeinError::StorageIntegrity(format!(
+                        "relational mutation outcome references unknown column {column}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let query_schema = executor::QuerySchema::try_new(returning.columns.clone())?;
+        let mut builder = executor::QueryRowsBuilder::with_schema(query_schema, outcome.rows.len());
+        for row in &outcome.rows {
+            builder.push_values(
+                positions
+                    .iter()
+                    .map(|position| relational_value_to_query_value(&row.values()[*position]))
+                    .collect::<Result<Vec<_>>>()?,
+            )?;
+        }
+        let rows = builder.finish();
+        if rows.payload_bytes() > limits.max_result_payload_bytes.get() {
+            return Err(SkeinError::Execution(format!(
+                "relational mutation result contains {} payload bytes, exceeding max_result_payload_bytes {}",
+                rows.payload_bytes(), limits.max_result_payload_bytes
+            )));
+        }
+        rows
+    } else {
+        executor::QueryRows::empty()
+    };
+    Ok(RelationalMutationResult {
+        affected_rows: outcome.affected_rows,
+        conflict_rows: outcome.conflict_rows,
+        rows,
+        provisional,
+    })
+}
+
+fn relational_value_to_query_value(value: &skein_storage::RelationalValue) -> Result<Value> {
+    match value {
+        skein_storage::RelationalValue::Null => Ok(Value::Null),
+        skein_storage::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
+        skein_storage::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        skein_storage::RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
+        skein_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
+        skein_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        skein_storage::RelationalValue::Overflow(_) => Err(SkeinError::StorageIntegrity(
+            "logical relational mutation outcome contains an overflow reference".to_string(),
+        )),
+    }
 }
 
 fn map_transaction_append_error(error: skein_storage::AppendTableError) -> SkeinError {
@@ -19865,8 +20066,9 @@ fn commit_database_transaction_state(
     db: &mut Database,
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,
-) -> Result<QueryOutput> {
+) -> Result<TransactionCommitResult> {
     db.ensure_writable()?;
+    let returning = std::mem::take(&mut state.relational_returning);
     let graph_transaction = state
         .graph_transaction
         .take()
@@ -19892,8 +20094,34 @@ fn commit_database_transaction_state(
         )?
     };
     db.complete_required_relational_row_checkpoint("transaction commit")?;
-    Ok(QueryOutput {
-        rows: summary.rows.into(),
+    if returning.len() != summary.relational_mutation_outcomes.len() {
+        return Err(SkeinError::StorageIntegrity(format!(
+            "transaction recorded {} relational result projections but committed {} outcomes",
+            returning.len(),
+            summary.relational_mutation_outcomes.len()
+        )));
+    }
+    let mutations = summary
+        .relational_mutation_outcomes
+        .iter()
+        .zip(&returning)
+        .map(|(outcome, returning)| {
+            project_relational_mutation_outcome(
+                outcome,
+                returning.as_ref(),
+                db.store.relational_state(),
+                db.config.mutation_limits,
+                false,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut rows: executor::QueryRows = summary.rows.into();
+    if rows.is_empty() && mutations.len() == 1 {
+        rows = mutations[0].rows.clone();
+    }
+    Ok(TransactionCommitResult {
+        output: QueryOutput { rows },
+        mutations,
     })
 }
 
@@ -19919,6 +20147,21 @@ impl DatabaseTransaction<'_> {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
+        self.query_sql_with_result_and_params(sql_text, parameters)
+            .map(|result| result.output)
+    }
+
+    /// Executes SQL and returns both PostgreSQL rows and a provisional mutation outcome.
+    pub fn query_sql_with_result(&mut self, sql_text: &str) -> Result<SqlStatementResult> {
+        self.query_sql_with_result_and_params(sql_text, &[])
+    }
+
+    /// Parameterized form of [`Self::query_sql_with_result`].
+    pub fn query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<SqlStatementResult> {
         execute_database_transaction_sql(
             &self.runtime,
             &mut self.state,
@@ -19946,9 +20189,15 @@ impl DatabaseTransaction<'_> {
             true,
             false,
         )
+        .map(|result| result.output)
     }
 
-    pub fn commit(mut self) -> Result<QueryOutput> {
+    pub fn commit(self) -> Result<QueryOutput> {
+        self.commit_with_result().map(|result| result.output)
+    }
+
+    /// Commits and returns outcomes recomputed against the durable commit state.
+    pub fn commit_with_result(mut self) -> Result<TransactionCommitResult> {
         commit_database_transaction_state(self.db, &mut self.state, false)
     }
 

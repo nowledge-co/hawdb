@@ -84,7 +84,8 @@ The scoped grammar includes:
 - `DISTINCT`, `GROUP BY`, `COUNT`, `SUM`, `MAX`, `COALESCE`, and
   `OCTET_LENGTH`;
 - deterministic PostgreSQL null ordering, `LIMIT`, and `OFFSET`;
-- `INSERT`, multi-row `VALUES`, `ON CONFLICT`, `UPDATE`, and `DELETE`;
+- `INSERT`, multi-row `VALUES`, `ON CONFLICT`, column-only `RETURNING`,
+  `UPDATE`, and `DELETE`;
 - `SELECT ... FOR SHARE` and `SELECT ... FOR UPDATE` in pessimistic concurrent
   transactions;
 - `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`, and
@@ -92,6 +93,13 @@ The scoped grammar includes:
 
 Unsupported syntax MUST fail during parse or binding. It MUST NOT silently use
 different semantics.
+
+`INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...` returns only rows
+inserted by that statement. A rejected candidate never contributes a returned
+row. The typed transaction API reports `affected_rows` and `conflict_rows` for
+the provisional statement outcome and recomputes the same result at commit.
+Only the commit result is confirmed. Result row, payload, and affected-row
+limits fail the statement before its transaction workspace is advanced.
 
 ## Concurrent locking
 
