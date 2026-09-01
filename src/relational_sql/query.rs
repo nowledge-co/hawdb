@@ -319,6 +319,13 @@ impl RelationalPhysicalAccess {
             Self::Probe(access) => &access.descriptor,
         }
     }
+
+    fn descriptor_mut(&mut self) -> &mut RelationalAccessPathDescriptor {
+        match self {
+            Self::Base(access) => &mut access.descriptor,
+            Self::Probe(access) => &mut access.descriptor,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,6 +478,36 @@ impl RelationalPhysicalJoinNode {
         Self::Relation(RelationalPhysicalRelation::new(
             binding, table, qualifier, access,
         ))
+    }
+
+    fn apply_index_coverage(
+        &mut self,
+        state: &RelationalState,
+        fields: &RelationalFieldPlan,
+    ) -> Result<()> {
+        match self {
+            Self::Relation(relation) => {
+                let descriptor = relation.access.descriptor_mut();
+                if descriptor.kind != RelationalAccessPathKind::Index {
+                    return Ok(());
+                }
+                let schema = state.table_schema(&relation.table).ok_or_else(|| {
+                    SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                })?;
+                let covering = fields.index_covers_table(
+                    &relation.table,
+                    schema,
+                    &descriptor.index_columns,
+                )?;
+                descriptor.covering = covering;
+                descriptor.requires_row_fetch = !covering;
+                Ok(())
+            }
+            Self::Join { left, right, .. } => {
+                left.apply_index_coverage(state, fields)?;
+                right.apply_index_coverage(state, fields)
+            }
+        }
     }
 
     fn join(
@@ -770,6 +807,14 @@ impl RelationalPhysicalJoinPlan {
         }
         Ok(())
     }
+
+    fn apply_index_coverage(
+        &mut self,
+        state: &RelationalState,
+        fields: &RelationalFieldPlan,
+    ) -> Result<()> {
+        self.root.apply_index_coverage(state, fields)
+    }
 }
 
 #[derive(Debug)]
@@ -831,8 +876,8 @@ fn merge_join_inputs(
             exclusive_range: false,
             reverse_order: false,
             unique_point: false,
-            covering: false,
-            requires_row_fetch: true,
+            covering: right.descriptor.covering,
+            requires_row_fetch: right.descriptor.requires_row_fetch,
             estimated_rows: state.row_count(right_table).max(1),
         },
         access: RelationalBaseAccess::Index {
@@ -878,6 +923,21 @@ fn hash_join_inputs(
 }
 
 impl PreparedRelationalAccessPlan {
+    fn apply_physical_index_coverage(
+        &mut self,
+        state: &RelationalState,
+        fields: &RelationalFieldPlan,
+    ) -> Result<()> {
+        self.physical_join_plan
+            .as_mut()
+            .ok_or_else(|| {
+                SkeinError::Execution(
+                    "cannot apply relational index coverage before physical planning".to_string(),
+                )
+            })?
+            .apply_index_coverage(state, fields)
+    }
+
     fn finalize_physical_join_plan(
         &mut self,
         statement: &SelectStatement,
@@ -1794,7 +1854,9 @@ fn prepare_relational_select(
             prepare_syntax_access_plan(&planned.statement, parameters, state, read_modes, limits)?
         }
     };
+    let field_plan = plan_relational_field_plan(&planned.statement, state)?;
     access_plan.finalize_physical_join_plan(&planned.statement, state, read_modes.index)?;
+    access_plan.apply_physical_index_coverage(state, &field_plan)?;
     let execution =
         PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
     let prepare_nanos = elapsed_nanos(prepare_started);
@@ -1898,6 +1960,28 @@ fn prepared_access_descriptors(
     )
 }
 
+fn plan_relational_field_plan(
+    select: &SelectStatement,
+    state: &RelationalState,
+) -> Result<RelationalFieldPlan> {
+    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+    let output_fields = plan_requested_fields(select, state)?;
+    let scan_fields = if (!select.order_by.is_empty() && !select.distinct && !has_aggregate)
+        || has_aggregate
+        || !select.group_by.is_empty()
+    {
+        plan_scan_fields(select, state)?
+    } else {
+        output_fields.clone()
+    };
+    let scan_hydration_fields = plan_scan_hydration_fields(select, state, &scan_fields)?;
+    Ok(RelationalFieldPlan::new(
+        scan_fields,
+        scan_hydration_fields,
+        output_fields,
+    ))
+}
+
 fn explain_select(
     prepared: &PreparedRelationalSelect,
     parameters: &[Value],
@@ -1964,7 +2048,6 @@ fn execute_select<'state>(
         .from_alias
         .clone()
         .unwrap_or_else(|| select.from.name.clone());
-    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let base_access = &prepared.access_plan.base_access;
     let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     let mut planned_joins = Vec::with_capacity(select.joins.len());
@@ -1995,20 +2078,11 @@ fn execute_select<'state>(
     }
     let default_task = skein_core::RuntimeTaskContext::default();
     let row_task = task_context.unwrap_or(&default_task);
-    let output_fields = plan_requested_fields(select, state)?;
-    let scan_fields = if (!select.order_by.is_empty() && !select.distinct && !has_aggregate)
-        || has_aggregate
-        || !select.group_by.is_empty()
-    {
-        plan_scan_fields(select, state)?
-    } else {
-        output_fields.clone()
-    };
-    let scan_hydration_fields = plan_scan_hydration_fields(select, state, &scan_fields)?;
+    let field_plan = plan_relational_field_plan(select, state)?;
     let row_runtime = RelationalRowRuntime::new(
         state,
         row_read_mode,
-        RelationalFieldPlan::new(scan_fields, scan_hydration_fields, output_fields),
+        field_plan,
         limits.row_read,
         limits.hydration,
         row_task,
@@ -2575,7 +2649,7 @@ fn explain_access_path(
     row_evidence: &RelationalRowExecutionEvidence,
 ) -> String {
     let planned = format!(
-        "equality_prefix={}, order_prefix={}, exclusive_seek={}, direction={}, unique_point={}, row_fetch={}",
+        "equality_prefix={}, order_prefix={}, exclusive_seek={}, direction={}, unique_point={}, covering={}, row_fetch={}",
         descriptor.equality_prefix_len,
         descriptor.order_prefix_len,
         descriptor.exclusive_range,
@@ -2585,10 +2659,11 @@ fn explain_access_path(
             "forward"
         },
         descriptor.unique_point,
+        descriptor.covering,
         descriptor.requires_row_fetch
     );
     let row = format!(
-        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}",
+        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}, row_index_covered_rows={}",
         row_evidence.runtime_path,
         row_evidence
             .projection_generation
@@ -2615,6 +2690,7 @@ fn explain_access_path(
         row_evidence.rows_visited,
         row_evidence.borrowed_rows_visited,
         row_evidence.owned_rows_visited,
+        row_evidence.index_covered_rows,
     );
     let Some(evidence) = evidence else {
         return format!("{planned}, {row}");
@@ -3563,6 +3639,7 @@ fn visit_base_entries<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     table: &str,
     access: &RelationalBaseAccess,
+    descriptor: Option<&RelationalAccessPathDescriptor>,
     visit: &mut dyn FnMut(RelationalReadRow) -> Result<bool>,
 ) -> Result<bool> {
     match access {
@@ -3571,14 +3648,21 @@ fn visit_base_entries<'a>(
             None => Ok(true),
         },
         RelationalBaseAccess::Index { name, scan } => {
-            index_runtime.visit_range_entries(state, table, name, scan, |_, key| match row_runtime
-                .read_point(
-                table, key,
-            )? {
-                Some(row) => visit(row),
-                None => Err(SkeinError::StorageIntegrity(format!(
-                    "relational index {name} on table {table} points to missing row {key:?}"
-                ))),
+            let covered_columns = descriptor
+                .filter(|descriptor| descriptor.covering)
+                .map(|descriptor| descriptor.index_columns.as_slice());
+            index_runtime.visit_range_entries(state, table, name, scan, |index_key, key| {
+                let row = match covered_columns {
+                    Some(index_columns) => row_runtime
+                        .read_index_covered(table, index_columns, index_key, key)?,
+                    None => row_runtime.read_point(table, key)?,
+                };
+                match row {
+                    Some(row) => visit(row),
+                    None => Err(SkeinError::StorageIntegrity(format!(
+                        "relational index {name} on table {table} points to missing or non-coverable row {key:?}"
+                    ))),
+                }
             })
         }
         RelationalBaseAccess::FullScan => row_runtime.visit_all(table, visit),
@@ -3648,6 +3732,7 @@ fn visit_tree_relation_entries<'a>(
             row_runtime,
             &relation.table,
             &access.access,
+            Some(&access.descriptor),
             visit,
         ),
         RelationalPhysicalAccess::Probe(access) => {
@@ -3677,15 +3762,34 @@ fn visit_tree_relation_entries<'a>(
                     let Some(prefix) = bound_join_key(outer, schema, columns)? else {
                         return Ok(true);
                     };
-                    index_runtime.visit_prefix(state, &relation.table, name, &prefix, |key| {
-                        match row_runtime.read_point(&relation.table, key)? {
+                    let covered_columns = access
+                        .descriptor
+                        .covering
+                        .then_some(access.descriptor.index_columns.as_slice());
+                    index_runtime.visit_prefix_entries(
+                        state,
+                        &relation.table,
+                        name,
+                        &prefix,
+                        |index_key, key| {
+                            let row = match covered_columns {
+                                Some(index_columns) => row_runtime.read_index_covered(
+                                    &relation.table,
+                                    index_columns,
+                                    index_key,
+                                    key,
+                                )?,
+                                None => row_runtime.read_point(&relation.table, key)?,
+                            };
+                            match row {
                             Some(row) => visit(row),
                             None => Err(SkeinError::StorageIntegrity(format!(
-                                "relational index {name} on table {} points to missing row {key:?}",
+                                "relational index {name} on table {} points to missing or non-coverable row {key:?}",
                                 relation.table
                             ))),
-                        }
-                    })
+                            }
+                        },
+                    )
                 }
                 RelationalJoinAccess::FullScan => row_runtime.visit_all(&relation.table, visit),
             }
@@ -3757,6 +3861,12 @@ fn batched_index_probe_key(
 
 const BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES: usize = 128;
 
+#[derive(Debug, Clone)]
+struct BatchedIndexJoinLocator {
+    primary_key: RelationalKey,
+    index_key: Option<RelationalKey>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flush_batched_index_join_rows<'a>(
     batch: &[(BoundRow<'a>, Option<RelationalKey>)],
@@ -3787,7 +3897,7 @@ fn flush_batched_index_join_rows<'a>(
         )));
     };
 
-    let mut locators_by_probe = BTreeMap::<RelationalKey, Vec<RelationalKey>>::new();
+    let mut locators_by_probe = BTreeMap::<RelationalKey, Vec<BatchedIndexJoinLocator>>::new();
     for (_, probe_key) in batch {
         let Some(probe_key) = probe_key else {
             continue;
@@ -3822,7 +3932,10 @@ fn flush_batched_index_join_rows<'a>(
                     )));
                 }
                 batch_tracker.try_charge(bytes)?;
-                locators.push(probe_key.clone());
+                locators.push(BatchedIndexJoinLocator {
+                    primary_key: probe_key.clone(),
+                    index_key: None,
+                });
             }
             RelationalJoinAccess::Index { .. } => {}
             RelationalJoinAccess::FullScan => {
@@ -3842,8 +3955,9 @@ fn flush_batched_index_join_rows<'a>(
             &right_relation.table,
             name,
             &prefixes,
-            |prefix, _, primary_key| {
-                let bytes = relational_key_resident_bytes(primary_key);
+            |prefix, index_key, primary_key| {
+                let bytes = relational_key_resident_bytes(index_key)
+                    .saturating_add(relational_key_resident_bytes(primary_key));
                 if batch_tracker.would_exceed(bytes) {
                     return Err(SkeinError::Execution(format!(
                         "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
@@ -3856,7 +3970,10 @@ fn flush_batched_index_join_rows<'a>(
                         "batch index reader emitted an unknown requested prefix".to_string(),
                     )
                 })?;
-                locators.push(primary_key.clone());
+                locators.push(BatchedIndexJoinLocator {
+                    primary_key: primary_key.clone(),
+                    index_key: Some(index_key.clone()),
+                });
                 Ok(true)
             },
         )?;
@@ -3865,11 +3982,13 @@ fn flush_batched_index_join_rows<'a>(
     let primary_keys = locators_by_probe
         .values()
         .flatten()
-        .cloned()
+        .map(|locator| locator.primary_key.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let read_rows = row_runtime.read_points(&right_relation.table, &primary_keys)?;
+    let read_rows = (!access.descriptor.covering)
+        .then(|| row_runtime.read_points(&right_relation.table, &primary_keys))
+        .transpose()?;
     let schema = state.table_schema(&right_relation.table).ok_or_else(|| {
         SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
@@ -3877,13 +3996,28 @@ fn flush_batched_index_join_rows<'a>(
     for (probe_key, locators) in locators_by_probe {
         let mut rows = Vec::with_capacity(locators.len());
         for locator in locators {
-            let Some(row) = read_rows.get(&locator).cloned() else {
+            let row = match (&locator.index_key, &read_rows) {
+                (Some(index_key), None) => row_runtime.read_index_covered(
+                    &right_relation.table,
+                    &access.descriptor.index_columns,
+                    index_key,
+                    &locator.primary_key,
+                )?,
+                (_, Some(read_rows)) => read_rows.get(&locator.primary_key).cloned(),
+                (None, None) => {
+                    return Err(SkeinError::StorageIntegrity(format!(
+                        "relational primary-key probe on table {} cannot claim secondary-index coverage",
+                        right_relation.table
+                    )));
+                }
+            };
+            let Some(row) = row else {
                 if matches!(access.access, RelationalJoinAccess::PrimaryKey(_)) {
                     continue;
                 }
                 return Err(SkeinError::StorageIntegrity(format!(
-                    "relational index probe on table {} points to missing row {locator:?}",
-                    right_relation.table
+                    "relational index probe on table {} points to missing or non-coverable row {:?}",
+                    right_relation.table, locator.primary_key
                 )));
             };
             let bound = BoundRow {
@@ -4750,6 +4884,7 @@ fn visit_relational_rows<'a>(
         row_runtime,
         &select.from.name,
         base_access,
+        None,
         &mut |row| {
             pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
             visit_joined_row(

@@ -2400,12 +2400,13 @@ mod tests {
             )
             .expect("open authoritative SQL reader");
             let output = database
-                .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
+                .query_sql("EXPLAIN ANALYZE SELECT body FROM documents WHERE owner = 'owner-1'")
                 .expect("read authoritative SQL index");
             let info = relational_explain_operator_info(&output, "IndexRangeScanExec");
             assert!(info.contains("runtime_path=authoritative"));
             assert!(info.contains("authoritative=1"));
             assert!(info.contains("canonical_fallback=0"));
+            assert!(info.contains("covering=false"));
         }
         {
             let mut database = Database::open_with_durability_and_config(
@@ -2419,12 +2420,13 @@ mod tests {
             )
             .expect("open authoritative SQL reader with an undersized cache");
             let output = database
-                .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
+                .query_sql("EXPLAIN ANALYZE SELECT body FROM documents WHERE owner = 'owner-1'")
                 .expect("cache admission rejection should retain bounded positioned reads");
             let info = relational_explain_operator_info(&output, "IndexRangeScanExec");
             assert!(info.contains("runtime_path=authoritative"));
             assert!(info.contains("authoritative=1"));
             assert!(info.contains("canonical_fallback=0"));
+            assert!(info.contains("covering=false"));
             assert!(info.contains("cache_admission_rejections="));
             assert!(!info.contains("cache_admission_rejections=0"));
         }
@@ -3047,19 +3049,37 @@ mod tests {
                 },
             )
             .expect("open authoritative batched-index reader");
-            let output = database
+            let non_covering = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.body AS document_body \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute non-covering batched index join");
+            let non_covering_info =
+                relational_explain_operator_info(&non_covering, "BatchedIndexNestedLoopJoinExec");
+            assert!(non_covering_info.contains("covering=false"));
+            assert!(non_covering_info.contains("row_fetch=true"));
+            assert!(non_covering_info.contains("row_logical_pages=2"));
+            assert!(non_covering_info.contains("row_rows=6"));
+
+            let covering = database
                 .query_sql(
                     "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
                      FROM join_keys AS k \
                      INNER JOIN join_documents AS d ON d.owner = k.owner",
                 )
                 .expect("execute batched index join");
-            let info = relational_explain_operator_info(&output, "BatchedIndexNestedLoopJoinExec");
+            let info =
+                relational_explain_operator_info(&covering, "BatchedIndexNestedLoopJoinExec");
             assert!(info.contains("runtime_path=authoritative"));
             assert!(info.contains("lookups=1"));
+            assert!(info.contains("covering=true"));
+            assert!(info.contains("row_fetch=false"));
             assert!(info.contains("row_runtime_path=snapshot_rows"));
-            assert!(info.contains("row_logical_pages=2"));
-            assert!(info.contains("row_rows=6"));
+            assert!(info.contains("row_logical_pages=1"));
+            assert!(info.contains("row_rows=3"));
+            assert!(info.contains("row_index_covered_rows=3"));
             database
                 .query_sql("INSERT INTO join_keys (id, owner) VALUES ('key-4', 'owner-c')")
                 .expect("append live join key");
