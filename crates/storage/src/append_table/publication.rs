@@ -17,9 +17,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKAPMAN1";
-const MANIFEST_VERSION: u16 = 1;
+const MANIFEST_VERSION: u16 = 2;
 const MANIFEST_HEADER_BYTES: usize = 128;
 const MANIFEST_INTEGRITY_OFFSET: usize = 84;
+const MANIFEST_INTEGRITY_TRAILER_OFFSET: usize = 120;
 
 pub fn append_segment_file(generation: u64) -> String {
     format!("append-{generation}.segment.skein")
@@ -39,6 +40,24 @@ pub struct AppendPublicationConfig {
     pub max_compaction_rows: usize,
     pub max_compaction_payload_bytes: usize,
     pub max_schema_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AppendPublicationState<'a> {
+    pub schemas: &'a BTreeMap<String, AppendTableSchema>,
+    pub generated_order_watermarks: &'a BTreeMap<String, i64>,
+}
+
+impl<'a> AppendPublicationState<'a> {
+    pub fn new(
+        schemas: &'a BTreeMap<String, AppendTableSchema>,
+        generated_order_watermarks: &'a BTreeMap<String, i64>,
+    ) -> Self {
+        Self {
+            schemas,
+            generated_order_watermarks,
+        }
+    }
 }
 
 impl Default for AppendPublicationConfig {
@@ -70,6 +89,7 @@ pub struct AppendGenerationManifest {
     pub previous_generation: Option<u64>,
     pub root_set_digest: Sha256Digest,
     pub schemas: BTreeMap<String, AppendTableSchema>,
+    pub generated_order_watermarks: BTreeMap<String, i64>,
     pub segments: Vec<AppendSegmentBinding>,
 }
 
@@ -168,11 +188,35 @@ impl AppendPublisher {
         rows: &[AppendTableRow],
         config: AppendPublicationConfig,
     ) -> Result<AppendPublicationReport, AppendTableError> {
+        let watermarks = effective_publication_watermarks(previous, rows);
+        let generated_order_watermarks =
+            super::derive_generated_order_watermarks(schemas, &watermarks)?;
+        Self::publish_candidate_with_state(
+            directory,
+            generation,
+            source_commit_epoch,
+            previous,
+            AppendPublicationState::new(schemas, &generated_order_watermarks),
+            rows,
+            config,
+        )
+    }
+
+    pub fn publish_candidate_with_state(
+        directory: &Path,
+        generation: u64,
+        source_commit_epoch: u64,
+        previous: Option<&AppendGenerationReader>,
+        state: AppendPublicationState<'_>,
+        rows: &[AppendTableRow],
+        config: AppendPublicationConfig,
+    ) -> Result<AppendPublicationReport, AppendTableError> {
         validate_publication_request(
             generation,
             source_commit_epoch,
             previous,
-            schemas,
+            state.schemas,
+            state.generated_order_watermarks,
             rows,
             config,
         )?;
@@ -218,7 +262,8 @@ impl AppendPublisher {
             source_commit_epoch,
             previous_generation: previous.map(|reader| reader.manifest.generation),
             root_set_digest: integrity_digest(&[]).sha256,
-            schemas: schemas.clone(),
+            schemas: state.schemas.clone(),
+            generated_order_watermarks: state.generated_order_watermarks.clone(),
             segments,
         };
         let payload = encode_manifest_payload(&manifest, config)?;
@@ -340,6 +385,11 @@ impl AppendGenerationReader {
             }
             readers.push(reader);
         }
+        super::validate_generated_order_watermarks(
+            &manifest.schemas,
+            &watermarks,
+            &manifest.generated_order_watermarks,
+        )?;
         Ok(Self {
             manifest: Arc::new(manifest),
             segments: readers.into(),
@@ -514,6 +564,10 @@ impl AppendGenerationReader {
         }
         watermarks
     }
+
+    pub fn generated_order_watermarks(&self) -> &BTreeMap<String, i64> {
+        &self.manifest.generated_order_watermarks
+    }
 }
 
 fn validate_publication_request(
@@ -521,6 +575,7 @@ fn validate_publication_request(
     source_commit_epoch: u64,
     previous: Option<&AppendGenerationReader>,
     schemas: &BTreeMap<String, AppendTableSchema>,
+    generated_order_watermarks: &BTreeMap<String, i64>,
     rows: &[AppendTableRow],
     config: AppendPublicationConfig,
 ) -> Result<(), AppendTableError> {
@@ -552,6 +607,12 @@ fn validate_publication_request(
             )));
         }
     }
+    let base_watermarks = effective_publication_watermarks(previous, rows);
+    super::validate_generated_order_watermarks(
+        schemas,
+        &base_watermarks,
+        generated_order_watermarks,
+    )?;
     if let Some(previous) = previous {
         if generation <= previous.manifest.generation
             || source_commit_epoch < previous.manifest.source_commit_epoch
@@ -567,6 +628,16 @@ fn validate_publication_request(
                 )));
             }
         }
+        for (table, prior) in &previous.manifest.generated_order_watermarks {
+            if generated_order_watermarks
+                .get(table)
+                .is_none_or(|current| current < prior)
+            {
+                return Err(AppendTableError::Constraint(format!(
+                    "append generated-order watermark for table {table} cannot regress"
+                )));
+            }
+        }
     }
     if let Some(row) = rows.iter().find(|row| !schemas.contains_key(&row.table)) {
         return Err(AppendTableError::Schema(format!(
@@ -575,6 +646,24 @@ fn validate_publication_request(
         )));
     }
     Ok(())
+}
+
+fn effective_publication_watermarks(
+    previous: Option<&AppendGenerationReader>,
+    rows: &[AppendTableRow],
+) -> BTreeMap<String, BTreeMap<RelationalKey, RelationalKey>> {
+    let mut watermarks = previous.map_or_else(BTreeMap::new, AppendGenerationReader::watermarks);
+    for row in rows {
+        let watermark = watermarks
+            .entry(row.table.clone())
+            .or_default()
+            .entry(row.partition_key.clone())
+            .or_insert_with(|| row.order_key.clone());
+        if row.order_key > *watermark {
+            *watermark = row.order_key.clone();
+        }
+    }
+    watermarks
 }
 
 fn validate_config(config: AppendPublicationConfig) -> Result<(), AppendTableError> {
@@ -620,6 +709,10 @@ fn encode_manifest_payload(
         }
         encoder.bytes(&encoded, "append manifest schema record")?;
     }
+    for (table, watermark) in &manifest.generated_order_watermarks {
+        encoder.string(table, "append generated-order table")?;
+        encoder.raw(&watermark.to_le_bytes());
+    }
     for binding in &manifest.segments {
         encoder.u64(binding.generation);
         encoder.u64(binding.source_commit_epoch);
@@ -655,11 +748,18 @@ fn encode_manifest_with_payload(
     encoded.extend_from_slice(manifest.root_set_digest.as_bytes());
     encoded.extend_from_slice(&0u32.to_le_bytes());
     encoded.extend_from_slice(&[0u8; SHA256_BYTES]);
-    encoded.extend_from_slice(&0u64.to_le_bytes());
+    encoded.extend_from_slice(&(manifest.generated_order_watermarks.len() as u32).to_le_bytes());
+    encoded.extend_from_slice(&0u32.to_le_bytes());
     debug_assert_eq!(encoded.len(), MANIFEST_HEADER_BYTES);
     encoded.extend_from_slice(&payload);
-    let mut integrity_input = Vec::with_capacity(MANIFEST_INTEGRITY_OFFSET + payload.len());
+    let mut integrity_input = Vec::with_capacity(
+        MANIFEST_INTEGRITY_OFFSET
+            + (MANIFEST_HEADER_BYTES - MANIFEST_INTEGRITY_TRAILER_OFFSET)
+            + payload.len(),
+    );
     integrity_input.extend_from_slice(&encoded[..MANIFEST_INTEGRITY_OFFSET]);
+    integrity_input
+        .extend_from_slice(&encoded[MANIFEST_INTEGRITY_TRAILER_OFFSET..MANIFEST_HEADER_BYTES]);
     integrity_input.extend_from_slice(&payload);
     let digest = integrity_digest(&integrity_input);
     encoded[84..88].copy_from_slice(&digest.crc32c.get().to_le_bytes());
@@ -677,7 +777,7 @@ fn decode_manifest(
         ));
     }
     let version = read_u16(encoded, 8);
-    if version != MANIFEST_VERSION || read_u16(encoded, 10) != 0 || read_u64(encoded, 120) != 0 {
+    if version != MANIFEST_VERSION || read_u16(encoded, 10) != 0 || read_u32(encoded, 124) != 0 {
         return Err(AppendTableError::Corruption(format!(
             "unsupported append manifest version {version} or non-zero reserved fields"
         )));
@@ -687,10 +787,12 @@ fn decode_manifest(
     let previous_raw = read_u64(encoded, 28);
     let schema_count = read_u32(encoded, 36) as usize;
     let segment_count = read_u32(encoded, 40) as usize;
+    let generated_order_watermark_count = read_u32(encoded, 120) as usize;
     let payload_len = to_usize(read_u64(encoded, 44), "manifest payload length")?;
     if generation == 0
         || (source_commit_epoch == 0 && (schema_count != 0 || segment_count != 0))
         || schema_count > config.max_schemas
+        || generated_order_watermark_count > config.max_schemas
         || segment_count > config.max_segments
         || MANIFEST_HEADER_BYTES.checked_add(payload_len) != Some(encoded.len())
     {
@@ -706,8 +808,14 @@ fn decode_manifest(
             "append manifest root-set digest mismatch".to_string(),
         ));
     }
-    let mut integrity_input = Vec::with_capacity(MANIFEST_INTEGRITY_OFFSET + payload.len());
+    let mut integrity_input = Vec::with_capacity(
+        MANIFEST_INTEGRITY_OFFSET
+            + (MANIFEST_HEADER_BYTES - MANIFEST_INTEGRITY_TRAILER_OFFSET)
+            + payload.len(),
+    );
     integrity_input.extend_from_slice(&encoded[..MANIFEST_INTEGRITY_OFFSET]);
+    integrity_input
+        .extend_from_slice(&encoded[MANIFEST_INTEGRITY_TRAILER_OFFSET..MANIFEST_HEADER_BYTES]);
     integrity_input.extend_from_slice(payload);
     let digest = integrity_digest(&integrity_input);
     let expected_crc = read_u32(encoded, 84);
@@ -734,6 +842,27 @@ fn decode_manifest(
         {
             return Err(AppendTableError::Corruption(
                 "append manifest schema record has a non-zero epoch or duplicate name".to_string(),
+            ));
+        }
+    }
+    let mut generated_order_watermarks = BTreeMap::new();
+    for _ in 0..generated_order_watermark_count {
+        let table = decoder.string(config.max_schema_bytes, "append generated-order table")?;
+        let watermark = i64::from_le_bytes(
+            decoder
+                .take(
+                    std::mem::size_of::<i64>(),
+                    "append generated-order watermark",
+                )?
+                .try_into()
+                .expect("fixed i64"),
+        );
+        if generated_order_watermarks
+            .insert(table, watermark)
+            .is_some()
+        {
+            return Err(AppendTableError::Corruption(
+                "append manifest contains duplicate generated-order watermarks".to_string(),
             ));
         }
     }
@@ -770,6 +899,7 @@ fn decode_manifest(
         previous_generation,
         root_set_digest,
         schemas,
+        generated_order_watermarks,
         segments,
     })
 }
@@ -901,6 +1031,7 @@ mod tests {
             ],
             partition_key: vec!["stream".to_string()],
             order_key: vec!["sequence".to_string()],
+            order_mode: Default::default(),
         }
     }
 
@@ -1101,6 +1232,31 @@ mod tests {
                 AppendPublicationConfig::default()
             ),
             Err(AppendTableError::Corruption(_))
+        ));
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn manifest_integrity_covers_the_generated_watermark_count() {
+        let directory = directory("watermark-count-tamper");
+        let schemas = BTreeMap::from([("events".to_string(), schema())]);
+        AppendPublisher::publish_candidate(
+            &directory,
+            1,
+            1,
+            None,
+            &schemas,
+            &[row(1)],
+            AppendPublicationConfig::default(),
+        )
+        .expect("publish candidate");
+        let path = directory.join(append_generation_manifest_file(1));
+        let mut encoded = fs::read(path).expect("read manifest");
+        encoded[MANIFEST_INTEGRITY_TRAILER_OFFSET] = 1;
+
+        assert!(matches!(
+            decode_manifest(&encoded, AppendPublicationConfig::default()),
+            Err(AppendTableError::Corruption(message)) if message.contains("checksum mismatch")
         ));
         fs::remove_dir_all(directory).expect("remove test directory");
     }

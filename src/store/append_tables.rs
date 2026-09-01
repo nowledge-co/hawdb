@@ -213,6 +213,7 @@ mod tests {
             ],
             partition_key: vec!["stream".to_string()],
             order_key: vec!["sequence".to_string()],
+            order_mode: Default::default(),
         }
     }
 
@@ -264,6 +265,7 @@ mod tests {
             ],
             partition_key: vec!["stream".to_string()],
             order_key: vec!["sequence".to_string()],
+            order_mode: Default::default(),
         }
     }
 

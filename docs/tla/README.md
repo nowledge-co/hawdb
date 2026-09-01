@@ -182,6 +182,17 @@ epoch. Publication cannot expose only one component, crash recovery selects a
 complete durable state, and a pinned reader retains its original triple while
 later transactions commit.
 
+`SkeinGeneratedAppendOrder.tla` models table-wide `commit_sequence`
+allocation at the serialized commit boundary. Each accepted request receives
+one contiguous interval before its materialized rows enter the WAL history,
+while abort and sequence exhaustion leave the allocator unchanged. Pending
+intervals remain outside the visible durable prefix. A group sync publishes all
+of its intervals together; an uncertain sync poisons the handle, and recovery
+retains an exact WAL prefix before reconstructing the next value. The checked
+invariants cover interval contiguity, no reuse within the retained history,
+durability-before-visibility, no pending visibility, and no consumption on
+abort or exhaustion.
+
 Negative-control configurations live under `docs/tla/mutants`. Each enables one
 unsafe transition and must violate its declared invariant. They are checked
 separately so deliberately failing models cannot enter the positive Bazel suite:

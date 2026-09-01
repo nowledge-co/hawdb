@@ -94,6 +94,7 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
     let mut storage_mode = None;
     let mut partition_key = None;
     let mut order_key = None;
+    let mut generated_order = None;
     for option in options {
         let SqlOption::KeyValue { key, value } = option else {
             return Err(SkeinError::Semantic(
@@ -117,6 +118,11 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
                 lower_storage_key(value, "order_key")?,
                 "order_key",
             )?,
+            "generated_order" => set_once(
+                &mut generated_order,
+                lower_generated_order(value)?,
+                "generated_order",
+            )?,
             _ => {
                 return Err(SkeinError::Semantic(format!(
                     "unsupported PostgreSQL CREATE TABLE storage option {name}"
@@ -132,13 +138,17 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
             order_key: order_key.ok_or_else(|| {
                 SkeinError::Semantic("strict_append storage requires order_key".to_string())
             })?,
+            generated_order: generated_order.unwrap_or_default(),
         }),
         Some(mode) => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL CREATE TABLE storage_mode {mode}"
         ))),
-        None if partition_key.is_none() && order_key.is_none() => Ok(SqlTableStorage::RowPage),
+        None if partition_key.is_none() && order_key.is_none() && generated_order.is_none() => {
+            Ok(SqlTableStorage::RowPage)
+        }
         None => Err(SkeinError::Semantic(
-            "partition_key and order_key require storage_mode = 'strict_append'".to_string(),
+            "partition_key, order_key, and generated_order require storage_mode = 'strict_append'"
+                .to_string(),
         )),
     }
 }
@@ -163,6 +173,24 @@ fn lower_storage_mode(value: &Expr) -> Result<String> {
         ));
     };
     Ok(value.to_ascii_lowercase())
+}
+
+fn lower_generated_order(value: &Expr) -> Result<crate::SqlGeneratedOrder> {
+    let Expr::Value(ValueWithSpan {
+        value: sqlparser::ast::Value::SingleQuotedString(value),
+        ..
+    }) = value
+    else {
+        return Err(SkeinError::Semantic(
+            "CREATE TABLE generated_order must be a string literal".to_string(),
+        ));
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "commit_sequence" => Ok(crate::SqlGeneratedOrder::CommitSequence),
+        value => Err(SkeinError::Semantic(format!(
+            "unsupported strict_append generated_order {value}"
+        ))),
+    }
 }
 
 fn lower_storage_key(value: &Expr, name: &str) -> Result<Vec<String>> {

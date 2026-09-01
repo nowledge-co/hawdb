@@ -1312,6 +1312,22 @@ fn append_table_rows(state: &skein_storage::AppendState) -> Vec<Row> {
                     ),
                 ),
                 (
+                    "order_mode".to_string(),
+                    Value::String(
+                        match schema.order_mode {
+                            skein_storage::AppendOrderMode::CallerProvided => "caller_provided",
+                            skein_storage::AppendOrderMode::CommitSequence => "commit_sequence",
+                        }
+                        .to_string(),
+                    ),
+                ),
+                (
+                    "generated_order_watermark".to_string(),
+                    state
+                        .generated_order_watermark(&schema.name)
+                        .map_or(Value::Null, Value::Int),
+                ),
+                (
                     "column_count".to_string(),
                     Value::Int(i64::try_from(schema.columns.len()).unwrap_or(i64::MAX)),
                 ),
@@ -2208,6 +2224,8 @@ fn table_columns(table: SystemTable) -> &'static [&'static str] {
             "storage_mode",
             "partition_key",
             "order_key",
+            "order_mode",
+            "generated_order_watermark",
             "column_count",
         ],
         SystemTable::AppendStorage => &[

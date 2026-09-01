@@ -1367,6 +1367,122 @@ mod tests {
     }
 
     #[test]
+    fn generated_order_is_assigned_only_by_the_durable_commit_result() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE events (\
+                   stream_id TEXT NOT NULL, \
+                   sequence BIGINT NOT NULL, \
+                   payload TEXT NOT NULL\
+                 ) WITH (\
+                   storage_mode = 'strict_append', \
+                   partition_key = 'stream_id', \
+                   order_key = 'sequence', \
+                   generated_order = 'commit_sequence'\
+                 )",
+            )
+            .expect("create generated-order append table");
+        database
+            .query_sql("CREATE TABLE metadata (id BIGINT PRIMARY KEY, value TEXT NOT NULL)")
+            .expect("create row-page table");
+        let before_commit_epoch = database.commit_epoch();
+
+        let mut transaction = database.begin_transaction();
+        transaction
+            .query("CREATE (:CommitMarker {id: 1})")
+            .expect("stage graph row");
+        transaction
+            .query_sql("INSERT INTO metadata (id, value) VALUES (1, 'committed')")
+            .expect("stage row-page row");
+        transaction
+            .query_sql(
+                "INSERT INTO events (stream_id, payload) VALUES \
+                 ('thread-1', 'first'), ('thread-2', 'second'), ('thread-1', 'third')",
+            )
+            .expect("stage generated rows");
+        for sql in [
+            "SELECT * FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+            "EXPLAIN SELECT * FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+        ] {
+            let read_error = transaction
+                .query_sql(sql)
+                .expect_err("pending generated rows must fail closed on read");
+            assert!(read_error
+                .to_string()
+                .contains("reads are unavailable until commit"));
+        }
+
+        let committed = transaction
+            .commit_with_result()
+            .expect("commit generated rows");
+        assert_eq!(database.commit_epoch(), before_commit_epoch + 1);
+        assert_eq!(committed.mutations.len(), 1);
+        assert_eq!(committed.mutations[0].affected_rows, 1);
+        assert_eq!(committed.append_mutations.len(), 1);
+        assert_eq!(
+            committed.append_mutations[0].generated_order_keys,
+            vec![
+                skein_storage::RelationalKey(vec![RelationalValue::BigInt(1)]),
+                skein_storage::RelationalKey(vec![RelationalValue::BigInt(2)]),
+                skein_storage::RelationalKey(vec![RelationalValue::BigInt(3)]),
+            ]
+        );
+
+        let rows = database
+            .query_sql(
+                "SELECT sequence, payload FROM events WHERE stream_id = 'thread-1' \
+                 ORDER BY sequence LIMIT 10",
+            )
+            .expect("read committed generated rows");
+        assert_eq!(rows.rows.len(), 2);
+        assert_eq!(rows.rows[0].get("sequence"), Some(&Value::Int(1)));
+        assert_eq!(rows.rows[1].get("sequence"), Some(&Value::Int(3)));
+        assert_eq!(
+            database
+                .query("MATCH (marker:CommitMarker) RETURN marker.id AS id")
+                .expect("read committed graph row")
+                .rows[0]
+                .get("id"),
+            Some(&Value::Int(1))
+        );
+        assert_eq!(
+            database
+                .query_sql("SELECT value FROM metadata WHERE id = 1")
+                .expect("read committed row-page row")
+                .rows[0]
+                .get("value"),
+            Some(&Value::String("committed".to_string()))
+        );
+
+        let catalog = database
+            .query_sql(
+                "SELECT order_mode, generated_order_watermark FROM system.append_tables \
+                 WHERE table_name = 'events'",
+            )
+            .expect("read generated-order observability");
+        assert_eq!(
+            catalog.rows[0].get("order_mode"),
+            Some(&Value::String("commit_sequence".to_string()))
+        );
+        assert_eq!(
+            catalog.rows[0].get("generated_order_watermark"),
+            Some(&Value::Int(3))
+        );
+
+        for sql in [
+            "INSERT INTO events (stream_id, sequence, payload) \
+             VALUES ('thread-1', 4, 'override')",
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'returning') \
+             RETURNING sequence",
+        ] {
+            assert!(database.query_sql(sql).is_err());
+        }
+    }
+
+    #[test]
     fn strict_append_sql_fails_closed_for_unbounded_and_mutating_shapes() {
         let mut database = Database::new();
         database

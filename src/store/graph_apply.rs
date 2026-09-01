@@ -762,7 +762,7 @@ impl GraphStore {
                 }
                 self.append_state = self
                     .append_state
-                    .stage_transaction(&batch.transaction, self.append_mutation_limits)
+                    .apply_recovered_transaction(&batch.transaction, self.append_mutation_limits)
                     .map_err(|error| SkeinError::Storage(error.to_string()))?;
             }
             WalOp::Batch(ops) => {

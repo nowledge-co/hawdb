@@ -127,8 +127,8 @@ use skein_storage::{
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
     encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
     sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
-    AppendMutationLimits, AppendPublicationConfig, AppendPublisher, AppendState,
-    CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalRelationshipIterator,
+    AppendMutationLimits, AppendPublicationConfig, AppendPublicationState, AppendPublisher,
+    AppendState, CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalRelationshipIterator,
     CanonicalSegmentError, PersistentPropertyProjectionDefinitionAdmission,
     PersistentPropertyProjectionRecord, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
     RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
@@ -138,14 +138,15 @@ use skein_storage::{
 };
 pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
-    AdjacencyLayout, AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow,
-    AppendTableSchema, AppendTransaction, AppendWrite, CanonicalAdjacencyBuildReport,
-    CanonicalAdjacencyConfig, CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport,
-    CanonicalAdjacencyReader, CanonicalAdjacencyWriter, CanonicalScanControl,
-    CanonicalSegmentConfig, CanonicalSegmentManifest, CanonicalSegmentReader,
-    CanonicalSegmentWriter, ConnectedNodesCreate, DurabilityPolicy, DurableCompression,
-    FileSegmentRangeReader, GraphMutation, ManifestGeneration, MatchedRelationshipCopyMerge,
-    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
+    AdjacencyLayout, AppendGeneratedRow, AppendMutationOutcome, AppendOrderMode,
+    AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow, AppendTableSchema,
+    AppendTransaction, AppendWrite, CanonicalAdjacencyBuildReport, CanonicalAdjacencyConfig,
+    CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport, CanonicalAdjacencyReader,
+    CanonicalAdjacencyWriter, CanonicalScanControl, CanonicalSegmentConfig,
+    CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter, ConnectedNodesCreate,
+    DurabilityPolicy, DurableCompression, FileSegmentRangeReader, GraphMutation,
+    ManifestGeneration, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
+    MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
     MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeId, NodeRecord, NodeSetAssignment,
     NodeSetValue, OrderedAdjacencyEntry, PersistentPropertyProjectionConfig,
     PersistentPropertyProjectionDefinition, PersistentPropertyProjectionError,
@@ -503,6 +504,7 @@ pub struct ScanPrunedRelationshipScan<'a> {
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
     pub relational_mutation_outcomes: Vec<skein_storage::RelationalMutationOutcome>,
+    pub append_mutation_outcomes: Vec<skein_storage::AppendMutationOutcome>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

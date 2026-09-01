@@ -1,5 +1,6 @@
 use crate::{
-    ConcurrentDatabase, ConcurrentTransactionOptions, Database, SkeinError, Value,
+    AppendGeneratedRow, AppendTransaction, AppendWrite, ConcurrentDatabase,
+    ConcurrentTransactionOptions, Database, RelationalValue, SkeinError, Value,
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
     WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
@@ -1080,6 +1081,186 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
 }
 
 #[test]
+fn wal_group_commit_assigns_generated_order_in_serial_commit_order() {
+    const WRITERS: usize = 4;
+    let path = super::unique_test_dir("generated_order_group_commit");
+    let mut database = Database::open(&path).unwrap();
+    database
+        .query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence', \
+               generated_order = 'commit_sequence'\
+             )",
+        )
+        .unwrap();
+    let group_commit = WalGroupCommitConfig::benchmark_candidate(
+        NonZeroUsize::new(WRITERS).unwrap(),
+        NonZeroU64::new(1024 * 1024).unwrap(),
+        Duration::from_millis(5),
+    )
+    .unwrap();
+    let db = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+    db.set_group_commit_post_enqueue_barrier(Arc::new(Barrier::new(WRITERS)))
+        .unwrap();
+
+    let writers = (0..WRITERS)
+        .map(|writer| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                db.append_transaction_with_result(AppendTransaction {
+                    writes: vec![AppendWrite::AppendGenerated {
+                        table: "events".to_string(),
+                        rows: vec![AppendGeneratedRow::new(vec![
+                            RelationalValue::Text("thread-1".to_string()),
+                            RelationalValue::Text(format!("writer-{writer}")),
+                        ])],
+                    }],
+                })
+                .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut committed = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap())
+        .map(|result| {
+            let sequence = match &result.mutations[0].generated_order_keys[0].0[0] {
+                RelationalValue::BigInt(value) => *value,
+                value => panic!("unexpected generated key {value:?}"),
+            };
+            (result.commit_epoch, sequence)
+        })
+        .collect::<Vec<_>>();
+    committed.sort_unstable_by_key(|(commit_epoch, _)| *commit_epoch);
+    assert!(committed.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert_eq!(
+        committed
+            .iter()
+            .map(|(_, sequence)| *sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+
+    let snapshot = db.wal_group_commit_snapshot().unwrap();
+    assert_eq!(snapshot.shared_sync_count, 1);
+    assert_eq!(snapshot.grouped_wal_entries, WRITERS as u64);
+    drop(db);
+
+    let mut reopened = Database::open(&path).unwrap();
+    let rows = reopened
+        .query_sql(
+            "SELECT sequence FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+        )
+        .unwrap();
+    assert_eq!(
+        rows.rows
+            .iter()
+            .map(|row| row["sequence"].clone())
+            .collect::<Vec<_>>(),
+        vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_commit() {
+    let mut database = Database::new();
+    database
+        .query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence', \
+               generated_order = 'commit_sequence'\
+             )",
+        )
+        .unwrap();
+    let db = database.into_concurrent();
+
+    let mut first = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    let mut stale = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    first
+        .query_sql(
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'optimistic-first')",
+        )
+        .unwrap();
+    stale
+        .query_sql(
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-stale')",
+        )
+        .unwrap();
+
+    let first = first.commit_with_result().unwrap();
+    assert_eq!(
+        first.append_mutations[0].generated_order_keys,
+        vec![crate::RelationalKey(vec![RelationalValue::BigInt(1)])]
+    );
+    assert!(stale
+        .commit_with_result()
+        .unwrap_err()
+        .to_string()
+        .contains("optimistic transaction conflict"));
+
+    let mut retry = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    retry
+        .query_sql(
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-retry')",
+        )
+        .unwrap();
+    let retry = retry.commit_with_result().unwrap();
+    assert_eq!(
+        retry.append_mutations[0].generated_order_keys,
+        vec![crate::RelationalKey(vec![RelationalValue::BigInt(2)])]
+    );
+
+    let mut pessimistic = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    pessimistic
+        .query_sql("INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'pessimistic')")
+        .unwrap();
+    let pessimistic = pessimistic.commit_with_result().unwrap();
+    assert_eq!(
+        pessimistic.append_mutations[0].generated_order_keys,
+        vec![crate::RelationalKey(vec![RelationalValue::BigInt(3)])]
+    );
+
+    let rows = db
+        .query_sql(
+            "SELECT sequence FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+        )
+        .unwrap();
+    assert_eq!(
+        rows.rows
+            .iter()
+            .map(|row| row["sequence"].clone())
+            .collect::<Vec<_>>(),
+        vec![Value::Int(1), Value::Int(3)]
+    );
+}
+
+#[test]
 fn wal_group_commit_publishes_schema_row_checkpoint_after_group_sync() {
     let path = super::unique_test_dir("wal_group_schema_checkpoint");
     let mut database = Database::open(&path).unwrap();
@@ -1176,6 +1357,90 @@ fn wal_group_sync_failure_rejects_commit_and_poisons_until_reopen() {
         .query_sql("SELECT id FROM public.messages")
         .unwrap();
     assert_eq!(rows.rows.len(), 1);
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn generated_order_recovers_after_an_uncertain_group_sync() {
+    let path = super::unique_test_dir("generated_order_group_sync_failure");
+    let mut database = Database::open(&path).unwrap();
+    database
+        .query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence', \
+               generated_order = 'commit_sequence'\
+             )",
+        )
+        .unwrap();
+    let group_commit = WalGroupCommitConfig::benchmark_candidate(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroU64::new(1024 * 1024).unwrap(),
+        Duration::ZERO,
+    )
+    .unwrap();
+    let db = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+
+    crate::store::set_wal_group_sync_failpoint(true);
+    let error = db
+        .append_transaction_with_result(AppendTransaction {
+            writes: vec![AppendWrite::AppendGenerated {
+                table: "events".to_string(),
+                rows: vec![AppendGeneratedRow::new(vec![
+                    RelationalValue::Text("thread-1".to_string()),
+                    RelationalValue::Text("uncertain".to_string()),
+                ])],
+            }],
+        })
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("WAL group durability barrier failed"));
+    assert!(db
+        .query_sql(
+            "SELECT sequence FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("close and reopen"));
+    drop(db);
+
+    let mut reopened = Database::open(&path).unwrap();
+    let next = reopened
+        .append_transaction_with_result(AppendTransaction {
+            writes: vec![AppendWrite::AppendGenerated {
+                table: "events".to_string(),
+                rows: vec![AppendGeneratedRow::new(vec![
+                    RelationalValue::Text("thread-1".to_string()),
+                    RelationalValue::Text("acknowledged".to_string()),
+                ])],
+            }],
+        })
+        .unwrap();
+    assert_eq!(
+        next.mutations[0].generated_order_keys,
+        vec![crate::RelationalKey(vec![RelationalValue::BigInt(2)])]
+    );
+    let rows = reopened
+        .query_sql(
+            "SELECT sequence FROM events WHERE stream_id = 'thread-1' \
+             ORDER BY sequence LIMIT 10",
+        )
+        .unwrap();
+    assert_eq!(
+        rows.rows
+            .iter()
+            .map(|row| row["sequence"].clone())
+            .collect::<Vec<_>>(),
+        vec![Value::Int(1), Value::Int(2)]
+    );
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
 }

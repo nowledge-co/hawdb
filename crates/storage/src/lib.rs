@@ -32,9 +32,10 @@ pub use adjacency::{
 };
 pub use append_table::{
     append_generation_manifest_file, append_segment_file, decode_append_wal_batch,
-    encode_append_wal_batch, AppendDecodeLimits, AppendGenerationArtifacts,
-    AppendGenerationManifest, AppendGenerationReader, AppendLiveBatch, AppendMutationLimits,
-    AppendPublicationConfig, AppendPublicationPhase, AppendPublicationReport, AppendPublisher,
+    encode_append_wal_batch, AppendCommitPreparation, AppendDecodeLimits, AppendGeneratedRow,
+    AppendGenerationArtifacts, AppendGenerationManifest, AppendGenerationReader, AppendLiveBatch,
+    AppendMutationLimits, AppendMutationOutcome, AppendOrderMode, AppendPublicationConfig,
+    AppendPublicationPhase, AppendPublicationReport, AppendPublicationState, AppendPublisher,
     AppendSegmentArtifactMetadata, AppendSegmentBinding, AppendSegmentBlockDescriptor,
     AppendSegmentConfig, AppendSegmentReadOutput, AppendSegmentReadReport, AppendSegmentReader,
     AppendSegmentWriteOutput, AppendSegmentWriter, AppendState, AppendStorageResidencyReport,

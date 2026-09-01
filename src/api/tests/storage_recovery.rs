@@ -48,6 +48,72 @@ fn strict_append_sql_replays_from_wal_after_reopen() {
 }
 
 #[test]
+fn generated_append_watermark_survives_checkpoint_and_wal_replay() {
+    let path = unique_test_dir("generated_append_checkpoint_reopen");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence', \
+               generated_order = 'commit_sequence'\
+             )",
+        )
+        .unwrap();
+        db.query_sql(
+            "INSERT INTO events (stream_id, payload) VALUES \
+             ('thread-1', 'one'), ('thread-2', 'two')",
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+        db.query_sql("INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'three')")
+            .unwrap();
+    }
+
+    {
+        let mut db = Database::open(&path).unwrap();
+        let result = db
+            .append_transaction_with_result(skein_storage::AppendTransaction {
+                writes: vec![skein_storage::AppendWrite::AppendGenerated {
+                    table: "events".to_string(),
+                    rows: vec![skein_storage::AppendGeneratedRow::new(vec![
+                        skein_storage::RelationalValue::Text("thread-1".to_string()),
+                        skein_storage::RelationalValue::Text("four".to_string()),
+                    ])],
+                }],
+            })
+            .unwrap();
+        assert_eq!(
+            result.mutations[0].generated_order_keys,
+            vec![skein_storage::RelationalKey(vec![
+                skein_storage::RelationalValue::BigInt(4),
+            ])]
+        );
+        let output = db
+            .query_sql(
+                "SELECT sequence FROM events WHERE stream_id = 'thread-1' \
+                 ORDER BY sequence LIMIT 10",
+            )
+            .unwrap();
+        assert_eq!(
+            output
+                .rows
+                .iter()
+                .map(|row| row["sequence"].clone())
+                .collect::<Vec<_>>(),
+            vec![Value::Int(1), Value::Int(3), Value::Int(4)]
+        );
+    }
+
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn wal_pressure_schedules_and_completes_a_bounded_background_checkpoint() {
     let path = unique_test_dir("wal_pressure_background_checkpoint");
     let config = DatabaseConfig {

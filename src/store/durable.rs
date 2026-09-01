@@ -1832,19 +1832,26 @@ impl DurableStore {
         self.ensure_wal_admission(self.wal_bytes.saturating_add(byte_count))?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
-        let result = (|| {
-            let (mut file, created) = self.open_wal_append()?;
-            if self.wal_bytes == 0 {
-                file.write_all(&header_bytes)?;
-            }
-            file.write_all(&record_bytes)?;
-            process_crash_failpoint("after_wal_append");
-            let fsync_micros = self.finish_wal_append(&mut file, created)?;
-            if !sync_deferred {
-                process_crash_failpoint("after_wal_sync");
-            }
-            Ok(fsync_micros)
-        })();
+        let result = match self.open_wal_append() {
+            Err(error) => Err(error),
+            Ok((mut file, created)) => (|| {
+                if self.wal_bytes == 0 {
+                    file.write_all(&header_bytes)?;
+                }
+                file.write_all(&record_bytes)?;
+                process_crash_failpoint("after_wal_append");
+                let fsync_micros = self.finish_wal_append(&mut file, created)?;
+                if !sync_deferred {
+                    process_crash_failpoint("after_wal_sync");
+                }
+                Ok(fsync_micros)
+            })()
+            .map_err(|error: SkeinError| {
+                SkeinError::StorageIntegrity(format!(
+                    "WAL append outcome is uncertain after opening the WAL: {error}"
+                ))
+            }),
+        };
         if let Some(telemetry) = &self.telemetry {
             telemetry.record_kernel(KernelTelemetry {
                 operation: KernelTelemetryOperation::WalAppend,

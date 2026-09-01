@@ -8,7 +8,14 @@ pub enum SkeinError {
     Storage(String),
     StorageIntegrity(String),
     Execution(String),
-    CapabilityUnavailable { capability: RuntimeCapability },
+    AppendSequenceExhausted {
+        table: String,
+        watermark: i64,
+        requested: usize,
+    },
+    CapabilityUnavailable {
+        capability: RuntimeCapability,
+    },
 }
 
 impl Display for SkeinError {
@@ -21,6 +28,14 @@ impl Display for SkeinError {
                 write!(f, "storage integrity error: {message}")
             }
             SkeinError::Execution(message) => write!(f, "execution error: {message}"),
+            SkeinError::AppendSequenceExhausted {
+                table,
+                watermark,
+                requested,
+            } => write!(
+                f,
+                "append commit sequence exhausted for table {table}: watermark={watermark}, requested={requested}"
+            ),
             SkeinError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
             }

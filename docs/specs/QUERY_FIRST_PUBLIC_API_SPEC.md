@@ -46,6 +46,42 @@ order key, an optional exclusive lower bound on that key, and an explicit
 `system.append_storage` expose schema and storage-residency state without
 making typed row CRUD a production integration surface.
 
+Strict Append tables may opt into a table-wide generated order key:
+
+```sql
+CREATE TABLE generated_events (
+    stream_id TEXT NOT NULL,
+    sequence BIGINT NOT NULL,
+    payload BYTEA NOT NULL
+) WITH (
+    storage_mode = 'strict_append',
+    partition_key = 'stream_id',
+    order_key = 'sequence',
+    generated_order = 'commit_sequence'
+);
+```
+
+`commit_sequence` requires one `BIGINT NOT NULL` order-key column without a
+default. `INSERT` MUST omit that column; caller overrides and Strict Append
+`INSERT ... RETURNING` fail closed. Values start at one and are assigned as one
+contiguous, table-wide interval in caller row order at the serialized durable
+commit boundary. Preparing, aborting, or rejecting a transaction consumes no
+values. A transaction with pending generated rows cannot read that table,
+because an order key does not exist before commit.
+
+Generated assignments are returned only by the typed durable result:
+`AppendCommitResult::mutations` for direct append commits and
+`TransactionCommitResult::append_mutations` for mixed transactions. Each
+`AppendMutationOutcome` preserves append-write order and caller row order.
+Exhaustion fails before WAL publication as
+`SkeinError::AppendSequenceExhausted`, retaining the table, prior watermark,
+and requested row count as typed fields.
+`system.append_tables` exposes `order_mode` and
+`generated_order_watermark`; the watermark is null for caller-provided tables.
+The assigned full rows and watermark are part of WAL replay and checkpoint
+state, so recovery either retains an exact committed prefix or reuses values
+from an uncommitted suffix.
+
 Every application-owned read statement MUST have explicit row and payload
 budgets. Multiple distinct read phases SHOULD remain separate named
 statements. The host MAY normalize requests, account for budgets across

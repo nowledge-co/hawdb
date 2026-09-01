@@ -433,6 +433,7 @@ fn json_error_from_skein(error: SkeinError) -> serde_json::Value {
         SkeinError::Storage(message) => json_error("storage", message),
         SkeinError::StorageIntegrity(message) => json_error("storage", message),
         SkeinError::Execution(message) => json_error("execution", message),
+        error @ SkeinError::AppendSequenceExhausted { .. } => json_error("storage", error),
         SkeinError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
         }

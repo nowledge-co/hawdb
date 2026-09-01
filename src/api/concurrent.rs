@@ -258,15 +258,39 @@ impl ConcurrentDatabase {
     /// sequencer used by other concurrent writers. When group commit is
     /// enabled, success is returned only after the shared durability barrier.
     pub fn append_transaction(&self, transaction: AppendTransaction) -> Result<()> {
+        self.append_transaction_with_result(transaction).map(|_| ())
+    }
+
+    /// Commits a strict append transaction and returns durable generated keys.
+    pub fn append_transaction_with_result(
+        &self,
+        transaction: AppendTransaction,
+    ) -> Result<super::AppendCommitResult> {
+        let committed_result = Arc::new(Mutex::new(None));
+        let result_slot = Arc::clone(&committed_result);
         self.inner
             .commits
             .execute_grouped(move |database| {
-                database.append_transaction(transaction)?;
+                let result = database.append_transaction_with_result(transaction)?;
+                *result_slot.lock().map_err(|_| {
+                    SkeinError::Execution("concurrent append result slot is poisoned".to_string())
+                })? = Some(result);
                 Ok(QueryOutput {
                     rows: Vec::new().into(),
                 })
             })
-            .map(|_| ())
+            .map(|_| ())?;
+        committed_result
+            .lock()
+            .map_err(|_| {
+                SkeinError::Execution("concurrent append result slot is poisoned".to_string())
+            })?
+            .take()
+            .ok_or_else(|| {
+                SkeinError::Execution(
+                    "concurrent append completed without a commit result".to_string(),
+                )
+            })
     }
 
     fn with_autocommit_exclusive(
@@ -1405,6 +1429,7 @@ mod tests {
                         ],
                         partition_key: vec!["stream".to_string()],
                         order_key: vec!["sequence".to_string()],
+                        order_mode: Default::default(),
                     },
                 }],
             })
@@ -1446,6 +1471,7 @@ mod tests {
                             ],
                             partition_key: vec!["stream".to_string()],
                             order_key: vec!["sequence".to_string()],
+                            order_mode: Default::default(),
                         },
                     }],
                 },

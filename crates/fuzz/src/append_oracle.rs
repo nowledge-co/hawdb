@@ -1,14 +1,15 @@
 use serde_json::{json, Value as JsonValue};
 use skein::{
-    AppendTableSchema, AppendTransaction, AppendWrite, Database, RelationalColumnSchema,
-    RelationalKey, RelationalRow, RelationalScalarType, RelationalValue,
+    AppendGeneratedRow, AppendOrderMode, AppendTableSchema, AppendTransaction, AppendWrite,
+    Database, RelationalColumnSchema, RelationalKey, RelationalRow, RelationalScalarType,
+    RelationalValue,
 };
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "skein-append-state-machine-fuzz-v1";
+pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "skein-append-state-machine-fuzz-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRow {
@@ -34,6 +35,15 @@ impl AppendModel {
             .entry(partition.to_string())
             .or_default()
             .extend(rows);
+    }
+
+    fn global_watermark(&self) -> i64 {
+        self.partitions
+            .values()
+            .flat_map(|rows| rows.iter())
+            .map(|row| row.sequence)
+            .max()
+            .unwrap_or(0)
     }
 
     fn tail(&self, partition: &str, after: Option<i64>, max_rows: usize) -> Vec<ModelRow> {
@@ -62,17 +72,23 @@ fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, S
     let mut database = Database::open(path).map_err(|error| error.to_string())?;
     database
         .append_transaction(AppendTransaction {
-            writes: vec![AppendWrite::CreateTable {
-                schema: append_schema(),
-            }],
+            writes: vec![
+                AppendWrite::CreateTable {
+                    schema: append_schema(),
+                },
+                AppendWrite::CreateTable {
+                    schema: generated_append_schema(),
+                },
+            ],
         })
         .map_err(|error| error.to_string())?;
     let mut model = AppendModel::default();
+    let mut generated_model = AppendModel::default();
     let mut rng = DeterministicRng::new(seed);
     let mut action_counts = BTreeMap::<&'static str, usize>::new();
 
     for step in 0..steps {
-        let action = rng.next_u64() % 11;
+        let action = rng.next_u64() % 15;
         let result = match action {
             0 | 1 => {
                 count_action(&mut action_counts, "valid_append");
@@ -148,14 +164,48 @@ fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, S
                 count_action(&mut action_counts, "bounded_tail");
                 verify_random_tail(&database, &model, &mut rng)
             }
-            _ => {
+            10 => {
                 count_action(&mut action_counts, "payload_budget_rejection");
                 verify_payload_budget(&database, &model, &mut rng)
+            }
+            11 | 12 => {
+                count_action(&mut action_counts, "generated_append");
+                append_generated_valid(&mut database, &mut generated_model, &mut rng, step)
+            }
+            13 => {
+                count_action(&mut action_counts, "generated_override_rejection");
+                reject_invalid(
+                    &mut database,
+                    AppendTransaction {
+                        writes: vec![AppendWrite::Append {
+                            table: "generated_events".to_string(),
+                            rows: vec![row("partition-0000", 1, "override")],
+                        }],
+                    },
+                    "generated order override",
+                )
+            }
+            _ => {
+                count_action(&mut action_counts, "generated_arity_rejection");
+                reject_invalid(
+                    &mut database,
+                    AppendTransaction {
+                        writes: vec![AppendWrite::AppendGenerated {
+                            table: "generated_events".to_string(),
+                            rows: vec![AppendGeneratedRow::new(vec![RelationalValue::Text(
+                                "partition-0000".to_string(),
+                            )])],
+                        }],
+                    },
+                    "generated row arity",
+                )
             }
         };
         result.map_err(|error| format!("step {step} action {action}: {error}"))?;
         verify_all_partitions(&database, &model)
             .map_err(|error| format!("step {step} state mismatch: {error}"))?;
+        verify_generated_partitions(&database, &generated_model)
+            .map_err(|error| format!("step {step} generated state mismatch: {error}"))?;
     }
 
     database.checkpoint().map_err(|error| error.to_string())?;
@@ -163,11 +213,14 @@ fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, S
     let database = Database::open(path).map_err(|error| error.to_string())?;
     verify_all_partitions(&database, &model)
         .map_err(|error| format!("final checkpoint/reopen mismatch: {error}"))?;
+    verify_generated_partitions(&database, &generated_model)
+        .map_err(|error| format!("final generated checkpoint/reopen mismatch: {error}"))?;
     Ok(json!({
         "protocol": APPEND_STATE_MACHINE_PROTOCOL,
         "seed": seed,
         "steps": steps,
         "row_count": model.partitions.values().map(Vec::len).sum::<usize>(),
+        "generated_row_count": generated_model.partitions.values().map(Vec::len).sum::<usize>(),
         "partition_count": model.partitions.len(),
         "action_counts": action_counts,
         "success": true,
@@ -204,6 +257,58 @@ fn append_valid(
         })
         .map_err(|error| format!("valid append was rejected: {error}"))?;
     model.append(&partition, model_rows);
+    Ok(())
+}
+
+fn append_generated_valid(
+    database: &mut Database,
+    model: &mut AppendModel,
+    rng: &mut DeterministicRng,
+    step: usize,
+) -> Result<(), String> {
+    let count = 1 + (rng.next_u64() % 4) as usize;
+    let first = model.global_watermark() + 1;
+    let input = (0..count)
+        .map(|offset| {
+            let sequence = first + offset as i64;
+            let partition = partition_name((rng.next_u64() % 4) as usize);
+            let payload = format!("generated-{step:04}-sequence-{sequence:08}");
+            (partition, ModelRow { sequence, payload })
+        })
+        .collect::<Vec<_>>();
+    let result = database
+        .append_transaction_with_result(AppendTransaction {
+            writes: vec![AppendWrite::AppendGenerated {
+                table: "generated_events".to_string(),
+                rows: input
+                    .iter()
+                    .map(|(partition, row)| {
+                        AppendGeneratedRow::new(vec![
+                            RelationalValue::Text(partition.clone()),
+                            RelationalValue::Text(row.payload.clone()),
+                        ])
+                    })
+                    .collect(),
+            }],
+        })
+        .map_err(|error| format!("valid generated append was rejected: {error}"))?;
+    let actual_keys = result
+        .mutations
+        .iter()
+        .flat_map(|outcome| outcome.generated_order_keys.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let expected_keys = (first..first + count as i64)
+        .map(|sequence| RelationalKey(vec![RelationalValue::BigInt(sequence)]))
+        .collect::<Vec<_>>();
+    if actual_keys != expected_keys {
+        return Err(format!(
+            "generated assignments differ: expected={expected_keys:?} actual={actual_keys:?}"
+        ));
+    }
+    for (partition, row) in input {
+        model.append(&partition, vec![row]);
+    }
     Ok(())
 }
 
@@ -280,7 +385,7 @@ fn verify_random_tail(
         watermark.saturating_sub(distance)
     });
     let max_rows = 1 + (rng.next_u64() % 8) as usize;
-    verify_tail(database, model, &partition, after, max_rows)
+    verify_tail(database, "events", model, &partition, after, max_rows)
 }
 
 fn verify_payload_budget(
@@ -311,13 +416,33 @@ fn verify_all_partitions(database: &Database, model: &AppendModel) -> Result<(),
             .partitions
             .get(&partition)
             .map_or(1, |rows| rows.len() + 1);
-        verify_tail(database, model, &partition, None, max_rows)?;
+        verify_tail(database, "events", model, &partition, None, max_rows)?;
+    }
+    Ok(())
+}
+
+fn verify_generated_partitions(database: &Database, model: &AppendModel) -> Result<(), String> {
+    for index in 0..4 {
+        let partition = partition_name(index);
+        let max_rows = model
+            .partitions
+            .get(&partition)
+            .map_or(1, |rows| rows.len() + 1);
+        verify_tail(
+            database,
+            "generated_events",
+            model,
+            &partition,
+            None,
+            max_rows,
+        )?;
     }
     Ok(())
 }
 
 fn verify_tail(
     database: &Database,
+    table: &str,
     model: &AppendModel,
     partition: &str,
     after: Option<i64>,
@@ -326,7 +451,7 @@ fn verify_tail(
     let after_key = after.map(|sequence| RelationalKey(vec![RelationalValue::BigInt(sequence)]));
     let actual = database
         .read_append_partition(
-            "events",
+            table,
             &partition_key(partition),
             after_key.as_ref(),
             max_rows,
@@ -339,7 +464,7 @@ fn verify_tail(
     let expected = model.tail(partition, after, max_rows);
     if actual != expected {
         return Err(format!(
-            "partition {partition} tail differs: after={after:?} max_rows={max_rows} expected={expected:?} actual={actual:?}"
+            "table {table} partition {partition} tail differs: after={after:?} max_rows={max_rows} expected={expected:?} actual={actual:?}"
         ));
     }
     Ok(())
@@ -367,6 +492,15 @@ fn append_schema() -> AppendTableSchema {
         ],
         partition_key: vec!["stream".to_string()],
         order_key: vec!["sequence".to_string()],
+        order_mode: Default::default(),
+    }
+}
+
+fn generated_append_schema() -> AppendTableSchema {
+    AppendTableSchema {
+        name: "generated_events".to_string(),
+        order_mode: AppendOrderMode::CommitSequence,
+        ..append_schema()
     }
 }
 

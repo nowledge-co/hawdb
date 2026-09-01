@@ -516,6 +516,14 @@ pub struct SqlStatementResult {
 pub struct TransactionCommitResult {
     pub output: QueryOutput,
     pub mutations: Vec<RelationalMutationResult>,
+    pub append_mutations: Vec<skein_storage::AppendMutationOutcome>,
+}
+
+/// Confirmed generated order-key assignments from one durable append commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendCommitResult {
+    pub commit_epoch: u64,
+    pub mutations: Vec<skein_storage::AppendMutationOutcome>,
 }
 
 #[cfg(test)]
@@ -794,6 +802,7 @@ pub(super) struct DatabaseTransactionState {
     relational_state: skein_storage::RelationalState,
     append_transaction: skein_storage::AppendTransaction,
     append_state: skein_storage::AppendState,
+    pending_generated_append_tables: BTreeSet<String>,
     relational_returning: Vec<Option<crate::relational_sql::RelationalReturningProjection>>,
     relational_index:
         std::result::Result<Option<crate::store::RelationalTransactionIndexView>, String>,
@@ -1504,8 +1513,16 @@ impl Database {
     }
 
     pub fn append_transaction(&mut self, transaction: AppendTransaction) -> Result<u64> {
+        self.append_transaction_with_result(transaction)
+            .map(|result| result.commit_epoch)
+    }
+
+    pub fn append_transaction_with_result(
+        &mut self,
+        transaction: AppendTransaction,
+    ) -> Result<AppendCommitResult> {
         self.ensure_writable()?;
-        self.store.commit_kernel_write_batch(
+        let summary = self.store.commit_kernel_write_batch(
             &mut self.catalog,
             KernelWriteBatch {
                 append: transaction,
@@ -1513,7 +1530,10 @@ impl Database {
             },
             self.config.mutation_limits,
         )?;
-        Ok(self.store.commit_epoch())
+        Ok(AppendCommitResult {
+            commit_epoch: self.store.commit_epoch(),
+            mutations: summary.append_mutation_outcomes,
+        })
     }
 
     pub fn commit_kernel_write_batch(
@@ -19449,6 +19469,7 @@ impl DatabaseTransactionState {
             relational_state: db.store.relational_state().clone(),
             append_transaction: skein_storage::AppendTransaction::default(),
             append_state: db.store.append_state().clone(),
+            pending_generated_append_tables: BTreeSet::new(),
             relational_returning: Vec::new(),
             relational_index: db
                 .store
@@ -19465,6 +19486,7 @@ impl DatabaseTransactionState {
         self.graph_transaction.take();
         self.relational_transaction.writes.clear();
         self.append_transaction.writes.clear();
+        self.pending_generated_append_tables.clear();
         self.relational_returning.clear();
         self.relational_index = Ok(None);
         self.relational_rows = Ok(None);
@@ -19484,6 +19506,9 @@ impl DatabaseTransactionState {
             relational_state: std::mem::take(&mut self.relational_state),
             append_transaction: std::mem::take(&mut self.append_transaction),
             append_state: std::mem::take(&mut self.append_state),
+            pending_generated_append_tables: std::mem::take(
+                &mut self.pending_generated_append_tables,
+            ),
             relational_returning: std::mem::take(&mut self.relational_returning),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
@@ -19795,6 +19820,22 @@ pub(super) fn execute_database_transaction_prepared_sql(
         )
         .map(sql_query_result);
     }
+    let pending_generated_read_table = match prepared.statement() {
+        crate::sql::SqlStatement::Select(select) => Some(select.from.name.as_str()),
+        crate::sql::SqlStatement::Explain(explain) => match explain.statement.as_ref() {
+            crate::sql::SqlStatement::Select(select) => Some(select.from.name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    if pending_generated_read_table
+        .is_some_and(|table| state.pending_generated_append_tables.contains(table))
+    {
+        return Err(SkeinError::Execution(format!(
+            "strict append table {} has uncommitted generated-order rows; reads are unavailable until commit",
+            pending_generated_read_table.expect("pending generated table was checked")
+        )));
+    }
     if let Some(plan) = crate::relational_sql::compile_append_select_sql(
         sql_text,
         parameters,
@@ -19932,8 +19973,19 @@ pub(super) fn execute_database_transaction_prepared_sql(
         }
         state.append_state = state
             .append_state
-            .stage_transaction(&transaction, skein_storage::AppendMutationLimits::default())
+            .stage_provisional_transaction(
+                &transaction,
+                skein_storage::AppendMutationLimits::default(),
+            )
             .map_err(map_transaction_append_error)?;
+        state
+            .pending_generated_append_tables
+            .extend(transaction.writes.iter().filter_map(|write| match write {
+                skein_storage::AppendWrite::AppendGenerated { table, rows } if !rows.is_empty() => {
+                    Some(table.clone())
+                }
+                _ => None,
+            }));
         state.append_transaction.writes.extend(transaction.writes);
         return Ok(sql_query_result(QueryOutput {
             rows: Vec::new().into(),
@@ -20176,6 +20228,15 @@ fn relational_value_to_query_value(value: &skein_storage::RelationalValue) -> Re
 
 fn map_transaction_append_error(error: skein_storage::AppendTableError) -> SkeinError {
     match error {
+        skein_storage::AppendTableError::SequenceExhausted {
+            table,
+            watermark,
+            requested,
+        } => SkeinError::AppendSequenceExhausted {
+            table,
+            watermark,
+            requested,
+        },
         skein_storage::AppendTableError::Corruption(message)
         | skein_storage::AppendTableError::Durability(message) => {
             SkeinError::StorageIntegrity(message)
@@ -20281,6 +20342,7 @@ fn commit_database_transaction_state(
     Ok(TransactionCommitResult {
         output: QueryOutput { rows },
         mutations,
+        append_mutations: summary.append_mutation_outcomes,
     })
 }
 

@@ -1756,6 +1756,7 @@ impl GraphStore {
         let mut staged_relational_row_capture = None;
         let mut staged_relational_primary_key_changes = None;
         let mut relational_mutation_outcomes = Vec::new();
+        let mut append_mutation_outcomes = Vec::new();
         let mut staged_append_state = None;
         let next_commit_epoch = self
             .commit_epoch
@@ -1847,13 +1848,15 @@ impl GraphStore {
             });
         }
         if let Some(transaction) = append_transaction.filter(|value| !value.writes.is_empty()) {
-            staged_append_state = Some(
-                self.append_state
-                    .stage_transaction(&transaction, self.append_mutation_limits)
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
-            );
-            let record = encode_append_wal_batch(next_commit_epoch, &transaction)
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            let prepared = self
+                .append_state
+                .prepare_transaction(&transaction, self.append_mutation_limits)
+                .map_err(map_append_staging_error)?;
+            let record =
+                encode_append_wal_batch(next_commit_epoch, &prepared.materialized_transaction)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            staged_append_state = Some(prepared.state);
+            append_mutation_outcomes = prepared.mutation_outcomes;
             ops.push(WalOp::Append {
                 record: Arc::from(record),
             });
@@ -1862,6 +1865,7 @@ impl GraphStore {
             return Ok(MutationSummary {
                 rows,
                 relational_mutation_outcomes,
+                append_mutation_outcomes,
             });
         }
         let staged_relational_index_publication = self.stage_relational_index_live_publication(
@@ -1883,7 +1887,7 @@ impl GraphStore {
         self.poison_on_storage_error(&row_publication_requirement);
         row_publication_requirement?;
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
+        let wal_result = if let Some(durable) = &mut self.durable {
             if preserve_single_create_wal
                 && let [WalOp::CreateNode {
                     id,
@@ -1891,11 +1895,15 @@ impl GraphStore {
                     properties,
                 }] = ops.as_slice()
             {
-                durable.append_create_node(*id, label, properties)?;
+                durable.append_create_node(*id, label, properties)
             } else {
-                durable.append_batch(ops.clone())?;
+                durable.append_batch(ops.clone())
             }
-        }
+        } else {
+            Ok(())
+        };
+        self.poison_on_storage_error(&wal_result);
+        wal_result?;
         *catalog = working_catalog;
         self.record_search_projection_changes_for_ops(
             catalog,
@@ -1922,6 +1930,7 @@ impl GraphStore {
         Ok(MutationSummary {
             rows,
             relational_mutation_outcomes,
+            append_mutation_outcomes,
         })
     }
 
@@ -2276,5 +2285,43 @@ fn map_relational_staging_error(error: RelationalError) -> SkeinError {
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
         | RelationalError::Durability(_) => SkeinError::Storage(error.to_string()),
+    }
+}
+
+fn map_append_staging_error(error: skein_storage::AppendTableError) -> SkeinError {
+    match error {
+        skein_storage::AppendTableError::SequenceExhausted {
+            table,
+            watermark,
+            requested,
+        } => SkeinError::AppendSequenceExhausted {
+            table,
+            watermark,
+            requested,
+        },
+        error => SkeinError::Storage(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {
+        let error = map_append_staging_error(skein_storage::AppendTableError::SequenceExhausted {
+            table: "events".to_string(),
+            watermark: i64::MAX,
+            requested: 1,
+        });
+
+        assert!(matches!(
+            error,
+            SkeinError::AppendSequenceExhausted {
+                table,
+                watermark: i64::MAX,
+                requested: 1,
+            } if table == "events"
+        ));
     }
 }

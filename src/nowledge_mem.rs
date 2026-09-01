@@ -8420,7 +8420,9 @@ fn skein_error_class(error: &SkeinError) -> &'static str {
     match error {
         SkeinError::Parse(_) => "parse",
         SkeinError::Semantic(_) => "semantic",
-        SkeinError::Storage(_) | SkeinError::StorageIntegrity(_) => "storage",
+        SkeinError::Storage(_)
+        | SkeinError::StorageIntegrity(_)
+        | SkeinError::AppendSequenceExhausted { .. } => "storage",
         SkeinError::Execution(_) => "execution",
         SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
     }

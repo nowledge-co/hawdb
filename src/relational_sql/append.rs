@@ -2,12 +2,13 @@ use super::{bind_relational_value, compile_column, reject_non_public_schema};
 use crate::error::{Result, SkeinError};
 use crate::sql::{
     CreateTableStatement, SelectProjection, SelectStatement, SqlBound, SqlComparisonOp,
-    SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableStorage, SqlValue,
+    SqlGeneratedOrder, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
+    SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
 use skein_storage::{
-    AppendState, AppendTableRow, AppendTableSchema, AppendTransaction, AppendWrite,
-    RelationalColumnSchema, RelationalRow, RelationalValue,
+    AppendGeneratedRow, AppendOrderMode, AppendState, AppendTableRow, AppendTableSchema,
+    AppendTransaction, AppendWrite, RelationalColumnSchema, RelationalRow, RelationalValue,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,12 @@ pub(crate) fn compile_append_statement_sql(
         }
         SqlStatement::Insert(insert) if state.schema(&insert.table.name).is_some() => {
             reject_non_public_schema(insert.table.schema.as_deref())?;
+            if !insert.returning.is_empty() {
+                return Err(SkeinError::Semantic(
+                    "strict append INSERT does not support RETURNING; use the typed Rust commit result for generated order keys"
+                        .to_string(),
+                ));
+            }
             if insert.on_conflict.is_some() {
                 return Err(SkeinError::Semantic(
                     "strict append INSERT does not support ON CONFLICT".to_string(),
@@ -64,18 +71,29 @@ pub(crate) fn compile_append_statement_sql(
             let schema = state
                 .schema(&insert.table.name)
                 .expect("append table existence was checked");
-            let rows = compile_insert_rows(
-                &insert.columns,
-                insert.rows,
-                parameters,
-                &schema.name,
-                &schema.columns,
-            )?;
-            Ok(Some(AppendTransaction {
-                writes: vec![AppendWrite::Append {
+            let write = match schema.order_mode {
+                AppendOrderMode::CallerProvided => AppendWrite::Append {
                     table: insert.table.name,
-                    rows,
-                }],
+                    rows: compile_insert_rows(
+                        &insert.columns,
+                        insert.rows,
+                        parameters,
+                        &schema.name,
+                        &schema.columns,
+                    )?,
+                },
+                AppendOrderMode::CommitSequence => AppendWrite::AppendGenerated {
+                    table: insert.table.name,
+                    rows: compile_generated_insert_rows(
+                        &insert.columns,
+                        insert.rows,
+                        parameters,
+                        schema,
+                    )?,
+                },
+            };
+            Ok(Some(AppendTransaction {
+                writes: vec![write],
             }))
         }
         SqlStatement::Update(update) if state.schema(&update.table.name).is_some() => Err(
@@ -106,6 +124,7 @@ fn compile_append_table(create: CreateTableStatement) -> Result<AppendTableSchem
     let SqlTableStorage::StrictAppend {
         partition_key,
         order_key,
+        generated_order,
     } = create.storage
     else {
         return Err(SkeinError::Semantic(
@@ -138,6 +157,10 @@ fn compile_append_table(create: CreateTableStatement) -> Result<AppendTableSchem
             .collect::<Result<_>>()?,
         partition_key,
         order_key,
+        order_mode: match generated_order {
+            SqlGeneratedOrder::CallerProvided => AppendOrderMode::CallerProvided,
+            SqlGeneratedOrder::CommitSequence => AppendOrderMode::CommitSequence,
+        },
     })
 }
 
@@ -148,6 +171,50 @@ fn compile_insert_rows(
     table_name: &str,
     columns: &[RelationalColumnSchema],
 ) -> Result<Vec<RelationalRow>> {
+    compile_insert_values(insert_columns, input_rows, parameters, table_name, columns)
+        .map(|rows| rows.into_iter().map(RelationalRow::new).collect())
+}
+
+fn compile_generated_insert_rows(
+    insert_columns: &[String],
+    input_rows: Vec<Vec<SqlValue>>,
+    parameters: &[Value],
+    schema: &AppendTableSchema,
+) -> Result<Vec<AppendGeneratedRow>> {
+    let order_column = schema.order_key.first().ok_or_else(|| {
+        SkeinError::Semantic(format!(
+            "generated-order table {} has no order-key column",
+            schema.name
+        ))
+    })?;
+    if insert_columns.iter().any(|column| column == order_column) {
+        return Err(SkeinError::Semantic(format!(
+            "generated-order column {order_column} cannot be supplied by INSERT"
+        )));
+    }
+    let caller_columns = schema
+        .columns
+        .iter()
+        .filter(|column| column.name != *order_column)
+        .cloned()
+        .collect::<Vec<_>>();
+    compile_insert_values(
+        insert_columns,
+        input_rows,
+        parameters,
+        &schema.name,
+        &caller_columns,
+    )
+    .map(|rows| rows.into_iter().map(AppendGeneratedRow::new).collect())
+}
+
+fn compile_insert_values(
+    insert_columns: &[String],
+    input_rows: Vec<Vec<SqlValue>>,
+    parameters: &[Value],
+    table_name: &str,
+    columns: &[RelationalColumnSchema],
+) -> Result<Vec<Vec<RelationalValue>>> {
     let mut positions = Vec::with_capacity(insert_columns.len());
     let mut unique = std::collections::BTreeSet::new();
     for column in insert_columns {
@@ -167,6 +234,13 @@ fn compile_insert_rows(
     input_rows
         .into_iter()
         .map(|values| {
+            if values.len() != insert_columns.len() {
+                return Err(SkeinError::Semantic(format!(
+                    "INSERT into table {table_name} names {} columns but row contains {} values",
+                    insert_columns.len(),
+                    values.len()
+                )));
+            }
             let mut row = columns
                 .iter()
                 .map(|column| column.default.clone().unwrap_or(RelationalValue::Null))
@@ -180,7 +254,7 @@ fn compile_insert_rows(
                     ))
                 })?;
             }
-            Ok(RelationalRow::new(row))
+            Ok(row)
         })
         .collect()
 }

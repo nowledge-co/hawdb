@@ -84,9 +84,12 @@ impl GraphStore {
             self.append_publication_config,
         )
         .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        self.append_state =
-            AppendState::from_checkpoint(reader.manifest().schemas.clone(), reader.watermarks())
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
+            reader.manifest().schemas.clone(),
+            reader.watermarks(),
+            reader.generated_order_watermarks().clone(),
+        )
+        .map_err(|error| SkeinError::Storage(error.to_string()))?;
         self.append_generation_reader = Some(reader);
         Ok(())
     }
@@ -417,12 +420,15 @@ impl GraphStore {
                 .append_state
                 .checkpoint_rows(self.append_publication_config.segment.max_rows)
                 .map_err(|error| SkeinError::Storage(error.to_string()))?;
-            let append_report = AppendPublisher::publish_candidate(
+            let append_report = AppendPublisher::publish_candidate_with_state(
                 durable.root_path(),
                 generation,
                 commit_epoch,
                 self.append_generation_reader.as_ref(),
-                self.append_state.schemas(),
+                AppendPublicationState::new(
+                    self.append_state.schemas(),
+                    self.append_state.generated_order_watermarks(),
+                ),
                 &append_rows,
                 self.append_publication_config,
             )
@@ -815,9 +821,13 @@ impl GraphStore {
         if let Some(relational_state) = prepared.checkpoint_relational_state {
             self.relational_state = relational_state;
         }
-        self.append_state = AppendState::from_checkpoint(
+        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
             prepared.checkpoint_append_reader.manifest().schemas.clone(),
             prepared.checkpoint_append_reader.watermarks(),
+            prepared
+                .checkpoint_append_reader
+                .generated_order_watermarks()
+                .clone(),
         )
         .map_err(|error| SkeinError::Storage(error.to_string()))?;
         self.append_generation_reader = Some(prepared.checkpoint_append_reader);

@@ -103,7 +103,15 @@ pub enum SqlTableStorage {
     StrictAppend {
         partition_key: Vec<String>,
         order_key: Vec<String>,
+        generated_order: SqlGeneratedOrder,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SqlGeneratedOrder {
+    #[default]
+    CallerProvided,
+    CommitSequence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

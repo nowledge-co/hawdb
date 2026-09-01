@@ -21,6 +21,7 @@ STORAGE_MODELS = [
     "SkeinCowPagePublication",
     "SkeinCrdtReplication",
     "SkeinExactGraphCounts",
+    "SkeinGeneratedAppendOrder",
     "SkeinGenerationReclamation",
     "SkeinGossipDelivery",
     "SkeinGraphDescriptorPaging",

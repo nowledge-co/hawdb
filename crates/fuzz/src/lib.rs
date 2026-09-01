@@ -2074,7 +2074,9 @@ fn error_class(error: &SkeinError) -> &'static str {
         SkeinError::Parse(_) => "parse",
         SkeinError::Semantic(_) => "semantic",
         SkeinError::Execution(_) => "execution",
-        SkeinError::Storage(_) | SkeinError::StorageIntegrity(_) => "storage",
+        SkeinError::Storage(_)
+        | SkeinError::StorageIntegrity(_)
+        | SkeinError::AppendSequenceExhausted { .. } => "storage",
         SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

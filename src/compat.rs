@@ -379,7 +379,9 @@ impl ExpectedErrorClass {
         match error {
             SkeinError::Parse(_) => Self::Parse,
             SkeinError::Semantic(_) => Self::Semantic,
-            SkeinError::Storage(_) | SkeinError::StorageIntegrity(_) => Self::Storage,
+            SkeinError::Storage(_)
+            | SkeinError::StorageIntegrity(_)
+            | SkeinError::AppendSequenceExhausted { .. } => Self::Storage,
             SkeinError::Execution(_) => Self::Execution,
             SkeinError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }

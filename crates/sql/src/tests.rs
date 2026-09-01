@@ -299,8 +299,29 @@ fn parses_strict_append_table_storage() {
         crate::SqlTableStorage::StrictAppend {
             partition_key: vec!["stream_id".to_string()],
             order_key: vec!["sequence".to_string()],
+            generated_order: crate::SqlGeneratedOrder::CallerProvided,
         }
     );
+}
+
+#[test]
+fn parses_commit_sequence_strict_append_storage() {
+    let statement = parse_postgres_sql(
+        "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) \
+         WITH (storage_mode = 'strict_append', partition_key = 'stream_id', \
+         order_key = 'sequence', generated_order = 'commit_sequence')",
+    )
+    .expect("supported generated-order CREATE TABLE statement");
+    let SqlStatement::CreateTable(create) = statement else {
+        panic!("expected CREATE TABLE statement");
+    };
+    assert!(matches!(
+        create.storage,
+        crate::SqlTableStorage::StrictAppend {
+            generated_order: crate::SqlGeneratedOrder::CommitSequence,
+            ..
+        }
+    ));
 }
 
 #[test]

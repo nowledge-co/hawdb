@@ -1,6 +1,7 @@
 use super::binary::{map_relational, Decoder, Encoder};
 use super::{
-    validate_table_schema, AppendTableError, AppendTableSchema, AppendTransaction, AppendWrite,
+    validate_table_schema, AppendOrderMode, AppendTableError, AppendTableSchema, AppendTransaction,
+    AppendWrite,
 };
 use crate::relational::{
     decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
@@ -12,7 +13,7 @@ use crate::{
 use skein_integrity::{integrity_digest, SHA256_BYTES};
 
 const APPEND_WAL_MAGIC: &[u8; 8] = b"SKAPWAL1";
-const APPEND_CODEC_VERSION: u16 = 1;
+const APPEND_CODEC_VERSION: u16 = 2;
 const APPEND_HEADER_BYTES: usize = 64;
 const CREATE_TABLE_TAG: u8 = 1;
 const APPEND_ROWS_TAG: u8 = 2;
@@ -92,6 +93,11 @@ pub fn encode_append_wal_batch(
                     let encoded = encode_relational_row_payload(row).map_err(map_relational)?;
                     payload.bytes(&encoded, "append WAL row payload")?;
                 }
+            }
+            AppendWrite::AppendGenerated { table, .. } => {
+                return Err(AppendTableError::Constraint(format!(
+                    "append WAL cannot encode unresolved generated rows for table {table}"
+                )));
             }
         }
     }
@@ -194,6 +200,10 @@ fn encode_schema(
         )));
     }
     encoder.count(schema.partition_key.len(), "append partition key columns")?;
+    encoder.u8(match schema.order_mode {
+        AppendOrderMode::CallerProvided => 0,
+        AppendOrderMode::CommitSequence => 1,
+    });
     encoder.bytes(&encoded, "append table schema")
 }
 
@@ -202,6 +212,15 @@ fn decode_schema(
     limits: AppendDecodeLimits,
 ) -> Result<AppendTableSchema, AppendTableError> {
     let partition_count = decoder.count(limits.max_values, "append partition key columns")?;
+    let order_mode = match decoder.u8("append order mode")? {
+        0 => AppendOrderMode::CallerProvided,
+        1 => AppendOrderMode::CommitSequence,
+        value => {
+            return Err(AppendTableError::Corruption(format!(
+                "unknown append order mode {value}"
+            )));
+        }
+    };
     let encoded = decoder.bytes(limits.max_schema_bytes, "append table schema")?;
     let relational =
         decode_relational_table_schema(encoded, limits.max_schema_bytes, limits.max_values)
@@ -221,6 +240,7 @@ fn decode_schema(
         columns: relational.columns,
         partition_key: relational.primary_key[..partition_count].to_vec(),
         order_key: relational.primary_key[partition_count..].to_vec(),
+        order_mode,
     };
     validate_table_schema(&schema)?;
     Ok(schema)
@@ -318,6 +338,7 @@ mod tests {
                         ],
                         partition_key: vec!["stream".to_string()],
                         order_key: vec!["sequence".to_string()],
+                        order_mode: AppendOrderMode::CallerProvided,
                     },
                 },
                 AppendWrite::Append {
@@ -369,6 +390,23 @@ mod tests {
         assert!(matches!(
             decode_append_wal_batch(&encoded, limits),
             Err(AppendTableError::Admission(_))
+        ));
+    }
+
+    #[test]
+    fn append_wal_rejects_unmaterialized_generated_rows() {
+        let transaction = AppendTransaction {
+            writes: vec![AppendWrite::AppendGenerated {
+                table: "events".to_string(),
+                rows: vec![super::super::AppendGeneratedRow::new(vec![
+                    RelationalValue::Text("alpha".to_string()),
+                ])],
+            }],
+        };
+
+        assert!(matches!(
+            encode_append_wal_batch(42, &transaction),
+            Err(AppendTableError::Constraint(_))
         ));
     }
 }

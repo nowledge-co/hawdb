@@ -928,7 +928,9 @@ fn error_class(error: &crate::SkeinError) -> String {
         crate::SkeinError::Parse(_) => "parse",
         crate::SkeinError::Semantic(_) => "semantic",
         crate::SkeinError::Execution(_) => "execution",
-        crate::SkeinError::Storage(_) | crate::SkeinError::StorageIntegrity(_) => "storage",
+        crate::SkeinError::Storage(_)
+        | crate::SkeinError::StorageIntegrity(_)
+        | crate::SkeinError::AppendSequenceExhausted { .. } => "storage",
         crate::SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
     .to_string()
