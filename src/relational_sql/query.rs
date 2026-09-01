@@ -3561,7 +3561,8 @@ fn join_index_access_candidate(
             .map(|statistics| {
                 debug_assert!(statistics.distinct_non_null_values <= statistics.non_null_rows);
                 debug_assert!(statistics.fanout <= statistics.non_null_rows);
-                usize::try_from(statistics.fanout)
+                debug_assert!(statistics.fanout >= statistics.average_fanout());
+                usize::try_from(statistics.average_fanout())
                     .unwrap_or(usize::MAX)
                     .min(row_count)
             })

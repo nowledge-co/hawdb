@@ -164,7 +164,20 @@ pub(crate) struct RelationalIndexProbeStatistics {
     pub source_commit_epoch: u64,
     pub distinct_non_null_values: u64,
     pub non_null_rows: u64,
+    /// Maximum rows observed for one prefix value. This bounds skew but is
+    /// intentionally not the selectivity estimate for an ordinary probe.
     pub fanout: u64,
+}
+
+impl RelationalIndexProbeStatistics {
+    /// Returns the exact average number of rows per non-null prefix value,
+    /// rounded up so the planner never estimates an existing probe as empty.
+    pub(crate) fn average_fanout(self) -> u64 {
+        if self.distinct_non_null_values == 0 {
+            return 0;
+        }
+        self.non_null_rows.div_ceil(self.distinct_non_null_values)
+    }
 }
 
 #[derive(Clone)]
