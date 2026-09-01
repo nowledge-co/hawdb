@@ -2817,6 +2817,40 @@ mod tests {
     }
 
     #[test]
+    fn relational_join_candidate_work_is_bounded_before_rejected_predicates() {
+        let store = RelationalStore::default();
+        for sql in [
+            "CREATE TABLE candidate_outer (id BIGINT PRIMARY KEY)",
+            "CREATE TABLE candidate_inner (id BIGINT PRIMARY KEY, outer_id BIGINT NOT NULL, accepted BOOLEAN NOT NULL)",
+            "CREATE INDEX candidate_inner_outer_idx ON candidate_inner (outer_id)",
+            "INSERT INTO candidate_outer (id) VALUES (1)",
+            "INSERT INTO candidate_inner (id, outer_id, accepted) VALUES (1, 1, FALSE), (2, 1, FALSE), (3, 1, FALSE)",
+        ] {
+            commit_sql(&store, sql, &[]);
+        }
+        let snapshot = store.snapshot().expect("candidate work snapshot");
+        let mut limits = query_limits(8, 4096);
+        limits.max_intermediate_rows = 32;
+        limits.max_candidate_work = 3;
+
+        let error = execute_relational_query_sql_with_runtime(
+            "SELECT o.id FROM candidate_outer AS o INNER JOIN candidate_inner AS i ON i.outer_id = o.id AND i.accepted = TRUE",
+            &[],
+            snapshot.value(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            limits,
+            &skein_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .expect_err("rejected join candidates must consume the work budget");
+
+        assert!(error.to_string().contains("max_candidate_work 3"));
+    }
+
+    #[test]
     fn relational_join_probe_fanout_tracks_checkpoint_epoch_and_wal_delta() {
         const PREFIX_ONE_SELECT: &str = "SELECT e.id \
             FROM probe_keys AS p \
@@ -3739,6 +3773,7 @@ mod tests {
             max_output_rows,
             max_output_payload_bytes,
             max_intermediate_rows: 10_000,
+            max_candidate_work: 10_000,
             hydration: skein_storage::RelationalHydrationBudget::default(),
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),

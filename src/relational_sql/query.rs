@@ -26,7 +26,7 @@ use skein_executor::blocking::{
 use skein_executor::external_order::ExternalTopN;
 use skein_executor::kernel::{ensure_operator_item_fits, OperatorMemoryTracker};
 use skein_executor::observer::ExecutionObserver;
-use skein_executor::pipeline::{BatchControl, BindingBatch};
+use skein_executor::pipeline::{BatchControl, BindingBatch, TransformBatchBuilder};
 use skein_executor::{
     BindingSchema, BlockingOperatorMemoryReport, ColumnVector, ColumnarBatch, ExecutionLimit,
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryRows, QueryRowsBuilder,
@@ -71,6 +71,10 @@ pub(crate) struct RelationalQueryLimits {
     pub max_output_rows: usize,
     pub max_output_payload_bytes: usize,
     pub max_intermediate_rows: usize,
+    /// Maximum relation-join work units, including probe attempts and rows
+    /// considered by a join predicate. This deliberately remains separate from
+    /// rows emitted at relational operator boundaries.
+    pub max_candidate_work: usize,
     pub hydration: RelationalHydrationBudget,
     pub index_read: skein_storage::RelationalIndexReadLimits,
     pub row_read: skein_storage::RelationalRowPageSnapshotReadLimits,
@@ -922,6 +926,8 @@ struct RelationalPipelineState<'a> {
     rows_until_checkpoint: usize,
     intermediate_rows: usize,
     max_intermediate_rows: usize,
+    candidate_work: usize,
+    max_candidate_work: usize,
     operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     operator_pipeline_started: bool,
 }
@@ -1035,6 +1041,8 @@ impl<'a> RelationalPipelineState<'a> {
             rows_until_checkpoint: batch_rows,
             intermediate_rows: 0,
             max_intermediate_rows: limits.max_intermediate_rows,
+            candidate_work: 0,
+            max_candidate_work: limits.max_candidate_work,
             operator_cardinality_profiles,
             operator_pipeline_started: false,
         }
@@ -1063,6 +1071,23 @@ impl<'a> RelationalPipelineState<'a> {
                 ))
             })?;
         profile.actual_rows = Some(profile.actual_rows.unwrap_or(0).saturating_add(1));
+        self.checkpoint_after_work()
+    }
+
+    fn account_candidate_work(&mut self) -> Result<()> {
+        self.candidate_work = self.candidate_work.checked_add(1).ok_or_else(|| {
+            SkeinError::Execution("relational candidate work count overflow".to_string())
+        })?;
+        if self.candidate_work > self.max_candidate_work {
+            return Err(SkeinError::Execution(format!(
+                "relational SQL exceeds max_candidate_work {}",
+                self.max_candidate_work
+            )));
+        }
+        self.checkpoint_after_work()
+    }
+
+    fn checkpoint_after_work(&mut self) -> Result<()> {
         self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
         if self.rows_until_checkpoint == 0 {
             skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
@@ -1073,12 +1098,7 @@ impl<'a> RelationalPipelineState<'a> {
 
     fn account_unprofiled_row(&mut self) -> Result<()> {
         account_intermediate(&mut self.intermediate_rows, 1, self.max_intermediate_rows)?;
-        self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
-        if self.rows_until_checkpoint == 0 {
-            skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
-            self.rows_until_checkpoint = self.batch_rows;
-        }
-        Ok(())
+        self.checkpoint_after_work()
     }
 
     fn finish_operator_pipeline(&mut self, fully_consumed: bool) {
@@ -3157,6 +3177,7 @@ fn visit_prepared_join_tree_node<'a>(
                 &mut |left_row| {
                     let mut matched = false;
                     let mut visit_right = |right_row: BoundRow<'a>| -> Result<bool> {
+                        pipeline.borrow_mut().account_candidate_work()?;
                         let mut combined = left_row.clone();
                         combined.bindings.extend(right_row.bindings);
                         for predicate in predicates {
@@ -3178,6 +3199,7 @@ fn visit_prepared_join_tree_node<'a>(
                         }
                         completed
                     } else {
+                        pipeline.borrow_mut().account_candidate_work()?;
                         visit_prepared_join_tree_node(
                             right,
                             Some(&left_row),
@@ -3314,6 +3336,7 @@ fn visit_joined_row<'a>(
     };
 
     let mut matched = false;
+    pipeline.account_candidate_work()?;
     let completed = visit_join_entries(
         state,
         index_runtime,
@@ -3321,6 +3344,7 @@ fn visit_joined_row<'a>(
         planned,
         &row,
         &mut |candidate| {
+            pipeline.account_candidate_work()?;
             let mut combined = row.clone();
             combined.bindings.push(Binding {
                 table: &planned.join.table.name,
@@ -3410,6 +3434,8 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
     batch_rows: usize,
+    batch_payload_bytes: NonZeroUsize,
+    memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
 struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
@@ -3426,6 +3452,8 @@ struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
     batch_rows: usize,
+    batch_payload_bytes: NonZeroUsize,
+    memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
 impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
@@ -3435,7 +3463,12 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let mut batch = Vec::with_capacity(self.batch_rows);
+        let mut batch = TransformBatchBuilder::new(
+            "RelationalDistinctAggregateValueSource",
+            self.batch_rows,
+            self.batch_payload_bytes,
+            self.memory_ledger,
+        )?;
         let mut control = BatchControl::Continue;
         visit_relational_rows(
             self.select,
@@ -3454,21 +3487,19 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
                 if matches!(value, RelationalValue::Null) {
                     return Ok(true);
                 }
+                batch.reserve_before_allocation()?;
                 batch.push(ExecutorBinding::scalar(
                     "value",
                     relational_sort_value(value)?,
                 ));
-                if batch.len() == self.batch_rows {
-                    control = emit(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(self.batch_rows),
-                    ))?;
+                if batch.is_full() {
+                    control = batch.emit(emit)?;
                 }
                 Ok(control == BatchControl::Continue)
             },
         )?;
         if control == BatchControl::Continue && !batch.is_empty() {
-            control = emit(batch)?;
+            control = batch.emit(emit)?;
         }
         Ok(control)
     }
@@ -3481,7 +3512,12 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let mut batch = Vec::with_capacity(self.batch_rows);
+        let mut batch = TransformBatchBuilder::new(
+            "RelationalProjectedBatchSource",
+            self.batch_rows,
+            self.batch_payload_bytes,
+            self.memory_ledger,
+        )?;
         let mut control = BatchControl::Continue;
         visit_relational_rows(
             self.select,
@@ -3496,19 +3532,17 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.index_runtime,
             self.row_runtime,
             &mut |row| {
+                batch.reserve_before_allocation()?;
                 let projected = project_bound_row(&row, &self.select.projection)?;
                 batch.push(ExecutorBinding::values(projected));
-                if batch.len() == self.batch_rows {
-                    control = emit(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(self.batch_rows),
-                    ))?;
+                if batch.is_full() {
+                    control = batch.emit(emit)?;
                 }
                 Ok(control == BatchControl::Continue)
             },
         )?;
         if control == BatchControl::Continue && !batch.is_empty() {
-            control = emit(batch)?;
+            control = batch.emit(emit)?;
         }
         Ok(control)
     }
@@ -3635,6 +3669,8 @@ fn execute_blocking_projection<'a>(
             index_runtime,
             row_runtime,
             batch_rows: memory.batch_rows.get(),
+            batch_payload_bytes: memory.batch_payload_bytes,
+            memory_ledger,
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
@@ -4642,6 +4678,8 @@ fn execute_single_count_distinct<'a>(
         index_runtime,
         row_runtime,
         batch_rows: execution_memory.batch_rows.get(),
+        batch_payload_bytes: execution_memory.batch_payload_bytes,
+        memory_ledger,
     };
     let mut count = 0usize;
     stream_distinct_batches(
@@ -5700,6 +5738,52 @@ mod tests {
     }
 
     #[test]
+    fn candidate_work_has_an_independent_budget_and_checkpoint() {
+        let limits = RelationalQueryLimits {
+            max_output_rows: 1,
+            max_output_payload_bytes: 1,
+            max_intermediate_rows: 1,
+            max_candidate_work: 1,
+            hydration: RelationalHydrationBudget::default(),
+            index_read: skein_storage::RelationalIndexReadLimits::default(),
+            row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        };
+        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+        let mut pipeline = RelationalPipelineState::new(
+            Some(&task_context),
+            limits,
+            NonZeroUsize::MIN,
+            Vec::new(),
+        );
+
+        pipeline
+            .account_candidate_work()
+            .expect("first candidate fits");
+        let error = pipeline
+            .account_candidate_work()
+            .expect_err("second candidate exceeds its separate budget");
+        assert!(error.to_string().contains("max_candidate_work 1"));
+
+        let mut cancellable = RelationalPipelineState::new(
+            Some(&task_context),
+            RelationalQueryLimits {
+                max_candidate_work: 2,
+                ..limits
+            },
+            NonZeroUsize::MIN,
+            Vec::new(),
+        );
+        cancellation.cancel();
+        let error = cancellable
+            .account_candidate_work()
+            .expect_err("candidate work must reach a runtime checkpoint");
+        assert!(error
+            .to_string()
+            .contains("runtime task stopped: cancelled"));
+    }
+
+    #[test]
     fn prepared_bushy_join_tree_materializes_the_composite_right_input_once() {
         const SQL: &str = "SELECT a.id AS a_id, d.id AS d_id \
             FROM bushy_a AS a \
@@ -5738,6 +5822,7 @@ mod tests {
             max_output_rows: 8,
             max_output_payload_bytes: 64 * 1024,
             max_intermediate_rows: 128,
+            max_candidate_work: 128,
             hydration: RelationalHydrationBudget::default(),
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
