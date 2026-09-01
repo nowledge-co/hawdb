@@ -1841,7 +1841,7 @@ mod tests {
             .find(|row| {
                 matches!(
                     row.get("id"),
-                    Some(Value::String(id)) if id.contains("NestedLoopJoinExec")
+                    Some(Value::String(id)) if id.contains("HashJoinExec")
                 )
             })
             .expect("join explain row");
@@ -2762,7 +2762,7 @@ mod tests {
             )
             .expect("profile fully consumed join");
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 5);
+        assert_eq!(full.profile.intermediate_rows, 8);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
@@ -2773,7 +2773,7 @@ mod tests {
         assert!(base.fully_consumed);
         let join = &full.profile.operator_cardinality_profiles[1];
         assert_eq!(join.operator_id.get(), 2);
-        assert_eq!(join.operator, RelationalOperatorKind::NestedLoopJoin);
+        assert_eq!(join.operator, RelationalOperatorKind::HashJoin);
         assert_eq!(join.table, "profile_children");
         assert_eq!(
             join.access_path.kind,
@@ -2791,7 +2791,7 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 2);
+        assert_eq!(limited.profile.intermediate_rows, 5);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
             Some(1)

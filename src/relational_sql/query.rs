@@ -46,7 +46,7 @@ use skein_storage::{
     RelationalValue, RelationalValueRef,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -399,11 +399,12 @@ enum RelationalPhysicalJoinAlgorithm {
     Probe,
     BatchedIndex,
     Merge,
+    Hash,
     Materialized,
 }
 
 #[derive(Debug, Clone)]
-struct RelationalMergeJoinKeys {
+struct RelationalEquiJoinKeys {
     columns: Vec<(String, SqlColumnRef)>,
 }
 
@@ -452,7 +453,7 @@ enum RelationalPhysicalJoinNode {
         operator_id: RelationalOperatorId,
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
-        merge_keys: Option<RelationalMergeJoinKeys>,
+        equi_join_keys: Option<RelationalEquiJoinKeys>,
         predicates: Vec<SqlPredicate>,
         left: Box<Self>,
         right: Box<Self>,
@@ -492,7 +493,7 @@ impl RelationalPhysicalJoinNode {
     fn merge_join(
         operator_id: RelationalOperatorId,
         predicates: Vec<SqlPredicate>,
-        merge_keys: RelationalMergeJoinKeys,
+        equi_join_keys: RelationalEquiJoinKeys,
         left: Self,
         right: Self,
     ) -> Result<Self> {
@@ -500,7 +501,25 @@ impl RelationalPhysicalJoinNode {
             operator_id,
             SqlJoinKind::Inner,
             RelationalPhysicalJoinAlgorithm::Merge,
-            Some(merge_keys),
+            Some(equi_join_keys),
+            predicates,
+            left,
+            right,
+        )
+    }
+
+    fn hash_join(
+        operator_id: RelationalOperatorId,
+        predicates: Vec<SqlPredicate>,
+        equi_join_keys: RelationalEquiJoinKeys,
+        left: Self,
+        right: Self,
+    ) -> Result<Self> {
+        Self::join_with_algorithm(
+            operator_id,
+            SqlJoinKind::Inner,
+            RelationalPhysicalJoinAlgorithm::Hash,
+            Some(equi_join_keys),
             predicates,
             left,
             right,
@@ -511,7 +530,7 @@ impl RelationalPhysicalJoinNode {
         operator_id: RelationalOperatorId,
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
-        merge_keys: Option<RelationalMergeJoinKeys>,
+        equi_join_keys: Option<RelationalEquiJoinKeys>,
         predicates: Vec<SqlPredicate>,
         left: Self,
         right: Self,
@@ -522,7 +541,7 @@ impl RelationalPhysicalJoinNode {
             operator_id,
             kind,
             algorithm,
-            merge_keys,
+            equi_join_keys,
             predicates,
             left: Box::new(left),
             right: Box::new(right),
@@ -582,6 +601,7 @@ impl RelationalPhysicalJoinNode {
             } => usize::from(matches!(
                 algorithm,
                 RelationalPhysicalJoinAlgorithm::Merge
+                    | RelationalPhysicalJoinAlgorithm::Hash
                     | RelationalPhysicalJoinAlgorithm::Materialized
             ))
             .saturating_add(left.materialized_right_count())
@@ -622,7 +642,7 @@ impl RelationalPhysicalJoinNode {
             Self::Join {
                 kind,
                 algorithm,
-                merge_keys,
+                equi_join_keys,
                 left,
                 right,
                 output_schema,
@@ -637,43 +657,77 @@ impl RelationalPhysicalJoinNode {
                     Self::Relation(_) => RelationalPhysicalJoinAlgorithm::Probe,
                     Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
                 };
-                if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
-                    if *kind != SqlJoinKind::Inner {
+                match algorithm {
+                    RelationalPhysicalJoinAlgorithm::Merge => {
+                        if *kind != SqlJoinKind::Inner {
+                            return Err(SkeinError::Execution(
+                                "merge join supports inner joins only".to_string(),
+                            ));
+                        }
+                        let (Self::Relation(left), Self::Relation(right)) =
+                            (left.as_ref(), right.as_ref())
+                        else {
+                            return Err(SkeinError::Execution(
+                                "merge join requires two relation inputs".to_string(),
+                            ));
+                        };
+                        if !matches!(
+                            left.access,
+                            RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                                access: RelationalBaseAccess::Index { .. },
+                                ..
+                            })
+                        ) || !matches!(
+                            right.access,
+                            RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                                access: RelationalBaseAccess::Index { .. },
+                                ..
+                            })
+                        ) || equi_join_keys
+                            .as_ref()
+                            .is_none_or(|keys| keys.columns.is_empty())
+                        {
+                            return Err(SkeinError::Execution(
+                                "merge join has incompatible ordered inputs".to_string(),
+                            ));
+                        }
+                    }
+                    RelationalPhysicalJoinAlgorithm::Hash => {
+                        if *kind != SqlJoinKind::Inner {
+                            return Err(SkeinError::Execution(
+                                "hash join supports inner joins only".to_string(),
+                            ));
+                        }
+                        let (Self::Relation(left), Self::Relation(right)) =
+                            (left.as_ref(), right.as_ref())
+                        else {
+                            return Err(SkeinError::Execution(
+                                "hash join requires two relation inputs".to_string(),
+                            ));
+                        };
+                        if !matches!(left.access, RelationalPhysicalAccess::Base(_))
+                            || !matches!(
+                                right.access,
+                                RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                                    access: RelationalBaseAccess::FullScan,
+                                    ..
+                                })
+                            )
+                            || equi_join_keys
+                                .as_ref()
+                                .is_none_or(|keys| keys.columns.is_empty())
+                        {
+                            return Err(SkeinError::Execution(
+                                "hash join has incompatible build input".to_string(),
+                            ));
+                        }
+                    }
+                    _ if *algorithm != expected_algorithm || equi_join_keys.is_some() => {
                         return Err(SkeinError::Execution(
-                            "merge join supports inner joins only".to_string(),
+                            "physical join algorithm disagrees with its right input".to_string(),
                         ));
                     }
-                    let (Self::Relation(left), Self::Relation(right)) =
-                        (left.as_ref(), right.as_ref())
-                    else {
-                        return Err(SkeinError::Execution(
-                            "merge join requires two relation inputs".to_string(),
-                        ));
-                    };
-                    if !matches!(
-                        left.access,
-                        RelationalPhysicalAccess::Base(RelationalAccessCandidate {
-                            access: RelationalBaseAccess::Index { .. },
-                            ..
-                        })
-                    ) || !matches!(
-                        right.access,
-                        RelationalPhysicalAccess::Base(RelationalAccessCandidate {
-                            access: RelationalBaseAccess::Index { .. },
-                            ..
-                        })
-                    ) || merge_keys
-                        .as_ref()
-                        .is_none_or(|keys| keys.columns.is_empty())
-                    {
-                        return Err(SkeinError::Execution(
-                            "merge join has incompatible ordered inputs".to_string(),
-                        ));
-                    }
-                } else if *algorithm != expected_algorithm || merge_keys.is_some() {
-                    return Err(SkeinError::Execution(
-                        "physical join algorithm disagrees with its right input".to_string(),
-                    ));
+                    _ => {}
                 }
                 let expected_schema = RelationalPhysicalOutputSchema::join(
                     left.output_schema(),
@@ -731,7 +785,7 @@ fn merge_join_inputs(
     base: &RelationalAccessCandidate,
     right: &RelationalJoinAccessCandidate,
     right_table: &str,
-) -> Option<(RelationalAccessCandidate, RelationalMergeJoinKeys)> {
+) -> Option<(RelationalAccessCandidate, RelationalEquiJoinKeys)> {
     let RelationalBaseAccess::Index { scan, .. } = &base.access else {
         return None;
     };
@@ -792,8 +846,33 @@ fn merge_join_inputs(
     };
     Some((
         right_base,
-        RelationalMergeJoinKeys {
+        RelationalEquiJoinKeys {
             columns: columns.clone(),
+        },
+    ))
+}
+
+fn hash_join_inputs(
+    predicate: &SqlPredicate,
+    right: &RelationalJoinAccessCandidate,
+    right_table: &str,
+    right_qualifier: &str,
+) -> Option<(RelationalAccessCandidate, RelationalEquiJoinKeys)> {
+    if !matches!(right.access, RelationalJoinAccess::FullScan) {
+        return None;
+    }
+    let mut columns = BTreeMap::new();
+    collect_conjunctive_join_equalities(predicate, right_table, right_qualifier, &mut columns);
+    if columns.is_empty() {
+        return None;
+    }
+    Some((
+        RelationalAccessCandidate {
+            descriptor: right.descriptor.clone(),
+            access: RelationalBaseAccess::FullScan,
+        },
+        RelationalEquiJoinKeys {
+            columns: columns.into_iter().collect(),
         },
     ))
 }
@@ -849,6 +928,50 @@ impl PreparedRelationalAccessPlan {
                 RelationalOperatorId::from_plan_index(1),
                 vec![join.on.clone()],
                 merge_keys,
+                left,
+                right,
+            )?;
+            self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
+            return Ok(());
+        }
+        if self.join_selection.is_none()
+            && statement.joins.len() == 1
+            && statement.joins[0].kind == SqlJoinKind::Inner
+            && let join = &statement.joins[0]
+            && let Some((right_access, equi_join_keys)) = hash_join_inputs(
+                &join.on,
+                &self.join_accesses[0],
+                &join.table.name,
+                join.alias.as_deref().unwrap_or(join.table.name.as_str()),
+            )
+        {
+            let base_qualifier = statement
+                .from_alias
+                .as_deref()
+                .unwrap_or(statement.from.name.as_str());
+            let right_qualifier = join.alias.as_deref().unwrap_or(join.table.name.as_str());
+            let left = RelationalPhysicalJoinNode::relation(
+                BindingId::new(0),
+                statement.from.name.clone(),
+                base_qualifier.to_string(),
+                RelationalPhysicalAccess::Base(self.base_access.clone()),
+            );
+            let right = RelationalPhysicalJoinNode::relation(
+                BindingId::new(1),
+                join.table.name.clone(),
+                right_qualifier.to_string(),
+                RelationalPhysicalAccess::Base(right_access.clone()),
+            );
+            let cost = estimate_relational_join_cost(
+                estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
+                estimate_relational_access_cost(right_access.descriptor.estimated_rows),
+                RelationalJoinCardinality::Inner,
+                RelationalJoinRightInput::Materialized,
+            );
+            let root = RelationalPhysicalJoinNode::hash_join(
+                RelationalOperatorId::from_plan_index(1),
+                vec![join.on.clone()],
+                equi_join_keys,
                 left,
                 right,
             )?;
@@ -1182,6 +1305,7 @@ fn validate_prepared_physical_join_plan_accesses(
                 matches!(
                     algorithm,
                     RelationalPhysicalJoinAlgorithm::Merge
+                        | RelationalPhysicalJoinAlgorithm::Hash
                         | RelationalPhysicalJoinAlgorithm::Materialized
                 ),
             )
@@ -1268,6 +1392,7 @@ fn planned_tree_operator_cardinality_profiles(
                             RelationalJoinRightInput::Probe
                         }
                         RelationalPhysicalJoinAlgorithm::Merge
+                        | RelationalPhysicalJoinAlgorithm::Hash
                         | RelationalPhysicalJoinAlgorithm::Materialized => {
                             RelationalJoinRightInput::Materialized
                         }
@@ -1347,6 +1472,9 @@ fn relational_join_operator_kind(
         (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::Merge) => {
             RelationalOperatorKind::MergeJoin
         }
+        (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::Hash) => {
+            RelationalOperatorKind::HashJoin
+        }
         (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::BatchedIndex) => {
             RelationalOperatorKind::BatchedIndexNestedLoopJoin
         }
@@ -1354,6 +1482,9 @@ fn relational_join_operator_kind(
             RelationalOperatorKind::BatchedIndexNestedLoopLeftJoin
         }
         (SqlJoinKind::Left, _, RelationalPhysicalJoinAlgorithm::Merge) => {
+            RelationalOperatorKind::NestedLoopLeftJoin
+        }
+        (SqlJoinKind::Left, _, RelationalPhysicalJoinAlgorithm::Hash) => {
             RelationalOperatorKind::NestedLoopLeftJoin
         }
         (SqlJoinKind::Inner, RelationalAccessPathKind::FullScan, _)
@@ -3886,10 +4017,10 @@ fn visit_batched_index_nested_loop<'a>(
     Ok(fully_consumed)
 }
 
-fn merge_join_right_key(
+fn bound_relation_join_key(
     row: &BoundRow<'_>,
     relation: &RelationalPhysicalRelation,
-    keys: &RelationalMergeJoinKeys,
+    keys: &RelationalEquiJoinKeys,
 ) -> Result<Option<RelationalKey>> {
     let binding = row
         .bindings
@@ -3897,7 +4028,7 @@ fn merge_join_right_key(
         .find(|binding| binding.binding == relation.binding)
         .ok_or_else(|| {
             SkeinError::Execution(format!(
-                "merge join right relation {} is missing from its row",
+                "equi-join relation {} is missing from its row",
                 relation.qualifier
             ))
         })?;
@@ -3905,7 +4036,7 @@ fn merge_join_right_key(
     for (column, _) in &keys.columns {
         let position = binding.schema.column_position(column).ok_or_else(|| {
             SkeinError::Semantic(format!(
-                "merge join relation {} has no column {column}",
+                "equi-join relation {} has no column {column}",
                 relation.table
             ))
         })?;
@@ -3922,7 +4053,7 @@ fn merge_join_right_key(
 fn visit_index_merge_join<'a>(
     operator_id: RelationalOperatorId,
     predicates: &[SqlPredicate],
-    merge_keys: &RelationalMergeJoinKeys,
+    equi_join_keys: &RelationalEquiJoinKeys,
     left: &'a RelationalPhysicalJoinNode,
     right: &'a RelationalPhysicalJoinNode,
     output_schema: &RelationalPhysicalOutputSchema,
@@ -3974,7 +4105,7 @@ fn visit_index_merge_join<'a>(
         index_runtime,
         row_runtime,
         &mut |row| {
-            let Some(key) = merge_join_right_key(&row, right_relation, merge_keys)? else {
+            let Some(key) = bound_relation_join_key(&row, right_relation, equi_join_keys)? else {
                 return Ok(true);
             };
             if previous_right_key
@@ -4026,7 +4157,7 @@ fn visit_index_merge_join<'a>(
         index_runtime,
         row_runtime,
         &mut |left_row| {
-            let Some(left_key) = bound_join_key(&left_row, right_schema, &merge_keys.columns)?
+            let Some(left_key) = bound_join_key(&left_row, right_schema, &equi_join_keys.columns)?
             else {
                 return Ok(true);
             };
@@ -4051,6 +4182,171 @@ fn visit_index_merge_join<'a>(
                 active_right_range = start..right_cursor;
             }
             for (_, right_row) in &right_rows[active_right_range.clone()] {
+                let mut combined = left_row.clone();
+                combined.bindings.extend(right_row.bindings.clone());
+                let mut predicates_match = true;
+                for predicate in predicates {
+                    if predicate_truth(predicate, &combined, parameters)? != Some(true) {
+                        predicates_match = false;
+                        break;
+                    }
+                }
+                if !predicates_match {
+                    continue;
+                }
+                output_schema.ensure_matches(&combined)?;
+                pipeline.borrow_mut().account_operator_row(operator_id)?;
+                if !visit(combined)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    )
+}
+
+const HASH_JOIN_MAP_ENTRY_OVERHEAD_BYTES: usize = 192;
+
+#[allow(clippy::too_many_arguments)]
+fn visit_hash_join<'a>(
+    operator_id: RelationalOperatorId,
+    predicates: &[SqlPredicate],
+    equi_join_keys: &RelationalEquiJoinKeys,
+    left: &'a RelationalPhysicalJoinNode,
+    right: &'a RelationalPhysicalJoinNode,
+    output_schema: &RelationalPhysicalOutputSchema,
+    outer: Option<&BoundRow<'a>>,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    profiled_base_binding: BindingId,
+    execution: &RelationalPhysicalJoinExecution<'a>,
+    pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
+    index_runtime: &RelationalIndexRuntime<'_>,
+    row_runtime: &RelationalRowRuntime<'a>,
+    visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
+) -> Result<bool> {
+    if outer.is_some() {
+        return Err(SkeinError::Execution(
+            "hash join cannot run below a probe input".to_string(),
+        ));
+    }
+    let (
+        RelationalPhysicalJoinNode::Relation(_left_relation),
+        RelationalPhysicalJoinNode::Relation(right_relation),
+    ) = (left, right)
+    else {
+        return Err(SkeinError::Execution(
+            "hash join requires two relation inputs".to_string(),
+        ));
+    };
+    let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
+        SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
+    })?;
+    let mut build = HashMap::<RelationalKey, Vec<BoundRow<'a>>>::new();
+    let mut build_rows = 0usize;
+    let mut build_tracker = OperatorMemoryTracker::with_account(
+        execution.memory.blocking_operator_bytes,
+        execution.memory_ledger.account(
+            QueryMemoryClass::BlockingState,
+            "RelationalHashJoinBuild",
+            execution.memory.blocking_operator_bytes,
+        ),
+    );
+    visit_prepared_physical_join_plan_node(
+        right,
+        None,
+        parameters,
+        state,
+        profiled_base_binding,
+        execution,
+        pipeline,
+        index_runtime,
+        row_runtime,
+        &mut |row| {
+            let Some(key) = bound_relation_join_key(&row, right_relation, equi_join_keys)? else {
+                return Ok(true);
+            };
+            let key_bytes = relational_key_resident_bytes(&key);
+            if build_tracker.would_exceed(key_bytes) {
+                return Err(SkeinError::Execution(format!(
+                    "RelationalHashJoinBuild state exceeds blocking_operator_bytes {}",
+                    execution.memory.blocking_operator_bytes
+                )));
+            }
+            build_tracker.try_charge(key_bytes)?;
+            let row_bytes = bound_row_resident_bytes(&row);
+            if let Some(rows) = build.get_mut(&key) {
+                if build_tracker.would_exceed(row_bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "RelationalHashJoinBuild state exceeds blocking_operator_bytes {}",
+                        execution.memory.blocking_operator_bytes
+                    )));
+                }
+                build_tracker.try_charge(row_bytes)?;
+                rows.try_reserve_exact(1).map_err(|_| {
+                    SkeinError::Execution(
+                        "RelationalHashJoinBuild cannot reserve build row".to_string(),
+                    )
+                })?;
+                rows.push(row);
+                build_tracker.release(key_bytes);
+            } else {
+                let entry_bytes = row_bytes.saturating_add(HASH_JOIN_MAP_ENTRY_OVERHEAD_BYTES);
+                if build_tracker.would_exceed(entry_bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "RelationalHashJoinBuild state exceeds blocking_operator_bytes {}",
+                        execution.memory.blocking_operator_bytes
+                    )));
+                }
+                build_tracker.try_charge(entry_bytes)?;
+                build.try_reserve(1).map_err(|_| {
+                    SkeinError::Execution(
+                        "RelationalHashJoinBuild cannot reserve hash table".to_string(),
+                    )
+                })?;
+                let mut rows = Vec::new();
+                rows.try_reserve_exact(1).map_err(|_| {
+                    SkeinError::Execution(
+                        "RelationalHashJoinBuild cannot reserve build row".to_string(),
+                    )
+                })?;
+                rows.push(row);
+                build.insert(key, rows);
+            }
+            build_rows = build_rows.saturating_add(1);
+            Ok(true)
+        },
+    )?;
+    execution
+        .reports
+        .borrow_mut()
+        .push(skein_executor::blocking::in_memory_report(
+            "RelationalHashJoinBuild",
+            &build_tracker,
+            build_tracker.peak_bytes,
+            build_rows,
+            execution.memory,
+        ));
+
+    visit_prepared_physical_join_plan_node(
+        left,
+        None,
+        parameters,
+        state,
+        profiled_base_binding,
+        execution,
+        pipeline,
+        index_runtime,
+        row_runtime,
+        &mut |left_row| {
+            let Some(key) = bound_join_key(&left_row, right_schema, &equi_join_keys.columns)?
+            else {
+                return Ok(true);
+            };
+            let Some(right_rows) = build.get(&key) else {
+                return Ok(true);
+            };
+            for right_row in right_rows {
                 let mut combined = left_row.clone();
                 combined.bindings.extend(right_row.bindings.clone());
                 let mut predicates_match = true;
@@ -4122,20 +4418,42 @@ fn visit_prepared_physical_join_plan_node<'a>(
             operator_id,
             kind,
             algorithm,
-            merge_keys,
+            equi_join_keys,
             predicates,
             left,
             right,
             output_schema,
         } => {
             if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
-                let merge_keys = merge_keys.as_ref().ok_or_else(|| {
+                let equi_join_keys = equi_join_keys.as_ref().ok_or_else(|| {
                     SkeinError::Execution("merge join has no key contract".to_string())
                 })?;
                 return visit_index_merge_join(
                     *operator_id,
                     predicates,
-                    merge_keys,
+                    equi_join_keys,
+                    left,
+                    right,
+                    output_schema,
+                    outer,
+                    parameters,
+                    state,
+                    profiled_base_binding,
+                    execution,
+                    pipeline,
+                    index_runtime,
+                    row_runtime,
+                    visit,
+                );
+            }
+            if *algorithm == RelationalPhysicalJoinAlgorithm::Hash {
+                let equi_join_keys = equi_join_keys.as_ref().ok_or_else(|| {
+                    SkeinError::Execution("hash join has no key contract".to_string())
+                })?;
+                return visit_hash_join(
+                    *operator_id,
+                    predicates,
+                    equi_join_keys,
                     left,
                     right,
                     output_schema,
@@ -6885,6 +7203,55 @@ mod tests {
         .expect("prepare merge join")
     }
 
+    fn hash_join_state() -> RelationalState {
+        let mut state = RelationalState::default();
+        for sql in [
+            "CREATE TABLE hash_left (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, join_key TEXT, tag TEXT NOT NULL)",
+            "CREATE TABLE hash_right (id TEXT PRIMARY KEY, join_key TEXT, tag TEXT NOT NULL, value TEXT NOT NULL)",
+            "CREATE INDEX idx_hash_left_tenant ON hash_left (tenant)",
+            "INSERT INTO hash_left (id, tenant, join_key, tag) VALUES ('left-b', 'tenant-1', 'b', 'gold'), ('left-a', 'tenant-1', 'a', 'silver'), ('left-null', 'tenant-1', NULL, 'silver'), ('left-other', 'tenant-2', 'a', 'silver')",
+            "INSERT INTO hash_right (id, join_key, tag, value) VALUES ('right-a', 'a', 'silver', 'keep'), ('right-b-1', 'b', 'gold', 'keep'), ('right-b-2', 'b', 'gold', 'keep'), ('right-b-skip', 'b', 'gold', 'skip'), ('right-null', NULL, 'silver', 'keep')",
+        ] {
+            let transaction = compile_relational_statement_sql(sql, &[], &state)
+                .unwrap_or_else(|error| panic!("failed to compile SQL '{sql}': {error}"));
+            state = state
+                .stage_transaction(
+                    transaction,
+                    RelationalMutationLimits::default(),
+                    RelationalOverflowConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("failed to apply SQL '{sql}': {error}"));
+        }
+        state
+    }
+
+    fn prepare_hash_join(state: &RelationalState) -> PreparedRelationalSelect {
+        let prepared_sql = skein_sql::prepare_postgres_sql(
+            "SELECT l.id AS left_id, r.id AS right_id \
+             FROM hash_left AS l \
+             INNER JOIN hash_right AS r \
+             ON r.join_key = l.join_key AND r.tag = l.tag AND r.value = 'keep' \
+             WHERE l.tenant = 'tenant-1'",
+        )
+        .expect("valid hash join SELECT");
+        let SqlStatement::Select(select) = prepared_sql.statement else {
+            panic!("expected SELECT statement");
+        };
+        prepare_relational_select(
+            select,
+            &[],
+            state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            batched_index_join_limits(),
+            RelationalJoinEnumerationConfig::default(),
+            RelationalSqlStageTimings::default(),
+        )
+        .expect("prepare hash join")
+    }
+
     #[test]
     fn explain_estimated_rows_never_render_zero() {
         assert_eq!(
@@ -7089,7 +7456,7 @@ mod tests {
         let prepared = prepare_merge_join(&state);
         let RelationalPhysicalJoinNode::Join {
             algorithm,
-            merge_keys,
+            equi_join_keys,
             ..
         } = &prepared
             .access_plan
@@ -7101,7 +7468,7 @@ mod tests {
         };
         assert_eq!(*algorithm, RelationalPhysicalJoinAlgorithm::Merge);
         assert_eq!(
-            merge_keys
+            equi_join_keys
                 .as_ref()
                 .expect("merge key contract")
                 .columns
@@ -7221,6 +7588,128 @@ mod tests {
         assert!(error
             .to_string()
             .contains("RelationalMergeJoinRightInput state exceeds blocking_operator_bytes 1"));
+    }
+
+    #[test]
+    fn prepared_full_scan_equi_join_uses_hash_operator_and_profile() {
+        let state = hash_join_state();
+        let prepared = prepare_hash_join(&state);
+        let RelationalPhysicalJoinNode::Join {
+            algorithm,
+            equi_join_keys,
+            ..
+        } = &prepared
+            .access_plan
+            .physical_join_plan()
+            .expect("physical join plan")
+            .root
+        else {
+            panic!("expected physical join root");
+        };
+        assert_eq!(*algorithm, RelationalPhysicalJoinAlgorithm::Hash);
+        assert_eq!(
+            equi_join_keys
+                .as_ref()
+                .expect("hash key contract")
+                .columns
+                .iter()
+                .map(|(right, left)| (right.as_str(), left.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("join_key", "join_key"), ("tag", "tag")]
+        );
+        let profiles =
+            planned_operator_cardinality_profiles(&prepared).expect("physical operator profiles");
+        assert_eq!(profiles[1].operator, RelationalOperatorKind::HashJoin);
+        assert_eq!(
+            profiles[1].access_path.kind,
+            RelationalAccessPathKind::FullScan
+        );
+    }
+
+    #[test]
+    fn hash_join_preserves_duplicate_build_rows_and_evaluates_full_on_predicates() {
+        let state = hash_join_state();
+        let prepared = prepare_hash_join(&state);
+        let memory = skein_executor::ExecutionMemoryConfig::default();
+        let execution = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    None,
+                ),
+            )
+            .expect("admit hash join");
+        let output = execute_select(&prepared, &[], execution).expect("execute hash join");
+
+        assert_eq!(output.rows.len(), 3);
+        assert_eq!(
+            output.rows[0]["left_id"],
+            Value::String("left-a".to_string())
+        );
+        assert_eq!(
+            output.rows[0]["right_id"],
+            Value::String("right-a".to_string())
+        );
+        assert_eq!(
+            output.rows[1]["left_id"],
+            Value::String("left-b".to_string())
+        );
+        assert_eq!(
+            output.rows[1]["right_id"],
+            Value::String("right-b-1".to_string())
+        );
+        assert_eq!(
+            output.rows[2]["right_id"],
+            Value::String("right-b-2".to_string())
+        );
+        assert_eq!(
+            output.operator_cardinality_profiles[1].operator,
+            RelationalOperatorKind::HashJoin
+        );
+        assert_eq!(output.operator_cardinality_profiles[1].actual_rows, Some(3));
+        assert!(output
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
+    }
+
+    #[test]
+    fn hash_join_rejects_build_state_that_exceeds_its_blocking_budget() {
+        let state = hash_join_state();
+        let prepared = prepare_hash_join(&state);
+        let memory = skein_executor::ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(1).expect("non-zero blocking budget"),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
+        let execution = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    None,
+                ),
+            )
+            .expect("admit constrained hash join");
+        let error = execute_select(&prepared, &[], execution)
+            .expect_err("hash join must enforce its build budget");
+        assert!(error
+            .to_string()
+            .contains("RelationalHashJoinBuild state exceeds blocking_operator_bytes 1"));
     }
 
     #[test]
