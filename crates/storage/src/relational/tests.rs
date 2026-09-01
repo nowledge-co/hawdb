@@ -4203,6 +4203,22 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     ));
     assert!(!reader.is_poisoned());
 
+    let no_file_budget = RelationalIndexReadLimits {
+        max_file_bytes: 0,
+        ..RelationalIndexReadLimits::default()
+    };
+    assert!(matches!(
+        reader.visit_exact_postings(
+            "documents",
+            "documents_owner_idx",
+            &owner,
+            no_file_budget,
+            |_| true,
+        ),
+        Err(RelationalIndexShadowError::Admission(_))
+    ));
+    assert!(!reader.is_poisoned());
+
     let page_cache = std::sync::Arc::new(crate::SegmentCache::new(16 * 1024));
     let cached_reader = RelationalIndexShadowReader::open_latest_with_cache(
         &directory,
@@ -4251,6 +4267,26 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     assert_eq!(warm_report.file_pages_read, 0);
     assert_eq!(warm_report.file_bytes_read, 0);
     assert_eq!(page_cache.snapshot().pinned_bytes, 0);
+
+    let mut cache_only = Vec::new();
+    let cache_only_report = cached_reader
+        .visit_exact_postings(
+            "documents",
+            "documents_owner_idx",
+            &owner,
+            RelationalIndexReadLimits {
+                max_file_bytes: 0,
+                ..RelationalIndexReadLimits::default()
+            },
+            |key| {
+                cache_only.push(key.clone());
+                true
+            },
+        )
+        .expect("warm cached lookup needs no file I/O budget");
+    assert_eq!(cache_only, expected_exact);
+    assert_eq!(cache_only_report.file_bytes_read, 0);
+    assert_eq!(cache_only_report.cache_hits, cache_only_report.pages_read);
 
     let callback_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = cached_reader.visit_exact_postings(
@@ -4576,6 +4612,21 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
         .expect("merge prefix base and recovery deltas");
     assert_eq!(actual_prefix, expected_prefix);
 
+    assert!(matches!(
+        reader.visit_exact_postings(
+            "documents",
+            "documents_owner_idx",
+            &owner_prefix,
+            RelationalIndexReadLimits {
+                max_file_bytes: 0,
+                ..RelationalIndexReadLimits::default()
+            },
+            |_| true,
+        ),
+        Err(RelationalIndexShadowError::Admission(_))
+    ));
+    assert!(!reader.is_poisoned());
+
     let page_cache = std::sync::Arc::new(crate::SegmentCache::new(64 * 1024));
     let cached_reader = RelationalIndexRecoveryReader::open_latest_with_cache(
         &directory,
@@ -4631,6 +4682,34 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
     assert_eq!(warm_report.delta_cache_hits, report.delta_pages);
     assert_eq!(warm_report.delta_file_pages_read, 0);
     assert_eq!(page_cache.snapshot().pinned_bytes, 0);
+
+    let mut cache_only_rows = Vec::new();
+    let cache_only_report = cached_reader
+        .visit_exact_postings(
+            "documents",
+            "documents_owner_idx",
+            &owner_prefix,
+            RelationalIndexReadLimits {
+                max_file_bytes: 0,
+                ..RelationalIndexReadLimits::default()
+            },
+            |primary_key| {
+                cache_only_rows.push(primary_key.clone());
+                true
+            },
+        )
+        .expect("warm recovery lookup needs no file I/O budget");
+    assert_eq!(cache_only_rows, expected_cold_rows);
+    assert_eq!(cache_only_report.base.file_bytes_read, 0);
+    assert_eq!(cache_only_report.delta_file_bytes_read, 0);
+    assert_eq!(
+        cache_only_report.base.cache_hits,
+        cache_only_report.base.pages_read
+    );
+    assert_eq!(
+        cache_only_report.delta_cache_hits, report.delta_pages,
+        "all recovery delta pages remain cache-resident"
+    );
 
     assert!(RelationalIndexRecoveryReader::open_latest(
         &directory,

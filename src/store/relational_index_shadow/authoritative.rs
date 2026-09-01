@@ -7,6 +7,7 @@ struct AuthoritativeReadUsage {
     logical_pages: usize,
     logical_bytes: usize,
     rows: usize,
+    file_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,15 @@ impl AuthoritativeReadLedger {
             max_pages,
             max_rows,
             max_bytes,
+            max_file_bytes: self
+                .limits
+                .max_file_bytes
+                .checked_sub(usage.file_bytes)
+                .ok_or_else(|| {
+                    RelationalError::Admission(
+                        "authoritative relational index file-byte accounting overflow".to_string(),
+                    )
+                })?,
             max_tree_height: self.limits.max_tree_height,
         })
     }
@@ -70,12 +80,12 @@ impl AuthoritativeReadLedger {
         &self,
         report: &RelationalIndexReadViewReport,
     ) -> Result<(), RelationalError> {
-        let (backend_pages, backend_bytes) = match &report.backend {
+        let (backend_pages, backend_bytes, file_bytes) = match &report.backend {
             RelationalIndexReadViewBackendReport::Base(report) => {
-                (report.pages_read, report.bytes_read)
+                (report.pages_read, report.bytes_read, report.file_bytes_read)
             }
-            RelationalIndexReadViewBackendReport::Recovered(report) => (
-                report
+            RelationalIndexReadViewBackendReport::Recovered(report) => {
+                let pages = report
                     .base
                     .pages_read
                     .checked_add(report.delta_pages_read)
@@ -83,8 +93,8 @@ impl AuthoritativeReadLedger {
                         RelationalError::Admission(
                             "authoritative index page accounting overflow".to_string(),
                         )
-                    })?,
-                report
+                    })?;
+                let bytes = report
                     .base
                     .bytes_read
                     .checked_add(report.delta_bytes_read)
@@ -92,8 +102,18 @@ impl AuthoritativeReadLedger {
                         RelationalError::Admission(
                             "authoritative index byte accounting overflow".to_string(),
                         )
-                    })?,
-            ),
+                    })?;
+                let file_bytes = report
+                    .base
+                    .file_bytes_read
+                    .checked_add(report.delta_file_bytes_read)
+                    .ok_or_else(|| {
+                        RelationalError::Admission(
+                            "authoritative index file-byte accounting overflow".to_string(),
+                        )
+                    })?;
+                (pages, bytes, file_bytes)
+            }
         };
         let logical_bytes = backend_bytes
             .checked_add(report.live_bytes_visited)
@@ -122,9 +142,15 @@ impl AuthoritativeReadLedger {
         usage.rows = usage.rows.checked_add(report.rows_visited).ok_or_else(|| {
             RelationalError::Admission("authoritative index row accounting overflow".to_string())
         })?;
+        usage.file_bytes = usage.file_bytes.checked_add(file_bytes).ok_or_else(|| {
+            RelationalError::Admission(
+                "authoritative index file-byte accounting overflow".to_string(),
+            )
+        })?;
         if usage.logical_pages > self.limits.max_pages.get()
             || usage.logical_bytes > self.limits.max_bytes.get()
             || usage.rows > self.limits.max_rows.get()
+            || usage.file_bytes > self.limits.max_file_bytes
         {
             return Err(RelationalError::Admission(
                 "authoritative relational index reader exceeded its transaction budget".to_string(),

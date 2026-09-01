@@ -279,6 +279,8 @@ pub struct DatabaseConfig {
     /// Aggregate encoded graph-manifest bytes allowed during database open.
     /// Payload pages remain governed separately by the segment cache.
     pub max_graph_manifest_open_bytes: u64,
+    /// Maximum physical relational-index file bytes fetched by one query.
+    /// Cache hits consume the separately derived logical traversal budget only.
     pub max_relational_index_read_bytes: NonZeroUsize,
     pub max_relational_hydration_bytes: NonZeroUsize,
     pub storage_residency_mode: skein_storage::StorageResidencyMode,
@@ -345,7 +347,15 @@ fn relational_query_limits_with_payload(
     let max_row_read_bytes = max_row_read_pages
         .saturating_mul(skein_storage::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
         .max(1);
-    let max_index_read_bytes = config.max_relational_index_read_bytes;
+    // Logical index traversal includes cache hits and must scale with the
+    // statement's admitted intermediate rows. Physical index reads retain a
+    // separate fixed I/O ceiling so a warm cache cannot disable query bounds.
+    let max_index_read_pages = max_intermediate_rows
+        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+        .max(1);
+    let max_index_read_bytes = max_index_read_pages
+        .saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+        .max(1);
     crate::relational_sql::RelationalQueryLimits {
         max_output_rows,
         max_output_payload_bytes,
@@ -358,11 +368,13 @@ fn relational_query_limits_with_payload(
             ..skein_storage::RelationalHydrationBudget::default()
         },
         index_read: skein_storage::RelationalIndexReadLimits {
-            max_rows: NonZeroUsize::new(
-                max_intermediate_rows.clamp(1, skein_storage::DEFAULT_RELATIONAL_INDEX_READ_ROWS),
-            )
-            .expect("relational index query row budget is non-zero"),
-            max_bytes: max_index_read_bytes,
+            max_pages: NonZeroUsize::new(max_index_read_pages)
+                .expect("relational index query page budget is non-zero"),
+            max_rows: NonZeroUsize::new(max_intermediate_rows.max(1))
+                .expect("relational index query row budget is non-zero"),
+            max_bytes: NonZeroUsize::new(max_index_read_bytes)
+                .expect("relational index query byte budget is non-zero"),
+            max_file_bytes: config.max_relational_index_read_bytes.get(),
             ..skein_storage::RelationalIndexReadLimits::default()
         },
         row_read: skein_storage::RelationalRowPageSnapshotReadLimits {

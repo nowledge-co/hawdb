@@ -101,6 +101,7 @@ struct RelationalIndexRuntimeState {
     logical_pages: usize,
     logical_bytes: usize,
     rows_visited: usize,
+    file_bytes: usize,
     evidence: BTreeMap<(String, String), RelationalIndexExecutionEvidence>,
 }
 
@@ -363,6 +364,7 @@ impl<'a> RelationalIndexRuntime<'a> {
                     .get()
                     .checked_sub(state.logical_bytes)?,
             )?,
+            max_file_bytes: self.limits.max_file_bytes.checked_sub(state.file_bytes)?,
             max_tree_height: self.limits.max_tree_height,
         })
     }
@@ -419,23 +421,32 @@ impl<'a> RelationalIndexRuntime<'a> {
             report.rows_visited,
             "query index row count",
         )?;
+        let file_bytes = checked_add(
+            state.file_bytes,
+            metrics.file_bytes,
+            "query index file byte count",
+        )?;
         if logical_pages > self.limits.max_pages.get()
             || logical_bytes > self.limits.max_bytes.get()
             || rows_visited > self.limits.max_rows.get()
+            || file_bytes > self.limits.max_file_bytes
         {
             return Err(SkeinError::Execution(format!(
-                "relational index reads exceed the statement budget pages={}/{}, bytes={}/{}, rows={}/{}",
+                "relational index reads exceed the statement budget logical_pages={}/{}, logical_bytes={}/{}, rows={}/{}, file_bytes={}/{}",
                 logical_pages,
                 self.limits.max_pages,
                 logical_bytes,
                 self.limits.max_bytes,
                 rows_visited,
                 self.limits.max_rows,
+                file_bytes,
+                self.limits.max_file_bytes,
             )));
         }
         state.logical_pages = logical_pages;
         state.logical_bytes = logical_bytes;
         state.rows_visited = rows_visited;
+        state.file_bytes = file_bytes;
         let evidence = Self::evidence_mut(&mut state, table, index);
         ensure_identity(evidence, report)?;
         evidence.lookups = checked_add(evidence.lookups, 1, "index lookup count")?;

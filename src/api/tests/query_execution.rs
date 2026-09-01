@@ -299,6 +299,27 @@ fn database_config_defaults_to_bounded_read_results() {
 }
 
 #[test]
+fn relational_query_index_limits_separate_logical_work_from_file_io() {
+    let config = DatabaseConfig::default();
+
+    let limits = super::super::relational_query_limits_with_payload(&config, None, None);
+    let index = limits.index_read;
+    let expected_pages = crate::DEFAULT_MAX_READ_RESULT_ROWS
+        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize);
+
+    assert_eq!(index.max_rows.get(), crate::DEFAULT_MAX_READ_RESULT_ROWS);
+    assert_eq!(index.max_pages.get(), expected_pages);
+    assert_eq!(
+        index.max_bytes.get(),
+        expected_pages.saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+    );
+    assert_eq!(
+        index.max_file_bytes,
+        config.max_relational_index_read_bytes.get()
+    );
+}
+
+#[test]
 fn database_config_caps_collected_read_query_payload() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_read_result_payload_bytes: Some(16),

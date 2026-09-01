@@ -13,9 +13,14 @@ pub const DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT: u32 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalIndexReadLimits {
+    /// Maximum logical index pages traversed, including cache hits.
     pub max_pages: NonZeroUsize,
+    /// Maximum index rows visited.
     pub max_rows: NonZeroUsize,
+    /// Maximum logical index bytes traversed, including cache hits.
     pub max_bytes: NonZeroUsize,
+    /// Maximum bytes fetched from index files. A zero budget permits cache hits only.
+    pub max_file_bytes: usize,
     pub max_tree_height: NonZeroU32,
 }
 
@@ -28,6 +33,7 @@ impl Default for RelationalIndexReadLimits {
                 .expect("default relational index row limit is non-zero"),
             max_bytes: NonZeroUsize::new(DEFAULT_RELATIONAL_INDEX_READ_BYTES)
                 .expect("default relational index byte limit is non-zero"),
+            max_file_bytes: DEFAULT_RELATIONAL_INDEX_READ_BYTES,
             max_tree_height: NonZeroU32::new(DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT)
                 .expect("default relational index tree-height limit is non-zero"),
         }
@@ -686,7 +692,14 @@ impl<'a> ReadContext<'a> {
                 self.limits.max_bytes
             )));
         }
-        let read = self.reader.read_page_accounted(page_id)?;
+        let remaining_file_bytes = self
+            .limits
+            .max_file_bytes
+            .checked_sub(self.report.file_bytes_read)
+            .ok_or_else(|| self.admission("index file byte counter exceeds its limit"))?;
+        let read = self
+            .reader
+            .read_page_accounted(page_id, remaining_file_bytes)?;
         self.report.pages_read += 1;
         self.report.bytes_read = next_bytes;
         self.report.cache_hits += usize::from(read.cache_hit);

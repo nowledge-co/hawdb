@@ -587,6 +587,7 @@ fn intersect_read_limits(
         max_pages: requested.max_pages.min(remaining.max_pages),
         max_rows: requested.max_rows.min(remaining.max_rows),
         max_bytes: requested.max_bytes.min(remaining.max_bytes),
+        max_file_bytes: requested.max_file_bytes.min(remaining.max_file_bytes),
         max_tree_height: requested.max_tree_height.min(remaining.max_tree_height),
     }
 }
