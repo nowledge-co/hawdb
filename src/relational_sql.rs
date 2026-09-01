@@ -3744,6 +3744,48 @@ mod tests {
         assert!(error.to_string().contains("blocking_operator_bytes"));
     }
 
+    #[test]
+    fn distinct_sources_account_input_batch_payload() {
+        let store = RelationalStore::default();
+        commit_sql(
+            &store,
+            "CREATE TABLE distinct_values (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
+            &[],
+        );
+        commit_sql(
+            &store,
+            "INSERT INTO distinct_values (id, body) VALUES ($1, $2)",
+            &[text("value-1"), text(&"x".repeat(256))],
+        );
+
+        let snapshot = store.snapshot().expect("distinct query snapshot");
+        let constrained_memory = skein_executor::ExecutionMemoryConfig {
+            batch_payload_bytes: std::num::NonZeroUsize::new(128)
+                .expect("non-zero distinct batch budget"),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
+        for sql in [
+            "SELECT DISTINCT body FROM distinct_values",
+            "SELECT COUNT(DISTINCT body) AS body_count FROM distinct_values",
+        ] {
+            let error = execute_relational_query_sql_with_runtime(
+                sql,
+                &[],
+                snapshot.value(),
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                query_limits(1, 4 * 1024),
+                &constrained_memory,
+                None,
+            )
+            .expect_err("distinct input must honor batch_payload_bytes");
+            assert!(error.to_string().contains("intermediate row uses"));
+            assert!(error.to_string().contains("batch_payload_bytes 128"));
+        }
+    }
+
     fn commit_sql(store: &RelationalStore, sql: &str, parameters: &[Value]) {
         let snapshot = store.snapshot().expect("SQL mutation snapshot");
         let transaction = compile_relational_statement_sql(sql, parameters, snapshot.value())

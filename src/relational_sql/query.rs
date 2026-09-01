@@ -26,7 +26,7 @@ use skein_executor::blocking::{
 use skein_executor::external_order::ExternalTopN;
 use skein_executor::kernel::{ensure_operator_item_fits, OperatorMemoryTracker};
 use skein_executor::observer::ExecutionObserver;
-use skein_executor::pipeline::{BatchControl, BindingBatch};
+use skein_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
 use skein_executor::{
     BindingSchema, BlockingOperatorMemoryReport, ColumnVector, ColumnarBatch, ExecutionLimit,
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryRows, QueryRowsBuilder,
@@ -4809,6 +4809,8 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
     batch_rows: usize,
+    batch_memory: NonZeroUsize,
+    memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
 struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
@@ -4825,6 +4827,8 @@ struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
     batch_rows: usize,
+    batch_memory: NonZeroUsize,
+    memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
 impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
@@ -4834,7 +4838,12 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let mut batch = Vec::with_capacity(self.batch_rows);
+        let mut batch = AccountedBindingBatch::with_ledger(
+            "RelationalCountDistinctExec input",
+            self.batch_rows,
+            self.batch_memory,
+            self.memory_ledger,
+        );
         let mut control = BatchControl::Continue;
         visit_relational_rows(
             self.select,
@@ -4853,21 +4862,18 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
                 if matches!(value, RelationalValue::Null) {
                     return Ok(true);
                 }
-                batch.push(ExecutorBinding::scalar(
-                    "value",
-                    relational_sort_value(value)?,
-                ));
-                if batch.len() == self.batch_rows {
-                    control = emit(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(self.batch_rows),
-                    ))?;
+                control = batch.push(
+                    ExecutorBinding::scalar("value", relational_sort_value(value)?),
+                    emit,
+                )?;
+                if control == BatchControl::Continue && batch.is_full() {
+                    control = batch.emit(emit)?;
                 }
                 Ok(control == BatchControl::Continue)
             },
         )?;
         if control == BatchControl::Continue && !batch.is_empty() {
-            control = emit(batch)?;
+            control = batch.emit(emit)?;
         }
         Ok(control)
     }
@@ -4880,7 +4886,12 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let mut batch = Vec::with_capacity(self.batch_rows);
+        let mut batch = AccountedBindingBatch::with_ledger(
+            "RelationalDistinctProjectionExec input",
+            self.batch_rows,
+            self.batch_memory,
+            self.memory_ledger,
+        );
         let mut control = BatchControl::Continue;
         visit_relational_rows(
             self.select,
@@ -4896,18 +4907,15 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.row_runtime,
             &mut |row| {
                 let projected = project_bound_row(&row, &self.select.projection)?;
-                batch.push(ExecutorBinding::values(projected));
-                if batch.len() == self.batch_rows {
-                    control = emit(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(self.batch_rows),
-                    ))?;
+                control = batch.push(ExecutorBinding::values(projected), emit)?;
+                if control == BatchControl::Continue && batch.is_full() {
+                    control = batch.emit(emit)?;
                 }
                 Ok(control == BatchControl::Continue)
             },
         )?;
         if control == BatchControl::Continue && !batch.is_empty() {
-            control = emit(batch)?;
+            control = batch.emit(emit)?;
         }
         Ok(control)
     }
@@ -5034,6 +5042,8 @@ fn execute_blocking_projection<'a>(
             index_runtime,
             row_runtime,
             batch_rows: memory.batch_rows.get(),
+            batch_memory: memory.batch_payload_bytes,
+            memory_ledger,
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
@@ -6043,6 +6053,8 @@ fn execute_single_count_distinct<'a>(
         index_runtime,
         row_runtime,
         batch_rows: execution_memory.batch_rows.get(),
+        batch_memory: execution_memory.batch_payload_bytes,
+        memory_ledger,
     };
     let mut count = 0usize;
     stream_distinct_batches(
