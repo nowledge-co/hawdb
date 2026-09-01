@@ -28,6 +28,7 @@ pub enum RelationalOperatorKind {
     IndexNestedLoopLeftJoin,
     BatchedIndexNestedLoopJoin,
     BatchedIndexNestedLoopLeftJoin,
+    MergeJoin,
 }
 
 impl RelationalOperatorKind {
@@ -42,6 +43,7 @@ impl RelationalOperatorKind {
             Self::IndexNestedLoopLeftJoin => "IndexNestedLoopLeftJoinExec",
             Self::BatchedIndexNestedLoopJoin => "BatchedIndexNestedLoopJoinExec",
             Self::BatchedIndexNestedLoopLeftJoin => "BatchedIndexNestedLoopLeftJoinExec",
+            Self::MergeJoin => "MergeJoinExec",
         }
     }
 }

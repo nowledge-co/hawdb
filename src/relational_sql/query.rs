@@ -398,7 +398,13 @@ impl RelationalPhysicalOutputSchema {
 enum RelationalPhysicalJoinAlgorithm {
     Probe,
     BatchedIndex,
+    Merge,
     Materialized,
+}
+
+#[derive(Debug, Clone)]
+struct RelationalMergeJoinKeys {
+    columns: Vec<(String, SqlColumnRef)>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +452,7 @@ enum RelationalPhysicalJoinNode {
         operator_id: RelationalOperatorId,
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
+        merge_keys: Option<RelationalMergeJoinKeys>,
         predicates: Vec<SqlPredicate>,
         left: Box<Self>,
         right: Box<Self>,
@@ -479,12 +486,43 @@ impl RelationalPhysicalJoinNode {
             Self::Relation(_) => RelationalPhysicalJoinAlgorithm::Probe,
             Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
         };
+        Self::join_with_algorithm(operator_id, kind, algorithm, None, predicates, left, right)
+    }
+
+    fn merge_join(
+        operator_id: RelationalOperatorId,
+        predicates: Vec<SqlPredicate>,
+        merge_keys: RelationalMergeJoinKeys,
+        left: Self,
+        right: Self,
+    ) -> Result<Self> {
+        Self::join_with_algorithm(
+            operator_id,
+            SqlJoinKind::Inner,
+            RelationalPhysicalJoinAlgorithm::Merge,
+            Some(merge_keys),
+            predicates,
+            left,
+            right,
+        )
+    }
+
+    fn join_with_algorithm(
+        operator_id: RelationalOperatorId,
+        kind: SqlJoinKind,
+        algorithm: RelationalPhysicalJoinAlgorithm,
+        merge_keys: Option<RelationalMergeJoinKeys>,
+        predicates: Vec<SqlPredicate>,
+        left: Self,
+        right: Self,
+    ) -> Result<Self> {
         let output_schema =
             RelationalPhysicalOutputSchema::join(left.output_schema(), right.output_schema())?;
         Ok(Self::Join {
             operator_id,
             kind,
             algorithm,
+            merge_keys,
             predicates,
             left: Box::new(left),
             right: Box::new(right),
@@ -541,9 +579,13 @@ impl RelationalPhysicalJoinNode {
                 left,
                 right,
                 ..
-            } => usize::from(*algorithm == RelationalPhysicalJoinAlgorithm::Materialized)
-                .saturating_add(left.materialized_right_count())
-                .saturating_add(right.materialized_right_count()),
+            } => usize::from(matches!(
+                algorithm,
+                RelationalPhysicalJoinAlgorithm::Merge
+                    | RelationalPhysicalJoinAlgorithm::Materialized
+            ))
+            .saturating_add(left.materialized_right_count())
+            .saturating_add(right.materialized_right_count()),
         }
     }
 
@@ -578,7 +620,9 @@ impl RelationalPhysicalJoinNode {
                 Ok(())
             }
             Self::Join {
+                kind,
                 algorithm,
+                merge_keys,
                 left,
                 right,
                 output_schema,
@@ -593,7 +637,40 @@ impl RelationalPhysicalJoinNode {
                     Self::Relation(_) => RelationalPhysicalJoinAlgorithm::Probe,
                     Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
                 };
-                if *algorithm != expected_algorithm {
+                if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
+                    if *kind != SqlJoinKind::Inner {
+                        return Err(SkeinError::Execution(
+                            "merge join supports inner joins only".to_string(),
+                        ));
+                    }
+                    let (Self::Relation(left), Self::Relation(right)) =
+                        (left.as_ref(), right.as_ref())
+                    else {
+                        return Err(SkeinError::Execution(
+                            "merge join requires two relation inputs".to_string(),
+                        ));
+                    };
+                    if !matches!(
+                        left.access,
+                        RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                            access: RelationalBaseAccess::Index { .. },
+                            ..
+                        })
+                    ) || !matches!(
+                        right.access,
+                        RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                            access: RelationalBaseAccess::Index { .. },
+                            ..
+                        })
+                    ) || merge_keys
+                        .as_ref()
+                        .is_none_or(|keys| keys.columns.is_empty())
+                    {
+                        return Err(SkeinError::Execution(
+                            "merge join has incompatible ordered inputs".to_string(),
+                        ));
+                    }
+                } else if *algorithm != expected_algorithm || merge_keys.is_some() {
                     return Err(SkeinError::Execution(
                         "physical join algorithm disagrees with its right input".to_string(),
                     ));
@@ -649,9 +726,133 @@ struct PreparedRelationalAccessPlan {
     physical_join_plan: Option<RelationalPhysicalJoinPlan>,
 }
 
+fn merge_join_inputs(
+    state: &RelationalState,
+    base: &RelationalAccessCandidate,
+    right: &RelationalJoinAccessCandidate,
+    right_table: &str,
+) -> Option<(RelationalAccessCandidate, RelationalMergeJoinKeys)> {
+    let RelationalBaseAccess::Index { scan, .. } = &base.access else {
+        return None;
+    };
+    let RelationalJoinAccess::Index { name, columns } = &right.access else {
+        return None;
+    };
+    if columns.is_empty()
+        || base.descriptor.kind != RelationalAccessPathKind::Index
+        || base.descriptor.reverse_order
+        || scan.direction != RelationalIndexScanDirection::Forward
+        || right.descriptor.kind != RelationalAccessPathKind::Index
+        || right.descriptor.reverse_order
+        || right.descriptor.index_columns.len() < columns.len()
+        || right.descriptor.index_columns[..columns.len()]
+            != columns
+                .iter()
+                .map(|(column, _)| column.clone())
+                .collect::<Vec<_>>()
+    {
+        return None;
+    }
+    let left_columns = columns
+        .iter()
+        .map(|(_, column)| column.name.clone())
+        .collect::<Vec<_>>();
+    let left_order_start = base.descriptor.equality_prefix_len;
+    if base.descriptor.index_columns.len() < left_order_start.saturating_add(left_columns.len())
+        || base.descriptor.index_columns[left_order_start..]
+            .iter()
+            .take(left_columns.len())
+            .ne(left_columns.iter())
+    {
+        return None;
+    }
+    let right_base = RelationalAccessCandidate {
+        descriptor: RelationalAccessPathDescriptor {
+            kind: RelationalAccessPathKind::Index,
+            name: name.clone(),
+            index_columns: right.descriptor.index_columns.clone(),
+            access_columns: BTreeSet::new(),
+            equality_prefix_len: 0,
+            order_prefix_len: columns.len(),
+            exclusive_range: false,
+            reverse_order: false,
+            unique_point: false,
+            covering: false,
+            requires_row_fetch: true,
+            estimated_rows: state.row_count(right_table).max(1),
+        },
+        access: RelationalBaseAccess::Index {
+            name: name.clone(),
+            scan: RelationalIndexRangeScan {
+                prefix: RelationalKey(Vec::new()),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+        },
+    };
+    Some((
+        right_base,
+        RelationalMergeJoinKeys {
+            columns: columns.clone(),
+        },
+    ))
+}
+
 impl PreparedRelationalAccessPlan {
-    fn finalize_physical_join_plan(&mut self, statement: &SelectStatement) -> Result<()> {
+    fn finalize_physical_join_plan(
+        &mut self,
+        statement: &SelectStatement,
+        state: &RelationalState,
+        index_read_mode: RelationalIndexReadMode<'_>,
+    ) -> Result<()> {
         if self.physical_join_plan.is_some() {
+            return Ok(());
+        }
+        if matches!(
+            index_read_mode,
+            RelationalIndexReadMode::Materialized | RelationalIndexReadMode::Shadow(_)
+        ) && self.join_selection.is_none()
+            && statement.joins.len() == 1
+            && statement.joins[0].kind == SqlJoinKind::Inner
+            && let Some((right_access, merge_keys)) = merge_join_inputs(
+                state,
+                &self.base_access,
+                &self.join_accesses[0],
+                &statement.joins[0].table.name,
+            )
+        {
+            let base_qualifier = statement
+                .from_alias
+                .as_deref()
+                .unwrap_or(statement.from.name.as_str());
+            let join = &statement.joins[0];
+            let right_qualifier = join.alias.as_deref().unwrap_or(join.table.name.as_str());
+            let left = RelationalPhysicalJoinNode::relation(
+                BindingId::new(0),
+                statement.from.name.clone(),
+                base_qualifier.to_string(),
+                RelationalPhysicalAccess::Base(self.base_access.clone()),
+            );
+            let right = RelationalPhysicalJoinNode::relation(
+                BindingId::new(1),
+                join.table.name.clone(),
+                right_qualifier.to_string(),
+                RelationalPhysicalAccess::Base(right_access.clone()),
+            );
+            let cost = estimate_relational_join_cost(
+                estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
+                estimate_relational_access_cost(right_access.descriptor.estimated_rows),
+                RelationalJoinCardinality::Inner,
+                RelationalJoinRightInput::Materialized,
+            );
+            let root = RelationalPhysicalJoinNode::merge_join(
+                RelationalOperatorId::from_plan_index(1),
+                vec![join.on.clone()],
+                merge_keys,
+                left,
+                right,
+            )?;
+            self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
             return Ok(());
         }
         let selection = self.join_selection.as_ref();
@@ -978,7 +1179,11 @@ fn validate_prepared_physical_join_plan_accesses(
             validate_prepared_physical_join_plan_accesses(left, true)?;
             validate_prepared_physical_join_plan_accesses(
                 right,
-                *algorithm == RelationalPhysicalJoinAlgorithm::Materialized,
+                matches!(
+                    algorithm,
+                    RelationalPhysicalJoinAlgorithm::Merge
+                        | RelationalPhysicalJoinAlgorithm::Materialized
+                ),
             )
         }
     }
@@ -1062,7 +1267,8 @@ fn planned_tree_operator_cardinality_profiles(
                         | RelationalPhysicalJoinAlgorithm::BatchedIndex => {
                             RelationalJoinRightInput::Probe
                         }
-                        RelationalPhysicalJoinAlgorithm::Materialized => {
+                        RelationalPhysicalJoinAlgorithm::Merge
+                        | RelationalPhysicalJoinAlgorithm::Materialized => {
                             RelationalJoinRightInput::Materialized
                         }
                     },
@@ -1138,11 +1344,17 @@ fn relational_join_operator_kind(
     algorithm: RelationalPhysicalJoinAlgorithm,
 ) -> RelationalOperatorKind {
     match (kind, access_path.kind, algorithm) {
+        (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::Merge) => {
+            RelationalOperatorKind::MergeJoin
+        }
         (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::BatchedIndex) => {
             RelationalOperatorKind::BatchedIndexNestedLoopJoin
         }
         (SqlJoinKind::Left, _, RelationalPhysicalJoinAlgorithm::BatchedIndex) => {
             RelationalOperatorKind::BatchedIndexNestedLoopLeftJoin
+        }
+        (SqlJoinKind::Left, _, RelationalPhysicalJoinAlgorithm::Merge) => {
+            RelationalOperatorKind::NestedLoopLeftJoin
         }
         (SqlJoinKind::Inner, RelationalAccessPathKind::FullScan, _)
         | (SqlJoinKind::Inner, _, RelationalPhysicalJoinAlgorithm::Materialized) => {
@@ -1451,7 +1663,7 @@ fn prepare_relational_select(
             prepare_syntax_access_plan(&planned.statement, parameters, state, read_modes, limits)?
         }
     };
-    access_plan.finalize_physical_join_plan(&planned.statement)?;
+    access_plan.finalize_physical_join_plan(&planned.statement, state, read_modes.index)?;
     let execution =
         PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
     let prepare_nanos = elapsed_nanos(prepare_started);
@@ -3674,6 +3886,194 @@ fn visit_batched_index_nested_loop<'a>(
     Ok(fully_consumed)
 }
 
+fn merge_join_right_key(
+    row: &BoundRow<'_>,
+    relation: &RelationalPhysicalRelation,
+    keys: &RelationalMergeJoinKeys,
+) -> Result<Option<RelationalKey>> {
+    let binding = row
+        .bindings
+        .iter()
+        .find(|binding| binding.binding == relation.binding)
+        .ok_or_else(|| {
+            SkeinError::Execution(format!(
+                "merge join right relation {} is missing from its row",
+                relation.qualifier
+            ))
+        })?;
+    let mut values = Vec::with_capacity(keys.columns.len());
+    for (column, _) in &keys.columns {
+        let position = binding.schema.column_position(column).ok_or_else(|| {
+            SkeinError::Semantic(format!(
+                "merge join relation {} has no column {column}",
+                relation.table
+            ))
+        })?;
+        let value = binding.value(position)?.clone();
+        if matches!(value, RelationalValue::Null) {
+            return Ok(None);
+        }
+        values.push(value);
+    }
+    Ok(Some(RelationalKey(values)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_index_merge_join<'a>(
+    operator_id: RelationalOperatorId,
+    predicates: &[SqlPredicate],
+    merge_keys: &RelationalMergeJoinKeys,
+    left: &'a RelationalPhysicalJoinNode,
+    right: &'a RelationalPhysicalJoinNode,
+    output_schema: &RelationalPhysicalOutputSchema,
+    outer: Option<&BoundRow<'a>>,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    profiled_base_binding: BindingId,
+    execution: &RelationalPhysicalJoinExecution<'a>,
+    pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
+    index_runtime: &RelationalIndexRuntime<'_>,
+    row_runtime: &RelationalRowRuntime<'a>,
+    visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
+) -> Result<bool> {
+    if outer.is_some() {
+        return Err(SkeinError::Execution(
+            "merge join cannot run below a probe input".to_string(),
+        ));
+    }
+    let (
+        RelationalPhysicalJoinNode::Relation(_left_relation),
+        RelationalPhysicalJoinNode::Relation(right_relation),
+    ) = (left, right)
+    else {
+        return Err(SkeinError::Execution(
+            "merge join requires two relation inputs".to_string(),
+        ));
+    };
+    let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
+        SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
+    })?;
+    let mut right_rows = Vec::new();
+    let mut right_tracker = OperatorMemoryTracker::with_account(
+        execution.memory.blocking_operator_bytes,
+        execution.memory_ledger.account(
+            QueryMemoryClass::BlockingState,
+            "RelationalMergeJoinRightInput",
+            execution.memory.blocking_operator_bytes,
+        ),
+    );
+    let mut previous_right_key = None;
+    visit_prepared_physical_join_plan_node(
+        right,
+        None,
+        parameters,
+        state,
+        profiled_base_binding,
+        execution,
+        pipeline,
+        index_runtime,
+        row_runtime,
+        &mut |row| {
+            let Some(key) = merge_join_right_key(&row, right_relation, merge_keys)? else {
+                return Ok(true);
+            };
+            if previous_right_key
+                .as_ref()
+                .is_some_and(|previous| key < *previous)
+            {
+                return Err(SkeinError::Execution(
+                    "merge join right input violates its declared key order".to_string(),
+                ));
+            }
+            previous_right_key = Some(key.clone());
+            let bytes = bound_row_resident_bytes(&row)
+                .saturating_add(relational_key_resident_bytes(&key))
+                .saturating_add(std::mem::size_of::<(RelationalKey, BoundRow<'_>)>());
+            if right_tracker.would_exceed(bytes) {
+                return Err(SkeinError::Execution(format!(
+                    "RelationalMergeJoinRightInput state exceeds blocking_operator_bytes {}",
+                    execution.memory.blocking_operator_bytes
+                )));
+            }
+            right_tracker.try_charge(bytes)?;
+            right_rows.push((key, row));
+            Ok(true)
+        },
+    )?;
+    execution
+        .reports
+        .borrow_mut()
+        .push(skein_executor::blocking::in_memory_report(
+            "RelationalMergeJoinRightInput",
+            &right_tracker,
+            right_tracker.peak_bytes,
+            right_rows.len(),
+            execution.memory,
+        ));
+
+    let mut previous_left_key = None;
+    let mut active_right_key = None;
+    let mut active_right_range = 0..0;
+    let mut right_cursor = 0usize;
+    visit_prepared_physical_join_plan_node(
+        left,
+        None,
+        parameters,
+        state,
+        profiled_base_binding,
+        execution,
+        pipeline,
+        index_runtime,
+        row_runtime,
+        &mut |left_row| {
+            let Some(left_key) = bound_join_key(&left_row, right_schema, &merge_keys.columns)?
+            else {
+                return Ok(true);
+            };
+            if previous_left_key
+                .as_ref()
+                .is_some_and(|previous| left_key < *previous)
+            {
+                return Err(SkeinError::Execution(
+                    "merge join left input violates its declared key order".to_string(),
+                ));
+            }
+            previous_left_key = Some(left_key.clone());
+            if active_right_key.as_ref() != Some(&left_key) {
+                while right_cursor < right_rows.len() && right_rows[right_cursor].0 < left_key {
+                    right_cursor = right_cursor.saturating_add(1);
+                }
+                let start = right_cursor;
+                while right_cursor < right_rows.len() && right_rows[right_cursor].0 == left_key {
+                    right_cursor = right_cursor.saturating_add(1);
+                }
+                active_right_key = Some(left_key);
+                active_right_range = start..right_cursor;
+            }
+            for (_, right_row) in &right_rows[active_right_range.clone()] {
+                let mut combined = left_row.clone();
+                combined.bindings.extend(right_row.bindings.clone());
+                let mut predicates_match = true;
+                for predicate in predicates {
+                    if predicate_truth(predicate, &combined, parameters)? != Some(true) {
+                        predicates_match = false;
+                        break;
+                    }
+                }
+                if !predicates_match {
+                    continue;
+                }
+                output_schema.ensure_matches(&combined)?;
+                pipeline.borrow_mut().account_operator_row(operator_id)?;
+                if !visit(combined)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn visit_prepared_physical_join_plan_node<'a>(
     node: &'a RelationalPhysicalJoinNode,
@@ -3722,11 +4122,34 @@ fn visit_prepared_physical_join_plan_node<'a>(
             operator_id,
             kind,
             algorithm,
+            merge_keys,
             predicates,
             left,
             right,
             output_schema,
         } => {
+            if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
+                let merge_keys = merge_keys.as_ref().ok_or_else(|| {
+                    SkeinError::Execution("merge join has no key contract".to_string())
+                })?;
+                return visit_index_merge_join(
+                    *operator_id,
+                    predicates,
+                    merge_keys,
+                    left,
+                    right,
+                    output_schema,
+                    outer,
+                    parameters,
+                    state,
+                    profiled_base_binding,
+                    execution,
+                    pipeline,
+                    index_runtime,
+                    row_runtime,
+                    visit,
+                );
+            }
             if *algorithm == RelationalPhysicalJoinAlgorithm::BatchedIndex {
                 return visit_batched_index_nested_loop(
                     *operator_id,
@@ -6409,6 +6832,59 @@ mod tests {
         .expect("prepare batched index join")
     }
 
+    fn merge_join_state() -> RelationalState {
+        let mut state = RelationalState::default();
+        for sql in [
+            "CREATE TABLE merge_left (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, join_key TEXT NOT NULL)",
+            "CREATE TABLE merge_right (id TEXT PRIMARY KEY, join_key TEXT NOT NULL, value TEXT NOT NULL)",
+            "CREATE INDEX idx_merge_left_tenant_key ON merge_left (tenant, join_key)",
+            "CREATE INDEX idx_merge_right_key ON merge_right (join_key)",
+            "INSERT INTO merge_left (id, tenant, join_key) VALUES ('left-b', 'tenant-1', 'b'), ('left-a', 'tenant-1', 'a'), ('left-other', 'tenant-2', 'a')",
+            "INSERT INTO merge_right (id, join_key, value) VALUES ('right-a', 'a', 'first'), ('right-b-1', 'b', 'second'), ('right-b-2', 'b', 'third')",
+        ] {
+            let transaction = compile_relational_statement_sql(sql, &[], &state)
+                .unwrap_or_else(|error| panic!("failed to compile SQL '{sql}': {error}"));
+            state = state
+                .stage_transaction(
+                    transaction,
+                    RelationalMutationLimits::default(),
+                    RelationalOverflowConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("failed to apply SQL '{sql}': {error}"));
+        }
+        state
+    }
+
+    fn prepare_merge_join(state: &RelationalState) -> PreparedRelationalSelect {
+        prepare_merge_join_with_index_read_mode(state, RelationalIndexReadMode::Materialized)
+    }
+
+    fn prepare_merge_join_with_index_read_mode(
+        state: &RelationalState,
+        index_read_mode: RelationalIndexReadMode<'_>,
+    ) -> PreparedRelationalSelect {
+        let prepared_sql = skein_sql::prepare_postgres_sql(
+            "SELECT l.id AS left_id, r.id AS right_id \
+             FROM merge_left AS l \
+             INNER JOIN merge_right AS r ON r.join_key = l.join_key \
+             WHERE l.tenant = 'tenant-1'",
+        )
+        .expect("valid merge join SELECT");
+        let SqlStatement::Select(select) = prepared_sql.statement else {
+            panic!("expected SELECT statement");
+        };
+        prepare_relational_select(
+            select,
+            &[],
+            state,
+            RelationalQueryReadModes::new(index_read_mode, RelationalRowReadMode::CanonicalMemory),
+            batched_index_join_limits(),
+            RelationalJoinEnumerationConfig::default(),
+            RelationalSqlStageTimings::default(),
+        )
+        .expect("prepare merge join")
+    }
+
     #[test]
     fn explain_estimated_rows_never_render_zero() {
         assert_eq!(
@@ -6608,6 +7084,146 @@ mod tests {
     }
 
     #[test]
+    fn prepared_index_ordered_join_uses_merge_operator_and_profile() {
+        let state = merge_join_state();
+        let prepared = prepare_merge_join(&state);
+        let RelationalPhysicalJoinNode::Join {
+            algorithm,
+            merge_keys,
+            ..
+        } = &prepared
+            .access_plan
+            .physical_join_plan()
+            .expect("physical join plan")
+            .root
+        else {
+            panic!("expected physical join root");
+        };
+        assert_eq!(*algorithm, RelationalPhysicalJoinAlgorithm::Merge);
+        assert_eq!(
+            merge_keys
+                .as_ref()
+                .expect("merge key contract")
+                .columns
+                .iter()
+                .map(|(right, left)| (right.as_str(), left.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("join_key", "join_key")]
+        );
+        let profiles =
+            planned_operator_cardinality_profiles(&prepared).expect("physical operator profiles");
+        assert_eq!(profiles[1].operator, RelationalOperatorKind::MergeJoin);
+    }
+
+    #[test]
+    fn transaction_workspace_join_keeps_the_batched_index_probe_plan() {
+        let state = merge_join_state();
+        let prepared = prepare_merge_join_with_index_read_mode(
+            &state,
+            RelationalIndexReadMode::TransactionWorkspace,
+        );
+        let RelationalPhysicalJoinNode::Join { algorithm, .. } = &prepared
+            .access_plan
+            .physical_join_plan()
+            .expect("physical join plan")
+            .root
+        else {
+            panic!("expected physical join root");
+        };
+        assert_eq!(*algorithm, RelationalPhysicalJoinAlgorithm::BatchedIndex);
+    }
+
+    #[test]
+    fn merge_join_reuses_right_key_groups_and_preserves_left_index_order() {
+        let state = merge_join_state();
+        let prepared = prepare_merge_join(&state);
+        let memory = skein_executor::ExecutionMemoryConfig::default();
+        let execution = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    None,
+                ),
+            )
+            .expect("admit merge join");
+        let output = execute_select(&prepared, &[], execution).expect("execute merge join");
+
+        assert_eq!(output.rows.len(), 3);
+        assert_eq!(
+            output.rows[0]["left_id"],
+            Value::String("left-a".to_string())
+        );
+        assert_eq!(
+            output.rows[0]["right_id"],
+            Value::String("right-a".to_string())
+        );
+        assert_eq!(
+            output.rows[1]["left_id"],
+            Value::String("left-b".to_string())
+        );
+        assert_eq!(
+            output.rows[1]["right_id"],
+            Value::String("right-b-1".to_string())
+        );
+        assert_eq!(
+            output.rows[2]["left_id"],
+            Value::String("left-b".to_string())
+        );
+        assert_eq!(
+            output.rows[2]["right_id"],
+            Value::String("right-b-2".to_string())
+        );
+        assert_eq!(
+            output.operator_cardinality_profiles[1].operator,
+            RelationalOperatorKind::MergeJoin
+        );
+        assert_eq!(output.operator_cardinality_profiles[1].actual_rows, Some(3));
+        assert!(output
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalMergeJoinRightInput"));
+    }
+
+    #[test]
+    fn merge_join_rejects_right_input_that_exceeds_its_blocking_budget() {
+        let state = merge_join_state();
+        let prepared = prepare_merge_join(&state);
+        let memory = skein_executor::ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(1).expect("non-zero blocking budget"),
+            ..skein_executor::ExecutionMemoryConfig::default()
+        };
+        let execution = prepared
+            .execution
+            .admit(
+                &state,
+                RelationalQueryReadModes::new(
+                    RelationalIndexReadMode::Materialized,
+                    RelationalRowReadMode::CanonicalMemory,
+                ),
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    None,
+                ),
+            )
+            .expect("admit constrained merge join");
+        let error = execute_select(&prepared, &[], execution)
+            .expect_err("merge join must enforce its blocking budget");
+        assert!(error
+            .to_string()
+            .contains("RelationalMergeJoinRightInput state exceeds blocking_operator_bytes 1"));
+    }
+
+    #[test]
     fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once() {
         const SQL: &str = "SELECT a.id AS a_id, d.id AS d_id \
             FROM bushy_a AS a \
@@ -6662,7 +7278,7 @@ mod tests {
         )
         .expect("prepare syntax access plan");
         syntax_plan
-            .finalize_physical_join_plan(&select)
+            .finalize_physical_join_plan(&select, &state, RelationalIndexReadMode::Materialized)
             .expect("finalize syntax physical join plan");
         let syntax_physical_plan = syntax_plan
             .physical_join_plan()
