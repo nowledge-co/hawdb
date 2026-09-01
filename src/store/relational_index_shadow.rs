@@ -457,6 +457,10 @@ impl RelationalIndexLiveOverlay {
             .get(index)
             .map(|batches| batches.as_slice())
     }
+
+    fn touches(&self, table: &str, index: &str) -> bool {
+        self.batches(table, index).is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -764,7 +768,12 @@ impl RelationalIndexReadView {
         index: &str,
         prefix_len: usize,
     ) -> Option<RelationalIndexProbeStatistics> {
-        if self.identity.base_commit_epoch != self.identity.visible_commit_epoch {
+        // A manifest aggregate remains exact across graph-only commits and
+        // writes to other indexes. A matching live partition or recovered
+        // delta, however, cannot derive per-prefix distinct counts safely.
+        if self.live.touches(table, index)
+            || matches!(&self.backend, RelationalIndexReadBackend::Recovered(_))
+        {
             return None;
         }
         let manifest = match &self.backend {
@@ -4534,9 +4543,11 @@ mod tests {
             .batches("documents", "documents_owner_idx")
             .expect("matching partition");
         assert_eq!(batches.len(), 1);
+        assert!(overlay.touches("documents", "documents_owner_idx"));
         assert!(overlay
             .batches("documents", "documents_missing_idx")
             .is_none());
+        assert!(!overlay.touches("documents", "documents_missing_idx"));
         let owner_b = RelationalKey(vec![RelationalValue::Text("owner-b".to_string())]);
         let mut primary_keys = Vec::new();
         let report = batches[0]
@@ -4554,6 +4565,71 @@ mod tests {
         );
         assert_eq!(report.entries_visited, 1);
         assert!(report.bytes_visited < overlay.encoded_bytes);
+    }
+
+    #[test]
+    fn probe_statistics_remain_available_until_the_target_index_changes() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-live-index-statistics-{}-{nonce}",
+            std::process::id()
+        ));
+        let replay = WalReplayConfig {
+            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .expect("open live-statistics store");
+        store
+            .commit_relational_transaction(&mut catalog, create_recovery_documents_table("doc-1"))
+            .expect("commit statistics source");
+        store
+            .checkpoint(&catalog)
+            .expect("checkpoint statistics source");
+
+        let initial = store
+            .relational_index_probe_statistics("documents", "documents_owner_idx", 1)
+            .expect("checkpoint statistics");
+        store
+            .create_node(&mut catalog, "Document", Default::default())
+            .expect("commit unrelated graph mutation");
+        assert_eq!(
+            store
+                .relational_index_probe_statistics("documents", "documents_owner_idx", 1)
+                .expect("statistics survive an unrelated graph mutation"),
+            initial
+        );
+
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![RelationalRow::new(vec![
+                            RelationalValue::Text("doc-2".to_string()),
+                            RelationalValue::Text("owner-2".to_string()),
+                        ])],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .expect("commit target index mutation");
+        assert!(store
+            .relational_index_probe_statistics("documents", "documents_owner_idx", 1)
+            .is_none());
+
+        drop(store);
+        std::fs::remove_dir_all(path).expect("remove live-statistics fixture");
     }
 
     fn create_recovery_documents_table(first_id: &str) -> RelationalTransaction {
