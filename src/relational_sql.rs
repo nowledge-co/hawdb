@@ -1614,7 +1614,15 @@ mod tests {
         let analyze = database
             .query_sql("EXPLAIN ANALYZE SELECT id FROM public.messages ORDER BY id")
             .expect("profile relational SQL through the public query entrypoint");
-        assert_eq!(analyze.rows[0]["actRows"], Value::Int(2));
+        assert_eq!(analyze.rows[0]["actRows"], Value::Null);
+        assert!(matches!(
+            analyze.rows[0].get("execution info"),
+            Some(Value::String(info)) if info.contains("statement_output_rows=2")
+        ));
+        assert!(analyze
+            .rows
+            .iter()
+            .any(|row| matches!(row.get("actRows"), Some(Value::Int(2)))));
 
         let snapshot = database.begin_read_transaction();
         let snapshot_output = snapshot
@@ -1786,7 +1794,21 @@ mod tests {
         let analyze = database
             .query_sql("EXPLAIN ANALYZE SELECT id FROM messages LIMIT 0")
             .expect("analyze empty relational query");
-        assert_eq!(analyze.rows[0]["actRows"], Value::Int(0));
+        assert_eq!(
+            analyze.rows[0]["id"],
+            Value::String("LimitExec_logical_limit".to_string())
+        );
+        assert_eq!(analyze.rows[0]["actRows"], Value::Null);
+        assert!(matches!(
+            analyze.rows[0].get("execution info"),
+            Some(Value::String(info)) if info.contains("statement_output_rows=0")
+        ));
+        assert!(analyze.rows.iter().any(|row| {
+            matches!(
+                row.get("id"),
+                Some(Value::String(id)) if id.contains("TableFullScanExec_1")
+            ) && matches!(row.get("actRows"), Some(Value::Null))
+        }));
         assert!(analyze
             .rows
             .iter()
@@ -1819,7 +1841,7 @@ mod tests {
             .find(|row| {
                 matches!(
                     row.get("id"),
-                    Some(Value::String(id)) if id.contains("IndexNestedLoopJoinExec")
+                    Some(Value::String(id)) if id.contains("NestedLoopJoinExec")
                 )
             })
             .expect("join explain row");
@@ -2751,8 +2773,12 @@ mod tests {
         assert!(base.fully_consumed);
         let join = &full.profile.operator_cardinality_profiles[1];
         assert_eq!(join.operator_id.get(), 2);
-        assert_eq!(join.operator, RelationalOperatorKind::IndexNestedLoopJoin);
+        assert_eq!(join.operator, RelationalOperatorKind::NestedLoopJoin);
         assert_eq!(join.table, "profile_children");
+        assert_eq!(
+            join.access_path.kind,
+            skein_optimizer::RelationalAccessPathKind::FullScan
+        );
         assert_eq!(join.estimated_rows, 6);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
@@ -4515,7 +4541,11 @@ mod tests {
             None,
         )
         .expect("EXPLAIN ANALYZE must expose measured spill evidence");
-        assert_eq!(analyzed.rows[0]["actRows"], Value::Int(256));
+        assert_eq!(analyzed.rows[0]["actRows"], Value::Null);
+        assert!(matches!(
+            analyzed.rows[0].get("execution info"),
+            Some(Value::String(info)) if info.contains("statement_output_rows=256")
+        ));
         assert!(analyzed.rows.iter().any(|row| {
             matches!(row.get("id"), Some(Value::String(id)) if id.contains("TopNExec"))
                 && !matches!(row.get("disk"), None | Some(Value::Null))

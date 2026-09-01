@@ -714,6 +714,7 @@ fn planned_operator_cardinality_profiles(
             RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
         },
         table: prepared.statement.from.name.clone(),
+        access_path: prepared.access_plan.base_access.descriptor.clone(),
         estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
         actual_rows: None,
         fully_consumed: false,
@@ -736,11 +737,9 @@ fn planned_operator_cardinality_profiles(
         );
         profiles.push(RelationalOperatorCardinalityProfile {
             operator_id: RelationalOperatorId::from_plan_index(index.saturating_add(1)),
-            operator: match join.kind {
-                SqlJoinKind::Inner => RelationalOperatorKind::IndexNestedLoopJoin,
-                SqlJoinKind::Left => RelationalOperatorKind::IndexNestedLoopLeftJoin,
-            },
+            operator: relational_join_operator_kind(join.kind, &access.descriptor, false),
             table: join.table.name.clone(),
+            access_path: access.descriptor.clone(),
             estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
             actual_rows: None,
             fully_consumed: false,
@@ -808,13 +807,16 @@ fn planned_tree_operator_cardinality_profiles(
                         operator_id.get()
                     )));
                 }
+                let access_path = right.first_relation().access.descriptor().clone();
                 *slot = Some(RelationalOperatorCardinalityProfile {
                     operator_id: *operator_id,
-                    operator: match kind {
-                        SqlJoinKind::Inner => RelationalOperatorKind::IndexNestedLoopJoin,
-                        SqlJoinKind::Left => RelationalOperatorKind::IndexNestedLoopLeftJoin,
-                    },
+                    operator: relational_join_operator_kind(
+                        *kind,
+                        &access_path,
+                        matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Join { .. }),
+                    ),
                     table: right.first_relation().table.clone(),
+                    access_path,
                     estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
                     actual_rows: None,
                     fully_consumed: false,
@@ -835,6 +837,7 @@ fn planned_tree_operator_cardinality_profiles(
             RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
         },
         table: base.table.clone(),
+        access_path: base.access.descriptor().clone(),
         estimated_rows: base.access.descriptor().estimated_rows,
         actual_rows: None,
         fully_consumed: false,
@@ -856,6 +859,21 @@ fn planned_tree_operator_cardinality_profiles(
             })
         })
         .collect()
+}
+
+fn relational_join_operator_kind(
+    kind: SqlJoinKind,
+    access_path: &RelationalAccessPathDescriptor,
+    materialized_right: bool,
+) -> RelationalOperatorKind {
+    match (kind, access_path.kind, materialized_right) {
+        (SqlJoinKind::Inner, RelationalAccessPathKind::FullScan, _)
+        | (SqlJoinKind::Inner, _, true) => RelationalOperatorKind::NestedLoopJoin,
+        (SqlJoinKind::Left, RelationalAccessPathKind::FullScan, _)
+        | (SqlJoinKind::Left, _, true) => RelationalOperatorKind::NestedLoopLeftJoin,
+        (SqlJoinKind::Inner, _, false) => RelationalOperatorKind::IndexNestedLoopJoin,
+        (SqlJoinKind::Left, _, false) => RelationalOperatorKind::IndexNestedLoopLeftJoin,
+    }
 }
 
 fn estimated_rows_as_usize(rows: u64) -> usize {
@@ -1503,11 +1521,35 @@ fn execute_select<'state>(
 #[derive(Debug)]
 struct RelationalExplainNode {
     operator: &'static str,
-    operator_id: Option<RelationalOperatorId>,
+    identity: RelationalExplainNodeIdentity,
     estimated_rows: Option<usize>,
     access_object: String,
     operator_info: String,
     report_operator: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelationalExplainNodeIdentity {
+    Profile(RelationalOperatorId),
+    Blocking(&'static str),
+    Logical(&'static str),
+}
+
+impl RelationalExplainNodeIdentity {
+    fn profile_id(self) -> Option<RelationalOperatorId> {
+        match self {
+            Self::Profile(operator_id) => Some(operator_id),
+            Self::Blocking(_) | Self::Logical(_) => None,
+        }
+    }
+
+    fn display_id(self) -> String {
+        match self {
+            Self::Profile(operator_id) => operator_id.get().to_string(),
+            Self::Blocking(name) => format!("blocking_{name}"),
+            Self::Logical(name) => format!("logical_{name}"),
+        }
+    }
 }
 
 fn format_relational_explain(
@@ -1524,11 +1566,11 @@ fn format_relational_explain(
     if select.limit.is_some() || select.offset.is_some() {
         nodes.push(RelationalExplainNode {
             operator: "LimitExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Logical("limit"),
             estimated_rows: bound_limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
             access_object: String::new(),
             operator_info: format!(
-                "offset={}, count={}",
+                "implementation=fused, offset={}, count={}",
                 bound_offset,
                 bound_limit
                     .map(|limit| limit.to_string())
@@ -1540,7 +1582,7 @@ fn format_relational_explain(
     if !select.order_by.is_empty() && output.access_path.order_prefix_len != select.order_by.len() {
         nodes.push(RelationalExplainNode {
             operator: "TopNExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Blocking("top_n"),
             estimated_rows: bound_limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
             access_object: String::new(),
             operator_info: format!(
@@ -1555,7 +1597,7 @@ fn format_relational_explain(
     if has_aggregate || !select.group_by.is_empty() {
         nodes.push(RelationalExplainNode {
             operator: "RelationalAggregateExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Blocking("aggregate"),
             estimated_rows: (!select.group_by.is_empty()).then_some(
                 output
                     .access_path
@@ -1574,7 +1616,7 @@ fn format_relational_explain(
     if !select.group_by.is_empty() {
         nodes.push(RelationalExplainNode {
             operator: "SortExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Blocking("group_sort"),
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
             operator_info: format!("group_keys=[{}]", explain_columns(&select.group_by)),
@@ -1584,7 +1626,7 @@ fn format_relational_explain(
     if select.distinct || single_count_distinct_column(select).is_some() {
         nodes.push(RelationalExplainNode {
             operator: "DistinctExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Blocking("distinct"),
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
             operator_info: if select.distinct {
@@ -1597,10 +1639,10 @@ fn format_relational_explain(
     }
     nodes.push(RelationalExplainNode {
         operator: "ProjectionExec",
-        operator_id: None,
+        identity: RelationalExplainNodeIdentity::Logical("projection"),
         estimated_rows: Some(output.access_path.estimated_rows),
         access_object: String::new(),
-        operator_info: format!("columns={}", select.projection.len()),
+        operator_info: format!("implementation=fused, columns={}", select.projection.len()),
         report_operator: None,
     });
     if select.selection.is_some()
@@ -1614,21 +1656,17 @@ fn format_relational_explain(
     {
         nodes.push(RelationalExplainNode {
             operator: "SelectionExec",
-            operator_id: None,
+            identity: RelationalExplainNodeIdentity::Logical("selection"),
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
-            operator_info: "residual_predicate=true".to_string(),
+            operator_info: "implementation=fused, residual_predicate=true".to_string(),
             report_operator: None,
         });
     }
-    for (cardinality, descriptor) in output
-        .operator_cardinality_profiles
-        .iter()
-        .skip(1)
-        .zip(&output.join_access_paths)
-    {
+    for cardinality in output.operator_cardinality_profiles.iter().skip(1) {
         let operator_id = cardinality.operator_id;
         let table = &cardinality.table;
+        let descriptor = &cardinality.access_path;
         let access_path = explain_access_path(
             descriptor,
             relational_index_evidence(&output, table, descriptor),
@@ -1636,7 +1674,7 @@ fn format_relational_explain(
         );
         nodes.push(RelationalExplainNode {
             operator: cardinality.operator.as_str(),
-            operator_id: Some(operator_id),
+            identity: RelationalExplainNodeIdentity::Profile(operator_id),
             estimated_rows: Some(cardinality.estimated_rows),
             access_object: explain_access_object(table, descriptor),
             operator_info: format!(
@@ -1648,24 +1686,25 @@ fn format_relational_explain(
     }
     let base_operator_id = RelationalOperatorId::from_plan_index(0);
     let base_cardinality = relational_operator_cardinality_profile(&output, base_operator_id);
-    let base_table = base_cardinality
-        .map(|profile| profile.table.as_str())
-        .unwrap_or(&select.from.name);
+    let base_table =
+        base_cardinality.map_or(select.from.name.as_str(), |profile| profile.table.as_str());
+    let base_access_path =
+        base_cardinality.map_or(&output.access_path, |profile| &profile.access_path);
     nodes.push(RelationalExplainNode {
         operator: base_cardinality.map_or_else(
-            || match output.access_path.kind {
+            || match base_access_path.kind {
                 RelationalAccessPathKind::FullScan => "TableFullScanExec",
                 RelationalAccessPathKind::PrimaryKey => "TablePointGetExec",
                 RelationalAccessPathKind::Index => "IndexRangeScanExec",
             },
             |profile| profile.operator.as_str(),
         ),
-        operator_id: Some(base_operator_id),
+        identity: RelationalExplainNodeIdentity::Profile(base_operator_id),
         estimated_rows: base_cardinality.map(|profile| profile.estimated_rows),
-        access_object: explain_access_object(base_table, &output.access_path),
+        access_object: explain_access_object(base_table, base_access_path),
         operator_info: explain_access_path(
-            &output.access_path,
-            relational_index_evidence(&output, base_table, &output.access_path),
+            base_access_path,
+            relational_index_evidence(&output, base_table, base_access_path),
             &output.row_execution_evidence,
         ),
         report_operator: None,
@@ -1673,7 +1712,6 @@ fn format_relational_explain(
 
     let mut rows = Vec::with_capacity(nodes.len());
     let mut payload_bytes = 0usize;
-    let mut next_unprofiled_id = output.operator_cardinality_profiles.len().saturating_add(1);
     for (index, node) in nodes.iter().enumerate() {
         let report = node.report_operator.and_then(|operator| {
             output
@@ -1682,20 +1720,14 @@ fn format_relational_explain(
                 .find(|report| report.operator == operator)
         });
         let cardinality = node
-            .operator_id
+            .identity
+            .profile_id()
             .and_then(|operator_id| relational_operator_cardinality_profile(&output, operator_id));
-        let display_id = node.operator_id.map_or_else(
-            || {
-                let display_id = next_unprofiled_id;
-                next_unprofiled_id = next_unprofiled_id.saturating_add(1);
-                display_id
-            },
-            RelationalOperatorId::get,
-        );
+        let display_id = node.identity.display_id();
         let mut row = Row::from([
             (
                 "id".to_string(),
-                Value::String(explain_tree_id(node.operator, index, display_id)),
+                Value::String(explain_tree_id(node.operator, index, &display_id)),
             ),
             (
                 "estRows".to_string(),
@@ -1714,13 +1746,9 @@ fn format_relational_explain(
         if analyze {
             row.insert(
                 "actRows".to_string(),
-                if let Some(cardinality) = cardinality {
+                cardinality.map_or(Value::Null, |cardinality| {
                     optional_usize_explain_value(cardinality.actual_rows)
-                } else if index == 0 {
-                    optional_usize_explain_value(Some(actual_output_rows))
-                } else {
-                    optional_usize_explain_value(report.map(|report| report.input_rows))
-                },
+                }),
             );
             row.insert(
                 "execution info".to_string(),
@@ -1732,7 +1760,7 @@ fn format_relational_explain(
                     ))
                 } else if index == 0 {
                     Value::String(format!(
-                        "intermediate_rows={}, hydrated_rows={}, compressed_bytes={}, decompressed_bytes={}",
+                        "statement_output_rows={actual_output_rows}, intermediate_rows={}, hydrated_rows={}, compressed_bytes={}, decompressed_bytes={}",
                         output.intermediate_rows,
                         output.hydration.hydrated_rows,
                         output.hydration.compressed_bytes,
@@ -1854,7 +1882,7 @@ fn explain_join_planning(
     )
 }
 
-fn explain_tree_id(operator: &str, index: usize, display_id: usize) -> String {
+fn explain_tree_id(operator: &str, index: usize, display_id: &str) -> String {
     if index == 0 {
         format!("{operator}_{display_id}")
     } else {
