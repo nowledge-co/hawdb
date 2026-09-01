@@ -21,14 +21,14 @@ use skein_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
 use skein_optimizer::{
-    enumerate_relational_csg_cmp_joins, enumerate_relational_inner_joins,
+    enumerate_relational_csg_cmp_joins_with_right_input_policy, enumerate_relational_inner_joins,
     enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalJoinAccessPath,
-    RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinGraph,
-    RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
-    RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation,
-    RelationalJoinRewriteError, RelationalJoinRewritePlan, RelationalJoinRewriteProblem,
-    RelationalJoinTree, RequiredProperties,
+    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
+    RelationalJoinAccessPath, RelationalJoinEnumerationConfig, RelationalJoinEnumerationError,
+    RelationalJoinGraph, RelationalJoinOperator, RelationalJoinOperatorId,
+    RelationalJoinOperatorKind, RelationalJoinPredicate, RelationalJoinPredicateId,
+    RelationalJoinRelation, RelationalJoinRewriteError, RelationalJoinRewritePlan,
+    RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
 };
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,7 +143,12 @@ pub(super) fn plan_select_join_order(
     });
     let mut attempts = Vec::new();
     if let Some(problem) = &problem {
-        match enumerate_relational_csg_cmp_joins(problem, &RequiredProperties::default(), config) {
+        match enumerate_relational_csg_cmp_joins_with_right_input_policy(
+            problem,
+            &RequiredProperties::default(),
+            config,
+            RelationalCsgCmpRightInputPolicy::ProbeOnly,
+        ) {
             Ok(enumeration) => {
                 let selected_bindings = csg_cmp_binding_order(&enumeration.plan.root);
                 let selected_order = binding_order_names(&selected_bindings, &relations);
@@ -154,7 +159,7 @@ pub(super) fn plan_select_join_order(
                 let attempt = RelationalJoinPlanningAttempt::selected(
                     RelationalJoinPlanningStrategy::CsgCmpMemo,
                     selected_bindings != syntax_bindings
-                        || plan_has_materialized_right(&enumeration.plan.root),
+                        || enumeration.plan.root.has_materialized_right(),
                     enumeration.memo_groups,
                     enumeration.memo_expressions,
                     enumeration.plan.cost_breakdown,
@@ -323,17 +328,6 @@ fn invariant_planning_error(
         "relational join planner invariant violated in {}: {error}",
         strategy.as_str()
     ))
-}
-
-fn plan_has_materialized_right(node: &RelationalCsgCmpPlanNode) -> bool {
-    match node {
-        RelationalCsgCmpPlanNode::Relation { .. } => false,
-        RelationalCsgCmpPlanNode::Join { left, right, .. } => {
-            matches!(right.as_ref(), RelationalCsgCmpPlanNode::Join { .. })
-                || plan_has_materialized_right(left)
-                || plan_has_materialized_right(right)
-        }
-    }
 }
 
 fn csg_cmp_binding_order(node: &RelationalCsgCmpPlanNode) -> Vec<BindingId> {

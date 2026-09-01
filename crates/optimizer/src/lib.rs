@@ -54,8 +54,9 @@ pub use relational_join_cost::{
     estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinRightInput,
 };
 pub use relational_join_hypergraph::{
-    enumerate_relational_csg_cmp_joins, RelationalCsgCmpAlternative, RelationalCsgCmpEnumeration,
-    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode,
+    enumerate_relational_csg_cmp_joins, enumerate_relational_csg_cmp_joins_with_right_input_policy,
+    RelationalCsgCmpAlternative, RelationalCsgCmpEnumeration, RelationalCsgCmpPlan,
+    RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
 };
 pub use relational_join_rewrite::{
     analyze_relational_join_conflicts, enumerate_relational_join_rewrites,

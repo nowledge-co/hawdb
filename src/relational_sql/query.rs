@@ -5742,6 +5742,28 @@ mod tests {
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
         };
+        let mut binding_nanos = 0;
+        let planned = join_order::plan_select_join_order(
+            select.clone(),
+            &[],
+            &state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            limits,
+            RelationalJoinEnumerationConfig::default(),
+            &mut binding_nanos,
+        )
+        .expect("plan bushy candidate with probe-only CSG-CMP policy");
+        let access_plan = planned
+            .access_plan
+            .expect("eligible bushy candidate retains an access plan");
+        assert!(access_plan
+            .join_tree
+            .as_ref()
+            .is_none_or(|tree| { tree.root.materialized_right_count() == 0 }));
+
         let syntax_plan = prepare_syntax_access_plan(
             &select,
             &[],
