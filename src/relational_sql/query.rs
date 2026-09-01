@@ -242,6 +242,7 @@ pub(crate) fn execute_relational_query_sql_with_runtime<'a>(
 
 #[derive(Clone)]
 struct Binding<'a> {
+    binding: BindingId,
     table: &'a str,
     qualifier: &'a str,
     schema: &'a RelationalTableSchema,
@@ -306,12 +307,12 @@ struct PreparedRelationalJoinSelection {
 }
 
 #[derive(Debug, Clone)]
-enum PreparedRelationalTreeAccess {
+enum RelationalPhysicalAccess {
     Base(RelationalAccessCandidate),
     Probe(RelationalJoinAccessCandidate),
 }
 
-impl PreparedRelationalTreeAccess {
+impl RelationalPhysicalAccess {
     fn descriptor(&self) -> &RelationalAccessPathDescriptor {
         match self {
             Self::Base(access) => &access.descriptor,
@@ -320,35 +321,177 @@ impl PreparedRelationalTreeAccess {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PreparedRelationalTreeRelation {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelationalPhysicalOutputBinding {
     binding: BindingId,
     table: String,
     qualifier: String,
-    access: PreparedRelationalTreeAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelationalPhysicalOutputSchema {
+    bindings: Arc<[RelationalPhysicalOutputBinding]>,
+}
+
+impl RelationalPhysicalOutputSchema {
+    fn relation(binding: BindingId, table: &str, qualifier: &str) -> Self {
+        Self {
+            bindings: vec![RelationalPhysicalOutputBinding {
+                binding,
+                table: table.to_string(),
+                qualifier: qualifier.to_string(),
+            }]
+            .into(),
+        }
+    }
+
+    fn join(left: &Self, right: &Self) -> Result<Self> {
+        let mut bindings =
+            Vec::with_capacity(left.bindings.len().saturating_add(right.bindings.len()));
+        bindings.extend(left.bindings.iter().cloned());
+        bindings.extend(right.bindings.iter().cloned());
+        let mut seen = BTreeSet::new();
+        if let Some(duplicate) = bindings
+            .iter()
+            .find_map(|binding| (!seen.insert(binding.binding)).then_some(binding.binding))
+        {
+            return Err(SkeinError::Execution(format!(
+                "physical join output schema repeats binding {}",
+                duplicate.get()
+            )));
+        }
+        Ok(Self {
+            bindings: bindings.into(),
+        })
+    }
+
+    fn ensure_matches(&self, row: &BoundRow<'_>) -> Result<()> {
+        if self.bindings.len() != row.bindings.len() {
+            return Err(SkeinError::Execution(format!(
+                "physical join output schema has {} bindings but executor produced {}",
+                self.bindings.len(),
+                row.bindings.len()
+            )));
+        }
+        if let Some((expected, actual)) =
+            self.bindings
+                .iter()
+                .zip(&row.bindings)
+                .find(|(expected, actual)| {
+                    expected.binding != actual.binding
+                        || expected.table != actual.table
+                        || expected.qualifier != actual.qualifier
+                })
+        {
+            return Err(SkeinError::Execution(format!(
+                "physical join output schema binding {} is {}, but executor produced {}",
+                expected.binding.get(),
+                expected.qualifier,
+                actual.qualifier
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationalPhysicalJoinAlgorithm {
+    ProbeNestedLoop,
+    MaterializedNestedLoop,
 }
 
 #[derive(Debug, Clone)]
-enum PreparedRelationalJoinTreeNode {
-    Relation(PreparedRelationalTreeRelation),
+struct RelationalPhysicalRelation {
+    binding: BindingId,
+    table: String,
+    qualifier: String,
+    access: RelationalPhysicalAccess,
+    output_schema: RelationalPhysicalOutputSchema,
+}
+
+impl RelationalPhysicalRelation {
+    fn new(
+        binding: BindingId,
+        table: String,
+        qualifier: String,
+        access: RelationalPhysicalAccess,
+    ) -> Self {
+        let output_schema = RelationalPhysicalOutputSchema::relation(binding, &table, &qualifier);
+        Self {
+            binding,
+            table,
+            qualifier,
+            access,
+            output_schema,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum RelationalPhysicalJoinNode {
+    Relation(RelationalPhysicalRelation),
     Join {
         operator_id: RelationalOperatorId,
         kind: SqlJoinKind,
+        algorithm: RelationalPhysicalJoinAlgorithm,
         predicates: Vec<SqlPredicate>,
         left: Box<Self>,
         right: Box<Self>,
+        output_schema: RelationalPhysicalOutputSchema,
     },
 }
 
-impl PreparedRelationalJoinTreeNode {
-    fn first_relation(&self) -> &PreparedRelationalTreeRelation {
+impl RelationalPhysicalJoinNode {
+    fn relation(
+        binding: BindingId,
+        table: String,
+        qualifier: String,
+        access: RelationalPhysicalAccess,
+    ) -> Self {
+        Self::Relation(RelationalPhysicalRelation::new(
+            binding, table, qualifier, access,
+        ))
+    }
+
+    fn join(
+        operator_id: RelationalOperatorId,
+        kind: SqlJoinKind,
+        predicates: Vec<SqlPredicate>,
+        left: Self,
+        right: Self,
+    ) -> Result<Self> {
+        let algorithm = match &right {
+            Self::Relation(_) => RelationalPhysicalJoinAlgorithm::ProbeNestedLoop,
+            Self::Join { .. } => RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop,
+        };
+        let output_schema =
+            RelationalPhysicalOutputSchema::join(left.output_schema(), right.output_schema())?;
+        Ok(Self::Join {
+            operator_id,
+            kind,
+            algorithm,
+            predicates,
+            left: Box::new(left),
+            right: Box::new(right),
+            output_schema,
+        })
+    }
+
+    fn output_schema(&self) -> &RelationalPhysicalOutputSchema {
+        match self {
+            Self::Relation(relation) => &relation.output_schema,
+            Self::Join { output_schema, .. } => output_schema,
+        }
+    }
+
+    fn first_relation(&self) -> &RelationalPhysicalRelation {
         match self {
             Self::Relation(relation) => relation,
             Self::Join { left, .. } => left.first_relation(),
         }
     }
 
-    fn visit_relations<'a>(&'a self, visit: &mut impl FnMut(&'a PreparedRelationalTreeRelation)) {
+    fn visit_relations<'a>(&'a self, visit: &mut impl FnMut(&'a RelationalPhysicalRelation)) {
         match self {
             Self::Relation(relation) => visit(relation),
             Self::Join { left, right, .. } => {
@@ -366,7 +509,7 @@ impl PreparedRelationalJoinTreeNode {
 
     fn visit_join_right_relations<'a>(
         &'a self,
-        visit: &mut impl FnMut(&'a PreparedRelationalTreeRelation),
+        visit: &mut impl FnMut(&'a RelationalPhysicalRelation),
     ) {
         if let Self::Join { left, right, .. } = self {
             left.visit_join_right_relations(visit);
@@ -378,19 +521,92 @@ impl PreparedRelationalJoinTreeNode {
     fn materialized_right_count(&self) -> usize {
         match self {
             Self::Relation(_) => 0,
-            Self::Join { left, right, .. } => {
-                usize::from(matches!(right.as_ref(), Self::Join { .. }))
-                    .saturating_add(left.materialized_right_count())
-                    .saturating_add(right.materialized_right_count())
+            Self::Join {
+                algorithm,
+                left,
+                right,
+                ..
+            } => usize::from(*algorithm == RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop)
+                .saturating_add(left.materialized_right_count())
+                .saturating_add(right.materialized_right_count()),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Relation(relation) => {
+                let expected = RelationalPhysicalOutputSchema::relation(
+                    relation.binding,
+                    &relation.table,
+                    &relation.qualifier,
+                );
+                if relation.output_schema != expected {
+                    return Err(SkeinError::Execution(format!(
+                        "physical relation {} has an inconsistent output schema",
+                        relation.qualifier
+                    )));
+                }
+                Ok(())
+            }
+            Self::Join {
+                algorithm,
+                left,
+                right,
+                output_schema,
+                ..
+            } => {
+                left.validate()?;
+                right.validate()?;
+                let expected_algorithm = match right.as_ref() {
+                    Self::Relation(_) => RelationalPhysicalJoinAlgorithm::ProbeNestedLoop,
+                    Self::Join { .. } => RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop,
+                };
+                if *algorithm != expected_algorithm {
+                    return Err(SkeinError::Execution(
+                        "physical join algorithm disagrees with its right input".to_string(),
+                    ));
+                }
+                let expected_schema = RelationalPhysicalOutputSchema::join(
+                    left.output_schema(),
+                    right.output_schema(),
+                )?;
+                if *output_schema != expected_schema {
+                    return Err(SkeinError::Execution(
+                        "physical join has an inconsistent output schema".to_string(),
+                    ));
+                }
+                Ok(())
             }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct PreparedRelationalJoinTree {
-    root: PreparedRelationalJoinTreeNode,
+struct RelationalPhysicalJoinPlan {
+    root: RelationalPhysicalJoinNode,
     cost_breakdown: PlanCostBreakdown,
+    output_schema: RelationalPhysicalOutputSchema,
+}
+
+impl RelationalPhysicalJoinPlan {
+    fn new(root: RelationalPhysicalJoinNode, cost_breakdown: PlanCostBreakdown) -> Self {
+        let output_schema = root.output_schema().clone();
+        Self {
+            root,
+            cost_breakdown,
+            output_schema,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.root.validate()?;
+        if self.output_schema != *self.root.output_schema() {
+            return Err(SkeinError::Execution(
+                "physical join plan has an inconsistent root output schema".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -398,7 +614,78 @@ struct PreparedRelationalAccessPlan {
     base_access: RelationalAccessCandidate,
     join_accesses: Vec<RelationalJoinAccessCandidate>,
     join_selection: Option<PreparedRelationalJoinSelection>,
-    join_tree: Option<PreparedRelationalJoinTree>,
+    physical_join_plan: Option<RelationalPhysicalJoinPlan>,
+}
+
+impl PreparedRelationalAccessPlan {
+    fn finalize_physical_join_plan(&mut self, statement: &SelectStatement) -> Result<()> {
+        if self.physical_join_plan.is_some() {
+            return Ok(());
+        }
+        let selection = self.join_selection.as_ref();
+        let base_binding = selection.map_or(BindingId::new(0), |selection| selection.base_binding);
+        let base_qualifier = statement
+            .from_alias
+            .as_deref()
+            .unwrap_or(statement.from.name.as_str());
+        let mut root = RelationalPhysicalJoinNode::relation(
+            base_binding,
+            statement.from.name.clone(),
+            base_qualifier.to_string(),
+            RelationalPhysicalAccess::Base(self.base_access.clone()),
+        );
+        let mut cost = estimate_relational_access_cost(self.base_access.descriptor.estimated_rows);
+        for (index, (join, access)) in statement.joins.iter().zip(&self.join_accesses).enumerate() {
+            let binding = if let Some(selection) = selection {
+                *selection.join_bindings.get(index).ok_or_else(|| {
+                    SkeinError::Execution(format!(
+                        "prepared relational join selection has no binding for join {}",
+                        index.saturating_add(1)
+                    ))
+                })?
+            } else {
+                let binding = u32::try_from(index.saturating_add(1)).map_err(|_| {
+                    SkeinError::Execution(
+                        "relational physical join plan exceeds the binding-id range".to_string(),
+                    )
+                })?;
+                BindingId::new(binding)
+            };
+            let qualifier = join.alias.as_deref().unwrap_or(join.table.name.as_str());
+            let right = RelationalPhysicalJoinNode::relation(
+                binding,
+                join.table.name.clone(),
+                qualifier.to_string(),
+                RelationalPhysicalAccess::Probe(access.clone()),
+            );
+            root = RelationalPhysicalJoinNode::join(
+                RelationalOperatorId::from_plan_index(index.saturating_add(1)),
+                join.kind,
+                vec![join.on.clone()],
+                root,
+                right,
+            )?;
+            cost = estimate_relational_probe_join_cost(
+                cost,
+                access.descriptor.estimated_rows,
+                match join.kind {
+                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
+                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
+                },
+            );
+        }
+        let cost_breakdown = selection.map_or(cost, |selection| selection.cost_breakdown);
+        self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost_breakdown));
+        Ok(())
+    }
+
+    fn physical_join_plan(&self) -> Result<&RelationalPhysicalJoinPlan> {
+        self.physical_join_plan.as_ref().ok_or_else(|| {
+            SkeinError::Execution(
+                "prepared relational SELECT has no finalized physical join plan".to_string(),
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,7 +766,7 @@ impl PreparedRelationalExecutionDescriptor {
         }
         .saturating_add(
             access_plan
-                .join_tree
+                .physical_join_plan
                 .as_ref()
                 .map_or(0, |tree| tree.root.materialized_right_count()),
         );
@@ -553,30 +840,30 @@ impl PreparedRelationalSelect {
                 "prepared relational SELECT has an inconsistent join access path".to_string(),
             ));
         }
-        if let Some(tree) = &self.access_plan.join_tree {
-            if tree.root.relation_count() != self.statement.joins.len().saturating_add(1) {
-                return Err(SkeinError::Execution(format!(
-                    "prepared CSG-CMP tree has {} relations for a {}-join SELECT",
-                    tree.root.relation_count(),
-                    self.statement.joins.len()
-                )));
-            }
-            let mut bindings = BTreeSet::new();
-            let mut duplicate = None;
-            tree.root.visit_relations(&mut |relation| {
-                if !bindings.insert(relation.binding) {
-                    duplicate = Some(relation.binding);
-                }
-            });
-            if let Some(binding) = duplicate {
-                return Err(SkeinError::Execution(format!(
-                    "prepared CSG-CMP tree repeats binding {}",
-                    binding.get()
-                )));
-            }
-            validate_prepared_join_tree_accesses(&tree.root, true)?;
-            planned_tree_operator_cardinality_profiles(tree)?;
+        let physical_plan = self.access_plan.physical_join_plan()?;
+        if physical_plan.root.relation_count() != self.statement.joins.len().saturating_add(1) {
+            return Err(SkeinError::Execution(format!(
+                "physical relational join plan has {} relations for a {}-join SELECT",
+                physical_plan.root.relation_count(),
+                self.statement.joins.len()
+            )));
         }
+        let mut bindings = BTreeSet::new();
+        let mut duplicate = None;
+        physical_plan.root.visit_relations(&mut |relation| {
+            if !bindings.insert(relation.binding) {
+                duplicate = Some(relation.binding);
+            }
+        });
+        if let Some(binding) = duplicate {
+            return Err(SkeinError::Execution(format!(
+                "physical relational join plan repeats binding {}",
+                binding.get()
+            )));
+        }
+        physical_plan.validate()?;
+        validate_prepared_physical_join_plan_accesses(&physical_plan.root, true)?;
+        planned_tree_operator_cardinality_profiles(physical_plan)?;
         if let Some(selection) = &self.access_plan.join_selection {
             if selection.join_bindings.len() != self.statement.joins.len() {
                 return Err(SkeinError::Execution(format!(
@@ -618,28 +905,29 @@ impl PreparedRelationalSelect {
     }
 }
 
-fn validate_prepared_join_tree_accesses(
-    node: &PreparedRelationalJoinTreeNode,
+fn validate_prepared_physical_join_plan_accesses(
+    node: &RelationalPhysicalJoinNode,
     requires_base: bool,
 ) -> Result<()> {
     match node {
-        PreparedRelationalJoinTreeNode::Relation(relation) => match &relation.access {
-            PreparedRelationalTreeAccess::Base(access)
+        RelationalPhysicalJoinNode::Relation(relation) => match &relation.access {
+            RelationalPhysicalAccess::Base(access)
                 if requires_base && base_access_matches_descriptor(access) =>
             {
                 Ok(())
             }
-            PreparedRelationalTreeAccess::Probe(access)
+            RelationalPhysicalAccess::Probe(access)
                 if !requires_base && join_access_matches_descriptor(access) =>
             {
                 Ok(())
             }
             _ => Err(SkeinError::Execution(format!(
-                "prepared CSG-CMP relation {} has an invalid access role",
+                "physical relation {} has an invalid access role",
                 relation.qualifier
             ))),
         },
-        PreparedRelationalJoinTreeNode::Join {
+        RelationalPhysicalJoinNode::Join {
+            algorithm,
             predicates,
             left,
             right,
@@ -647,13 +935,13 @@ fn validate_prepared_join_tree_accesses(
         } => {
             if predicates.is_empty() {
                 return Err(SkeinError::Execution(
-                    "prepared CSG-CMP join has no predicate".to_string(),
+                    "physical join has no predicate".to_string(),
                 ));
             }
-            validate_prepared_join_tree_accesses(left, true)?;
-            validate_prepared_join_tree_accesses(
+            validate_prepared_physical_join_plan_accesses(left, true)?;
+            validate_prepared_physical_join_plan_accesses(
                 right,
-                !matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Relation(_)),
+                *algorithm == RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop,
             )
         }
     }
@@ -700,76 +988,24 @@ fn join_access_matches_descriptor(candidate: &RelationalJoinAccessCandidate) -> 
 fn planned_operator_cardinality_profiles(
     prepared: &PreparedRelationalSelect,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
-    if let Some(tree) = &prepared.access_plan.join_tree {
-        return planned_tree_operator_cardinality_profiles(tree);
-    }
-    let mut cost =
-        estimate_relational_access_cost(prepared.access_plan.base_access.descriptor.estimated_rows);
-    let mut profiles = Vec::with_capacity(prepared.statement.joins.len().saturating_add(1));
-    profiles.push(RelationalOperatorCardinalityProfile {
-        operator_id: RelationalOperatorId::from_plan_index(0),
-        operator: match prepared.access_plan.base_access.descriptor.kind {
-            RelationalAccessPathKind::FullScan => RelationalOperatorKind::TableFullScan,
-            RelationalAccessPathKind::PrimaryKey => RelationalOperatorKind::TablePointGet,
-            RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
-        },
-        table: prepared.statement.from.name.clone(),
-        access_path: prepared.access_plan.base_access.descriptor.clone(),
-        estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
-        actual_rows: None,
-        fully_consumed: false,
-    });
-    for (index, (join, access)) in prepared
-        .statement
-        .joins
-        .iter()
-        .zip(&prepared.access_plan.join_accesses)
-        .enumerate()
-    {
-        let cardinality = match join.kind {
-            SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
-            SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
-        };
-        cost = estimate_relational_probe_join_cost(
-            cost,
-            access.descriptor.estimated_rows,
-            cardinality,
-        );
-        profiles.push(RelationalOperatorCardinalityProfile {
-            operator_id: RelationalOperatorId::from_plan_index(index.saturating_add(1)),
-            operator: relational_join_operator_kind(join.kind, &access.descriptor, false),
-            table: join.table.name.clone(),
-            access_path: access.descriptor.clone(),
-            estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
-            actual_rows: None,
-            fully_consumed: false,
-        });
-    }
-    if let Some(selection) = &prepared.access_plan.join_selection
-        && cost != selection.cost_breakdown
-    {
-        return Err(SkeinError::Execution(
-            "prepared relational operator estimates diverge from the selected join cost"
-                .to_string(),
-        ));
-    }
-    Ok(profiles)
+    planned_tree_operator_cardinality_profiles(prepared.access_plan.physical_join_plan()?)
 }
 
 fn planned_tree_operator_cardinality_profiles(
-    tree: &PreparedRelationalJoinTree,
+    tree: &RelationalPhysicalJoinPlan,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
     fn plan_node(
-        node: &PreparedRelationalJoinTreeNode,
+        node: &RelationalPhysicalJoinNode,
         profiles: &mut [Option<RelationalOperatorCardinalityProfile>],
     ) -> Result<PlanCostBreakdown> {
         match node {
-            PreparedRelationalJoinTreeNode::Relation(relation) => Ok(
-                estimate_relational_access_cost(relation.access.descriptor().estimated_rows),
-            ),
-            PreparedRelationalJoinTreeNode::Join {
+            RelationalPhysicalJoinNode::Relation(relation) => Ok(estimate_relational_access_cost(
+                relation.access.descriptor().estimated_rows,
+            )),
+            RelationalPhysicalJoinNode::Join {
                 operator_id,
                 kind,
+                algorithm,
                 left,
                 right,
                 ..
@@ -784,26 +1020,27 @@ fn planned_tree_operator_cardinality_profiles(
                     left_cost,
                     right_cost,
                     cardinality,
-                    if matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Relation(_)) {
-                        RelationalJoinRightInput::Probe
-                    } else {
-                        RelationalJoinRightInput::Materialized
+                    match algorithm {
+                        RelationalPhysicalJoinAlgorithm::ProbeNestedLoop => {
+                            RelationalJoinRightInput::Probe
+                        }
+                        RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop => {
+                            RelationalJoinRightInput::Materialized
+                        }
                     },
                 );
                 let index = operator_id.get().checked_sub(1).ok_or_else(|| {
-                    SkeinError::Execution(
-                        "prepared CSG-CMP join has an invalid operator id".to_string(),
-                    )
+                    SkeinError::Execution("physical join has an invalid operator id".to_string())
                 })?;
                 let slot = profiles.get_mut(index).ok_or_else(|| {
                     SkeinError::Execution(format!(
-                        "prepared CSG-CMP join operator {} is outside the plan profile",
+                        "physical join operator {} is outside the plan profile",
                         operator_id.get()
                     ))
                 })?;
                 if slot.is_some() {
                     return Err(SkeinError::Execution(format!(
-                        "prepared CSG-CMP join repeats operator {}",
+                        "physical join repeats operator {}",
                         operator_id.get()
                     )));
                 }
@@ -813,7 +1050,7 @@ fn planned_tree_operator_cardinality_profiles(
                     operator: relational_join_operator_kind(
                         *kind,
                         &access_path,
-                        matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Join { .. }),
+                        *algorithm == RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop,
                     ),
                     table: right.first_relation().table.clone(),
                     access_path,
@@ -845,7 +1082,7 @@ fn planned_tree_operator_cardinality_profiles(
     let cost = plan_node(&tree.root, &mut profiles)?;
     if cost != tree.cost_breakdown {
         return Err(SkeinError::Execution(
-            "prepared CSG-CMP operator estimates diverge from the selected join cost".to_string(),
+            "physical join operator estimates diverge from the selected join cost".to_string(),
         ));
     }
     profiles
@@ -854,7 +1091,7 @@ fn planned_tree_operator_cardinality_profiles(
         .map(|(index, profile)| {
             profile.ok_or_else(|| {
                 SkeinError::Execution(format!(
-                    "prepared CSG-CMP plan has no operator profile at index {index}"
+                    "physical join plan has no operator profile at index {index}"
                 ))
             })
         })
@@ -881,6 +1118,7 @@ fn estimated_rows_as_usize(rows: u64) -> usize {
 }
 
 struct PlannedJoin<'a> {
+    binding: BindingId,
     join: &'a crate::sql::SqlJoin,
     schema: &'a RelationalTableSchema,
     qualifier: String,
@@ -894,21 +1132,22 @@ fn relational_locator_layout<'a>(
     joins: &'a [PlannedJoin<'a>],
 ) -> Result<RelationalLocatorLayout<'a>> {
     RelationalLocatorLayout::from_bindings(
-        std::iter::once((base_table, base_qualifier, base_schema)).chain(joins.iter().map(
-            |join| {
+        std::iter::once((BindingId::new(0), base_table, base_qualifier, base_schema)).chain(
+            joins.iter().map(|join| {
                 (
+                    join.binding,
                     join.join.table.name.as_str(),
                     join.qualifier.as_str(),
                     join.schema,
                 )
-            },
-        )),
+            }),
+        ),
     )
 }
 
-fn relational_join_tree_locator_layout<'a>(
+fn relational_physical_join_plan_locator_layout<'a>(
     state: &'a RelationalState,
-    tree: &'a PreparedRelationalJoinTree,
+    tree: &'a RelationalPhysicalJoinPlan,
 ) -> Result<RelationalLocatorLayout<'a>> {
     let mut bindings = Vec::with_capacity(tree.root.relation_count());
     let mut error = None;
@@ -917,9 +1156,12 @@ fn relational_join_tree_locator_layout<'a>(
             return;
         }
         match state.table_schema(&relation.table) {
-            Some(schema) => {
-                bindings.push((relation.table.as_str(), relation.qualifier.as_str(), schema))
-            }
+            Some(schema) => bindings.push((
+                relation.binding,
+                relation.table.as_str(),
+                relation.qualifier.as_str(),
+                schema,
+            )),
             None => {
                 error = Some(SkeinError::Semantic(format!(
                     "unknown relational table {}",
@@ -1155,12 +1397,13 @@ fn prepare_relational_select(
         join_enumeration,
         &mut current_state_bind_nanos,
     )?;
-    let access_plan = match planned.access_plan {
+    let mut access_plan = match planned.access_plan {
         Some(access_plan) => access_plan,
         None => {
             prepare_syntax_access_plan(&planned.statement, parameters, state, read_modes, limits)?
         }
     };
+    access_plan.finalize_physical_join_plan(&planned.statement)?;
     let execution =
         PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
     let prepare_nanos = elapsed_nanos(prepare_started);
@@ -1237,7 +1480,7 @@ fn prepare_syntax_access_plan(
         base_access,
         join_accesses,
         join_selection: None,
-        join_tree: None,
+        physical_join_plan: None,
     })
 }
 
@@ -1247,7 +1490,7 @@ fn prepared_access_descriptors(
     RelationalAccessPathDescriptor,
     Vec<RelationalAccessPathDescriptor>,
 ) {
-    if let Some(tree) = &plan.join_tree {
+    if let Some(tree) = &plan.physical_join_plan {
         let base = tree.root.first_relation().access.descriptor().clone();
         let mut joins = Vec::with_capacity(tree.root.relation_count().saturating_sub(1));
         tree.root.visit_join_right_relations(&mut |relation| {
@@ -1334,7 +1577,12 @@ fn execute_select<'state>(
     let base_access = &prepared.access_plan.base_access;
     let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     let mut planned_joins = Vec::with_capacity(select.joins.len());
-    for (join, join_access) in select.joins.iter().zip(&prepared.access_plan.join_accesses) {
+    for (index, (join, join_access)) in select
+        .joins
+        .iter()
+        .zip(&prepared.access_plan.join_accesses)
+        .enumerate()
+    {
         let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
             SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
         })?;
@@ -1343,6 +1591,11 @@ fn execute_select<'state>(
             .clone()
             .unwrap_or_else(|| join.table.name.clone());
         planned_joins.push(PlannedJoin {
+            binding: BindingId::new(u32::try_from(index.saturating_add(1)).map_err(|_| {
+                SkeinError::Execution(
+                    "relational planned join exceeds the binding-id range".to_string(),
+                )
+            })?),
             join,
             schema: join_schema,
             qualifier,
@@ -1376,17 +1629,12 @@ fn execute_select<'state>(
         operator_cardinality_profiles,
     );
     let index_runtime = RelationalIndexRuntime::new(index_read_mode, limits.index_read);
-    let tree_execution =
-        prepared
-            .access_plan
-            .join_tree
-            .as_ref()
-            .map(|tree| PreparedJoinTreeExecution {
-                tree,
-                memory: execution_memory,
-                memory_ledger: &memory_ledger,
-                reports: RefCell::new(Vec::new()),
-            });
+    let physical_execution = RelationalPhysicalJoinExecution {
+        tree: prepared.access_plan.physical_join_plan()?,
+        memory: execution_memory,
+        memory_ledger: &memory_ledger,
+        reports: RefCell::new(Vec::new()),
+    };
     if prepared.execution.mode == PreparedRelationalExecutionMode::OrderedIndexProjection {
         let output = execute_ordered_index_projection(
             select,
@@ -1426,17 +1674,15 @@ fn execute_select<'state>(
             &base_qualifier,
             &base_access.access,
             &planned_joins,
-            tree_execution.as_ref(),
+            Some(&physical_execution),
             &mut pipeline,
             &index_runtime,
             &row_runtime,
             limits,
         )?;
-        if let Some(execution) = &tree_execution {
-            output
-                .blocking_operator_memory_reports
-                .extend(execution.take_reports());
-        }
+        output
+            .blocking_operator_memory_reports
+            .extend(physical_execution.take_reports());
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
             rows: output.rows,
@@ -1462,7 +1708,7 @@ fn execute_select<'state>(
             &base_qualifier,
             &base_access.access,
             &planned_joins,
-            tree_execution.as_ref(),
+            Some(&physical_execution),
             &mut pipeline,
             &index_runtime,
             &row_runtime,
@@ -1473,11 +1719,9 @@ fn execute_select<'state>(
             join_access_paths,
             join_planning,
         )?;
-        if let Some(execution) = &tree_execution {
-            output
-                .blocking_operator_memory_reports
-                .extend(execution.take_reports());
-        }
+        output
+            .blocking_operator_memory_reports
+            .extend(physical_execution.take_reports());
         return Ok(output);
     }
 
@@ -1489,7 +1733,7 @@ fn execute_select<'state>(
         &base_qualifier,
         &base_access.access,
         &planned_joins,
-        tree_execution.as_ref(),
+        Some(&physical_execution),
         &mut pipeline,
         &index_runtime,
         &row_runtime,
@@ -1497,11 +1741,9 @@ fn execute_select<'state>(
         execution_memory,
         &memory_ledger,
     )?;
-    if let Some(execution) = &tree_execution {
-        output
-            .blocking_operator_memory_reports
-            .extend(execution.take_reports());
-    }
+    output
+        .blocking_operator_memory_reports
+        .extend(physical_execution.take_reports());
     pipeline.finish()?;
     Ok(RelationalQueryOutput {
         rows: output.rows,
@@ -2952,14 +3194,14 @@ fn visit_base_entries<'a>(
     }
 }
 
-struct PreparedJoinTreeExecution<'a> {
-    tree: &'a PreparedRelationalJoinTree,
+struct RelationalPhysicalJoinExecution<'a> {
+    tree: &'a RelationalPhysicalJoinPlan,
     memory: &'a skein_executor::ExecutionMemoryConfig,
     memory_ledger: &'a QueryMemoryLedger,
     reports: RefCell<Vec<BlockingOperatorMemoryReport>>,
 }
 
-impl PreparedJoinTreeExecution<'_> {
+impl RelationalPhysicalJoinExecution<'_> {
     fn take_reports(&self) -> Vec<BlockingOperatorMemoryReport> {
         std::mem::take(&mut *self.reports.borrow_mut())
     }
@@ -2985,12 +3227,12 @@ fn visit_tree_relation_entries<'a>(
     state: &'a RelationalState,
     index_runtime: &RelationalIndexRuntime<'_>,
     row_runtime: &RelationalRowRuntime<'a>,
-    relation: &'a PreparedRelationalTreeRelation,
+    relation: &'a RelationalPhysicalRelation,
     outer: Option<&BoundRow<'a>>,
     visit: &mut dyn FnMut(RelationalReadRow) -> Result<bool>,
 ) -> Result<bool> {
     match &relation.access {
-        PreparedRelationalTreeAccess::Base(access) => visit_base_entries(
+        RelationalPhysicalAccess::Base(access) => visit_base_entries(
             state,
             index_runtime,
             row_runtime,
@@ -2998,10 +3240,10 @@ fn visit_tree_relation_entries<'a>(
             &access.access,
             visit,
         ),
-        PreparedRelationalTreeAccess::Probe(access) => {
+        RelationalPhysicalAccess::Probe(access) => {
             let outer = outer.ok_or_else(|| {
                 SkeinError::Execution(format!(
-                    "prepared CSG-CMP probe for {} has no outer row",
+                    "physical join probe for {} has no outer row",
                     relation.qualifier
                 ))
             })?;
@@ -3042,7 +3284,7 @@ fn visit_tree_relation_entries<'a>(
 }
 
 fn null_extended_tree_row<'a>(
-    node: &'a PreparedRelationalJoinTreeNode,
+    node: &'a RelationalPhysicalJoinNode,
     state: &'a RelationalState,
 ) -> Result<BoundRow<'a>> {
     let mut bindings = Vec::new();
@@ -3053,6 +3295,7 @@ fn null_extended_tree_row<'a>(
         }
         match state.table_schema(&relation.table) {
             Some(schema) => bindings.push(Binding {
+                binding: relation.binding,
                 table: &relation.table,
                 qualifier: &relation.qualifier,
                 schema,
@@ -3069,24 +3312,26 @@ fn null_extended_tree_row<'a>(
     if let Some(error) = error {
         return Err(error);
     }
-    Ok(BoundRow { bindings })
+    let row = BoundRow { bindings };
+    node.output_schema().ensure_matches(&row)?;
+    Ok(row)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn visit_prepared_join_tree_node<'a>(
-    node: &'a PreparedRelationalJoinTreeNode,
+fn visit_prepared_physical_join_plan_node<'a>(
+    node: &'a RelationalPhysicalJoinNode,
     outer: Option<&BoundRow<'a>>,
     parameters: &[Value],
     state: &'a RelationalState,
     profiled_base_binding: BindingId,
-    execution: &PreparedJoinTreeExecution<'a>,
+    execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
     index_runtime: &RelationalIndexRuntime<'_>,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     match node {
-        PreparedRelationalJoinTreeNode::Relation(relation) => visit_tree_relation_entries(
+        RelationalPhysicalJoinNode::Relation(relation) => visit_tree_relation_entries(
             state,
             index_runtime,
             row_runtime,
@@ -3097,31 +3342,36 @@ fn visit_prepared_join_tree_node<'a>(
                     pipeline
                         .borrow_mut()
                         .account_operator_row(RelationalOperatorId::from_plan_index(0))?;
-                } else if matches!(relation.access, PreparedRelationalTreeAccess::Base(_)) {
+                } else if matches!(relation.access, RelationalPhysicalAccess::Base(_)) {
                     pipeline.borrow_mut().account_unprofiled_row()?;
                 }
                 let schema = state.table_schema(&relation.table).ok_or_else(|| {
                     SkeinError::Semantic(format!("unknown relational table {}", relation.table))
                 })?;
-                visit(BoundRow {
+                let bound = BoundRow {
                     bindings: vec![Binding {
+                        binding: relation.binding,
                         table: &relation.table,
                         qualifier: &relation.qualifier,
                         schema,
                         row: Some(row),
                     }],
-                })
+                };
+                relation.output_schema.ensure_matches(&bound)?;
+                visit(bound)
             },
         ),
-        PreparedRelationalJoinTreeNode::Join {
+        RelationalPhysicalJoinNode::Join {
             operator_id,
             kind,
+            algorithm,
             predicates,
             left,
             right,
+            output_schema,
         } => {
             let materialized_right =
-                matches!(right.as_ref(), PreparedRelationalJoinTreeNode::Join { .. });
+                *algorithm == RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop;
             let mut right_rows = Vec::new();
             let mut right_tracker = materialized_right.then(|| {
                 OperatorMemoryTracker::with_account(
@@ -3134,7 +3384,7 @@ fn visit_prepared_join_tree_node<'a>(
                 )
             });
             if let Some(tracker) = right_tracker.as_mut() {
-                visit_prepared_join_tree_node(
+                visit_prepared_physical_join_plan_node(
                     right,
                     None,
                     parameters,
@@ -3172,7 +3422,7 @@ fn visit_prepared_join_tree_node<'a>(
             let null_right = (*kind == SqlJoinKind::Left)
                 .then(|| null_extended_tree_row(right, state))
                 .transpose()?;
-            visit_prepared_join_tree_node(
+            visit_prepared_physical_join_plan_node(
                 left,
                 outer,
                 parameters,
@@ -3192,6 +3442,7 @@ fn visit_prepared_join_tree_node<'a>(
                                 return Ok(true);
                             }
                         }
+                        output_schema.ensure_matches(&combined)?;
                         matched = true;
                         pipeline.borrow_mut().account_operator_row(*operator_id)?;
                         visit(combined)
@@ -3206,7 +3457,7 @@ fn visit_prepared_join_tree_node<'a>(
                         }
                         completed
                     } else {
-                        visit_prepared_join_tree_node(
+                        visit_prepared_physical_join_plan_node(
                             right,
                             Some(&left_row),
                             parameters,
@@ -3225,6 +3476,7 @@ fn visit_prepared_join_tree_node<'a>(
                     if !matched && let Some(null_right) = &null_right {
                         let mut combined = left_row;
                         combined.bindings.extend(null_right.bindings.clone());
+                        output_schema.ensure_matches(&combined)?;
                         pipeline.borrow_mut().account_operator_row(*operator_id)?;
                         return visit(combined);
                     }
@@ -3244,7 +3496,7 @@ fn visit_relational_rows<'a>(
     base_qualifier: &'a str,
     base_access: &RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
     index_runtime: &RelationalIndexRuntime<'_>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -3255,7 +3507,7 @@ fn visit_relational_rows<'a>(
         let profiled_base_binding = execution.tree.root.first_relation().binding;
         let fully_consumed = {
             let tree_pipeline = RefCell::new(&mut *pipeline);
-            visit_prepared_join_tree_node(
+            visit_prepared_physical_join_plan_node(
                 &execution.tree.root,
                 None,
                 parameters,
@@ -3298,6 +3550,7 @@ fn visit_relational_rows<'a>(
                 0,
                 BoundRow {
                     bindings: vec![Binding {
+                        binding: BindingId::new(0),
                         table: &select.from.name,
                         qualifier: base_qualifier,
                         schema: base_schema,
@@ -3351,6 +3604,7 @@ fn visit_joined_row<'a>(
         &mut |candidate| {
             let mut combined = row.clone();
             combined.bindings.push(Binding {
+                binding: planned.binding,
                 table: &planned.join.table.name,
                 qualifier: &planned.qualifier,
                 schema: planned.schema,
@@ -3383,6 +3637,7 @@ fn visit_joined_row<'a>(
     if !matched && planned.join.kind == SqlJoinKind::Left {
         let mut combined = row;
         combined.bindings.push(Binding {
+            binding: planned.binding,
             table: &planned.join.table.name,
             qualifier: &planned.qualifier,
             schema: planned.schema,
@@ -3433,7 +3688,7 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&'pipeline PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&'pipeline RelationalPhysicalJoinExecution<'a>>,
     pipeline: &'pipeline mut RelationalPipelineState<'a>,
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
@@ -3449,7 +3704,7 @@ struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&'pipeline PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&'pipeline RelationalPhysicalJoinExecution<'a>>,
     pipeline: &'pipeline mut RelationalPipelineState<'a>,
     index_runtime: &'pipeline RelationalIndexRuntime<'a>,
     row_runtime: &'pipeline RelationalRowRuntime<'a>,
@@ -3617,7 +3872,7 @@ fn execute_blocking_projection<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -3739,7 +3994,7 @@ fn execute_blocking_projection<'a>(
         }
     } else {
         let locator_layout = match tree_execution {
-            Some(execution) => relational_join_tree_locator_layout(state, execution.tree)?,
+            Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
             None => {
                 relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?
             }
@@ -4027,6 +4282,7 @@ fn with_typed_locator_bound_row<T>(
             None => None,
         };
         bound.bindings.push(Binding {
+            binding: binding.binding,
             table: binding.table,
             qualifier: binding.qualifier,
             schema: binding.schema,
@@ -4102,6 +4358,7 @@ fn execute_ordered_index_projection<'a>(
                 })?;
             let bound = BoundRow {
                 bindings: vec![Binding {
+                    binding: BindingId::new(0),
                     table: &select.from.name,
                     qualifier: base_qualifier,
                     schema: base_schema,
@@ -4173,13 +4430,13 @@ fn execute_streaming_projection<'a>(
     base_qualifier: &'a str,
     base_access: &RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
 ) -> Result<StreamingProjectionOutput> {
-    if tree_execution.is_none()
+    if tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
         && joins.is_empty()
         && matches!(base_access, RelationalBaseAccess::FullScan)
     {
@@ -4340,7 +4597,7 @@ fn execute_aggregate_select<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -4641,7 +4898,7 @@ fn execute_single_count_distinct<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -4728,7 +4985,7 @@ fn execute_grouped_aggregate<'a>(
     base_qualifier: &'a str,
     base_access: &'a RelationalBaseAccess,
     joins: &'a [PlannedJoin<'a>],
-    tree_execution: Option<&PreparedJoinTreeExecution<'a>>,
+    tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
     index_runtime: &RelationalIndexRuntime<'a>,
     row_runtime: &RelationalRowRuntime<'a>,
@@ -4762,7 +5019,7 @@ fn execute_grouped_aggregate<'a>(
     let observer = RelationalBlockingObserver::default();
     let task_context = pipeline.task_context;
     let locator_layout = match tree_execution {
-        Some(execution) => relational_join_tree_locator_layout(state, execution.tree)?,
+        Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
         None => relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?,
     };
     let mut order = ExternalTopN::new(
@@ -5728,7 +5985,78 @@ mod tests {
     }
 
     #[test]
-    fn prepared_bushy_join_tree_materializes_the_composite_right_input_once() {
+    fn physical_join_plan_rejects_output_schema_drift() {
+        let full_scan = || RelationalAccessPathDescriptor {
+            kind: RelationalAccessPathKind::FullScan,
+            name: "__full_scan".to_string(),
+            index_columns: Vec::new(),
+            access_columns: BTreeSet::new(),
+            equality_prefix_len: 0,
+            order_prefix_len: 0,
+            exclusive_range: false,
+            reverse_order: false,
+            unique_point: false,
+            covering: false,
+            requires_row_fetch: false,
+            estimated_rows: 1,
+        };
+        let join_predicate = match skein_sql::prepare_postgres_sql(
+            "SELECT left_table.id FROM left_table INNER JOIN right_table ON left_table.id = right_table.id",
+        )
+        .expect("parse join predicate")
+        .statement
+        {
+            SqlStatement::Select(select) => select
+                .joins
+                .into_iter()
+                .next()
+                .expect("join")
+                .on,
+            _ => unreachable!("join test must parse as a SELECT"),
+        };
+        let left = RelationalPhysicalJoinNode::relation(
+            BindingId::new(0),
+            "left_table".to_string(),
+            "left_table".to_string(),
+            RelationalPhysicalAccess::Base(RelationalAccessCandidate {
+                descriptor: full_scan(),
+                access: RelationalBaseAccess::FullScan,
+            }),
+        );
+        let right = RelationalPhysicalJoinNode::relation(
+            BindingId::new(1),
+            "right_table".to_string(),
+            "right_table".to_string(),
+            RelationalPhysicalAccess::Probe(RelationalJoinAccessCandidate {
+                descriptor: full_scan(),
+                access: RelationalJoinAccess::FullScan,
+            }),
+        );
+        let mut plan = RelationalPhysicalJoinPlan::new(
+            RelationalPhysicalJoinNode::join(
+                RelationalOperatorId::from_plan_index(1),
+                SqlJoinKind::Inner,
+                vec![join_predicate],
+                left,
+                right,
+            )
+            .expect("build physical join"),
+            estimate_relational_access_cost(1),
+        );
+        let RelationalPhysicalJoinNode::Join { output_schema, .. } = &mut plan.root else {
+            panic!("expected physical join root");
+        };
+        *output_schema =
+            RelationalPhysicalOutputSchema::relation(BindingId::new(0), "left_table", "left_table");
+
+        let error = plan
+            .validate()
+            .expect_err("schema drift must fail closed before execution");
+        assert!(error.to_string().contains("inconsistent output schema"));
+    }
+
+    #[test]
+    fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once() {
         const SQL: &str = "SELECT a.id AS a_id, d.id AS d_id \
             FROM bushy_a AS a \
             INNER JOIN bushy_b AS b ON b.a_id = a.id \
@@ -5770,7 +6098,7 @@ mod tests {
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
         };
-        let syntax_plan = prepare_syntax_access_plan(
+        let mut syntax_plan = prepare_syntax_access_plan(
             &select,
             &[],
             &state,
@@ -5781,6 +6109,38 @@ mod tests {
             limits,
         )
         .expect("prepare syntax access plan");
+        syntax_plan
+            .finalize_physical_join_plan(&select)
+            .expect("finalize syntax physical join plan");
+        let syntax_physical_plan = syntax_plan
+            .physical_join_plan()
+            .expect("syntax physical join plan");
+        assert_eq!(syntax_physical_plan.root.materialized_right_count(), 0);
+        assert!(matches!(
+            syntax_physical_plan.root,
+            RelationalPhysicalJoinNode::Join {
+                algorithm: RelationalPhysicalJoinAlgorithm::ProbeNestedLoop,
+                ..
+            }
+        ));
+        assert_eq!(
+            syntax_physical_plan
+                .output_schema
+                .bindings
+                .iter()
+                .map(|binding| (
+                    binding.binding.get(),
+                    binding.table.as_str(),
+                    binding.qualifier.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0, "bushy_a", "a"),
+                (1, "bushy_b", "b"),
+                (2, "bushy_c", "c"),
+                (3, "bushy_d", "d"),
+            ]
+        );
         let c_schema = state.table_schema("bushy_c").expect("bushy_c schema");
         let c_base = choose_base_access(RelationalBaseAccessPlanning {
             predicate: None,
@@ -5797,48 +6157,45 @@ mod tests {
         .expect("prepare bushy_c materialized base access");
 
         let relation =
-            |binding: u32, table: &str, qualifier: &str, access: PreparedRelationalTreeAccess| {
-                PreparedRelationalJoinTreeNode::Relation(PreparedRelationalTreeRelation {
-                    binding: BindingId::new(binding),
-                    table: table.to_string(),
-                    qualifier: qualifier.to_string(),
+            |binding: u32, table: &str, qualifier: &str, access: RelationalPhysicalAccess| {
+                RelationalPhysicalJoinNode::relation(
+                    BindingId::new(binding),
+                    table.to_string(),
+                    qualifier.to_string(),
                     access,
-                })
+                )
             };
-        let left = PreparedRelationalJoinTreeNode::Join {
-            operator_id: RelationalOperatorId::from_plan_index(1),
-            kind: SqlJoinKind::Inner,
-            predicates: vec![select.joins[0].on.clone()],
-            left: Box::new(relation(
+        let left = RelationalPhysicalJoinNode::join(
+            RelationalOperatorId::from_plan_index(1),
+            SqlJoinKind::Inner,
+            vec![select.joins[0].on.clone()],
+            relation(
                 0,
                 "bushy_a",
                 "a",
-                PreparedRelationalTreeAccess::Base(syntax_plan.base_access.clone()),
-            )),
-            right: Box::new(relation(
+                RelationalPhysicalAccess::Base(syntax_plan.base_access.clone()),
+            ),
+            relation(
                 1,
                 "bushy_b",
                 "b",
-                PreparedRelationalTreeAccess::Probe(syntax_plan.join_accesses[0].clone()),
-            )),
-        };
-        let right = PreparedRelationalJoinTreeNode::Join {
-            operator_id: RelationalOperatorId::from_plan_index(2),
-            kind: SqlJoinKind::Inner,
-            predicates: vec![select.joins[2].on.clone()],
-            left: Box::new(relation(
-                2,
-                "bushy_c",
-                "c",
-                PreparedRelationalTreeAccess::Base(c_base),
-            )),
-            right: Box::new(relation(
+                RelationalPhysicalAccess::Probe(syntax_plan.join_accesses[0].clone()),
+            ),
+        )
+        .expect("build left physical join");
+        let right = RelationalPhysicalJoinNode::join(
+            RelationalOperatorId::from_plan_index(2),
+            SqlJoinKind::Inner,
+            vec![select.joins[2].on.clone()],
+            relation(2, "bushy_c", "c", RelationalPhysicalAccess::Base(c_base)),
+            relation(
                 3,
                 "bushy_d",
                 "d",
-                PreparedRelationalTreeAccess::Probe(syntax_plan.join_accesses[2].clone()),
-            )),
-        };
+                RelationalPhysicalAccess::Probe(syntax_plan.join_accesses[2].clone()),
+            ),
+        )
+        .expect("build right physical join");
         let left_cost = estimate_relational_probe_join_cost(
             estimate_relational_access_cost(syntax_plan.base_access.descriptor.estimated_rows),
             syntax_plan.join_accesses[0].descriptor.estimated_rows,
@@ -5857,19 +6214,17 @@ mod tests {
             RelationalJoinCardinality::Inner,
             RelationalJoinRightInput::Materialized,
         );
-        let root = PreparedRelationalJoinTreeNode::Join {
-            operator_id: RelationalOperatorId::from_plan_index(3),
-            kind: SqlJoinKind::Inner,
-            predicates: vec![select.joins[1].on.clone()],
-            left: Box::new(left),
-            right: Box::new(right),
-        };
+        let root = RelationalPhysicalJoinNode::join(
+            RelationalOperatorId::from_plan_index(3),
+            SqlJoinKind::Inner,
+            vec![select.joins[1].on.clone()],
+            left,
+            right,
+        )
+        .expect("build materialized physical join");
         let mut access_plan = syntax_plan;
         access_plan.join_selection = None;
-        access_plan.join_tree = Some(PreparedRelationalJoinTree {
-            root,
-            cost_breakdown: cost,
-        });
+        access_plan.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
         let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan);
         let prepared = PreparedRelationalSelect {
             statement: select,
@@ -5890,6 +6245,27 @@ mod tests {
             stage_timings: RelationalSqlStageTimings::default(),
         };
         prepared.validate().expect("validate prepared bushy plan");
+        let physical_plan = prepared
+            .access_plan
+            .physical_join_plan()
+            .expect("materialized physical join plan");
+        assert_eq!(physical_plan.root.materialized_right_count(), 1);
+        assert!(matches!(
+            physical_plan.root,
+            RelationalPhysicalJoinNode::Join {
+                algorithm: RelationalPhysicalJoinAlgorithm::MaterializedNestedLoop,
+                ..
+            }
+        ));
+        assert_eq!(
+            physical_plan
+                .output_schema
+                .bindings
+                .iter()
+                .map(|binding| (binding.binding.get(), binding.qualifier.as_str()))
+                .collect::<Vec<_>>(),
+            [(0, "a"), (1, "b"), (2, "c"), (3, "d")]
+        );
 
         let memory = skein_executor::ExecutionMemoryConfig::default();
         let resources = RelationalQueryResourceContext::new(
