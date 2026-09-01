@@ -552,6 +552,31 @@ impl GroupExpr {
                         predicate: predicate.clone(),
                         input: Box::new(plan),
                     }
+                } else if let Predicate::BoundRelationshipExists {
+                    source_variable,
+                    rel_type,
+                    direction,
+                    target_variable,
+                } = predicate
+                {
+                    decisions.push(
+                        "lower bound relationship existence predicate to AdjacencyExistsExec"
+                            .to_string(),
+                    );
+                    PhysicalPlan::AdjacencyExistsExec {
+                        source_variable: source_variable.clone(),
+                        rel_type: rel_type.clone(),
+                        direction: *direction,
+                        target_variable: target_variable.clone(),
+                        input: Box::new(best_physical(
+                            memo,
+                            self.children[0],
+                            catalog,
+                            optimizer_context,
+                            decisions,
+                            stage_events,
+                        )),
+                    }
                 } else {
                     let mut input = best_physical(
                         memo,
@@ -773,6 +798,7 @@ fn vector_seed_top_k(plan: &PhysicalPlan) -> Option<usize> {
         PhysicalPlan::VectorSeedScan { vector_plan, .. } => vector_plan_top_k(vector_plan),
         PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => vector_seed_top_k(input),
@@ -1030,6 +1056,30 @@ fn logical_to_physical_direct(
                 PhysicalPlan::FilterExec {
                     predicate: predicate.clone(),
                     input: Box::new(plan),
+                }
+            } else if let Predicate::BoundRelationshipExists {
+                source_variable,
+                rel_type,
+                direction,
+                target_variable,
+            } = predicate
+            {
+                decisions.push(
+                    "lower bound relationship existence predicate to AdjacencyExistsExec"
+                        .to_string(),
+                );
+                PhysicalPlan::AdjacencyExistsExec {
+                    source_variable: source_variable.clone(),
+                    rel_type: rel_type.clone(),
+                    direction: *direction,
+                    target_variable: target_variable.clone(),
+                    input: Box::new(logical_to_physical_direct(
+                        input,
+                        catalog,
+                        optimizer_context,
+                        decisions,
+                        stage_events,
+                    )),
                 }
             } else {
                 let mut input = logical_to_physical_direct(
