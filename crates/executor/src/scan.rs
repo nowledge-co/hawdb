@@ -1191,7 +1191,7 @@ mod tests {
                     source: NodeId(0),
                     target: NodeId(offset as u64 + 1),
                     rel_type: RelTypeId(0),
-                    properties: BTreeMap::new(),
+                    properties: BTreeMap::from([("keep".to_string(), Value::Bool(true))]),
                 })? == ScanControl::Stop
                 {
                     return Ok(ScanControl::Stop);
@@ -1230,7 +1230,10 @@ mod tests {
         }
     }
 
-    fn high_degree_expand_visits(rel_variable: Option<&str>) -> (usize, usize) {
+    fn high_degree_expand_visits(
+        rel_variable: Option<&str>,
+        rel_properties: BTreeMap<String, Value>,
+    ) -> (usize, usize) {
         let store = HighDegreeStore {
             degree: 100_000,
             relationship_visits: Cell::new(0),
@@ -1253,7 +1256,7 @@ mod tests {
             AdjacencyExpandSpec {
                 source_variable: "source",
                 rel_variable,
-                rel_properties: &BTreeMap::new(),
+                rel_properties: &rel_properties,
                 direction: RelationshipDirection::Outgoing,
                 target_variable: "target",
                 min_hops: 1,
@@ -1320,11 +1323,25 @@ mod tests {
 
     #[test]
     fn bounded_one_hop_expand_stops_storage_visit_at_limit() {
-        assert_eq!(high_degree_expand_visits(None), (50, 50));
+        assert_eq!(high_degree_expand_visits(None, BTreeMap::new()), (50, 50));
     }
 
     #[test]
     fn relationship_binding_expand_stops_storage_visit_at_limit() {
-        assert_eq!(high_degree_expand_visits(Some("relationship")), (50, 50));
+        assert_eq!(
+            high_degree_expand_visits(Some("relationship"), BTreeMap::new()),
+            (50, 50)
+        );
+    }
+
+    #[test]
+    fn filtered_expand_uses_only_the_bounded_adjacency_visit() {
+        assert_eq!(
+            high_degree_expand_visits(
+                None,
+                BTreeMap::from([("keep".to_string(), Value::Bool(true))]),
+            ),
+            (50, 50)
+        );
     }
 }
