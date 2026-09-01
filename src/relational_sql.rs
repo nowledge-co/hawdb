@@ -2982,6 +2982,87 @@ mod tests {
         std::fs::remove_dir_all(path).expect("remove probe-fanout fixture");
     }
 
+    #[test]
+    fn authoritative_batched_index_join_reads_right_rows_once_per_checkpoint_page() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-batched-index-row-pages-{}-{nonce}",
+            std::process::id()
+        ));
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                DatabaseConfig {
+                    relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .expect("open batched-index fixture");
+            database
+                .query_sql("CREATE TABLE join_keys (id TEXT PRIMARY KEY, owner TEXT NOT NULL)")
+                .expect("create join keys");
+            database
+                .query_sql(
+                    "CREATE TABLE join_documents (\
+                       id TEXT PRIMARY KEY, \
+                       owner TEXT NOT NULL, \
+                       body TEXT NOT NULL\
+                     )",
+                )
+                .expect("create join documents");
+            database
+                .query_sql("CREATE INDEX join_documents_owner_idx ON join_documents (owner)")
+                .expect("create join document index");
+            database
+                .query_sql(
+                    "INSERT INTO join_keys (id, owner) VALUES \
+                     ('key-1', 'owner-a'), \
+                     ('key-2', 'owner-a'), \
+                     ('key-3', 'owner-b')",
+                )
+                .expect("insert join keys");
+            database
+                .query_sql(
+                    "INSERT INTO join_documents (id, owner, body) VALUES \
+                     ('doc-1', 'owner-a', 'body-1'), \
+                     ('doc-2', 'owner-a', 'body-2'), \
+                     ('doc-3', 'owner-b', 'body-3')",
+                )
+                .expect("insert join documents");
+            database
+                .checkpoint()
+                .expect("publish batched-index checkpoint");
+        }
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                DatabaseConfig {
+                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .expect("open authoritative batched-index reader");
+            let output = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute batched index join");
+            let info = relational_explain_operator_info(&output, "BatchedIndexNestedLoopJoinExec");
+            assert!(info.contains("runtime_path=authoritative"));
+            assert!(info.contains("row_runtime_path=snapshot_rows"));
+            assert!(info.contains("row_logical_pages=2"));
+            assert!(info.contains("row_rows=6"));
+        }
+        std::fs::remove_dir_all(path).expect("remove batched-index fixture");
+    }
+
     fn relational_explain_access_row<'a>(
         output: &'a crate::QueryOutput,
         table: &str,

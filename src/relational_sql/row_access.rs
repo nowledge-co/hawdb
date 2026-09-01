@@ -12,9 +12,10 @@ use skein_storage::{
     RelationalProjectedRowView, RelationalRow, RelationalRowPageDemandReadError,
     RelationalRowPageProjectedFields, RelationalRowPageProjectedRangeFields,
     RelationalRowPageReadViewIdentity, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, RelationalState, RelationalTableSchema, RelationalValueRef,
+    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
+    RelationalTableSchema, RelationalValueRef,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -310,6 +311,18 @@ impl<'a> RelationalRowRuntime<'a> {
         self.read_point_with_fields(table, key, fields, fields)
     }
 
+    /// Reads each distinct key once while retaining the caller-owned mapping
+    /// from duplicate input keys to their output rows.
+    pub(crate) fn read_points(
+        &self,
+        table: &str,
+        keys: &[RelationalKey],
+    ) -> Result<BTreeMap<RelationalKey, RelationalReadRow>> {
+        let fields = self.fields(&self.fields.scan_fields, table)?;
+        let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        self.read_points_with_fields(table, keys, fields, hydration_fields)
+    }
+
     fn read_point_with_fields(
         &self,
         table: &str,
@@ -367,6 +380,89 @@ impl<'a> RelationalRowRuntime<'a> {
                 drop(hydration);
                 self.record_point(&report)?;
                 Ok(row.map(|row| RelationalReadRow { row: Arc::new(row) }))
+            }
+        }
+    }
+
+    fn read_points_with_fields(
+        &self,
+        table: &str,
+        keys: &[RelationalKey],
+        fields: &[usize],
+        hydration_fields: &[usize],
+    ) -> Result<BTreeMap<RelationalKey, RelationalReadRow>> {
+        let keys = keys.iter().cloned().collect::<BTreeSet<_>>();
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.tables.contains(table))
+        {
+            let mut rows = BTreeMap::new();
+            for key in keys {
+                if let Some(row) =
+                    self.read_projection_point(table, &key, fields, hydration_fields)?
+                {
+                    rows.insert(key, row);
+                }
+            }
+            return Ok(rows);
+        }
+        match &self.backend {
+            RelationalRowBackend::CanonicalMemory => {
+                let mut rows = BTreeMap::new();
+                for key in keys {
+                    self.task.checkpoint().map_err(|reason| {
+                        SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                    })?;
+                    let Some((key, row)) = self.state.row_entry(table, &key) else {
+                        continue;
+                    };
+                    self.admit_memory_row()?;
+                    rows.insert(
+                        key.clone(),
+                        self.project_memory_row(table, key, row, fields, hydration_fields)?,
+                    );
+                }
+                Ok(rows)
+            }
+            RelationalRowBackend::Snapshot(reader) => {
+                let remaining = self.remaining_limits()?;
+                let mut hydration = self.hydration.borrow_mut();
+                let (mut rows, report) = reader
+                    .points_projected_fields(
+                        table,
+                        &keys.into_iter().collect::<Vec<_>>(),
+                        RelationalRowPageProjectedFields {
+                            requested_fields: fields,
+                            hydration_fields,
+                        },
+                        remaining,
+                        &mut hydration,
+                        self.task,
+                    )
+                    .map_err(map_snapshot_error)?;
+                for key in &report.unbound_overlay_keys {
+                    let row = rows.get_mut(key).ok_or_else(|| {
+                        SkeinError::StorageIntegrity(
+                            "snapshot multi-point resolver lost an overlay row".to_string(),
+                        )
+                    })?;
+                    self.state
+                        .hydrate_projected_row_fields_with_context(
+                            table,
+                            row,
+                            hydration_fields,
+                            &mut hydration,
+                            Some(self.task),
+                        )
+                        .map_err(map_state_error)?;
+                }
+                drop(hydration);
+                self.record_points(&report)?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(key, row)| (key, RelationalReadRow { row: Arc::new(row) }))
+                    .collect())
             }
         }
     }
@@ -867,6 +963,15 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn record_range(&self, report: &RelationalRowPageSnapshotRangeReport) -> Result<()> {
+        self.record(
+            report.identity,
+            &report.demand,
+            report.overlay_entries,
+            report.overlay_resident_bytes,
+        )
+    }
+
+    fn record_points(&self, report: &RelationalRowPageSnapshotPointsReport) -> Result<()> {
         self.record(
             report.identity,
             &report.demand,

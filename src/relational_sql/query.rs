@@ -3769,14 +3769,130 @@ fn flush_batched_index_join_rows<'a>(
     output_schema: &RelationalPhysicalOutputSchema,
     parameters: &[Value],
     state: &'a RelationalState,
-    profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
     index_runtime: &RelationalIndexRuntime<'_>,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
+    let RelationalPhysicalJoinNode::Relation(right_relation) = right else {
+        return Err(SkeinError::Execution(
+            "batched index nested-loop join requires a relational probe input".to_string(),
+        ));
+    };
+    let RelationalPhysicalAccess::Probe(access) = &right_relation.access else {
+        return Err(SkeinError::Execution(format!(
+            "batched index join relation {} is not a probe input",
+            right_relation.qualifier
+        )));
+    };
+
+    let mut locators_by_probe = BTreeMap::<&RelationalKey, Vec<RelationalKey>>::new();
+    for (_, probe_key) in batch {
+        let Some(probe_key) = probe_key else {
+            continue;
+        };
+        if locators_by_probe.contains_key(probe_key) {
+            continue;
+        }
+        if batch_tracker.would_exceed(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES) {
+            return Err(SkeinError::Execution(format!(
+                "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                execution.memory.batch_payload_bytes
+            )));
+        }
+        batch_tracker.try_charge(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES)?;
+
+        let mut locators = Vec::new();
+        match &access.access {
+            RelationalJoinAccess::PrimaryKey(_) => {
+                let bytes = relational_key_resident_bytes(probe_key);
+                if batch_tracker.would_exceed(bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                        execution.memory.batch_payload_bytes
+                    )));
+                }
+                batch_tracker.try_charge(bytes)?;
+                locators.push(probe_key.clone());
+            }
+            RelationalJoinAccess::Index { name, .. } => {
+                index_runtime.visit_prefix_entries(
+                    state,
+                    &right_relation.table,
+                    name,
+                    probe_key,
+                    |_, primary_key| {
+                        let bytes = relational_key_resident_bytes(primary_key);
+                        if batch_tracker.would_exceed(bytes) {
+                            return Err(SkeinError::Execution(format!(
+                                "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                                execution.memory.batch_payload_bytes
+                            )));
+                        }
+                        batch_tracker.try_charge(bytes)?;
+                        locators.push(primary_key.clone());
+                        Ok(true)
+                    },
+                )?;
+            }
+            RelationalJoinAccess::FullScan => {
+                return Err(SkeinError::Execution(format!(
+                    "batched index join relation {} has a full-scan probe",
+                    right_relation.qualifier
+                )));
+            }
+        }
+        locators_by_probe.insert(probe_key, locators);
+    }
+
+    let primary_keys = locators_by_probe
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let read_rows = row_runtime.read_points(&right_relation.table, &primary_keys)?;
+    let schema = state.table_schema(&right_relation.table).ok_or_else(|| {
+        SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
+    })?;
     let mut candidates = BTreeMap::<&RelationalKey, Vec<BoundRow<'a>>>::new();
+    for (probe_key, locators) in locators_by_probe {
+        let mut rows = Vec::with_capacity(locators.len());
+        for locator in locators {
+            let Some(row) = read_rows.get(&locator).cloned() else {
+                if matches!(access.access, RelationalJoinAccess::PrimaryKey(_)) {
+                    continue;
+                }
+                return Err(SkeinError::StorageIntegrity(format!(
+                    "relational index probe on table {} points to missing row {locator:?}",
+                    right_relation.table
+                )));
+            };
+            let bound = BoundRow {
+                bindings: vec![Binding {
+                    binding: right_relation.binding,
+                    table: &right_relation.table,
+                    qualifier: &right_relation.qualifier,
+                    schema,
+                    row: Some(row),
+                }],
+            };
+            right_relation.output_schema.ensure_matches(&bound)?;
+            let bytes = bound_row_resident_bytes(&bound);
+            if batch_tracker.would_exceed(bytes) {
+                return Err(SkeinError::Execution(format!(
+                    "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                    execution.memory.batch_payload_bytes
+                )));
+            }
+            batch_tracker.try_charge(bytes)?;
+            rows.push(bound);
+        }
+        candidates.insert(probe_key, rows);
+    }
+
     for (left_row, probe_key) in batch {
         let Some(probe_key) = probe_key else {
             if kind != SqlJoinKind::Left {
@@ -3796,41 +3912,6 @@ fn flush_batched_index_join_rows<'a>(
             }
             continue;
         };
-
-        if !candidates.contains_key(probe_key) {
-            if batch_tracker.would_exceed(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES) {
-                return Err(SkeinError::Execution(format!(
-                    "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
-                    execution.memory.batch_payload_bytes
-                )));
-            }
-            batch_tracker.try_charge(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES)?;
-            let mut rows = Vec::new();
-            visit_prepared_physical_join_plan_node(
-                right,
-                Some(left_row),
-                parameters,
-                state,
-                profiled_base_binding,
-                execution,
-                pipeline,
-                index_runtime,
-                row_runtime,
-                &mut |row| {
-                    let bytes = bound_row_resident_bytes(&row);
-                    if batch_tracker.would_exceed(bytes) {
-                        return Err(SkeinError::Execution(format!(
-                            "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
-                            execution.memory.batch_payload_bytes
-                        )));
-                    }
-                    batch_tracker.try_charge(bytes)?;
-                    rows.push(row);
-                    Ok(true)
-                },
-            )?;
-            candidates.insert(probe_key, rows);
-        }
 
         let mut matched = false;
         let rows = candidates.get(probe_key).ok_or_else(|| {
@@ -3943,7 +4024,6 @@ fn visit_batched_index_nested_loop<'a>(
                     output_schema,
                     parameters,
                     state,
-                    profiled_base_binding,
                     execution,
                     pipeline,
                     index_runtime,
@@ -3976,7 +4056,6 @@ fn visit_batched_index_nested_loop<'a>(
                     output_schema,
                     parameters,
                     state,
-                    profiled_base_binding,
                     execution,
                     pipeline,
                     index_runtime,
@@ -4004,7 +4083,6 @@ fn visit_batched_index_nested_loop<'a>(
             output_schema,
             parameters,
             state,
-            profiled_base_binding,
             execution,
             pipeline,
             index_runtime,
