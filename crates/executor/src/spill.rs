@@ -162,7 +162,7 @@ pub(crate) struct SpillRecordPayload {
     _lease: Option<QueryMemoryLease>,
 }
 
-pub(crate) struct SpillBindingRecord {
+pub struct SpillBindingRecord {
     payload: SpillRecordPayload,
     decoded_binding_bytes: usize,
 }
@@ -172,7 +172,7 @@ impl SpillBindingRecord {
         self.decoded_binding_bytes
     }
 
-    pub(crate) fn try_map<T>(
+    pub fn try_map<T>(
         self,
         operator: &str,
         max_item_bytes: usize,
@@ -306,7 +306,7 @@ impl SpillReader {
         }))
     }
 
-    pub(crate) fn read_binding_record(
+    pub fn read_binding_record(
         &mut self,
         max_record_bytes: usize,
         spill_budget: &SpillBudgetTracker,

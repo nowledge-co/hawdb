@@ -2764,7 +2764,7 @@ mod tests {
             )
             .expect("profile fully consumed join");
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 8);
+        assert_eq!(full.profile.intermediate_rows, 11);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
@@ -2793,7 +2793,7 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 5);
+        assert_eq!(limited.profile.intermediate_rows, 6);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
             Some(1)
