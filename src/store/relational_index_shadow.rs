@@ -693,6 +693,174 @@ impl RelationalIndexReadView {
         )
     }
 
+    fn visit_prefix_entries_many(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        if prefixes.is_empty() {
+            return Err(admission("batch index lookup requires at least one prefix"));
+        }
+        let prefix_width = prefixes[0].0.len();
+        if prefixes.iter().any(|prefix| prefix.0.len() != prefix_width) {
+            return Err(admission(
+                "batch index prefixes must have one common key width",
+            ));
+        }
+        if self.is_poisoned() {
+            return Err(RelationalIndexShadowError::Corrupt(
+                "relational index read view is poisoned".to_string(),
+            ));
+        }
+
+        let mut live_entries_visited = 0usize;
+        let mut live_entries_matched = 0usize;
+        let mut live_bytes_visited = 0usize;
+        let mut pending_live = BTreeMap::new();
+        let mut previous_epoch = self.durable_commit_epoch();
+        for batch in self.live.batches.iter() {
+            if batch.commit_epoch <= previous_epoch
+                || batch.commit_epoch > self.identity.visible_commit_epoch
+            {
+                return Err(RelationalIndexShadowError::Corrupt(format!(
+                    "relational index live batch epoch {} is outside ({previous_epoch}, {}]",
+                    batch.commit_epoch, self.identity.visible_commit_epoch
+                )));
+            }
+            previous_epoch = batch.commit_epoch;
+            live_bytes_visited = live_bytes_visited
+                .checked_add(batch.encoded_bytes)
+                .ok_or_else(|| admission("relational index live byte counter overflow"))?;
+            for change in batch.changes.iter() {
+                live_entries_visited = live_entries_visited
+                    .checked_add(1)
+                    .ok_or_else(|| admission("relational index live entry counter overflow"))?;
+                if change.table != table
+                    || change.index != index
+                    || !prefixes
+                        .iter()
+                        .any(|prefix| change.index_key.0.starts_with(&prefix.0))
+                {
+                    continue;
+                }
+                live_entries_matched = live_entries_matched
+                    .checked_add(1)
+                    .ok_or_else(|| admission("relational index matched-live counter overflow"))?;
+                pending_live.insert(
+                    (change.index_key.clone(), change.primary_key.clone()),
+                    change.kind,
+                );
+                if pending_live.len() >= limits.max_rows.get() {
+                    return Err(admission(format!(
+                        "relational index live batch merge needs {} entries, exhausting row limit {}",
+                        pending_live.len(),
+                        limits.max_rows
+                    )));
+                }
+            }
+        }
+        let backend_byte_limit = limits
+            .max_bytes
+            .get()
+            .checked_sub(live_bytes_visited)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                admission(format!(
+                    "relational index live batch merge needs {live_bytes_visited} bytes, exhausting byte limit {}",
+                    limits.max_bytes
+                ))
+            })?;
+        let backend_row_limit = limits
+            .max_rows
+            .get()
+            .checked_sub(pending_live.len())
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                admission("relational index live batch merge exhausted its row budget")
+            })?;
+        let backend_limits = RelationalIndexReadLimits {
+            max_rows: backend_row_limit,
+            max_bytes: backend_byte_limit,
+            ..limits
+        };
+        let mut merge = OrderedIndexEntryMerge {
+            pending: pending_live,
+            visit: &mut visit,
+            max_rows: limits.max_rows.get(),
+            rows_visited: 0,
+            stopped_early: false,
+            error: None,
+            direction: RelationalIndexScanDirection::Forward,
+        };
+        let backend = {
+            let mut emit_backend = |index_key: &RelationalKey, primary_key: &RelationalKey| {
+                merge.visit_base(index_key, primary_key)
+            };
+            match &self.backend {
+                RelationalIndexReadBackend::Base(reader) => {
+                    RelationalIndexReadViewBackendReport::Base(reader.visit_prefix_entries_many(
+                        table,
+                        index,
+                        prefixes,
+                        backend_limits,
+                        |_, index_key, primary_key| emit_backend(index_key, primary_key),
+                    )?)
+                }
+                RelationalIndexReadBackend::Recovered(reader) => {
+                    RelationalIndexReadViewBackendReport::Recovered(
+                        reader.visit_prefix_entries_many(
+                            table,
+                            index,
+                            prefixes,
+                            backend_limits,
+                            &mut emit_backend,
+                        )?,
+                    )
+                }
+            }
+        };
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        merge.finish();
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        let total_bytes = backend
+            .bytes_read()
+            .ok_or_else(|| admission("relational index backend byte counter overflow"))?
+            .checked_add(live_bytes_visited)
+            .ok_or_else(|| admission("relational index batch read byte counter overflow"))?;
+        if total_bytes > limits.max_bytes.get() {
+            return Err(admission(format!(
+                "relational index batch read needs {total_bytes} bytes including live changes, exceeding byte limit {}",
+                limits.max_bytes
+            )));
+        }
+        let mut report = RelationalIndexReadViewReport {
+            base_generation: self.identity.base_generation,
+            delta_generation: self.identity.delta_generation,
+            base_commit_epoch: self.identity.base_commit_epoch,
+            visible_commit_epoch: self.identity.visible_commit_epoch,
+            root_set_digest: self.identity.root_set_digest.to_string(),
+            backend,
+            live_batches_visited: self.live.batch_count(),
+            live_entries_visited,
+            live_entries_matched,
+            live_bytes_visited,
+            rows_visited: merge.rows_visited,
+            stopped_early: merge.stopped_early,
+        };
+        report.stopped_early |= match &report.backend {
+            RelationalIndexReadViewBackendReport::Base(backend) => backend.stopped_early,
+            RelationalIndexReadViewBackendReport::Recovered(backend) => backend.stopped_early,
+        };
+        Ok(report)
+    }
+
     fn visit_range_entries(
         &self,
         table: &str,
@@ -1882,6 +2050,29 @@ impl GraphStore {
             .current_read_view(self.commit_epoch)
         {
             Some(view) => Some(view.visit_prefix_entries(table, index, prefix, limits, visit)),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    pub(crate) fn visit_relational_index_read_view_prefix_entries_many(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => {
+                Some(view.visit_prefix_entries_many(table, index, prefixes, limits, visit))
+            }
             None => self
                 .relational_index_shadow
                 .selected_read_failure()

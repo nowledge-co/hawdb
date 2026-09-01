@@ -3056,9 +3056,52 @@ mod tests {
                 .expect("execute batched index join");
             let info = relational_explain_operator_info(&output, "BatchedIndexNestedLoopJoinExec");
             assert!(info.contains("runtime_path=authoritative"));
+            assert!(info.contains("lookups=1"));
             assert!(info.contains("row_runtime_path=snapshot_rows"));
             assert!(info.contains("row_logical_pages=2"));
             assert!(info.contains("row_rows=6"));
+            database
+                .query_sql("INSERT INTO join_keys (id, owner) VALUES ('key-4', 'owner-c')")
+                .expect("append live join key");
+            database
+                .query_sql(
+                    "INSERT INTO join_documents (id, owner, body) \
+                     VALUES ('doc-4', 'owner-c', 'body-4')",
+                )
+                .expect("append live join document");
+            let live = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute live batched index join");
+            let live_info =
+                relational_explain_operator_info(&live, "BatchedIndexNestedLoopJoinExec");
+            assert!(live_info.contains("lookups=1"));
+            assert!(!live_info.contains("live_batches=0"));
+        }
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                DatabaseConfig {
+                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .expect("reopen recovered batched-index reader");
+            let recovered = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute recovered batched index join");
+            let recovered_info =
+                relational_explain_operator_info(&recovered, "BatchedIndexNestedLoopJoinExec");
+            assert!(recovered_info.contains("lookups=1"));
+            assert!(!recovered_info.contains("delta_generation=none"));
         }
         std::fs::remove_dir_all(path).expect("remove batched-index fixture");
     }

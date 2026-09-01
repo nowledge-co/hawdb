@@ -3787,7 +3787,7 @@ fn flush_batched_index_join_rows<'a>(
         )));
     };
 
-    let mut locators_by_probe = BTreeMap::<&RelationalKey, Vec<RelationalKey>>::new();
+    let mut locators_by_probe = BTreeMap::<RelationalKey, Vec<RelationalKey>>::new();
     for (_, probe_key) in batch {
         let Some(probe_key) = probe_key else {
             continue;
@@ -3802,6 +3802,14 @@ fn flush_batched_index_join_rows<'a>(
             )));
         }
         batch_tracker.try_charge(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES)?;
+        let key_bytes = relational_key_resident_bytes(probe_key);
+        if batch_tracker.would_exceed(key_bytes) {
+            return Err(SkeinError::Execution(format!(
+                "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                execution.memory.batch_payload_bytes
+            )));
+        }
+        batch_tracker.try_charge(key_bytes)?;
 
         let mut locators = Vec::new();
         match &access.access {
@@ -3816,26 +3824,7 @@ fn flush_batched_index_join_rows<'a>(
                 batch_tracker.try_charge(bytes)?;
                 locators.push(probe_key.clone());
             }
-            RelationalJoinAccess::Index { name, .. } => {
-                index_runtime.visit_prefix_entries(
-                    state,
-                    &right_relation.table,
-                    name,
-                    probe_key,
-                    |_, primary_key| {
-                        let bytes = relational_key_resident_bytes(primary_key);
-                        if batch_tracker.would_exceed(bytes) {
-                            return Err(SkeinError::Execution(format!(
-                                "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
-                                execution.memory.batch_payload_bytes
-                            )));
-                        }
-                        batch_tracker.try_charge(bytes)?;
-                        locators.push(primary_key.clone());
-                        Ok(true)
-                    },
-                )?;
-            }
+            RelationalJoinAccess::Index { .. } => {}
             RelationalJoinAccess::FullScan => {
                 return Err(SkeinError::Execution(format!(
                     "batched index join relation {} has a full-scan probe",
@@ -3843,7 +3832,34 @@ fn flush_batched_index_join_rows<'a>(
                 )));
             }
         }
-        locators_by_probe.insert(probe_key, locators);
+        locators_by_probe.insert(probe_key.clone(), locators);
+    }
+
+    if let RelationalJoinAccess::Index { name, .. } = &access.access {
+        let prefixes = locators_by_probe.keys().cloned().collect::<Vec<_>>();
+        index_runtime.visit_prefix_entries_many(
+            state,
+            &right_relation.table,
+            name,
+            &prefixes,
+            |prefix, _, primary_key| {
+                let bytes = relational_key_resident_bytes(primary_key);
+                if batch_tracker.would_exceed(bytes) {
+                    return Err(SkeinError::Execution(format!(
+                        "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
+                        execution.memory.batch_payload_bytes
+                    )));
+                }
+                batch_tracker.try_charge(bytes)?;
+                let locators = locators_by_probe.get_mut(prefix).ok_or_else(|| {
+                    SkeinError::StorageIntegrity(
+                        "batch index reader emitted an unknown requested prefix".to_string(),
+                    )
+                })?;
+                locators.push(primary_key.clone());
+                Ok(true)
+            },
+        )?;
     }
 
     let primary_keys = locators_by_probe
@@ -3857,7 +3873,7 @@ fn flush_batched_index_join_rows<'a>(
     let schema = state.table_schema(&right_relation.table).ok_or_else(|| {
         SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
-    let mut candidates = BTreeMap::<&RelationalKey, Vec<BoundRow<'a>>>::new();
+    let mut candidates = BTreeMap::<RelationalKey, Vec<BoundRow<'a>>>::new();
     for (probe_key, locators) in locators_by_probe {
         let mut rows = Vec::with_capacity(locators.len());
         for locator in locators {
