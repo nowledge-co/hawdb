@@ -358,10 +358,8 @@ fn relational_query_limits_with_payload(
             ..skein_storage::RelationalHydrationBudget::default()
         },
         index_read: skein_storage::RelationalIndexReadLimits {
-            max_rows: NonZeroUsize::new(
-                max_intermediate_rows.clamp(1, skein_storage::DEFAULT_RELATIONAL_INDEX_READ_ROWS),
-            )
-            .expect("relational index query row budget is non-zero"),
+            max_rows: NonZeroUsize::new(max_intermediate_rows.max(1))
+                .expect("relational index query row budget is non-zero"),
             max_bytes: max_index_read_bytes,
             ..skein_storage::RelationalIndexReadLimits::default()
         },
