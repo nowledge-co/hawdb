@@ -2864,7 +2864,7 @@ mod tests {
             assert_eq!(profiled.profile.operator_cardinality_profiles.len(), 2);
             assert_eq!(
                 profiled.profile.operator_cardinality_profiles[1].operator,
-                RelationalOperatorKind::IndexNestedLoopJoin
+                RelationalOperatorKind::BatchedIndexNestedLoopJoin
             );
             assert_eq!(
                 profiled.profile.operator_cardinality_profiles[1].table,
@@ -4170,8 +4170,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (RelationalOperatorKind::IndexRangeScan, 1, Some(1)),
-                (RelationalOperatorKind::IndexNestedLoopJoin, 3, Some(2)),
-                (RelationalOperatorKind::IndexNestedLoopLeftJoin, 6, Some(2)),
+                (
+                    RelationalOperatorKind::BatchedIndexNestedLoopJoin,
+                    3,
+                    Some(2),
+                ),
+                (
+                    RelationalOperatorKind::BatchedIndexNestedLoopLeftJoin,
+                    6,
+                    Some(2),
+                ),
             ]
         );
         assert!(output
