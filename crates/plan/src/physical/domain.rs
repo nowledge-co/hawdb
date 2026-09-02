@@ -124,6 +124,7 @@ impl PhysicalPlan {
                 PhysicalPlanDomainRef::Access(AccessPhysicalPlanRef::new(self))
             }
             PhysicalPlan::AdjacencyExpandExec { .. }
+            | PhysicalPlan::AdjacencyExistsExec { .. }
             | PhysicalPlan::OptionalDegreeExec { .. }
             | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
             | PhysicalPlan::ShortestPathExec { .. } => {

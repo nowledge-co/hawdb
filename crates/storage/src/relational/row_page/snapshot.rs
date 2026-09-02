@@ -21,7 +21,7 @@ use crate::relational::{
 use crate::{SegmentCache, StoreId};
 use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fmt;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
@@ -80,6 +80,18 @@ pub struct RelationalRowPageSnapshotRangeReport {
     pub overlay_replacements: usize,
     pub overlay_merge_sources: usize,
     pub overlay_peak_buffered_entries: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowPageSnapshotPointsReport {
+    pub identity: RelationalRowPageReadViewIdentity,
+    pub demand: RelationalRowPageDemandReadReport,
+    pub live_batches_examined: usize,
+    pub overlay_entries: usize,
+    pub overlay_resident_bytes: usize,
+    /// Overlay rows whose overflow references still need the caller's
+    /// transaction-local resolver before they may be exposed.
+    pub unbound_overlay_keys: BTreeSet<RelationalKey>,
 }
 
 struct ProjectedRangeVisitContext<'a> {
@@ -326,6 +338,173 @@ impl RelationalRowPageSnapshotReader {
             task,
             hydration_fields: Some(hydration_fields),
         })
+    }
+
+    /// Reads a deduplicated set of primary keys from one snapshot-correct
+    /// checkpoint/recovery/live view. Checkpoint keys share page reads, while
+    /// live and recovery values retain their point precedence over the base.
+    pub fn points_projected_fields(
+        &self,
+        table: &str,
+        primary_keys: &[RelationalKey],
+        fields: RelationalRowPageProjectedFields<'_>,
+        limits: RelationalRowPageSnapshotReadLimits,
+        hydration: &mut RelationalHydrationBudget,
+        task: &RuntimeTaskContext,
+    ) -> Result<
+        (
+            BTreeMap<RelationalKey, RelationalProjectedRow>,
+            RelationalRowPageSnapshotPointsReport,
+        ),
+        RelationalRowPageSnapshotReadError,
+    > {
+        self.checkpoint(task)?;
+        let RelationalRowPageProjectedFields {
+            requested_fields,
+            hydration_fields,
+        } = fields;
+        let table_root = self
+            .view
+            .base()
+            .table_root(table)
+            .map_err(|error| self.map_row_publication_error(error))?;
+        super::validate_requested_fields(
+            requested_fields,
+            table_root.column_count.get() as usize,
+            self.view.base().publication_config().page_limits,
+        )
+        .map_err(|error| self.map_row_error(error))?;
+
+        let primary_keys = primary_keys.iter().cloned().collect::<BTreeSet<_>>();
+        if primary_keys.len() > limits.demand.max_rows.get() {
+            return Err(RelationalRowPageSnapshotReadError::Admission(format!(
+                "relational snapshot multi-point read needs {} keys, exceeding row limit {}",
+                primary_keys.len(),
+                limits.demand.max_rows
+            )));
+        }
+
+        let mut rows = BTreeMap::new();
+        let mut base_keys = Vec::new();
+        let mut demand = RelationalRowPageDemandReadReport::default();
+        let mut live_batches_examined = 0usize;
+        let mut overlay_entries = 0usize;
+        let mut overlay_resident_bytes = 0usize;
+        let mut unbound_overlay_keys = BTreeSet::new();
+        for primary_key in primary_keys {
+            self.checkpoint(task)?;
+            let (overlay, _recovery, batches_examined, selected_live) = self
+                .view
+                .overlay_value_accounted(table, &primary_key)
+                .map_err(|error| self.map_delta_error(error))?;
+            live_batches_examined = live_batches_examined
+                .checked_add(batches_examined)
+                .ok_or_else(|| {
+                    RelationalRowPageSnapshotReadError::Admission(
+                        "snapshot multi-point live batch counter overflow".to_string(),
+                    )
+                })?;
+            let Some(value) = overlay else {
+                base_keys.push(primary_key);
+                continue;
+            };
+
+            validate_overlay_row(&value, table_root.column_count.get() as usize)?;
+            let value_resident_bytes = projected_overlay_resident_bytes(&value, requested_fields)?;
+            let resident_bytes = overlay_point_resident_bytes(&primary_key, value_resident_bytes)?;
+            if resident_bytes > limits.max_overlay_bytes.get() {
+                return Err(RelationalRowPageSnapshotReadError::Admission(format!(
+                    "overlay point requires {resident_bytes} bytes, exceeding limit {}",
+                    limits.max_overlay_bytes
+                )));
+            }
+            overlay_entries = overlay_entries.checked_add(1).ok_or_else(|| {
+                RelationalRowPageSnapshotReadError::Admission(
+                    "snapshot multi-point overlay-entry counter overflow".to_string(),
+                )
+            })?;
+            if overlay_entries > limits.max_overlay_entries.get() {
+                return Err(RelationalRowPageSnapshotReadError::Admission(format!(
+                    "snapshot multi-point overlay needs {overlay_entries} entries, exceeding limit {}",
+                    limits.max_overlay_entries
+                )));
+            }
+            overlay_resident_bytes = overlay_resident_bytes
+                .checked_add(resident_bytes)
+                .ok_or_else(|| {
+                    RelationalRowPageSnapshotReadError::Admission(
+                        "snapshot multi-point overlay byte counter overflow".to_string(),
+                    )
+                })?;
+            if overlay_resident_bytes > limits.max_overlay_bytes.get() {
+                return Err(RelationalRowPageSnapshotReadError::Admission(format!(
+                    "snapshot multi-point overlay needs {overlay_resident_bytes} bytes, exceeding limit {}",
+                    limits.max_overlay_bytes
+                )));
+            }
+            let deleted = matches!(value, RelationalRowPageRecoveredValue::Deleted);
+            let unbound_overlay =
+                selected_live || (!selected_live && self.overlay_overflow.is_none());
+            let value = project_overlay_value(
+                &value,
+                requested_fields,
+                !selected_live && self.overlay_overflow.is_some(),
+            );
+            let remaining_demand = remaining_demand_limits(limits.demand, &demand)?;
+            let (row, point_demand) = self
+                .demand
+                .point_projected_overlay(
+                    RelationalRowPageOverlayPoint {
+                        table,
+                        primary_key: primary_key.clone(),
+                        value,
+                        overflow_root: self.overlay_overflow.as_deref(),
+                    },
+                    remaining_demand,
+                    hydration,
+                    task,
+                    Some(hydration_fields),
+                )
+                .map_err(|error| self.map_demand_error(error))?;
+            accumulate_demand_report(&mut demand, point_demand)?;
+            if !deleted && let Some(row) = row {
+                if unbound_overlay {
+                    unbound_overlay_keys.insert(primary_key.clone());
+                }
+                rows.insert(primary_key, row);
+            }
+        }
+
+        if !base_keys.is_empty() {
+            let remaining_demand = remaining_demand_limits(limits.demand, &demand)?;
+            let (base_rows, base_demand) = self
+                .demand
+                .points_projected_fields(
+                    table,
+                    &base_keys,
+                    RelationalRowPageProjectedFields {
+                        requested_fields,
+                        hydration_fields,
+                    },
+                    remaining_demand,
+                    hydration,
+                    task,
+                )
+                .map_err(|error| self.map_demand_error(error))?;
+            accumulate_demand_report(&mut demand, base_demand)?;
+            rows.extend(base_rows);
+        }
+        Ok((
+            rows,
+            RelationalRowPageSnapshotPointsReport {
+                identity: self.identity(),
+                demand,
+                live_batches_examined,
+                overlay_entries,
+                overlay_resident_bytes,
+                unbound_overlay_keys,
+            },
+        ))
     }
 
     /// Reads one projected snapshot row without loading overflow payloads.
@@ -750,6 +929,75 @@ impl RelationalRowPageSnapshotReader {
             self.poisoned.store(true, Ordering::Release);
         }
     }
+}
+
+fn accumulate_demand_report(
+    total: &mut RelationalRowPageDemandReadReport,
+    next: RelationalRowPageDemandReadReport,
+) -> Result<(), RelationalRowPageSnapshotReadError> {
+    if total.generation == 0 {
+        total.generation = next.generation;
+        total.source_commit_epoch = next.source_commit_epoch;
+    } else if total.generation != next.generation
+        || total.source_commit_epoch != next.source_commit_epoch
+    {
+        return Err(RelationalRowPageSnapshotReadError::Corrupt(
+            "snapshot multi-point demand reads changed generation identity".to_string(),
+        ));
+    }
+    macro_rules! accumulate {
+        ($field:ident) => {
+            total.$field = total.$field.checked_add(next.$field).ok_or_else(|| {
+                RelationalRowPageSnapshotReadError::Admission(format!(
+                    "snapshot multi-point demand {} counter overflow",
+                    stringify!($field)
+                ))
+            })?;
+        };
+    }
+    accumulate!(descriptor_reads);
+    accumulate!(pages_read);
+    accumulate!(bytes_read);
+    accumulate!(file_pages_read);
+    accumulate!(file_bytes_read);
+    accumulate!(cache_hits);
+    accumulate!(cache_misses);
+    accumulate!(cache_admission_rejections);
+    accumulate!(rows_decoded);
+    accumulate!(rows_emitted);
+    accumulate!(borrowed_rows_emitted);
+    accumulate!(owned_rows_emitted);
+    accumulate!(hydrated_values);
+    accumulate!(compressed_hydration_bytes);
+    accumulate!(decompressed_hydration_bytes);
+    total.peak_pins = total.peak_pins.max(next.peak_pins);
+    total.stopped_early |= next.stopped_early;
+    Ok(())
+}
+
+fn remaining_demand_limits(
+    limits: RelationalRowPageDemandReadLimits,
+    used: &RelationalRowPageDemandReadReport,
+) -> Result<RelationalRowPageDemandReadLimits, RelationalRowPageSnapshotReadError> {
+    let remaining = |limit: NonZeroUsize, observed: usize, resource: &str| {
+        limit
+            .get()
+            .checked_sub(observed)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                RelationalRowPageSnapshotReadError::Admission(format!(
+                    "snapshot multi-point demand {resource} budget is exhausted at {}",
+                    limit
+                ))
+            })
+    };
+    Ok(RelationalRowPageDemandReadLimits {
+        max_pages: remaining(limits.max_pages, used.pages_read, "page")?,
+        max_rows: remaining(limits.max_rows, used.rows_emitted, "row")?,
+        max_bytes: remaining(limits.max_bytes, used.bytes_read, "byte")?,
+        max_pins: limits.max_pins,
+        max_tree_height: limits.max_tree_height,
+    })
 }
 
 fn lexicographic_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
