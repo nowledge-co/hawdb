@@ -70,6 +70,64 @@ fn point_reads_select_live_recovery_checkpoint_and_tombstones() {
 }
 
 #[test]
+fn multi_point_reads_preserve_snapshot_precedence_and_share_checkpoint_pages() {
+    let fixture = SnapshotFixture::new("multi-point-precedence");
+    let mut hydration = RelationalHydrationBudget::default();
+    let (rows, report) = fixture
+        .reader
+        .points_projected_fields(
+            "documents",
+            &[
+                key(0),
+                key(0),
+                key(1),
+                key(2),
+                key(3),
+                key(4),
+                key(5),
+                key(6),
+                key(9),
+            ],
+            RelationalRowPageProjectedFields {
+                requested_fields: &[1],
+                hydration_fields: &[1],
+            },
+            RelationalRowPageSnapshotReadLimits::default(),
+            &mut hydration,
+            &RuntimeTaskContext::default(),
+        )
+        .expect("read snapshot points");
+
+    let bodies = rows
+        .iter()
+        .map(|(primary_key, row)| {
+            (
+                primary_key.clone(),
+                projected_body(Some(row))
+                    .expect("projected body")
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies,
+        vec![
+            (key(0), "zero".to_string()),
+            (key(1), "one-recovery".to_string()),
+            (key(2), "two-live".to_string()),
+            (key(4), "four-live".to_string()),
+            (key(6), "six-live".to_string()),
+        ]
+    );
+    assert_eq!(report.identity.visible_commit_epoch, 15);
+    assert_eq!(report.overlay_entries, 6);
+    assert_eq!(report.demand.pages_read, 1);
+    assert_eq!(report.demand.rows_emitted, 5);
+    assert!(report.live_batches_examined > 0);
+    fixture.remove();
+}
+
+#[test]
 fn range_reads_merge_ordered_rows_and_keep_overlay_after_the_base_tail() {
     let fixture = SnapshotFixture::new("range-merge");
     let mut hydration = RelationalHydrationBudget::default();

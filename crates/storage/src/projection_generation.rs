@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 const DATA_MAGIC: &[u8; 8] = b"SKPRGD01";
 const MANIFEST_MAGIC: &[u8; 8] = b"SKPRGM01";
 const HEAD_MAGIC: &[u8; 8] = b"SKPRGH01";
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const DATA_SUFFIX: &str = "data";
 const MANIFEST_SUFFIX: &str = "manifest";
 const HEAD_SUFFIX: &str = "head";
@@ -35,6 +35,8 @@ const ENVELOPE_OVERHEAD_BYTES: usize = 8 + 4 + 4 + 4;
 const MAX_ENVELOPE_BYTES: usize = MAX_ENVELOPE_BODY_BYTES + ENVELOPE_OVERHEAD_BYTES;
 const MAX_ENCODED_MEMBER_BYTES: usize =
     MAX_COLLECTION_BYTES + MAX_KEY_BYTES + MAX_MEMBER_PAYLOAD_BYTES + 32;
+const PROJECTION_SEEK_FENCE_STRIDE: u64 = 128;
+const MAX_PROJECTION_SEEK_FENCES: usize = 1_048_576;
 
 #[derive(Debug)]
 pub enum ProjectionGenerationError {
@@ -237,7 +239,16 @@ pub struct ProjectionGenerationManifest {
     pub payload_bytes: u64,
     pub content_digest: IntegrityDigest,
     pub data_bytes: u64,
+    pub seek_fences: Vec<ProjectionGenerationSeekFence>,
     pub rollup_metadata: Vec<(String, Vec<u8>)>,
+}
+
+/// One immutable lower bound for ordered `(collection, key)` projection seeks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionGenerationSeekFence {
+    pub collection: String,
+    pub key: Vec<u8>,
+    pub offset: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -929,12 +940,14 @@ impl ProjectionGenerationWriter {
                 digest
             )));
         }
+        let seek_fences = build_seek_fences(&self.data_path, self.state.valid_bytes)?;
         let manifest = ProjectionGenerationManifest {
             begin: self.begin.clone(),
             member_count: self.state.member_count,
             payload_bytes: self.state.payload_bytes,
             content_digest: digest,
             data_bytes: self.state.valid_bytes,
+            seek_fences,
             rollup_metadata: seal.rollup_metadata,
         };
         let idempotent = if let Some(existing) = &self.sealed {
@@ -1014,6 +1027,7 @@ impl ProjectionGenerationReader {
                 "active generation data does not match its manifest boundary".to_string(),
             ));
         }
+        validate_seek_fences(&mut file, &manifest, data_start)?;
         Ok(Self {
             store,
             publication_commit_epoch,
@@ -1029,6 +1043,43 @@ impl ProjectionGenerationReader {
 
     pub const fn publication_commit_epoch(&self) -> u64 {
         self.publication_commit_epoch
+    }
+
+    /// Returns a generation-bound cursor at or before one ordered
+    /// `(collection, key)` lower bound.
+    pub fn seek_cursor(
+        &self,
+        collection: &str,
+        key: &[u8],
+    ) -> Result<ProjectionGenerationCursor, ProjectionGenerationError> {
+        if collection.len() > MAX_COLLECTION_BYTES || key.len() > MAX_KEY_BYTES {
+            return Err(ProjectionGenerationError::Admission(
+                "projection seek key exceeds bounded member limits".to_string(),
+            ));
+        }
+        let target = (collection, key);
+        let position = self
+            .manifest
+            .seek_fences
+            .partition_point(|fence| (fence.collection.as_str(), fence.key.as_slice()) <= target);
+        let offset = position
+            .checked_sub(1)
+            .and_then(|index| self.manifest.seek_fences.get(index))
+            .map_or(self.data_start, |fence| fence.offset);
+        Ok(ProjectionGenerationCursor {
+            generation: self.manifest.begin.identity.generation.clone(),
+            offset,
+        })
+    }
+
+    /// Returns the lower-bound cursor for an ordered key prefix. The caller
+    /// must stop when either collection or prefix no longer matches.
+    pub fn seek_prefix_cursor(
+        &self,
+        collection: &str,
+        prefix: &[u8],
+    ) -> Result<ProjectionGenerationCursor, ProjectionGenerationError> {
+        self.seek_cursor(collection, prefix)
     }
 
     pub fn read_page(
@@ -1469,6 +1520,113 @@ fn read_data_header(
     Ok((decode_begin(&header)?, offset))
 }
 
+fn build_seek_fences(
+    path: &Path,
+    data_bytes: u64,
+) -> Result<Vec<ProjectionGenerationSeekFence>, ProjectionGenerationError> {
+    let mut file = File::open(path)?;
+    let (_, data_start) = read_data_header(&mut file)?;
+    if data_bytes < data_start {
+        return Err(ProjectionGenerationError::Corruption(
+            "projection candidate ends before its data header".to_string(),
+        ));
+    }
+    let mut fences = Vec::new();
+    let mut offset = data_start;
+    let mut member_index = 0u64;
+    while offset < data_bytes {
+        file.seek(SeekFrom::Start(offset))?;
+        let (member, consumed) = read_record(&mut file, MAX_ENCODED_MEMBER_BYTES)?;
+        if member_index % PROJECTION_SEEK_FENCE_STRIDE == 0 {
+            if fences.len() == MAX_PROJECTION_SEEK_FENCES {
+                return Err(ProjectionGenerationError::Admission(
+                    "projection seek fence count exceeds its bounded manifest limit".to_string(),
+                ));
+            }
+            fences.push(ProjectionGenerationSeekFence {
+                collection: member.collection,
+                key: member.key,
+                offset,
+            });
+        }
+        offset = offset.checked_add(consumed).ok_or_else(|| {
+            ProjectionGenerationError::Corruption(
+                "projection seek fence offset overflow".to_string(),
+            )
+        })?;
+        member_index = member_index.checked_add(1).ok_or_else(|| {
+            ProjectionGenerationError::Admission(
+                "projection member count overflows u64".to_string(),
+            )
+        })?;
+    }
+    if offset != data_bytes {
+        return Err(ProjectionGenerationError::Corruption(
+            "projection candidate record crosses its sealed data boundary".to_string(),
+        ));
+    }
+    Ok(fences)
+}
+
+fn validate_seek_fences(
+    file: &mut File,
+    manifest: &ProjectionGenerationManifest,
+    data_start: u64,
+) -> Result<(), ProjectionGenerationError> {
+    if manifest.member_count == 0 {
+        if !manifest.seek_fences.is_empty() {
+            return Err(ProjectionGenerationError::Corruption(
+                "empty projection generation has seek fences".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    let first = manifest.seek_fences.first().ok_or_else(|| {
+        ProjectionGenerationError::Corruption(
+            "non-empty projection generation has no seek fence".to_string(),
+        )
+    })?;
+    if first.offset != data_start {
+        return Err(ProjectionGenerationError::Corruption(
+            "projection seek fences do not begin at the data boundary".to_string(),
+        ));
+    }
+    let mut previous = None;
+    for fence in &manifest.seek_fences {
+        if fence.offset < data_start || fence.offset >= manifest.data_bytes {
+            return Err(ProjectionGenerationError::Corruption(
+                "projection seek fence offset is outside the sealed generation".to_string(),
+            ));
+        }
+        if fence.collection.len() > MAX_COLLECTION_BYTES || fence.key.len() > MAX_KEY_BYTES {
+            return Err(ProjectionGenerationError::Corruption(
+                "projection seek fence exceeds member bounds".to_string(),
+            ));
+        }
+        if previous
+            .as_ref()
+            .is_some_and(|(collection, key, offset): &(String, Vec<u8>, u64)| {
+                (collection.as_str(), key.as_slice())
+                    >= (fence.collection.as_str(), fence.key.as_slice())
+                    || *offset >= fence.offset
+            })
+        {
+            return Err(ProjectionGenerationError::Corruption(
+                "projection seek fences are not strictly ordered".to_string(),
+            ));
+        }
+        file.seek(SeekFrom::Start(fence.offset))?;
+        let (member, _) = read_record(file, MAX_ENCODED_MEMBER_BYTES)?;
+        if member.collection != fence.collection || member.key != fence.key {
+            return Err(ProjectionGenerationError::Corruption(
+                "projection seek fence does not match its member boundary".to_string(),
+            ));
+        }
+        previous = Some((fence.collection.clone(), fence.key.clone(), fence.offset));
+    }
+    Ok(())
+}
+
 fn append_record(record: &[u8], output: &mut Vec<u8>) -> Result<(), ProjectionGenerationError> {
     push_bytes(output, record)?;
     push_u32(output, crc32c(record).get());
@@ -1711,6 +1869,19 @@ fn encode_manifest_body(
     push_u64(&mut bytes, manifest.data_bytes);
     push_u32(
         &mut bytes,
+        u32::try_from(manifest.seek_fences.len()).map_err(|_| {
+            ProjectionGenerationError::Admission(
+                "projection seek fence count exceeds u32".to_string(),
+            )
+        })?,
+    );
+    for fence in &manifest.seek_fences {
+        push_string(&mut bytes, &fence.collection)?;
+        push_bytes(&mut bytes, &fence.key)?;
+        push_u64(&mut bytes, fence.offset);
+    }
+    push_u32(
+        &mut bytes,
         u32::try_from(manifest.rollup_metadata.len()).map_err(|_| {
             ProjectionGenerationError::Admission("rollup count exceeds u32".to_string())
         })?,
@@ -1732,6 +1903,24 @@ fn decode_manifest_body(
     let digest_crc = Crc32c::new(decoder.u32()?);
     let digest_sha = Sha256Digest::from_bytes(decoder.array_32()?);
     let data_bytes = decoder.u64()?;
+    let fence_count = usize::try_from(decoder.u32()?).map_err(|_| {
+        ProjectionGenerationError::Corruption(
+            "projection seek fence count exceeds usize".to_string(),
+        )
+    })?;
+    if fence_count > MAX_PROJECTION_SEEK_FENCES {
+        return Err(ProjectionGenerationError::Corruption(
+            "projection seek fence count exceeds decode limit".to_string(),
+        ));
+    }
+    let mut seek_fences = Vec::with_capacity(fence_count);
+    for _ in 0..fence_count {
+        seek_fences.push(ProjectionGenerationSeekFence {
+            collection: decoder.string(MAX_COLLECTION_BYTES)?,
+            key: decoder.bytes(MAX_KEY_BYTES)?,
+            offset: decoder.u64()?,
+        });
+    }
     let rollup_count = usize::try_from(decoder.u32()?).map_err(|_| {
         ProjectionGenerationError::Corruption("rollup count exceeds usize".to_string())
     })?;
@@ -1754,6 +1943,7 @@ fn decode_manifest_body(
             sha256: digest_sha,
         },
         data_bytes,
+        seek_fences,
         rollup_metadata,
     })
 }
@@ -2039,6 +2229,44 @@ mod tests {
             writer.append_batch(batch).expect("append bounded batch");
         }
         writer.seal(seal_for(rows)).expect("seal generation")
+    }
+
+    #[test]
+    fn sparse_fences_seek_to_the_nearest_ordered_member_boundary() {
+        let root = path("seek-fences");
+        let store = ProjectionGenerationStore::open(&root).expect("open store");
+        let rows = (0..300)
+            .map(|index| ProjectionGenerationMember {
+                collection: "spans".to_string(),
+                key: format!("{index:04}").into_bytes(),
+                payload: vec![b'x'],
+            })
+            .collect::<Vec<_>>();
+        let sealed = stage(&store, begin("generation-1", None, 10), &rows);
+        assert_eq!(sealed.manifest().seek_fences.len(), 3);
+        assert_eq!(sealed.manifest().seek_fences[2].key, b"0256");
+        store.publish(&sealed).expect("publish generation");
+
+        let reader = store
+            .open_active("session_spans", b"session-1")
+            .expect("open generation");
+        let cursor = reader
+            .seek_prefix_cursor("spans", b"0257")
+            .expect("seek prefix");
+        let page = reader
+            .read_page(
+                Some(&cursor),
+                ProjectionGenerationReadLimits {
+                    max_rows: NonZeroUsize::new(2).unwrap(),
+                    max_payload_bytes: NonZeroUsize::new(8).unwrap(),
+                    max_record_bytes: NonZeroUsize::new(128).unwrap(),
+                },
+            )
+            .expect("read from seek fence");
+        assert_eq!(page.members[0].key, b"0256");
+        assert_eq!(page.members[1].key, b"0257");
+        drop(reader);
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
