@@ -2135,6 +2135,7 @@ mod tests {
             assert!(recovered_info.contains("runtime_path=demand_paged"));
             assert!(recovered_info.contains("order_prefix=1"));
             assert!(!recovered_info.contains("delta_generation=none"));
+            assert!(recovered_info.contains("delta_pages_skipped="));
             assert!(recovered_info.contains("delta_entries="));
             assert!(recovered_info.contains("row_runtime_path=snapshot_rows"));
             assert!(!recovered_info.contains("row_delta_generation=none"));
@@ -2764,7 +2765,7 @@ mod tests {
             )
             .expect("profile fully consumed join");
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 8);
+        assert_eq!(full.profile.intermediate_rows, 11);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
@@ -2784,6 +2785,11 @@ mod tests {
         assert_eq!(join.estimated_rows, 6);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
+        assert!(full
+            .profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(
@@ -2793,7 +2799,7 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 5);
+        assert_eq!(limited.profile.intermediate_rows, 6);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
             Some(1)
@@ -2940,8 +2946,8 @@ mod tests {
                 .checkpoint()
                 .expect("publish fresh index statistics");
 
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 7);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 4);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 4);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 2);
 
             database
                 .query_sql(
@@ -2966,8 +2972,8 @@ mod tests {
             database
                 .checkpoint()
                 .expect("refresh index statistics after WAL recovery");
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 3);
         }
 
         {
@@ -2977,8 +2983,8 @@ mod tests {
                 config,
             )
             .expect("reopen fresh index statistics");
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 3);
         }
 
         std::fs::remove_dir_all(path).expect("remove probe-fanout fixture");

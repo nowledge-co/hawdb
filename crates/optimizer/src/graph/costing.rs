@@ -347,6 +347,10 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
                 0,
             )
         }
+        PhysicalPlan::AdjacencyExistsExec { input, .. } => {
+            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+            input_cost.with_random_io(input_cost.estimated_rows, input_cost.estimated_rows, 0)
+        }
         PhysicalPlan::FilterExec { predicate, input } => {
             let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
             let rows = estimate_filter_rows(predicate, input, input_cost.estimated_rows, catalog);

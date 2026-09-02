@@ -151,8 +151,9 @@ pub use projection_generation::{
     ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,
     ProjectionGenerationMember, ProjectionGenerationPage, ProjectionGenerationPublishReport,
     ProjectionGenerationReadLimits, ProjectionGenerationReadReport, ProjectionGenerationReader,
-    ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
-    ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
+    ProjectionGenerationSeal, ProjectionGenerationSeekFence, ProjectionGenerationState,
+    ProjectionGenerationStatus, ProjectionGenerationStore, ProjectionGenerationWriter,
+    SealedProjectionGeneration,
 };
 pub use property_projection::{
     persistent_composite_property_identity, property_projection_descriptor_page_file,

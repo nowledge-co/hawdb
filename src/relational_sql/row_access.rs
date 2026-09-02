@@ -773,7 +773,18 @@ impl<'a> RelationalRowRuntime<'a> {
             ))
         })?;
         let mut found = None;
-        self.visit_projection_members(table, &mut |member| match member
+        let cursor = self
+            .projection
+            .as_ref()
+            .ok_or_else(|| {
+                SkeinError::StorageIntegrity(
+                    "projection row path was selected without a pinned generation".to_string(),
+                )
+            })?
+            .reader
+            .seek_cursor(table, &encoded_key)
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), &mut |member| match member
             .key
             .as_slice()
             .cmp(encoded_key.as_slice())
@@ -815,7 +826,24 @@ impl<'a> RelationalRowRuntime<'a> {
                 "projection row path was selected without a pinned generation".to_string(),
             )
         })?;
-        let mut cursor = None;
+        let cursor = projection
+            .reader
+            .seek_prefix_cursor(table, &[])
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), visit)
+    }
+
+    fn visit_projection_members_from(
+        &self,
+        table: &str,
+        mut cursor: Option<skein_storage::ProjectionGenerationCursor>,
+        visit: &mut dyn FnMut(&skein_storage::ProjectionGenerationMember) -> Result<bool>,
+    ) -> Result<bool> {
+        let projection = self.projection.as_ref().ok_or_else(|| {
+            SkeinError::StorageIntegrity(
+                "projection row path was selected without a pinned generation".to_string(),
+            )
+        })?;
         loop {
             self.task.checkpoint().map_err(|reason| {
                 SkeinError::Execution(format!("runtime task stopped: {reason}"))
