@@ -1067,6 +1067,9 @@ fn execute_binding_batches_inner(
             AdjacencyExpandFilters::default(),
             emit,
         ),
+        PhysicalPlan::AdjacencyExistsExec { input, .. } => {
+            stream_adjacency_exists_batches(plan, input, context, execution_limit, emit)
+        }
         PhysicalPlan::NodeCartesianProductExec { left, right } => {
             stream_cartesian_product_batches(left, right, context, execution_limit, emit)
         }
