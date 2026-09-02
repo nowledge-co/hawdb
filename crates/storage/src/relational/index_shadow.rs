@@ -2266,6 +2266,7 @@ fn referential_action_tag(action: RelationalReferentialAction) -> u8 {
     match action {
         RelationalReferentialAction::NoAction => 0,
         RelationalReferentialAction::Restrict => 1,
+        RelationalReferentialAction::Cascade => 2,
     }
 }
 

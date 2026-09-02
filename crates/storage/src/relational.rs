@@ -5,7 +5,7 @@ use crate::{
 use skein_core::{LogicalType, Uuid};
 use skein_integrity::Sha256Digest;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
@@ -479,6 +479,7 @@ pub enum RelationalColumnDefault {
 pub enum RelationalReferentialAction {
     NoAction,
     Restrict,
+    Cascade,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1369,6 +1370,12 @@ fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize
                 .sum::<usize>(),
         )
         .saturating_add(row.estimated_payload_bytes())
+}
+
+fn relational_key_payload_bytes(key: &RelationalKey) -> Option<usize> {
+    key.0.iter().try_fold(0usize, |bytes, value| {
+        bytes.checked_add(value.estimated_payload_bytes())
+    })
 }
 
 fn relational_sparse_recovery_entry_bytes(entry: &RelationalSparseRecoveryRow) -> Option<usize> {
@@ -4446,6 +4453,147 @@ struct TransactionApplyResult {
     mutation_outcomes: Vec<RelationalMutationOutcome>,
 }
 
+struct CascadeDelete {
+    table: String,
+    row: RelationalRow,
+}
+
+fn apply_delete_cascades(
+    state: &mut RelationalState,
+    deleted_rows: &mut VecDeque<CascadeDelete>,
+    limits: RelationalMutationLimits,
+    admitted_rows: usize,
+    admitted_payload_bytes: usize,
+    unbounded_delete_rows: usize,
+    unbounded_delete_payload_bytes: usize,
+    changed_keys: &mut BTreeMap<String, BTreeSet<RelationalKey>>,
+    touched: &mut BTreeSet<String>,
+    mut replay_access_tracker: Option<&mut RelationalReplayAccessTracker>,
+) -> Result<(), RelationalError> {
+    let mut cascade_rows = 0usize;
+    let mut cascade_payload_bytes = 0usize;
+    while let Some(CascadeDelete { table, row }) = deleted_rows.pop_front() {
+        let referenced_schema = Arc::clone(state.schemas.get(&table).ok_or_else(|| {
+            RelationalError::Schema(format!("unknown table {table} during delete cascade"))
+        })?);
+        let inbound = state
+            .schemas
+            .iter()
+            .flat_map(|(child_table, child_schema)| {
+                child_schema
+                    .foreign_keys
+                    .iter()
+                    .filter(|foreign_key| {
+                        foreign_key.referenced_table == table
+                            && foreign_key.on_delete == RelationalReferentialAction::Cascade
+                    })
+                    .cloned()
+                    .map(|foreign_key| (child_table.clone(), foreign_key))
+            })
+            .collect::<Vec<_>>();
+        for (child_table, foreign_key) in inbound {
+            let referenced_positions =
+                column_positions(&referenced_schema, &foreign_key.referenced_columns)?;
+            let referenced_key = row_key(&row, &referenced_positions);
+            if key_contains_null(&referenced_key) {
+                continue;
+            }
+            let child_schema = Arc::clone(state.schemas.get(&child_table).ok_or_else(|| {
+                RelationalError::Schema(format!(
+                    "unknown child table {child_table} during delete cascade"
+                ))
+            })?);
+            let local_positions = column_positions(&child_schema, &foreign_key.columns)?;
+            let child_keys = state
+                .segments
+                .get(&child_table)
+                .ok_or_else(|| {
+                    RelationalError::Schema(format!(
+                        "missing row segment for child table {child_table} during delete cascade"
+                    ))
+                })?
+                .rows
+                .iter()
+                .filter_map(|(key, candidate)| {
+                    let local_key = row_key(candidate, &local_positions);
+                    (!key_contains_null(&local_key) && local_key == referenced_key)
+                        .then(|| key.clone())
+                })
+                .collect::<Vec<_>>();
+            if child_keys.is_empty() {
+                continue;
+            }
+            for key in child_keys {
+                cascade_rows = cascade_rows.checked_add(1).ok_or_else(|| {
+                    RelationalError::Admission(
+                        "relational delete cascade row count overflow".to_string(),
+                    )
+                })?;
+                let total_rows = admitted_rows
+                    .checked_add(unbounded_delete_rows)
+                    .and_then(|rows| rows.checked_add(cascade_rows))
+                    .ok_or_else(|| {
+                        RelationalError::Admission(
+                            "relational delete cascade row count overflow".to_string(),
+                        )
+                    })?;
+                if total_rows > limits.max_rows.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "relational delete cascade affects {total_rows} rows, exceeding max_rows {}",
+                        limits.max_rows
+                    )));
+                }
+                cascade_payload_bytes = cascade_payload_bytes
+                    .checked_add(relational_key_payload_bytes(&key).ok_or_else(|| {
+                        RelationalError::Admission(
+                            "relational delete cascade payload byte count overflow".to_string(),
+                        )
+                    })?)
+                    .ok_or_else(|| {
+                        RelationalError::Admission(
+                            "relational delete cascade payload byte count overflow".to_string(),
+                        )
+                    })?;
+                let total_payload_bytes = admitted_payload_bytes
+                    .checked_add(unbounded_delete_payload_bytes)
+                    .and_then(|bytes| bytes.checked_add(cascade_payload_bytes))
+                    .ok_or_else(|| {
+                        RelationalError::Admission(
+                            "relational delete cascade payload byte count overflow".to_string(),
+                        )
+                    })?;
+                if total_payload_bytes > limits.max_payload_bytes.get() {
+                    return Err(RelationalError::Admission(format!(
+                        "relational delete cascade contains {total_payload_bytes} payload bytes, exceeding max_payload_bytes {}",
+                        limits.max_payload_bytes
+                    )));
+                }
+                if let Some(tracker) = replay_access_tracker.as_deref_mut() {
+                    tracker.record(&child_table, &key)?;
+                }
+                let row = Arc::make_mut(state.segments.get_mut(&child_table).ok_or_else(|| {
+                    RelationalError::Schema(format!(
+                        "missing row segment for child table {child_table} during delete cascade"
+                    ))
+                })?)
+                .rows
+                .remove(&key)
+                .expect("cascade target was selected from the current child segment");
+                changed_keys
+                    .entry(child_table.clone())
+                    .or_default()
+                    .insert(key);
+                touched.insert(child_table.clone());
+                deleted_rows.push_back(CascadeDelete {
+                    table: child_table.clone(),
+                    row,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn apply_transaction_inner(
     state: &RelationalState,
     transaction: RelationalTransaction,
@@ -4476,6 +4624,11 @@ fn apply_transaction_inner(
             next.omit_materialized_index_postings();
         }
     }
+    let admitted_rows = transaction.estimated_mutation_rows();
+    let admitted_payload_bytes = transaction.estimated_payload_bytes();
+    let mut unbounded_delete_rows = 0usize;
+    let mut unbounded_delete_payload_bytes = 0usize;
+    let mut deleted_rows = VecDeque::new();
     let mut touched = BTreeSet::new();
     let mut changed_keys = BTreeMap::<String, BTreeSet<RelationalKey>>::new();
     let mut replay_access_tracker = replay_access_limits.map(RelationalReplayAccessTracker::new);
@@ -4674,7 +4827,12 @@ fn apply_transaction_inner(
                         .entry(table.clone())
                         .or_default()
                         .insert(key.clone());
-                    segment.rows.remove(&key);
+                    if let Some(row) = segment.rows.remove(&key) {
+                        deleted_rows.push_back(CascadeDelete {
+                            table: table.clone(),
+                            row,
+                        });
+                    }
                 }
                 touched.insert(table);
             }
@@ -4707,12 +4865,63 @@ fn apply_transaction_inner(
                         limits.max_rows
                     )));
                 }
+                unbounded_delete_rows =
+                    unbounded_delete_rows
+                        .checked_add(keys.len())
+                        .ok_or_else(|| {
+                            RelationalError::Admission(
+                                "relational DELETE row count overflow".to_string(),
+                            )
+                        })?;
+                if admitted_rows
+                    .checked_add(unbounded_delete_rows)
+                    .is_none_or(|rows| rows > limits.max_rows.get())
+                {
+                    return Err(RelationalError::Admission(format!(
+                        "relational mutation affects more than max_rows {}",
+                        limits.max_rows
+                    )));
+                }
+                let delete_payload_bytes = keys.iter().try_fold(0usize, |bytes, key| {
+                    bytes
+                        .checked_add(relational_key_payload_bytes(key).ok_or_else(|| {
+                            RelationalError::Admission(
+                                "relational DELETE payload byte count overflow".to_string(),
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            RelationalError::Admission(
+                                "relational DELETE payload byte count overflow".to_string(),
+                            )
+                        })
+                })?;
+                unbounded_delete_payload_bytes = unbounded_delete_payload_bytes
+                    .checked_add(delete_payload_bytes)
+                    .ok_or_else(|| {
+                        RelationalError::Admission(
+                            "relational DELETE payload byte count overflow".to_string(),
+                        )
+                    })?;
+                if admitted_payload_bytes
+                    .checked_add(unbounded_delete_payload_bytes)
+                    .is_none_or(|bytes| bytes > limits.max_payload_bytes.get())
+                {
+                    return Err(RelationalError::Admission(format!(
+                        "relational DELETE contains more than max_payload_bytes {}",
+                        limits.max_payload_bytes
+                    )));
+                }
                 for key in keys {
                     changed_keys
                         .entry(table.clone())
                         .or_default()
                         .insert(key.clone());
-                    segment.rows.remove(&key);
+                    if let Some(row) = segment.rows.remove(&key) {
+                        deleted_rows.push_back(CascadeDelete {
+                            table: table.clone(),
+                            row,
+                        });
+                    }
                 }
                 touched.insert(table);
             }
@@ -4737,6 +4946,18 @@ fn apply_transaction_inner(
             }
         }
     }
+    apply_delete_cascades(
+        &mut next,
+        &mut deleted_rows,
+        limits,
+        admitted_rows,
+        admitted_payload_bytes,
+        unbounded_delete_rows,
+        unbounded_delete_payload_bytes,
+        &mut changed_keys,
+        &mut touched,
+        replay_access_tracker.as_mut(),
+    )?;
     overflow::prune_unreachable_segments(&mut next);
     if index_mode == TransactionIndexMode::Materialized {
         for table in &touched {

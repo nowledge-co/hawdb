@@ -538,8 +538,8 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
                 columns: vec![column.name.clone()],
                 referenced_table: reference.table.name.clone(),
                 referenced_columns: reference.columns.clone(),
-                on_delete: compile_referential_action(reference.on_delete)?,
-                on_update: compile_referential_action(reference.on_update)?,
+                on_delete: compile_delete_referential_action(reference.on_delete)?,
+                on_update: compile_update_referential_action(reference.on_update)?,
             });
         }
     }
@@ -559,8 +559,8 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
                     columns,
                     referenced_table: reference.table.name,
                     referenced_columns: reference.columns,
-                    on_delete: compile_referential_action(reference.on_delete)?,
-                    on_update: compile_referential_action(reference.on_update)?,
+                    on_delete: compile_delete_referential_action(reference.on_delete)?,
+                    on_update: compile_update_referential_action(reference.on_update)?,
                 });
             }
         }
@@ -693,12 +693,27 @@ fn coerce_relational_value(
     }
 }
 
-fn compile_referential_action(action: SqlReferentialAction) -> Result<RelationalReferentialAction> {
+fn compile_delete_referential_action(
+    action: SqlReferentialAction,
+) -> Result<RelationalReferentialAction> {
+    match action {
+        SqlReferentialAction::NoAction => Ok(RelationalReferentialAction::NoAction),
+        SqlReferentialAction::Restrict => Ok(RelationalReferentialAction::Restrict),
+        SqlReferentialAction::Cascade => Ok(RelationalReferentialAction::Cascade),
+        SqlReferentialAction::SetNull => Err(SkeinError::Semantic(
+            "ON DELETE SET NULL is not supported".to_string(),
+        )),
+    }
+}
+
+fn compile_update_referential_action(
+    action: SqlReferentialAction,
+) -> Result<RelationalReferentialAction> {
     match action {
         SqlReferentialAction::NoAction => Ok(RelationalReferentialAction::NoAction),
         SqlReferentialAction::Restrict => Ok(RelationalReferentialAction::Restrict),
         SqlReferentialAction::Cascade | SqlReferentialAction::SetNull => Err(SkeinError::Semantic(
-            "CASCADE and SET NULL require a qualified relational mutation executor".to_string(),
+            "ON UPDATE CASCADE and SET NULL are not supported".to_string(),
         )),
     }
 }
@@ -1072,6 +1087,182 @@ mod tests {
         assert_uuidv7(generated);
         drop(reopened);
         std::fs::remove_dir_all(path).expect("remove durable uuidv7 test directory");
+    }
+
+    #[test]
+    fn relational_on_delete_cascade_is_transitive_and_atomic() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE parents (id BIGINT PRIMARY KEY)")
+            .expect("create cascade parent table");
+        database
+            .query_sql(
+                "CREATE TABLE children (\
+                    id BIGINT PRIMARY KEY, \
+                    parent_id BIGINT NOT NULL REFERENCES parents(id) ON DELETE CASCADE\
+                )",
+            )
+            .expect("create cascade child table");
+        database
+            .query_sql(
+                "CREATE TABLE grandchildren (\
+                    id BIGINT PRIMARY KEY, \
+                    child_id BIGINT NOT NULL REFERENCES children(id) ON DELETE CASCADE\
+                )",
+            )
+            .expect("create cascade grandchild table");
+        database
+            .query_sql(
+                "CREATE TABLE restrictors (\
+                    id BIGINT PRIMARY KEY, \
+                    parent_id BIGINT NOT NULL REFERENCES parents(id) ON DELETE RESTRICT\
+                )",
+            )
+            .expect("create restrict child table");
+
+        database
+            .query_sql("INSERT INTO parents (id) VALUES (1)")
+            .expect("insert cascade parent");
+        database
+            .query_sql("INSERT INTO children (id, parent_id) VALUES (10, 1), (11, 1)")
+            .expect("insert cascade children");
+        database
+            .query_sql("INSERT INTO grandchildren (id, child_id) VALUES (100, 10), (101, 11)")
+            .expect("insert cascade grandchildren");
+        database
+            .query_sql("DELETE FROM parents WHERE id = 1")
+            .expect("delete cascade parent");
+        for table in ["parents", "children", "grandchildren"] {
+            assert!(database
+                .query_sql(&format!("SELECT id FROM {table}"))
+                .expect("read cascade result")
+                .rows
+                .is_empty());
+        }
+
+        database
+            .query_sql("INSERT INTO parents (id) VALUES (2)")
+            .expect("insert restricted parent");
+        database
+            .query_sql("INSERT INTO children (id, parent_id) VALUES (20, 2)")
+            .expect("insert restricted cascade child");
+        database
+            .query_sql("INSERT INTO grandchildren (id, child_id) VALUES (200, 20)")
+            .expect("insert restricted cascade grandchild");
+        database
+            .query_sql("INSERT INTO restrictors (id, parent_id) VALUES (300, 2)")
+            .expect("insert restrict child");
+        let rejected = database
+            .query_sql("DELETE FROM parents WHERE id = 2")
+            .expect_err("restrict child must reject the complete cascade");
+        assert!(rejected.to_string().contains("prevents removing"));
+        for (table, id) in [
+            ("parents", 2),
+            ("children", 20),
+            ("grandchildren", 200),
+            ("restrictors", 300),
+        ] {
+            assert_eq!(
+                database
+                    .query_sql(&format!("SELECT id FROM {table} WHERE id = {id}"))
+                    .expect("read rejected cascade result")
+                    .rows
+                    .len(),
+                1
+            );
+        }
+
+        database
+            .query_sql("INSERT INTO parents (id) VALUES (3)")
+            .expect("insert rollback parent");
+        database
+            .query_sql("INSERT INTO children (id, parent_id) VALUES (30, 3)")
+            .expect("insert rollback child");
+        let mut rollback = database.begin_transaction();
+        rollback
+            .query_sql("DELETE FROM parents WHERE id = 3")
+            .expect("stage delete cascade");
+        rollback.rollback();
+        assert_eq!(
+            database
+                .query_sql("SELECT id FROM children WHERE id = 30")
+                .expect("read rolled back cascade child")
+                .rows
+                .len(),
+            1
+        );
+
+        let unsupported = database
+            .query_sql(
+                "CREATE TABLE unsupported_update (\
+                    id BIGINT PRIMARY KEY, \
+                    parent_id BIGINT NOT NULL REFERENCES parents(id) ON UPDATE CASCADE\
+                )",
+            )
+            .expect_err("ON UPDATE CASCADE remains unsupported");
+        assert!(unsupported.to_string().contains("ON UPDATE CASCADE"));
+    }
+
+    #[test]
+    fn relational_on_delete_cascade_survives_wal_and_checkpoint_reopen() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-cascade-{nonce}-{}",
+            std::process::id()
+        ));
+        {
+            let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("open durable cascade database");
+            database
+                .query_sql("CREATE TABLE durable_parents (id BIGINT PRIMARY KEY)")
+                .expect("create durable cascade parent table");
+            database
+                .query_sql(
+                    "CREATE TABLE durable_children (\
+                        id BIGINT PRIMARY KEY, \
+                        parent_id BIGINT NOT NULL REFERENCES durable_parents(id) ON DELETE CASCADE\
+                    )",
+                )
+                .expect("create durable cascade child table");
+            database
+                .query_sql("INSERT INTO durable_parents (id) VALUES (1)")
+                .expect("insert durable cascade parent");
+            database
+                .query_sql("INSERT INTO durable_children (id, parent_id) VALUES (10, 1)")
+                .expect("insert durable cascade child");
+            database
+                .query_sql("DELETE FROM durable_parents WHERE id = 1")
+                .expect("delete durable cascade parent");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen durable cascade WAL");
+            for table in ["durable_parents", "durable_children"] {
+                assert!(reopened
+                    .query_sql(&format!("SELECT id FROM {table}"))
+                    .expect("read durable cascade WAL result")
+                    .rows
+                    .is_empty());
+            }
+            reopened
+                .checkpoint()
+                .expect("checkpoint durable cascade result");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen durable cascade checkpoint");
+            for table in ["durable_parents", "durable_children"] {
+                assert!(reopened
+                    .query_sql(&format!("SELECT id FROM {table}"))
+                    .expect("read durable cascade checkpoint result")
+                    .rows
+                    .is_empty());
+            }
+        }
+        std::fs::remove_dir_all(path).expect("remove durable cascade test directory");
     }
 
     fn assert_uuidv7(value: crate::Uuid) {

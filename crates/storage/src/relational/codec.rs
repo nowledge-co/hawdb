@@ -1141,6 +1141,7 @@ impl Encoder {
         self.u8(match action {
             RelationalReferentialAction::NoAction => 0,
             RelationalReferentialAction::Restrict => 1,
+            RelationalReferentialAction::Cascade => 2,
         });
     }
 
@@ -1833,6 +1834,7 @@ impl<I: DecodeInput> Decoder<I> {
         match self.u8()? {
             0 => Ok(RelationalReferentialAction::NoAction),
             1 => Ok(RelationalReferentialAction::Restrict),
+            2 => Ok(RelationalReferentialAction::Cascade),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid referential action tag {tag}"
             ))),

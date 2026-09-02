@@ -381,6 +381,171 @@ fn referenced_delete_is_restricted_unless_child_is_removed_in_same_batch() {
 }
 
 #[test]
+fn delete_cascade_is_transitive_and_respects_mutation_admission() {
+    let store = RelationalStore::default();
+    store
+        .commit(create_cascade_tables(), |_, _| Ok(()))
+        .expect("create cascade tables");
+    store
+        .commit(seed_cascade_rows(), |_, _| Ok(()))
+        .expect("seed cascade rows");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                    table: "cascade_parents".to_string(),
+                    keys: vec![RelationalKey(vec![RelationalValue::Text(
+                        "parent-1".to_string(),
+                    )])],
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("delete cascade parent");
+    let snapshot = store.snapshot().expect("snapshot after cascade delete");
+    for table in [
+        "cascade_parents",
+        "cascade_children",
+        "cascade_grandchildren",
+    ] {
+        assert_eq!(snapshot.value().row_count(table), 0);
+    }
+
+    let limited_store = RelationalStore::new(RelationalMutationLimits {
+        max_rows: NonZeroUsize::new(1).expect("non-zero cascade limit"),
+        max_payload_bytes: NonZeroUsize::new(DEFAULT_MAX_RELATIONAL_MUTATION_BYTES)
+            .expect("non-zero payload limit"),
+    });
+    limited_store
+        .commit(create_cascade_tables(), |_, _| Ok(()))
+        .expect("create limited cascade tables");
+    for transaction in seed_cascade_rows()
+        .writes
+        .into_iter()
+        .map(|write| RelationalTransaction {
+            writes: vec![write],
+        })
+    {
+        limited_store
+            .commit(transaction, |_, _| Ok(()))
+            .expect("seed one limited cascade row");
+    }
+    let rejected = limited_store.commit(
+        RelationalTransaction {
+            writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                table: "cascade_parents".to_string(),
+                keys: vec![RelationalKey(vec![RelationalValue::Text(
+                    "parent-1".to_string(),
+                )])],
+            }],
+        },
+        |_, _| Ok(()),
+    );
+    assert!(matches!(
+        rejected,
+        Err(SnapshotCommitError::Stage(RelationalError::Admission(message)))
+            if message.contains("delete cascade")
+    ));
+    let snapshot = limited_store
+        .snapshot()
+        .expect("snapshot after rejected cascade");
+    for table in [
+        "cascade_parents",
+        "cascade_children",
+        "cascade_grandchildren",
+    ] {
+        assert_eq!(snapshot.value().row_count(table), 1);
+    }
+
+    let payload_limited_store = RelationalStore::new(RelationalMutationLimits {
+        max_rows: NonZeroUsize::new(10).expect("non-zero cascade row limit"),
+        max_payload_bytes: NonZeroUsize::new(20).expect("non-zero cascade payload limit"),
+    });
+    payload_limited_store
+        .commit(create_cascade_tables(), |_, _| Ok(()))
+        .expect("create payload-limited cascade tables");
+    for transaction in seed_cascade_rows()
+        .writes
+        .into_iter()
+        .map(|write| RelationalTransaction {
+            writes: vec![write],
+        })
+    {
+        payload_limited_store
+            .commit(transaction, |_, _| Ok(()))
+            .expect("seed one payload-limited cascade row");
+    }
+    let rejected = payload_limited_store.commit(
+        RelationalTransaction {
+            writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                table: "cascade_parents".to_string(),
+                keys: vec![RelationalKey(vec![RelationalValue::Text(
+                    "parent-1".to_string(),
+                )])],
+            }],
+        },
+        |_, _| Ok(()),
+    );
+    assert!(matches!(
+        rejected,
+        Err(SnapshotCommitError::Stage(RelationalError::Admission(message)))
+            if message.contains("delete cascade")
+    ));
+    let snapshot = payload_limited_store
+        .snapshot()
+        .expect("snapshot after rejected payload-limited cascade");
+    for table in [
+        "cascade_parents",
+        "cascade_children",
+        "cascade_grandchildren",
+    ] {
+        assert_eq!(snapshot.value().row_count(table), 1);
+    }
+}
+
+#[test]
+fn authoritative_constraint_staging_applies_delete_cascade_before_publication() {
+    let base = RelationalState::default()
+        .stage_transaction(
+            create_cascade_tables(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("create authoritative cascade tables")
+        .stage_transaction(
+            seed_cascade_rows(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .expect("seed authoritative cascade rows");
+    let index = TestConstraintIndex::from_state(&base);
+
+    let (cascaded, _) = base
+        .stage_transaction_with_authoritative_index(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                    table: "cascade_parents".to_string(),
+                    keys: vec![RelationalKey(vec![RelationalValue::Text(
+                        "parent-1".to_string(),
+                    )])],
+                }],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+            RelationalIndexChangeCaptureLimits::default(),
+            &index,
+        )
+        .expect("stage authoritative delete cascade");
+    for table in [
+        "cascade_parents",
+        "cascade_children",
+        "cascade_grandchildren",
+    ] {
+        assert_eq!(cascaded.row_count(table), 0);
+    }
+}
+
+#[test]
 fn unique_constraint_rejects_complete_batch() {
     let store = RelationalStore::default();
     store
@@ -5433,6 +5598,79 @@ fn create_content_tables() -> RelationalTransaction {
                 }],
                 indexes: Vec::new(),
             }),
+        ],
+    }
+}
+
+fn create_cascade_tables() -> RelationalTransaction {
+    RelationalTransaction {
+        writes: vec![
+            RelationalWrite::CreateTable(RelationalTableSchema {
+                name: "cascade_parents".to_string(),
+                columns: vec![text_column("id", false)],
+                primary_key: vec!["id".to_string()],
+                unique_constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }),
+            RelationalWrite::CreateTable(RelationalTableSchema {
+                name: "cascade_children".to_string(),
+                columns: vec![text_column("id", false), text_column("parent_id", false)],
+                primary_key: vec!["id".to_string()],
+                unique_constraints: Vec::new(),
+                foreign_keys: vec![RelationalForeignKeySchema {
+                    columns: vec!["parent_id".to_string()],
+                    referenced_table: "cascade_parents".to_string(),
+                    referenced_columns: vec!["id".to_string()],
+                    on_delete: RelationalReferentialAction::Cascade,
+                    on_update: RelationalReferentialAction::NoAction,
+                }],
+                indexes: Vec::new(),
+            }),
+            RelationalWrite::CreateTable(RelationalTableSchema {
+                name: "cascade_grandchildren".to_string(),
+                columns: vec![text_column("id", false), text_column("child_id", false)],
+                primary_key: vec!["id".to_string()],
+                unique_constraints: Vec::new(),
+                foreign_keys: vec![RelationalForeignKeySchema {
+                    columns: vec!["child_id".to_string()],
+                    referenced_table: "cascade_children".to_string(),
+                    referenced_columns: vec!["id".to_string()],
+                    on_delete: RelationalReferentialAction::Cascade,
+                    on_update: RelationalReferentialAction::NoAction,
+                }],
+                indexes: Vec::new(),
+            }),
+        ],
+    }
+}
+
+fn seed_cascade_rows() -> RelationalTransaction {
+    RelationalTransaction {
+        writes: vec![
+            RelationalWrite::Insert {
+                table: "cascade_parents".to_string(),
+                rows: vec![RelationalRow::new(vec![RelationalValue::Text(
+                    "parent-1".to_string(),
+                )])],
+                mode: RelationalInsertMode::Error,
+            },
+            RelationalWrite::Insert {
+                table: "cascade_children".to_string(),
+                rows: vec![RelationalRow::new(vec![
+                    RelationalValue::Text("child-1".to_string()),
+                    RelationalValue::Text("parent-1".to_string()),
+                ])],
+                mode: RelationalInsertMode::Error,
+            },
+            RelationalWrite::Insert {
+                table: "cascade_grandchildren".to_string(),
+                rows: vec![RelationalRow::new(vec![
+                    RelationalValue::Text("grandchild-1".to_string()),
+                    RelationalValue::Text("child-1".to_string()),
+                ])],
+                mode: RelationalInsertMode::Error,
+            },
         ],
     }
 }
