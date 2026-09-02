@@ -869,13 +869,25 @@ mod tests {
     fn relational_uuid_scalar_preserves_typed_schema_keys_and_queries() {
         let account_id = skein_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
             .expect("parse account UUID");
+        let account_external_id =
+            skein_core::Uuid::parse_str("018f4e6a-7c1a-79d2-8f4d-1234567890ab")
+                .expect("parse account external UUID");
+        let duplicate_account_id =
+            skein_core::Uuid::parse_str("018f4e6a-7c1b-79d2-8f4d-1234567890ab")
+                .expect("parse duplicate account UUID");
         let first_session = skein_core::Uuid::parse_str("018f4e6a-7c1c-7b45-8f4d-1234567890ab")
             .expect("parse first session UUID");
         let second_session = skein_core::Uuid::parse_str("018f4e6a-7c1d-7b45-8f4d-1234567890ab")
             .expect("parse second session UUID");
         let mut database = Database::new();
         database
-            .query_sql("CREATE TABLE accounts (id UUID PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
+            .query_sql(
+                "CREATE TABLE accounts (\
+                    id UUID PRIMARY KEY, \
+                    external_id UUID NOT NULL UNIQUE, \
+                    name TEXT NOT NULL UNIQUE\
+                )",
+            )
             .expect("create UUID parent table");
         database
             .query_sql(
@@ -891,7 +903,8 @@ mod tests {
             .expect("create UUID secondary index");
         database
             .query_sql(&format!(
-                "INSERT INTO accounts (id, name) VALUES ('{account_id}', 'primary')"
+                "INSERT INTO accounts (id, external_id, name) \
+                 VALUES ('{account_id}', '{account_external_id}', 'primary')"
             ))
             .expect("insert UUID parent");
         database
@@ -909,6 +922,24 @@ mod tests {
             .expect("read UUID primary key");
         assert_eq!(point.rows[0]["id"], Value::Uuid(account_id));
         assert_eq!(point.rows[0]["id"].to_string(), account_id.to_string());
+
+        let unique = database
+            .query_sql(&format!(
+                "SELECT id FROM accounts WHERE external_id = '{account_external_id}'"
+            ))
+            .expect("read UUID unique constraint");
+        assert_eq!(unique.rows[0]["id"], Value::Uuid(account_id));
+        database
+            .query_sql(&format!(
+                "INSERT INTO accounts (id, external_id, name) \
+                 VALUES ('{duplicate_account_id}', '{account_external_id}', 'duplicate')"
+            ))
+            .expect_err("duplicate UUID unique constraint must reject atomically");
+        assert!(database
+            .query_sql("SELECT id FROM accounts WHERE name = 'duplicate'")
+            .expect("read after duplicate UUID unique constraint")
+            .rows
+            .is_empty());
 
         let parameterized = database
             .query_sql_with_params(

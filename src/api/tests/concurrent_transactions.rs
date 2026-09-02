@@ -1776,6 +1776,46 @@ fn delete_cascade_blocks_a_concurrent_child_insert_before_publication() {
 }
 
 #[test]
+fn uuidv7_defaults_preserve_staged_ids_across_concurrent_commit_modes() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.uuidv7_defaults (\
+            id UUID PRIMARY KEY DEFAULT uuidv7(), \
+            url TEXT NOT NULL UNIQUE\
+        )",
+    )
+    .unwrap();
+
+    for (url, options) in [
+        (
+            "https://optimistic.example",
+            ConcurrentTransactionOptions::optimistic(),
+        ),
+        (
+            "https://pessimistic.example",
+            ConcurrentTransactionOptions::pessimistic(Duration::from_secs(1)),
+        ),
+    ] {
+        let mut transaction = db.begin_transaction(options).unwrap();
+        let staged = transaction
+            .query_sql_with_result(&format!(
+                "INSERT INTO public.uuidv7_defaults (url) VALUES ('{url}') RETURNING id"
+            ))
+            .unwrap();
+        let staged_id = staged.mutation.unwrap().rows[0]["id"].clone();
+        let Value::Uuid(uuid) = &staged_id else {
+            panic!("uuidv7 default must stage a typed UUID");
+        };
+        assert_eq!(uuid.as_bytes()[6] >> 4, 7, "uuidv7 version bits");
+        assert_eq!(uuid.as_bytes()[8] & 0b1100_0000, 0b1000_0000);
+
+        let committed = transaction.commit_with_result().unwrap();
+        assert_eq!(committed.output.rows[0]["id"], staged_id);
+        assert_eq!(committed.mutations[0].rows[0]["id"], staged_id);
+    }
+}
+
+#[test]
 fn optimistic_transaction_rejects_locking_selects() {
     let db = Database::new().into_concurrent();
     db.query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY)")
