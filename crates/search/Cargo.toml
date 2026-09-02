@@ -24,7 +24,12 @@ skein-telemetry = { path = "../telemetry" }
 skein-vector-projection = { path = "../vector-projection", optional = true }
 
 [features]
-default = ["background-maintenance", "full-text-search", "vector-search"]
+default = [
+    "background-maintenance",
+    "full-text-search",
+    "graph-analytics",
+    "vector-search",
+]
 acl = []
 background-maintenance = []
 full-text-search = []

@@ -6,6 +6,7 @@ package(default_visibility = ["//visibility:public"])
 _SEARCH_DEFAULT_FEATURES = [
     "background-maintenance",
     "full-text-search",
+    "graph-analytics",
     "vector-search",
 ]
 
