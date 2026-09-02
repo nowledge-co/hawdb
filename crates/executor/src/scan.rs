@@ -25,8 +25,8 @@ use skein_plan::{
     ComparisonOp, ExactPropertySeekBranch, NodeProjectionAccess, Predicate, Projection,
 };
 use skein_storage::{
-    NodeId, NodeRecord, ProjectedNodeRecord, PropertyFilter, RangeBound, ScanPredicate,
-    ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
+    AdjacencyDirection, NodeId, NodeRecord, ProjectedNodeRecord, PropertyFilter, RangeBound,
+    ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -226,6 +226,57 @@ pub fn stream_expand_binding(
         return consumer(expanded);
     }
     Ok(ScanControl::Continue)
+}
+
+pub fn adjacency_exists(
+    store: &dyn GraphExecutionRead,
+    source: NodeId,
+    target: NodeId,
+    rel_type_id: RelTypeId,
+    direction: RelationshipDirection,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<bool> {
+    runtime_checkpoint(task_context)?;
+    let mut found = false;
+    let mut visit_direction = |adjacency_direction: AdjacencyDirection| {
+        let mut visit = |relationship: skein_storage::RelRecord| {
+            runtime_checkpoint(task_context)?;
+            let matches = match adjacency_direction {
+                AdjacencyDirection::Outgoing => {
+                    relationship.source == source && relationship.target == target
+                }
+                AdjacencyDirection::Incoming => {
+                    relationship.target == source && relationship.source == target
+                }
+            };
+            if matches {
+                found = true;
+                Ok(ScanControl::Stop)
+            } else {
+                Ok(ScanControl::Continue)
+            }
+        };
+        store.visit_adjacent_relationships_owned(
+            source,
+            Some(rel_type_id),
+            adjacency_direction,
+            &mut visit,
+        )
+    };
+    match direction {
+        RelationshipDirection::Outgoing => {
+            visit_direction(AdjacencyDirection::Outgoing)?;
+        }
+        RelationshipDirection::Incoming => {
+            visit_direction(AdjacencyDirection::Incoming)?;
+        }
+        RelationshipDirection::Undirected => {
+            if visit_direction(AdjacencyDirection::Outgoing)? == ScanControl::Continue {
+                visit_direction(AdjacencyDirection::Incoming)?;
+            }
+        }
+    }
+    Ok(found)
 }
 
 fn ensure_expanded_binding_fits(
@@ -1285,6 +1336,25 @@ mod tests {
         .unwrap();
         assert_eq!(control, ScanControl::Stop);
         (emitted, store.relationship_visits.get())
+    }
+
+    #[test]
+    fn adjacency_exists_stops_after_the_first_matching_target() {
+        let store = HighDegreeStore {
+            degree: 100_000,
+            relationship_visits: Cell::new(0),
+        };
+
+        assert!(adjacency_exists(
+            &store,
+            NodeId(0),
+            NodeId(17),
+            RelTypeId(0),
+            RelationshipDirection::Outgoing,
+            None,
+        )
+        .unwrap());
+        assert_eq!(store.relationship_visits.get(), 17);
     }
 
     #[test]

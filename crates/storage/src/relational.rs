@@ -102,24 +102,24 @@ pub use row_page::{
     RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
     RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageRootReader,
     RelationalRowPageSlotIntegrity, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, RelationalRowPageTableDelta, RelationalRowPageTableRoot,
-    RelationalRowPageView, DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS,
-    DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES,
-    DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES, DEFAULT_RELATIONAL_ROW_DELTA_RUNS,
-    DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_COLUMNS, DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_INLINE_VALUE_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_READ_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES,
-    DEFAULT_RELATIONAL_ROW_PAGE_READ_PINS, DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS,
-    DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_ROWS,
-    DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_TABLES,
-    DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
-    RELATIONAL_ROW_PAGE_MANIFEST_FILE,
+    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource,
+    RelationalRowPageTableDelta, RelationalRowPageTableRoot, RelationalRowPageView,
+    DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES,
+    DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES, DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES,
+    DEFAULT_RELATIONAL_ROW_DELTA_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_COLUMNS,
+    DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES,
+    DEFAULT_RELATIONAL_ROW_PAGE_INLINE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_KEY_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_READ_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_READ_PINS,
+    DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT,
+    DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES,
+    DEFAULT_RELATIONAL_ROW_PAGE_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+    RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 
 pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 100_000;
@@ -657,6 +657,14 @@ pub struct RelationalIndexChange {
     pub index_key: RelationalKey,
     pub primary_key: RelationalKey,
     pub kind: RelationalIndexChangeKind,
+}
+
+impl RelationalIndexChange {
+    /// Returns the bounded wire footprint used by index-change capture and
+    /// derived live overlays.
+    pub fn estimated_encoded_bytes(&self) -> Option<usize> {
+        estimated_index_change_encoding_bytes(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5776,7 +5784,7 @@ fn push_captured_index_change(
     limits: RelationalIndexChangeCaptureLimits,
     change: RelationalIndexChange,
 ) -> bool {
-    let Some(change_bytes) = estimated_index_change_encoding_bytes(&change) else {
+    let Some(change_bytes) = change.estimated_encoded_bytes() else {
         return false;
     };
     let Some(next_bytes) = encoded_bytes.checked_add(change_bytes) else {

@@ -455,6 +455,23 @@ impl PhysicalPlan {
                     input.explain(indent + 2)
                 )
             }
+            PhysicalPlan::AdjacencyExistsExec {
+                source_variable,
+                rel_type,
+                direction,
+                target_variable,
+                input,
+            } => {
+                let arrow = match direction {
+                    RelationshipDirection::Outgoing => "->",
+                    RelationshipDirection::Incoming => "<-",
+                    RelationshipDirection::Undirected => "-",
+                };
+                format!(
+                    "{pad}AdjacencyExistsExec source={source_variable} direction={arrow} rel_type={rel_type} target={target_variable}\n{}",
+                    input.explain(indent + 2)
+                )
+            }
             PhysicalPlan::OptionalDegreeExec {
                 source_variable,
                 rel_type,
