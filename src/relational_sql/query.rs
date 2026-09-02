@@ -2726,7 +2726,7 @@ fn explain_access_path(
             .join("|")
     };
     format!(
-        "{planned}, runtime_path={}, lookups={}, range_lookups={}, exclusive_seek_lookups={}, backward_lookups={}, early_stop_lookups={}, demand_paged={}, authoritative={}, transaction_workspace={}, canonical_fallback={}, fallback_reasons={}, base_generation={}, delta_generation={}, base_epoch={}, visible_epoch={}, root_set_digest={}, logical_pages={}, logical_bytes={}, physical_pages={}, physical_bytes={}, cache_hits={}, cache_misses={}, cache_admission_rejections={}, delta_entries={}, live_batches={}, live_entries={}, live_matches={}, live_bytes={}, index_rows={}, {row}",
+        "{planned}, runtime_path={}, lookups={}, range_lookups={}, exclusive_seek_lookups={}, backward_lookups={}, early_stop_lookups={}, demand_paged={}, authoritative={}, transaction_workspace={}, canonical_fallback={}, fallback_reasons={}, base_generation={}, delta_generation={}, base_epoch={}, visible_epoch={}, root_set_digest={}, logical_pages={}, logical_bytes={}, physical_pages={}, physical_bytes={}, cache_hits={}, cache_misses={}, cache_admission_rejections={}, delta_pages_skipped={}, delta_entries={}, live_batches={}, live_entries={}, live_matches={}, live_bytes={}, index_rows={}, {row}",
         evidence.runtime_path(),
         evidence.lookups,
         evidence.range_lookups,
@@ -2750,6 +2750,7 @@ fn explain_access_path(
         evidence.cache_hits,
         evidence.cache_misses,
         evidence.cache_admission_rejections,
+        evidence.delta_pages_skipped,
         evidence.delta_entries_visited,
         evidence.live_batches_visited,
         evidence.live_entries_visited,
@@ -3561,7 +3562,8 @@ fn join_index_access_candidate(
             .map(|statistics| {
                 debug_assert!(statistics.distinct_non_null_values <= statistics.non_null_rows);
                 debug_assert!(statistics.fanout <= statistics.non_null_rows);
-                usize::try_from(statistics.fanout)
+                debug_assert!(statistics.fanout >= statistics.average_fanout());
+                usize::try_from(statistics.average_fanout())
                     .unwrap_or(usize::MAX)
                     .min(row_count)
             })

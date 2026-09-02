@@ -84,6 +84,15 @@ impl RelationalTransactionIndexOverlay {
         self.encoded_bytes = next_bytes;
         Ok(())
     }
+
+    fn touches(&self, table: &str, index: &str) -> bool {
+        self.batches.iter().any(|batch| {
+            batch
+                .changes
+                .iter()
+                .any(|change| change.table == table && change.index == index)
+        })
+    }
 }
 
 struct TransactionOverlayMerge<'a, F> {
@@ -217,7 +226,7 @@ impl RelationalTransactionIndexView {
         index: &str,
         prefix_len: usize,
     ) -> Option<RelationalIndexProbeStatistics> {
-        if self.overlay.entry_count != 0 {
+        if self.overlay.touches(table, index) {
             return None;
         }
         self.base.fresh_probe_statistics(table, index, prefix_len)
@@ -799,6 +808,8 @@ mod tests {
         assert_eq!(overlay.entry_count, 1);
         assert_eq!(overlay.encoded_bytes, 4);
         assert_eq!(overlay.batches.len(), 1);
+        assert!(overlay.touches("documents", "documents_owner_idx"));
+        assert!(!overlay.touches("documents", "documents_missing_idx"));
 
         let byte_error = overlay
             .append(capture(vec![change(2)], 7))
