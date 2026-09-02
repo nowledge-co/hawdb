@@ -245,12 +245,55 @@ fn parses_aggregate_projection_and_distinct_argument() {
                 name,
                 arguments,
                 distinct: true,
+                filter: None,
             },
             alias: Some(alias),
         } if name == "count"
             && alias == "covered_messages"
             && matches!(arguments.as_slice(), [SqlFunctionArgument::Expression(_)])
     ));
+}
+
+#[test]
+fn parses_aggregate_filter_predicate_and_parameters() {
+    let prepared = prepare_postgres_sql(
+        "SELECT COUNT(*) FILTER (WHERE is_read = $1) AS unread_count FROM entries",
+    )
+    .expect("supported aggregate filter");
+    assert_eq!(
+        prepared
+            .parameters
+            .iter()
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    let SqlStatement::Select(select) = prepared.statement else {
+        panic!("expected SELECT statement");
+    };
+    assert!(matches!(
+        &select.projection[0],
+        SelectProjection::Expression {
+            expression: SqlExpression::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: Some(SqlPredicate::Compare {
+                    left,
+                    op: SqlComparisonOp::Eq,
+                    right: SqlValue::Parameter(1),
+                }),
+            },
+            alias: Some(alias),
+        } if name == "count"
+            && alias == "unread_count"
+            && left.name == "is_read"
+            && matches!(arguments.as_slice(), [SqlFunctionArgument::Wildcard])
+    ));
+
+    let error = parse_postgres_sql("SELECT MAX(id) FILTER (WHERE id = 'entry-1') FROM entries")
+        .expect_err("non-supported aggregate filter must fail");
+    assert!(error.to_string().contains("FILTER"));
 }
 
 #[test]

@@ -147,11 +147,16 @@ fn collect_arithmetic_operand_parameter(
 fn collect_expression_parameters(expression: &SqlExpression, positions: &mut BTreeSet<usize>) {
     match expression {
         SqlExpression::Value(value) => collect_value_parameter(value, positions),
-        SqlExpression::Function { arguments, .. } => {
+        SqlExpression::Function {
+            arguments, filter, ..
+        } => {
             for argument in arguments {
                 if let SqlFunctionArgument::Expression(expression) = argument {
                     collect_expression_parameters(expression, positions);
                 }
+            }
+            if let Some(filter) = filter {
+                collect_predicate_parameters(filter, positions);
             }
         }
         SqlExpression::Column(_) => {}

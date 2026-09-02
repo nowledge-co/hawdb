@@ -199,6 +199,7 @@ impl BoundStreamingProjection {
                         name,
                         arguments,
                         distinct: false,
+                        filter: None,
                     } if name == "uuidv7" && arguments.is_empty() => {
                         columns.push(BoundStreamingColumn {
                             value: BoundStreamingValue::UuidV7,

@@ -318,6 +318,7 @@ fn prepare_projection(
         name,
         arguments,
         distinct: false,
+        filter: None,
     } = expression
     else {
         return None;
@@ -385,6 +386,7 @@ fn octet_length_column(expression: &SqlExpression) -> Option<&SqlColumnRef> {
         name,
         arguments,
         distinct: false,
+        filter: None,
     } = expression
     else {
         return None;
@@ -401,6 +403,7 @@ fn unwrap_coalesce(expression: &SqlExpression) -> Option<(&SqlExpression, Option
         name,
         arguments,
         distinct: false,
+        filter: None,
     } = expression
     else {
         return Some((expression, None));

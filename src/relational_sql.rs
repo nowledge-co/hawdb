@@ -1549,6 +1549,166 @@ mod tests {
         std::fs::remove_dir_all(path).expect("remove durable arithmetic test directory");
     }
 
+    #[test]
+    fn relational_aggregate_filters_preserve_grouping_distinct_and_null_semantics() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE entries (\
+                    id TEXT PRIMARY KEY, \
+                    feed_id TEXT NOT NULL, \
+                    is_read BOOLEAN, \
+                    is_saved BOOLEAN, \
+                    amount BIGINT\
+                )",
+            )
+            .expect("create aggregate filter table");
+        for (id, feed_id, is_read, is_saved, amount) in [
+            (
+                "entry-1",
+                "feed-1",
+                Value::Bool(false),
+                Value::Bool(true),
+                Value::Int(4),
+            ),
+            (
+                "entry-2",
+                "feed-1",
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Int(4),
+            ),
+            (
+                "entry-3",
+                "feed-2",
+                Value::Bool(false),
+                Value::Bool(true),
+                Value::Int(8),
+            ),
+            (
+                "entry-4",
+                "feed-2",
+                Value::Null,
+                Value::Bool(false),
+                Value::Null,
+            ),
+            (
+                "entry-5",
+                "feed-2",
+                Value::Bool(false),
+                Value::Bool(true),
+                Value::Int(8),
+            ),
+        ] {
+            database
+                .query_sql_with_params(
+                    "INSERT INTO entries (id, feed_id, is_read, is_saved, amount) \
+                     VALUES ($1, $2, $3, $4, $5)",
+                    &[
+                        Value::String(id.to_string()),
+                        Value::String(feed_id.to_string()),
+                        is_read,
+                        is_saved,
+                        amount,
+                    ],
+                )
+                .expect("insert aggregate filter row");
+        }
+
+        let totals = database
+            .query_sql(
+                "SELECT \
+                    COUNT(*) AS entry_count, \
+                    COUNT(*) FILTER (WHERE is_read = FALSE) AS unread_count, \
+                    COUNT(amount) FILTER (WHERE is_read = FALSE) AS unread_amount_count, \
+                    SUM(amount) FILTER (WHERE is_read = FALSE) AS unread_amount_sum, \
+                    SUM(amount) FILTER (WHERE is_read IS NULL) AS null_read_amount_sum \
+                 FROM entries",
+            )
+            .expect("aggregate filters on one snapshot");
+        assert_eq!(
+            totals.rows,
+            vec![BTreeMap::from([
+                ("entry_count".to_string(), Value::Int(5)),
+                ("unread_count".to_string(), Value::Int(3)),
+                ("unread_amount_count".to_string(), Value::Int(3)),
+                ("unread_amount_sum".to_string(), Value::Int(20)),
+                ("null_read_amount_sum".to_string(), Value::Null),
+            ])]
+        );
+
+        let distinct = database
+            .query_sql(
+                "SELECT COUNT(DISTINCT amount) FILTER (WHERE is_read = FALSE) AS amount_count \
+                 FROM entries",
+            )
+            .expect("filtered distinct count");
+        assert_eq!(distinct.rows[0]["amount_count"], Value::Int(2));
+
+        let grouped = database
+            .query_sql(
+                "SELECT \
+                    feed_id, \
+                    COUNT(*) FILTER (WHERE is_read = FALSE) AS unread_count, \
+                    SUM(amount) FILTER (WHERE is_read = FALSE) AS unread_amount_sum, \
+                    COUNT(*) FILTER (WHERE is_read IS NULL) AS null_read_count \
+                 FROM entries GROUP BY feed_id",
+            )
+            .expect("grouped aggregate filters");
+        assert_eq!(
+            grouped.rows,
+            vec![
+                BTreeMap::from([
+                    ("feed_id".to_string(), Value::String("feed-1".to_string())),
+                    ("unread_count".to_string(), Value::Int(1)),
+                    ("unread_amount_sum".to_string(), Value::Int(4)),
+                    ("null_read_count".to_string(), Value::Int(0)),
+                ]),
+                BTreeMap::from([
+                    ("feed_id".to_string(), Value::String("feed-2".to_string())),
+                    ("unread_count".to_string(), Value::Int(2)),
+                    ("unread_amount_sum".to_string(), Value::Int(16)),
+                    ("null_read_count".to_string(), Value::Int(1)),
+                ]),
+            ]
+        );
+
+        let parameterized = database
+            .query_sql_with_params(
+                "SELECT COUNT(*) FILTER (WHERE is_saved = $1) AS saved_count FROM entries",
+                &[Value::Bool(true)],
+            )
+            .expect("parameterized aggregate filter");
+        assert_eq!(parameterized.rows[0]["saved_count"], Value::Int(3));
+
+        let empty = database
+            .query_sql(
+                "SELECT \
+                    COUNT(*) FILTER (WHERE is_read = FALSE) AS unread_count, \
+                    SUM(amount) FILTER (WHERE is_read = FALSE) AS unread_amount_sum \
+                 FROM entries WHERE feed_id = 'missing'",
+            )
+            .expect("aggregate filter over empty selected input");
+        assert_eq!(
+            empty.rows,
+            vec![BTreeMap::from([
+                ("unread_count".to_string(), Value::Int(0)),
+                ("unread_amount_sum".to_string(), Value::Null),
+            ])]
+        );
+
+        let explain = database
+            .query_sql(
+                "EXPLAIN ANALYZE SELECT COUNT(*) FILTER (WHERE is_read = FALSE) \
+                 AS unread_count FROM entries",
+            )
+            .expect("explain aggregate filter");
+        assert!(
+            relational_explain_operator_info(&explain, "RelationalAggregateExec")
+                .contains("count(*) FILTER (is_read = false)")
+        );
+    }
+
     fn assert_uuidv7(value: crate::Uuid) {
         let bytes = value.as_bytes();
         assert_eq!(bytes[6] >> 4, 7, "uuidv7 version bits");

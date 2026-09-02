@@ -260,6 +260,7 @@ fn lower_column_default(expr: &Expr) -> Result<SqlColumnDefault> {
             name,
             arguments,
             distinct: false,
+            filter: None,
         } if name == "uuidv7" && arguments.is_empty() => Ok(SqlColumnDefault::UuidV7),
         SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL column default function {name}"

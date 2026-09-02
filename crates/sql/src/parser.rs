@@ -398,7 +398,6 @@ pub(super) fn lower_sql_expression(expr: &Expr) -> Result<SqlExpression> {
 fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlExpression> {
     if function.uses_odbc_syntax
         || !matches!(function.parameters, FunctionArguments::None)
-        || function.filter.is_some()
         || function.null_treatment.is_some()
         || function.over.is_some()
         || !function.within_group.is_empty()
@@ -441,14 +440,29 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlE
             )),
         })
         .collect::<Result<Vec<_>>>()?;
+    let filter = function
+        .filter
+        .as_deref()
+        .map(lower_predicate)
+        .transpose()?;
     match name.as_str() {
-        "count" | "sum" | "max" | "coalesce" | "octet_length" | "uuidv7" => {
+        "count" | "sum" => Ok(SqlExpression::Function {
+            name: name.clone(),
+            arguments,
+            distinct,
+            filter,
+        }),
+        "max" | "coalesce" | "octet_length" | "uuidv7" if filter.is_none() => {
             Ok(SqlExpression::Function {
                 name: name.clone(),
                 arguments,
                 distinct,
+                filter,
             })
         }
+        "max" | "coalesce" | "octet_length" | "uuidv7" => Err(SkeinError::Semantic(
+            "FILTER is supported only for COUNT and SUM aggregates".to_string(),
+        )),
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL function {name}"
         ))),

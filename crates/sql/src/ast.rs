@@ -252,6 +252,7 @@ pub enum SqlExpression {
         name: String,
         arguments: Vec<SqlFunctionArgument>,
         distinct: bool,
+        filter: Option<SqlPredicate>,
     },
 }
 
