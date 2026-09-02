@@ -6,6 +6,7 @@ pub use crate::relational_sql::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
     RelationalSqlStageTimings,
 };
+pub use skein_executor::BlockingOperatorMemoryReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfiledRelationalSqlQueryOutput {
@@ -25,6 +26,8 @@ pub struct RelationalSqlReadProfile {
     pub hydrated_decompressed_bytes: usize,
     pub index_reads: Vec<RelationalSqlIndexReadProfile>,
     pub row_read: RelationalSqlRowReadProfile,
+    /// Memory and spill evidence for blocking relational operators.
+    pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

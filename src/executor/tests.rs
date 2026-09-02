@@ -134,6 +134,57 @@ fn empty_exec_returns_without_scanning_or_buffering_rows() {
 }
 
 #[test]
+fn adjacency_exists_exec_filters_bound_pairs_and_reports_its_operator() {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::in_memory();
+    let source = store
+        .create_node(&mut catalog, "Source", BTreeMap::new())
+        .unwrap();
+    let matching_target = store
+        .create_node(&mut catalog, "Target", BTreeMap::new())
+        .unwrap();
+    store
+        .create_node(&mut catalog, "Target", BTreeMap::new())
+        .unwrap();
+    store
+        .create_relationship(
+            &mut catalog,
+            source,
+            matching_target,
+            "LINKS_TO",
+            BTreeMap::new(),
+        )
+        .unwrap();
+    let plan = PhysicalPlan::AdjacencyExistsExec {
+        source_variable: "source".to_string(),
+        rel_type: "LINKS_TO".to_string(),
+        direction: crate::cypher::RelationshipDirection::Outgoing,
+        target_variable: "target".to_string(),
+        input: Box::new(PhysicalPlan::NodeCartesianProductExec {
+            left: Box::new(PhysicalPlan::SeqNodeScan {
+                variable: "source".to_string(),
+                label: "Source".to_string(),
+            }),
+            right: Box::new(PhysicalPlan::SeqNodeScan {
+                variable: "target".to_string(),
+                label: "Target".to_string(),
+            }),
+        }),
+    };
+
+    let output = execute_with_row_limit_profile(&plan, &mut catalog, &mut store, None).unwrap();
+
+    assert_eq!(output.rows.len(), 1);
+    assert!(output
+        .profile
+        .operator_cardinality_profiles
+        .iter()
+        .any(|profile| {
+            profile.operator.as_str() == "AdjacencyExistsExec" && profile.actual_rows == Some(1)
+        }));
+}
+
+#[test]
 fn node_count_exec_uses_label_count_without_scanning() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();

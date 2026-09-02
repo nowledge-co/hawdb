@@ -4549,6 +4549,77 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
         assert_eq!(read_report.delta_pages_read, report.delta_pages);
     }
 
+    let inserted_document = RelationalKey(vec![RelationalValue::Text("doc-004".to_string())]);
+    let mut exact_inserted = Vec::new();
+    let exact_report = reader
+        .visit_exact_postings(
+            "documents",
+            RELATIONAL_PRIMARY_INDEX_NAME,
+            &inserted_document,
+            RelationalIndexReadLimits::default(),
+            |primary_key| {
+                exact_inserted.push(primary_key.clone());
+                true
+            },
+        )
+        .expect("recovery selectors find one inserted primary key");
+    assert_eq!(exact_inserted, vec![inserted_document.clone()]);
+    assert!(exact_report.delta_pages_read < report.delta_pages);
+    assert_eq!(
+        exact_report.delta_pages_read + exact_report.delta_pages_skipped,
+        report.delta_pages
+    );
+
+    let mut batch_inserted = Vec::new();
+    let batch_report = reader
+        .visit_prefix_entries_many(
+            "documents",
+            RELATIONAL_PRIMARY_INDEX_NAME,
+            std::slice::from_ref(&inserted_document),
+            RelationalIndexReadLimits::default(),
+            |index_key, primary_key| {
+                batch_inserted.push((index_key.clone(), primary_key.clone()));
+                true
+            },
+        )
+        .expect("recovery batch selectors find one inserted primary key");
+    assert_eq!(
+        batch_inserted,
+        vec![(inserted_document.clone(), inserted_document.clone())]
+    );
+    assert!(batch_report.delta_pages_read < report.delta_pages);
+    assert_eq!(
+        batch_report.delta_pages_read + batch_report.delta_pages_skipped,
+        report.delta_pages
+    );
+
+    let mut range_inserted = Vec::new();
+    let range_report = reader
+        .visit_range_entries(
+            "documents",
+            RELATIONAL_PRIMARY_INDEX_NAME,
+            &RelationalIndexRangeScan {
+                prefix: inserted_document.clone(),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            RelationalIndexReadLimits::default(),
+            |index_key, primary_key| {
+                range_inserted.push((index_key.clone(), primary_key.clone()));
+                true
+            },
+        )
+        .expect("recovery range selectors find one inserted primary key");
+    assert_eq!(
+        range_inserted,
+        vec![(inserted_document.clone(), inserted_document.clone())]
+    );
+    assert!(range_report.delta_pages_read < report.delta_pages);
+    assert_eq!(
+        range_report.delta_pages_read + range_report.delta_pages_skipped,
+        report.delta_pages
+    );
+
     let owner_prefix = RelationalKey(vec![RelationalValue::Text("owner-a".to_string())]);
     let expected_prefix = state
         .index_prefix_lookup(
