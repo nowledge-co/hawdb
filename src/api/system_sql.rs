@@ -607,6 +607,25 @@ fn bind_predicate(predicate: SqlPredicate, parameters: &[Value]) -> Result<SqlPr
                 .collect::<Result<Vec<_>>>()?,
             negated,
         },
+        SqlPredicate::Like {
+            left,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => {
+            let pattern = bind_value(pattern, parameters)?;
+            if let Value::String(pattern) = &pattern {
+                skein_sql::sql_like_matches("", pattern, escape, case_insensitive)?;
+            }
+            SqlPredicate::Like {
+                left,
+                pattern: SqlValue::Literal(pattern),
+                case_insensitive,
+                negated,
+                escape,
+            }
+        }
         SqlPredicate::IsNull { column, negated } => SqlPredicate::IsNull { column, negated },
     })
 }
@@ -2053,6 +2072,23 @@ fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
                 matched
             }
         }
+        SqlPredicate::Like {
+            left,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => {
+            let matched = row.get(&left.name).zip(match pattern {
+                SqlValue::Literal(Value::String(pattern)) => Some(pattern),
+                _ => None,
+            });
+            let Some((Value::String(value), pattern)) = matched else {
+                return false;
+            };
+            skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
+                .is_ok_and(|matched| matched != *negated)
+        }
         SqlPredicate::IsNull { column, negated } => {
             let matched = row
                 .get(&column.name)
@@ -2158,6 +2194,7 @@ fn validate_predicate_columns(table: SystemTable, predicate: Option<&SqlPredicat
         SqlPredicate::Not(inner) => validate_predicate_columns(table, Some(inner)),
         SqlPredicate::Compare { left, .. }
         | SqlPredicate::InList { left, .. }
+        | SqlPredicate::Like { left, .. }
         | SqlPredicate::IsNull { column: left, .. } => validate_column(table, left),
         SqlPredicate::CompareColumns { left, right, .. } => {
             validate_column(table, left)?;

@@ -1270,7 +1270,9 @@ fn collect_predicate_hydration_columns(
         SqlPredicate::Not(predicate) => {
             collect_predicate_hydration_columns(predicate, value_columns)
         }
-        SqlPredicate::Compare { left, .. } | SqlPredicate::InList { left, .. } => {
+        SqlPredicate::Compare { left, .. }
+        | SqlPredicate::InList { left, .. }
+        | SqlPredicate::Like { left, .. } => {
             value_columns.push(left.clone());
         }
         SqlPredicate::CompareColumns { left, right, .. } => {
@@ -1310,7 +1312,9 @@ fn collect_predicate_columns<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&
             collect_predicate_columns(right, output);
         }
         SqlPredicate::Not(predicate) => collect_predicate_columns(predicate, output),
-        SqlPredicate::Compare { left, .. } | SqlPredicate::InList { left, .. } => output.push(left),
+        SqlPredicate::Compare { left, .. }
+        | SqlPredicate::InList { left, .. }
+        | SqlPredicate::Like { left, .. } => output.push(left),
         SqlPredicate::CompareColumns { left, right, .. } => {
             output.push(left);
             output.push(right);

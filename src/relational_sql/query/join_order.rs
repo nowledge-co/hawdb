@@ -1102,6 +1102,19 @@ fn qualify_predicate(
             values: values.clone(),
             negated: *negated,
         },
+        SqlPredicate::Like {
+            left,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => SqlPredicate::Like {
+            left: qualify_column(left, relations)?,
+            pattern: pattern.clone(),
+            case_insensitive: *case_insensitive,
+            negated: *negated,
+            escape: *escape,
+        },
         SqlPredicate::IsNull { column, negated } => SqlPredicate::IsNull {
             column: qualify_column(column, relations)?,
             negated: *negated,
@@ -1142,6 +1155,7 @@ fn bind_null_rejection_predicate(
             values: values.iter().map(bind_null_rejection_value).collect(),
             negated: *negated,
         },
+        SqlPredicate::Like { .. } => return None,
         SqlPredicate::IsNull { column, negated } => {
             let column = bind_null_rejection_column(column, relations)?;
             if *negated {
@@ -1223,6 +1237,7 @@ fn collect_predicate_columns<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&
         SqlPredicate::Not(predicate) => collect_predicate_columns(predicate, output),
         SqlPredicate::Compare { left, .. }
         | SqlPredicate::InList { left, .. }
+        | SqlPredicate::Like { left, .. }
         | SqlPredicate::IsNull { column: left, .. } => output.push(left),
         SqlPredicate::CompareColumns { left, right, .. } => {
             output.push(left);

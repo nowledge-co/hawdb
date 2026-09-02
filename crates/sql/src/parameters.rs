@@ -176,6 +176,7 @@ fn collect_predicate_parameters(predicate: &SqlPredicate, positions: &mut BTreeS
                 collect_value_parameter(value, positions);
             }
         }
+        SqlPredicate::Like { pattern, .. } => collect_value_parameter(pattern, positions),
         SqlPredicate::CompareColumns { .. } | SqlPredicate::IsNull { .. } => {}
     }
 }

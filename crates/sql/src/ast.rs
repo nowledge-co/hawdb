@@ -1,4 +1,4 @@
-use skein_core::{LogicalType, Value};
+use skein_core::{LogicalType, Result, SkeinError, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlStatement {
@@ -322,10 +322,121 @@ pub enum SqlPredicate {
         values: Vec<SqlValue>,
         negated: bool,
     },
+    Like {
+        left: SqlColumnRef,
+        pattern: SqlValue,
+        case_insensitive: bool,
+        negated: bool,
+        escape: SqlLikeEscape,
+    },
     IsNull {
         column: SqlColumnRef,
         negated: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlLikeEscape {
+    Character(char),
+    Disabled,
+}
+
+/// Matches SQL LIKE patterns with locale-independent Unicode lowercasing for ILIKE.
+pub fn sql_like_matches(
+    value: &str,
+    pattern: &str,
+    escape: SqlLikeEscape,
+    case_insensitive: bool,
+) -> Result<bool> {
+    let value = normalize_like_value(value, case_insensitive);
+    let tokens = tokenize_like_pattern(pattern, escape, case_insensitive)?;
+    let value = value.chars().collect::<Vec<_>>();
+
+    let mut value_index = 0;
+    let mut pattern_index = 0;
+    let mut wildcard_index = None;
+    let mut wildcard_value_index = 0;
+    while value_index < value.len() {
+        match tokens.get(pattern_index) {
+            Some(LikeToken::Literal(expected)) if value[value_index] == *expected => {
+                value_index += 1;
+                pattern_index += 1;
+            }
+            Some(LikeToken::One) => {
+                value_index += 1;
+                pattern_index += 1;
+            }
+            Some(LikeToken::Many) => {
+                wildcard_index = Some(pattern_index);
+                wildcard_value_index = value_index;
+                pattern_index += 1;
+            }
+            _ => {
+                let Some(wildcard_index) = wildcard_index else {
+                    return Ok(false);
+                };
+                wildcard_value_index += 1;
+                value_index = wildcard_value_index;
+                pattern_index = wildcard_index + 1;
+            }
+        }
+    }
+    while matches!(tokens.get(pattern_index), Some(LikeToken::Many)) {
+        pattern_index += 1;
+    }
+    Ok(pattern_index == tokens.len())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LikeToken {
+    Literal(char),
+    One,
+    Many,
+}
+
+fn normalize_like_value(value: &str, case_insensitive: bool) -> String {
+    if case_insensitive {
+        value.chars().flat_map(char::to_lowercase).collect()
+    } else {
+        value.to_string()
+    }
+}
+
+fn tokenize_like_pattern(
+    pattern: &str,
+    escape: SqlLikeEscape,
+    case_insensitive: bool,
+) -> Result<Vec<LikeToken>> {
+    let escape = match escape {
+        SqlLikeEscape::Character(character) => Some(character),
+        SqlLikeEscape::Disabled => None,
+    };
+    let mut tokens = Vec::with_capacity(pattern.chars().count());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if Some(character) == escape {
+            let escaped = characters.next().ok_or_else(|| {
+                SkeinError::Semantic("LIKE pattern ends with its escape character".to_string())
+            })?;
+            push_like_literal(&mut tokens, escaped, case_insensitive);
+            continue;
+        }
+        match character {
+            '%' if !matches!(tokens.last(), Some(LikeToken::Many)) => tokens.push(LikeToken::Many),
+            '%' => {}
+            '_' => tokens.push(LikeToken::One),
+            literal => push_like_literal(&mut tokens, literal, case_insensitive),
+        }
+    }
+    Ok(tokens)
+}
+
+fn push_like_literal(tokens: &mut Vec<LikeToken>, literal: char, case_insensitive: bool) {
+    if case_insensitive {
+        tokens.extend(literal.to_lowercase().map(LikeToken::Literal));
+    } else {
+        tokens.push(LikeToken::Literal(literal));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

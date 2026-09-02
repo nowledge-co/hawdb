@@ -1,7 +1,7 @@
 use super::{
     parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlArithmeticOperand,
     SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp,
-    SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument, SqlJoinKind,
+    SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument, SqlJoinKind, SqlLikeEscape,
     SqlLockStrength, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableName, SqlValue,
 };
 use skein_core::Value;
@@ -559,4 +559,87 @@ fn parses_nested_octet_length_aggregate() {
             alias: Some(alias),
         } if name == "coalesce" && alias == "payload_bytes"
     ));
+}
+
+#[test]
+fn parses_like_and_ilike_predicates_with_parameters_and_escape() {
+    let statement = parse_postgres_sql(
+        "SELECT id FROM documents WHERE title LIKE $1 ESCAPE '!' OR title NOT ILIKE 'guide%'",
+    )
+    .expect("valid LIKE and ILIKE predicates");
+    let SqlStatement::Select(select) = statement else {
+        panic!("expected SELECT");
+    };
+    let Some(SqlPredicate::Or(left, right)) = select.selection else {
+        panic!("expected disjunctive predicate");
+    };
+    assert!(matches!(
+        *left,
+        SqlPredicate::Like {
+            pattern: SqlValue::Parameter(1),
+            case_insensitive: false,
+            negated: false,
+            escape: SqlLikeEscape::Character('!'),
+            ..
+        }
+    ));
+    assert!(matches!(
+        *right,
+        SqlPredicate::Like {
+            pattern: SqlValue::Literal(Value::String(ref pattern)),
+            case_insensitive: true,
+            negated: true,
+            escape: SqlLikeEscape::Character('\\'),
+            ..
+        } if pattern == "guide%"
+    ));
+}
+
+#[test]
+fn like_matcher_handles_wildcards_escaping_and_unicode_case_insensitivity() {
+    assert!(super::sql_like_matches(
+        "prefix-middle-suffix",
+        "prefix%suffix",
+        SqlLikeEscape::Character('\\'),
+        false,
+    )
+    .expect("valid LIKE pattern"));
+    assert!(super::sql_like_matches(
+        "road_map",
+        r"road\_map",
+        SqlLikeEscape::Character('\\'),
+        false,
+    )
+    .expect("escaped underscore"));
+    assert!(super::sql_like_matches(
+        "100% complete",
+        "100!% complete",
+        SqlLikeEscape::Character('!'),
+        false,
+    )
+    .expect("custom escape"));
+    assert!(super::sql_like_matches(
+        "ÄPFEL guide",
+        "%äpfel%",
+        SqlLikeEscape::Character('\\'),
+        true,
+    )
+    .expect("locale-independent Unicode lowercase"));
+    assert!(!super::sql_like_matches(
+        "roadXmap",
+        r"road\_map",
+        SqlLikeEscape::Character('\\'),
+        false,
+    )
+    .expect("literal underscore does not match arbitrary character"));
+    assert!(
+        super::sql_like_matches("trailing\\", "trailing\\", SqlLikeEscape::Disabled, false,)
+            .expect("disabled escape retains literal backslash")
+    );
+    assert!(
+        super::sql_like_matches("value", "value\\", SqlLikeEscape::Character('\\'), false,)
+            .expect_err("dangling escape must fail")
+            .to_string()
+            .contains("ends with its escape")
+    );
 }

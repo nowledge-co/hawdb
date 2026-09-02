@@ -295,6 +295,20 @@ pub(super) fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
                 .collect::<Result<Vec<_>>>()?,
             negated: *negated,
         }),
+        Expr::Like {
+            negated,
+            any,
+            expr,
+            pattern,
+            escape_char,
+        } => lower_like_predicate(expr, pattern, *negated, *any, escape_char.as_ref(), false),
+        Expr::ILike {
+            negated,
+            any,
+            expr,
+            pattern,
+            escape_char,
+        } => lower_like_predicate(expr, pattern, *negated, *any, escape_char.as_ref(), true),
         Expr::IsNull(expr) => Ok(SqlPredicate::IsNull {
             column: lower_column_expr(expr)?,
             negated: false,
@@ -307,6 +321,49 @@ pub(super) fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
             "unsupported PostgreSQL predicate expression {expr}"
         ))),
     }
+}
+
+fn lower_like_predicate(
+    expr: &Expr,
+    pattern: &Expr,
+    negated: bool,
+    any: bool,
+    escape_char: Option<&ParserValue>,
+    case_insensitive: bool,
+) -> Result<SqlPredicate> {
+    if any {
+        return Err(SkeinError::Semantic(
+            "PostgreSQL LIKE ANY is not supported".to_string(),
+        ));
+    }
+    Ok(SqlPredicate::Like {
+        left: lower_column_expr(expr)?,
+        pattern: lower_literal_expr(pattern)?,
+        case_insensitive,
+        negated,
+        escape: lower_like_escape(escape_char)?,
+    })
+}
+
+fn lower_like_escape(escape_char: Option<&ParserValue>) -> Result<SqlLikeEscape> {
+    let Some(escape_char) = escape_char else {
+        return Ok(SqlLikeEscape::Character('\\'));
+    };
+    let Some(escape) = escape_char.clone().into_string() else {
+        return Err(SkeinError::Semantic(
+            "LIKE ESCAPE must be a string literal".to_string(),
+        ));
+    };
+    let mut characters = escape.chars();
+    let Some(character) = characters.next() else {
+        return Ok(SqlLikeEscape::Disabled);
+    };
+    if characters.next().is_some() {
+        return Err(SkeinError::Semantic(
+            "LIKE ESCAPE must contain at most one Unicode scalar".to_string(),
+        ));
+    }
+    Ok(SqlLikeEscape::Character(character))
 }
 
 fn lower_distinct(distinct: Option<&Distinct>) -> Result<bool> {

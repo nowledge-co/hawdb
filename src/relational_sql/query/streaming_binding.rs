@@ -1,10 +1,14 @@
 use super::{bind_sql_value, compare_value_refs, relational_ref_to_value, value_to_relational};
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::row_access::RelationalReadRowRef;
-use crate::sql::{SelectProjection, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlPredicate};
+use crate::sql::{
+    SelectProjection, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlLikeEscape, SqlPredicate,
+};
 use crate::value::Value;
 use skein_executor::{QueryRowsBuilder, QuerySchema};
-use skein_storage::{RelationalTableSchema, RelationalValue, RelationalValueRef};
+use skein_storage::{
+    RelationalScalarType, RelationalTableSchema, RelationalValue, RelationalValueRef,
+};
 
 pub(super) enum BoundStreamingPredicate {
     And(Box<Self>, Box<Self>),
@@ -24,6 +28,13 @@ pub(super) enum BoundStreamingPredicate {
         left: usize,
         values: Box<[RelationalValue]>,
         negated: bool,
+    },
+    Like {
+        left: usize,
+        pattern: RelationalValue,
+        case_insensitive: bool,
+        negated: bool,
+        escape: SqlLikeEscape,
     },
     IsNull {
         column: usize,
@@ -96,6 +107,29 @@ impl BoundStreamingPredicate {
                     negated: *negated,
                 })
             }
+            SqlPredicate::Like {
+                left,
+                pattern,
+                case_insensitive,
+                negated,
+                escape,
+            } => {
+                let left = bind_column(left, schema, table, qualifier)?;
+                if schema.columns[left].scalar_type != RelationalScalarType::Text {
+                    return Err(SkeinError::Semantic(
+                        "LIKE and ILIKE require a TEXT column".to_string(),
+                    ));
+                }
+                let pattern = value_to_relational(bind_sql_value(pattern, parameters)?)?;
+                validate_value_type(schema, left, &pattern)?;
+                Ok(Self::Like {
+                    left,
+                    pattern,
+                    case_insensitive: *case_insensitive,
+                    negated: *negated,
+                    escape: *escape,
+                })
+            }
             SqlPredicate::IsNull { column, negated } => Ok(Self::IsNull {
                 column: bind_column(column, schema, table, qualifier)?,
                 negated: *negated,
@@ -144,6 +178,26 @@ impl BoundStreamingPredicate {
                 }
                 Ok(if has_unknown { None } else { Some(*negated) })
             }
+            Self::Like {
+                left,
+                pattern,
+                case_insensitive,
+                negated,
+                escape,
+            } => match (row.value(*left)?, pattern.as_ref()) {
+                (RelationalValueRef::Null, _) | (_, RelationalValueRef::Null) => Ok(None),
+                (RelationalValueRef::Text(value), RelationalValueRef::Text(pattern)) => {
+                    let matched =
+                        skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
+                    Ok(Some(matched != *negated))
+                }
+                (RelationalValueRef::Overflow(_), _) => Err(SkeinError::Execution(
+                    "LIKE reached an overflow value without hydration".to_string(),
+                )),
+                _ => Err(SkeinError::Semantic(
+                    "LIKE and ILIKE require TEXT values".to_string(),
+                )),
+            },
             Self::IsNull { column, negated } => Ok(Some(
                 matches!(row.value(*column)?, RelationalValueRef::Null) != *negated,
             )),

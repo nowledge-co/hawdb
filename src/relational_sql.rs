@@ -463,6 +463,11 @@ fn compile_mutation_predicate(
                     .to_string(),
             ));
         }
+        SqlPredicate::Like { .. } => {
+            return Err(SkeinError::Semantic(
+                "single-table mutation predicates do not support LIKE or ILIKE".to_string(),
+            ));
+        }
         SqlPredicate::InList {
             left,
             values,
@@ -2783,6 +2788,117 @@ mod tests {
             .rows
             .iter()
             .all(|row| row.contains_key("payload") && !row.contains_key("body")));
+    }
+
+    #[test]
+    fn relational_sql_like_and_ilike_cover_scans_joins_groups_and_nulls() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE like_feeds (id TEXT PRIMARY KEY, title TEXT NOT NULL)")
+            .expect("create LIKE feeds");
+        database
+            .query_sql(
+                "CREATE TABLE like_documents (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL, title TEXT)",
+            )
+            .expect("create LIKE documents");
+        database
+            .query_sql(
+                "INSERT INTO like_feeds (id, title) VALUES \
+                 ('feed-1', 'Engineering Notes'), ('feed-2', 'General')",
+            )
+            .expect("insert LIKE feeds");
+        database
+            .query_sql(
+                "INSERT INTO like_documents (id, feed_id, title) VALUES \
+                 ('doc-1', 'feed-1', 'road_map'), \
+                 ('doc-2', 'feed-1', 'roadXmap'), \
+                 ('doc-3', 'feed-2', '100% complete'), \
+                 ('doc-4', 'feed-2', 'ÄPFEL Guide'), \
+                 ('doc-5', 'feed-2', 'misc'), \
+                 ('doc-6', 'feed-2', NULL)",
+            )
+            .expect("insert LIKE documents");
+
+        let escaped = database
+            .query_sql("SELECT id FROM like_documents WHERE title LIKE 'road\\_map'")
+            .expect("match escaped underscore through borrowed scan");
+        assert_eq!(escaped.rows.len(), 1);
+        assert_eq!(escaped.rows[0]["id"], text("doc-1"));
+
+        let wildcard = database
+            .query_sql("SELECT id FROM like_documents WHERE title LIKE 'road_map'")
+            .expect("match single-character wildcard");
+        assert_eq!(wildcard.rows.len(), 2);
+
+        let suffix = database
+            .query_sql_with_params(
+                "SELECT id FROM like_documents WHERE title LIKE $1",
+                &[text("%complete")],
+            )
+            .expect("match parameterized suffix");
+        assert_eq!(suffix.rows.len(), 1);
+        assert_eq!(suffix.rows[0]["id"], text("doc-3"));
+
+        let custom_escape = database
+            .query_sql("SELECT id FROM like_documents WHERE title LIKE '100!% complete' ESCAPE '!'")
+            .expect("match custom escaped wildcard");
+        assert_eq!(custom_escape.rows.len(), 1);
+        assert_eq!(custom_escape.rows[0]["id"], text("doc-3"));
+
+        let ilike = database
+            .query_sql_with_params(
+                "SELECT id FROM like_documents WHERE title ILIKE $1",
+                &[text("%äpfel%")],
+            )
+            .expect("match Unicode ILIKE without a process locale");
+        assert_eq!(ilike.rows.len(), 1);
+        assert_eq!(ilike.rows[0]["id"], text("doc-4"));
+
+        let null_pattern = database
+            .query_sql_with_params(
+                "SELECT id FROM like_documents WHERE title LIKE $1",
+                &[Value::Null],
+            )
+            .expect("NULL LIKE pattern evaluates to unknown");
+        assert!(null_pattern.rows.is_empty());
+        let negated = database
+            .query_sql("SELECT id FROM like_documents WHERE title NOT ILIKE 'road%'")
+            .expect("NOT ILIKE retains SQL NULL semantics");
+        assert_eq!(negated.rows.len(), 3);
+        assert!(negated.rows.iter().all(|row| row["id"] != text("doc-6")));
+
+        let grouped = database
+            .query_sql(
+                "SELECT feed_id, COUNT(*) AS document_count \
+                 FROM like_documents WHERE title ILIKE '%guide%' GROUP BY feed_id",
+            )
+            .expect("group LIKE-filtered documents");
+        assert_eq!(grouped.rows.len(), 1);
+        assert_eq!(grouped.rows[0]["feed_id"], text("feed-2"));
+        assert_eq!(grouped.rows[0]["document_count"], Value::Int(1));
+
+        let joined = database
+            .query_sql(
+                "SELECT d.id FROM like_documents AS d \
+                 INNER JOIN like_feeds AS f ON f.id = d.feed_id \
+                 WHERE f.title ILIKE 'engineering%' OR d.title LIKE '%complete'",
+            )
+            .expect("evaluate LIKE predicates across a join");
+        assert_eq!(joined.rows.len(), 3);
+
+        let explain = database
+            .query_sql("EXPLAIN SELECT id FROM like_documents WHERE title ILIKE '%guide%'")
+            .expect("explain scan-based ILIKE evaluation");
+        assert!(relational_explain_operator_info(&explain, "SelectionExec").contains("ILIKE"));
+        assert!(explain.rows.iter().any(|row| matches!(
+            row.get("id"),
+            Some(Value::String(id)) if id.contains("TableFullScanExec")
+        )));
+
+        let error = database
+            .query_sql("UPDATE like_documents SET title = 'changed' WHERE title LIKE 'road%'")
+            .expect_err("mutation LIKE remains outside the relational write contract");
+        assert!(error.to_string().contains("do not support LIKE or ILIKE"));
     }
 
     #[test]

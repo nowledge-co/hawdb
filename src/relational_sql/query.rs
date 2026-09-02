@@ -14,8 +14,8 @@ use crate::relational_sql::row_access::{
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression,
-    SqlFunctionArgument, SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
-    SqlValue,
+    SqlFunctionArgument, SqlJoinKind, SqlLikeEscape, SqlNullOrder, SqlOrderDirection, SqlPredicate,
+    SqlStatement, SqlValue,
 };
 use crate::value::Value;
 use skein_core::Catalog;
@@ -1644,7 +1644,10 @@ fn format_relational_explain(
             operator_id: None,
             estimated_rows: Some(output.access_path.estimated_rows),
             access_object: String::new(),
-            operator_info: "residual_predicate=true".to_string(),
+            operator_info: format!(
+                "residual_predicate={}",
+                explain_predicate(select.selection.as_ref().expect("selection is present"))
+            ),
             report_operator: None,
         });
     }
@@ -2186,6 +2189,29 @@ fn explain_predicate(predicate: &SqlPredicate) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        SqlPredicate::Like {
+            left,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => {
+            let mut explanation = format!(
+                "{} {}{} {}",
+                explain_column(left),
+                if *negated { "NOT " } else { "" },
+                if *case_insensitive { "ILIKE" } else { "LIKE" },
+                explain_sql_value(pattern)
+            );
+            match escape {
+                SqlLikeEscape::Character('\\') => {}
+                SqlLikeEscape::Character(character) => {
+                    explanation.push_str(&format!(" ESCAPE '{character}'"));
+                }
+                SqlLikeEscape::Disabled => explanation.push_str(" ESCAPE ''"),
+            }
+            explanation
+        }
         SqlPredicate::IsNull { column, negated } => format!(
             "{} IS {}NULL",
             explain_column(column),
@@ -5576,6 +5602,9 @@ fn sql_predicate_memory_bytes(predicate: &SqlPredicate) -> usize {
             column_ref_memory_bytes(left).saturating_add(std::mem::size_of::<Vec<SqlValue>>()),
             |total, value| total.saturating_add(sql_value_memory_bytes(value)),
         ),
+        SqlPredicate::Like { left, pattern, .. } => {
+            column_ref_memory_bytes(left).saturating_add(sql_value_memory_bytes(pattern))
+        }
         SqlPredicate::IsNull { column, .. } => column_ref_memory_bytes(column),
     })
 }
@@ -5762,6 +5791,38 @@ fn predicate_truth(
                 Some(false)
             };
             Ok(result.map(|value| value != *negated))
+        }
+        SqlPredicate::Like {
+            left,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => {
+            let (left, scalar_type) = resolve_column_with_type(row, left)?;
+            if scalar_type != RelationalScalarType::Text {
+                return Err(SkeinError::Semantic(
+                    "LIKE and ILIKE require a TEXT column".to_string(),
+                ));
+            }
+            let pattern = value_to_relational_as(
+                bind_sql_value(pattern, parameters)?,
+                RelationalScalarType::Text,
+            )?;
+            match (left, pattern) {
+                (RelationalValue::Null, _) | (_, RelationalValue::Null) => Ok(None),
+                (RelationalValue::Text(value), RelationalValue::Text(pattern)) => {
+                    let matched =
+                        skein_sql::sql_like_matches(value, &pattern, *escape, *case_insensitive)?;
+                    Ok(Some(matched != *negated))
+                }
+                (RelationalValue::Overflow(_), _) => Err(SkeinError::Execution(
+                    "LIKE reached an overflow value without hydration".to_string(),
+                )),
+                _ => Err(SkeinError::Semantic(
+                    "LIKE and ILIKE require TEXT values".to_string(),
+                )),
+            }
         }
         SqlPredicate::IsNull { column, negated } => Ok(Some(
             matches!(resolve_column(row, column)?, RelationalValue::Null) != *negated,
