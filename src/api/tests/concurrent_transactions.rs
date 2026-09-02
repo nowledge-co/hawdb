@@ -1727,6 +1727,55 @@ fn bigint_arithmetic_update_uses_the_existing_point_lock_contract() {
 }
 
 #[test]
+fn delete_cascade_blocks_a_concurrent_child_insert_before_publication() {
+    let db = Database::new().into_concurrent();
+    db.query_sql("CREATE TABLE public.parents (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    db.query_sql(
+        "CREATE TABLE public.children (\
+            id BIGINT PRIMARY KEY, \
+            parent_id BIGINT NOT NULL REFERENCES public.parents(id) ON DELETE CASCADE\
+        )",
+    )
+    .unwrap();
+    db.query_sql("INSERT INTO public.parents (id) VALUES (1)")
+        .unwrap();
+
+    let mut deleting = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    deleting
+        .query_sql("DELETE FROM public.parents WHERE id = 1")
+        .unwrap();
+
+    let mut inserting = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+    let error = inserting
+        .query_sql("INSERT INTO public.children (id, parent_id) VALUES (10, 1)")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("transaction lock wait timed out"));
+
+    deleting.commit().unwrap();
+    assert!(db
+        .query_sql("SELECT id FROM public.parents")
+        .unwrap()
+        .rows
+        .is_empty());
+    assert!(db
+        .query_sql("SELECT id FROM public.children")
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
 fn optimistic_transaction_rejects_locking_selects() {
     let db = Database::new().into_concurrent();
     db.query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY)")

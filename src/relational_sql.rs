@@ -908,6 +908,15 @@ mod tests {
             ))
             .expect("read UUID primary key");
         assert_eq!(point.rows[0]["id"], Value::Uuid(account_id));
+        assert_eq!(point.rows[0]["id"].to_string(), account_id.to_string());
+
+        let parameterized = database
+            .query_sql_with_params(
+                "SELECT id FROM accounts WHERE id = $1",
+                &[Value::String(account_id.to_string())],
+            )
+            .expect("bind UUID parameter as a typed scalar");
+        assert_eq!(parameterized.rows[0]["id"], Value::Uuid(account_id));
 
         let joined = database
             .query_sql(&format!(
@@ -1711,6 +1720,30 @@ mod tests {
         assert!(
             relational_explain_operator_info(&explain, "RelationalAggregateExec")
                 .contains("count(*) FILTER (is_read = false)")
+        );
+
+        let filtered_identity_sql =
+            "SELECT COUNT(*) FILTER (WHERE is_read = FALSE) AS unread_count FROM entries";
+        let unfiltered_identity_sql = "SELECT COUNT(*) AS entry_count FROM entries";
+        database
+            .query_sql(filtered_identity_sql)
+            .expect("record filtered aggregate statement identity");
+        database
+            .query_sql(unfiltered_identity_sql)
+            .expect("record unfiltered aggregate statement identity");
+        let filtered_summary = database
+            .query_sql(&format!(
+                "SELECT digest FROM system.statement_summary WHERE query_text = '{filtered_identity_sql}'"
+            ))
+            .expect("read filtered aggregate statement summary");
+        let unfiltered_summary = database
+            .query_sql(&format!(
+                "SELECT digest FROM system.statement_summary WHERE query_text = '{unfiltered_identity_sql}'"
+            ))
+            .expect("read unfiltered aggregate statement summary");
+        assert_ne!(
+            filtered_summary.rows[0]["digest"], unfiltered_summary.rows[0]["digest"],
+            "statement identity must retain aggregate FILTER shape"
         );
     }
 
