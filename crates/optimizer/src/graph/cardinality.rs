@@ -196,6 +196,7 @@ fn physical_plan_node_variable_distinct_count(
         PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }
         | PhysicalPlan::NodeColumnLookupExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. }
         | PhysicalPlan::AggregateExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
@@ -424,6 +425,7 @@ fn physical_plan_access_path_covers_property(
         | PhysicalPlan::ProjectExec { input, .. }
         | PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. }
         | PhysicalPlan::AggregateExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
@@ -509,6 +511,7 @@ fn physical_plan_node_label<'a>(plan: &'a PhysicalPlan, variable: &str) -> Optio
         }
         PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. }
         | PhysicalPlan::AggregateExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
@@ -539,6 +542,7 @@ fn physical_plan_relationship_type<'a>(plan: &'a PhysicalPlan, variable: &str) -
         }
         PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. }
         | PhysicalPlan::AggregateExec { input, .. }
         | PhysicalPlan::DistinctExec { input }

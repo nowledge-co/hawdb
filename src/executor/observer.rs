@@ -217,6 +217,7 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
         }
         PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. }
         | PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }

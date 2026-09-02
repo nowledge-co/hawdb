@@ -60,6 +60,7 @@ pub(crate) struct RelationalIndexExecutionEvidence {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub cache_admission_rejections: usize,
+    pub delta_pages_skipped: usize,
     pub delta_entries_visited: usize,
     pub live_batches_visited: usize,
     pub live_entries_visited: usize,
@@ -814,6 +815,7 @@ struct IndexReadMetrics {
     cache_hits: usize,
     cache_misses: usize,
     cache_admission_rejections: usize,
+    delta_pages_skipped: usize,
     delta_entries_visited: usize,
 }
 
@@ -828,6 +830,7 @@ impl IndexReadMetrics {
                 cache_hits: base.cache_hits,
                 cache_misses: base.cache_misses,
                 cache_admission_rejections: base.cache_admission_rejections,
+                delta_pages_skipped: 0,
                 delta_entries_visited: 0,
             },
             RelationalIndexReadViewBackendReport::Recovered(recovered) => Self {
@@ -866,6 +869,7 @@ impl IndexReadMetrics {
                     recovered.delta_cache_admission_rejections,
                     "recovered cache rejection count",
                 )?,
+                delta_pages_skipped: recovered.delta_pages_skipped,
                 delta_entries_visited: recovered.delta_entries_visited,
             },
         };
@@ -899,6 +903,11 @@ impl IndexReadMetrics {
             evidence.cache_admission_rejections,
             self.cache_admission_rejections,
             "cache admission rejection count",
+        )?;
+        evidence.delta_pages_skipped = checked_add(
+            evidence.delta_pages_skipped,
+            self.delta_pages_skipped,
+            "delta skipped-page count",
         )?;
         evidence.delta_entries_visited = checked_add(
             evidence.delta_entries_visited,
