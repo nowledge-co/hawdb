@@ -159,6 +159,62 @@ fn source_predicate_is_indexed_before_graph_expansion() {
 }
 
 #[test]
+fn bound_relationship_exists_lowers_to_an_observable_adjacency_operator() {
+    let logical = LogicalPlan::Filter {
+        predicate: Predicate::BoundRelationshipExists {
+            source_variable: "c".to_string(),
+            rel_type: "SYNTHESIZED_FROM".to_string(),
+            direction: skein_cypher::RelationshipDirection::Outgoing,
+            target_variable: "s".to_string(),
+        },
+        input: Box::new(LogicalPlan::Expand {
+            source_variable: "c".to_string(),
+            source_label: "Memory".to_string(),
+            rel_variable: None,
+            rel_type: "CRYSTALLIZED_FROM".to_string(),
+            rel_properties: Default::default(),
+            direction: skein_cypher::RelationshipDirection::Outgoing,
+            target_variable: "s".to_string(),
+            target_label: "Memory".to_string(),
+            min_hops: 1,
+            max_hops: 1,
+            optional: false,
+            input: Box::new(LogicalPlan::NodeScan {
+                variable: "c".to_string(),
+                label: "Memory".to_string(),
+            }),
+        }),
+    };
+
+    let (plan, trace) = CascadesOptimizer::new(OptimizerConfig { max_groups: 16 })
+        .optimize_with_catalog(&logical, &OptimizerCatalog::default());
+
+    assert!(matches!(
+        plan,
+        PhysicalPlan::AdjacencyExistsExec {
+            source_variable,
+            rel_type,
+            direction: skein_cypher::RelationshipDirection::Outgoing,
+            target_variable,
+            input,
+        } if source_variable == "c"
+            && rel_type == "SYNTHESIZED_FROM"
+            && target_variable == "s"
+            && matches!(input.as_ref(), PhysicalPlan::AdjacencyExpandExec { .. })
+    ));
+    assert_eq!(
+        trace
+            .selected_plan_operator_counts
+            .get("AdjacencyExistsExec"),
+        Some(&1)
+    );
+    assert!(trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("AdjacencyExistsExec")));
+}
+
+#[test]
 fn exact_or_lookup_lowers_to_one_index_multiseek() {
     let logical = LogicalPlan::Filter {
         predicate: Predicate::Or(vec![

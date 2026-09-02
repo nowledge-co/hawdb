@@ -2407,6 +2407,58 @@ impl GraphStore {
         filter: &PropertyFilter,
         mut consumer: impl FnMut(RelRecord) -> GraphScanControl,
     ) -> Result<(GraphScanControl, Option<ScanPruningReport>)> {
+        if self.canonical_base.is_none()
+            && let Some(rel_type) = rel_type
+            && let Some(candidate) = self.prune_relationship_candidates(Some(rel_type), filter)
+        {
+            let adjacency_entries = self
+                .adjacency_relationship_ids(node_id, rel_type, direction)
+                .map(AdjacencyPostingList::len)
+                .unwrap_or_default();
+            if candidate.rel_ids.len() <= adjacency_entries {
+                let candidate_count_before_filter = candidate.rel_ids.len();
+                let mut output_count = 0usize;
+                for relationship_id in &candidate.rel_ids {
+                    let relationship =
+                        self.relationships.get(relationship_id).ok_or_else(|| {
+                            SkeinError::StorageIntegrity(format!(
+                                "relationship property index references missing relationship {}",
+                                relationship_id.0
+                            ))
+                        })?;
+                    if !property_filter_matches(filter, relationship.id.0, &relationship.properties)
+                    {
+                        continue;
+                    }
+                    output_count = output_count.saturating_add(1);
+                    if relationship_matches_endpoint(relationship, node_id, direction)
+                        && consumer(relationship.clone()) == GraphScanControl::Stop
+                    {
+                        return Ok((GraphScanControl::Stop, None));
+                    }
+                }
+                let candidate_count_before_pruning =
+                    self.relationship_count_for_type(Some(rel_type));
+                return Ok((
+                    GraphScanControl::Continue,
+                    Some(ScanPruningReport {
+                        target_kind: ScanPruningTargetKind::Relationship,
+                        label_id: None,
+                        rel_type_id: Some(rel_type),
+                        strategy: candidate.strategy,
+                        pruned: true,
+                        exact_empty: candidate.exact_empty,
+                        candidate_count_before_pruning,
+                        pruned_candidate_count: candidate_count_before_pruning
+                            .saturating_sub(candidate_count_before_filter),
+                        candidate_count_before_filter,
+                        output_count,
+                        filtered_out_count: candidate_count_before_filter
+                            .saturating_sub(output_count),
+                    }),
+                ));
+            }
+        }
         self.visit_adjacent_relationships_owned(node_id, rel_type, direction, |relationship| {
             if property_filter_matches(filter, relationship.id.0, &relationship.properties) {
                 consumer(relationship)

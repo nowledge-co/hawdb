@@ -456,6 +456,87 @@ pub(super) fn stream_filtered_adjacency_expand_batches(
     )
 }
 
+pub(super) fn stream_adjacency_exists_batches(
+    plan: &PhysicalPlan,
+    input: &PhysicalPlan,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
+    let PhysicalPlan::AdjacencyExistsExec {
+        source_variable,
+        rel_type,
+        direction,
+        target_variable,
+        ..
+    } = plan
+    else {
+        return Err(SkeinError::Execution(
+            "expected adjacency exists plan".to_string(),
+        ));
+    };
+    let rel_type_id = context.catalog.rel_type_id(rel_type);
+    let emitted = Cell::new(0usize);
+    execute_binding_batches(input, context, ExecutionLimit::unlimited(), &mut |batch| {
+        let remaining = execution_limit
+            .output_rows
+            .unwrap_or(usize::MAX)
+            .saturating_sub(emitted.get());
+        if remaining == 0 {
+            return Ok(BatchControl::Stop);
+        }
+        let mut filtered = TransformBatchBuilder::new(
+            "AdjacencyExistsExec",
+            context.memory.batch_rows.get(),
+            context.memory.batch_payload_bytes,
+            context.memory_ledger,
+        )?;
+        let mut emit_filtered = |output: BindingBatch| {
+            emitted.set(emitted.get().saturating_add(output.len()));
+            emit(output)
+        };
+        for binding in batch {
+            runtime_checkpoint(context.task_context)?;
+            let exists = match (
+                rel_type_id,
+                binding.nodes.get(source_variable),
+                binding.nodes.get(target_variable),
+            ) {
+                (Some(rel_type_id), Some(source), Some(target)) => {
+                    skein_executor::scan::adjacency_exists(
+                        context.store,
+                        source.id,
+                        target.id,
+                        rel_type_id,
+                        *direction,
+                        context.task_context,
+                    )?
+                }
+                _ => false,
+            };
+            if exists {
+                filtered.reserve_before_allocation()?;
+                filtered.push(binding);
+                if filtered.is_full() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
+                    return Ok(BatchControl::Stop);
+                }
+                if execution_limit.is_reached(emitted.get().saturating_add(filtered.len())) {
+                    break;
+                }
+            }
+        }
+        if !filtered.is_empty() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+        Ok(if execution_limit.is_reached(emitted.get()) {
+            BatchControl::Stop
+        } else {
+            BatchControl::Continue
+        })
+    })
+}
+
 pub(super) fn stream_adjacency_expand_batches(
     plan: &PhysicalPlan,
     input: &PhysicalPlan,

@@ -84,6 +84,7 @@ impl PhysicalPlan {
             PhysicalPlan::IndexNodeRangeSeek { .. } => PhysicalPlanKind::IndexNodeRangeSeek,
             PhysicalPlan::IndexNodeTextSeek { .. } => PhysicalPlanKind::IndexNodeTextSeek,
             PhysicalPlan::AdjacencyExpandExec { .. } => PhysicalPlanKind::AdjacencyExpandExec,
+            PhysicalPlan::AdjacencyExistsExec { .. } => PhysicalPlanKind::AdjacencyExistsExec,
             PhysicalPlan::OptionalDegreeExec { .. } => PhysicalPlanKind::OptionalDegreeExec,
             PhysicalPlan::OptionalRelationshipCountSumExec { .. } => {
                 PhysicalPlanKind::OptionalRelationshipCountSumExec
@@ -113,6 +114,7 @@ impl PhysicalPlan {
             }
             PhysicalPlan::NodeColumnLookupExec { input, .. }
             | PhysicalPlan::AdjacencyExpandExec { input, .. }
+            | PhysicalPlan::AdjacencyExistsExec { input, .. }
             | PhysicalPlan::OptionalDegreeExec { input, .. }
             | PhysicalPlan::FilterExec { input, .. }
             | PhysicalPlan::ProjectExec { input, .. }

@@ -444,6 +444,13 @@ pub enum PhysicalPlan {
         graph_budget: Option<GraphExpansionBudget>,
         input: Box<PhysicalPlan>,
     },
+    AdjacencyExistsExec {
+        source_variable: String,
+        rel_type: String,
+        direction: RelationshipDirection,
+        target_variable: String,
+        input: Box<PhysicalPlan>,
+    },
     OptionalDegreeExec {
         source_variable: String,
         rel_type: String,

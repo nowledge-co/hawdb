@@ -973,6 +973,29 @@ impl PhysicalPlan {
                 input.write_instance_fingerprint(output);
                 output.push(')');
             }
+            PhysicalPlan::AdjacencyExistsExec {
+                source_variable,
+                rel_type,
+                direction,
+                target_variable,
+                input,
+            } => {
+                output.push_str("AdjacencyExistsExec(");
+                write_identifier(output, source_variable);
+                output.push(':');
+                write_identifier(output, rel_type);
+                output.push(':');
+                output.push_str(match direction {
+                    RelationshipDirection::Outgoing => "out",
+                    RelationshipDirection::Incoming => "in",
+                    RelationshipDirection::Undirected => "both",
+                });
+                output.push(':');
+                write_identifier(output, target_variable);
+                output.push_str(",input=");
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::OptionalDegreeExec {
                 source_variable,
                 rel_type,
