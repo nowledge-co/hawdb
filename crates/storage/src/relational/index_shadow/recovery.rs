@@ -1245,7 +1245,11 @@ impl RelationalIndexRecoveryReader {
                     limits.max_bytes
                 )));
             }
-            let page_read = self.visit_page(descriptor, |entry| {
+            let remaining_file_bytes = limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| admission("recovery batch file-byte counter exceeds its limit"))?;
+            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
                 report.delta_entries_visited = report
                     .delta_entries_visited
                     .checked_add(1)
@@ -1309,6 +1313,12 @@ impl RelationalIndexRecoveryReader {
             max_pages: base_pages,
             max_rows: base_rows,
             max_bytes: base_bytes,
+            max_file_bytes: limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| {
+                    admission("recovery batch ordered merge exhausted its file-byte budget")
+                })?,
             ..limits
         };
         let mut merge = RecoveryOrderedMerge {
@@ -1405,7 +1415,11 @@ impl RelationalIndexRecoveryReader {
                     limits.max_bytes
                 )));
             }
-            let page_read = self.visit_page(descriptor, |entry| {
+            let remaining_file_bytes = limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| admission("recovery delta file-byte counter exceeds its limit"))?;
+            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
                 report.delta_entries_visited = report
                     .delta_entries_visited
                     .checked_add(1)
@@ -1473,6 +1487,12 @@ impl RelationalIndexRecoveryReader {
             max_pages: base_pages,
             max_rows: base_rows,
             max_bytes: base_bytes,
+            max_file_bytes: limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| {
+                    admission("recovery ordered merge exhausted its file-byte budget")
+                })?,
             ..limits
         };
         let mut merge = RecoveryOrderedMerge {
@@ -1574,7 +1594,16 @@ impl RelationalIndexRecoveryReader {
                     limits.max_bytes
                 )));
             }
-            let page_read = self.visit_page(descriptor, |entry| {
+            let file_bytes_read = report
+                .base
+                .file_bytes_read
+                .checked_add(report.delta_file_bytes_read)
+                .ok_or_else(|| admission("recovery file byte counter overflow"))?;
+            let remaining_file_bytes = limits
+                .max_file_bytes
+                .checked_sub(file_bytes_read)
+                .ok_or_else(|| admission("recovery file byte counter exceeds its limit"))?;
+            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
                 report.delta_entries_visited = report
                     .delta_entries_visited
                     .checked_add(1)
@@ -1627,6 +1656,7 @@ impl RelationalIndexRecoveryReader {
     fn visit_page(
         &self,
         descriptor: &DeltaPageDescriptor,
+        max_file_bytes: usize,
         visit: impl FnMut(DeltaEntry) -> Result<(), RelationalIndexShadowError>,
     ) -> Result<RecoveryDeltaPageRead, RelationalIndexShadowError> {
         let cache_key = SegmentCacheKey {
@@ -1656,6 +1686,13 @@ impl RelationalIndexRecoveryReader {
                 cache_miss: false,
                 cache_admission_rejected: false,
             });
+        }
+        let encoded_len = usize::try_from(descriptor.encoded_len)
+            .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+        if encoded_len > max_file_bytes {
+            return Err(admission(format!(
+                "recovery index lookup needs {encoded_len} file bytes, exceeding remaining file byte budget {max_file_bytes}"
+            )));
         }
         let path = self
             .base

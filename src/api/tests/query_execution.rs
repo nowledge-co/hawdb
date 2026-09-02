@@ -14,10 +14,19 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
     assert_eq!(limits.index_read.max_rows.get(), 4_097);
     assert_eq!(
         limits.index_read.max_pages.get(),
-        skein_storage::DEFAULT_RELATIONAL_INDEX_READ_PAGES
+        4_097usize
+            .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
     );
     assert_eq!(
         limits.index_read.max_bytes.get(),
+        limits
+            .index_read
+            .max_pages
+            .get()
+            .saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+    );
+    assert_eq!(
+        limits.index_read.max_file_bytes,
         config.max_relational_index_read_bytes.get()
     );
 }
@@ -317,6 +326,27 @@ fn database_config_defaults_to_bounded_read_results() {
     assert_eq!(
         config.max_read_result_payload_bytes,
         Some(crate::DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES)
+    );
+}
+
+#[test]
+fn relational_query_index_limits_separate_logical_work_from_file_io() {
+    let config = DatabaseConfig::default();
+
+    let limits = super::super::relational_query_limits_with_payload(&config, None, None);
+    let index = limits.index_read;
+    let expected_pages = crate::DEFAULT_MAX_READ_RESULT_ROWS
+        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize);
+
+    assert_eq!(index.max_rows.get(), crate::DEFAULT_MAX_READ_RESULT_ROWS);
+    assert_eq!(index.max_pages.get(), expected_pages);
+    assert_eq!(
+        index.max_bytes.get(),
+        expected_pages.saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+    );
+    assert_eq!(
+        index.max_file_bytes,
+        config.max_relational_index_read_bytes.get()
     );
 }
 

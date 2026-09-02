@@ -16,6 +16,19 @@ use crate::{
 use skein_expression::{BindingId, BindingSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Execution capability for a CSG-CMP join's non-singleton right input.
+///
+/// A materialized right input is only safe when the executor has a bounded
+/// materialization implementation, such as a spill-capable blocking operator.
+/// The default preserves the optimizer's standalone behavior; embedded query
+/// planning selects `ProbeOnly` until that implementation is available.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RelationalCsgCmpRightInputPolicy {
+    #[default]
+    AllowMaterialized,
+    ProbeOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalCsgCmpAlternative {
     pub left_bindings: BindingSet,
@@ -64,6 +77,17 @@ impl RelationalCsgCmpPlanNode {
                 operator_id.get(),
                 right.stable_key()
             ),
+        }
+    }
+
+    pub fn has_materialized_right(&self) -> bool {
+        match self {
+            Self::Relation { .. } => false,
+            Self::Join { left, right, .. } => {
+                matches!(right.as_ref(), Self::Join { .. })
+                    || left.has_materialized_right()
+                    || right.has_materialized_right()
+            }
         }
     }
 }
@@ -174,6 +198,20 @@ pub fn enumerate_relational_csg_cmp_joins(
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
+    enumerate_relational_csg_cmp_joins_with_right_input_policy(
+        problem,
+        required_properties,
+        config,
+        RelationalCsgCmpRightInputPolicy::default(),
+    )
+}
+
+pub fn enumerate_relational_csg_cmp_joins_with_right_input_policy(
+    problem: &RelationalJoinRewriteProblem,
+    required_properties: &RequiredProperties,
+    config: RelationalJoinEnumerationConfig,
+    right_input_policy: RelationalCsgCmpRightInputPolicy,
+) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
     let analysis = analyze_relational_join_conflicts(
         &problem.initial_tree,
         problem.post_join_filter.as_ref(),
@@ -196,8 +234,15 @@ pub fn enumerate_relational_csg_cmp_joins(
         .expressions()
         .len();
     let mut cache = HashMap::new();
-    let plan = best_csg_cmp_plan(problem, &memo, root, required_properties, &mut cache)
-        .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
+    let plan = best_csg_cmp_plan(
+        problem,
+        &memo,
+        root,
+        required_properties,
+        right_input_policy,
+        &mut cache,
+    )
+    .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
     Ok(RelationalCsgCmpEnumeration {
         plan,
         conflict_analysis: analysis,
@@ -357,6 +402,7 @@ fn best_csg_cmp_plan(
     memo: &CsgCmpMemo,
     group: GroupId,
     required_properties: &RequiredProperties,
+    right_input_policy: RelationalCsgCmpRightInputPolicy,
     cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalCsgCmpPlan>>,
 ) -> Option<RelationalCsgCmpPlan> {
     let key = (group, required_properties.clone());
@@ -402,7 +448,14 @@ fn best_csg_cmp_plan(
             } => {
                 let left_group = *left;
                 let right_group = *right;
-                let left = best_csg_cmp_plan(problem, memo, left_group, required_properties, cache);
+                let left = best_csg_cmp_plan(
+                    problem,
+                    memo,
+                    left_group,
+                    required_properties,
+                    right_input_policy,
+                    cache,
+                );
                 let right_key = memo
                     .keys
                     .get(&right_group)
@@ -427,16 +480,24 @@ fn best_csg_cmp_plan(
                 };
                 let (right, materialized_right) = match probe.flatten() {
                     Some(plan) => (Some(plan), false),
-                    None => (
-                        best_csg_cmp_plan(
-                            problem,
-                            memo,
-                            right_group,
-                            &RequiredProperties::default(),
-                            cache,
-                        ),
-                        true,
-                    ),
+                    None if matches!(
+                        right_input_policy,
+                        RelationalCsgCmpRightInputPolicy::AllowMaterialized
+                    ) =>
+                    {
+                        (
+                            best_csg_cmp_plan(
+                                problem,
+                                memo,
+                                right_group,
+                                &RequiredProperties::default(),
+                                right_input_policy,
+                                cache,
+                            ),
+                            true,
+                        )
+                    }
+                    None => (None, true),
                 };
                 left.zip(right).map(|(left, right)| {
                     let cardinality = match operator_kind {
@@ -697,6 +758,35 @@ mod tests {
                 && alternative.left_bindings == BindingSet::from([A, B])
                 && alternative.right_bindings == BindingSet::from([C, D])
         }));
+    }
+
+    #[test]
+    fn csg_cmp_probe_only_policy_excludes_unbounded_materialization() {
+        let left = RelationalJoinTree::join(
+            operator(1, RelationalJoinOperatorKind::Inner, &[A, B]),
+            RelationalJoinTree::Relation(A),
+            RelationalJoinTree::Relation(B),
+        );
+        let right = RelationalJoinTree::join(
+            operator(2, RelationalJoinOperatorKind::Inner, &[C, D]),
+            RelationalJoinTree::Relation(C),
+            RelationalJoinTree::Relation(D),
+        );
+        let tree = RelationalJoinTree::join(
+            operator(3, RelationalJoinOperatorKind::Inner, &[B, C]),
+            left,
+            right,
+        );
+
+        let result = enumerate_relational_csg_cmp_joins_with_right_input_policy(
+            &problem(&[A, B, C, D], tree, None),
+            &RequiredProperties::default(),
+            RelationalJoinEnumerationConfig::default(),
+            RelationalCsgCmpRightInputPolicy::ProbeOnly,
+        )
+        .expect("probe-only CSG-CMP can choose a left-deep alternative");
+
+        assert!(!result.plan.root.has_materialized_right());
     }
 
     #[test]

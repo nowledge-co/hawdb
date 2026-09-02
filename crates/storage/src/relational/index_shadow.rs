@@ -1178,12 +1178,14 @@ impl RelationalIndexShadowReader {
         &self,
         page_id: IndexPageId,
     ) -> Result<ImmutableIndexPage, RelationalIndexShadowError> {
-        self.read_page_accounted(page_id).map(|read| read.page)
+        self.read_page_accounted(page_id, usize::MAX)
+            .map(|read| read.page)
     }
 
     pub(super) fn read_page_accounted(
         &self,
         page_id: IndexPageId,
+        max_file_bytes: usize,
     ) -> Result<RelationalIndexPageRead, RelationalIndexShadowError> {
         if page_id.get() > self.manifest.page_count {
             return Err(RelationalIndexShadowError::Corrupt(format!(
@@ -1197,8 +1199,11 @@ impl RelationalIndexShadowReader {
                 "relational index shadow reader is poisoned by an earlier page failure".to_string(),
             ));
         }
-        let result = self.read_page_inner(page_id);
-        if result.is_err() {
+        let result = self.read_page_inner(page_id, max_file_bytes);
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, RelationalIndexShadowError::Admission(_)))
+        {
             self.poison();
         }
         result
@@ -1207,6 +1212,7 @@ impl RelationalIndexShadowReader {
     fn read_page_inner(
         &self,
         page_id: IndexPageId,
+        max_file_bytes: usize,
     ) -> Result<RelationalIndexPageRead, RelationalIndexShadowError> {
         let page_bytes = self.config.page_limits.max_page_bytes.get();
         let cache_identity = SegmentCacheIdentity {
@@ -1225,6 +1231,11 @@ impl RelationalIndexShadowReader {
                 cache_miss: false,
                 cache_admission_rejected: false,
             });
+        }
+        if page_bytes > max_file_bytes {
+            return Err(RelationalIndexShadowError::Admission(format!(
+                "index lookup needs {page_bytes} file bytes, exceeding remaining file byte budget {max_file_bytes}"
+            )));
         }
         let offset = page_id
             .get()
