@@ -161,7 +161,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                 unreachable!("lifetime marker is never constructed")
             }
             #[cfg(feature = "vector-search")]
-            VectorSearchBackend::TurboQuant {
+            VectorSearchBackend::RaBitQ {
                 projection,
                 required,
             } => {
@@ -176,7 +176,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                     self.query_embedding,
                     request.candidate_limit,
                     allowlist,
-                    super::turboquant_projection::TurboQuantCandidateScanOptions {
+                    super::rabitq_projection::RaBitQCandidateScanOptions {
                         max_parallelism: self.vector_execution_options.max_parallelism,
                         max_working_bytes: self.vector_execution_options.max_working_bytes,
                         kernel: self.vector_execution_options.kernel.projection_preference(),
@@ -203,7 +203,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                                 SearchFallbackReasonCode::CompressedVectorProjectionUnavailable,
                             );
                             self.fallback_reasons.push(format!(
-                                "Skein TurboQuant projection is required but candidate scan failed: {error}"
+                                "Skein RaBitQ projection is required but candidate scan failed: {error}"
                             ));
                             Ok(VectorCandidateBatch {
                                 score_source: VectorScoreSource::Unavailable,
@@ -213,7 +213,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                             self.fallback_reason_codes
                                 .push(SearchFallbackReasonCode::VectorIndexEmpty);
                             self.fallback_reasons.push(format!(
-                                "Skein TurboQuant projection unavailable; fell back to scalar vector scan: {error}"
+                                "Skein RaBitQ projection unavailable; fell back to scalar vector scan: {error}"
                             ));
                             self.raw_vector_candidates()
                         }

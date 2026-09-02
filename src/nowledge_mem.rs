@@ -10575,7 +10575,7 @@ mod tests {
         VectorRecallValidationReport {
             protocol: VECTOR_RECALL_VALIDATION_PROTOCOL.to_string(),
             ready: true,
-            approximate_backend: "skein_turboquant_candidate_projection".to_string(),
+            approximate_backend: "skein_rabitq_candidate_projection".to_string(),
             sample_candidate_count: 2,
             requested_sample_count: 2,
             executed_sample_count: 2,
@@ -13852,7 +13852,7 @@ mod tests {
         assert_eq!(report.executed_sample_count, 2);
         assert_eq!(
             report.approximate_backend,
-            "skein_turboquant_candidate_projection"
+            "skein_rabitq_candidate_projection"
         );
         assert!(report.validates_required_approximate_backend());
     }
@@ -17269,7 +17269,7 @@ mod tests {
         assert_eq!(output.search.hits[0].id, "memory:mem-vector");
         assert_eq!(
             output.search.retrievers[0].backend,
-            "skein_turboquant_candidate_projection"
+            "skein_rabitq_candidate_projection"
         );
         assert_eq!(
             retrieval.report.compressed_vector_search_mode,
@@ -17277,11 +17277,11 @@ mod tests {
         );
         assert_eq!(
             retrieval.report.vector_backend,
-            Some("skein_turboquant_candidate_projection".to_string())
+            Some("skein_rabitq_candidate_projection".to_string())
         );
         assert_eq!(
             retrieval.report.json()["vector_backend"],
-            "skein_turboquant_candidate_projection"
+            "skein_rabitq_candidate_projection"
         );
 
         std::fs::remove_dir_all(root).unwrap();

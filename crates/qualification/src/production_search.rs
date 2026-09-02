@@ -250,11 +250,11 @@ pub struct ProductionSearchLifecycleReport {
     pub checkpoint_write_amplification_per_million: u64,
     pub max_update_resident_document_count: usize,
     pub max_update_peak_segment_document_bytes: u64,
-    pub turboquant_serving: bool,
-    pub turboquant_preferred_serving: bool,
-    pub turboquant_raw_rerank: bool,
-    pub turboquant_metadata_filter_pushdown: bool,
-    pub turboquant_payload_bytes_read: u64,
+    pub rabitq_serving: bool,
+    pub rabitq_preferred_serving: bool,
+    pub rabitq_raw_rerank: bool,
+    pub rabitq_metadata_filter_pushdown: bool,
+    pub rabitq_payload_bytes_read: u64,
     pub process_memory: ProcessMemoryProfile,
 }
 
@@ -273,11 +273,11 @@ impl ProductionSearchLifecycleReport {
             "checkpoint_write_amplification_per_million": self.checkpoint_write_amplification_per_million,
             "max_update_resident_document_count": self.max_update_resident_document_count,
             "max_update_peak_segment_document_bytes": self.max_update_peak_segment_document_bytes,
-            "turboquant_serving": self.turboquant_serving,
-            "turboquant_preferred_serving": self.turboquant_preferred_serving,
-            "turboquant_raw_rerank": self.turboquant_raw_rerank,
-            "turboquant_metadata_filter_pushdown": self.turboquant_metadata_filter_pushdown,
-            "turboquant_payload_bytes_read": self.turboquant_payload_bytes_read,
+            "rabitq_serving": self.rabitq_serving,
+            "rabitq_preferred_serving": self.rabitq_preferred_serving,
+            "rabitq_raw_rerank": self.rabitq_raw_rerank,
+            "rabitq_metadata_filter_pushdown": self.rabitq_metadata_filter_pushdown,
+            "rabitq_payload_bytes_read": self.rabitq_payload_bytes_read,
             "process_memory": process_memory_json(self.process_memory),
         })
     }
@@ -320,7 +320,7 @@ struct QueryRun {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct TurboQuantServingProbe {
+struct RaBitQServingProbe {
     required_serving: bool,
     preferred_serving: bool,
     raw_rerank: bool,
@@ -357,8 +357,7 @@ pub fn run_production_search_out_of_core_qualification(
                 && !query_case.request.metadata_filters.is_empty()
         })
         .expect("validated production search cases include a filtered vector case");
-    let source_turboquant =
-        run_turboquant_serving_probe(&candidate_reader, compressed_vector_probe)?;
+    let source_rabitq = run_rabitq_serving_probe(&candidate_reader, compressed_vector_probe)?;
     let process_start =
         ProcessMemorySnapshot::capture().map_err(ProductionSearchQualificationError::from_error)?;
     for _ in 0..config.warmup_runs {
@@ -397,13 +396,13 @@ pub fn run_production_search_out_of_core_qualification(
         &config.out_of_core_config,
         compressed_vector_probe,
     )?;
-    lifecycle.turboquant_serving &= source_turboquant.required_serving;
-    lifecycle.turboquant_preferred_serving &= source_turboquant.preferred_serving;
-    lifecycle.turboquant_raw_rerank &= source_turboquant.raw_rerank;
-    lifecycle.turboquant_metadata_filter_pushdown &= source_turboquant.metadata_filter_pushdown;
-    lifecycle.turboquant_payload_bytes_read = lifecycle
-        .turboquant_payload_bytes_read
-        .saturating_add(source_turboquant.payload_bytes_read);
+    lifecycle.rabitq_serving &= source_rabitq.required_serving;
+    lifecycle.rabitq_preferred_serving &= source_rabitq.preferred_serving;
+    lifecycle.rabitq_raw_rerank &= source_rabitq.raw_rerank;
+    lifecycle.rabitq_metadata_filter_pushdown &= source_rabitq.metadata_filter_pushdown;
+    lifecycle.rabitq_payload_bytes_read = lifecycle
+        .rabitq_payload_bytes_read
+        .saturating_add(source_rabitq.payload_bytes_read);
 
     let reference = SearchIndex::open(&config.reference_projection_path)
         .map_err(ProductionSearchQualificationError::from_error)?;
@@ -551,10 +550,10 @@ fn execute_out_of_core(
     .map_err(ProductionSearchQualificationError::from_error)
 }
 
-fn run_turboquant_serving_probe(
+fn run_rabitq_serving_probe(
     reader: &SearchOutOfCoreReader,
     query_case: &ProductionSearchQueryCase,
-) -> Result<TurboQuantServingProbe, ProductionSearchQualificationError> {
+) -> Result<RaBitQServingProbe, ProductionSearchQualificationError> {
     let execute = |mode| {
         reader.search_with_options_compressed_vector_projection_mode(
             &query_case.request.query_text,
@@ -576,7 +575,7 @@ fn run_turboquant_serving_probe(
             .find(|retriever| retriever.name == "vector")
             .map(|retriever| {
                 (
-                    retriever.backend == "skein_turboquant_out_of_core_candidate_projection"
+                    retriever.backend == "skein_rabitq_out_of_core_candidate_projection"
                         && retriever.fallback_reason_codes.is_empty(),
                     retriever.candidate_score_source == "quantized_projection"
                         && retriever.final_score_source == "raw_vector"
@@ -588,15 +587,15 @@ fn run_turboquant_serving_probe(
     };
     let (required_serving, required_raw_rerank, required_filter_pushdown) = inspect(&required);
     let (preferred_serving, preferred_raw_rerank, preferred_filter_pushdown) = inspect(&preferred);
-    Ok(TurboQuantServingProbe {
+    Ok(RaBitQServingProbe {
         required_serving,
         preferred_serving,
         raw_rerank: required_raw_rerank && preferred_raw_rerank,
         metadata_filter_pushdown: required_filter_pushdown && preferred_filter_pushdown,
         payload_bytes_read: required
             .metrics
-            .turboquant_payload_bytes_read
-            .saturating_add(preferred.metrics.turboquant_payload_bytes_read),
+            .rabitq_payload_bytes_read
+            .saturating_add(preferred.metrics.rabitq_payload_bytes_read),
     })
 }
 
@@ -708,11 +707,11 @@ fn coverage_from_evidence(
         acl_filter: has(ProductionSearchCaseKind::AclFilter),
         hybrid_rrf: has(ProductionSearchCaseKind::Hybrid),
         bounded_generation_update: lifecycle.bounded_generation_update,
-        bounded_turboquant_serving: lifecycle.turboquant_serving
-            && lifecycle.turboquant_preferred_serving
-            && lifecycle.turboquant_raw_rerank
-            && lifecycle.turboquant_metadata_filter_pushdown
-            && lifecycle.turboquant_payload_bytes_read > 0,
+        bounded_rabitq_serving: lifecycle.rabitq_serving
+            && lifecycle.rabitq_preferred_serving
+            && lifecycle.rabitq_raw_rerank
+            && lifecycle.rabitq_metadata_filter_pushdown
+            && lifecycle.rabitq_payload_bytes_read > 0,
         incremental_upsert_delete: lifecycle.incremental_upsert_delete,
         checkpoint_reopen: lifecycle.checkpoint_reopen,
         corrupt_artifact: lifecycle.corrupt_artifact_rejected,
@@ -846,7 +845,7 @@ fn validate_query_cases(
             && query_case.access_control.is_none()
     }) {
         return Err(ProductionSearchQualificationError::new(
-            "production search qualification requires a metadata-filtered vector case for TurboQuant allowlist pushdown",
+            "production search qualification requires a metadata-filtered vector case for RaBitQ allowlist pushdown",
         ));
     }
     Ok(())
@@ -1104,9 +1103,9 @@ fn add_out_of_core_metrics(
     aggregate.vector_bytes_read = aggregate
         .vector_bytes_read
         .saturating_add(metrics.vector_bytes_read);
-    aggregate.turboquant_payload_bytes_read = aggregate
-        .turboquant_payload_bytes_read
-        .saturating_add(metrics.turboquant_payload_bytes_read);
+    aggregate.rabitq_payload_bytes_read = aggregate
+        .rabitq_payload_bytes_read
+        .saturating_add(metrics.rabitq_payload_bytes_read);
     aggregate.hydrated_documents = aggregate
         .hydrated_documents
         .saturating_add(metrics.hydrated_documents);
@@ -1160,7 +1159,7 @@ fn out_of_core_metrics_json(metrics: &SearchOutOfCoreMetrics) -> serde_json::Val
         "candidate_block_reads": metrics.candidate_block_reads,
         "candidate_bytes_read": metrics.candidate_bytes_read,
         "vector_bytes_read": metrics.vector_bytes_read,
-        "turboquant_payload_bytes_read": metrics.turboquant_payload_bytes_read,
+        "rabitq_payload_bytes_read": metrics.rabitq_payload_bytes_read,
         "hydrated_documents": metrics.hydrated_documents,
         "hydrated_bytes": metrics.hydrated_bytes,
     })

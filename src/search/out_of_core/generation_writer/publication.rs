@@ -2,7 +2,7 @@ use super::super::{
     publish_generation_link, write_generation_artifact, SearchOutOfCoreLayoutBody,
     SearchOutOfCoreManifestBody, OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
 };
-use super::{TurboQuantGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use super::{RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
 use crate::error::{Result, SkeinError};
 use crate::search::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
 use crate::search::{
@@ -26,7 +26,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) embedding_dimension: Option<usize>,
     pub(super) layout: &'a SearchOutOfCoreLayoutBody,
     pub(super) lexical_artifact_name: &'a str,
-    pub(super) turboquant: Option<&'a TurboQuantGenerationArtifact>,
+    pub(super) rabitq: Option<&'a RaBitQGenerationArtifact>,
     pub(super) payload_bytes: u64,
     pub(super) metadata_payload_bytes: u64,
     pub(super) vector_payload_bytes: u64,
@@ -94,14 +94,14 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         lexical_manifest_file: lexical_manifest_file.clone(),
         lexical_manifest_len,
         lexical_manifest_checksum,
-        turboquant_artifact_file: input.turboquant.map(|artifact| artifact.file_name.clone()),
-        turboquant_artifact_len: input.turboquant.map(|artifact| artifact.artifact_bytes),
-        turboquant_artifact_checksum: input.turboquant.map(|artifact| artifact.artifact_checksum),
-        turboquant_source_digest: input.turboquant.map(|artifact| artifact.source_digest),
-        turboquant_vector_document_count: input.turboquant.map(|artifact| artifact.document_count),
-        turboquant_payload_checksum: input.turboquant.map(|artifact| artifact.payload_checksum),
-        turboquant_peak_build_working_bytes: input
-            .turboquant
+        rabitq_artifact_file: input.rabitq.map(|artifact| artifact.file_name.clone()),
+        rabitq_artifact_len: input.rabitq.map(|artifact| artifact.artifact_bytes),
+        rabitq_artifact_checksum: input.rabitq.map(|artifact| artifact.artifact_checksum),
+        rabitq_source_digest: input.rabitq.map(|artifact| artifact.source_digest),
+        rabitq_vector_document_count: input.rabitq.map(|artifact| artifact.document_count),
+        rabitq_payload_checksum: input.rabitq.map(|artifact| artifact.payload_checksum),
+        rabitq_peak_build_working_bytes: input
+            .rabitq
             .map(|artifact| artifact.peak_build_working_bytes),
         document_count: input.document_count,
         documents_digest: input.documents_digest,
@@ -128,9 +128,7 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         lexical_manifest_len,
         lexical_artifact_len,
         manifest_bytes.len() as u64,
-        input
-            .turboquant
-            .map_or(0, |artifact| artifact.artifact_bytes),
+        input.rabitq.map_or(0, |artifact| artifact.artifact_bytes),
     ]
     .into_iter()
     .try_fold(0u64, |total, bytes| total.checked_add(bytes))
@@ -150,10 +148,10 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         &lexical_artifact_source,
         &input.root.join(input.lexical_artifact_name),
     )?;
-    if let Some(turboquant) = input.turboquant {
+    if let Some(rabitq) = input.rabitq {
         publish_generation_link(
-            &input.stage.join(&turboquant.file_name),
-            &input.root.join(&turboquant.file_name),
+            &input.stage.join(&rabitq.file_name),
+            &input.root.join(&rabitq.file_name),
         )?;
     }
     publish_generation_link(
@@ -168,12 +166,12 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         Some(descriptor_checksum),
         "descriptor",
     )?;
-    if let Some(turboquant) = input.turboquant {
+    if let Some(rabitq) = input.rabitq {
         verify_published_artifact(
-            &input.root.join(&turboquant.file_name),
-            turboquant.artifact_bytes,
-            Some(turboquant.artifact_checksum),
-            "TurboQuant artifact",
+            &input.root.join(&rabitq.file_name),
+            rabitq.artifact_bytes,
+            Some(rabitq.artifact_checksum),
+            "RaBitQ artifact",
         )?;
     }
     verify_published_artifact(

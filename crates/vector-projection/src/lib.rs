@@ -7,7 +7,7 @@ mod error;
 mod hnsw;
 mod kernel;
 mod model;
-mod quantizer;
+mod rabitq;
 mod scan;
 mod transform;
 
@@ -23,10 +23,10 @@ pub use hnsw::{HnswBuildConfig, HnswIndex};
 pub use kernel::{KernelPreference, ScanKernel};
 pub use model::{
     InMemoryProjection, ProjectionBuildAdmission, ProjectionBuildConfig, ProjectionBuildReport,
-    ProjectionIdentity, ProjectionManifest, ProjectionMetric, SegmentDescriptor,
-    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED, PROJECTION_ALGORITHM,
-    PROJECTION_BIT_WIDTH, PROJECTION_CALIBRATION, PROJECTION_FORMAT_VERSION, PROJECTION_PROTOCOL,
-    PROJECTION_QUANTIZER, PROJECTION_TRANSFORM,
+    ProjectionIdentity, ProjectionManifest, ProjectionMetric, RaBitQBitWidth, SegmentDescriptor,
+    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_PROJECTION_BIT_WIDTH, DEFAULT_SEGMENT_ROWS,
+    DEFAULT_TRANSFORM_SEED, PROJECTION_ALGORITHM, PROJECTION_BIT_WIDTH, PROJECTION_CALIBRATION,
+    PROJECTION_FORMAT_VERSION, PROJECTION_PROTOCOL, PROJECTION_QUANTIZER, PROJECTION_TRANSFORM,
 };
 pub use scan::{
     CandidateSet, ProjectionHit, ProjectionSearchOptions, ProjectionSearchOutput,

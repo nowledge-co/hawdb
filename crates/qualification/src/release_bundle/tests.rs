@@ -1774,7 +1774,7 @@ fn search(identity: &ProductionQualificationIdentity) -> Value {
         "acl_filter": false,
         "hybrid_rrf": true,
         "bounded_generation_update": true,
-        "bounded_turboquant_serving": true,
+        "bounded_rabitq_serving": true,
         "incremental_upsert_delete": true,
         "checkpoint_reopen": true,
         "corrupt_artifact": true,
@@ -1830,11 +1830,11 @@ fn search(identity: &ProductionQualificationIdentity) -> Value {
         ],
         "lifecycle": {
             "bounded_generation_update": true,
-            "turboquant_serving": true,
-            "turboquant_preferred_serving": true,
-            "turboquant_raw_rerank": true,
-            "turboquant_metadata_filter_pushdown": true,
-            "turboquant_payload_bytes_read": 1,
+            "rabitq_serving": true,
+            "rabitq_preferred_serving": true,
+            "rabitq_raw_rerank": true,
+            "rabitq_metadata_filter_pushdown": true,
+            "rabitq_payload_bytes_read": 1,
             "incremental_upsert_delete": true,
             "checkpoint_reopen": true,
             "stale_generation": true,
@@ -1862,7 +1862,7 @@ fn search(identity: &ProductionQualificationIdentity) -> Value {
 fn vector(identity: &ProductionQualificationIdentity) -> Value {
     let metrics = |kernel: &str| {
         serde_json::json!({
-            "backend": "skein_turboquant_candidate_projection",
+            "backend": "skein_rabitq_candidate_projection",
             "candidate_score_source": "quantized_projection",
             "final_score_source": "raw_vector",
             "kernel": kernel,
@@ -1873,7 +1873,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
         })
     };
     let serving_metrics = serde_json::json!({
-        "backend": "skein_turboquant_out_of_core_candidate_projection",
+        "backend": "skein_rabitq_out_of_core_candidate_projection",
         "candidate_score_source": "quantized_projection",
         "final_score_source": "raw_vector",
         "kernel": "portable",
@@ -1891,7 +1891,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
         "payload_bytes": 1,
         "payload_checksum": 1,
         "format_version": 1,
-        "algorithm": "turboquant",
+        "algorithm": "rabitq",
         "bit_width": 4,
         "dimension": 3,
         "transform_seed": 1,
@@ -1930,7 +1930,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
             "report": {
                 "protocol": "skein-vector-recall-validation-v1",
                 "ready": true,
-                "approximate_backend": "skein_turboquant_candidate_projection",
+                "approximate_backend": "skein_rabitq_candidate_projection",
                 "requested_sample_count": 1,
                 "executed_sample_count": 1,
                 "minimum_recall_per_million": 950_000,
@@ -1957,13 +1957,13 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
             "scalar_candidate_metrics": metrics("scalar"),
             "serving_metrics": serving_metrics,
         }],
-        "differential_oracle": {
+        "rabitq_reference_verification": {
             "required": true,
             "compiled": true,
             "available": true,
             "ready": true,
-            "implementation": "upstream_turbovec",
-            "role": "development_differential_oracle_not_truth",
+            "implementation": "native_rabitq_scalar_reference",
+            "role": "native_scalar_reference_for_dispatch_parity",
             "bit_width": 4,
             "cases": [{}],
         },

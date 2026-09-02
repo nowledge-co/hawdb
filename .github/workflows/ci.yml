@@ -76,26 +76,14 @@ jobs:
           cargo check -p skein
           cargo check -p skein --no-default-features
 
-      - name: Test TurboQuant projection
+      - name: Test RaBitQ projection
         run: cargo test -p skein-vector-projection
 
-      - name: Test embedded TurboQuant facade
-        run: cargo test -p skein --lib search::turboquant_projection::tests
+      - name: Test embedded RaBitQ facade
+        run: cargo test -p skein --lib search::rabitq_projection::tests
 
       - name: Test vector qualification protocol
         run: cargo test -p skein-qualification production_vector
-
-      - name: Install upstream oracle native dependency
-        if: matrix.target == 'linux-x86_64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libopenblas-dev
-
-      - name: Test upstream differential oracle
-        if: matrix.target == 'linux-x86_64'
-        env:
-          OPENBLAS_NUM_THREADS: "1"
-        run: cargo test -p skein-qualification production_vector --features turbovec-oracle
 
   storage-platform:
     name: Storage Platform (${{ matrix.os }})

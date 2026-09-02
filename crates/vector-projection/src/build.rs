@@ -4,7 +4,6 @@ use crate::model::{
     InMemoryProjection, ProjectionBuildConfig, ProjectionBuildReport, ProjectionManifest,
     QuantizedSegment, SegmentDescriptor, ValidatedBuildConfig,
 };
-use crate::quantizer::TurboQuantCodebook;
 
 const DIGEST_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const DIGEST_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -39,7 +38,8 @@ impl ProjectionBuilder {
             .iter()
             .map(|segment| {
                 segment.ids.len() * std::mem::size_of::<u64>()
-                    + segment.renormalizations.len() * std::mem::size_of::<f32>()
+                    + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
+                    + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
                     + segment.codes.len()
             })
             .sum::<usize>() as u64;
@@ -50,7 +50,8 @@ impl ProjectionBuilder {
             .enumerate()
             .map(|(index, segment)| {
                 let payload_bytes = (segment.ids.len() * std::mem::size_of::<u64>()
-                    + segment.renormalizations.len() * std::mem::size_of::<f32>()
+                    + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
+                    + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
                     + segment.codes.len()) as u64;
                 let descriptor = SegmentDescriptor {
                     index,
@@ -76,7 +77,6 @@ impl ProjectionBuilder {
         Ok(InMemoryProjection {
             manifest,
             segments: self.segments,
-            codebook: self.state.codebook.clone(),
             build_report,
         })
     }
@@ -99,7 +99,6 @@ pub(crate) struct BuildState {
     pub pending: QuantizedSegment,
     pub transformed: Vec<f32>,
     pub packed: Vec<u8>,
-    pub codebook: TurboQuantCodebook,
     pub last_id: Option<u64>,
     pub document_count: usize,
     pub raw_vector_bytes: u64,
@@ -108,12 +107,10 @@ pub(crate) struct BuildState {
 
 impl BuildState {
     pub fn new(config: ValidatedBuildConfig) -> Result<Self> {
-        let codebook = TurboQuantCodebook::for_dimension(config.dimension)?;
         Ok(Self {
             pending: QuantizedSegment::with_capacity(&config, 0),
             transformed: vec![0.0; config.dimension],
             packed: Vec::with_capacity(config.bytes_per_vector),
-            codebook,
             last_id: None,
             document_count: 0,
             raw_vector_bytes: 0,
@@ -139,15 +136,20 @@ impl BuildState {
             }
         }
         self.last_id = Some(id);
-        let renormalization = encode_vector(
+        let encoding = encode_vector(
             vector,
             self.config.transform_seed,
-            &self.codebook,
+            self.config.bit_width,
             &mut self.transformed,
             &mut self.packed,
         )?;
         self.pending.ids.push(id);
-        self.pending.renormalizations.push(renormalization);
+        self.pending
+            .reconstruction_scales
+            .push(encoding.reconstruction_scale);
+        self.pending
+            .reconstruction_offsets
+            .push(encoding.reconstruction_offset);
         self.pending.codes.extend_from_slice(&self.packed);
         self.document_count = self.document_count.saturating_add(1);
         self.raw_vector_bytes = self
@@ -211,18 +213,16 @@ fn digest_bytes(digest: &mut u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProjectionIdentity;
+    use crate::model::{ProjectionIdentity, RaBitQBitWidth};
 
     #[test]
     fn builder_bounds_raw_intermediates_by_segment_budget() {
         let dimension = 64;
-        let row_bytes = 8 + 4 + dimension / 2;
-        let scratch_bytes = dimension * 4
-            + dimension / 2
-            + crate::quantizer::TURBOQUANT_CODEBOOK_BYTES
-            + crate::model::BUILD_FIXED_WORKING_BYTES;
+        let row_bytes = 8 + 8 + dimension / 2;
+        let scratch_bytes = dimension * 4 + dimension / 2 + crate::model::BUILD_FIXED_WORKING_BYTES;
         let budget = scratch_bytes + row_bytes * 3;
         let config = ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1))
+            .with_bit_width(RaBitQBitWidth::Four)
             .with_segment_rows(100)
             .with_max_working_bytes(budget);
         let mut builder = ProjectionBuilder::new(config).unwrap();

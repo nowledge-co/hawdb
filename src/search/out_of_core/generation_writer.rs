@@ -55,9 +55,11 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub lexical_max_spill_runs: NonZeroUsize,
     pub lexical_max_merge_fan_in: NonZeroUsize,
     pub lexical_max_document_source_bytes: NonZeroU64,
-    pub turboquant_segment_rows: NonZeroUsize,
-    pub turboquant_build_memory_bytes: NonZeroUsize,
-    pub turboquant_transform_seed: u64,
+    pub rabitq_segment_rows: NonZeroUsize,
+    pub rabitq_build_memory_bytes: NonZeroUsize,
+    pub rabitq_transform_seed: u64,
+    #[cfg(feature = "vector-search")]
+    pub rabitq_bit_width: skein_vector_projection::RaBitQBitWidth,
     pub source_graph_commit_epoch: Option<u64>,
     pub import_source_graph_commit_epoch: Option<u64>,
     pub embedding_manifest: Option<SearchEmbeddingManifest>,
@@ -85,9 +87,11 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             lexical_max_spill_runs: NonZeroUsize::new(4_096).unwrap(),
             lexical_max_merge_fan_in: NonZeroUsize::new(32).unwrap(),
             lexical_max_document_source_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
-            turboquant_segment_rows: NonZeroUsize::new(1_024).unwrap(),
-            turboquant_build_memory_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
-            turboquant_transform_seed: 0x534b_4549_4e56_5134,
+            rabitq_segment_rows: NonZeroUsize::new(1_024).unwrap(),
+            rabitq_build_memory_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+            rabitq_transform_seed: 0x534b_4549_4e56_5134,
+            #[cfg(feature = "vector-search")]
+            rabitq_bit_width: skein_vector_projection::RaBitQBitWidth::default(),
             source_graph_commit_epoch: None,
             import_source_graph_commit_epoch: None,
             embedding_manifest: None,
@@ -117,9 +121,9 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub vector_payload_bytes: u64,
     pub lexical_artifact_bytes: u64,
     pub lexical_manifest_bytes: u64,
-    pub turboquant_artifact_bytes: u64,
-    pub turboquant_source_digest: Option<u64>,
-    pub turboquant_peak_build_working_bytes: usize,
+    pub rabitq_artifact_bytes: u64,
+    pub rabitq_source_digest: Option<u64>,
+    pub rabitq_peak_build_working_bytes: usize,
     pub manifest_bytes: u64,
     pub generation_bytes: u64,
     pub source_graph_commit_epoch: Option<u64>,
@@ -319,7 +323,7 @@ impl SearchOutOfCoreGenerationWriter {
         let (lexical_artifact_bytes, _) = file_len_checksum(&lexical_artifact_path)?;
         let (lexical_manifest_bytes, _) = file_len_checksum(&lexical_manifest_path)?;
 
-        let turboquant = build_turboquant_artifact(
+        let rabitq = build_rabitq_artifact(
             &source,
             &self.stage.path,
             generation,
@@ -341,7 +345,7 @@ impl SearchOutOfCoreGenerationWriter {
             embedding_dimension: self.embedding_dimension,
             layout: &segment_output.layout,
             lexical_artifact_name: &lexical_artifact_name,
-            turboquant: turboquant.as_ref(),
+            rabitq: rabitq.as_ref(),
             payload_bytes: segment_output.document_payload_bytes,
             metadata_payload_bytes: segment_output.metadata_payload_bytes,
             vector_payload_bytes: segment_output.vector_payload_bytes,
@@ -354,8 +358,8 @@ impl SearchOutOfCoreGenerationWriter {
             SearchProjectionGenerations {
                 lexical: Some(lexical_generation),
                 out_of_core: Some(generation),
-                turboquant: turboquant.as_ref().map(|_| generation),
-                turboquant_remove_all: turboquant.is_none(),
+                rabitq: rabitq.as_ref().map(|_| generation),
+                rabitq_remove_all: rabitq.is_none(),
                 out_of_core_discovery_failed: false,
             },
             self.options.cleanup_options,
@@ -379,11 +383,11 @@ impl SearchOutOfCoreGenerationWriter {
             vector_payload_bytes: segment_output.vector_payload_bytes,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
-            turboquant_artifact_bytes: turboquant
+            rabitq_artifact_bytes: rabitq
                 .as_ref()
                 .map_or(0, |artifact| artifact.artifact_bytes),
-            turboquant_source_digest: turboquant.as_ref().map(|artifact| artifact.source_digest),
-            turboquant_peak_build_working_bytes: turboquant
+            rabitq_source_digest: rabitq.as_ref().map(|artifact| artifact.source_digest),
+            rabitq_peak_build_working_bytes: rabitq
                 .as_ref()
                 .map_or(0, |artifact| artifact.peak_build_working_bytes),
             manifest_bytes: published.manifest_bytes,
@@ -504,7 +508,7 @@ impl SearchOutOfCoreGenerationWriter {
 }
 
 #[derive(Debug)]
-pub(super) struct TurboQuantGenerationArtifact {
+pub(super) struct RaBitQGenerationArtifact {
     pub(super) file_name: String,
     pub(super) artifact_bytes: u64,
     pub(super) artifact_checksum: u64,
@@ -515,7 +519,7 @@ pub(super) struct TurboQuantGenerationArtifact {
 }
 
 #[cfg(feature = "vector-search")]
-fn build_turboquant_artifact(
+fn build_rabitq_artifact(
     source: &SpoolSource,
     stage: &Path,
     generation: u64,
@@ -523,7 +527,7 @@ fn build_turboquant_artifact(
     embedding_dimension: Option<usize>,
     embedding_manifest: Option<&SearchEmbeddingManifest>,
     options: &SearchOutOfCoreGenerationBuildOptions,
-) -> Result<Option<TurboQuantGenerationArtifact>> {
+) -> Result<Option<RaBitQGenerationArtifact>> {
     if vector_document_count == 0 {
         return Ok(None);
     }
@@ -532,7 +536,7 @@ fn build_turboquant_artifact(
             "search generation has vector documents without an embedding dimension".to_string(),
         )
     })?;
-    let file_name = crate::search::turboquant_artifact_file(generation);
+    let file_name = crate::search::rabitq_artifact_file(generation);
     let path = stage.join(&file_name);
     let identity = skein_vector_projection::ProjectionIdentity {
         generation,
@@ -541,11 +545,12 @@ fn build_turboquant_artifact(
         embedding_version: embedding_manifest.and_then(|manifest| manifest.version.clone()),
     };
     let config = skein_vector_projection::ProjectionBuildConfig::new(dimension, identity)
-        .with_segment_rows(options.turboquant_segment_rows.get())
-        .with_max_working_bytes(options.turboquant_build_memory_bytes.get())
-        .with_transform_seed(options.turboquant_transform_seed);
-    let mut writer = skein_vector_projection::ProjectionWriter::create(&path, config)
-        .map_err(turboquant_error)?;
+        .with_bit_width(options.rabitq_bit_width)
+        .with_segment_rows(options.rabitq_segment_rows.get())
+        .with_max_working_bytes(options.rabitq_build_memory_bytes.get())
+        .with_transform_seed(options.rabitq_transform_seed);
+    let mut writer =
+        skein_vector_projection::ProjectionWriter::create(&path, config).map_err(rabitq_error)?;
     let mut vector_ordinal = 0u64;
     source.scan(&mut |document| {
         let Some(embedding) = document.embedding.as_deref() else {
@@ -553,7 +558,7 @@ fn build_turboquant_artifact(
         };
         writer
             .push(vector_ordinal, embedding)
-            .map_err(turboquant_error)?;
+            .map_err(rabitq_error)?;
         vector_ordinal = vector_ordinal
             .checked_add(1)
             .ok_or_else(|| SkeinError::Storage("search vector ordinal overflow".to_string()))?;
@@ -561,14 +566,13 @@ fn build_turboquant_artifact(
     })?;
     if vector_ordinal != vector_document_count as u64 {
         return Err(SkeinError::Storage(
-            "search TurboQuant build did not consume the expected vector document count"
-                .to_string(),
+            "search RaBitQ build did not consume the expected vector document count".to_string(),
         ));
     }
-    let projection = writer.finish().map_err(turboquant_error)?;
+    let projection = writer.finish().map_err(rabitq_error)?;
     let manifest = projection.manifest();
     let (artifact_bytes, artifact_checksum) = file_len_checksum(&path)?;
-    Ok(Some(TurboQuantGenerationArtifact {
+    Ok(Some(RaBitQGenerationArtifact {
         file_name,
         artifact_bytes,
         artifact_checksum,
@@ -580,7 +584,7 @@ fn build_turboquant_artifact(
 }
 
 #[cfg(not(feature = "vector-search"))]
-fn build_turboquant_artifact(
+fn build_rabitq_artifact(
     _source: &SpoolSource,
     _stage: &Path,
     _generation: u64,
@@ -588,13 +592,13 @@ fn build_turboquant_artifact(
     _embedding_dimension: Option<usize>,
     _embedding_manifest: Option<&SearchEmbeddingManifest>,
     _options: &SearchOutOfCoreGenerationBuildOptions,
-) -> Result<Option<TurboQuantGenerationArtifact>> {
+) -> Result<Option<RaBitQGenerationArtifact>> {
     Ok(None)
 }
 
 #[cfg(feature = "vector-search")]
-fn turboquant_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
-    SkeinError::Storage(format!("search TurboQuant projection: {error}"))
+fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
+    SkeinError::Storage(format!("search RaBitQ projection: {error}"))
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {

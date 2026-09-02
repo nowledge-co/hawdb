@@ -13,7 +13,7 @@
 //! `ProjectionBuilder`/`ProjectionWriter` work for the quantized base.
 //!
 //! Unlike the quantized base, `HnswIndex` keeps full-precision vectors:
-//! TurboQuant's 4-bit codes are too lossy to support the repeated,
+//! RaBitQ's 4-bit codes are too lossy to support the repeated,
 //! high-precision distance comparisons HNSW's graph search relies on, so
 //! this index trades memory for an independent, more accurate
 //! approximation -- a caller who cannot afford that memory should keep

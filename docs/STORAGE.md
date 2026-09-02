@@ -154,7 +154,7 @@ The streaming writer deliberately does not publish the mutable compatibility
 snapshot, so `SearchIndex::open()` is not accidentally turned into a
 larger-than-memory serving owner. `SearchOutOfCoreReader` reopens the generation
 with zero resident documents. Raw vector sidecars remain sufficient for exact
-bounded vector and hybrid search; TurboQuant candidate construction and its
+bounded vector and hybrid search; RaBitQ candidate construction and its
 production qualification remain a separate derived-generation gate. Run
 `cargo bench --bench search_generation` for the default 100,000-document build
 profile and its RSS, page-fault, spool, descriptor, payload, and peak-segment
@@ -384,7 +384,7 @@ writing the applied audit record and unblocking service. It never overwrites a
 published derived artifact in place and never silently repairs during open.
 
 Search projection GC is separate from canonical recovery. Lexical, out-of-core,
-and TurboQuant artifacts retain the active and immediately previous immutable
+and RaBitQ artifacts retain the active and immediately previous immutable
 generations. `SearchIndex::projection_cleanup_report` exposes attempted,
 deleted, deferred, and failed file counts without returning file names, while
 `retry_projection_cleanup` runs an explicit retry cycle with bounded deletion

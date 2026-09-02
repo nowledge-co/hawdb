@@ -17,7 +17,7 @@ const REQUIRED_TARGETS: [(&str, &str); 4] = [
 ];
 const MINIMUM_VECTOR_DOCUMENT_COUNT: u64 = 100_000;
 const RECALL_PROTOCOL: &str = "skein-vector-recall-validation-v1";
-const TURBOQUANT_BACKEND: &str = "skein_turboquant_candidate_projection";
+const RABITQ_BACKEND: &str = "skein_rabitq_candidate_projection";
 
 pub(super) fn evaluate_matrix(
     artifacts: &[Value],
@@ -270,12 +270,12 @@ fn validate_projection(
     {
         blockers.push("vector_source_graph_epoch_mismatch".to_string());
     }
-    if artifact
+    if !artifact
         .pointer("/projection_identity/bit_width")
         .and_then(Value::as_u64)
-        != Some(4)
+        .is_some_and(|bit_width| matches!(bit_width, 1 | 4))
     {
-        blockers.push("vector_projection_not_4bit".to_string());
+        blockers.push("vector_projection_unsupported_bit_width".to_string());
     }
     for (pointer, code) in [
         ("/projection_identity/algorithm", "vector_algorithm_missing"),
@@ -336,7 +336,7 @@ fn validate_recall(artifact: &Value, blockers: &mut Vec<String>) {
         require_string(
             report,
             "/approximate_backend",
-            TURBOQUANT_BACKEND,
+            RABITQ_BACKEND,
             "vector_recall_backend_mismatch",
             blockers,
         );
@@ -445,7 +445,7 @@ fn validate_queries(artifact: &Value, blockers: &mut Vec<String>) {
         require_string(
             case,
             "/serving_metrics/backend",
-            "skein_turboquant_out_of_core_candidate_projection",
+            "skein_rabitq_out_of_core_candidate_projection",
             "vector_serving_backend_mismatch",
             blockers,
         );
@@ -487,23 +487,26 @@ fn validate_oracle(
     policy: ProductionReleaseQualificationPolicy,
     blockers: &mut Vec<String>,
 ) {
-    let Some(oracle) = artifact.pointer("/differential_oracle") else {
-        blockers.push("turbovec_oracle_missing".to_string());
+    let Some(oracle) = artifact.pointer("/rabitq_reference_verification") else {
+        blockers.push("rabitq_reference_verification_missing".to_string());
         return;
     };
     require_string(
         oracle,
         "/role",
-        "development_differential_oracle_not_truth",
-        "turbovec_oracle_role_mismatch",
+        "native_scalar_reference_for_dispatch_parity",
+        "rabitq_reference_verification_role_mismatch",
         blockers,
     );
-    if policy.require_turbovec_oracle {
+    if policy.require_rabitq_reference_verification {
         for (pointer, code) in [
-            ("/required", "turbovec_oracle_not_required_by_run"),
-            ("/compiled", "turbovec_oracle_not_compiled"),
-            ("/available", "turbovec_oracle_unavailable"),
-            ("/ready", "turbovec_oracle_not_ready"),
+            (
+                "/required",
+                "rabitq_reference_verification_not_required_by_run",
+            ),
+            ("/compiled", "rabitq_reference_verification_not_compiled"),
+            ("/available", "rabitq_reference_verification_unavailable"),
+            ("/ready", "rabitq_reference_verification_not_ready"),
         ] {
             require_bool(oracle, pointer, true, code, blockers);
         }
@@ -512,7 +515,7 @@ fn validate_oracle(
             .and_then(Value::as_array)
             .is_some_and(|cases| !cases.is_empty())
         {
-            blockers.push("turbovec_oracle_cases_missing".to_string());
+            blockers.push("rabitq_reference_verification_cases_missing".to_string());
         }
     }
 }

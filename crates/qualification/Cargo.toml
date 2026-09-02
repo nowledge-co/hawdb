@@ -12,11 +12,9 @@ sha2 = { version = "0.10", default-features = false }
 skein = { path = "../..", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
 skein-query = { path = "../query" }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
-turbovec = { version = "0.9.0", optional = true }
 
 [features]
 default = []
-turbovec-oracle = ["dep:turbovec", "skein/qualification"]
 
 [[bin]]
 name = "skein-soak"

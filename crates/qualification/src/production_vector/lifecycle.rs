@@ -18,8 +18,8 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Instant;
 
-const TURBOQUANT_ARTIFACT_PREFIX: &str = "search_turboquant.";
-const TURBOQUANT_ARTIFACT_SUFFIX: &str = ".skein";
+const RABITQ_ARTIFACT_PREFIX: &str = "search_rabitq.";
+const RABITQ_ARTIFACT_SUFFIX: &str = ".skein";
 
 pub(super) fn run_lifecycle(
     config: &ProductionVectorQualificationConfig,
@@ -153,7 +153,7 @@ pub(super) fn run_lifecycle(
             .vector_projection_qualification_identity()
             .ok_or_else(|| {
                 ProductionVectorQualificationError::new(
-                    "production vector checkpoint did not publish a TurboQuant projection",
+                    "production vector checkpoint did not publish a RaBitQ projection",
                 )
             })?;
         let reopened_result = execute_query(
@@ -227,7 +227,7 @@ fn run_corruption_probe(
     require_projection_identity(&before, expected)?;
     drop(before);
 
-    let corrupted_name = corrupt_latest_turboquant_artifact(path)?;
+    let corrupted_name = corrupt_latest_rabitq_artifact(path)?;
     let reopened =
         SearchIndex::open(path).map_err(ProductionVectorQualificationError::from_error)?;
     let actual = reopened.vector_projection_qualification_identity();
@@ -297,7 +297,7 @@ fn require_projection_identity(
     }
 }
 
-fn corrupt_latest_turboquant_artifact(
+fn corrupt_latest_rabitq_artifact(
     path: &Path,
 ) -> Result<String, ProductionVectorQualificationError> {
     let mut artifacts = std::fs::read_dir(path)
@@ -306,8 +306,8 @@ fn corrupt_latest_turboquant_artifact(
         .filter_map(|entry| {
             let name = entry.file_name().to_str()?.to_string();
             let generation = name
-                .strip_prefix(TURBOQUANT_ARTIFACT_PREFIX)?
-                .strip_suffix(TURBOQUANT_ARTIFACT_SUFFIX)?
+                .strip_prefix(RABITQ_ARTIFACT_PREFIX)?
+                .strip_suffix(RABITQ_ARTIFACT_SUFFIX)?
                 .parse::<u64>()
                 .ok()?;
             Some((generation, name, entry.path()))
@@ -316,7 +316,7 @@ fn corrupt_latest_turboquant_artifact(
     artifacts.sort_unstable_by_key(|(generation, _, _)| std::cmp::Reverse(*generation));
     let (_, name, artifact) = artifacts.into_iter().next().ok_or_else(|| {
         ProductionVectorQualificationError::new(
-            "production vector corruption replica has no TurboQuant artifact",
+            "production vector corruption replica has no RaBitQ artifact",
         )
     })?;
     let mut file = OpenOptions::new()
@@ -331,7 +331,7 @@ fn corrupt_latest_turboquant_artifact(
         == 0
     {
         return Err(ProductionVectorQualificationError::new(
-            "production vector corruption replica has an empty TurboQuant artifact",
+            "production vector corruption replica has an empty RaBitQ artifact",
         ));
     }
     file.seek(SeekFrom::End(-1))

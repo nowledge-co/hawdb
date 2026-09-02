@@ -13,9 +13,9 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
         "search_lexical.1.skein",
         "search_lexical.2.skein",
         "search_lexical.3.skein",
-        "search_turboquant.1.skein",
-        "search_turboquant.2.skein",
-        "search_turboquant.3.skein",
+        "search_rabitq.1.skein",
+        "search_rabitq.2.skein",
+        "search_rabitq.3.skein",
         "search_projection_segments.1.skein",
         "search_projection_segments.2.skein",
         "search_projection_segments.3.skein",
@@ -25,7 +25,7 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
     let generations = SearchProjectionGenerations {
         lexical: Some(3),
         out_of_core: Some(3),
-        turboquant: Some(3),
+        rabitq: Some(3),
         ..SearchProjectionGenerations::default()
     };
     let mut state = SearchProjectionCleanupState::default();
@@ -50,8 +50,8 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
     for name in [
         "search_lexical.2.skein",
         "search_lexical.3.skein",
-        "search_turboquant.2.skein",
-        "search_turboquant.3.skein",
+        "search_rabitq.2.skein",
+        "search_rabitq.3.skein",
         "search_projection_segments.2.skein",
         "search_projection_segments.3.skein",
     ] {

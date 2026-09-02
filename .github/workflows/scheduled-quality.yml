@@ -48,7 +48,7 @@ jobs:
         with:
           components: rust-src
 
-      - name: Run scalar and SIMD differential corpus under ASan
+      - name: Run RaBitQ scalar reference corpus under ASan
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           RUSTFLAGS: -Zsanitizer=address

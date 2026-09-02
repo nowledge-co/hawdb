@@ -1,4 +1,4 @@
-use super::{SearchRetrieverReport, TURBOQUANT_CANDIDATE_BACKEND};
+use super::{SearchRetrieverReport, RABITQ_CANDIDATE_BACKEND};
 use crate::production_evidence::production_evidence_blocker_codes;
 use crate::{Result, SkeinError};
 use std::collections::BTreeSet;
@@ -96,7 +96,7 @@ impl VectorRecallValidationReport {
     pub fn validates_required_approximate_backend(&self) -> bool {
         self.protocol == VECTOR_RECALL_VALIDATION_PROTOCOL
             && self.ready
-            && self.approximate_backend == TURBOQUANT_CANDIDATE_BACKEND
+            && self.approximate_backend == RABITQ_CANDIDATE_BACKEND
             && self.requested_sample_count > 0
             && self.executed_sample_count == self.requested_sample_count
             && self.exact_hit_count > 0
@@ -207,8 +207,8 @@ impl VectorProjectionQualificationIdentity {
             && self.source_digest > 0
             && self.payload_bytes > 0
             && self.format_version > 0
-            && self.algorithm == "turboquant"
-            && self.bit_width == 4
+            && self.algorithm == "rabitq"
+            && matches!(self.bit_width, 1 | 4)
             && self.dimension > 0
             && self
                 .embedding_model
@@ -265,7 +265,7 @@ impl VectorRecallProductionQualificationReport {
             Ok(())
         } else {
             Err(SkeinError::Storage(format!(
-                "TurboQuant projection is not qualified for the current production release: {}",
+                "RaBitQ projection is not qualified for the current production release: {}",
                 blockers.join(",")
             )))
         }
@@ -419,7 +419,7 @@ impl VectorRecallValidationAccumulator {
                 .filter(|id| exact_ids.contains(id.as_str()))
                 .count(),
         );
-        if approximate_retriever.backend == TURBOQUANT_CANDIDATE_BACKEND {
+        if approximate_retriever.backend == RABITQ_CANDIDATE_BACKEND {
             self.approximate_backend_count = self.approximate_backend_count.saturating_add(1);
         }
         if !approximate_retriever.fallback_reason_codes.is_empty() {
@@ -487,7 +487,7 @@ impl VectorRecallValidationAccumulator {
         VectorRecallValidationReport {
             protocol: VECTOR_RECALL_VALIDATION_PROTOCOL.to_string(),
             ready: blocker_codes.is_empty(),
-            approximate_backend: TURBOQUANT_CANDIDATE_BACKEND.to_string(),
+            approximate_backend: RABITQ_CANDIDATE_BACKEND.to_string(),
             sample_candidate_count: self.sample_candidate_count,
             requested_sample_count: self.requested_sample_count,
             executed_sample_count: self.executed_sample_count,
@@ -628,7 +628,7 @@ mod tests {
             &["a".to_string()],
             &["a".to_string()],
             &["a".to_string()],
-            &retriever(TURBOQUANT_CANDIDATE_BACKEND),
+            &retriever(RABITQ_CANDIDATE_BACKEND),
         );
         accumulator.finish()
     }
@@ -642,7 +642,7 @@ mod tests {
             payload_bytes: 4096,
             payload_checksum: 12,
             format_version: 1,
-            algorithm: "turboquant".to_string(),
+            algorithm: "rabitq".to_string(),
             bit_width: 4,
             dimension: 3,
             transform_seed: 17,
@@ -683,13 +683,13 @@ mod tests {
             &["a".to_string(), "b".to_string()],
             &["a".to_string(), "x".to_string()],
             &["a".to_string(), "x".to_string()],
-            &retriever(TURBOQUANT_CANDIDATE_BACKEND),
+            &retriever(RABITQ_CANDIDATE_BACKEND),
         );
         accumulator.record(
             &["c".to_string(), "d".to_string()],
             &["c".to_string(), "d".to_string()],
             &["c".to_string(), "d".to_string()],
-            &retriever(TURBOQUANT_CANDIDATE_BACKEND),
+            &retriever(RABITQ_CANDIDATE_BACKEND),
         );
 
         let report = accumulator.finish();

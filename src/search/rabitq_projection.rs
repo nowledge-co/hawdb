@@ -4,27 +4,29 @@ use skein_core::RuntimeTaskContext;
 use skein_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
     ProjectionBuildReport, ProjectionBuilder, ProjectionIdentity, ProjectionManifest,
-    ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter, DEFAULT_BUILD_MEMORY_BYTES,
-    DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
+    ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter, RaBitQBitWidth,
+    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-const DEFAULT_TURBOQUANT_SEARCH_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_RABITQ_SEARCH_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const NUMERIC_ID_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const NUMERIC_ID_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TurboQuantCandidateProjectionBuildOptions {
+pub struct RaBitQCandidateProjectionBuildOptions {
+    pub bit_width: RaBitQBitWidth,
     pub segment_rows: usize,
     pub max_working_bytes: usize,
     pub transform_seed: u64,
 }
 
-impl Default for TurboQuantCandidateProjectionBuildOptions {
+impl Default for RaBitQCandidateProjectionBuildOptions {
     fn default() -> Self {
         Self {
+            bit_width: RaBitQBitWidth::default(),
             segment_rows: DEFAULT_SEGMENT_ROWS,
             max_working_bytes: DEFAULT_BUILD_MEMORY_BYTES,
             transform_seed: DEFAULT_TRANSFORM_SEED,
@@ -33,69 +35,69 @@ impl Default for TurboQuantCandidateProjectionBuildOptions {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TurboQuantCandidateScanOptions<'a> {
+pub struct RaBitQCandidateScanOptions<'a> {
     pub max_parallelism: NonZeroUsize,
     pub max_working_bytes: usize,
     pub kernel: KernelPreference,
     pub task_context: Option<&'a RuntimeTaskContext>,
 }
 
-impl TurboQuantCandidateScanOptions<'_> {
+impl RaBitQCandidateScanOptions<'_> {
     pub fn sequential() -> Self {
         Self {
             max_parallelism: NonZeroUsize::MIN,
-            max_working_bytes: DEFAULT_TURBOQUANT_SEARCH_MEMORY_BYTES,
+            max_working_bytes: DEFAULT_RABITQ_SEARCH_MEMORY_BYTES,
             kernel: KernelPreference::Auto,
             task_context: None,
         }
     }
 }
 
-impl Default for TurboQuantCandidateScanOptions<'_> {
+impl Default for RaBitQCandidateScanOptions<'_> {
     fn default() -> Self {
         Self::sequential()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TurboQuantCandidate {
+pub struct RaBitQCandidate {
     pub id: String,
     pub score: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TurboQuantCandidateOutput {
-    pub candidates: Vec<TurboQuantCandidate>,
+pub struct RaBitQCandidateOutput {
+    pub candidates: Vec<RaBitQCandidate>,
     pub report: ProjectionSearchReport,
 }
 
 #[derive(Debug)]
-pub struct TurboQuantCandidateProjection {
-    storage: TurboQuantCandidateProjectionStorage,
+pub struct RaBitQCandidateProjection {
+    storage: RaBitQCandidateProjectionStorage,
     numeric_to_document_id: BTreeMap<u64, String>,
     document_to_numeric_id: BTreeMap<String, u64>,
     build_report: ProjectionBuildReport,
 }
 
 #[derive(Debug)]
-enum TurboQuantCandidateProjectionStorage {
+enum RaBitQCandidateProjectionStorage {
     InMemory(InMemoryProjection),
     File(FileProjection),
 }
 
-struct TurboQuantDocumentIdMap {
+struct RaBitQDocumentIdMap {
     dimension: usize,
     numeric_to_document_id: BTreeMap<u64, String>,
     document_to_numeric_id: BTreeMap<String, u64>,
 }
 
-impl TurboQuantCandidateProjection {
+impl RaBitQCandidateProjection {
     pub fn build_from_documents(
         documents: &BTreeMap<String, SearchDocument>,
         identity: ProjectionIdentity,
-        options: TurboQuantCandidateProjectionBuildOptions,
+        options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        let Some(TurboQuantDocumentIdMap {
+        let Some(RaBitQDocumentIdMap {
             dimension,
             numeric_to_document_id,
             document_to_numeric_id,
@@ -109,7 +111,7 @@ impl TurboQuantCandidateProjection {
             let embedding = documents[document_id]
                 .embedding
                 .as_deref()
-                .expect("mapped TurboQuant document has an embedding");
+                .expect("mapped RaBitQ document has an embedding");
             builder
                 .push(*numeric_id, embedding)
                 .map_err(projection_error)?;
@@ -117,7 +119,7 @@ impl TurboQuantCandidateProjection {
         let projection = builder.finish().map_err(projection_error)?;
         let build_report = projection.build_report().clone();
         Ok(Some(Self {
-            storage: TurboQuantCandidateProjectionStorage::InMemory(projection),
+            storage: RaBitQCandidateProjectionStorage::InMemory(projection),
             numeric_to_document_id,
             document_to_numeric_id,
             build_report,
@@ -128,9 +130,9 @@ impl TurboQuantCandidateProjection {
         artifact_path: impl AsRef<Path>,
         documents: &BTreeMap<String, SearchDocument>,
         identity: ProjectionIdentity,
-        options: TurboQuantCandidateProjectionBuildOptions,
+        options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        let Some(TurboQuantDocumentIdMap {
+        let Some(RaBitQDocumentIdMap {
             dimension,
             numeric_to_document_id,
             document_to_numeric_id,
@@ -145,7 +147,7 @@ impl TurboQuantCandidateProjection {
             let embedding = documents[document_id]
                 .embedding
                 .as_deref()
-                .expect("mapped TurboQuant document has an embedding");
+                .expect("mapped RaBitQ document has an embedding");
             writer
                 .push(*numeric_id, embedding)
                 .map_err(projection_error)?;
@@ -153,7 +155,7 @@ impl TurboQuantCandidateProjection {
         let projection = writer.finish().map_err(projection_error)?;
         let build_report = projection.build_report();
         Ok(Some(Self {
-            storage: TurboQuantCandidateProjectionStorage::File(projection),
+            storage: RaBitQCandidateProjectionStorage::File(projection),
             numeric_to_document_id,
             document_to_numeric_id,
             build_report,
@@ -166,26 +168,26 @@ impl TurboQuantCandidateProjection {
         expected_identity: &ProjectionIdentity,
     ) -> Result<Self> {
         let projection = FileProjection::open(artifact_path).map_err(projection_error)?;
-        let Some(TurboQuantDocumentIdMap {
+        let Some(RaBitQDocumentIdMap {
             dimension,
             numeric_to_document_id,
             document_to_numeric_id,
         }) = validate_and_map_documents(documents)?
         else {
             return Err(SkeinError::Storage(
-                "Skein TurboQuant projection exists without vector documents".to_string(),
+                "Skein RaBitQ projection exists without vector documents".to_string(),
             ));
         };
         let manifest = projection.manifest();
         if manifest.dimension != dimension {
             return Err(SkeinError::Storage(format!(
-                "Skein TurboQuant projection dimension {} does not match search dimension {dimension}",
+                "Skein RaBitQ projection dimension {} does not match search dimension {dimension}",
                 manifest.dimension
             )));
         }
         if &manifest.identity != expected_identity {
             return Err(SkeinError::Storage(format!(
-                "Skein TurboQuant projection identity {:?} does not match expected {:?}",
+                "Skein RaBitQ projection identity {:?} does not match expected {:?}",
                 manifest.identity, expected_identity
             )));
         }
@@ -196,19 +198,19 @@ impl TurboQuantCandidateProjection {
                     documents[document_id]
                         .embedding
                         .as_deref()
-                        .expect("mapped TurboQuant document has an embedding"),
+                        .expect("mapped RaBitQ document has an embedding"),
                 )
             }),
         );
         if manifest.source_digest != expected_digest {
             return Err(SkeinError::Storage(
-                "Skein TurboQuant projection source digest does not match search documents"
+                "Skein RaBitQ projection source digest does not match search documents"
                     .to_string(),
             ));
         }
         let build_report = projection.build_report();
         Ok(Self {
-            storage: TurboQuantCandidateProjectionStorage::File(projection),
+            storage: RaBitQCandidateProjectionStorage::File(projection),
             numeric_to_document_id,
             document_to_numeric_id,
             build_report,
@@ -220,12 +222,12 @@ impl TurboQuantCandidateProjection {
         query_embedding: &[f32],
         limit: usize,
         allowlist: Option<&[&str]>,
-    ) -> Result<TurboQuantCandidateOutput> {
+    ) -> Result<RaBitQCandidateOutput> {
         self.search_with_options(
             query_embedding,
             limit,
             allowlist,
-            TurboQuantCandidateScanOptions::default(),
+            RaBitQCandidateScanOptions::default(),
         )
     }
 
@@ -234,8 +236,8 @@ impl TurboQuantCandidateProjection {
         query_embedding: &[f32],
         limit: usize,
         allowlist: Option<&[&str]>,
-        options: TurboQuantCandidateScanOptions<'_>,
-    ) -> Result<TurboQuantCandidateOutput> {
+        options: RaBitQCandidateScanOptions<'_>,
+    ) -> Result<RaBitQCandidateOutput> {
         let allowed_numeric_ids = allowlist.map(|allowed| {
             let mut ids = allowed
                 .iter()
@@ -253,8 +255,8 @@ impl TurboQuantCandidateProjection {
         query_embedding: &[f32],
         limit: usize,
         allowlist: Option<&[&SearchDocument]>,
-        options: TurboQuantCandidateScanOptions<'_>,
-    ) -> Result<TurboQuantCandidateOutput> {
+        options: RaBitQCandidateScanOptions<'_>,
+    ) -> Result<RaBitQCandidateOutput> {
         let allowed_numeric_ids = allowlist.map(|allowed| {
             let mut ids = allowed
                 .iter()
@@ -272,8 +274,8 @@ impl TurboQuantCandidateProjection {
         query_embedding: &[f32],
         limit: usize,
         allowed_numeric_ids: Option<Vec<u64>>,
-        options: TurboQuantCandidateScanOptions<'_>,
-    ) -> Result<TurboQuantCandidateOutput> {
+        options: RaBitQCandidateScanOptions<'_>,
+    ) -> Result<RaBitQCandidateOutput> {
         let allowlist_bytes = allowed_numeric_ids
             .as_ref()
             .map_or(0, |ids| ids.len().saturating_mul(std::mem::size_of::<u64>()));
@@ -282,7 +284,7 @@ impl TurboQuantCandidateProjection {
             .checked_sub(allowlist_bytes)
             .ok_or_else(|| {
                 SkeinError::Storage(format!(
-                    "Skein TurboQuant projection allowlist requires {allowlist_bytes} bytes but the search budget is {} bytes",
+                    "Skein RaBitQ projection allowlist requires {allowlist_bytes} bytes but the search budget is {} bytes",
                     options.max_working_bytes
                 ))
             })?;
@@ -297,10 +299,10 @@ impl TurboQuantCandidateProjection {
             scan_options = scan_options.with_task_context(context);
         }
         let mut output = match &self.storage {
-            TurboQuantCandidateProjectionStorage::InMemory(projection) => {
+            RaBitQCandidateProjectionStorage::InMemory(projection) => {
                 projection.search(query_embedding, limit, scan_options)
             }
-            TurboQuantCandidateProjectionStorage::File(projection) => {
+            RaBitQCandidateProjectionStorage::File(projection) => {
                 projection.search(query_embedding, limit, scan_options)
             }
         }
@@ -319,17 +321,17 @@ impl TurboQuantCandidateProjection {
                     .cloned()
                     .ok_or_else(|| {
                         SkeinError::Storage(format!(
-                            "Skein TurboQuant projection returned unknown numeric id {}",
+                            "Skein RaBitQ projection returned unknown numeric id {}",
                             hit.id
                         ))
                     })?;
-                Ok(TurboQuantCandidate {
+                Ok(RaBitQCandidate {
                     id,
                     score: f64::from(hit.score),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(TurboQuantCandidateOutput {
+        Ok(RaBitQCandidateOutput {
             candidates,
             report: output.report,
         })
@@ -337,8 +339,8 @@ impl TurboQuantCandidateProjection {
 
     pub fn manifest(&self) -> &ProjectionManifest {
         match &self.storage {
-            TurboQuantCandidateProjectionStorage::InMemory(projection) => projection.manifest(),
-            TurboQuantCandidateProjectionStorage::File(projection) => projection.manifest(),
+            RaBitQCandidateProjectionStorage::InMemory(projection) => projection.manifest(),
+            RaBitQCandidateProjectionStorage::File(projection) => projection.manifest(),
         }
     }
 
@@ -349,7 +351,7 @@ impl TurboQuantCandidateProjection {
     pub fn is_file_backed(&self) -> bool {
         matches!(
             self.storage,
-            TurboQuantCandidateProjectionStorage::File(_)
+            RaBitQCandidateProjectionStorage::File(_)
         )
     }
 
@@ -361,7 +363,7 @@ impl TurboQuantCandidateProjection {
 
 fn validate_and_map_documents(
     documents: &BTreeMap<String, SearchDocument>,
-) -> Result<Option<TurboQuantDocumentIdMap>> {
+) -> Result<Option<RaBitQDocumentIdMap>> {
     let mut dimension = None;
     let mut numeric_to_document_id = BTreeMap::new();
     let mut document_to_numeric_id = BTreeMap::new();
@@ -371,14 +373,14 @@ fn validate_and_map_documents(
         };
         if embedding.is_empty() || !embedding.iter().all(|value| value.is_finite()) {
             return Err(SkeinError::Storage(format!(
-                "Skein TurboQuant projection rejected empty or non-finite embedding for {}",
+                "Skein RaBitQ projection rejected empty or non-finite embedding for {}",
                 document.id
             )));
         }
         match dimension {
             Some(existing) if existing != embedding.len() => {
                 return Err(SkeinError::Storage(format!(
-                    "Skein TurboQuant projection dimension mismatch: expected {existing}, got {}",
+                    "Skein RaBitQ projection dimension mismatch: expected {existing}, got {}",
                     embedding.len()
                 )));
             }
@@ -388,13 +390,13 @@ fn validate_and_map_documents(
         let numeric_id = stable_numeric_id(&document.id);
         if let Some(existing) = numeric_to_document_id.insert(numeric_id, document.id.clone()) {
             return Err(SkeinError::Storage(format!(
-                "Skein TurboQuant projection id collision between {existing} and {}",
+                "Skein RaBitQ projection id collision between {existing} and {}",
                 document.id
             )));
         }
         document_to_numeric_id.insert(document.id.clone(), numeric_id);
     }
-    Ok(dimension.map(|dimension| TurboQuantDocumentIdMap {
+    Ok(dimension.map(|dimension| RaBitQDocumentIdMap {
         dimension,
         numeric_to_document_id,
         document_to_numeric_id,
@@ -404,9 +406,10 @@ fn validate_and_map_documents(
 fn build_config(
     dimension: usize,
     identity: ProjectionIdentity,
-    options: TurboQuantCandidateProjectionBuildOptions,
+    options: RaBitQCandidateProjectionBuildOptions,
 ) -> ProjectionBuildConfig {
     ProjectionBuildConfig::new(dimension, identity)
+        .with_bit_width(options.bit_width)
         .with_segment_rows(options.segment_rows)
         .with_max_working_bytes(options.max_working_bytes)
         .with_transform_seed(options.transform_seed)
@@ -422,7 +425,7 @@ fn stable_numeric_id(document_id: &str) -> u64 {
 }
 
 fn projection_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
-    SkeinError::Storage(format!("Skein TurboQuant projection: {error}"))
+    SkeinError::Storage(format!("Skein RaBitQ projection: {error}"))
 }
 
 #[cfg(test)]
@@ -433,29 +436,33 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn turboquant_projection_round_trips_string_ids_and_raw_identity() {
+    fn rabitq_projection_round_trips_string_ids_and_raw_identity() {
         let documents = sample_documents();
         let root = unique_test_dir("roundtrip");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_turboquant.1.skein");
+        let artifact = root.join("search_rabitq.1.skein");
         let identity = ProjectionIdentity {
             generation: 1,
             source_epoch: Some(9),
             embedding_model: Some("test-model".to_string()),
             embedding_version: Some("v1".to_string()),
         };
-        let written = TurboQuantCandidateProjection::write_from_documents(
+        let written = RaBitQCandidateProjection::write_from_documents(
             &artifact,
             &documents,
             identity.clone(),
-            TurboQuantCandidateProjectionBuildOptions::default(),
+            RaBitQCandidateProjectionBuildOptions {
+                bit_width: RaBitQBitWidth::One,
+                ..RaBitQCandidateProjectionBuildOptions::default()
+            },
         )
         .unwrap()
         .unwrap();
         assert!(written.is_file_backed());
+        assert_eq!(written.manifest().bit_width, 1);
 
         let loaded =
-            TurboQuantCandidateProjection::load_from_path(&artifact, &documents, &identity).unwrap();
+            RaBitQCandidateProjection::load_from_path(&artifact, &documents, &identity).unwrap();
         let output = loaded
             .search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1, None)
             .unwrap();
@@ -465,10 +472,10 @@ mod tests {
 
     #[test]
     fn candidate_allowlist_is_charged_to_the_search_budget() {
-        let projection = TurboQuantCandidateProjection::build_from_documents(
+        let projection = RaBitQCandidateProjection::build_from_documents(
             &sample_documents(),
             ProjectionIdentity::new(1),
-            TurboQuantCandidateProjectionBuildOptions::default(),
+            RaBitQCandidateProjectionBuildOptions::default(),
         )
         .unwrap()
         .unwrap();
@@ -477,9 +484,9 @@ mod tests {
             &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             1,
             Some(&allowed),
-            TurboQuantCandidateScanOptions {
+            RaBitQCandidateScanOptions {
                 max_working_bytes: std::mem::size_of::<u64>(),
-                ..TurboQuantCandidateScanOptions::default()
+                ..RaBitQCandidateScanOptions::default()
             },
         );
 
@@ -491,10 +498,10 @@ mod tests {
 
     #[test]
     fn unfiltered_candidate_scan_does_not_materialize_an_allowlist() {
-        let projection = TurboQuantCandidateProjection::build_from_documents(
+        let projection = RaBitQCandidateProjection::build_from_documents(
             &sample_documents(),
             ProjectionIdentity::new(1),
-            TurboQuantCandidateProjectionBuildOptions::default(),
+            RaBitQCandidateProjectionBuildOptions::default(),
         )
         .unwrap()
         .unwrap();
@@ -507,9 +514,9 @@ mod tests {
                 &query,
                 1,
                 None,
-                TurboQuantCandidateScanOptions {
+                RaBitQCandidateScanOptions {
                     max_working_bytes: exact_budget,
-                    ..TurboQuantCandidateScanOptions::default()
+                    ..RaBitQCandidateScanOptions::default()
                 },
             )
             .unwrap();
@@ -518,9 +525,9 @@ mod tests {
             &query,
             1,
             Some(&all_documents),
-            TurboQuantCandidateScanOptions {
+            RaBitQCandidateScanOptions {
                 max_working_bytes: exact_budget,
-                ..TurboQuantCandidateScanOptions::default()
+                ..RaBitQCandidateScanOptions::default()
             },
         );
         assert!(filtered
@@ -556,7 +563,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein_turboquant_candidate_projection_{name}_{}_{nanos}",
+            "skein_rabitq_candidate_projection_{name}_{}_{nanos}",
             std::process::id()
         ))
     }

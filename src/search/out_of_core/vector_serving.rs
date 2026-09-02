@@ -84,8 +84,8 @@ impl SearchOutOfCoreReader {
             ),
             CompressedVectorSearchMode::Preferred => {
                 #[cfg(feature = "vector-search")]
-                if self.turboquant_projection.is_some() {
-                    return self.scan_turboquant_vector_scores(
+                if self.rabitq_projection.is_some() {
+                    return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
                         retained_limit,
@@ -103,15 +103,15 @@ impl SearchOutOfCoreReader {
                 scan.fallback_reason_codes
                     .push(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable);
                 scan.fallback_reasons.push(
-                    "out-of-core TurboQuant projection is not attached to this generation; used exact scalar vector segments"
+                    "out-of-core RaBitQ projection is not attached to this generation; used exact scalar vector segments"
                         .to_string(),
                 );
                 Ok(scan)
             }
             CompressedVectorSearchMode::Required => {
                 #[cfg(feature = "vector-search")]
-                if self.turboquant_projection.is_some() {
-                    return self.scan_turboquant_vector_scores(
+                if self.rabitq_projection.is_some() {
+                    return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
                         retained_limit,
@@ -120,7 +120,7 @@ impl SearchOutOfCoreReader {
                     );
                 }
                 Err(SkeinError::Storage(
-                    "out-of-core TurboQuant projection is required but unavailable for this generation"
+                    "out-of-core RaBitQ projection is required but unavailable for this generation"
                         .to_string(),
                 ))
             }
@@ -187,7 +187,7 @@ impl SearchOutOfCoreReader {
     }
 
     #[cfg(feature = "vector-search")]
-    fn scan_turboquant_vector_scores(
+    fn scan_rabitq_vector_scores(
         &self,
         query_embedding: &[f32],
         candidate_set: &CandidateSet,
@@ -196,10 +196,8 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
-        let projection = self.turboquant_projection.as_ref().ok_or_else(|| {
-            SkeinError::Storage(
-                "search out-of-core TurboQuant projection is unavailable".to_string(),
-            )
+        let projection = self.rabitq_projection.as_ref().ok_or_else(|| {
+            SkeinError::Storage("search out-of-core RaBitQ projection is unavailable".to_string())
         })?;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
@@ -253,8 +251,8 @@ impl SearchOutOfCoreReader {
             .search(query_embedding, candidate_limit, search_options)
             .map_err(vector_projection_error)?;
         let projection_report = output.report;
-        metrics.turboquant_payload_bytes_read = metrics
-            .turboquant_payload_bytes_read
+        metrics.rabitq_payload_bytes_read = metrics
+            .rabitq_payload_bytes_read
             .saturating_add(projection_report.payload_bytes_read);
         let mut selected_ordinals = output
             .hits
@@ -264,7 +262,7 @@ impl SearchOutOfCoreReader {
         selected_ordinals.sort_unstable();
         if selected_ordinals.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(SkeinError::Storage(
-                "search TurboQuant projection returned duplicate candidate ordinals".to_string(),
+                "search RaBitQ projection returned duplicate candidate ordinals".to_string(),
             ));
         }
 
@@ -319,7 +317,7 @@ impl SearchOutOfCoreReader {
         }
         if reranked_candidate_count != selected_ordinals.len() {
             return Err(SkeinError::Storage(format!(
-                "search TurboQuant raw rerank hydrated {reranked_candidate_count} of {} candidates",
+                "search RaBitQ raw rerank hydrated {reranked_candidate_count} of {} candidates",
                 selected_ordinals.len()
             )));
         }
@@ -329,7 +327,7 @@ impl SearchOutOfCoreReader {
             matching_count,
             vector_document_count: projection.manifest().document_count,
             segment_scan_count: raw_segment_scan_count,
-            backend: "skein_turboquant_out_of_core_candidate_projection".to_string(),
+            backend: "skein_rabitq_out_of_core_candidate_projection".to_string(),
             candidate_score_source: "quantized_projection".to_string(),
             generated_candidate_count: projection_report.candidate_count,
             reranked_candidate_count,
@@ -363,5 +361,5 @@ fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> R
 pub(super) fn vector_projection_error(
     error: skein_vector_projection::ProjectionError,
 ) -> SkeinError {
-    SkeinError::Storage(format!("search TurboQuant projection: {error}"))
+    SkeinError::Storage(format!("search RaBitQ projection: {error}"))
 }

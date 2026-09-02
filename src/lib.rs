@@ -382,9 +382,9 @@ pub use schema::{
     PropertyType, SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
 #[cfg(feature = "vector-search")]
-pub use search::turboquant_projection::{
-    TurboQuantCandidate, TurboQuantCandidateOutput, TurboQuantCandidateProjection,
-    TurboQuantCandidateProjectionBuildOptions, TurboQuantCandidateScanOptions,
+pub use search::rabitq_projection::{
+    RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,
+    RaBitQCandidateProjectionBuildOptions, RaBitQCandidateScanOptions,
 };
 pub use search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, MetadataRepairOptions,
@@ -488,10 +488,10 @@ pub use skein_storage::{
 };
 #[cfg(feature = "vector-search")]
 pub use skein_vector_projection::{
-    KernelPreference as TurboQuantKernelPreference,
-    ProjectionBuildReport as TurboQuantCandidateProjectionBuildReport,
-    ProjectionManifest as TurboQuantCandidateProjectionManifest,
-    ProjectionSearchReport as TurboQuantCandidateScanReport, ScanKernel as TurboQuantScanKernel,
+    KernelPreference as RaBitQKernelPreference,
+    ProjectionBuildReport as RaBitQCandidateProjectionBuildReport,
+    ProjectionManifest as RaBitQCandidateProjectionManifest,
+    ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
 };
 pub use storage_recovery_evidence::nowledge_storage_recovery_evidence_json;
 pub use store::{

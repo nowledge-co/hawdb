@@ -19,6 +19,8 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
             dimension: 2,
         }),
         lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
+        #[cfg(feature = "vector-search")]
+        rabitq_bit_width: skein_vector_projection::RaBitQBitWidth::One,
         ..SearchOutOfCoreGenerationBuildOptions::default()
     };
     let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
@@ -28,8 +30,8 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
     let report = writer.finish().unwrap();
     assert_eq!(report.document_count, 300);
     assert_eq!(report.vector_document_count, 300);
-    assert!(report.turboquant_artifact_bytes > 0);
-    assert!(report.turboquant_source_digest.is_some());
+    assert!(report.rabitq_artifact_bytes > 0);
+    assert!(report.rabitq_source_digest.is_some());
     assert_eq!(report.resident_document_count, 0);
     assert!(report.active_manifest_published_last);
     assert!(!report.cleanup_retry_required);
@@ -48,6 +50,14 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
     assert_eq!(reader.resident_document_count(), 0);
     assert_eq!(reader.generation(), report.generation);
     assert_eq!(reader.source_graph_commit_epoch(), Some(17));
+    #[cfg(feature = "vector-search")]
+    assert_eq!(
+        reader
+            .vector_projection_qualification_identity()
+            .expect("vector projection is present")
+            .bit_width,
+        1
+    );
     let output = reader
         .search_with_options(
             "graph storage",
@@ -83,9 +93,9 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
         .unwrap();
     assert_eq!(
         compressed.result.retrievers[0].backend,
-        "skein_turboquant_out_of_core_candidate_projection"
+        "skein_rabitq_out_of_core_candidate_projection"
     );
-    assert!(compressed.metrics.turboquant_payload_bytes_read > 0);
+    assert!(compressed.metrics.rabitq_payload_bytes_read > 0);
     assert!(compressed.result.retrievers[0].reranked_candidate_count <= 16);
     assert_eq!(
         compressed.result.retrievers[0].final_score_source,
@@ -326,8 +336,8 @@ fn bounded_delta_rejects_stale_base_generation_without_lost_update() {
 }
 
 #[test]
-fn turboquant_open_rejects_corruption_and_insufficient_serving_memory() {
-    let root = test_dir("turboquant_open_admission");
+fn rabitq_open_rejects_corruption_and_insufficient_serving_memory() {
+    let root = test_dir("rabitq_open_admission");
     let mut writer = SearchOutOfCoreGenerationWriter::create(
         &root,
         SearchOutOfCoreGenerationBuildOptions {
@@ -355,7 +365,7 @@ fn turboquant_open_rejects_corruption_and_insufficient_serving_memory() {
     .unwrap_err();
     assert!(admission_error.to_string().contains("serving admission"));
 
-    let artifact = root.join(format!("search_turboquant.{}.skein", report.generation));
+    let artifact = root.join(format!("search_rabitq.{}.skein", report.generation));
     let mut bytes = fs::read(&artifact).unwrap();
     *bytes.last_mut().unwrap() ^= 0xff;
     fs::write(&artifact, bytes).unwrap();

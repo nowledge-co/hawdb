@@ -1,19 +1,76 @@
-use crate::codec::bytes_per_vector;
 use crate::error::{ProjectionError, Result};
-use crate::quantizer::{TurboQuantCodebook, TURBOQUANT_CODEBOOK_BYTES};
 use serde::{Deserialize, Serialize};
 
-pub const PROJECTION_PROTOCOL: &str = "skein-turboquant-projection";
-pub const PROJECTION_FORMAT_VERSION: u32 = 2;
-pub const PROJECTION_BIT_WIDTH: u8 = 4;
-pub const PROJECTION_ALGORITHM: &str = "turboquant";
+pub const PROJECTION_PROTOCOL: &str = "skein-rabitq-projection";
+pub const PROJECTION_FORMAT_VERSION: u32 = 1;
+pub const DEFAULT_PROJECTION_BIT_WIDTH: u8 = 1;
+pub const PROJECTION_BIT_WIDTH: u8 = DEFAULT_PROJECTION_BIT_WIDTH;
+pub const PROJECTION_ALGORITHM: &str = "rabitq";
 pub const PROJECTION_TRANSFORM: &str = "signed_block_hadamard_v1";
-pub const PROJECTION_QUANTIZER: &str = "gaussian_lloyd_max_4bit_v1";
+pub const PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_1bit_v1";
+const FOUR_BIT_PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_4bit_v1";
 pub const PROJECTION_CALIBRATION: &str = "none";
 pub const DEFAULT_TRANSFORM_SEED: u64 = 0x534b_4549_4e56_5134;
 pub const DEFAULT_SEGMENT_ROWS: usize = 1_024;
 pub const DEFAULT_BUILD_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const BUILD_FIXED_WORKING_BYTES: usize = 1_024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum RaBitQBitWidth {
+    One = 1,
+    Four = 4,
+}
+
+impl Default for RaBitQBitWidth {
+    fn default() -> Self {
+        Self::One
+    }
+}
+
+impl RaBitQBitWidth {
+    pub const fn bits(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn quantizer(self) -> &'static str {
+        match self {
+            Self::One => PROJECTION_QUANTIZER,
+            Self::Four => FOUR_BIT_PROJECTION_QUANTIZER,
+        }
+    }
+
+    pub(crate) const fn sign_code_bytes(self, dimension: usize) -> usize {
+        let _ = self;
+        dimension.div_ceil(u8::BITS as usize)
+    }
+
+    pub(crate) const fn refinement_bits(self) -> usize {
+        self.bits() as usize - 1
+    }
+
+    pub(crate) const fn refinement_code_bytes(self, dimension: usize) -> usize {
+        dimension
+            .saturating_mul(self.refinement_bits())
+            .div_ceil(u8::BITS as usize)
+    }
+
+    pub(crate) fn from_bits(bits: u8) -> Result<Self> {
+        match bits {
+            1 => Ok(Self::One),
+            4 => Ok(Self::Four),
+            _ => Err(ProjectionError::CorruptArtifact(format!(
+                "unsupported RaBitQ bit width {bits}"
+            ))),
+        }
+    }
+}
+
+pub(crate) fn encoded_vector_bytes(dimension: usize, bit_width: RaBitQBitWidth) -> usize {
+    bit_width
+        .sign_code_bytes(dimension)
+        .saturating_add(bit_width.refinement_code_bytes(dimension))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +100,7 @@ impl ProjectionIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBuildConfig {
     pub dimension: usize,
+    pub bit_width: RaBitQBitWidth,
     pub segment_rows: usize,
     pub max_working_bytes: usize,
     pub transform_seed: u64,
@@ -53,6 +111,7 @@ impl ProjectionBuildConfig {
     pub fn new(dimension: usize, identity: ProjectionIdentity) -> Self {
         Self {
             dimension,
+            bit_width: RaBitQBitWidth::default(),
             segment_rows: DEFAULT_SEGMENT_ROWS,
             max_working_bytes: DEFAULT_BUILD_MEMORY_BYTES,
             transform_seed: DEFAULT_TRANSFORM_SEED,
@@ -62,6 +121,11 @@ impl ProjectionBuildConfig {
 
     pub fn with_segment_rows(mut self, segment_rows: usize) -> Self {
         self.segment_rows = segment_rows;
+        self
+    }
+
+    pub fn with_bit_width(mut self, bit_width: RaBitQBitWidth) -> Self {
+        self.bit_width = bit_width;
         self
     }
 
@@ -96,15 +160,14 @@ impl ProjectionBuildConfig {
                 "segment_rows must be greater than zero".to_string(),
             ));
         }
-        let bytes_per_vector = bytes_per_vector(self.dimension);
+        let bytes_per_vector = encoded_vector_bytes(self.dimension, self.bit_width);
         let row_bytes = std::mem::size_of::<u64>()
-            .saturating_add(std::mem::size_of::<f32>())
+            .saturating_add(2 * std::mem::size_of::<f32>())
             .saturating_add(bytes_per_vector);
         let scratch_bytes = self
             .dimension
             .saturating_mul(std::mem::size_of::<f32>())
             .saturating_add(bytes_per_vector)
-            .saturating_add(TURBOQUANT_CODEBOOK_BYTES)
             .saturating_add(BUILD_FIXED_WORKING_BYTES);
         let available_for_rows = self.max_working_bytes.saturating_sub(scratch_bytes);
         let admitted_rows = (available_for_rows / row_bytes).min(self.segment_rows);
@@ -122,6 +185,7 @@ impl ProjectionBuildConfig {
             max_working_bytes: self.max_working_bytes,
             peak_working_bytes,
             bytes_per_vector,
+            bit_width: self.bit_width,
             transform_seed: self.transform_seed,
             identity: self.identity.clone(),
         })
@@ -139,6 +203,7 @@ pub struct ProjectionBuildAdmission {
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedBuildConfig {
     pub dimension: usize,
+    pub bit_width: RaBitQBitWidth,
     pub requested_segment_rows: usize,
     pub admitted_segment_rows: usize,
     pub max_working_bytes: usize,
@@ -194,11 +259,11 @@ impl ProjectionManifest {
         Self {
             protocol: PROJECTION_PROTOCOL.to_string(),
             format_version: PROJECTION_FORMAT_VERSION,
-            bit_width: PROJECTION_BIT_WIDTH,
+            bit_width: config.bit_width.bits(),
             algorithm: PROJECTION_ALGORITHM.to_string(),
             metric: ProjectionMetric::Cosine,
             transform: PROJECTION_TRANSFORM.to_string(),
-            quantizer: PROJECTION_QUANTIZER.to_string(),
+            quantizer: config.bit_width.quantizer().to_string(),
             calibration: PROJECTION_CALIBRATION.to_string(),
             transform_seed: config.transform_seed,
             dimension: config.dimension,
@@ -228,16 +293,11 @@ impl ProjectionManifest {
                 self.format_version
             )));
         }
-        if self.bit_width != PROJECTION_BIT_WIDTH {
-            return Err(ProjectionError::CorruptArtifact(format!(
-                "unsupported bit width {}",
-                self.bit_width
-            )));
-        }
+        let bit_width = RaBitQBitWidth::from_bits(self.bit_width)?;
         if self.algorithm != PROJECTION_ALGORITHM
             || self.metric != ProjectionMetric::Cosine
             || self.transform != PROJECTION_TRANSFORM
-            || self.quantizer != PROJECTION_QUANTIZER
+            || self.quantizer != bit_width.quantizer()
             || self.calibration != PROJECTION_CALIBRATION
         {
             return Err(ProjectionError::CorruptArtifact(
@@ -268,7 +328,8 @@ impl ProjectionManifest {
                     segment.index
                 )));
             }
-            let expected_bytes = segment_payload_bytes(self.dimension, segment.row_count);
+            let expected_bytes =
+                segment_payload_bytes(self.dimension, bit_width, segment.row_count);
             if segment.payload_bytes != expected_bytes as u64 {
                 return Err(ProjectionError::CorruptArtifact(format!(
                     "segment {} payload length mismatch",
@@ -303,7 +364,8 @@ pub struct ProjectionBuildReport {
 pub(crate) struct QuantizedSegment {
     pub base_ordinal: usize,
     pub ids: Vec<u64>,
-    pub renormalizations: Vec<f32>,
+    pub reconstruction_scales: Vec<f32>,
+    pub reconstruction_offsets: Vec<f32>,
     pub codes: Vec<u8>,
 }
 
@@ -312,7 +374,8 @@ impl QuantizedSegment {
         Self {
             base_ordinal,
             ids: Vec::with_capacity(config.admitted_segment_rows),
-            renormalizations: Vec::with_capacity(config.admitted_segment_rows),
+            reconstruction_scales: Vec::with_capacity(config.admitted_segment_rows),
+            reconstruction_offsets: Vec::with_capacity(config.admitted_segment_rows),
             codes: Vec::with_capacity(
                 config
                     .admitted_segment_rows
@@ -329,7 +392,8 @@ impl QuantizedSegment {
         Self {
             base_ordinal,
             ids: Vec::new(),
-            renormalizations: Vec::new(),
+            reconstruction_scales: Vec::new(),
+            reconstruction_offsets: Vec::new(),
             codes: Vec::new(),
         }
     }
@@ -343,7 +407,6 @@ impl QuantizedSegment {
 pub struct InMemoryProjection {
     pub(crate) manifest: ProjectionManifest,
     pub(crate) segments: Vec<QuantizedSegment>,
-    pub(crate) codebook: TurboQuantCodebook,
     pub(crate) build_report: ProjectionBuildReport,
 }
 
@@ -357,11 +420,15 @@ impl InMemoryProjection {
     }
 }
 
-pub(crate) fn segment_payload_bytes(dimension: usize, rows: usize) -> usize {
+pub(crate) fn segment_payload_bytes(
+    dimension: usize,
+    bit_width: RaBitQBitWidth,
+    rows: usize,
+) -> usize {
     rows.saturating_mul(
         std::mem::size_of::<u64>()
-            .saturating_add(std::mem::size_of::<f32>())
-            .saturating_add(bytes_per_vector(dimension)),
+            .saturating_add(2 * std::mem::size_of::<f32>())
+            .saturating_add(encoded_vector_bytes(dimension, bit_width)),
     )
 }
 
@@ -369,6 +436,18 @@ pub(crate) fn ids_bytes(rows: usize) -> usize {
     rows.saturating_mul(std::mem::size_of::<u64>())
 }
 
-pub(crate) fn renormalization_bytes(rows: usize) -> usize {
+pub(crate) fn reconstruction_factor_bytes(rows: usize) -> usize {
     rows.saturating_mul(std::mem::size_of::<f32>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_bit_width_matches_faiss_standard_rabitq() {
+        assert_eq!(DEFAULT_PROJECTION_BIT_WIDTH, 1);
+        assert_eq!(RaBitQBitWidth::default(), RaBitQBitWidth::One);
+        assert_eq!(RaBitQBitWidth::default().quantizer(), PROJECTION_QUANTIZER);
+    }
 }

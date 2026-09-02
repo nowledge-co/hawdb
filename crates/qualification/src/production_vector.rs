@@ -4,9 +4,9 @@ use serde::Serialize;
 use skein::{
     ProcessMemoryProfile, ProcessMemorySnapshot, ProductionEvidenceBinding,
     ProductionQualificationIdentity, RuntimeCancellationToken, RuntimeTaskContext,
-    SearchAccessControlContext, SearchDocument, SearchFallbackReasonCode, SearchIndex,
-    SearchOutOfCoreConfig, SearchOutOfCoreReader, SearchProjectionQualificationIdentity,
-    SearchResultSet, VectorProjectionQualificationIdentity, VectorProjectionResourceEvidence,
+    SearchAccessControlContext, SearchFallbackReasonCode, SearchIndex, SearchOutOfCoreConfig,
+    SearchOutOfCoreReader, SearchProjectionQualificationIdentity, SearchResultSet,
+    VectorProjectionQualificationIdentity, VectorProjectionResourceEvidence,
     VectorSearchExecutionOptions, VectorSearchKernelPreference,
     MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT, MAX_VECTOR_RECALL_VALIDATION_SAMPLES,
     MAX_VECTOR_RECALL_VALIDATION_TOP_K, MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT,
@@ -27,9 +27,7 @@ pub use matrix::{
     ProductionVectorMatrixExpectation, ProductionVectorQualificationMatrixReport,
     PRODUCTION_VECTOR_QUALIFICATION_MATRIX_PROTOCOL,
 };
-pub use oracle::{
-    ProductionVectorDifferentialOracleCase, ProductionVectorDifferentialOracleEvidence,
-};
+pub use oracle::{ProductionVectorRaBitQReferenceCase, ProductionVectorRaBitQReferenceEvidence};
 use query::{
     collect_recall_evidence, execute_query, execute_serving_query, measure_query,
     measure_serving_query, request_digest, VectorExecutionProfile,
@@ -97,8 +95,6 @@ pub struct ProductionVectorLifecycleConfig {
 pub struct ProductionVectorQualificationConfig {
     /// Full-residency algorithm oracle and lifecycle fixture.
     pub projection_path: PathBuf,
-    /// Full-residency corpus used only by optional differential oracles.
-    pub differential_oracle_documents: Vec<SearchDocument>,
     /// Production out-of-core generation whose document identity is released.
     pub search_projection_path: PathBuf,
     pub query_cases: Vec<ProductionVectorQueryCase>,
@@ -109,7 +105,7 @@ pub struct ProductionVectorQualificationConfig {
     pub top_k: usize,
     pub candidate_limit: usize,
     pub minimum_recall_per_million: u32,
-    pub require_turbovec_oracle: bool,
+    pub require_rabitq_reference_verification: bool,
     pub max_parallelism: NonZeroUsize,
     pub max_working_bytes: usize,
     pub evidence_binding: ProductionEvidenceBinding,
@@ -279,7 +275,7 @@ pub struct ProductionVectorQualificationReport {
     pub projection_resources: VectorProjectionResourceEvidence,
     pub recall_evidence: Vec<ProductionVectorRecallEvidence>,
     pub query_evidence: Vec<ProductionVectorQueryEvidence>,
-    pub differential_oracle: ProductionVectorDifferentialOracleEvidence,
+    pub rabitq_reference_verification: ProductionVectorRaBitQReferenceEvidence,
     pub lifecycle: ProductionVectorLifecycleReport,
     pub process_memory: ProcessMemoryProfile,
 }
@@ -301,7 +297,7 @@ impl ProductionVectorQualificationReport {
             "projection_resources": self.projection_resources.json(),
             "recall_evidence": self.recall_evidence.iter().map(ProductionVectorRecallEvidence::json).collect::<Vec<_>>(),
             "query_evidence": self.query_evidence.iter().map(ProductionVectorQueryEvidence::json).collect::<Vec<_>>(),
-            "differential_oracle": self.differential_oracle.json(),
+            "rabitq_reference_verification": self.rabitq_reference_verification.json(),
             "lifecycle": self.lifecycle,
             "process_memory": process_memory_json(self.process_memory),
         })
@@ -373,7 +369,7 @@ impl ProductionVectorQualificationReport {
                     || evidence.auto_metrics.max_admitted_workers == 0
                     || evidence.scalar_candidate_metrics.kernel != "scalar"
                     || evidence.serving_metrics.backend
-                        != "skein_turboquant_out_of_core_candidate_projection"
+                        != "skein_rabitq_out_of_core_candidate_projection"
                     || evidence.serving_metrics.candidate_score_source != "quantized_projection"
                     || evidence.serving_metrics.final_score_source != "raw_vector"
                     || evidence.serving_metrics.kernel.is_empty()
@@ -386,8 +382,9 @@ impl ProductionVectorQualificationReport {
         {
             blockers.push("query_execution_evidence_failed".to_string());
         }
-        if self.differential_oracle.required && !self.differential_oracle.ready {
-            blockers.push("turbovec_differential_oracle_unavailable".to_string());
+        if self.rabitq_reference_verification.required && !self.rabitq_reference_verification.ready
+        {
+            blockers.push("rabitq_reference_verification_unavailable".to_string());
         }
         if !self.process_memory.capabilities.resident_memory {
             blockers.push("resident_memory_metric_unavailable".to_string());
@@ -440,14 +437,14 @@ pub fn run_production_vector_qualification(
         .vector_projection_qualification_identity()
         .ok_or_else(|| {
             ProductionVectorQualificationError::new(
-                "production vector qualification requires TurboQuant on the released out-of-core search generation",
+                "production vector qualification requires RaBitQ on the released out-of-core search generation",
             )
         })?;
     let projection_resources = serving_reader
         .vector_projection_resource_evidence()
         .ok_or_else(|| {
             ProductionVectorQualificationError::new(
-                "released out-of-core TurboQuant resource evidence is unavailable",
+                "released out-of-core RaBitQ resource evidence is unavailable",
             )
         })?;
     if projection_identity.source_graph_commit_epoch
@@ -490,12 +487,12 @@ pub fn run_production_vector_qualification(
         .vector_projection_qualification_identity()
         .ok_or_else(|| {
             ProductionVectorQualificationError::new(
-                "production vector qualification requires a valid file-backed TurboQuant projection",
+                "production vector qualification requires a valid file-backed RaBitQ projection",
             )
         })?;
     if !same_vector_algorithm_identity(&projection_identity, &oracle_projection_identity) {
         return Err(ProductionVectorQualificationError::new(
-            "production vector oracle algorithm identity does not match the released TurboQuant projection",
+            "production vector oracle algorithm identity does not match the released RaBitQ projection",
         ));
     }
 
@@ -592,8 +589,11 @@ pub fn run_production_vector_qualification(
             },
         )
         .collect::<Vec<_>>();
-    let differential_oracle =
-        oracle::collect_differential_oracle(&index, &config, &query_evidence, &task_context)?;
+    let rabitq_reference_verification = oracle::collect_reference_verification(
+        &config,
+        &query_evidence,
+        usize::from(projection_identity.bit_width),
+    )?;
     drop(index);
 
     let mut lifecycle = lifecycle::run_lifecycle(&config)?;
@@ -611,7 +611,7 @@ pub fn run_production_vector_qualification(
         projection_resources,
         recall_evidence,
         query_evidence,
-        differential_oracle,
+        rabitq_reference_verification,
         lifecycle,
         process_memory,
     };
