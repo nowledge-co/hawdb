@@ -2,6 +2,7 @@ use crate::error::{Result, SkeinError};
 use crate::sql::{SqlNullOrder, SqlOrderDirection};
 use skein_executor::columnar::RelationalRowLocator;
 use skein_executor::external_order::ExternalOrderRecord;
+use skein_expression::BindingId;
 use skein_storage::{RelationalKey, RelationalScalarType, RelationalTableSchema, RelationalValue};
 use std::cmp::Ordering;
 use std::io::{Cursor, Read};
@@ -153,6 +154,7 @@ pub(super) struct RelationalLocatorLayout<'a> {
 }
 
 pub(super) struct RelationalLocatorBindingLayout<'a> {
+    pub(super) binding: BindingId,
     pub(super) table: &'a str,
     pub(super) qualifier: &'a str,
     pub(super) schema: &'a RelationalTableSchema,
@@ -161,12 +163,12 @@ pub(super) struct RelationalLocatorBindingLayout<'a> {
 
 impl<'a> RelationalLocatorLayout<'a> {
     pub(super) fn from_bindings(
-        bindings: impl IntoIterator<Item = (&'a str, &'a str, &'a RelationalTableSchema)>,
+        bindings: impl IntoIterator<Item = (BindingId, &'a str, &'a str, &'a RelationalTableSchema)>,
     ) -> Result<Self> {
         bindings
             .into_iter()
-            .map(|(table, qualifier, schema)| {
-                RelationalLocatorBindingLayout::new(table, qualifier, schema)
+            .map(|(binding, table, qualifier, schema)| {
+                RelationalLocatorBindingLayout::new(binding, table, qualifier, schema)
             })
             .collect::<Result<Vec<_>>>()
             .map(|bindings| Self { bindings })
@@ -202,7 +204,12 @@ impl<'a> RelationalLocatorLayout<'a> {
 }
 
 impl<'a> RelationalLocatorBindingLayout<'a> {
-    fn new(table: &'a str, qualifier: &'a str, schema: &'a RelationalTableSchema) -> Result<Self> {
+    fn new(
+        binding: BindingId,
+        table: &'a str,
+        qualifier: &'a str,
+        schema: &'a RelationalTableSchema,
+    ) -> Result<Self> {
         if schema.primary_key.is_empty() {
             return Err(SkeinError::Storage(format!(
                 "relational locator layout requires a primary key for table {table}"
@@ -223,6 +230,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
+            binding,
             table,
             qualifier,
             schema,
@@ -541,8 +549,13 @@ mod tests {
         let optional_schema =
             locator_schema("optional_records", &[("id", RelationalScalarType::Text)]);
         let layout = RelationalLocatorLayout::from_bindings([
-            ("records", "r", &primary_schema),
-            ("optional_records", "optional", &optional_schema),
+            (BindingId::new(0), "records", "r", &primary_schema),
+            (
+                BindingId::new(1),
+                "optional_records",
+                "optional",
+                &optional_schema,
+            ),
         ])
         .expect("locator layout");
         let key = RelationalKey(vec![
@@ -589,8 +602,9 @@ mod tests {
     #[test]
     fn typed_locator_rejects_layout_identity_and_type_drift() {
         let schema = locator_schema("records", &[("id", RelationalScalarType::BigInt)]);
-        let layout = RelationalLocatorLayout::from_bindings([("records", "r", &schema)])
-            .expect("locator layout");
+        let layout =
+            RelationalLocatorLayout::from_bindings([(BindingId::new(0), "records", "r", &schema)])
+                .expect("locator layout");
 
         let error = layout
             .validate(&RelationalRowSetLocator::new(Vec::new()))
