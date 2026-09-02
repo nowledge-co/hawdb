@@ -660,7 +660,7 @@ without replacing the newer generation; callers may rebuild the delta against
 the new active generation.
 
 When `vector-search` is enabled, the generation writer MUST build the
-file-backed TurboQuant candidate artifact from the same ordered spool under the
+file-backed RaBitQ candidate artifact from the same ordered spool under the
 same publish lease. Its generation, source graph epoch, embedding identity,
 vector count, source digest, payload checksum, file length, and outer checksum
 MUST be covered by the active out-of-core manifest. Filter sidecars MUST carry
@@ -669,18 +669,18 @@ allowlist into the quantized scan, retain at most the admitted candidate window,
 read raw vectors only for returned candidates, and use raw cosine scores for
 final ranking. `Required` MUST fail closed when the bound artifact is absent or
 invalid. `Preferred` MAY use the exact scalar segment path with an observable
-fallback reason only when no usable TurboQuant projection is attached to the
+fallback reason only when no usable RaBitQ projection is attached to the
 reader. An I/O, corruption, cancellation, or resource error from an attached
 artifact MUST fail closed instead of being hidden by scalar fallback. The
 default exact scalar path remains available for differential qualification.
 
 Production qualification MUST exercise `Required` and `Preferred` against the
 source generation named by the report, not only against a later disposable
-lifecycle generation. Both modes MUST select the file-backed TurboQuant
+lifecycle generation. Both modes MUST select the file-backed RaBitQ
 backend, push a metadata-derived ordinal allowlist, read projection payload
 bytes, and finish with raw-vector scores without fallback. The generation-update
 lifecycle repeats the same probes after publication and corrupts both a bound
-TurboQuant artifact and the active manifest; either corruption MUST be rejected
+RaBitQ artifact and the active manifest; either corruption MUST be rejected
 during open.
 
 The embedded serving entrypoint is
@@ -694,12 +694,12 @@ Candidate search, bounded late hydration, Knowledge Retrieval graph-context
 expansion, and Cypher vector seed reads MUST use the same admitted handle and
 the pinned out-of-core generation. Out-of-core byte metrics MUST remain visible
 on the typed candidate, hydration, and retrieval outputs. Runtime admission MUST
-charge the configured decoded-segment, candidate-block, TurboQuant scan,
+charge the configured decoded-segment, candidate-block, RaBitQ scan,
 hydration, and matched-span buffers in addition to blocking score state and the
 result budget; a bound larger than the shared governor can admit MUST reject
 before search I/O.
 
-Immutable lexical, out-of-core, and TurboQuant generation cleanup MUST retain
+Immutable lexical, out-of-core, and RaBitQ generation cleanup MUST retain
 the active and immediately previous generations. `SearchIndex` MUST run a
 cleanup cycle with bounded deletion attempts and a bounded pending queue after
 open and checkpoint and expose the latest `SearchProjectionCleanupReport`.
@@ -769,7 +769,7 @@ source graph epoch, or embedding identity differs from the qualified search
 artifact. The file-backed vector projection generation MUST equal that common
 search generation.
 
-`run_production_vector_qualification` is the typed TurboQuant production
+`run_production_vector_qualification` is the typed RaBitQ production
 collector. Its `skein-production-vector-qualification-v1` report wraps the
 bounded `skein-vector-recall-production-qualification-v1` probes and binds
 them to the current release identity and the opened file projection's
@@ -788,12 +788,12 @@ identity MUST match the serving algorithm, format, bit width, dimension,
 transform seed, source epoch, document count, and embedding identity.
 
 Before opening the full-residency oracle, the collector MUST run the released
-out-of-core TurboQuant artifact with `Required`, record its latency, RSS, page
+out-of-core RaBitQ artifact with `Required`, record its latency, RSS, page
 faults, backend, kernel, payload I/O, admitted workers, and raw-reranked result
 digest, and propagate a cancelled `RuntimeTaskContext` into that scan. The
-serving final digest MUST equal the corresponding offline TurboQuant oracle
+serving final digest MUST equal the corresponding offline RaBitQ oracle
 digest for every case. Candidate recall remains the offline oracle's bounded
-responsibility, bound to the same document identity and TurboQuant algorithm
+responsibility, bound to the same document identity and RaBitQ algorithm
 identity; the production reader does not retain candidate-ID evidence solely
 for qualification. This keeps full-residency recall and differential machinery
 out of the serving path without allowing an unrelated or unexecuted artifact to
@@ -811,15 +811,13 @@ Lifecycle probes MUST use explicit disposable copies and cover incremental
 projection invalidation with safe scalar serving, checkpoint publication,
 reopen, pinned stale-generation isolation, current-artifact corruption,
 cancellation propagation, and foreground reads overlapping checkpoint work.
-The optional `skein-qualification/turbovec-oracle` feature MAY build the
-upstream implementation as a development differential oracle. The report MUST
-label it as an oracle rather than truth, record candidate overlap and final
-result comparisons, and MUST NOT require oracle agreement as a correctness
-condition. A qualification configured to require this oracle MUST fail closed
-when it was not compiled or could not run. The upstream dependency, full-
-residency corpus, and oracle index MUST remain owned by `skein-qualification`;
-the production `skein` feature graph, checkpoint, and serving backend MUST NOT
-depend on them.
+The report MUST also contain native RaBitQ scalar-reference evidence for every
+case: dispatched/scalar candidate parity, final raw-rerank parity, and serving
+parity. A qualification configured to require this evidence MUST fail closed
+when it is absent or inconsistent. This is a dispatch-regression guard, not an
+independent truth oracle; candidate recall remains measured against canonical
+raw-vector truth. The production feature graph, checkpoint, and serving backend
+MUST not depend on a separate vector-quantization runtime.
 
 `skein-production-vector-qualification-matrix-v1` combines independently
 generated reports and requires matching release and projection identities for
@@ -893,7 +891,7 @@ routine local verification. They MUST NOT be added to default or dedicated CI
 jobs. The canonical local command is documented in `AGENTS.md`.
 
 The scheduled quality workflow MUST run the advisory and license policy, the
-scalar/SIMD differential corpus under an address sanitizer, and a mixed
+RaBitQ scalar-reference corpus under an address sanitizer, and a mixed
 foreground/background runtime soak. The runtime soak MUST
 use an out-of-core fixture whose raw bytes exceed the admitted runtime memory
 and whose canonical artifact exceeds the segment cache. It MUST exercise the

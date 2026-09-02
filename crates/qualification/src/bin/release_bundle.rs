@@ -171,8 +171,8 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Option<Config>
             "--max-cancellation-latency-micros" => {
                 policy.morsel.max_cancellation_latency_micros = parse_u64(&argument, &value)?;
             }
-            "--require-turbovec-oracle" => {
-                policy.require_turbovec_oracle = parse_bool(&argument, &value)?;
+            "--require-rabitq-reference-verification" => {
+                policy.require_rabitq_reference_verification = parse_bool(&argument, &value)?;
             }
             _ => return Err(format!("unknown argument '{argument}'\n{}", usage())),
         }
@@ -269,7 +269,7 @@ fn usage() -> &'static str {
      [--max-p99-regression-per-million <u32>] \
      [--max-peak-rss-regression-per-million <u32>] \
      [--max-cancellation-latency-micros <u64>] \
-     [--require-turbovec-oracle <bool>]"
+     [--require-rabitq-reference-verification <bool>]"
 }
 
 #[cfg(test)]
@@ -347,6 +347,6 @@ mod tests {
         );
         assert_eq!(config.storage_crash_recovery, PathBuf::from("crash.json"));
         assert_eq!(config.release_controls, PathBuf::from("controls.json"));
-        assert!(config.policy.require_turbovec_oracle);
+        assert!(config.policy.require_rabitq_reference_verification);
     }
 }

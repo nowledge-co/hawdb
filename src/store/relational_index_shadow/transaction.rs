@@ -84,6 +84,15 @@ impl RelationalTransactionIndexOverlay {
         self.encoded_bytes = next_bytes;
         Ok(())
     }
+
+    fn touches(&self, table: &str, index: &str) -> bool {
+        self.batches.iter().any(|batch| {
+            batch
+                .changes
+                .iter()
+                .any(|change| change.table == table && change.index == index)
+        })
+    }
 }
 
 struct TransactionOverlayMerge<'a, F> {
@@ -217,7 +226,7 @@ impl RelationalTransactionIndexView {
         index: &str,
         prefix_len: usize,
     ) -> Option<RelationalIndexProbeStatistics> {
-        if self.overlay.entry_count != 0 {
+        if self.overlay.touches(table, index) {
             return None;
         }
         self.base.fresh_probe_statistics(table, index, prefix_len)
@@ -249,6 +258,27 @@ impl RelationalTransactionIndexView {
             limits,
             visit,
         )
+    }
+
+    pub(crate) fn visit_prefix_entries_many(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        let transaction_remaining = self
+            .read_ledger
+            .remaining_limits()
+            .map_err(relational_read_error)?;
+        let limits = intersect_read_limits(limits, transaction_remaining);
+        let report =
+            self.visit_prefix_entries_many_with_overlay(table, index, prefixes, limits, visit)?;
+        self.read_ledger
+            .record(&report)
+            .map_err(relational_read_error)?;
+        Ok(report)
     }
 
     pub(crate) fn visit_range_entries(
@@ -390,6 +420,148 @@ impl RelationalTransactionIndexView {
             report.live_bytes_visited,
             bytes_visited,
             "transaction index byte count",
+        )?;
+        report.rows_visited = merge.rows_visited;
+        report.stopped_early |= merge.stopped_early;
+        Ok(report)
+    }
+
+    fn visit_prefix_entries_many_with_overlay(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        if prefixes.is_empty() {
+            return Err(admission(
+                "transaction batch index lookup requires at least one prefix",
+            ));
+        }
+        let prefix_width = prefixes[0].0.len();
+        if prefixes.iter().any(|prefix| prefix.0.len() != prefix_width) {
+            return Err(admission(
+                "batch index prefixes must have one common key width",
+            ));
+        }
+        let mut posting_states =
+            BTreeMap::<(RelationalKey, RelationalKey), TransactionPostingState>::new();
+        let mut entries_visited = 0usize;
+        let mut entries_matched = 0usize;
+        let mut bytes_visited = 0usize;
+        for batch in &self.overlay.batches {
+            bytes_visited = bytes_visited
+                .checked_add(batch.encoded_bytes)
+                .ok_or_else(|| admission("transaction batch index byte accounting overflow"))?;
+            for change in batch.changes.iter() {
+                entries_visited = entries_visited.checked_add(1).ok_or_else(|| {
+                    admission("transaction batch index entry accounting overflow")
+                })?;
+                if change.table != table
+                    || change.index != index
+                    || !prefixes
+                        .iter()
+                        .any(|prefix| change.index_key.0.starts_with(&prefix.0))
+                {
+                    continue;
+                }
+                entries_matched = entries_matched.checked_add(1).ok_or_else(|| {
+                    admission("transaction batch index matched-entry accounting overflow")
+                })?;
+                let entry_key = (change.index_key.clone(), change.primary_key.clone());
+                match posting_states.entry(entry_key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(TransactionPostingState::first(change.kind));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        entry.get_mut().apply(change.kind)?;
+                    }
+                }
+            }
+        }
+        let overlay = posting_states
+            .into_iter()
+            .filter_map(|(entry, state)| state.effect().map(|kind| (entry, kind)))
+            .collect::<BTreeMap<_, _>>();
+        let reserved_inserts = overlay
+            .values()
+            .filter(|kind| **kind == RelationalIndexChangeKind::Insert)
+            .count();
+        let backend_rows = limits
+            .max_rows
+            .get()
+            .checked_sub(reserved_inserts)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                admission(format!(
+                    "transaction batch index overlay reserves {reserved_inserts} rows, exhausting row limit {}",
+                    limits.max_rows
+                ))
+            })?;
+        let backend_bytes = limits
+            .max_bytes
+            .get()
+            .checked_sub(bytes_visited)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                admission(format!(
+                    "transaction batch index overlay needs {bytes_visited} bytes, exhausting byte limit {}",
+                    limits.max_bytes
+                ))
+            })?;
+        let backend_limits = RelationalIndexReadLimits {
+            max_rows: backend_rows,
+            max_bytes: backend_bytes,
+            ..limits
+        };
+        let mut merge = super::OrderedIndexEntryMerge {
+            pending: overlay,
+            visit: &mut visit,
+            max_rows: limits.max_rows.get(),
+            rows_visited: 0,
+            stopped_early: false,
+            error: None,
+            direction: RelationalIndexScanDirection::Forward,
+        };
+        let mut report = {
+            let mut emit_base = |index_key: &RelationalKey, primary_key: &RelationalKey| {
+                merge.visit_base(index_key, primary_key)
+            };
+            self.base.visit_prefix_entries_many(
+                table,
+                index,
+                prefixes,
+                backend_limits,
+                &mut emit_base,
+            )?
+        };
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        merge.finish();
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        report.live_batches_visited = checked_add(
+            report.live_batches_visited,
+            self.overlay.batches.len(),
+            "transaction batch index count",
+        )?;
+        report.live_entries_visited = checked_add(
+            report.live_entries_visited,
+            entries_visited,
+            "transaction batch index entry count",
+        )?;
+        report.live_entries_matched = checked_add(
+            report.live_entries_matched,
+            entries_matched,
+            "transaction batch index matched-entry count",
+        )?;
+        report.live_bytes_visited = checked_add(
+            report.live_bytes_visited,
+            bytes_visited,
+            "transaction batch index byte count",
         )?;
         report.rows_visited = merge.rows_visited;
         report.stopped_early |= merge.stopped_early;
@@ -637,6 +809,8 @@ mod tests {
         assert_eq!(overlay.entry_count, 1);
         assert_eq!(overlay.encoded_bytes, 4);
         assert_eq!(overlay.batches.len(), 1);
+        assert!(overlay.touches("documents", "documents_owner_idx"));
+        assert!(!overlay.touches("documents", "documents_missing_idx"));
 
         let byte_error = overlay
             .append(capture(vec![change(2)], 7))

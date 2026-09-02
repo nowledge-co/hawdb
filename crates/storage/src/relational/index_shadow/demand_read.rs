@@ -4,6 +4,7 @@ use super::{
     RelationalIndexShadowError, RelationalIndexShadowReader,
 };
 use crate::{ImmutableIndexPage, ImmutableIndexPageBody, IndexPostingPage};
+use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 
 pub const DEFAULT_RELATIONAL_INDEX_READ_PAGES: usize = 256;
@@ -136,6 +137,63 @@ impl RelationalIndexShadowReader {
         let outcome =
             context.visit_prefix_subtree(root.child, root.height, None, &encoded, &mut visit)?;
         context.report.stopped_early = outcome == VisitOutcome::Stopped;
+        Ok(context.report)
+    }
+
+    /// Visits entries for a deduplicated set of equally wide index-key
+    /// prefixes under one immutable root read, cache scope, and read budget.
+    ///
+    /// Values observed by `visit` are provisional until this method returns
+    /// `Ok`; callers must discard them on error. The first callback argument
+    /// identifies the requested prefix that selected the entry.
+    pub fn visit_prefix_entries_many(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[super::RelationalKey],
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(
+            &super::RelationalKey,
+            &super::RelationalKey,
+            &super::RelationalKey,
+        ) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        let mut encoded_prefixes = BTreeMap::new();
+        let mut prefix_width = None;
+        for prefix in prefixes {
+            if let Some(width) = prefix_width {
+                if width != prefix.0.len() {
+                    return Err(RelationalIndexShadowError::Admission(
+                        "batch index prefixes must have one common key width".to_string(),
+                    ));
+                }
+            } else {
+                prefix_width = Some(prefix.0.len());
+            }
+            encoded_prefixes
+                .entry(self.encode_lookup_key(prefix)?)
+                .or_insert_with(|| prefix.clone());
+        }
+        if encoded_prefixes.is_empty() {
+            return Ok(RelationalIndexReadReport::default());
+        }
+
+        let descriptor = self.root_descriptor(table, index)?.clone();
+        let mut context = ReadContext::new(self, limits);
+        let root = context.read_root(&descriptor)?;
+        for (encoded_prefix, prefix) in encoded_prefixes {
+            let outcome = context.visit_prefix_subtree(
+                root.child,
+                root.height,
+                None,
+                &encoded_prefix,
+                &mut |index_key, primary_key| visit(&prefix, index_key, primary_key),
+            )?;
+            if outcome == VisitOutcome::Stopped {
+                context.report.stopped_early = true;
+                break;
+            }
+        }
         Ok(context.report)
     }
 

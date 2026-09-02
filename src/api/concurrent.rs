@@ -28,9 +28,9 @@ use crate::sql::{
 use crate::store::DurabilityPolicy;
 use crate::value::Value;
 use skein_storage::{
-    AppendTransaction, RelationalConflictAction, RelationalKey, RelationalRow, RelationalState,
-    RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite,
-    StoragePressureSnapshot, StorageRecoveryReport,
+    AppendTransaction, RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
+    RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
+    RelationalWrite, StoragePressureSnapshot, StorageRecoveryReport,
 };
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -1103,9 +1103,13 @@ fn insert_lock_requests(
             RelationalWrite::Upsert {
                 table,
                 rows,
-                action: RelationalConflictAction::DoNothing,
+                action,
                 ..
-            } => (table, rows),
+            } if matches!(action, RelationalConflictAction::DoNothing)
+                || upsert_update_can_use_insert_locks(write, state) =>
+            {
+                (table, rows)
+            }
             _ => return None,
         };
         let schema = state.table_schema(table)?;
@@ -1152,6 +1156,47 @@ fn insert_lock_requests(
         }
     }
     Some(requests)
+}
+
+fn upsert_update_can_use_insert_locks(write: &RelationalWrite, state: &RelationalState) -> bool {
+    let RelationalWrite::Upsert {
+        table,
+        rows,
+        conflict_columns,
+        action: RelationalConflictAction::Update(_),
+    } = write
+    else {
+        return false;
+    };
+    let Some(schema) = state.table_schema(table) else {
+        return false;
+    };
+    let Some(conflict_index) = schema.unique_index_definition(conflict_columns) else {
+        return false;
+    };
+    if conflict_index.role != RelationalIndexRole::Primary
+        && !state.materialized_index_postings_resident()
+    {
+        return false;
+    }
+    rows.iter().all(|row| {
+        let Some(conflict_key) = relational_row_key(schema, row, conflict_columns) else {
+            return false;
+        };
+        if conflict_key
+            .0
+            .iter()
+            .any(|value| value == &RelationalValue::Null)
+        {
+            return true;
+        }
+        match conflict_index.role {
+            RelationalIndexRole::Primary => state.row(table, &conflict_key).is_none(),
+            _ => state
+                .index_lookup(table, &conflict_index.name, &conflict_key)
+                .is_none_or(|postings| postings.is_empty()),
+        }
+    })
 }
 
 fn push_unique_lock_request(requests: &mut Vec<LockRequest>, request: LockRequest) {

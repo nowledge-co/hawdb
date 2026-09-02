@@ -15,8 +15,8 @@ use std::thread;
 use std::time::Instant;
 
 const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.skein";
-const TURBOQUANT_ARTIFACT_PREFIX: &str = "search_turboquant.";
-const TURBOQUANT_ARTIFACT_SUFFIX: &str = ".skein";
+const RABITQ_ARTIFACT_PREFIX: &str = "search_rabitq.";
+const RABITQ_ARTIFACT_SUFFIX: &str = ".skein";
 
 pub(super) fn run_lifecycle_probes(
     config: &ProductionSearchLifecycleConfig,
@@ -37,11 +37,11 @@ pub(super) fn run_lifecycle_probes(
     let mut bounded_generation_update = true;
     let mut max_update_resident_document_count = 0usize;
     let mut max_update_peak_segment_document_bytes = 0u64;
-    let mut turboquant_serving = true;
-    let mut turboquant_preferred_serving = true;
-    let mut turboquant_raw_rerank = true;
-    let mut turboquant_metadata_filter_pushdown = true;
-    let mut turboquant_payload_bytes_read = 0u64;
+    let mut rabitq_serving = true;
+    let mut rabitq_preferred_serving = true;
+    let mut rabitq_raw_rerank = true;
+    let mut rabitq_metadata_filter_pushdown = true;
+    let mut rabitq_payload_bytes_read = 0u64;
     let logical_delta_bytes = delta_logical_bytes(&config.delta);
 
     for path in &config.replica_paths {
@@ -119,13 +119,13 @@ pub(super) fn run_lifecycle_probes(
         incremental_upsert_delete &=
             contains_hit(&upsert_after.result, &config.expected_upsert_document_id)
                 && !contains_hit(&delete_after.result, &config.expected_deleted_document_id);
-        let compressed = super::run_turboquant_serving_probe(&new_reader, compressed_vector_probe)?;
-        turboquant_serving &= compressed.required_serving;
-        turboquant_preferred_serving &= compressed.preferred_serving;
-        turboquant_raw_rerank &= compressed.raw_rerank;
-        turboquant_metadata_filter_pushdown &= compressed.metadata_filter_pushdown;
-        turboquant_payload_bytes_read =
-            turboquant_payload_bytes_read.saturating_add(compressed.payload_bytes_read);
+        let compressed = super::run_rabitq_serving_probe(&new_reader, compressed_vector_probe)?;
+        rabitq_serving &= compressed.required_serving;
+        rabitq_preferred_serving &= compressed.preferred_serving;
+        rabitq_raw_rerank &= compressed.raw_rerank;
+        rabitq_metadata_filter_pushdown &= compressed.metadata_filter_pushdown;
+        rabitq_payload_bytes_read =
+            rabitq_payload_bytes_read.saturating_add(compressed.payload_bytes_read);
         let expected_upsert_digest = super::result_digest(&upsert_after.result);
         let expected_delete_digest = super::result_digest(&delete_after.result);
         drop(new_reader);
@@ -139,36 +139,30 @@ pub(super) fn run_lifecycle_probes(
             ) == expected_delete_digest;
     }
 
-    let turboquant_corruption_path = config
+    let rabitq_corruption_path = config
         .replica_paths
         .last()
         .expect("validated lifecycle paths are non-empty");
-    let turboquant_reader = SearchOutOfCoreReader::open_with_config(
-        turboquant_corruption_path,
-        out_of_core_config.clone(),
-    )
-    .map_err(ProductionSearchQualificationError::from_error)?;
-    let turboquant_generation = turboquant_reader.generation();
-    let turboquant_attached = turboquant_reader
+    let rabitq_reader =
+        SearchOutOfCoreReader::open_with_config(rabitq_corruption_path, out_of_core_config.clone())
+            .map_err(ProductionSearchQualificationError::from_error)?;
+    let rabitq_generation = rabitq_reader.generation();
+    let rabitq_attached = rabitq_reader
         .vector_projection_qualification_identity()
         .is_some();
-    drop(turboquant_reader);
+    drop(rabitq_reader);
 
-    let turboquant_path = turboquant_corruption_path.join(format!(
-        "{TURBOQUANT_ARTIFACT_PREFIX}{turboquant_generation}{TURBOQUANT_ARTIFACT_SUFFIX}"
+    let rabitq_path = rabitq_corruption_path.join(format!(
+        "{RABITQ_ARTIFACT_PREFIX}{rabitq_generation}{RABITQ_ARTIFACT_SUFFIX}"
     ));
-    flip_last_byte(&turboquant_path)?;
-    let corrupt_turboquant_rejected = SearchOutOfCoreReader::open_with_config(
-        turboquant_corruption_path,
-        out_of_core_config.clone(),
-    )
-    .is_err();
-    flip_last_byte(&turboquant_path)?;
-    let turboquant_restored = SearchOutOfCoreReader::open_with_config(
-        turboquant_corruption_path,
-        out_of_core_config.clone(),
-    )
-    .is_ok();
+    flip_last_byte(&rabitq_path)?;
+    let corrupt_rabitq_rejected =
+        SearchOutOfCoreReader::open_with_config(rabitq_corruption_path, out_of_core_config.clone())
+            .is_err();
+    flip_last_byte(&rabitq_path)?;
+    let rabitq_restored =
+        SearchOutOfCoreReader::open_with_config(rabitq_corruption_path, out_of_core_config.clone())
+            .is_ok();
 
     let corrupt_reader = SearchOutOfCoreReader::open_with_config(
         &config.corruption_replica_path,
@@ -183,10 +177,8 @@ pub(super) fn run_lifecycle_probes(
         out_of_core_config.clone(),
     )
     .is_err();
-    let corrupt_artifact_rejected = turboquant_attached
-        && corrupt_turboquant_rejected
-        && turboquant_restored
-        && corrupt_manifest_rejected;
+    let corrupt_artifact_rejected =
+        rabitq_attached && corrupt_rabitq_rejected && rabitq_restored && corrupt_manifest_rejected;
     let process_end =
         ProcessMemorySnapshot::capture().map_err(ProductionSearchQualificationError::from_error)?;
 
@@ -203,11 +195,11 @@ pub(super) fn run_lifecycle_probes(
         checkpoint_write_amplification_per_million,
         max_update_resident_document_count,
         max_update_peak_segment_document_bytes,
-        turboquant_serving,
-        turboquant_preferred_serving,
-        turboquant_raw_rerank,
-        turboquant_metadata_filter_pushdown,
-        turboquant_payload_bytes_read,
+        rabitq_serving,
+        rabitq_preferred_serving,
+        rabitq_raw_rerank,
+        rabitq_metadata_filter_pushdown,
+        rabitq_payload_bytes_read,
         process_memory: ProcessMemoryProfile::between(process_start, process_end),
     })
 }

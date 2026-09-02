@@ -130,7 +130,7 @@ pub struct ProductionReleaseQualificationArtifacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProductionReleaseQualificationPolicy {
     pub morsel: ProductionMorselMatrixPolicy,
-    pub require_turbovec_oracle: bool,
+    pub require_rabitq_reference_verification: bool,
 }
 
 impl Default for ProductionReleaseQualificationPolicy {
@@ -142,7 +142,7 @@ impl Default for ProductionReleaseQualificationPolicy {
                 max_peak_rss_regression_per_million: 1_100_000,
                 max_cancellation_latency_micros: 100_000,
             },
-            require_turbovec_oracle: true,
+            require_rabitq_reference_verification: true,
         }
     }
 }

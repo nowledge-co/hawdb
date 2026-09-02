@@ -1,10 +1,10 @@
 use super::{
     choose_base_access, choose_join_access, projection_access_planning,
     projection_contains_aggregate, PreparedRelationalAccessPlan, PreparedRelationalJoinSelection,
-    PreparedRelationalJoinTree, PreparedRelationalJoinTreeNode, PreparedRelationalTreeAccess,
-    PreparedRelationalTreeRelation, RelationalAccessCandidate, RelationalBaseAccess,
-    RelationalBaseAccessPlanning, RelationalJoinAccess, RelationalJoinAccessCandidate,
-    RelationalOperatorId, RelationalQueryLimits, RelationalQueryReadModes,
+    RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalOperatorId,
+    RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
+    RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::timing::measure_nanos;
@@ -699,7 +699,7 @@ fn prepare_csg_cmp_select(
             "CSG-CMP selected an empty relational join tree".to_string(),
         ));
     };
-    let PreparedRelationalTreeAccess::Base(base_access) = &first.access else {
+    let RelationalPhysicalAccess::Base(base_access) = &first.access else {
         return Err(SkeinError::Execution(
             "CSG-CMP join tree does not start with a base access".to_string(),
         ));
@@ -708,8 +708,8 @@ fn prepare_csg_cmp_select(
         .iter()
         .skip(1)
         .map(|relation| match &relation.access {
-            PreparedRelationalTreeAccess::Probe(access) => Ok(access.clone()),
-            PreparedRelationalTreeAccess::Base(_) => {
+            RelationalPhysicalAccess::Probe(access) => Ok(access.clone()),
+            RelationalPhysicalAccess::Base(_) => {
                 selected_materialized_join_display_access(prepared_relations, relation.binding)
             }
         })
@@ -720,10 +720,7 @@ fn prepare_csg_cmp_select(
             base_access: base_access.clone(),
             join_accesses,
             join_selection: None,
-            join_tree: Some(PreparedRelationalJoinTree {
-                root,
-                cost_breakdown: plan.cost_breakdown,
-            }),
+            physical_join_plan: Some(RelationalPhysicalJoinPlan::new(root, plan.cost_breakdown)),
         }),
         join_planning,
     })
@@ -736,7 +733,7 @@ fn prepare_csg_cmp_node(
     prepared_relations: &[PreparedGraphRelation],
     predicates: &BTreeMap<RelationalJoinPredicateId, SqlPredicate>,
     next_join_plan_index: &mut usize,
-) -> Result<PreparedRelationalJoinTreeNode> {
+) -> Result<RelationalPhysicalJoinNode> {
     match node {
         RelationalCsgCmpPlanNode::Relation {
             binding,
@@ -744,20 +741,18 @@ fn prepare_csg_cmp_node(
         } => {
             let relation = relation_by_binding(relations, *binding);
             let access = match role {
-                PreparedTreeRelationRole::Base => PreparedRelationalTreeAccess::Base(
+                PreparedTreeRelationRole::Base => RelationalPhysicalAccess::Base(
                     selected_base_access(prepared_relations, *binding, access_path)?,
                 ),
-                PreparedTreeRelationRole::Probe => PreparedRelationalTreeAccess::Probe(
+                PreparedTreeRelationRole::Probe => RelationalPhysicalAccess::Probe(
                     selected_join_access(prepared_relations, *binding, access_path)?,
                 ),
             };
-            Ok(PreparedRelationalJoinTreeNode::Relation(
-                PreparedRelationalTreeRelation {
-                    binding: *binding,
-                    table: relation.table.name.clone(),
-                    qualifier: relation.qualifier.clone(),
-                    access,
-                },
+            Ok(RelationalPhysicalJoinNode::relation(
+                *binding,
+                relation.table.name.clone(),
+                relation.qualifier.clone(),
+                access,
             ))
         }
         RelationalCsgCmpPlanNode::Join {
@@ -802,16 +797,16 @@ fn prepare_csg_cmp_node(
                 .collect::<Result<Vec<_>>>()?;
             let prepared_operator_id = RelationalOperatorId::from_plan_index(*next_join_plan_index);
             *next_join_plan_index = next_join_plan_index.saturating_add(1);
-            Ok(PreparedRelationalJoinTreeNode::Join {
-                operator_id: prepared_operator_id,
-                kind: match operator_kind {
+            RelationalPhysicalJoinNode::join(
+                prepared_operator_id,
+                match operator_kind {
                     RelationalJoinOperatorKind::Inner => SqlJoinKind::Inner,
                     RelationalJoinOperatorKind::LeftOuter => SqlJoinKind::Left,
                 },
                 predicates,
-                left: Box::new(left),
-                right: Box::new(right),
-            })
+                left,
+                right,
+            )
         }
     }
 }
@@ -966,7 +961,7 @@ fn prepare_selected_access_plan<'a>(
                 .collect(),
             cost_breakdown,
         }),
-        join_tree: None,
+        physical_join_plan: None,
     })
 }
 

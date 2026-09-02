@@ -109,7 +109,7 @@ pub struct SearchOutOfCoreMetrics {
     pub candidate_block_reads: u64,
     pub candidate_bytes_read: u64,
     pub vector_bytes_read: u64,
-    pub turboquant_payload_bytes_read: u64,
+    pub rabitq_payload_bytes_read: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
 }
@@ -139,7 +139,7 @@ pub struct SearchOutOfCoreReader {
     layout: SearchOutOfCoreLayoutBody,
     lexical_projection: Arc<LexicalProjectionReader>,
     #[cfg(feature = "vector-search")]
-    turboquant_projection: Option<Arc<skein_vector_projection::FileProjection>>,
+    rabitq_projection: Option<Arc<skein_vector_projection::FileProjection>>,
     runtime_capabilities: RuntimeCapabilities,
 }
 
@@ -164,19 +164,19 @@ struct SearchOutOfCoreManifestBody {
     lexical_manifest_len: u64,
     lexical_manifest_checksum: u64,
     #[serde(default)]
-    turboquant_artifact_file: Option<String>,
+    rabitq_artifact_file: Option<String>,
     #[serde(default)]
-    turboquant_artifact_len: Option<u64>,
+    rabitq_artifact_len: Option<u64>,
     #[serde(default)]
-    turboquant_artifact_checksum: Option<u64>,
+    rabitq_artifact_checksum: Option<u64>,
     #[serde(default)]
-    turboquant_source_digest: Option<u64>,
+    rabitq_source_digest: Option<u64>,
     #[serde(default)]
-    turboquant_vector_document_count: Option<usize>,
+    rabitq_vector_document_count: Option<usize>,
     #[serde(default)]
-    turboquant_payload_checksum: Option<u32>,
+    rabitq_payload_checksum: Option<u32>,
     #[serde(default)]
-    turboquant_peak_build_working_bytes: Option<usize>,
+    rabitq_peak_build_working_bytes: Option<usize>,
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
@@ -316,12 +316,11 @@ impl SearchOutOfCoreManifestBody {
                 ));
             }
         }
-        if let Some(name) = self.turboquant_artifact_file.as_deref()
+        if let Some(name) = self.rabitq_artifact_file.as_deref()
             && Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
         {
             return Err(SkeinError::Storage(
-                "search out-of-core manifest contains an invalid TurboQuant artifact name"
-                    .to_string(),
+                "search out-of-core manifest contains an invalid RaBitQ artifact name".to_string(),
             ));
         }
         if self.descriptor_file != format!("search_projection_segments.{}.skein", self.generation)
@@ -353,27 +352,27 @@ impl SearchOutOfCoreManifestBody {
                     .to_string(),
             ));
         }
-        let turboquant_fields = [
-            self.turboquant_artifact_file.is_some(),
-            self.turboquant_artifact_len.is_some(),
-            self.turboquant_artifact_checksum.is_some(),
-            self.turboquant_source_digest.is_some(),
-            self.turboquant_vector_document_count.is_some(),
-            self.turboquant_payload_checksum.is_some(),
-            self.turboquant_peak_build_working_bytes.is_some(),
+        let rabitq_fields = [
+            self.rabitq_artifact_file.is_some(),
+            self.rabitq_artifact_len.is_some(),
+            self.rabitq_artifact_checksum.is_some(),
+            self.rabitq_source_digest.is_some(),
+            self.rabitq_vector_document_count.is_some(),
+            self.rabitq_payload_checksum.is_some(),
+            self.rabitq_peak_build_working_bytes.is_some(),
         ];
-        if turboquant_fields.iter().any(|present| *present)
-            && turboquant_fields.iter().any(|present| !*present)
+        if rabitq_fields.iter().any(|present| *present)
+            && rabitq_fields.iter().any(|present| !*present)
         {
             return Err(SkeinError::Storage(
-                "search out-of-core manifest has an incomplete TurboQuant identity".to_string(),
+                "search out-of-core manifest has an incomplete RaBitQ identity".to_string(),
             ));
         }
-        if let Some(name) = self.turboquant_artifact_file.as_deref()
-            && name != format!("search_turboquant.{}.skein", self.generation)
+        if let Some(name) = self.rabitq_artifact_file.as_deref()
+            && name != format!("search_rabitq.{}.skein", self.generation)
         {
             return Err(SkeinError::Storage(
-                "search out-of-core TurboQuant artifact does not match its generation".to_string(),
+                "search out-of-core RaBitQ artifact does not match its generation".to_string(),
             ));
         }
         Ok(())
@@ -563,8 +562,8 @@ impl SearchOutOfCoreReader {
             &descriptor,
             config.max_compressed_segment_bytes.get(),
         )?;
-        if manifest.turboquant_vector_document_count
-            != manifest.turboquant_artifact_file.as_ref().map(|_| {
+        if manifest.rabitq_vector_document_count
+            != manifest.rabitq_artifact_file.as_ref().map(|_| {
                 layout
                     .segments
                     .iter()
@@ -573,7 +572,7 @@ impl SearchOutOfCoreReader {
             })
         {
             return Err(SkeinError::Storage(
-                "search out-of-core TurboQuant vector count does not match the sidecar layout"
+                "search out-of-core RaBitQ vector count does not match the sidecar layout"
                     .to_string(),
             ));
         }
@@ -618,13 +617,13 @@ impl SearchOutOfCoreReader {
         })?;
 
         #[cfg(feature = "vector-search")]
-        let turboquant_projection = open_turboquant_projection(
+        let rabitq_projection = open_rabitq_projection(
             &root,
             &manifest,
             config.max_vector_search_working_bytes.get(),
         )?;
         #[cfg(not(feature = "vector-search"))]
-        verify_turboquant_artifact(&root, &manifest)?;
+        verify_rabitq_artifact(&root, &manifest)?;
 
         Ok(Self {
             root,
@@ -638,7 +637,7 @@ impl SearchOutOfCoreReader {
             layout,
             lexical_projection,
             #[cfg(feature = "vector-search")]
-            turboquant_projection,
+            rabitq_projection,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
     }
@@ -655,7 +654,7 @@ impl SearchOutOfCoreReader {
             .saturating_add(self.manifest.vector_payload_len)
             .saturating_add(self.manifest.layout_len)
             .saturating_add(self.manifest.lexical_manifest_len)
-            .saturating_add(self.manifest.turboquant_artifact_len.unwrap_or_default())
+            .saturating_add(self.manifest.rabitq_artifact_len.unwrap_or_default())
     }
 
     pub(crate) fn config(&self) -> &SearchOutOfCoreConfig {
@@ -710,7 +709,7 @@ impl SearchOutOfCoreReader {
     ) -> Option<super::VectorProjectionQualificationIdentity> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.turboquant_projection.as_ref()?;
+            let projection = self.rabitq_projection.as_ref()?;
             let manifest = projection.manifest();
             Some(super::VectorProjectionQualificationIdentity {
                 projection_generation: manifest.identity.generation,
@@ -740,7 +739,7 @@ impl SearchOutOfCoreReader {
     ) -> Option<super::VectorProjectionResourceEvidence> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.turboquant_projection.as_ref()?;
+            let projection = self.rabitq_projection.as_ref()?;
             let manifest = projection.manifest();
             let raw_vector_bytes = (manifest.document_count as u64)
                 .saturating_mul(manifest.dimension as u64)
@@ -1839,41 +1838,41 @@ impl SearchOutOfCoreReader {
     }
 }
 
-fn verify_turboquant_artifact(root: &Path, manifest: &SearchOutOfCoreManifestBody) -> Result<()> {
-    let Some(file_name) = manifest.turboquant_artifact_file.as_deref() else {
+fn verify_rabitq_artifact(root: &Path, manifest: &SearchOutOfCoreManifestBody) -> Result<()> {
+    let Some(file_name) = manifest.rabitq_artifact_file.as_deref() else {
         return Ok(());
     };
     let expected_len = manifest
-        .turboquant_artifact_len
-        .expect("validated TurboQuant identity has a length");
+        .rabitq_artifact_len
+        .expect("validated RaBitQ identity has a length");
     let expected_checksum = manifest
-        .turboquant_artifact_checksum
-        .expect("validated TurboQuant identity has a checksum");
+        .rabitq_artifact_checksum
+        .expect("validated RaBitQ identity has a checksum");
     let (actual_len, actual_checksum) = file_len_checksum_streaming(&root.join(file_name))?;
     if actual_len != expected_len || actual_checksum != expected_checksum {
         return Err(SkeinError::Storage(
-            "search out-of-core TurboQuant artifact does not match its manifest".to_string(),
+            "search out-of-core RaBitQ artifact does not match its manifest".to_string(),
         ));
     }
     Ok(())
 }
 
 #[cfg(feature = "vector-search")]
-fn open_turboquant_projection(
+fn open_rabitq_projection(
     root: &Path,
     manifest: &SearchOutOfCoreManifestBody,
     max_working_bytes: usize,
 ) -> Result<Option<Arc<skein_vector_projection::FileProjection>>> {
-    verify_turboquant_artifact(root, manifest)?;
-    let Some(file_name) = manifest.turboquant_artifact_file.as_deref() else {
+    verify_rabitq_artifact(root, manifest)?;
+    let Some(file_name) = manifest.rabitq_artifact_file.as_deref() else {
         return Ok(None);
     };
     let peak_build_working_bytes = manifest
-        .turboquant_peak_build_working_bytes
-        .expect("validated TurboQuant identity has a build memory bound");
+        .rabitq_peak_build_working_bytes
+        .expect("validated RaBitQ identity has a build memory bound");
     if peak_build_working_bytes > max_working_bytes {
         return Err(SkeinError::Storage(format!(
-            "search TurboQuant artifact requires {peak_build_working_bytes} build bytes, exceeding the serving admission {max_working_bytes}"
+            "search RaBitQ artifact requires {peak_build_working_bytes} build bytes, exceeding the serving admission {max_working_bytes}"
         )));
     }
     let projection = skein_vector_projection::FileProjection::open(root.join(file_name))
@@ -1887,12 +1886,12 @@ fn open_turboquant_projection(
     };
     if projection_manifest.identity != expected_identity
         || Some(projection_manifest.dimension) != manifest.embedding_dimension
-        || Some(projection_manifest.document_count) != manifest.turboquant_vector_document_count
-        || Some(projection_manifest.source_digest) != manifest.turboquant_source_digest
-        || Some(projection_manifest.payload_checksum) != manifest.turboquant_payload_checksum
+        || Some(projection_manifest.document_count) != manifest.rabitq_vector_document_count
+        || Some(projection_manifest.source_digest) != manifest.rabitq_source_digest
+        || Some(projection_manifest.payload_checksum) != manifest.rabitq_payload_checksum
     {
         return Err(SkeinError::Storage(
-            "search out-of-core TurboQuant identity does not match its generation".to_string(),
+            "search out-of-core RaBitQ identity does not match its generation".to_string(),
         ));
     }
     Ok(Some(Arc::new(projection)))
@@ -2009,13 +2008,13 @@ pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -
         lexical_manifest_file,
         lexical_manifest_len: lexical_manifest_bytes.len() as u64,
         lexical_manifest_checksum: checksum_bytes(&lexical_manifest_bytes),
-        turboquant_artifact_file: None,
-        turboquant_artifact_len: None,
-        turboquant_artifact_checksum: None,
-        turboquant_source_digest: None,
-        turboquant_vector_document_count: None,
-        turboquant_payload_checksum: None,
-        turboquant_peak_build_working_bytes: None,
+        rabitq_artifact_file: None,
+        rabitq_artifact_len: None,
+        rabitq_artifact_checksum: None,
+        rabitq_source_digest: None,
+        rabitq_vector_document_count: None,
+        rabitq_payload_checksum: None,
+        rabitq_peak_build_working_bytes: None,
         document_count: index.documents.len(),
         documents_digest: lexical_documents_digest(&index.documents),
         source_graph_commit_epoch: index.source_graph_commit_epoch,

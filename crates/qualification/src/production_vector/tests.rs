@@ -26,10 +26,6 @@ fn representative_runner_collects_recall_execution_and_lifecycle_evidence() {
     let identity = production_identity(42);
     let report = run_production_vector_qualification(ProductionVectorQualificationConfig {
         projection_path: source.clone(),
-        differential_oracle_documents: projection_rows()
-            .into_iter()
-            .map(SearchProjectionRow::into_document)
-            .collect(),
         search_projection_path: serving,
         query_cases: query_cases(),
         lifecycle: ProductionVectorLifecycleConfig {
@@ -58,7 +54,7 @@ fn representative_runner_collects_recall_execution_and_lifecycle_evidence() {
         top_k: 2,
         candidate_limit: 4,
         minimum_recall_per_million: 0,
-        require_turbovec_oracle: cfg!(feature = "turbovec-oracle"),
+        require_rabitq_reference_verification: true,
         max_parallelism: NonZeroUsize::new(2).unwrap(),
         max_working_bytes: 64 * 1024 * 1024,
         evidence_binding: ProductionEvidenceBinding {
@@ -79,7 +75,7 @@ fn representative_runner_collects_recall_execution_and_lifecycle_evidence() {
         .iter()
         .all(|evidence| evidence.serving_auto_final_parity
             && evidence.serving_metrics.backend
-                == "skein_turboquant_out_of_core_candidate_projection"));
+                == "skein_rabitq_out_of_core_candidate_projection"));
     assert!(report
         .recall_evidence
         .iter()
@@ -91,22 +87,12 @@ fn representative_runner_collects_recall_execution_and_lifecycle_evidence() {
     assert!(report.lifecycle.cancellation_propagated);
     assert!(report.lifecycle.serving_cancellation_propagated);
     assert!(report.lifecycle.mixed_foreground_background);
-    if cfg!(feature = "turbovec-oracle") {
-        assert!(
-            report.differential_oracle.ready,
-            "{:?}",
-            report.differential_oracle
-        );
-        assert_eq!(report.differential_oracle.cases.len(), 2);
-    }
-    #[cfg(not(feature = "turbovec-oracle"))]
-    {
-        let mut required_oracle_report = report.clone();
-        required_oracle_report.differential_oracle.required = true;
-        assert!(required_oracle_report
-            .recompute_blocker_codes()
-            .contains(&"turbovec_differential_oracle_unavailable".to_string()));
-    }
+    assert!(
+        report.rabitq_reference_verification.ready,
+        "{:?}",
+        report.rabitq_reference_verification
+    );
+    assert_eq!(report.rabitq_reference_verification.cases.len(), 2);
     assert!(report
         .blocker_codes
         .contains(&"dataset_too_small".to_string()));

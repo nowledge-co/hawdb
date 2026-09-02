@@ -29,8 +29,8 @@ pub struct SearchProjectionCleanupReport {
     pub max_delete_attempts: usize,
     pub lexical_generation: Option<u64>,
     pub out_of_core_generation: Option<u64>,
-    pub turboquant_generation: Option<u64>,
-    pub turboquant_remove_all: bool,
+    pub rabitq_generation: Option<u64>,
+    pub rabitq_remove_all: bool,
     pub pending_before: usize,
     pub scanned_entries: usize,
     pub eligible_files: usize,
@@ -59,8 +59,8 @@ impl Default for SearchProjectionCleanupReport {
                 .get(),
             lexical_generation: None,
             out_of_core_generation: None,
-            turboquant_generation: None,
-            turboquant_remove_all: false,
+            rabitq_generation: None,
+            rabitq_remove_all: false,
             pending_before: 0,
             scanned_entries: 0,
             eligible_files: 0,
@@ -87,8 +87,8 @@ impl SearchProjectionCleanupReport {
             "max_delete_attempts": self.max_delete_attempts,
             "lexical_generation": self.lexical_generation,
             "out_of_core_generation": self.out_of_core_generation,
-            "turboquant_generation": self.turboquant_generation,
-            "turboquant_remove_all": self.turboquant_remove_all,
+            "rabitq_generation": self.rabitq_generation,
+            "rabitq_remove_all": self.rabitq_remove_all,
             "pending_before": self.pending_before,
             "scanned_entries": self.scanned_entries,
             "eligible_files": self.eligible_files,
@@ -111,8 +111,8 @@ impl SearchProjectionCleanupReport {
 pub(super) struct SearchProjectionGenerations {
     pub lexical: Option<u64>,
     pub out_of_core: Option<u64>,
-    pub turboquant: Option<u64>,
-    pub turboquant_remove_all: bool,
+    pub rabitq: Option<u64>,
+    pub rabitq_remove_all: bool,
     pub out_of_core_discovery_failed: bool,
 }
 
@@ -153,8 +153,8 @@ impl SearchProjectionCleanupState {
             max_delete_attempts: delete_limit,
             lexical_generation: generations.lexical,
             out_of_core_generation: generations.out_of_core,
-            turboquant_generation: generations.turboquant,
-            turboquant_remove_all: generations.turboquant_remove_all,
+            rabitq_generation: generations.rabitq,
+            rabitq_remove_all: generations.rabitq_remove_all,
             pending_before: self.pending.len(),
             ..SearchProjectionCleanupReport::default()
         };
@@ -240,7 +240,7 @@ impl SearchProjectionCleanupState {
 enum CleanupArtifactKind {
     Lexical,
     OutOfCore,
-    TurboQuant,
+    RaBitQ,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -267,10 +267,10 @@ impl CleanupCandidate {
                 generation,
             });
         }
-        if let Some(generation) = parse_generation(&name, "search_turboquant.") {
+        if let Some(generation) = parse_generation(&name, "search_rabitq.") {
             return Some(Self {
                 name,
-                kind: CleanupArtifactKind::TurboQuant,
+                kind: CleanupArtifactKind::RaBitQ,
                 generation,
             });
         }
@@ -291,10 +291,8 @@ impl CleanupCandidate {
             CleanupArtifactKind::OutOfCore => {
                 older_than_previous(self.generation, generations.out_of_core)
             }
-            CleanupArtifactKind::TurboQuant if generations.turboquant_remove_all => true,
-            CleanupArtifactKind::TurboQuant => {
-                older_than_previous(self.generation, generations.turboquant)
-            }
+            CleanupArtifactKind::RaBitQ if generations.rabitq_remove_all => true,
+            CleanupArtifactKind::RaBitQ => older_than_previous(self.generation, generations.rabitq),
         }
     }
 }

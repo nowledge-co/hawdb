@@ -1,7 +1,9 @@
-/// Stable, plan-local identifier for a relational access or join operator.
+/// Stable, plan-local identifier for a physical relational access or join operator.
 ///
-/// Identifiers are one-based. The base access is always operator 1, followed
-/// by join operators in execution order.
+/// Identifiers are one-based. They identify profile entries, not logical SQL
+/// wrappers such as projection or limit. A profile carries its own access path
+/// so an identifier cannot be reinterpreted through an independently ordered
+/// descriptor list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelationalOperatorId(usize);
 
@@ -20,8 +22,14 @@ pub enum RelationalOperatorKind {
     TableFullScan,
     TablePointGet,
     IndexRangeScan,
+    NestedLoopJoin,
+    NestedLoopLeftJoin,
     IndexNestedLoopJoin,
     IndexNestedLoopLeftJoin,
+    BatchedIndexNestedLoopJoin,
+    BatchedIndexNestedLoopLeftJoin,
+    MergeJoin,
+    HashJoin,
 }
 
 impl RelationalOperatorKind {
@@ -30,8 +38,14 @@ impl RelationalOperatorKind {
             Self::TableFullScan => "TableFullScanExec",
             Self::TablePointGet => "TablePointGetExec",
             Self::IndexRangeScan => "IndexRangeScanExec",
+            Self::NestedLoopJoin => "NestedLoopJoinExec",
+            Self::NestedLoopLeftJoin => "NestedLoopLeftJoinExec",
             Self::IndexNestedLoopJoin => "IndexNestedLoopJoinExec",
             Self::IndexNestedLoopLeftJoin => "IndexNestedLoopLeftJoinExec",
+            Self::BatchedIndexNestedLoopJoin => "BatchedIndexNestedLoopJoinExec",
+            Self::BatchedIndexNestedLoopLeftJoin => "BatchedIndexNestedLoopLeftJoinExec",
+            Self::MergeJoin => "MergeJoinExec",
+            Self::HashJoin => "HashJoinExec",
         }
     }
 }
@@ -43,6 +57,8 @@ pub struct RelationalOperatorCardinalityProfile {
     pub operator_id: RelationalOperatorId,
     pub operator: RelationalOperatorKind,
     pub table: String,
+    /// The physical access path executed by this operator.
+    pub access_path: skein_optimizer::RelationalAccessPathDescriptor,
     pub estimated_rows: usize,
     /// `None` means execution never invoked the access pipeline. `Some(0)`
     /// means the operator ran and produced no rows.

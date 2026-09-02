@@ -1,4 +1,35 @@
+use super::super::relational_query_limits_with_payload;
 use super::*;
+
+#[test]
+fn relational_index_read_row_budget_matches_intermediate_limit() {
+    let config = DatabaseConfig {
+        max_read_result_rows: Some(4_097),
+        ..DatabaseConfig::default()
+    };
+
+    let limits = relational_query_limits_with_payload(&config, None, None);
+
+    assert_eq!(limits.max_intermediate_rows, 4_097);
+    assert_eq!(limits.index_read.max_rows.get(), 4_097);
+    assert_eq!(
+        limits.index_read.max_pages.get(),
+        4_097usize
+            .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+    );
+    assert_eq!(
+        limits.index_read.max_bytes.get(),
+        limits
+            .index_read
+            .max_pages
+            .get()
+            .saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+    );
+    assert_eq!(
+        limits.index_read.max_file_bytes,
+        config.max_relational_index_read_bytes.get()
+    );
+}
 
 #[test]
 fn numeric_scan_filter_project_is_default_morsel_eligible() {

@@ -1,9 +1,7 @@
 use crate::artifact::{FileProjection, SegmentParts};
-use crate::codec::bytes_per_vector;
 use crate::error::{ProjectionError, Result};
 use crate::kernel::{score_function, select_kernel, KernelPreference, ScanKernel};
-use crate::model::{InMemoryProjection, ProjectionManifest};
-use crate::quantizer::TurboQuantCodebook;
+use crate::model::{encoded_vector_bytes, InMemoryProjection, ProjectionManifest, RaBitQBitWidth};
 use crate::transform::normalize_and_transform;
 use skein_core::RuntimeTaskContext;
 use std::cmp::Ordering;
@@ -189,13 +187,14 @@ impl SegmentReader for InMemoryProjection {
         scan_segment(
             segment.row_count(),
             self.manifest.dimension,
+            RaBitQBitWidth::from_bits(self.manifest.bit_width)?,
             |row| segment.ids[row],
-            |row| segment.renormalizations[row],
+            |row| segment.reconstruction_scales[row],
+            |row| segment.reconstruction_offsets[row],
             &segment.codes,
             query,
             top_k,
             kernel,
-            &self.codebook,
             allowed_ids,
             context,
             0,
@@ -237,15 +236,16 @@ impl SegmentReader for FileProjection {
     ) -> Result<SegmentSearchResult> {
         let descriptor = &self.manifest().segments[segment_index];
         let buffer = self.read_segment(segment_index)?;
-        let parts = buffer.parts(self.manifest().dimension, descriptor.row_count)?;
+        let bit_width = RaBitQBitWidth::from_bits(self.manifest().bit_width)?;
+        let parts = buffer.parts(self.manifest().dimension, bit_width, descriptor.row_count)?;
         scan_file_segment(
             parts,
             descriptor.row_count,
             self.manifest().dimension,
+            bit_width,
             query,
             top_k,
             kernel,
-            &self.codebook,
             allowed_ids,
             context,
             descriptor.payload_bytes,
@@ -428,7 +428,7 @@ fn search_projection<R: SegmentReader>(
             let mut handles = Vec::with_capacity(worker_count);
             for worker in 0..worker_count {
                 match std::thread::Builder::new()
-                    .name(format!("skein-turboquant-scan-{worker}"))
+                    .name(format!("skein-rabitq-scan-{worker}"))
                     .stack_size(WORKER_STACK_BYTES)
                     .spawn_scoped(scope, run_worker)
                 {
@@ -493,10 +493,10 @@ fn scan_file_segment(
     parts: SegmentParts<'_>,
     rows: usize,
     dimension: usize,
+    bit_width: RaBitQBitWidth,
     query: &[f32],
     top_k: usize,
     kernel: ScanKernel,
-    codebook: &TurboQuantCodebook,
     allowed_ids: Option<&[u64]>,
     context: Option<&RuntimeTaskContext>,
     payload_bytes_read: u64,
@@ -504,13 +504,14 @@ fn scan_file_segment(
     scan_segment(
         rows,
         dimension,
+        bit_width,
         |row| parts.id(row),
-        |row| parts.renormalization(row),
+        |row| parts.reconstruction_scale(row),
+        |row| parts.reconstruction_offset(row),
         parts.codes,
         query,
         top_k,
         kernel,
-        codebook,
         allowed_ids,
         context,
         payload_bytes_read,
@@ -518,16 +519,17 @@ fn scan_file_segment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_segment<Id, Scale>(
+fn scan_segment<Id, Scale, Offset>(
     rows: usize,
     dimension: usize,
+    bit_width: RaBitQBitWidth,
     id_at: Id,
     scale_at: Scale,
+    offset_at: Offset,
     codes: &[u8],
     query: &[f32],
     top_k: usize,
     kernel: ScanKernel,
-    codebook: &TurboQuantCodebook,
     allowed_ids: Option<&[u64]>,
     context: Option<&RuntimeTaskContext>,
     payload_bytes_read: u64,
@@ -535,8 +537,9 @@ fn scan_segment<Id, Scale>(
 where
     Id: Fn(usize) -> u64,
     Scale: Fn(usize) -> f32,
+    Offset: Fn(usize) -> f32,
 {
-    let bytes_per_vector = bytes_per_vector(dimension);
+    let bytes_per_vector = encoded_vector_bytes(dimension, bit_width);
     if codes.len() != rows.saturating_mul(bytes_per_vector) {
         return Err(ProjectionError::CorruptArtifact(
             "segment code length does not match rows and dimension".to_string(),
@@ -544,6 +547,7 @@ where
     }
     let mask = allowed_ids.map(|allowed| build_allowed_mask(rows, &id_at, allowed));
     let score = score_function(kernel);
+    let query_sum = query.iter().sum::<f32>();
     let mut top = TopK::new(top_k);
     let mut scored_document_count = 0usize;
     let mut scanned_block_count = 0usize;
@@ -565,15 +569,18 @@ where
             let scale = scale_at(row);
             if !scale.is_finite() || scale < 0.0 {
                 return Err(ProjectionError::CorruptArtifact(format!(
-                    "row {row} has an invalid renormalization"
+                    "row {row} has an invalid RaBitQ reconstruction scale"
+                )));
+            }
+            let offset = offset_at(row);
+            if !offset.is_finite() {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "row {row} has an invalid RaBitQ reconstruction offset"
                 )));
             }
             let start = row * bytes_per_vector;
-            let score = score(
-                &codes[start..start + bytes_per_vector],
-                query,
-                codebook.centroids(),
-            ) * scale;
+            let score = score(&codes[start..start + bytes_per_vector], query, bit_width) * scale
+                + (offset * query_sum);
             if !score.is_finite() {
                 return Err(ProjectionError::CorruptArtifact(format!(
                     "row {row} produced a non-finite score"
@@ -807,7 +814,7 @@ mod tests {
     use super::*;
     use crate::{
         FileProjection, ProjectionBuildConfig, ProjectionBuilder, ProjectionIdentity,
-        ProjectionWriter,
+        ProjectionWriter, RaBitQBitWidth,
     };
     use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
     use std::fs;
@@ -914,7 +921,7 @@ mod tests {
     fn parallel_file_scan_matches_sequential_scan() {
         let root = unique_test_dir("parallel");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_turboquant.1.skein");
+        let artifact = root.join("search_rabitq.1.skein");
         let config =
             ProjectionBuildConfig::new(64, ProjectionIdentity::new(1)).with_segment_rows(3);
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
@@ -1026,6 +1033,43 @@ mod tests {
         for (automatic, scalar) in automatic.hits.iter().zip(&scalar.hits) {
             assert!((automatic.score - scalar.score).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn one_bit_file_and_in_memory_scans_have_identical_candidates() {
+        let dimension = 9;
+        let config = ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1))
+            .with_bit_width(RaBitQBitWidth::One)
+            .with_segment_rows(2);
+        let mut builder = ProjectionBuilder::new(config.clone()).unwrap();
+        let root = unique_test_dir("one-bit");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.skein");
+        let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
+        for id in 0..5u64 {
+            let vector = (0..dimension)
+                .map(|coordinate| ((id * 11 + coordinate as u64 * 5) as f32).sin())
+                .collect::<Vec<_>>();
+            builder.push(id, &vector).unwrap();
+            writer.push(id, &vector).unwrap();
+        }
+        let in_memory = builder.finish().unwrap();
+        let file = writer.finish().unwrap();
+        let query = (0..dimension)
+            .map(|coordinate| (coordinate as f32 * 0.37).cos())
+            .collect::<Vec<_>>();
+        let options = ProjectionSearchOptions::new().with_kernel(KernelPreference::Scalar);
+        let in_memory = in_memory.search(&query, 3, options).unwrap();
+        let file = file
+            .search(
+                &query,
+                3,
+                ProjectionSearchOptions::new().with_kernel(KernelPreference::Scalar),
+            )
+            .unwrap();
+
+        assert_eq!(file.hits, in_memory.hits);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn sample_in_memory_projection(dimension: usize, segment_rows: usize) -> InMemoryProjection {

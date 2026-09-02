@@ -12,9 +12,10 @@ use skein_storage::{
     RelationalProjectedRowView, RelationalRow, RelationalRowPageDemandReadError,
     RelationalRowPageProjectedFields, RelationalRowPageProjectedRangeFields,
     RelationalRowPageReadViewIdentity, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, RelationalState, RelationalTableSchema, RelationalValueRef,
+    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
+    RelationalTableSchema, RelationalValueRef,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -74,6 +75,7 @@ pub(crate) struct RelationalRowExecutionEvidence {
     pub rows_visited: usize,
     pub borrowed_rows_visited: usize,
     pub owned_rows_visited: usize,
+    pub index_covered_rows: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
     pub projection_generation: Option<String>,
@@ -185,6 +187,27 @@ impl RelationalFieldPlan {
 
     fn uses_any_table(&self, tables: &BTreeSet<String>) -> bool {
         self.scan_fields.keys().any(|table| tables.contains(table))
+    }
+
+    pub(crate) fn index_covers_table(
+        &self,
+        table: &str,
+        schema: &RelationalTableSchema,
+        index_columns: &[String],
+    ) -> Result<bool> {
+        let fields = self.scan_fields.get(table).ok_or_else(|| {
+            SkeinError::StorageIntegrity(format!(
+                "relational query has no field plan for table {table}"
+            ))
+        })?;
+        let mut covered = BTreeSet::new();
+        for column in index_columns.iter().chain(&schema.primary_key) {
+            let Some(ordinal) = schema.column_position(column) else {
+                return Ok(false);
+            };
+            covered.insert(ordinal);
+        }
+        Ok(fields.iter().all(|field| covered.contains(field)))
     }
 }
 
@@ -310,6 +333,115 @@ impl<'a> RelationalRowRuntime<'a> {
         self.read_point_with_fields(table, key, fields, fields)
     }
 
+    /// Reads each distinct key once while retaining the caller-owned mapping
+    /// from duplicate input keys to their output rows.
+    pub(crate) fn read_points(
+        &self,
+        table: &str,
+        keys: &[RelationalKey],
+    ) -> Result<BTreeMap<RelationalKey, RelationalReadRow>> {
+        let fields = self.fields(&self.fields.scan_fields, table)?;
+        let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        self.read_points_with_fields(table, keys, fields, hydration_fields)
+    }
+
+    /// Builds a scan projection directly from a secondary-index key and its
+    /// primary-key locator. It is valid only when the query field plan is
+    /// completely covered by those two key tuples.
+    pub(crate) fn read_index_covered(
+        &self,
+        table: &str,
+        index_columns: &[String],
+        index_key: &RelationalKey,
+        primary_key: &RelationalKey,
+    ) -> Result<Option<RelationalReadRow>> {
+        let schema = self
+            .state
+            .table_schema(table)
+            .ok_or_else(|| SkeinError::Semantic(format!("unknown relational table {table}")))?;
+        if !self
+            .fields
+            .index_covers_table(table, schema, index_columns)?
+        {
+            return Ok(None);
+        }
+        if index_key.0.len() != index_columns.len() {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "relational index key for table {table} has {} values but its descriptor has {} columns",
+                index_key.0.len(),
+                index_columns.len()
+            )));
+        }
+        if primary_key.0.len() != schema.primary_key.len() {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "relational primary-key locator for table {table} has {} values but the schema has {} primary-key columns",
+                primary_key.0.len(),
+                schema.primary_key.len()
+            )));
+        }
+        // Covering index values still belong to the pinned row snapshot.
+        self.bind_snapshot_identity()?;
+
+        let mut values = BTreeMap::new();
+        for (column, value) in index_columns.iter().zip(&index_key.0) {
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                SkeinError::StorageIntegrity(format!(
+                    "relational index coverage references unknown column {column} on table {table}"
+                ))
+            })?;
+            values.insert(ordinal, value.clone());
+        }
+        for (column, value) in schema.primary_key.iter().zip(&primary_key.0) {
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                SkeinError::StorageIntegrity(format!(
+                    "relational primary-key coverage references unknown column {column} on table {table}"
+                ))
+            })?;
+            values.entry(ordinal).or_insert_with(|| value.clone());
+        }
+        let fields = self.fields(&self.fields.scan_fields, table)?;
+        let fields = fields
+            .iter()
+            .map(|ordinal| {
+                values
+                    .get(ordinal)
+                    .cloned()
+                    .map(|value| RelationalProjectedField {
+                        ordinal: *ordinal,
+                        value,
+                    })
+                    .ok_or_else(|| {
+                        SkeinError::StorageIntegrity(format!(
+                            "relational index coverage omitted required field {ordinal} on table {table}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut projected = RelationalProjectedRow {
+            primary_key: primary_key.clone(),
+            fields,
+        };
+        let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        self.state
+            .hydrate_projected_row_fields_with_context(
+                table,
+                &mut projected,
+                hydration_fields,
+                &mut self.hydration.borrow_mut(),
+                Some(self.task),
+            )
+            .map_err(map_state_error)?;
+        let mut evidence = self.evidence.borrow_mut();
+        add_counter(
+            &mut evidence.index_covered_rows,
+            1,
+            "relational index-covered row",
+        )?;
+        Ok(Some(RelationalReadRow {
+            row: Arc::new(projected),
+        }))
+    }
+
     fn read_point_with_fields(
         &self,
         table: &str,
@@ -367,6 +499,89 @@ impl<'a> RelationalRowRuntime<'a> {
                 drop(hydration);
                 self.record_point(&report)?;
                 Ok(row.map(|row| RelationalReadRow { row: Arc::new(row) }))
+            }
+        }
+    }
+
+    fn read_points_with_fields(
+        &self,
+        table: &str,
+        keys: &[RelationalKey],
+        fields: &[usize],
+        hydration_fields: &[usize],
+    ) -> Result<BTreeMap<RelationalKey, RelationalReadRow>> {
+        let keys = keys.iter().cloned().collect::<BTreeSet<_>>();
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.tables.contains(table))
+        {
+            let mut rows = BTreeMap::new();
+            for key in keys {
+                if let Some(row) =
+                    self.read_projection_point(table, &key, fields, hydration_fields)?
+                {
+                    rows.insert(key, row);
+                }
+            }
+            return Ok(rows);
+        }
+        match &self.backend {
+            RelationalRowBackend::CanonicalMemory => {
+                let mut rows = BTreeMap::new();
+                for key in keys {
+                    self.task.checkpoint().map_err(|reason| {
+                        SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                    })?;
+                    let Some((key, row)) = self.state.row_entry(table, &key) else {
+                        continue;
+                    };
+                    self.admit_memory_row()?;
+                    rows.insert(
+                        key.clone(),
+                        self.project_memory_row(table, key, row, fields, hydration_fields)?,
+                    );
+                }
+                Ok(rows)
+            }
+            RelationalRowBackend::Snapshot(reader) => {
+                let remaining = self.remaining_limits()?;
+                let mut hydration = self.hydration.borrow_mut();
+                let (mut rows, report) = reader
+                    .points_projected_fields(
+                        table,
+                        &keys.into_iter().collect::<Vec<_>>(),
+                        RelationalRowPageProjectedFields {
+                            requested_fields: fields,
+                            hydration_fields,
+                        },
+                        remaining,
+                        &mut hydration,
+                        self.task,
+                    )
+                    .map_err(map_snapshot_error)?;
+                for key in &report.unbound_overlay_keys {
+                    let row = rows.get_mut(key).ok_or_else(|| {
+                        SkeinError::StorageIntegrity(
+                            "snapshot multi-point resolver lost an overlay row".to_string(),
+                        )
+                    })?;
+                    self.state
+                        .hydrate_projected_row_fields_with_context(
+                            table,
+                            row,
+                            hydration_fields,
+                            &mut hydration,
+                            Some(self.task),
+                        )
+                        .map_err(map_state_error)?;
+                }
+                drop(hydration);
+                self.record_points(&report)?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(key, row)| (key, RelationalReadRow { row: Arc::new(row) }))
+                    .collect())
             }
         }
     }
@@ -560,7 +775,18 @@ impl<'a> RelationalRowRuntime<'a> {
             ))
         })?;
         let mut found = None;
-        self.visit_projection_members(table, &mut |member| match member
+        let cursor = self
+            .projection
+            .as_ref()
+            .ok_or_else(|| {
+                SkeinError::StorageIntegrity(
+                    "projection row path was selected without a pinned generation".to_string(),
+                )
+            })?
+            .reader
+            .seek_cursor(table, &encoded_key)
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), &mut |member| match member
             .key
             .as_slice()
             .cmp(encoded_key.as_slice())
@@ -602,7 +828,24 @@ impl<'a> RelationalRowRuntime<'a> {
                 "projection row path was selected without a pinned generation".to_string(),
             )
         })?;
-        let mut cursor = None;
+        let cursor = projection
+            .reader
+            .seek_prefix_cursor(table, &[])
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), visit)
+    }
+
+    fn visit_projection_members_from(
+        &self,
+        table: &str,
+        mut cursor: Option<skein_storage::ProjectionGenerationCursor>,
+        visit: &mut dyn FnMut(&skein_storage::ProjectionGenerationMember) -> Result<bool>,
+    ) -> Result<bool> {
+        let projection = self.projection.as_ref().ok_or_else(|| {
+            SkeinError::StorageIntegrity(
+                "projection row path was selected without a pinned generation".to_string(),
+            )
+        })?;
         loop {
             self.task.checkpoint().map_err(|reason| {
                 SkeinError::Execution(format!("runtime task stopped: {reason}"))
@@ -873,6 +1116,22 @@ impl<'a> RelationalRowRuntime<'a> {
             report.overlay_entries,
             report.overlay_resident_bytes,
         )
+    }
+
+    fn record_points(&self, report: &RelationalRowPageSnapshotPointsReport) -> Result<()> {
+        self.record(
+            report.identity,
+            &report.demand,
+            report.overlay_entries,
+            report.overlay_resident_bytes,
+        )
+    }
+
+    fn bind_snapshot_identity(&self) -> Result<()> {
+        let RelationalRowBackend::Snapshot(reader) = &self.backend else {
+            return Ok(());
+        };
+        self.record(reader.identity(), &Default::default(), 0, 0)
     }
 
     fn record(

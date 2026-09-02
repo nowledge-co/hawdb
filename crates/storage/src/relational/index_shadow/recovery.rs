@@ -10,10 +10,10 @@ use super::super::{
     RELATIONAL_RECOVERY_SOURCE_BYTES,
 };
 use super::{
-    decode_bytes, decode_utf8, encode_relational_key, read_bounded_file, read_u16, read_u32,
-    read_u64, take, RelationalIndexGenerationArtifacts, RelationalIndexGenerationIdentity,
-    RelationalIndexReadLimits, RelationalIndexReadReport, RelationalIndexShadowConfig,
-    RelationalIndexShadowError, RelationalIndexShadowReader,
+    decode_bytes, decode_utf8, encode_bytes, encode_relational_key, read_bounded_file, read_u16,
+    read_u32, read_u64, take, RelationalIndexGenerationArtifacts,
+    RelationalIndexGenerationIdentity, RelationalIndexReadLimits, RelationalIndexReadReport,
+    RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
 use crate::{
     durable_replace_file, ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache,
@@ -30,11 +30,14 @@ use std::sync::Arc;
 
 const DELTA_MANIFEST_MAGIC: &[u8; 8] = b"SKRIDXR1";
 const DELTA_PAGE_MAGIC: &[u8; 8] = b"SKRIDXD1";
-const DELTA_FORMAT_VERSION: u16 = 1;
+const DELTA_MANIFEST_FORMAT_VERSION: u16 = 2;
+const DELTA_PAGE_FORMAT_VERSION: u16 = 1;
 const DELTA_MANIFEST_HEADER_BYTES: usize = 148;
 const DELTA_MANIFEST_INTEGRITY_OFFSET: usize = 112;
 const DELTA_PAGE_HEADER_BYTES: usize = 104;
-const DELTA_DESCRIPTOR_BYTES: usize = 68;
+const DELTA_DESCRIPTOR_FIXED_BYTES: usize = 72;
+const DELTA_DESCRIPTOR_LENGTH_BYTES: usize = 4;
+const DELTA_SELECTOR_FIXED_BYTES: usize = 16;
 const DELTA_ENTRY_FIXED_BYTES: usize = 17;
 static NEXT_DELTA_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -93,6 +96,91 @@ struct DeltaPageDescriptor {
     entry_count: u32,
     encoded_len: u64,
     digest: IntegrityDigest,
+    selectors: Vec<DeltaPageSelector>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeltaPageSelector {
+    table: String,
+    index: String,
+    lower_index_key: Vec<u8>,
+    upper_index_key: Vec<u8>,
+}
+
+impl DeltaPageSelector {
+    fn may_match_prefix(&self, prefix: &[u8]) -> bool {
+        self.upper_index_key.as_slice() >= prefix
+            && encoded_prefix_upper_bound(prefix)
+                .is_none_or(|upper_bound| self.lower_index_key.as_slice() < upper_bound.as_slice())
+    }
+
+    fn encoded_len(&self) -> Result<usize, RelationalIndexShadowError> {
+        DELTA_SELECTOR_FIXED_BYTES
+            .checked_add(self.table.len())
+            .and_then(|bytes| bytes.checked_add(self.index.len()))
+            .and_then(|bytes| bytes.checked_add(self.lower_index_key.len()))
+            .and_then(|bytes| bytes.checked_add(self.upper_index_key.len()))
+            .ok_or_else(|| admission("recovery delta selector length overflow"))
+    }
+}
+
+impl DeltaPageDescriptor {
+    fn selector_bytes(&self) -> Result<usize, RelationalIndexShadowError> {
+        self.selectors.iter().try_fold(0_usize, |bytes, selector| {
+            bytes
+                .checked_add(selector.encoded_len()?)
+                .ok_or_else(|| admission("recovery delta selector payload overflow"))
+        })
+    }
+
+    fn may_match_prefixes(&self, table: &str, index: &str, prefixes: &BTreeSet<Vec<u8>>) -> bool {
+        self.may_match_selector(table, index, |selector| {
+            prefixes
+                .iter()
+                .any(|prefix| selector.may_match_prefix(prefix))
+        })
+    }
+
+    fn may_match_exact_key(&self, table: &str, index: &str, key: &[u8]) -> bool {
+        self.may_match_selector(table, index, |selector| {
+            selector.lower_index_key.as_slice() <= key && key <= selector.upper_index_key.as_slice()
+        })
+    }
+
+    fn may_match_range(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &[u8],
+        exclusive_bound: Option<&[u8]>,
+        direction: RelationalIndexScanDirection,
+    ) -> bool {
+        self.may_match_selector(table, index, |selector| {
+            selector.may_match_prefix(prefix)
+                && exclusive_bound.is_none_or(|bound| match direction {
+                    RelationalIndexScanDirection::Forward => {
+                        selector.upper_index_key.as_slice() > bound
+                    }
+                    RelationalIndexScanDirection::Backward => {
+                        selector.lower_index_key.as_slice() < bound
+                    }
+                })
+        })
+    }
+
+    fn may_match_selector(
+        &self,
+        table: &str,
+        index: &str,
+        matches: impl FnMut(&DeltaPageSelector) -> bool,
+    ) -> bool {
+        self.selectors.is_empty()
+            || self
+                .selectors
+                .iter()
+                .filter(|selector| selector.table == table && selector.index == index)
+                .any(matches)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,15 +216,21 @@ impl RelationalIndexRecoveryManifest {
         config: RelationalIndexRecoveryConfig,
     ) -> Result<Vec<u8>, RelationalIndexShadowError> {
         validate_manifest(self, config, false)?;
-        let mut payload = Vec::with_capacity(self.pages.len() * DELTA_DESCRIPTOR_BYTES);
+        let payload_capacity = self.pages.iter().try_fold(0_usize, |bytes, page| {
+            let selector_bytes = page.selector_bytes()?;
+            bytes
+                .checked_add(DELTA_DESCRIPTOR_LENGTH_BYTES)
+                .and_then(|bytes| bytes.checked_add(DELTA_DESCRIPTOR_FIXED_BYTES))
+                .and_then(|bytes| bytes.checked_add(selector_bytes))
+                .ok_or_else(|| admission("recovery manifest payload length overflow"))
+        })?;
+        let mut payload = Vec::with_capacity(payload_capacity);
         for page in &self.pages {
-            payload.extend_from_slice(&page.ordinal.to_le_bytes());
-            payload.extend_from_slice(&page.start_epoch.to_le_bytes());
-            payload.extend_from_slice(&page.end_epoch.to_le_bytes());
-            payload.extend_from_slice(&page.entry_count.to_le_bytes());
-            payload.extend_from_slice(&page.encoded_len.to_le_bytes());
-            payload.extend_from_slice(&page.digest.crc32c.get().to_le_bytes());
-            payload.extend_from_slice(page.digest.sha256.as_bytes());
+            let descriptor = encode_delta_page_descriptor(page)?;
+            let descriptor_len = u32::try_from(descriptor.len())
+                .map_err(|_| admission("recovery delta descriptor length does not fit u32"))?;
+            payload.extend_from_slice(&descriptor_len.to_le_bytes());
+            payload.extend_from_slice(&descriptor);
         }
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
             RelationalIndexShadowError::Admission(
@@ -150,7 +244,7 @@ impl RelationalIndexRecoveryManifest {
         })?;
         let mut encoded = Vec::with_capacity(DELTA_MANIFEST_HEADER_BYTES + payload.len());
         encoded.extend_from_slice(DELTA_MANIFEST_MAGIC);
-        encoded.extend_from_slice(&DELTA_FORMAT_VERSION.to_le_bytes());
+        encoded.extend_from_slice(&DELTA_MANIFEST_FORMAT_VERSION.to_le_bytes());
         encoded.extend_from_slice(&0_u16.to_le_bytes());
         encoded.extend_from_slice(&self.base_generation.to_le_bytes());
         encoded.extend_from_slice(&self.delta_generation.to_le_bytes());
@@ -197,7 +291,7 @@ impl RelationalIndexRecoveryManifest {
         }
         let version = read_u16(&encoded[8..10]);
         let flags = read_u16(&encoded[10..12]);
-        if version != DELTA_FORMAT_VERSION || flags != 0 {
+        if version != DELTA_MANIFEST_FORMAT_VERSION || flags != 0 {
             return Err(RelationalIndexShadowError::Corrupt(format!(
                 "unsupported relational index recovery manifest version {version} or flags {flags}"
             )));
@@ -227,9 +321,7 @@ impl RelationalIndexRecoveryManifest {
             .ok_or_else(|| {
                 RelationalIndexShadowError::Corrupt("recovery manifest length overflow".to_string())
             })?;
-        if encoded.len() != expected_len
-            || payload_len != page_count.saturating_mul(DELTA_DESCRIPTOR_BYTES)
-        {
+        if encoded.len() != expected_len {
             return Err(RelationalIndexShadowError::Corrupt(
                 "relational index recovery manifest length mismatch".to_string(),
             ));
@@ -249,28 +341,19 @@ impl RelationalIndexRecoveryManifest {
         let mut pages = Vec::with_capacity(page_count);
         let mut offset = 0usize;
         for _ in 0..page_count {
-            let ordinal = read_u32(take(payload, &mut offset, 4, "delta ordinal")?);
-            let start_epoch = read_u64(take(payload, &mut offset, 8, "delta start epoch")?);
-            let end_epoch = read_u64(take(payload, &mut offset, 8, "delta end epoch")?);
-            let entry_count = read_u32(take(payload, &mut offset, 4, "delta entry count")?);
-            let encoded_len = read_u64(take(payload, &mut offset, 8, "delta encoded length")?);
-            let crc32c = read_u32(take(payload, &mut offset, 4, "delta CRC32C")?);
-            let sha256 = Sha256Digest::from_bytes(
-                take(payload, &mut offset, SHA256_BYTES, "delta SHA-256")?
-                    .try_into()
-                    .expect("delta SHA-256 length was checked"),
-            );
-            pages.push(DeltaPageDescriptor {
-                ordinal,
-                start_epoch,
-                end_epoch,
-                entry_count,
-                encoded_len,
-                digest: IntegrityDigest {
-                    crc32c: skein_integrity::Crc32c::new(crc32c),
-                    sha256,
-                },
-            });
+            let descriptor_len = read_u32(take(
+                payload,
+                &mut offset,
+                DELTA_DESCRIPTOR_LENGTH_BYTES,
+                "delta descriptor length",
+            )?) as usize;
+            let descriptor = take(payload, &mut offset, descriptor_len, "delta descriptor")?;
+            pages.push(decode_delta_page_descriptor(descriptor, config)?);
+        }
+        if offset != payload.len() {
+            return Err(corrupt(
+                "relational index recovery manifest contains trailing descriptor bytes",
+            ));
         }
         let manifest = Self {
             base_generation,
@@ -283,6 +366,113 @@ impl RelationalIndexRecoveryManifest {
         validate_manifest(&manifest, config, true)?;
         Ok(manifest)
     }
+}
+
+fn encode_delta_page_descriptor(
+    descriptor: &DeltaPageDescriptor,
+) -> Result<Vec<u8>, RelationalIndexShadowError> {
+    let selector_count = u32::try_from(descriptor.selectors.len())
+        .map_err(|_| admission("recovery delta selector count does not fit u32"))?;
+    let selector_bytes = descriptor.selector_bytes()?;
+    let capacity = DELTA_DESCRIPTOR_FIXED_BYTES
+        .checked_add(selector_bytes)
+        .ok_or_else(|| admission("recovery delta descriptor length overflow"))?;
+    let mut encoded = Vec::with_capacity(capacity);
+    encoded.extend_from_slice(&descriptor.ordinal.to_le_bytes());
+    encoded.extend_from_slice(&descriptor.start_epoch.to_le_bytes());
+    encoded.extend_from_slice(&descriptor.end_epoch.to_le_bytes());
+    encoded.extend_from_slice(&descriptor.entry_count.to_le_bytes());
+    encoded.extend_from_slice(&descriptor.encoded_len.to_le_bytes());
+    encoded.extend_from_slice(&descriptor.digest.crc32c.get().to_le_bytes());
+    encoded.extend_from_slice(descriptor.digest.sha256.as_bytes());
+    encoded.extend_from_slice(&selector_count.to_le_bytes());
+    debug_assert_eq!(encoded.len(), DELTA_DESCRIPTOR_FIXED_BYTES);
+    for selector in &descriptor.selectors {
+        encode_bytes(&mut encoded, selector.table.as_bytes())?;
+        encode_bytes(&mut encoded, selector.index.as_bytes())?;
+        encode_bytes(&mut encoded, &selector.lower_index_key)?;
+        encode_bytes(&mut encoded, &selector.upper_index_key)?;
+    }
+    Ok(encoded)
+}
+
+fn decode_delta_page_descriptor(
+    encoded: &[u8],
+    config: RelationalIndexRecoveryConfig,
+) -> Result<DeltaPageDescriptor, RelationalIndexShadowError> {
+    if encoded.len() < DELTA_DESCRIPTOR_FIXED_BYTES {
+        return Err(corrupt("truncated recovery delta descriptor"));
+    }
+    let mut offset = 0usize;
+    let ordinal = read_u32(take(encoded, &mut offset, 4, "delta ordinal")?);
+    let start_epoch = read_u64(take(encoded, &mut offset, 8, "delta start epoch")?);
+    let end_epoch = read_u64(take(encoded, &mut offset, 8, "delta end epoch")?);
+    let entry_count = read_u32(take(encoded, &mut offset, 4, "delta entry count")?);
+    let encoded_len = read_u64(take(encoded, &mut offset, 8, "delta encoded length")?);
+    let crc32c = read_u32(take(encoded, &mut offset, 4, "delta CRC32C")?);
+    let sha256 = Sha256Digest::from_bytes(
+        take(encoded, &mut offset, SHA256_BYTES, "delta SHA-256")?
+            .try_into()
+            .expect("delta SHA-256 length was checked"),
+    );
+    let selector_count = read_u32(take(encoded, &mut offset, 4, "delta selector count")?) as usize;
+    if selector_count > encoded.len().saturating_sub(offset) / DELTA_SELECTOR_FIXED_BYTES {
+        return Err(corrupt(
+            "recovery delta descriptor selector count is impossible",
+        ));
+    }
+    let mut selectors = Vec::with_capacity(selector_count);
+    for _ in 0..selector_count {
+        let (table, next) = decode_bytes(
+            encoded,
+            offset,
+            config.max_dirty_bytes.get(),
+            "recovery delta selector table",
+        )?;
+        offset = next;
+        let (index, next) = decode_bytes(
+            encoded,
+            offset,
+            config.max_dirty_bytes.get(),
+            "recovery delta selector index",
+        )?;
+        offset = next;
+        let (lower_index_key, next) = decode_bytes(
+            encoded,
+            offset,
+            config.max_dirty_bytes.get(),
+            "recovery delta selector lower key",
+        )?;
+        offset = next;
+        let (upper_index_key, next) = decode_bytes(
+            encoded,
+            offset,
+            config.max_dirty_bytes.get(),
+            "recovery delta selector upper key",
+        )?;
+        offset = next;
+        selectors.push(DeltaPageSelector {
+            table: decode_utf8(table, "recovery delta selector table")?,
+            index: decode_utf8(index, "recovery delta selector index")?,
+            lower_index_key: lower_index_key.to_vec(),
+            upper_index_key: upper_index_key.to_vec(),
+        });
+    }
+    if offset != encoded.len() {
+        return Err(corrupt("recovery delta descriptor contains trailing bytes"));
+    }
+    Ok(DeltaPageDescriptor {
+        ordinal,
+        start_epoch,
+        end_epoch,
+        entry_count,
+        encoded_len,
+        digest: IntegrityDigest {
+            crc32c: skein_integrity::Crc32c::new(crc32c),
+            sha256,
+        },
+        selectors,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -467,13 +657,15 @@ impl RelationalIndexRecoveryBuilder {
             )));
         }
         self.flush()?;
+        let mut pages = self.pages;
+        bound_delta_page_selectors(&mut pages, self.config)?;
         let manifest = RelationalIndexRecoveryManifest {
             base_generation: self.base_generation,
             delta_generation: self.delta_generation,
             base_commit_epoch: self.base_commit_epoch,
             recovered_commit_epoch,
             recovery_source,
-            pages: self.pages,
+            pages,
         };
         let encoded_manifest = manifest.encode(self.config)?;
         let manifest_path = self.directory.join(RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE);
@@ -558,6 +750,7 @@ impl RelationalIndexRecoveryBuilder {
             entry_count,
             encoded_len,
             digest,
+            selectors: delta_page_selectors(&self.dirty),
         });
         self.artifact_bytes = self.artifact_bytes.saturating_add(encoded_len);
         self.dirty.clear();
@@ -568,10 +761,67 @@ impl RelationalIndexRecoveryBuilder {
     }
 }
 
+fn delta_page_selectors(entries: &BTreeMap<DeltaKey, DeltaValue>) -> Vec<DeltaPageSelector> {
+    let mut selectors = Vec::<DeltaPageSelector>::new();
+    for key in entries.keys() {
+        if let Some(selector) = selectors.last_mut()
+            && selector.table == key.table
+            && selector.index == key.index
+        {
+            selector.upper_index_key.clone_from(&key.index_key);
+            continue;
+        }
+        selectors.push(DeltaPageSelector {
+            table: key.table.clone(),
+            index: key.index.clone(),
+            lower_index_key: key.index_key.clone(),
+            upper_index_key: key.index_key.clone(),
+        });
+    }
+    selectors
+}
+
+/// Keeps recovery-delta page pruning best-effort. If selectors would exceed
+/// the existing manifest budget, an affected page simply remains unpruned.
+fn bound_delta_page_selectors(
+    pages: &mut [DeltaPageDescriptor],
+    config: RelationalIndexRecoveryConfig,
+) -> Result<(), RelationalIndexShadowError> {
+    let static_bytes = DELTA_MANIFEST_HEADER_BYTES
+        .checked_add(
+            pages
+                .len()
+                .checked_mul(
+                    DELTA_DESCRIPTOR_LENGTH_BYTES
+                        .checked_add(DELTA_DESCRIPTOR_FIXED_BYTES)
+                        .expect("recovery descriptor constants do not overflow"),
+                )
+                .ok_or_else(|| admission("recovery manifest static descriptor bytes overflow"))?,
+        )
+        .ok_or_else(|| admission("recovery manifest static byte count overflow"))?;
+    if static_bytes > config.max_manifest_bytes.get() {
+        return Err(admission(format!(
+            "recovery manifest needs {static_bytes} static bytes, exceeding limit {}",
+            config.max_manifest_bytes
+        )));
+    }
+    let mut remaining = config.max_manifest_bytes.get() - static_bytes;
+    for page in pages {
+        let selector_bytes = page.selector_bytes()?;
+        if selector_bytes > remaining {
+            page.selectors.clear();
+        } else {
+            remaining -= selector_bytes;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalIndexRecoveryReadReport {
     pub base: RelationalIndexReadReport,
     pub delta_pages_read: usize,
+    pub delta_pages_skipped: usize,
     pub delta_bytes_read: usize,
     pub delta_file_pages_read: usize,
     pub delta_file_bytes_read: usize,
@@ -867,6 +1117,7 @@ impl RelationalIndexRecoveryReader {
             table,
             index,
             limits,
+            &encoded_key,
             |candidate| candidate == encoded_key,
             |base, visit| base.visit_exact_postings(table, index, key, limits, visit),
             visit,
@@ -907,6 +1158,197 @@ impl RelationalIndexRecoveryReader {
         )
     }
 
+    /// Merges recovery-delta and immutable postings for equally wide prefixes
+    /// while charging one shared index-read budget.
+    pub fn visit_prefix_entries_many(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        let mut encoded_prefixes = BTreeSet::new();
+        let mut prefix_width = None;
+        for prefix in prefixes {
+            if let Some(width) = prefix_width {
+                if width != prefix.0.len() {
+                    return Err(admission(
+                        "batch index prefixes must have one common key width",
+                    ));
+                }
+            } else {
+                prefix_width = Some(prefix.0.len());
+            }
+            encoded_prefixes.insert(encode_relational_key(prefix)?);
+        }
+        if encoded_prefixes.is_empty() {
+            return Ok(RelationalIndexRecoveryReadReport {
+                base: RelationalIndexReadReport::default(),
+                delta_pages_read: 0,
+                delta_pages_skipped: 0,
+                delta_bytes_read: 0,
+                delta_file_pages_read: 0,
+                delta_file_bytes_read: 0,
+                delta_cache_hits: 0,
+                delta_cache_misses: 0,
+                delta_cache_admission_rejections: 0,
+                delta_entries_visited: 0,
+                rows_visited: 0,
+                stopped_early: false,
+            });
+        }
+        if self.is_poisoned() {
+            return Err(RelationalIndexShadowError::Corrupt(
+                "relational index recovery reader is poisoned".to_string(),
+            ));
+        }
+
+        let mut pending = BTreeMap::new();
+        let mut report = RelationalIndexRecoveryReadReport {
+            base: RelationalIndexReadReport::default(),
+            delta_pages_read: 0,
+            delta_pages_skipped: 0,
+            delta_bytes_read: 0,
+            delta_file_pages_read: 0,
+            delta_file_bytes_read: 0,
+            delta_cache_hits: 0,
+            delta_cache_misses: 0,
+            delta_cache_admission_rejections: 0,
+            delta_entries_visited: 0,
+            rows_visited: 0,
+            stopped_early: false,
+        };
+        for descriptor in &self.manifest.pages {
+            if !descriptor.may_match_prefixes(table, index, &encoded_prefixes) {
+                report.delta_pages_skipped = report
+                    .delta_pages_skipped
+                    .checked_add(1)
+                    .ok_or_else(|| admission("recovery batch skipped-page counter overflow"))?;
+                continue;
+            }
+            if report.delta_pages_read >= limits.max_pages.get() {
+                return Err(admission(format!(
+                    "recovery index batch lookup exceeds page limit {}",
+                    limits.max_pages
+                )));
+            }
+            let encoded_len = usize::try_from(descriptor.encoded_len)
+                .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            let total_bytes = report
+                .delta_bytes_read
+                .checked_add(encoded_len)
+                .ok_or_else(|| admission("recovery batch read byte counter overflow"))?;
+            if total_bytes > limits.max_bytes.get() {
+                return Err(admission(format!(
+                    "recovery index batch lookup needs {total_bytes} bytes, exceeding byte limit {}",
+                    limits.max_bytes
+                )));
+            }
+            let remaining_file_bytes = limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| admission("recovery batch file-byte counter exceeds its limit"))?;
+            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
+                report.delta_entries_visited = report
+                    .delta_entries_visited
+                    .checked_add(1)
+                    .ok_or_else(|| admission("recovery batch delta entry counter overflow"))?;
+                if entry.key.table != table
+                    || entry.key.index != index
+                    || !encoded_prefixes
+                        .iter()
+                        .any(|prefix| entry.key.index_key.starts_with(prefix))
+                {
+                    return Ok(());
+                }
+                let index_key = super::demand_read::decode_relational_key(&entry.key.index_key)
+                    .inspect_err(|_| self.poison())?;
+                let primary_key = super::demand_read::decode_relational_key(&entry.key.primary_key)
+                    .inspect_err(|_| self.poison())?;
+                pending.insert((index_key, primary_key), entry.value.kind);
+                if pending.len() >= limits.max_rows.get() {
+                    return Err(admission(format!(
+                        "recovery batch ordered merge needs {} entries, exhausting row limit {}",
+                        pending.len(),
+                        limits.max_rows
+                    )));
+                }
+                Ok(())
+            })?;
+            report.delta_pages_read += 1;
+            report.delta_bytes_read += encoded_len;
+            report.delta_cache_hits += usize::from(page_read.cache_hit);
+            report.delta_cache_misses += usize::from(page_read.cache_miss);
+            report.delta_cache_admission_rejections +=
+                usize::from(page_read.cache_admission_rejected);
+            if !page_read.cache_hit {
+                report.delta_file_pages_read += 1;
+                report.delta_file_bytes_read += encoded_len;
+            }
+        }
+        let base_pages = limits
+            .max_pages
+            .get()
+            .checked_sub(report.delta_pages_read)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| admission("recovery batch ordered merge exhausted its page budget"))?;
+        let base_bytes = limits
+            .max_bytes
+            .get()
+            .checked_sub(report.delta_bytes_read)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| admission("recovery batch ordered merge exhausted its byte budget"))?;
+        let reserved_inserts = pending
+            .values()
+            .filter(|kind| **kind == RelationalIndexChangeKind::Insert)
+            .count();
+        let base_rows = limits
+            .max_rows
+            .get()
+            .checked_sub(reserved_inserts)
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| admission("recovery batch ordered merge exhausted its row budget"))?;
+        let base_limits = RelationalIndexReadLimits {
+            max_pages: base_pages,
+            max_rows: base_rows,
+            max_bytes: base_bytes,
+            max_file_bytes: limits
+                .max_file_bytes
+                .checked_sub(report.delta_file_bytes_read)
+                .ok_or_else(|| {
+                    admission("recovery batch ordered merge exhausted its file-byte budget")
+                })?,
+            ..limits
+        };
+        let mut merge = RecoveryOrderedMerge {
+            pending,
+            visit: &mut visit,
+            max_rows: limits.max_rows.get(),
+            rows_visited: 0,
+            stopped_early: false,
+            error: None,
+            direction: RelationalIndexScanDirection::Forward,
+        };
+        report.base = self.base.visit_prefix_entries_many(
+            table,
+            index,
+            prefixes,
+            base_limits,
+            |_, index_key, primary_key| merge.visit_base(index_key, primary_key),
+        )?;
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        merge.finish();
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
+        report.rows_visited = merge.rows_visited;
+        report.stopped_early = merge.stopped_early || report.base.stopped_early;
+        Ok(report)
+    }
+
     pub fn visit_range_entries(
         &self,
         table: &str,
@@ -930,6 +1372,7 @@ impl RelationalIndexRecoveryReader {
         let mut report = RelationalIndexRecoveryReadReport {
             base: RelationalIndexReadReport::default(),
             delta_pages_read: 0,
+            delta_pages_skipped: 0,
             delta_bytes_read: 0,
             delta_file_pages_read: 0,
             delta_file_bytes_read: 0,
@@ -941,6 +1384,19 @@ impl RelationalIndexRecoveryReader {
             stopped_early: false,
         };
         for descriptor in &self.manifest.pages {
+            if !descriptor.may_match_range(
+                table,
+                index,
+                &encoded_prefix,
+                encoded_bound.as_deref(),
+                scan.direction,
+            ) {
+                report.delta_pages_skipped = report
+                    .delta_pages_skipped
+                    .checked_add(1)
+                    .ok_or_else(|| admission("recovery skipped-page counter overflow"))?;
+                continue;
+            }
             if report.delta_pages_read >= limits.max_pages.get() {
                 return Err(admission(format!(
                     "recovery index lookup exceeds page limit {}",
@@ -1072,6 +1528,7 @@ impl RelationalIndexRecoveryReader {
         table: &str,
         index: &str,
         limits: RelationalIndexReadLimits,
+        selector_key: &[u8],
         matches_key: impl Fn(&[u8]) -> bool,
         read_base: impl FnOnce(
             &RelationalIndexShadowReader,
@@ -1093,6 +1550,7 @@ impl RelationalIndexRecoveryReader {
         let mut report = RelationalIndexRecoveryReadReport {
             base,
             delta_pages_read: 0,
+            delta_pages_skipped: 0,
             delta_bytes_read: 0,
             delta_file_pages_read: 0,
             delta_file_bytes_read: 0,
@@ -1104,6 +1562,13 @@ impl RelationalIndexRecoveryReader {
             stopped_early: false,
         };
         for descriptor in &self.manifest.pages {
+            if !descriptor.may_match_exact_key(table, index, selector_key) {
+                report.delta_pages_skipped = report
+                    .delta_pages_skipped
+                    .checked_add(1)
+                    .ok_or_else(|| admission("recovery skipped-page counter overflow"))?;
+                continue;
+            }
             let total_pages = report
                 .base
                 .pages_read
@@ -1296,6 +1761,13 @@ impl RelationalIndexRecoveryReader {
     }
 }
 
+fn encoded_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let position = prefix.iter().rposition(|byte| *byte != u8::MAX)?;
+    let mut upper_bound = prefix[..=position].to_vec();
+    upper_bound[position] = upper_bound[position].saturating_add(1);
+    Some(upper_bound)
+}
+
 fn encode_change(
     change: RelationalIndexChange,
     epoch: u64,
@@ -1363,7 +1835,7 @@ fn write_delta_page(
     })?;
     let mut prefix = Vec::with_capacity(68);
     prefix.extend_from_slice(DELTA_PAGE_MAGIC);
-    prefix.extend_from_slice(&DELTA_FORMAT_VERSION.to_le_bytes());
+    prefix.extend_from_slice(&DELTA_PAGE_FORMAT_VERSION.to_le_bytes());
     prefix.extend_from_slice(&0_u16.to_le_bytes());
     prefix.extend_from_slice(&page.base_generation.to_le_bytes());
     prefix.extend_from_slice(&page.delta_generation.to_le_bytes());
@@ -1514,7 +1986,7 @@ fn decode_delta_page(
     let entry_count = read_u32(&encoded[56..60]);
     let payload_len = usize::try_from(read_u64(&encoded[60..68]))
         .map_err(|_| corrupt("recovery delta payload length overflows usize"))?;
-    if version != DELTA_FORMAT_VERSION
+    if version != DELTA_PAGE_FORMAT_VERSION
         || flags != 0
         || base_generation != expected_base_generation
         || delta_generation != expected_delta_generation
@@ -1657,9 +2129,125 @@ fn validate_manifest(
                 "invalid relational index recovery delta descriptor at ordinal {position}"
             )));
         }
+        let mut previous_selector: Option<(&str, &str)> = None;
+        for selector in &page.selectors {
+            let identity = (selector.table.as_str(), selector.index.as_str());
+            if selector.table.is_empty()
+                || selector.index.is_empty()
+                || selector.lower_index_key > selector.upper_index_key
+                || previous_selector.is_some_and(|previous| previous >= identity)
+            {
+                return Err(fail(format!(
+                    "invalid relational index recovery delta selector at page ordinal {position}"
+                )));
+            }
+            previous_selector = Some(identity);
+        }
         previous_end = page.end_epoch;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(selectors: Vec<DeltaPageSelector>) -> DeltaPageDescriptor {
+        DeltaPageDescriptor {
+            ordinal: 0,
+            start_epoch: 1,
+            end_epoch: 1,
+            entry_count: 1,
+            encoded_len: DELTA_PAGE_HEADER_BYTES as u64,
+            digest: IntegrityDigest {
+                crc32c: skein_integrity::Crc32c::new(1),
+                sha256: Sha256Digest::from_bytes([0; SHA256_BYTES]),
+            },
+            selectors,
+        }
+    }
+
+    #[test]
+    fn page_selector_prunes_disjoint_keys_but_keeps_matching_prefixes() {
+        let descriptor = descriptor(vec![DeltaPageSelector {
+            table: "documents".to_string(),
+            index: "documents_owner_idx".to_string(),
+            lower_index_key: vec![0x10],
+            upper_index_key: vec![0x1f],
+        }]);
+
+        assert!(descriptor.may_match_exact_key("documents", "documents_owner_idx", &[0x14]));
+        assert!(!descriptor.may_match_exact_key("documents", "documents_owner_idx", &[0x20]));
+        assert!(descriptor.may_match_range(
+            "documents",
+            "documents_owner_idx",
+            &[0x10],
+            None,
+            RelationalIndexScanDirection::Forward,
+        ));
+        assert!(!descriptor.may_match_range(
+            "documents",
+            "documents_owner_idx",
+            &[0x10],
+            Some(&[0x1f]),
+            RelationalIndexScanDirection::Forward,
+        ));
+    }
+
+    #[test]
+    fn manifest_round_trips_page_selectors_and_rejects_descriptor_tail() {
+        let page = descriptor(vec![DeltaPageSelector {
+            table: "documents".to_string(),
+            index: "documents_owner_idx".to_string(),
+            lower_index_key: vec![0x10],
+            upper_index_key: vec![0x1f],
+        }]);
+        let manifest = RelationalIndexRecoveryManifest {
+            base_generation: 1,
+            delta_generation: 2,
+            base_commit_epoch: 0,
+            recovered_commit_epoch: 1,
+            recovery_source: RelationalRecoverySourceIdentity::for_test(0, 1),
+            pages: vec![page.clone()],
+        };
+        let config = RelationalIndexRecoveryConfig::default();
+
+        let encoded = manifest.encode(config).expect("encode recovery manifest");
+        assert_eq!(
+            RelationalIndexRecoveryManifest::decode(&encoded, config)
+                .expect("decode recovery manifest"),
+            manifest
+        );
+
+        let mut descriptor = encode_delta_page_descriptor(&page).expect("encode descriptor");
+        descriptor.push(0);
+        assert!(matches!(
+            decode_delta_page_descriptor(&descriptor, config),
+            Err(RelationalIndexShadowError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn selector_budget_falls_back_to_an_unpruned_page() {
+        let mut pages = vec![descriptor(vec![DeltaPageSelector {
+            table: "documents".to_string(),
+            index: "documents_owner_idx".to_string(),
+            lower_index_key: vec![0x10],
+            upper_index_key: vec![0x1f],
+        }])];
+        let static_bytes = DELTA_MANIFEST_HEADER_BYTES
+            + DELTA_DESCRIPTOR_LENGTH_BYTES
+            + DELTA_DESCRIPTOR_FIXED_BYTES;
+        let config = RelationalIndexRecoveryConfig {
+            max_manifest_bytes: NonZeroUsize::new(static_bytes).expect("static bytes are non-zero"),
+            ..RelationalIndexRecoveryConfig::default()
+        };
+
+        bound_delta_page_selectors(&mut pages, config).expect("selector budget fallback");
+
+        assert!(pages[0].selectors.is_empty());
+        assert!(pages[0].may_match_exact_key("other", "other_idx", &[0xff]));
+    }
 }
 
 fn next_delta_generation() -> u64 {

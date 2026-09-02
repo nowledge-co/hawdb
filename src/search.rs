@@ -42,8 +42,8 @@ mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
 #[cfg(feature = "vector-search")]
-pub mod turboquant_projection {
-    include!("search/turboquant_projection.rs");
+pub mod rabitq_projection {
+    include!("search/rabitq_projection.rs");
 }
 mod out_of_core;
 mod range_io;
@@ -88,20 +88,18 @@ pub use snapshot_writer::SearchCheckpointReport;
 use vector_execution::{execute_search_vector_plan, SearchVectorExecutionRequest};
 
 #[cfg(feature = "vector-search")]
-use turboquant_projection::{
-    TurboQuantCandidateProjection, TurboQuantCandidateProjectionBuildOptions,
-};
+use rabitq_projection::{RaBitQCandidateProjection, RaBitQCandidateProjectionBuildOptions};
 
 const SEARCH_SNAPSHOT_FILE: &str = "search_projection.skein";
 const SEARCH_SEGMENT_DESCRIPTOR_FILE: &str = "search_projection_segments.skein";
 const SEARCH_SEGMENT_PAYLOAD_FILE: &str = "search_projection_segment_payloads.skein";
 const SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID: u64 = 1;
-const TURBOQUANT_CANDIDATE_BACKEND: &str = "skein_turboquant_candidate_projection";
+const RABITQ_CANDIDATE_BACKEND: &str = "skein_rabitq_candidate_projection";
 static QUARANTINE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "vector-search")]
-const SEARCH_TURBOQUANT_PROJECTION_PREFIX: &str = "search_turboquant.";
+const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 #[cfg(feature = "vector-search")]
-const SEARCH_TURBOQUANT_PROJECTION_SUFFIX: &str = ".skein";
+const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".skein";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
 const BM25_K1: f64 = 1.2;
@@ -839,8 +837,8 @@ enum VectorSearchBackend<'a> {
     #[cfg(not(feature = "vector-search"))]
     _Lifetime(std::marker::PhantomData<&'a ()>),
     #[cfg(feature = "vector-search")]
-    TurboQuant {
-        projection: &'a TurboQuantCandidateProjection,
+    RaBitQ {
+        projection: &'a RaBitQCandidateProjection,
         required: bool,
     },
     #[cfg(feature = "qualification")]
@@ -932,7 +930,7 @@ struct PreparedAdaptiveVectorBackend {
     decision: AdaptiveVectorBackendDecision,
     fallback_reason: Option<String>,
     #[cfg(feature = "vector-search")]
-    projection: Option<Arc<TurboQuantCandidateProjection>>,
+    projection: Option<Arc<RaBitQCandidateProjection>>,
 }
 
 impl<'a> SearchExecutionStrategy<'a> {
@@ -988,7 +986,7 @@ impl PreparedAdaptiveVectorBackend {
             AdaptiveVectorBackend::QuantizedProjection => {
                 #[cfg(feature = "vector-search")]
                 {
-                    VectorSearchBackend::TurboQuant {
+                    VectorSearchBackend::RaBitQ {
                         projection: self
                             .projection
                             .as_ref()
@@ -1014,7 +1012,7 @@ impl VectorSearchBackend<'_> {
             #[cfg(not(feature = "vector-search"))]
             Self::_Lifetime(_) => "scalar_vector_scan",
             #[cfg(feature = "vector-search")]
-            Self::TurboQuant { .. } => TURBOQUANT_CANDIDATE_BACKEND,
+            Self::RaBitQ { .. } => RABITQ_CANDIDATE_BACKEND,
             #[cfg(feature = "qualification")]
             Self::ExternalValidation { .. } => "external_validation_candidate_projection",
         }
@@ -1026,7 +1024,7 @@ impl VectorSearchBackend<'_> {
             #[cfg(not(feature = "vector-search"))]
             Self::_Lifetime(_) => VectorCandidateSource::Scalar,
             #[cfg(feature = "vector-search")]
-            Self::TurboQuant { .. } => VectorCandidateSource::Quantized,
+            Self::RaBitQ { .. } => VectorCandidateSource::Quantized,
             #[cfg(feature = "qualification")]
             Self::ExternalValidation { .. } => VectorCandidateSource::Quantized,
         }
@@ -1043,7 +1041,7 @@ impl VectorSearchBackend<'_> {
             #[cfg(not(feature = "vector-search"))]
             Self::_Lifetime(_) => candidate_count,
             #[cfg(feature = "vector-search")]
-            Self::TurboQuant { projection, .. } => documents
+            Self::RaBitQ { projection, .. } => documents
                 .iter()
                 .filter(|document| {
                     document.embedding.is_some()
@@ -1273,9 +1271,9 @@ pub struct SearchIndex {
     lexical_delta: Mutex<LexicalMiniDelta>,
     lexical_config: LexicalProjectionConfig,
     #[cfg(feature = "vector-search")]
-    turboquant_projection: Mutex<Option<Arc<TurboQuantCandidateProjection>>>,
+    rabitq_projection: Mutex<Option<Arc<RaBitQCandidateProjection>>>,
     #[cfg(feature = "vector-search")]
-    turboquant_build_options: TurboQuantCandidateProjectionBuildOptions,
+    rabitq_build_options: RaBitQCandidateProjectionBuildOptions,
     segment_descriptor: Option<SearchSegmentDescriptor>,
     range_read_config: SearchRangeReadConfig,
     cleanup_state: Mutex<SearchProjectionCleanupState>,
@@ -1302,7 +1300,7 @@ impl SearchIndex {
         index.load_or_rebuild_segment_descriptor()?;
         index.load_lexical_projection()?;
         #[cfg(feature = "vector-search")]
-        index.load_turboquant_projection();
+        index.load_rabitq_projection();
         index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         Ok(index)
     }
@@ -1348,37 +1346,37 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
-    pub fn set_turboquant_projection_build_options(
+    pub fn set_rabitq_projection_build_options(
         &mut self,
-        options: TurboQuantCandidateProjectionBuildOptions,
+        options: RaBitQCandidateProjectionBuildOptions,
     ) {
-        self.turboquant_build_options = options;
-        self.invalidate_turboquant_projection();
+        self.rabitq_build_options = options;
+        self.invalidate_rabitq_projection();
     }
 
     #[cfg(feature = "vector-search")]
-    fn invalidate_turboquant_projection(&self) {
+    fn invalidate_rabitq_projection(&self) {
         *self
-            .turboquant_projection
+            .rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     #[cfg(feature = "vector-search")]
-    fn load_turboquant_projection(&self) {
+    fn load_rabitq_projection(&self) {
         let Some(path) = &self.path else {
             return;
         };
-        for (generation, artifact_path) in turboquant_artifacts_descending(path) {
-            let identity = self.turboquant_projection_identity(generation);
-            match TurboQuantCandidateProjection::load_from_path(
+        for (generation, artifact_path) in rabitq_artifacts_descending(path) {
+            let identity = self.rabitq_projection_identity(generation);
+            match RaBitQCandidateProjection::load_from_path(
                 &artifact_path,
                 &self.documents,
                 &identity,
             ) {
                 Ok(projection) => {
                     *self
-                        .turboquant_projection
+                        .rabitq_projection
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         Some(Arc::new(projection));
@@ -1394,7 +1392,7 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
-    fn turboquant_projection_identity(
+    fn rabitq_projection_identity(
         &self,
         generation: u64,
     ) -> skein_vector_projection::ProjectionIdentity {
@@ -1413,28 +1411,26 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
-    fn turboquant_projection(&self) -> Option<Arc<TurboQuantCandidateProjection>> {
-        self.turboquant_projection
+    fn rabitq_projection(&self) -> Option<Arc<RaBitQCandidateProjection>> {
+        self.rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     #[cfg(feature = "vector-search")]
-    fn build_in_memory_turboquant_projection(
-        &self,
-    ) -> Result<Option<Arc<TurboQuantCandidateProjection>>> {
-        if let Some(projection) = self.turboquant_projection() {
+    fn build_in_memory_rabitq_projection(&self) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        if let Some(projection) = self.rabitq_projection() {
             return Ok(Some(projection));
         }
-        let projection = TurboQuantCandidateProjection::build_from_documents(
+        let projection = RaBitQCandidateProjection::build_from_documents(
             &self.documents,
-            self.turboquant_projection_identity(0),
-            self.turboquant_build_options,
+            self.rabitq_projection_identity(0),
+            self.rabitq_build_options,
         )?
         .map(Arc::new);
         *self
-            .turboquant_projection
+            .rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = projection.clone();
         Ok(projection)
@@ -1516,7 +1512,7 @@ impl SearchIndex {
         self.record_lexical_upsert(&document);
         self.documents.insert(document.id.clone(), document);
         #[cfg(feature = "vector-search")]
-        self.invalidate_turboquant_projection();
+        self.invalidate_rabitq_projection();
         self.segment_descriptor = None;
         Ok(())
     }
@@ -1529,7 +1525,7 @@ impl SearchIndex {
         self.record_lexical_delete(id);
         self.documents.remove(id);
         #[cfg(feature = "vector-search")]
-        self.invalidate_turboquant_projection();
+        self.invalidate_rabitq_projection();
         self.segment_descriptor = None;
     }
 
@@ -1594,7 +1590,7 @@ impl SearchIndex {
         }
 
         #[cfg(feature = "vector-search")]
-        self.invalidate_turboquant_projection();
+        self.invalidate_rabitq_projection();
 
         self.segment_descriptor = None;
         self.embedding_dimension = next_embedding_dimension;
@@ -1865,7 +1861,7 @@ impl SearchIndex {
         self.embedding_dimension = Some(manifest.dimension);
         self.embedding_manifest = Some(manifest);
         #[cfg(feature = "vector-search")]
-        self.invalidate_turboquant_projection();
+        self.invalidate_rabitq_projection();
         Ok(())
     }
 
@@ -1906,7 +1902,7 @@ impl SearchIndex {
             self.documents = next_documents;
             self.invalidate_lexical_projection();
             #[cfg(feature = "vector-search")]
-            self.invalidate_turboquant_projection();
+            self.invalidate_rabitq_projection();
             self.source_graph_commit_epoch = Some(store.commit_epoch());
             self.embedding_dimension = self
                 .embedding_manifest
@@ -2211,12 +2207,12 @@ impl SearchIndex {
                 .map(|projection| projection.generation()),
             out_of_core: out_of_core_generation,
             #[cfg(feature = "vector-search")]
-            turboquant: self
-                .turboquant_projection()
+            rabitq: self
+                .rabitq_projection()
                 .map(|projection| projection.manifest().identity.generation),
             #[cfg(not(feature = "vector-search"))]
-            turboquant: None,
-            turboquant_remove_all: self
+            rabitq: None,
+            rabitq_remove_all: self
                 .documents
                 .values()
                 .all(|document| document.embedding.is_none()),
@@ -2252,7 +2248,7 @@ impl SearchIndex {
             self.write_lexical_projection(path)?;
             let projection_generation = out_of_core::publish_out_of_core_projection(self, path)?;
             #[cfg(feature = "vector-search")]
-            self.write_turboquant_projection(path)?;
+            self.write_rabitq_projection(path)?;
             *self
                 .durable_source_graph_commit_epoch
                 .lock()
@@ -2306,38 +2302,38 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
-    fn write_turboquant_projection(&self, path: &Path) -> Result<()> {
+    fn write_rabitq_projection(&self, path: &Path) -> Result<()> {
         if self
             .documents
             .values()
             .all(|document| document.embedding.is_none())
         {
-            self.invalidate_turboquant_projection();
+            self.invalidate_rabitq_projection();
             return Ok(());
         }
         let loaded_generation = self
-            .turboquant_projection()
+            .rabitq_projection()
             .map(|projection| projection.manifest().identity.generation)
             .unwrap_or(0);
-        let artifact_generation = latest_turboquant_artifact(path)
+        let artifact_generation = latest_rabitq_artifact(path)
             .map(|(generation, _)| generation)
             .unwrap_or(0);
         let generation = loaded_generation.max(artifact_generation).saturating_add(1);
-        let artifact_path = path.join(turboquant_artifact_file(generation));
-        let projection = TurboQuantCandidateProjection::write_from_documents(
+        let artifact_path = path.join(rabitq_artifact_file(generation));
+        let projection = RaBitQCandidateProjection::write_from_documents(
             &artifact_path,
             &self.documents,
-            self.turboquant_projection_identity(generation),
-            self.turboquant_build_options,
+            self.rabitq_projection_identity(generation),
+            self.rabitq_build_options,
         )?
         .ok_or_else(|| {
             SkeinError::Storage(
-                "Skein TurboQuant projection build produced no artifact for vector documents"
+                "Skein RaBitQ projection build produced no artifact for vector documents"
                     .to_string(),
             )
         })?;
         *self
-            .turboquant_projection
+            .rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(projection));
         Ok(())
@@ -2665,7 +2661,7 @@ impl SearchIndex {
     ) -> Option<VectorProjectionQualificationIdentity> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.turboquant_projection()?;
+            let projection = self.rabitq_projection()?;
             let manifest = projection.manifest();
             Some(VectorProjectionQualificationIdentity {
                 projection_generation: manifest.identity.generation,
@@ -2693,7 +2689,7 @@ impl SearchIndex {
     pub fn vector_projection_resource_evidence(&self) -> Option<VectorProjectionResourceEvidence> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.turboquant_projection()?;
+            let projection = self.rabitq_projection()?;
             let manifest = projection.manifest();
             let raw_vector_bytes = u64::try_from(manifest.document_count)
                 .unwrap_or(u64::MAX)
@@ -2807,10 +2803,10 @@ impl SearchIndex {
 
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.turboquant_projection().or_else(|| {
+            let projection = self.rabitq_projection().or_else(|| {
                 self.path
                     .is_none()
-                    .then(|| self.build_in_memory_turboquant_projection().ok().flatten())
+                    .then(|| self.build_in_memory_rabitq_projection().ok().flatten())
                     .flatten()
             });
             let covered_document_count = projection
@@ -3787,9 +3783,9 @@ impl Default for SearchIndex {
             lexical_delta: Mutex::new(LexicalMiniDelta::default()),
             lexical_config: LexicalProjectionConfig::default(),
             #[cfg(feature = "vector-search")]
-            turboquant_projection: Mutex::new(None),
+            rabitq_projection: Mutex::new(None),
             #[cfg(feature = "vector-search")]
-            turboquant_build_options: TurboQuantCandidateProjectionBuildOptions::default(),
+            rabitq_build_options: RaBitQCandidateProjectionBuildOptions::default(),
             segment_descriptor: None,
             range_read_config: SearchRangeReadConfig::default(),
             cleanup_state: Mutex::new(SearchProjectionCleanupState::default()),
@@ -3810,26 +3806,24 @@ fn quarantine_rebuildable_artifact(parent: &Path, name: &str) {
 }
 
 #[cfg(feature = "vector-search")]
-fn turboquant_artifact_file(generation: u64) -> String {
-    format!(
-        "{SEARCH_TURBOQUANT_PROJECTION_PREFIX}{generation}{SEARCH_TURBOQUANT_PROJECTION_SUFFIX}"
-    )
+fn rabitq_artifact_file(generation: u64) -> String {
+    format!("{SEARCH_RABITQ_PROJECTION_PREFIX}{generation}{SEARCH_RABITQ_PROJECTION_SUFFIX}")
 }
 
 #[cfg(feature = "vector-search")]
-fn turboquant_artifact_generation(name: &str) -> Option<u64> {
-    name.strip_prefix(SEARCH_TURBOQUANT_PROJECTION_PREFIX)
-        .and_then(|value| value.strip_suffix(SEARCH_TURBOQUANT_PROJECTION_SUFFIX))
+fn rabitq_artifact_generation(name: &str) -> Option<u64> {
+    name.strip_prefix(SEARCH_RABITQ_PROJECTION_PREFIX)
+        .and_then(|value| value.strip_suffix(SEARCH_RABITQ_PROJECTION_SUFFIX))
         .and_then(|value| value.parse().ok())
 }
 
 #[cfg(feature = "vector-search")]
-fn latest_turboquant_artifact(path: &Path) -> Option<(u64, PathBuf)> {
-    turboquant_artifacts_descending(path).into_iter().next()
+fn latest_rabitq_artifact(path: &Path) -> Option<(u64, PathBuf)> {
+    rabitq_artifacts_descending(path).into_iter().next()
 }
 
 #[cfg(feature = "vector-search")]
-fn turboquant_artifacts_descending(path: &Path) -> Vec<(u64, PathBuf)> {
+fn rabitq_artifacts_descending(path: &Path) -> Vec<(u64, PathBuf)> {
     let Ok(entries) = fs::read_dir(path) else {
         return Vec::new();
     };
@@ -3839,7 +3833,7 @@ fn turboquant_artifacts_descending(path: &Path) -> Vec<(u64, PathBuf)> {
             let generation = entry
                 .file_name()
                 .to_str()
-                .and_then(turboquant_artifact_generation)?;
+                .and_then(rabitq_artifact_generation)?;
             Some((generation, entry.path()))
         })
         .collect::<Vec<_>>();
@@ -4358,16 +4352,16 @@ struct SearchProjectionProbeFieldSummary {
 fn search_projection_probe_compressed_vector_projection_report(
     index: &SearchIndex,
 ) -> serde_json::Value {
-    let projection = index.turboquant_projection().or_else(|| {
+    let projection = index.rabitq_projection().or_else(|| {
         index
             .path
             .is_none()
-            .then(|| index.build_in_memory_turboquant_projection().ok().flatten())
+            .then(|| index.build_in_memory_rabitq_projection().ok().flatten())
             .flatten()
     });
     match projection {
         Some(projection) => serde_json::json!({
-            "engine": "skein_turboquant_scan",
+            "engine": "skein_rabitq_scan",
             "compiled": true,
             "ready": true,
             "format_version": projection.manifest().format_version,
@@ -4388,7 +4382,7 @@ fn search_projection_probe_compressed_vector_projection_report(
             "supports_allowlist": true,
             "supports_filter_bitmap": true,
             "supports_scalar_reference": true,
-            "supports_runtime_simd_dispatch": true,
+            "supports_runtime_simd_dispatch": false,
             "supports_governed_parallelism": true,
             "raw_rerank_required": true,
             "persisted_artifact_used": projection.is_file_backed(),
@@ -4396,7 +4390,7 @@ fn search_projection_probe_compressed_vector_projection_report(
             "blocker_codes": [],
         }),
         None => serde_json::json!({
-            "engine": "skein_turboquant_scan",
+            "engine": "skein_rabitq_scan",
             "compiled": true,
             "ready": false,
             "algorithm": skein_vector_projection::PROJECTION_ALGORITHM,
@@ -4408,12 +4402,12 @@ fn search_projection_probe_compressed_vector_projection_report(
             "supports_allowlist": true,
             "supports_filter_bitmap": true,
             "supports_scalar_reference": true,
-            "supports_runtime_simd_dispatch": true,
+            "supports_runtime_simd_dispatch": false,
             "supports_governed_parallelism": true,
             "raw_rerank_required": true,
             "persisted_artifact_used": false,
             "artifact_rebuilt_from_snapshot": false,
-            "blocker_codes": ["turboquant_projection_unavailable"],
+            "blocker_codes": ["rabitq_projection_unavailable"],
         }),
     }
 }
@@ -4423,10 +4417,10 @@ fn search_projection_probe_compressed_vector_projection_report(
     _index: &SearchIndex,
 ) -> serde_json::Value {
     serde_json::json!({
-        "engine": "skein_turboquant_scan",
+        "engine": "skein_rabitq_scan",
         "compiled": false,
         "ready": false,
-        "algorithm": "turboquant",
+        "algorithm": "rabitq",
         "bit_width": serde_json::Value::Null,
         "dimension": serde_json::Value::Null,
         "document_count": 0,
@@ -9846,8 +9840,8 @@ mod tests {
 
     #[test]
     #[cfg(feature = "vector-search")]
-    fn turboquant_reopen_falls_back_to_previous_valid_generation() {
-        let path = unique_test_dir("turboquant_generation_fallback");
+    fn rabitq_reopen_falls_back_to_previous_valid_generation() {
+        let path = unique_test_dir("rabitq_generation_fallback");
         {
             let mut index = SearchIndex::open(&path).unwrap();
             index
@@ -9862,7 +9856,7 @@ mod tests {
             index.checkpoint().unwrap();
         }
 
-        let latest = path.join(turboquant_artifact_file(2));
+        let latest = path.join(rabitq_artifact_file(2));
         let mut bytes = std::fs::read(&latest).unwrap();
         bytes[0] ^= 0xff;
         std::fs::write(&latest, bytes).unwrap();
@@ -9878,7 +9872,7 @@ mod tests {
             entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with("search_turboquant.2.skein.corrupt.")
+                .starts_with("search_rabitq.2.skein.corrupt.")
         }));
 
         let result = index.search_with_options_compressed_vector_projection_mode(
@@ -9898,14 +9892,14 @@ mod tests {
         assert_eq!(result.hits[0].id, "memory:a");
         assert_eq!(
             result.retrievers[0].backend,
-            "skein_turboquant_candidate_projection"
+            "skein_rabitq_candidate_projection"
         );
         std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
     fn compressed_vector_projection_disabled_uses_scalar_even_when_artifact_exists() {
-        let path = unique_test_dir("search_turboquant_disabled_uses_scalar");
+        let path = unique_test_dir("search_rabitq_disabled_uses_scalar");
         {
             let mut index = SearchIndex::open(&path).unwrap();
             index
@@ -9947,7 +9941,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_vector_projection_required_uses_turboquant_projection() {
+    fn compressed_vector_projection_required_uses_rabitq_projection() {
         let mut index = SearchIndex::in_memory();
         index
             .upsert(doc(
@@ -9976,7 +9970,7 @@ mod tests {
         assert_eq!(result.hits[0].id, "memory:a");
         assert_eq!(
             result.retrievers[0].backend,
-            "skein_turboquant_candidate_projection"
+            "skein_rabitq_candidate_projection"
         );
         assert_eq!(
             result.retrievers[0].candidate_score_source,
@@ -10122,7 +10116,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_vector_recall_validates_turboquant_candidate_projection() {
+    fn sampled_vector_recall_validates_rabitq_candidate_projection() {
         let mut index = SearchIndex::in_memory();
         index
             .upsert(doc(
@@ -11561,11 +11555,14 @@ mod tests {
         assert_eq!(probe["incremental_update"]["ready"], true);
         assert_eq!(
             probe["compressed_vector_projection"]["engine"],
-            "skein_turboquant_scan"
+            "skein_rabitq_scan"
         );
         assert_eq!(probe["compressed_vector_projection"]["compiled"], true);
         assert_eq!(probe["compressed_vector_projection"]["ready"], true);
-        assert_eq!(probe["compressed_vector_projection"]["bit_width"], 4);
+        assert_eq!(
+            probe["compressed_vector_projection"]["bit_width"],
+            skein_vector_projection::PROJECTION_BIT_WIDTH
+        );
         assert_eq!(probe["compressed_vector_projection"]["dimension"], 2);
         assert_eq!(
             probe["compressed_vector_projection"]["persisted_artifact_used"],
@@ -11637,7 +11634,7 @@ mod tests {
     }
 
     #[test]
-    fn nowledge_search_projection_probe_reports_turboquant_projection_without_vectors() {
+    fn nowledge_search_projection_probe_reports_rabitq_projection_without_vectors() {
         let index = SearchIndex::in_memory();
 
         let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
@@ -11647,13 +11644,13 @@ mod tests {
 
         assert_eq!(
             probe["compressed_vector_projection"]["engine"],
-            "skein_turboquant_scan"
+            "skein_rabitq_scan"
         );
         assert_eq!(probe["compressed_vector_projection"]["compiled"], true);
         assert_eq!(probe["compressed_vector_projection"]["ready"], false);
         assert_eq!(
             probe["compressed_vector_projection"]["blocker_codes"],
-            serde_json::json!(["turboquant_projection_unavailable"])
+            serde_json::json!(["rabitq_projection_unavailable"])
         );
     }
 

@@ -137,21 +137,18 @@ pub(super) fn validate_search(
             "/lifecycle/bounded_generation_update",
             "search_bounded_generation_update_failed",
         ),
+        ("/lifecycle/rabitq_serving", "search_rabitq_serving_failed"),
         (
-            "/lifecycle/turboquant_serving",
-            "search_turboquant_serving_failed",
+            "/lifecycle/rabitq_preferred_serving",
+            "search_rabitq_preferred_serving_failed",
         ),
         (
-            "/lifecycle/turboquant_preferred_serving",
-            "search_turboquant_preferred_serving_failed",
+            "/lifecycle/rabitq_raw_rerank",
+            "search_rabitq_raw_rerank_failed",
         ),
         (
-            "/lifecycle/turboquant_raw_rerank",
-            "search_turboquant_raw_rerank_failed",
-        ),
-        (
-            "/lifecycle/turboquant_metadata_filter_pushdown",
-            "search_turboquant_filter_pushdown_failed",
+            "/lifecycle/rabitq_metadata_filter_pushdown",
+            "search_rabitq_filter_pushdown_failed",
         ),
         (
             "/lifecycle/incremental_upsert_delete",
@@ -207,8 +204,8 @@ pub(super) fn validate_search(
     );
     require_nonzero(
         artifact,
-        "/lifecycle/turboquant_payload_bytes_read",
-        "search_turboquant_payload_bytes_missing",
+        "/lifecycle/rabitq_payload_bytes_read",
+        "search_rabitq_payload_bytes_missing",
         &mut blockers,
     );
     require_nonzero(

@@ -44,7 +44,7 @@ cargo build --locked -p skein --no-default-features \
 | Feature | Default | Purpose |
 | --- | --- | --- |
 | `full-text-search` | yes | Makes full-text indexing and search available to the runtime capability matrix. |
-| `vector-search` | yes | Enables scalar vector search and Skein's bounded 4-bit TurboQuant candidate projection. Adaptive selection may use the projection, but final ranking always reads canonical raw vectors. |
+| `vector-search` | yes | Enables scalar vector search and Skein's bounded 1- or 4-bit RaBitQ candidate projection. Adaptive selection may use the projection, but final ranking always reads canonical raw vectors. |
 | `graph-analytics` | yes | Makes bounded graph projection and analytics operations available. |
 | `background-maintenance` | yes | Makes QoS-admitted background schema, index, projection, and maintenance work available. |
 | `acl` | no | Compiles the optional access-control capability. The host must still provide fresh policy state and enable it at runtime; enabling this feature alone does not establish an authorization boundary. |
@@ -53,9 +53,10 @@ cargo build --locked -p skein --no-default-features \
 | `qualification` | no | Compiles validation-only candidate ingress used by offline qualification crates. It is not a serving capability. |
 | `loom-tests` | no | Enables Loom-only concurrency model tests. It is a validation feature, not an application capability. |
 
-The optional `skein-qualification/turbovec-oracle` feature owns the upstream
-`turbovec` dependency for offline differential qualification. It is not a
-`skein` serving feature and does not publish a production search artifact.
+RaBitQ qualification compares the dispatched candidate path with the native
+scalar reference path on the same generation. This evidence detects future
+kernel-dispatch drift without adding a separate vector-search runtime or
+publishing a production search artifact.
 
 Compile a nightly non-production monitoring variant with the metrics adapter and
 Tokio integration explicitly:
@@ -132,13 +133,15 @@ Fuzz campaigns keep successful console output quiet and write detailed JSON to
 `--print-report` to explicitly copy the machine-readable report to stdout.
 
 The default `vector-search` implementation keeps raw embeddings canonical and
-publishes an immutable, checksummed `search_turboquant.<generation>.skein`
+publishes an immutable, checksummed `search_rabitq.<generation>.skein`
 candidate projection. Projection construction is segment-bounded, filtered
-scans use a compact allowlist bitmap, and the scalar, AVX2, or NEON kernel is
-selected for each query without changing the artifact. Parallel segment scans
+scans use a compact allowlist bitmap, and the current query kernel is the
+portable scalar reference; AVX2 requests, and NEON requests outside Arm, fail
+closed until native implementations are qualified. Arm's NEON preference uses
+the explicit scalar fallback. Parallel segment scans
 are opt-in through a caller-supplied limit and memory budget; Skein does not
 create a global vector-search thread pool. See
-[`docs/specs/TURBOQUANT_VECTOR_PROJECTION_SPEC.md`](docs/specs/TURBOQUANT_VECTOR_PROJECTION_SPEC.md)
+[`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md)
 for the algorithm, recovery, and readiness contract.
 
 ## Production Boundary

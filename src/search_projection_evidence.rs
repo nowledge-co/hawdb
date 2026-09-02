@@ -838,12 +838,12 @@ fn ready_probe_template(engine: &str) -> serde_json::Value {
         },
         "production_filter_pruning": ready_production_filter_pruning_template(),
         "compressed_vector_projection": {
-            "engine": "skein_turboquant_scan",
-            "algorithm": "turboquant",
+            "engine": "skein_rabitq_scan",
+            "algorithm": "rabitq",
             "compiled": true,
             "ready": true,
             "bit_width": 4,
-            "quantizer": "gaussian_lloyd_max_4bit_v1",
+            "quantizer": "rabitq_sign_then_refinement_scalar_4bit_v1",
             "calibration": "none",
             "dimension": 1024,
             "document_count": 5,
@@ -1763,7 +1763,7 @@ mod tests {
         probe["compressed_vector_projection"]["ready"] = serde_json::json!(false);
         probe["compressed_vector_projection"]["compiled"] = serde_json::json!(false);
         probe["compressed_vector_projection"]["blocker_codes"] =
-            serde_json::json!(["turboquant_projection_unavailable"]);
+            serde_json::json!(["rabitq_projection_unavailable"]);
 
         let report = nowledge_search_projection_evidence_json(&probe);
 
@@ -1772,7 +1772,7 @@ mod tests {
         assert_eq!(report["compressed_vector_projection_ready"], false);
         assert_eq!(
             report["compressed_vector_projection"]["blocker_codes"],
-            serde_json::json!(["turboquant_projection_unavailable"])
+            serde_json::json!(["rabitq_projection_unavailable"])
         );
         assert!(report["blocker_codes"]
             .as_array()
@@ -2449,12 +2449,12 @@ mod tests {
             },
             "production_filter_pruning": ready_production_filter_pruning_template(),
             "compressed_vector_projection": {
-                "engine": "skein_turboquant_scan",
-                "algorithm": "turboquant",
+                "engine": "skein_rabitq_scan",
+                "algorithm": "rabitq",
                 "compiled": true,
                 "ready": true,
                 "bit_width": 4,
-                "quantizer": "gaussian_lloyd_max_4bit_v1",
+                "quantizer": "rabitq_sign_then_refinement_scalar_4bit_v1",
                 "calibration": "none",
                 "dimension": 1024,
                 "document_count": 5,

@@ -19,7 +19,7 @@ pub struct SearchLexicalFeasibilityCoverage {
     pub acl_filter: bool,
     pub hybrid_rrf: bool,
     pub bounded_generation_update: bool,
-    pub bounded_turboquant_serving: bool,
+    pub bounded_rabitq_serving: bool,
     pub incremental_upsert_delete: bool,
     pub checkpoint_reopen: bool,
     pub corrupt_artifact: bool,
@@ -38,7 +38,7 @@ impl SearchLexicalFeasibilityCoverage {
             && (!acl_required || self.acl_filter)
             && self.hybrid_rrf
             && self.bounded_generation_update
-            && self.bounded_turboquant_serving
+            && self.bounded_rabitq_serving
             && self.incremental_upsert_delete
             && self.checkpoint_reopen
             && self.corrupt_artifact
@@ -57,7 +57,7 @@ impl SearchLexicalFeasibilityCoverage {
             "acl_filter": self.acl_filter,
             "hybrid_rrf": self.hybrid_rrf,
             "bounded_generation_update": self.bounded_generation_update,
-            "bounded_turboquant_serving": self.bounded_turboquant_serving,
+            "bounded_rabitq_serving": self.bounded_rabitq_serving,
             "incremental_upsert_delete": self.incremental_upsert_delete,
             "checkpoint_reopen": self.checkpoint_reopen,
             "corrupt_artifact": self.corrupt_artifact,
@@ -552,7 +552,7 @@ mod tests {
             acl_filter: true,
             hybrid_rrf: true,
             bounded_generation_update: true,
-            bounded_turboquant_serving: true,
+            bounded_rabitq_serving: true,
             incremental_upsert_delete: true,
             checkpoint_reopen: true,
             corrupt_artifact: true,

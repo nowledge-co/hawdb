@@ -60,6 +60,7 @@ pub(crate) struct RelationalIndexExecutionEvidence {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub cache_admission_rejections: usize,
+    pub delta_pages_skipped: usize,
     pub delta_entries_visited: usize,
     pub live_batches_visited: usize,
     pub live_entries_visited: usize,
@@ -172,6 +173,177 @@ impl<'a> RelationalIndexRuntime<'a> {
             &mut visit,
             fallback,
         )
+    }
+
+    /// Probes one persistent index view for a deduplicated batch of equally
+    /// wide prefixes. The callback receives the requested prefix first so the
+    /// caller can retain duplicate outer-row semantics outside the index read.
+    pub(crate) fn visit_prefix_entries_many(
+        &self,
+        state: &RelationalState,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        mut visit: impl FnMut(&RelationalKey, &RelationalKey, &RelationalKey) -> Result<bool>,
+    ) -> Result<bool> {
+        let prefixes = prefixes.iter().cloned().collect::<BTreeSet<_>>();
+        if prefixes.is_empty() {
+            return Ok(true);
+        }
+        let prefixes = prefixes.into_iter().collect::<Vec<_>>();
+        let prefix_width = prefixes[0].0.len();
+        if prefixes.iter().any(|prefix| prefix.0.len() != prefix_width) {
+            return Err(SkeinError::Execution(
+                "batch index prefixes must have one common key width".to_string(),
+            ));
+        }
+        let requested_prefix = |index_key: &RelationalKey| {
+            prefixes
+                .iter()
+                .find(|prefix| index_key.0.starts_with(&prefix.0))
+                .ok_or_else(|| {
+                    SkeinError::StorageIntegrity(
+                        "batch index reader emitted a key outside every requested prefix"
+                            .to_string(),
+                    )
+                })
+        };
+
+        if matches!(
+            self.mode,
+            RelationalIndexReadMode::Materialized
+                | RelationalIndexReadMode::Shadow(_)
+                | RelationalIndexReadMode::TransactionWorkspace
+        ) {
+            return visit_materialized_prefix_entries_many(
+                state, table, index, &prefixes, &mut visit,
+            );
+        }
+        enum PersistentTarget<'a> {
+            Store(&'a GraphStore),
+            Transaction(&'a RelationalTransactionIndexView),
+        }
+        let (target, authoritative) = match self.mode {
+            RelationalIndexReadMode::DemandPaged(store) => (PersistentTarget::Store(store), false),
+            RelationalIndexReadMode::Authoritative(store) => (PersistentTarget::Store(store), true),
+            RelationalIndexReadMode::AuthoritativeTransaction(view) => {
+                (PersistentTarget::Transaction(view), true)
+            }
+            RelationalIndexReadMode::Materialized
+            | RelationalIndexReadMode::Shadow(_)
+            | RelationalIndexReadMode::TransactionWorkspace => {
+                unreachable!("handled by the batch prefix fallback")
+            }
+        };
+        let Some(remaining) = self.remaining_limits() else {
+            if authoritative {
+                return Err(SkeinError::Execution(format!(
+                    "authoritative relational index budget is exhausted before reading {table}.{index}"
+                )));
+            }
+            self.record_fallback(table, index, "query_index_budget_exhausted")?;
+            return visit_materialized_prefix_entries_many(
+                state, table, index, &prefixes, &mut visit,
+            );
+        };
+
+        let mut callback_error = None;
+        let mut keep_going = true;
+        let mut produced_provisional_rows = false;
+        let mut visit_locator = |index_key: &RelationalKey, locator: &RelationalKey| {
+            produced_provisional_rows = true;
+            let continue_scan =
+                requested_prefix(index_key).and_then(|prefix| visit(prefix, index_key, locator));
+            match continue_scan {
+                Ok(continue_scan) => {
+                    keep_going = continue_scan;
+                    continue_scan
+                }
+                Err(error) => {
+                    callback_error = Some(error);
+                    false
+                }
+            }
+        };
+        let attempt = match target {
+            PersistentTarget::Store(store) => store
+                .visit_relational_index_read_view_prefix_entries_many(
+                    table,
+                    index,
+                    &prefixes,
+                    remaining,
+                    &mut visit_locator,
+                ),
+            PersistentTarget::Transaction(view) => Some(view.visit_prefix_entries_many(
+                table,
+                index,
+                &prefixes,
+                remaining,
+                &mut visit_locator,
+            )),
+        };
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        match attempt {
+            Some(Ok(report)) => {
+                self.record_success(
+                    table,
+                    index,
+                    &report,
+                    RelationalIndexProbeSelector::Prefix(&prefixes[0]),
+                )?;
+                Ok(keep_going)
+            }
+            Some(Err(RelationalIndexShadowError::Admission(_))) => {
+                if produced_provisional_rows {
+                    return Err(SkeinError::Execution(format!(
+                        "relational batch index read for {table}.{index} exhausted admission after producing provisional row locators"
+                    )));
+                }
+                if authoritative {
+                    return Err(SkeinError::Execution(format!(
+                        "authoritative relational batch index read for {table}.{index} was rejected by admission"
+                    )));
+                }
+                self.record_fallback(table, index, "admission_rejected")?;
+                visit_materialized_prefix_entries_many(state, table, index, &prefixes, &mut visit)
+            }
+            Some(Err(RelationalIndexShadowError::MissingIndex { .. })) => {
+                if produced_provisional_rows {
+                    return Err(SkeinError::StorageIntegrity(format!(
+                        "relational batch index {table}.{index} disappeared after producing provisional row locators"
+                    )));
+                }
+                if authoritative {
+                    return Err(SkeinError::StorageIntegrity(format!(
+                        "authoritative relational index {table}.{index} is missing"
+                    )));
+                }
+                self.record_fallback(table, index, "missing_index")?;
+                visit_materialized_prefix_entries_many(state, table, index, &prefixes, &mut visit)
+            }
+            Some(Err(error @ RelationalIndexShadowError::Corrupt(_))) => {
+                Err(SkeinError::StorageIntegrity(format!(
+                    "relational batch index read failed closed for {table}.{index}: {error}"
+                )))
+            }
+            Some(Err(error @ RelationalIndexShadowError::Durability(_)))
+            | Some(Err(error @ RelationalIndexShadowError::StaleGeneration { .. })) => {
+                Err(SkeinError::StorageIntegrity(format!(
+                    "relational batch index identity failed closed for {table}.{index}: {error}"
+                )))
+            }
+            None => {
+                if authoritative {
+                    return Err(SkeinError::StorageIntegrity(format!(
+                        "authoritative relational index view is unavailable for {table}.{index}"
+                    )));
+                }
+                self.record_fallback(table, index, "read_view_unavailable")?;
+                visit_materialized_prefix_entries_many(state, table, index, &prefixes, &mut visit)
+            }
+        }
     }
 
     pub(crate) fn visit_range_entries(
@@ -556,6 +728,27 @@ fn visit_materialized_prefix_entries<'state>(
     }
 }
 
+fn visit_materialized_prefix_entries_many(
+    state: &RelationalState,
+    table: &str,
+    index: &str,
+    prefixes: &[RelationalKey],
+    visit: &mut dyn FnMut(&RelationalKey, &RelationalKey, &RelationalKey) -> Result<bool>,
+) -> Result<bool> {
+    for prefix in prefixes {
+        if !visit_materialized_prefix_entries(
+            state,
+            table,
+            index,
+            prefix,
+            &mut |index_key, locator| visit(prefix, index_key, locator),
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn visit_materialized_range_entries<'state>(
     state: &'state RelationalState,
     table: &str,
@@ -633,6 +826,7 @@ struct IndexReadMetrics {
     cache_hits: usize,
     cache_misses: usize,
     cache_admission_rejections: usize,
+    delta_pages_skipped: usize,
     delta_entries_visited: usize,
 }
 
@@ -647,6 +841,7 @@ impl IndexReadMetrics {
                 cache_hits: base.cache_hits,
                 cache_misses: base.cache_misses,
                 cache_admission_rejections: base.cache_admission_rejections,
+                delta_pages_skipped: 0,
                 delta_entries_visited: 0,
             },
             RelationalIndexReadViewBackendReport::Recovered(recovered) => Self {
@@ -685,6 +880,7 @@ impl IndexReadMetrics {
                     recovered.delta_cache_admission_rejections,
                     "recovered cache rejection count",
                 )?,
+                delta_pages_skipped: recovered.delta_pages_skipped,
                 delta_entries_visited: recovered.delta_entries_visited,
             },
         };
@@ -718,6 +914,11 @@ impl IndexReadMetrics {
             evidence.cache_admission_rejections,
             self.cache_admission_rejections,
             "cache admission rejection count",
+        )?;
+        evidence.delta_pages_skipped = checked_add(
+            evidence.delta_pages_skipped,
+            self.delta_pages_skipped,
+            "delta skipped-page count",
         )?;
         evidence.delta_entries_visited = checked_add(
             evidence.delta_entries_visited,

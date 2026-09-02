@@ -1,10 +1,9 @@
 use crate::build::BuildState;
 use crate::error::{ProjectionError, Result};
 use crate::model::{
-    ids_bytes, renormalization_bytes, ProjectionBuildConfig, ProjectionBuildReport,
-    ProjectionManifest, QuantizedSegment, SegmentDescriptor,
+    ids_bytes, reconstruction_factor_bytes, ProjectionBuildConfig, ProjectionBuildReport,
+    ProjectionManifest, QuantizedSegment, RaBitQBitWidth, SegmentDescriptor,
 };
-use crate::quantizer::TurboQuantCodebook;
 use crc32fast::Hasher;
 use memmap2::Mmap;
 use std::fs::{self, File, OpenOptions};
@@ -13,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-const FOOTER_MAGIC: &[u8; 8] = b"SKTQ4F02";
+const FOOTER_MAGIC: &[u8; 8] = b"SKRQBF01";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -113,10 +112,18 @@ impl ProjectionWriter {
                 &mut self.payload_hasher,
             )?;
         }
-        for scale in &segment.renormalizations {
+        for scale in &segment.reconstruction_scales {
             write_payload(
                 file,
                 &scale.to_bits().to_le_bytes(),
+                &mut segment_hasher,
+                &mut self.payload_hasher,
+            )?;
+        }
+        for offset in &segment.reconstruction_offsets {
+            write_payload(
+                file,
+                &offset.to_bits().to_le_bytes(),
                 &mut segment_hasher,
                 &mut self.payload_hasher,
             )?;
@@ -158,7 +165,6 @@ impl Drop for ProjectionWriter {
 pub struct FileProjection {
     path: PathBuf,
     manifest: ProjectionManifest,
-    pub(crate) codebook: TurboQuantCodebook,
     mmap: Arc<Mmap>,
 }
 
@@ -217,7 +223,11 @@ impl FileProjection {
         for descriptor in &manifest.segments {
             let buffer = segment_buffer(&mmap, descriptor)?;
             payload_hasher.update(buffer.bytes);
-            let parts = buffer.parts(manifest.dimension, descriptor.row_count)?;
+            let parts = buffer.parts(
+                manifest.dimension,
+                RaBitQBitWidth::from_bits(manifest.bit_width)?,
+                descriptor.row_count,
+            )?;
             for row in 0..descriptor.row_count {
                 let id = parts.id(row);
                 if let Some(previous) = previous_id
@@ -228,10 +238,16 @@ impl FileProjection {
                     )));
                 }
                 previous_id = Some(id);
-                let scale = parts.renormalization(row);
+                let scale = parts.reconstruction_scale(row);
                 if !scale.is_finite() || scale < 0.0 {
                     return Err(ProjectionError::CorruptArtifact(format!(
-                        "invalid renormalization in segment {} row {row}",
+                        "invalid RaBitQ reconstruction scale in segment {} row {row}",
+                        descriptor.index
+                    )));
+                }
+                if !parts.reconstruction_offset(row).is_finite() {
+                    return Err(ProjectionError::CorruptArtifact(format!(
+                        "invalid RaBitQ reconstruction offset in segment {} row {row}",
                         descriptor.index
                     )));
                 }
@@ -242,11 +258,9 @@ impl FileProjection {
                 "payload checksum mismatch".to_string(),
             ));
         }
-        let codebook = TurboQuantCodebook::for_dimension(manifest.dimension)?;
         Ok(Self {
             path,
             manifest,
-            codebook,
             mmap,
         })
     }
@@ -294,16 +308,23 @@ pub(crate) struct SegmentBuffer<'a> {
 }
 
 impl<'a> SegmentBuffer<'a> {
-    pub fn parts(&self, dimension: usize, rows: usize) -> Result<SegmentParts<'a>> {
+    pub fn parts(
+        &self,
+        dimension: usize,
+        bit_width: RaBitQBitWidth,
+        rows: usize,
+    ) -> Result<SegmentParts<'a>> {
         let ids_end = ids_bytes(rows);
-        let scales_end = ids_end.saturating_add(renormalization_bytes(rows));
-        if scales_end > self.bytes.len() {
+        let scales_end = ids_end.saturating_add(reconstruction_factor_bytes(rows));
+        let offsets_end = scales_end.saturating_add(reconstruction_factor_bytes(rows));
+        if offsets_end > self.bytes.len() {
             return Err(ProjectionError::CorruptArtifact(
                 "segment header arrays exceed payload".to_string(),
             ));
         }
-        let codes = &self.bytes[scales_end..];
-        let expected_codes = rows.saturating_mul(dimension.div_ceil(2));
+        let codes = &self.bytes[offsets_end..];
+        let expected_codes =
+            rows.saturating_mul(crate::model::encoded_vector_bytes(dimension, bit_width));
         if codes.len() != expected_codes {
             return Err(ProjectionError::CorruptArtifact(format!(
                 "segment codes have {} bytes, expected {expected_codes}",
@@ -312,7 +333,8 @@ impl<'a> SegmentBuffer<'a> {
         }
         Ok(SegmentParts {
             ids: &self.bytes[..ids_end],
-            renormalizations: &self.bytes[ids_end..scales_end],
+            reconstruction_scales: &self.bytes[ids_end..scales_end],
+            reconstruction_offsets: &self.bytes[scales_end..offsets_end],
             codes,
         })
     }
@@ -321,7 +343,8 @@ impl<'a> SegmentBuffer<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SegmentParts<'a> {
     pub ids: &'a [u8],
-    pub renormalizations: &'a [u8],
+    pub reconstruction_scales: &'a [u8],
+    pub reconstruction_offsets: &'a [u8],
     pub codes: &'a [u8],
 }
 
@@ -335,19 +358,29 @@ impl SegmentParts<'_> {
         )
     }
 
-    pub fn renormalization(self, row: usize) -> f32 {
+    pub fn reconstruction_scale(self, row: usize) -> f32 {
         let offset = row * std::mem::size_of::<f32>();
         f32::from_bits(u32::from_le_bytes(
-            self.renormalizations[offset..offset + std::mem::size_of::<f32>()]
+            self.reconstruction_scales[offset..offset + std::mem::size_of::<f32>()]
                 .try_into()
                 .expect("validated scale slice"),
+        ))
+    }
+
+    pub fn reconstruction_offset(self, row: usize) -> f32 {
+        let offset = row * std::mem::size_of::<f32>();
+        f32::from_bits(u32::from_le_bytes(
+            self.reconstruction_offsets[offset..offset + std::mem::size_of::<f32>()]
+                .try_into()
+                .expect("validated offset slice"),
         ))
     }
 }
 
 fn segment_payload_len(segment: &QuantizedSegment) -> usize {
     segment.ids.len() * std::mem::size_of::<u64>()
-        + segment.renormalizations.len() * std::mem::size_of::<f32>()
+        + segment.reconstruction_scales.len() * std::mem::size_of::<f32>()
+        + segment.reconstruction_offsets.len() * std::mem::size_of::<f32>()
         + segment.codes.len()
 }
 
@@ -437,7 +470,7 @@ mod tests {
     fn generation_artifact_round_trips_and_validates_checksums() {
         let root = unique_test_dir("roundtrip");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_turboquant.1.skein");
+        let artifact = root.join("search_rabitq.1.skein");
         let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)).with_segment_rows(2);
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer
@@ -462,10 +495,10 @@ mod tests {
         assert!(build_report.peak_working_bytes <= build_report.configured_working_bytes);
         assert_eq!(build_report.raw_vector_bytes, 3 * 8 * 4);
         let first = projection.read_segment(0).unwrap();
-        let first = first.parts(8, 2).unwrap();
+        let first = first.parts(8, RaBitQBitWidth::One, 2).unwrap();
         assert_eq!([first.id(0), first.id(1)], [10, 20]);
         let second = projection.read_segment(1).unwrap();
-        let second = second.parts(8, 1).unwrap();
+        let second = second.parts(8, RaBitQBitWidth::One, 1).unwrap();
         assert_eq!(second.id(0), 30);
         FileProjection::open(&artifact).unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -475,7 +508,7 @@ mod tests {
     fn corrupted_segment_fails_closed() {
         let root = unique_test_dir("corruption");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_turboquant.1.skein");
+        let artifact = root.join("search_rabitq.1.skein");
         let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1));
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer.push(10, &[1.0; 8]).unwrap();
@@ -487,6 +520,36 @@ mod tests {
         file.sync_all().unwrap();
         let error = FileProjection::open(&artifact).unwrap_err();
         assert!(matches!(error, ProjectionError::CorruptArtifact(_)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn one_bit_generation_uses_one_bit_code_payloads() {
+        let root = unique_test_dir("one-bit");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.skein");
+        let config = ProjectionBuildConfig::new(9, ProjectionIdentity::new(1))
+            .with_bit_width(RaBitQBitWidth::One)
+            .with_segment_rows(2);
+        let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
+        writer.push(10, &[1.0; 9]).unwrap();
+        writer.push(20, &[-1.0; 9]).unwrap();
+        writer.push(30, &[0.5; 9]).unwrap();
+        let projection = writer.finish().unwrap();
+
+        assert_eq!(projection.manifest().bit_width, 1);
+        assert_eq!(
+            projection.manifest().quantizer,
+            "rabitq_sign_then_refinement_scalar_1bit_v1"
+        );
+        assert_eq!(
+            projection.manifest().segments[0].payload_bytes,
+            2 * (8 + 8 + 2)
+        );
+        let first = projection.read_segment(0).unwrap();
+        let first = first.parts(9, RaBitQBitWidth::One, 2).unwrap();
+        assert_eq!([first.id(0), first.id(1)], [10, 20]);
+        FileProjection::open(&artifact).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

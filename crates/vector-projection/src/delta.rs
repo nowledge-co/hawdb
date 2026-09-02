@@ -2,13 +2,13 @@
 //!
 //! `InMemoryProjection`/`FileProjection` are built once (via `ProjectionBuilder`
 //! / `ProjectionWriter`) and have no update path: every row is an immutable
-//! TurboQuant-quantized artifact. `DeltaBuffer` holds recent upserts that
+//! RaBitQ-quantized artifact. `DeltaBuffer` holds recent upserts that
 //! have not yet been folded into that base, scored by exact cosine
 //! similarity at query time rather than quantized -- the same
 //! immutable-base-plus-un-indexed-delta shape used by comparable systems
 //! (an append-only base segment with a flat-scanned growing buffer on top).
 //!
-//! `DeltaBuffer` does not attempt to fold itself into the base: TurboQuant
+//! `DeltaBuffer` does not attempt to fold itself into the base: RaBitQ
 //! encoding is lossy, so a base row's original vector cannot be recovered
 //! from its quantized codes. Folding means the host re-running the existing
 //! full-rebuild path (`ProjectionBuilder`/`ProjectionWriter`) over canonical
@@ -168,9 +168,9 @@ impl DeltaBuffer {
     }
 
     /// Exact cosine-similarity scan, comparable to the base projection's
-    /// approximate TurboQuant score (see module docs): both approximate
+    /// approximate RaBitQ score (see module docs): both approximate
     /// the same cosine-similarity metric, since indexed and query vectors
-    /// are unit-normalized before TurboQuant's orthogonal transform.
+    /// are unit-normalized before RaBitQ's orthogonal transform.
     ///
     /// Checkpoints once per call, before scanning, rather than once per
     /// entry: the buffer is already bounded by `max_working_bytes`, so one
