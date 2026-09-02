@@ -14,6 +14,7 @@ use crate::relational::{
 };
 use crate::{SegmentCache, StoreId};
 use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Bound;
@@ -375,6 +376,125 @@ impl RelationalRowPageDemandReader {
             task,
             hydration_fields: Some(hydration_fields),
         })
+    }
+
+    /// Reads a deduplicated set of projected primary keys while sharing one
+    /// demand-read budget and decoding every selected row page at most once.
+    ///
+    /// Returned rows are keyed by primary key. Missing keys are absent from the
+    /// map. Callers that need duplicate input semantics retain that mapping
+    /// outside this storage primitive.
+    pub fn points_projected_fields(
+        &self,
+        table: &str,
+        primary_keys: &[RelationalKey],
+        fields: RelationalRowPageProjectedFields<'_>,
+        limits: RelationalRowPageDemandReadLimits,
+        hydration: &mut RelationalHydrationBudget,
+        task: &RuntimeTaskContext,
+    ) -> Result<
+        (
+            BTreeMap<RelationalKey, RelationalProjectedRow>,
+            RelationalRowPageDemandReadReport,
+        ),
+        RelationalRowPageDemandReadError,
+    > {
+        let RelationalRowPageProjectedFields {
+            requested_fields,
+            hydration_fields,
+        } = fields;
+        let mut context = DemandReadContext::new(self, limits, hydration, task)?;
+        let table_root = context.table_root(table)?;
+        context
+            .validate_requested_fields(requested_fields, table_root.column_count.get() as usize)?;
+        context.admit_descriptor_search(table_root.page_count)?;
+
+        let mut encoded_keys = BTreeMap::new();
+        for primary_key in primary_keys {
+            let encoded = encode_ordered_relational_key(primary_key)
+                .map_err(|error| RelationalRowPageDemandReadError::Admission(error.to_string()))?;
+            encoded_keys
+                .entry(encoded)
+                .or_insert_with(|| primary_key.clone());
+        }
+        if encoded_keys.len() > limits.max_rows.get() {
+            return Err(RelationalRowPageDemandReadError::Admission(format!(
+                "relational row multi-point read needs {} keys, exceeding row limit {}",
+                encoded_keys.len(),
+                limits.max_rows
+            )));
+        }
+
+        let mut page_groups = BTreeMap::<
+            u64,
+            (
+                RelationalRowPageRootDescriptor,
+                Vec<(Vec<u8>, RelationalKey)>,
+            ),
+        >::new();
+        for (encoded, primary_key) in encoded_keys {
+            context.checkpoint()?;
+            let (descriptor, descriptor_reads) = self
+                .root
+                .find_table_page_descriptor_accounted_encoded(table, &encoded)
+                .map_err(|error| context.map_row_publication_error(error))?;
+            context.add_descriptor_reads(descriptor_reads)?;
+            let Some((ordinal, descriptor)) = descriptor else {
+                continue;
+            };
+            if encoded.as_slice() < descriptor.lower_bound.as_slice()
+                || encoded.as_slice() > descriptor.upper_bound.as_slice()
+            {
+                continue;
+            }
+            page_groups
+                .entry(ordinal)
+                .or_insert_with(|| (descriptor, Vec::new()))
+                .1
+                .push((encoded, primary_key));
+        }
+
+        let mut rows = BTreeMap::new();
+        for (_, (descriptor, keys)) in page_groups {
+            context.checkpoint()?;
+            let page = context.read_page(&descriptor)?;
+            let view = page.view();
+            context.validate_column_count(&table_root, &view)?;
+            for (encoded, primary_key) in keys {
+                context.checkpoint()?;
+                let Some(mut row) = view
+                    .find_projected_row_encoded(&encoded, requested_fields)
+                    .map_err(|error| context.map_page_error(error))?
+                else {
+                    continue;
+                };
+                context.admit_row()?;
+                context.resolve_projected_row(&mut row, hydration_fields)?;
+                context.report.rows_decoded =
+                    context.report.rows_decoded.checked_add(1).ok_or_else(|| {
+                        RelationalRowPageDemandReadError::Admission(
+                            "relational row multi-point decoded-row counter overflow".to_string(),
+                        )
+                    })?;
+                context.report.rows_emitted =
+                    context.report.rows_emitted.checked_add(1).ok_or_else(|| {
+                        RelationalRowPageDemandReadError::Admission(
+                            "relational row multi-point emitted-row counter overflow".to_string(),
+                        )
+                    })?;
+                context.report.owned_rows_emitted = context
+                    .report
+                    .owned_rows_emitted
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        RelationalRowPageDemandReadError::Admission(
+                            "relational row multi-point owned-row counter overflow".to_string(),
+                        )
+                    })?;
+                rows.insert(primary_key, row);
+            }
+        }
+        Ok((rows, context.finish()))
     }
 
     /// Reads one projected row while retaining overflow fields as references.

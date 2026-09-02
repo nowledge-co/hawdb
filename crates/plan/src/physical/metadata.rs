@@ -74,6 +74,7 @@ pub enum PhysicalPlanKind {
     IndexNodeRangeSeek,
     IndexNodeTextSeek,
     AdjacencyExpandExec,
+    AdjacencyExistsExec,
     OptionalDegreeExec,
     OptionalRelationshipCountSumExec,
     NodeCountExec,
@@ -170,6 +171,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::IndexNodeRangeSeek,
             PhysicalPlanKind::IndexNodeTextSeek,
             PhysicalPlanKind::AdjacencyExpandExec,
+            PhysicalPlanKind::AdjacencyExistsExec,
             PhysicalPlanKind::OptionalDegreeExec,
             PhysicalPlanKind::OptionalRelationshipCountSumExec,
             PhysicalPlanKind::NodeCountExec,
@@ -250,6 +252,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::IndexNodeRangeSeek => "IndexNodeRangeSeek",
             PhysicalPlanKind::IndexNodeTextSeek => "IndexNodeTextSeek",
             PhysicalPlanKind::AdjacencyExpandExec => "AdjacencyExpandExec",
+            PhysicalPlanKind::AdjacencyExistsExec => "AdjacencyExistsExec",
             PhysicalPlanKind::OptionalDegreeExec => "OptionalDegreeExec",
             PhysicalPlanKind::OptionalRelationshipCountSumExec => {
                 "OptionalRelationshipCountSumExec"
@@ -316,6 +319,7 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::IndexNodeRangeSeek
             | PhysicalPlanKind::IndexNodeTextSeek => PhysicalPlanClass::Access,
             PhysicalPlanKind::AdjacencyExpandExec
+            | PhysicalPlanKind::AdjacencyExistsExec
             | PhysicalPlanKind::OptionalDegreeExec
             | PhysicalPlanKind::OptionalRelationshipCountSumExec
             | PhysicalPlanKind::ShortestPathExec => PhysicalPlanClass::Traversal,

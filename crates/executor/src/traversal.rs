@@ -420,16 +420,6 @@ pub fn visit_one_hop_relationships_with_budget(
         }
         Ok(ScanControl::Continue)
     };
-    if !store.is_out_of_core()
-        && let Some(filter) = relationship_filter.as_ref()
-        && store
-            .relationship_count_for_type(spec.rel_type_id)
-            .saturating_mul(std::mem::size_of::<&RelRecord>())
-            <= memory.budget_bytes
-    {
-        let scan = store.scan_relationships_with_filter_pruning(spec.rel_type_id, Some(filter))?;
-        observer.record_scan_pruning_report(scan.report.clone());
-    }
     let mut visit_direction = |adjacency_direction: AdjacencyDirection,
                                skip_undirected_self_loops: bool|
      -> Result<ScanControl> {
