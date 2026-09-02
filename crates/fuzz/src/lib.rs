@@ -2,7 +2,7 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use skein::api::{Database, DatabaseReadTransaction};
 use skein::executor::Row;
 use skein::optimizer::OptimizerSearchDirective;
-use skein::{SkeinError, Value};
+use skein::{SkeinError, Uuid, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -2167,6 +2167,7 @@ fn typed_value_json(value: &Value) -> JsonValue {
             "bits": format!("{:016x}", value.to_bits()),
         }),
         Value::String(value) => json!({"type": "string", "value": value}),
+        Value::Uuid(value) => json!({"type": "uuid", "value": value.to_string()}),
         Value::Binary(value) => json!({
             "type": "binary",
             "hex": value.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
@@ -2258,6 +2259,16 @@ mod tests {
             ResultSemantics::Ordered,
         )
         .is_err());
+    }
+
+    #[test]
+    fn typed_value_json_preserves_uuid_values() {
+        let value =
+            Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab").expect("parse UUID fixture");
+        assert_eq!(
+            typed_value_json(&Value::Uuid(value)),
+            json!({"type": "uuid", "value": value.to_string()})
+        );
     }
 
     #[test]
