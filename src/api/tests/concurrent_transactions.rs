@@ -541,6 +541,91 @@ fn disjoint_primary_key_point_locks_allow_both_pessimistic_writers_to_commit() {
 }
 
 #[test]
+fn disjoint_update_upserts_use_point_locks_when_the_conflict_targets_are_absent() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.documents (\
+            id BIGINT PRIMARY KEY, \
+            owner TEXT NOT NULL UNIQUE, \
+            body TEXT NOT NULL\
+        )",
+    )
+    .unwrap();
+    let mut first = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+    let mut second = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+
+    first
+        .query_sql(
+            "INSERT INTO public.documents (id, owner, body) VALUES (1, 'first', 'first') \
+             ON CONFLICT (owner) DO UPDATE SET body = EXCLUDED.body",
+        )
+        .unwrap();
+    second
+        .query_sql(
+            "INSERT INTO public.documents (id, owner, body) VALUES (2, 'second', 'second') \
+             ON CONFLICT (owner) DO UPDATE SET body = EXCLUDED.body",
+        )
+        .unwrap();
+    first.commit().unwrap();
+    second.commit().unwrap();
+
+    let rows = db
+        .query_sql("SELECT id FROM public.documents ORDER BY id")
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("id"), Some(&Value::Int(1)));
+    assert_eq!(rows[1].get("id"), Some(&Value::Int(2)));
+}
+
+#[test]
+fn same_key_update_upserts_remain_bounded_by_the_conflict_target_lock() {
+    let db = Database::new().into_concurrent();
+    db.query_sql(
+        "CREATE TABLE public.documents (\
+            id BIGINT PRIMARY KEY, \
+            owner TEXT NOT NULL UNIQUE, \
+            body TEXT NOT NULL\
+        )",
+    )
+    .unwrap();
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    owner
+        .query_sql(
+            "INSERT INTO public.documents (id, owner, body) VALUES (1, 'shared', 'owner') \
+             ON CONFLICT (owner) DO UPDATE SET body = EXCLUDED.body",
+        )
+        .unwrap();
+    let mut waiter = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+    let error = waiter
+        .query_sql(
+            "INSERT INTO public.documents (id, owner, body) VALUES (2, 'shared', 'waiter') \
+             ON CONFLICT (owner) DO UPDATE SET body = EXCLUDED.body",
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    owner.rollback();
+}
+
+#[test]
 fn wal_group_commit_requires_performance_and_recovery_evidence() {
     let bounds = (
         NonZeroUsize::new(8).unwrap(),
