@@ -2135,6 +2135,7 @@ mod tests {
             assert!(recovered_info.contains("runtime_path=demand_paged"));
             assert!(recovered_info.contains("order_prefix=1"));
             assert!(!recovered_info.contains("delta_generation=none"));
+            assert!(recovered_info.contains("delta_pages_skipped="));
             assert!(recovered_info.contains("delta_entries="));
             assert!(recovered_info.contains("row_runtime_path=snapshot_rows"));
             assert!(!recovered_info.contains("row_delta_generation=none"));
@@ -2784,6 +2785,11 @@ mod tests {
         assert_eq!(join.estimated_rows, 6);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
+        assert!(full
+            .profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(
