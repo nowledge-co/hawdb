@@ -2823,7 +2823,8 @@ mod tests {
                  ('doc-3', 'feed-2', '100% complete'), \
                  ('doc-4', 'feed-2', 'ÄPFEL Guide'), \
                  ('doc-5', 'feed-2', 'misc'), \
-                 ('doc-6', 'feed-2', NULL)",
+                 ('doc-6', 'feed-2', NULL), \
+                 ('doc-7', 'feed-2', 'Straße')",
             )
             .expect("insert LIKE documents");
 
@@ -2862,6 +2863,21 @@ mod tests {
         assert_eq!(ilike.rows.len(), 1);
         assert_eq!(ilike.rows[0]["id"], text("doc-4"));
 
+        let case_folded = database
+            .query_sql("SELECT id FROM like_documents WHERE title ILIKE '%STRASSE%'")
+            .expect("match Unicode default case folding");
+        assert_eq!(case_folded.rows.len(), 1);
+        assert_eq!(case_folded.rows[0]["id"], text("doc-7"));
+
+        let bounded = database
+            .query_sql(
+                "SELECT id FROM like_documents WHERE title ILIKE 'road%' \
+                 ORDER BY id ASC LIMIT 1 OFFSET 1",
+            )
+            .expect("apply ILIKE before bounded ordering");
+        assert_eq!(bounded.rows.len(), 1);
+        assert_eq!(bounded.rows[0]["id"], text("doc-2"));
+
         let null_pattern = database
             .query_sql_with_params(
                 "SELECT id FROM like_documents WHERE title LIKE $1",
@@ -2872,7 +2888,7 @@ mod tests {
         let negated = database
             .query_sql("SELECT id FROM like_documents WHERE title NOT ILIKE 'road%'")
             .expect("NOT ILIKE retains SQL NULL semantics");
-        assert_eq!(negated.rows.len(), 3);
+        assert_eq!(negated.rows.len(), 4);
         assert!(negated.rows.iter().all(|row| row["id"] != text("doc-6")));
 
         let grouped = database

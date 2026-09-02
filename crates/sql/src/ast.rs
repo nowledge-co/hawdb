@@ -1,3 +1,4 @@
+use caseless::Caseless;
 use skein_core::{LogicalType, Result, SkeinError, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,7 +342,7 @@ pub enum SqlLikeEscape {
     Disabled,
 }
 
-/// Matches SQL LIKE patterns with locale-independent Unicode lowercasing for ILIKE.
+/// Matches SQL LIKE patterns with locale-independent Unicode default case folding for ILIKE.
 pub fn sql_like_matches(
     value: &str,
     pattern: &str,
@@ -396,7 +397,7 @@ enum LikeToken {
 
 fn normalize_like_value(value: &str, case_insensitive: bool) -> String {
     if case_insensitive {
-        value.chars().flat_map(char::to_lowercase).collect()
+        value.chars().default_case_fold().collect()
     } else {
         value.to_string()
     }
@@ -433,7 +434,13 @@ fn tokenize_like_pattern(
 
 fn push_like_literal(tokens: &mut Vec<LikeToken>, literal: char, case_insensitive: bool) {
     if case_insensitive {
-        tokens.extend(literal.to_lowercase().map(LikeToken::Literal));
+        tokens.extend(
+            literal
+                .to_string()
+                .chars()
+                .default_case_fold()
+                .map(LikeToken::Literal),
+        );
     } else {
         tokens.push(LikeToken::Literal(literal));
     }

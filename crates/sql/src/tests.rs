@@ -624,7 +624,11 @@ fn like_matcher_handles_wildcards_escaping_and_unicode_case_insensitivity() {
         SqlLikeEscape::Character('\\'),
         true,
     )
-    .expect("locale-independent Unicode lowercase"));
+    .expect("locale-independent Unicode case folding"));
+    assert!(
+        super::sql_like_matches("Straße", "%STRASSE%", SqlLikeEscape::Character('\\'), true,)
+            .expect("default case folding expands sharp s")
+    );
     assert!(!super::sql_like_matches(
         "roadXmap",
         r"road\_map",

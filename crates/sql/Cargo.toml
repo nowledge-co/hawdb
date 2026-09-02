@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+caseless = "0.2.2"
 skein-core = { path = "../core" }
 skein-plan = { path = "../plan" }
 skein-sql-syntax = { path = "../sql-syntax" }
