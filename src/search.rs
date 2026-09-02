@@ -11558,7 +11558,10 @@ mod tests {
         );
         assert_eq!(probe["compressed_vector_projection"]["compiled"], true);
         assert_eq!(probe["compressed_vector_projection"]["ready"], true);
-        assert_eq!(probe["compressed_vector_projection"]["bit_width"], 4);
+        assert_eq!(
+            probe["compressed_vector_projection"]["bit_width"],
+            skein_vector_projection::PROJECTION_BIT_WIDTH
+        );
         assert_eq!(probe["compressed_vector_projection"]["dimension"], 2);
         assert_eq!(
             probe["compressed_vector_projection"]["persisted_artifact_used"],
