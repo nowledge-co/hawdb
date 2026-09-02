@@ -2785,6 +2785,11 @@ mod tests {
         assert_eq!(join.estimated_rows, 6);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
+        assert!(full
+            .profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(

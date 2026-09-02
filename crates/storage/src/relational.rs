@@ -659,6 +659,14 @@ pub struct RelationalIndexChange {
     pub kind: RelationalIndexChangeKind,
 }
 
+impl RelationalIndexChange {
+    /// Returns the bounded wire footprint used by index-change capture and
+    /// derived live overlays.
+    pub fn estimated_encoded_bytes(&self) -> Option<usize> {
+        estimated_index_change_encoding_bytes(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalIndexChangeCapture {
     Captured {
@@ -5776,7 +5784,7 @@ fn push_captured_index_change(
     limits: RelationalIndexChangeCaptureLimits,
     change: RelationalIndexChange,
 ) -> bool {
-    let Some(change_bytes) = estimated_index_change_encoding_bytes(&change) else {
+    let Some(change_bytes) = change.estimated_encoded_bytes() else {
         return false;
     };
     let Some(next_bytes) = encoded_bytes.checked_add(change_bytes) else {
