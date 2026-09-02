@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::io::{Cursor, Read};
 
 const TYPED_LOCATOR_RECORD_VERSION: u8 = 1;
+const HASH_SPILL_LOCATOR_RECORD_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RelationalRowSetLocator {
@@ -38,7 +39,69 @@ impl RelationalRowSetLocator {
         &self.rows
     }
 
-    fn memory_bytes(&self) -> usize {
+    /// Encodes a compact, typed reference to relational rows for a spill run.
+    ///
+    /// The payload deliberately carries only primary-key locators. The executor
+    /// must re-read rows from the query snapshot before evaluating join keys or
+    /// residual predicates, so spill files never retain a second copy of rows.
+    pub(super) fn encode_hash_spill_record(&self) -> Result<Vec<u8>> {
+        let mut output = Vec::new();
+        output.push(HASH_SPILL_LOCATOR_RECORD_VERSION);
+        write_len(&mut output, self.rows.len())?;
+        for locator in &self.rows {
+            match locator {
+                None => output.push(0),
+                Some(locator) => {
+                    output.push(1);
+                    output.extend_from_slice(&locator.table_id().to_le_bytes());
+                    write_len(&mut output, locator.primary_key().0.len())?;
+                    for value in &locator.primary_key().0 {
+                        write_relational_value(&mut output, value, false)?;
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    pub(super) fn decode_hash_spill_record(input: &[u8]) -> Result<Self> {
+        let mut cursor = Cursor::new(input);
+        if read_u8(&mut cursor)? != HASH_SPILL_LOCATOR_RECORD_VERSION {
+            return Err(invalid_typed_record(
+                "unsupported hash spill locator version",
+            ));
+        }
+        let locator_count = read_len(&mut cursor, input.len())?;
+        let mut rows = Vec::with_capacity(locator_count);
+        for _ in 0..locator_count {
+            match read_u8(&mut cursor)? {
+                0 => rows.push(None),
+                1 => {
+                    let table_id = read_u32(&mut cursor)?;
+                    let value_count = read_len(&mut cursor, input.len())?;
+                    let mut values = Vec::with_capacity(value_count);
+                    for _ in 0..value_count {
+                        values.push(read_relational_value(&mut cursor, input.len(), false)?);
+                    }
+                    rows.push(Some(RelationalRowLocator::new(
+                        table_id,
+                        RelationalKey(values),
+                    )));
+                }
+                _ => {
+                    return Err(invalid_typed_record(
+                        "invalid hash spill locator presence tag",
+                    ))
+                }
+            }
+        }
+        if cursor.position() != input.len() as u64 {
+            return Err(invalid_typed_record("trailing hash spill locator bytes"));
+        }
+        Ok(Self::new(rows))
+    }
+
+    pub(super) fn memory_bytes(&self) -> usize {
         self.rows.iter().fold(
             std::mem::size_of::<Self>().saturating_add(
                 self.rows
@@ -521,7 +584,7 @@ fn read_array<const N: usize>(input: &mut Cursor<&[u8]>) -> Result<[u8; N]> {
 
 fn invalid_typed_record(reason: &str) -> SkeinError {
     SkeinError::Execution(format!(
-        "typed relational sort spill record is invalid: {reason}"
+        "typed relational spill record is invalid: {reason}"
     ))
 }
 
@@ -596,6 +659,31 @@ mod tests {
         assert!(
             record.locator.memory_bytes() < value_memory_bytes(&legacy),
             "typed locator must retain fewer estimated bytes than self-describing Value maps"
+        );
+    }
+
+    #[test]
+    fn hash_spill_locator_round_trips_without_row_payloads() {
+        let locator = RelationalRowSetLocator::new(vec![
+            Some(RelationalRowLocator::new(
+                0,
+                RelationalKey(vec![
+                    RelationalValue::Text("left-7".to_string()),
+                    RelationalValue::BigInt(7),
+                ]),
+            )),
+            None,
+        ]);
+
+        let encoded = locator
+            .encode_hash_spill_record()
+            .expect("encode typed hash spill locator");
+        let decoded = RelationalRowSetLocator::decode_hash_spill_record(&encoded)
+            .expect("decode typed hash spill locator");
+        assert_eq!(decoded, locator);
+        assert!(
+            RelationalRowSetLocator::decode_hash_spill_record(&encoded[..encoded.len() - 1])
+                .is_err()
         );
     }
 

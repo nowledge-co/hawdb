@@ -27,6 +27,7 @@ pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalPropertie
         | PhysicalPlan::LimitExec { input, .. }
         | PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::OptionalDegreeExec { input, .. } => selected_plan_properties(input),
         PhysicalPlan::SortExec { items, input } => {
             let mut properties = selected_plan_properties(input);

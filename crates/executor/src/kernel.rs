@@ -140,11 +140,25 @@ impl SpillBudgetTracker {
         memory: &ExecutionMemoryConfig,
         memory_ledger: &QueryMemoryLedger,
     ) -> Self {
+        Self::with_ledger_staging_budget(
+            operator,
+            memory,
+            memory_ledger,
+            memory.blocking_operator_bytes,
+        )
+    }
+
+    pub fn with_ledger_staging_budget(
+        operator: &'static str,
+        memory: &ExecutionMemoryConfig,
+        memory_ledger: &QueryMemoryLedger,
+        staging_budget: NonZeroUsize,
+    ) -> Self {
         Self {
             staging_account: Some(memory_ledger.account(
                 QueryMemoryClass::SpillStaging,
                 format!("{operator} spill staging"),
-                memory.blocking_operator_bytes,
+                staging_budget,
             )),
             ..Self::new(operator, memory)
         }

@@ -887,6 +887,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::IndexNodeRangeSeek { .. }
         | PhysicalPlan::IndexNodeTextSeek { .. }
         | PhysicalPlan::AdjacencyExpandExec { .. }
+        | PhysicalPlan::AdjacencyExistsExec { .. }
         | PhysicalPlan::OptionalDegreeExec { .. }
         | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
         | PhysicalPlan::ShortestPathExec { .. }
