@@ -62,6 +62,7 @@ _SKEIN_SRCS = glob(
 
 _SKEIN_BASE_DEPS = [
     "@crate_index//:chrono",
+    "@crate_index//:getrandom",
     "@crate_index//:jieba-rs",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
