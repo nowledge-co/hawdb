@@ -32,6 +32,7 @@ enum ParameterValueShape {
     Float,
     String,
     Binary,
+    Uuid,
     List(Vec<ParameterValueShape>),
     Map(BTreeMap<String, ParameterValueShape>),
 }
@@ -202,6 +203,7 @@ fn parameter_value_shape(value: &Value) -> ParameterValueShape {
         Value::Float(_) => ParameterValueShape::Float,
         Value::String(_) => ParameterValueShape::String,
         Value::Binary(_) => ParameterValueShape::Binary,
+        Value::Uuid(_) => ParameterValueShape::Uuid,
         Value::List(values) => {
             ParameterValueShape::List(values.iter().map(parameter_value_shape).collect())
         }

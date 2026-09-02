@@ -1,7 +1,7 @@
 use crate::{
     DeleteStatement, InsertStatement, SelectProjection, SelectStatement, SqlAssignment,
-    SqlAssignmentValue, SqlBound, SqlExpression, SqlFunctionArgument, SqlPredicate, SqlStatement,
-    SqlValue, UpdateStatement,
+    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlFunctionArgument,
+    SqlPredicate, SqlStatement, SqlValue, UpdateStatement,
 };
 use skein_core::{Result, SkeinError};
 use std::collections::BTreeSet;
@@ -61,16 +61,22 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
         SqlStatement::CreateTable(create) => {
             for column in &create.columns {
                 if let Some(value) = &column.default {
-                    collect_value_parameter(value, positions);
+                    collect_column_default_parameter(value, positions);
                 }
             }
         }
         SqlStatement::AlterTableAddColumn(alter) => {
             if let Some(value) = &alter.column.default {
-                collect_value_parameter(value, positions);
+                collect_column_default_parameter(value, positions);
             }
         }
         SqlStatement::CreateIndex(_) => {}
+    }
+}
+
+fn collect_column_default_parameter(default: &SqlColumnDefault, positions: &mut BTreeSet<usize>) {
+    if let SqlColumnDefault::Literal(value) = default {
+        collect_value_parameter(value, positions);
     }
 }
 

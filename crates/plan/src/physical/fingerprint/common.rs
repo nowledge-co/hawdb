@@ -78,6 +78,10 @@ pub(super) fn write_value(output: &mut String, value: &Value) {
                 output.push(HEX[usize::from(byte & 0x0f)] as char);
             }
         }
+        Value::Uuid(value) => {
+            output.push_str("uuid:");
+            output.push_str(&value.to_string());
+        }
         Value::List(values) => {
             output.push_str("list:[");
             for (index, value) in values.iter().enumerate() {

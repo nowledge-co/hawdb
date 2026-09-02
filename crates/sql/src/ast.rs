@@ -119,10 +119,16 @@ pub struct SqlColumnDefinition {
     pub name: String,
     pub data_type: SqlDataType,
     pub nullable: bool,
-    pub default: Option<SqlValue>,
+    pub default: Option<SqlColumnDefault>,
     pub primary_key: bool,
     pub unique: bool,
     pub references: Option<SqlForeignKeyReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlColumnDefault {
+    Literal(SqlValue),
+    UuidV7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +138,7 @@ pub enum SqlDataType {
     DoublePrecision,
     Text,
     Bytea,
+    Uuid,
 }
 
 impl SqlDataType {
@@ -142,6 +149,7 @@ impl SqlDataType {
             Self::DoublePrecision => LogicalType::Float64,
             Self::Text => LogicalType::Text,
             Self::Bytea => LogicalType::Binary,
+            Self::Uuid => LogicalType::Uuid,
         }
     }
 }

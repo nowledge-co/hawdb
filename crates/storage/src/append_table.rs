@@ -1,6 +1,7 @@
 use self::binary::compare_rows;
 use crate::{
-    RelationalColumnSchema, RelationalKey, RelationalRow, RelationalScalarType, RelationalValue,
+    RelationalColumnDefault, RelationalColumnSchema, RelationalKey, RelationalRow,
+    RelationalScalarType, RelationalValue,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -870,7 +871,15 @@ fn validate_table_schema(schema: &AppendTableSchema) -> Result<(), AppendTableEr
             )));
         }
         if let Some(default) = &column.default {
-            validate_value_type(column, default)?;
+            match default {
+                RelationalColumnDefault::Literal(value) => validate_value_type(column, value)?,
+                RelationalColumnDefault::UuidV7 => {
+                    return Err(AppendTableError::Schema(format!(
+                        "append table column {} does not support uuidv7() defaults",
+                        column.name
+                    )));
+                }
+            }
         }
     }
     let mut key_columns = BTreeSet::new();
@@ -1618,7 +1627,8 @@ mod tests {
         ));
 
         let mut invalid_default = generated_schema();
-        invalid_default.columns[1].default = Some(RelationalValue::BigInt(1));
+        invalid_default.columns[1].default =
+            Some(RelationalColumnDefault::Literal(RelationalValue::BigInt(1)));
         assert!(matches!(
             AppendState::default().stage_transaction(
                 &AppendTransaction {

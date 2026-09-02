@@ -508,6 +508,7 @@ fn value_encoded_len(value: &Value, depth: usize) -> Result<usize> {
         Value::Int(_) | Value::Float(_) => Ok(9),
         Value::String(value) => encoded_len_add(1, string_encoded_len(value)?),
         Value::Binary(value) => encoded_len_add(9, value.len()),
+        Value::Uuid(_) => Ok(17),
         Value::List(values) => values.iter().try_fold(9usize, |bytes, value| {
             encoded_len_add(bytes, value_encoded_len(value, depth + 1)?)
         }),
@@ -642,6 +643,10 @@ fn write_value(output: &mut Vec<u8>, value: &Value, depth: usize) -> Result<()> 
             write_len(output, value.len())?;
             output.extend_from_slice(value);
         }
+        Value::Uuid(value) => {
+            output.push(8);
+            output.extend_from_slice(value.as_bytes());
+        }
         Value::List(values) => {
             output.push(5);
             write_len(output, values.len())?;
@@ -688,6 +693,13 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
                 SkeinError::Execution(format!("truncated binary in spill record: {error}"))
             })?;
             Value::Binary(bytes)
+        }
+        8 => {
+            let mut bytes = [0_u8; 16];
+            input.read_exact(&mut bytes).map_err(|error| {
+                SkeinError::Execution(format!("truncated UUID in spill record: {error}"))
+            })?;
+            Value::Uuid(skein_core::Uuid::from_bytes(bytes))
         }
         tag => {
             return Err(SkeinError::Execution(format!(

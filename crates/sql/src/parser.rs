@@ -380,7 +380,7 @@ fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
     })
 }
 
-fn lower_sql_expression(expr: &Expr) -> Result<SqlExpression> {
+pub(super) fn lower_sql_expression(expr: &Expr) -> Result<SqlExpression> {
     match expr {
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
             Ok(SqlExpression::Column(lower_column_expr(expr)?))
@@ -442,11 +442,13 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlE
         })
         .collect::<Result<Vec<_>>>()?;
     match name.as_str() {
-        "count" | "sum" | "max" | "coalesce" | "octet_length" => Ok(SqlExpression::Function {
-            name: name.clone(),
-            arguments,
-            distinct,
-        }),
+        "count" | "sum" | "max" | "coalesce" | "octet_length" | "uuidv7" => {
+            Ok(SqlExpression::Function {
+                name: name.clone(),
+                arguments,
+                distinct,
+            })
+        }
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL function {name}"
         ))),

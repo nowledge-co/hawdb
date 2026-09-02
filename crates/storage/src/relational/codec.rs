@@ -1,14 +1,14 @@
 use super::{
     column_positions, rebuild_indexes, validate_foreign_keys, validate_row, validate_table_schema,
-    RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction, RelationalError,
-    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-    RelationalOverflowRef, RelationalOverflowSegment, RelationalPredicate,
-    RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
-    RelationalReferentialAction, RelationalReplayAccess, RelationalReplayAccessSet, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTablePrimaryKeyChanges, RelationalTableSchema,
-    RelationalTableSegment, RelationalTransaction, RelationalUpdateAssignment,
-    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-    RelationalWrite,
+    RelationalColumnDefault, RelationalColumnSchema, RelationalComparisonOp,
+    RelationalConflictAction, RelationalError, RelationalForeignKeySchema, RelationalIndexSchema,
+    RelationalInsertMode, RelationalKey, RelationalOverflowRef, RelationalOverflowSegment,
+    RelationalPredicate, RelationalPrimaryKeyChangeCapture,
+    RelationalPrimaryKeyChangeRebuildReason, RelationalReferentialAction, RelationalReplayAccess,
+    RelationalReplayAccessSet, RelationalRow, RelationalScalarType, RelationalState,
+    RelationalTablePrimaryKeyChanges, RelationalTableSchema, RelationalTableSegment,
+    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
+    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWrite, Uuid,
 };
 use crate::{
     ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
@@ -1009,6 +1009,7 @@ impl Encoder {
             RelationalScalarType::DoublePrecision => 3,
             RelationalScalarType::Text => 4,
             RelationalScalarType::Bytea => 5,
+            RelationalScalarType::Uuid => 6,
         });
     }
 
@@ -1037,6 +1038,10 @@ impl Encoder {
             RelationalValue::Bytea(value) => {
                 self.u8(5);
                 self.bytes(value)?;
+            }
+            RelationalValue::Uuid(value) => {
+                self.u8(7);
+                self.bytes.extend_from_slice(value.as_bytes());
             }
             RelationalValue::Overflow(reference) => {
                 self.u8(6);
@@ -1072,10 +1077,7 @@ impl Encoder {
             self.string(&column.name)?;
             self.scalar_type(column.scalar_type);
             self.u8(u8::from(column.nullable));
-            self.u8(u8::from(column.default.is_some()));
-            if let Some(value) = &column.default {
-                self.value(value)?;
-            }
+            self.column_default(&column.default)?;
         }
         self.string_list(&schema.primary_key)?;
         self.count(schema.unique_constraints.len(), "unique constraints")?;
@@ -1105,6 +1107,36 @@ impl Encoder {
         Ok(())
     }
 
+    fn column_default(
+        &mut self,
+        default: &Option<RelationalColumnDefault>,
+    ) -> Result<(), RelationalError> {
+        match default {
+            None => self.u8(0),
+            Some(RelationalColumnDefault::Literal(value)) => {
+                self.u8(1);
+                self.value(value)?;
+            }
+            Some(RelationalColumnDefault::UuidV7) => self.u8(2),
+        }
+        Ok(())
+    }
+
+    fn column_default_logical(
+        &mut self,
+        default: &Option<RelationalColumnDefault>,
+    ) -> Result<(), RelationalError> {
+        match default {
+            None => self.u8(0),
+            Some(RelationalColumnDefault::Literal(value)) => {
+                self.u8(1);
+                self.logical_value(value)?;
+            }
+            Some(RelationalColumnDefault::UuidV7) => self.u8(2),
+        }
+        Ok(())
+    }
+
     fn referential_action(&mut self, action: RelationalReferentialAction) {
         self.u8(match action {
             RelationalReferentialAction::NoAction => 0,
@@ -1131,10 +1163,7 @@ impl Encoder {
                 self.string(&column.name)?;
                 self.scalar_type(column.scalar_type);
                 self.u8(u8::from(column.nullable));
-                self.u8(u8::from(column.default.is_some()));
-                if let Some(value) = &column.default {
-                    self.logical_value(value)?;
-                }
+                self.column_default_logical(&column.default)?;
             }
             RelationalWrite::CreateIndex { table, index } => {
                 self.u8(2);
@@ -1615,6 +1644,7 @@ impl<I: DecodeInput> Decoder<I> {
             3 => Ok(RelationalScalarType::DoublePrecision),
             4 => Ok(RelationalScalarType::Text),
             5 => Ok(RelationalScalarType::Bytea),
+            6 => Ok(RelationalScalarType::Uuid),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid relational scalar type tag {tag}"
             ))),
@@ -1679,6 +1709,7 @@ impl<I: DecodeInput> Decoder<I> {
                     uncompressed_bytes,
                 }))
             }
+            7 => Ok(RelationalValue::Uuid(Uuid::from_bytes(self.fixed()?))),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid relational value tag {tag}"
             ))),
@@ -1721,11 +1752,7 @@ impl<I: DecodeInput> Decoder<I> {
             let name = self.string()?;
             let scalar_type = self.scalar_type()?;
             let nullable = self.boolean("column nullable")?;
-            let default = if self.boolean("column default presence")? {
-                Some(self.value()?)
-            } else {
-                None
-            };
+            let default = self.column_default()?;
             columns.push(RelationalColumnSchema {
                 name,
                 scalar_type,
@@ -1762,6 +1789,32 @@ impl<I: DecodeInput> Decoder<I> {
             1 => Ok(true),
             tag => Err(RelationalError::Corruption(format!(
                 "invalid {context} tag {tag}"
+            ))),
+        }
+    }
+
+    fn column_default(&mut self) -> Result<Option<RelationalColumnDefault>, RelationalError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
+            2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            tag => Err(RelationalError::Corruption(format!(
+                "invalid column default tag {tag}"
+            ))),
+        }
+    }
+
+    fn column_default_logical(
+        &mut self,
+    ) -> Result<Option<RelationalColumnDefault>, RelationalError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(RelationalColumnDefault::Literal(
+                self.logical_value()?,
+            ))),
+            2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            tag => Err(RelationalError::Corruption(format!(
+                "invalid column default tag {tag}"
             ))),
         }
     }
@@ -1906,10 +1959,7 @@ impl<I: DecodeInput> Decoder<I> {
                 let name = self.string()?;
                 let scalar_type = self.scalar_type()?;
                 let nullable = self.boolean("column nullable")?;
-                let default = self
-                    .boolean("column default present")?
-                    .then(|| self.logical_value())
-                    .transpose()?;
+                let default = self.column_default_logical()?;
                 Ok(RelationalWrite::AddColumn {
                     table,
                     column: RelationalColumnSchema {

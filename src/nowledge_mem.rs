@@ -10459,6 +10459,7 @@ fn estimate_value_payload_bytes(value: &Value) -> usize {
         Value::Int(_) | Value::Float(_) => std::mem::size_of::<i64>(),
         Value::String(value) => value.len(),
         Value::Binary(value) => value.len(),
+        Value::Uuid(_) => 16,
         Value::List(values) => values.iter().map(estimate_value_payload_bytes).sum(),
         Value::Map(values) => values
             .iter()

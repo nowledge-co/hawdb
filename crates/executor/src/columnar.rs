@@ -106,6 +106,7 @@ impl RelationalRowLocator {
                         | RelationalValue::Boolean(_)
                         | RelationalValue::BigInt(_)
                         | RelationalValue::DoublePrecision(_)
+                        | RelationalValue::Uuid(_)
                         | RelationalValue::Overflow(_) => 0,
                     })
                     .sum::<usize>(),

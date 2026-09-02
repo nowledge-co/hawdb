@@ -8,7 +8,8 @@ use crate::sql::{
 use crate::value::Value;
 use skein_storage::{
     AppendGeneratedRow, AppendOrderMode, AppendState, AppendTableRow, AppendTableSchema,
-    AppendTransaction, AppendWrite, RelationalColumnSchema, RelationalRow, RelationalValue,
+    AppendTransaction, AppendWrite, RelationalColumnDefault, RelationalColumnSchema, RelationalRow,
+    RelationalValue,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,8 +244,15 @@ fn compile_insert_values(
             }
             let mut row = columns
                 .iter()
-                .map(|column| column.default.clone().unwrap_or(RelationalValue::Null))
-                .collect::<Vec<_>>();
+                .map(|column| match &column.default {
+                    None => Ok(RelationalValue::Null),
+                    Some(RelationalColumnDefault::Literal(value)) => Ok(value.clone()),
+                    Some(RelationalColumnDefault::UuidV7) => Err(SkeinError::Semantic(format!(
+                        "append table column {} does not support uuidv7() defaults",
+                        column.name
+                    ))),
+                })
+                .collect::<Result<Vec<_>>>()?;
             for ((position, value), column_name) in
                 positions.iter().zip(values).zip(insert_columns.iter())
             {
@@ -622,6 +630,7 @@ fn append_value_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Overflow(_) => Err(SkeinError::StorageIntegrity(
             "strict append row contains an overflow reference".to_string(),
         )),

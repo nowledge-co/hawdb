@@ -14,8 +14,8 @@ use crate::value::Value;
 use skein_core::{GraphStatistics, RuntimeCapabilities};
 use skein_query::QueryIdentity;
 use skein_storage::{
-    ProjectedGraphStatus, RelationalScalarType, RelationalState, RelationalTableSchema,
-    RelationalValue, SearchProjectionChangefeedStatus, StorageResidencyMode,
+    ProjectedGraphStatus, RelationalColumnDefault, RelationalScalarType, RelationalState,
+    RelationalTableSchema, RelationalValue, SearchProjectionChangefeedStatus, StorageResidencyMode,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
@@ -982,22 +982,43 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision_radix: None,
             numeric_scale: None,
         },
+        RelationalScalarType::Uuid => InformationSchemaType {
+            data_type: "uuid",
+            udt_name: "uuid",
+            character_maximum_length: None,
+            character_octet_length: None,
+            numeric_precision: None,
+            numeric_precision_radix: None,
+            numeric_scale: None,
+        },
     }
 }
 
-fn relational_default_value(default: Option<&RelationalValue>) -> Value {
+fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value {
     match default {
-        None | Some(RelationalValue::Overflow(_)) => Value::Null,
-        Some(RelationalValue::Null) => Value::String("NULL".to_string()),
-        Some(RelationalValue::Boolean(value)) => Value::String(value.to_string()),
-        Some(RelationalValue::BigInt(value)) => Value::String(value.to_string()),
-        Some(RelationalValue::DoublePrecision(value)) => Value::String(value.to_string()),
-        Some(RelationalValue::Text(value)) => {
+        None | Some(RelationalColumnDefault::Literal(RelationalValue::Overflow(_))) => Value::Null,
+        Some(RelationalColumnDefault::Literal(RelationalValue::Null)) => {
+            Value::String("NULL".to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Boolean(value))) => {
+            Value::String(value.to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::BigInt(value))) => {
+            Value::String(value.to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::DoublePrecision(value))) => {
+            Value::String(value.to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Text(value))) => {
             Value::String(format!("'{}'::text", value.replace('\'', "''")))
         }
-        Some(RelationalValue::Bytea(value)) => {
+        Some(RelationalColumnDefault::Literal(RelationalValue::Bytea(value))) => {
             Value::String(format!("'\\x{}'::bytea", encode_hex(value)))
         }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Uuid(value))) => {
+            Value::String(format!("'{value}'::uuid"))
+        }
+        Some(RelationalColumnDefault::UuidV7) => Value::String("uuidv7()".to_string()),
     }
 }
 

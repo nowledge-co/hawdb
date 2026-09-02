@@ -764,6 +764,7 @@ fn vector_seed_metadata_value(value: &Value) -> Option<String> {
         Value::Bool(value) => Some(value.to_string()),
         Value::Int(value) => Some(value.to_string()),
         Value::Float(value) if value.is_finite() => Some(value.to_string()),
+        Value::Uuid(value) => Some(value.to_string()),
         Value::Null | Value::Float(_) | Value::Binary(_) | Value::List(_) | Value::Map(_) => None,
     }
 }

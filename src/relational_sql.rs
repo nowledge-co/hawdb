@@ -1,20 +1,22 @@
 use crate::error::{Result, SkeinError};
 use crate::sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlAssignmentValue,
-    SqlColumnDefinition, SqlComparisonOp, SqlConflictAction, SqlDataType, SqlPredicate,
-    SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
+    SqlColumnDefault, SqlColumnDefinition, SqlComparisonOp, SqlConflictAction, SqlDataType,
+    SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage,
+    SqlValue,
 };
 use crate::value::Value;
 use skein_storage::{
-    RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
-    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,
-    RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
-    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-    RelationalWrite,
+    RelationalColumnDefault, RelationalColumnSchema, RelationalComparisonOp,
+    RelationalConflictAction, RelationalForeignKeySchema, RelationalIndexSchema,
+    RelationalInsertMode, RelationalPredicate, RelationalReferentialAction, RelationalRow,
+    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalTransaction,
+    RelationalUpdateAssignment, RelationalUpdateValue, RelationalUpsertAssignment,
+    RelationalUpsertValue, RelationalValue, RelationalWrite,
 };
 mod append;
 mod cardinality;
+mod uuidv7;
 
 pub(crate) use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
@@ -184,17 +186,21 @@ fn compile_relational_mutation(
                     let mut row = schema
                         .columns
                         .iter()
-                        .map(|column| column.default.clone().unwrap_or(RelationalValue::Null))
-                        .collect::<Vec<_>>();
+                        .map(materialize_column_default)
+                        .collect::<Result<Vec<_>>>()?;
                     for ((position, value), column_name) in
                         positions.iter().zip(values).zip(insert.columns.iter())
                     {
-                        row[*position] =
-                            bind_relational_value(value, parameters).map_err(|error| {
-                                SkeinError::Semantic(format!(
-                                    "failed to bind INSERT column {column_name}: {error}"
-                                ))
-                            })?;
+                        row[*position] = bind_relational_value_as(
+                            value,
+                            parameters,
+                            schema.columns[*position].scalar_type,
+                        )
+                        .map_err(|error| {
+                            SkeinError::Semantic(format!(
+                                "failed to bind INSERT column {column_name}: {error}"
+                            ))
+                        })?;
                     }
                     Ok(RelationalRow::new(row))
                 })
@@ -289,6 +295,10 @@ fn compile_relational_mutation(
                             schema.name, assignment.column
                         )));
                     }
+                    let target_type = schema.columns[schema
+                        .column_position(&assignment.column)
+                        .expect("assignment column was validated")]
+                    .scalar_type;
                     let value = match assignment.value {
                         SqlAssignmentValue::Column(column) => {
                             validate_mutation_column(
@@ -299,9 +309,9 @@ fn compile_relational_mutation(
                             )?;
                             RelationalUpdateValue::Column(column.name)
                         }
-                        SqlAssignmentValue::Value(value) => {
-                            RelationalUpdateValue::Value(bind_relational_value(value, parameters)?)
-                        }
+                        SqlAssignmentValue::Value(value) => RelationalUpdateValue::Value(
+                            bind_relational_value_as(value, parameters, target_type)?,
+                        ),
                     };
                     Ok(RelationalUpdateAssignment {
                         column: assignment.column,
@@ -358,10 +368,14 @@ fn compile_mutation_predicate(
         SqlPredicate::Not(predicate) => RelationalPredicate::Not(Box::new(compile(*predicate)?)),
         SqlPredicate::Compare { left, op, right } => {
             validate_mutation_column(&left, schema, alias, table)?;
+            let scalar_type = schema.columns[schema
+                .column_position(&left.name)
+                .expect("mutation column was validated")]
+            .scalar_type;
             RelationalPredicate::Compare {
                 column: left.name,
                 op: compile_comparison_op(op),
-                value: bind_relational_value(right, parameters)?,
+                value: bind_relational_value_as(right, parameters, scalar_type)?,
             }
         }
         SqlPredicate::CompareColumns { .. } => {
@@ -376,6 +390,10 @@ fn compile_mutation_predicate(
             negated,
         } => {
             validate_mutation_column(&left, schema, alias, table)?;
+            let scalar_type = schema.columns[schema
+                .column_position(&left.name)
+                .expect("mutation column was validated")]
+            .scalar_type;
             let mut predicates = values
                 .into_iter()
                 .map(|value| {
@@ -386,7 +404,7 @@ fn compile_mutation_predicate(
                         } else {
                             RelationalComparisonOp::Eq
                         },
-                        value: bind_relational_value(value, parameters)?,
+                        value: bind_relational_value_as(value, parameters, scalar_type)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -468,6 +486,7 @@ pub(crate) fn bind_relational_value(
         Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
+        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
             "relational SQL parameters must be scalar".to_string(),
         )),
@@ -588,11 +607,28 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
 }
 
 fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSchema> {
+    let scalar_type = compile_data_type(column.data_type);
     Ok(RelationalColumnSchema {
         name: column.name,
-        scalar_type: compile_data_type(column.data_type),
+        scalar_type,
         nullable: column.nullable,
-        default: column.default.map(compile_schema_value).transpose()?,
+        default: column
+            .default
+            .map(|default| match default {
+                SqlColumnDefault::Literal(value) => {
+                    compile_schema_value(value, scalar_type).map(RelationalColumnDefault::Literal)
+                }
+                SqlColumnDefault::UuidV7 => Ok(RelationalColumnDefault::UuidV7),
+            })
+            .transpose()?,
+    })
+}
+
+fn materialize_column_default(column: &RelationalColumnSchema) -> Result<RelationalValue> {
+    Ok(match &column.default {
+        None => RelationalValue::Null,
+        Some(RelationalColumnDefault::Literal(value)) => value.clone(),
+        Some(RelationalColumnDefault::UuidV7) => RelationalValue::Uuid(uuidv7::generate_uuidv7()?),
     })
 }
 
@@ -603,10 +639,14 @@ fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
         SqlDataType::DoublePrecision => RelationalScalarType::DoublePrecision,
         SqlDataType::Text => RelationalScalarType::Text,
         SqlDataType::Bytea => RelationalScalarType::Bytea,
+        SqlDataType::Uuid => RelationalScalarType::Uuid,
     }
 }
 
-fn compile_schema_value(value: SqlValue) -> Result<RelationalValue> {
+fn compile_schema_value(
+    value: SqlValue,
+    scalar_type: RelationalScalarType,
+) -> Result<RelationalValue> {
     let SqlValue::Literal(value) = value else {
         return Err(SkeinError::Semantic(
             "schema defaults cannot contain parameters".to_string(),
@@ -619,9 +659,37 @@ fn compile_schema_value(value: SqlValue) -> Result<RelationalValue> {
         Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
+        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
             "relational schema defaults must be scalar".to_string(),
         )),
+    }
+    .and_then(|value| coerce_relational_value(value, scalar_type))
+}
+
+fn bind_relational_value_as(
+    value: SqlValue,
+    parameters: &[Value],
+    scalar_type: RelationalScalarType,
+) -> Result<RelationalValue> {
+    bind_relational_value(value, parameters)
+        .and_then(|value| coerce_relational_value(value, scalar_type))
+}
+
+fn coerce_relational_value(
+    value: RelationalValue,
+    scalar_type: RelationalScalarType,
+) -> Result<RelationalValue> {
+    match (scalar_type, value) {
+        (RelationalScalarType::Uuid, RelationalValue::Text(value)) => {
+            skein_core::Uuid::parse_str(&value)
+                .map(RelationalValue::Uuid)
+                .map_err(|_| SkeinError::Semantic(format!("invalid UUID value {value:?}")))
+        }
+        (RelationalScalarType::Uuid, RelationalValue::Uuid(value)) => {
+            Ok(RelationalValue::Uuid(value))
+        }
+        (_, value) => Ok(value),
     }
 }
 
@@ -697,6 +765,320 @@ mod tests {
     use crate::{Database, DatabaseConfig};
     use skein_storage::{DurabilityPolicy, RelationalStore};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn relational_uuid_scalar_preserves_typed_schema_keys_and_queries() {
+        let account_id = skein_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
+            .expect("parse account UUID");
+        let first_session = skein_core::Uuid::parse_str("018f4e6a-7c1c-7b45-8f4d-1234567890ab")
+            .expect("parse first session UUID");
+        let second_session = skein_core::Uuid::parse_str("018f4e6a-7c1d-7b45-8f4d-1234567890ab")
+            .expect("parse second session UUID");
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE accounts (id UUID PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
+            .expect("create UUID parent table");
+        database
+            .query_sql(
+                "CREATE TABLE sessions (\
+                    id UUID PRIMARY KEY, \
+                    account_id UUID NOT NULL REFERENCES accounts(id), \
+                    label TEXT NOT NULL\
+                )",
+            )
+            .expect("create UUID child table");
+        database
+            .query_sql("CREATE INDEX sessions_account_id_idx ON sessions (account_id, id)")
+            .expect("create UUID secondary index");
+        database
+            .query_sql(&format!(
+                "INSERT INTO accounts (id, name) VALUES ('{account_id}', 'primary')"
+            ))
+            .expect("insert UUID parent");
+        database
+            .query_sql(&format!(
+                "INSERT INTO sessions (id, account_id, label) VALUES \
+                 ('{second_session}', '{account_id}', 'second'), \
+                 ('{first_session}', '{account_id}', 'first')"
+            ))
+            .expect("insert UUID children");
+
+        let point = database
+            .query_sql(&format!(
+                "SELECT id FROM accounts WHERE id = '{account_id}'"
+            ))
+            .expect("read UUID primary key");
+        assert_eq!(point.rows[0]["id"], Value::Uuid(account_id));
+
+        let joined = database
+            .query_sql(&format!(
+                "SELECT s.id FROM sessions AS s \
+                 INNER JOIN accounts AS a ON a.id = s.account_id \
+                 WHERE a.id = '{account_id}' \
+                 ORDER BY s.id ASC LIMIT 2"
+            ))
+            .expect("join UUID foreign key");
+        assert_eq!(
+            joined
+                .rows
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            [Value::Uuid(first_session), Value::Uuid(second_session)]
+        );
+
+        let range = database
+            .query_sql(&format!(
+                "SELECT id FROM sessions WHERE account_id = '{account_id}' \
+                 AND id > '{first_session}' ORDER BY id ASC LIMIT 1"
+            ))
+            .expect("range read UUID index");
+        assert_eq!(range.rows[0]["id"], Value::Uuid(second_session));
+
+        let metadata = database
+            .query_sql(
+                "SELECT data_type, udt_name FROM information_schema.columns \
+                 WHERE table_name = 'sessions' AND column_name = 'id'",
+            )
+            .expect("read UUID information schema");
+        assert_eq!(
+            metadata.rows[0]["data_type"],
+            Value::String("uuid".to_string())
+        );
+        assert_eq!(
+            metadata.rows[0]["udt_name"],
+            Value::String("uuid".to_string())
+        );
+
+        let invalid = database
+            .query_sql("INSERT INTO accounts (id, name) VALUES ('invalid', 'bad')")
+            .expect_err("invalid UUID must fail before mutation");
+        assert!(invalid.to_string().contains("invalid UUID"));
+        assert_eq!(
+            database
+                .query_sql("SELECT id FROM accounts WHERE name = 'bad'")
+                .expect("read after invalid UUID")
+                .rows
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn relational_uuid_scalar_survives_wal_and_checkpoint_reopen() {
+        let value = skein_core::Uuid::parse_str("018f4e6a-7c1e-7d7a-8f4d-1234567890ab")
+            .expect("parse durable UUID");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-uuid-{nonce}-{}",
+            std::process::id()
+        ));
+        {
+            let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("open durable UUID database");
+            database
+                .query_sql("CREATE TABLE durable_ids (id UUID PRIMARY KEY, label TEXT NOT NULL)")
+                .expect("create durable UUID table");
+            database
+                .query_sql(&format!(
+                    "INSERT INTO durable_ids (id, label) VALUES ('{value}', 'durable')"
+                ))
+                .expect("insert durable UUID");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen UUID WAL");
+            let recovered = reopened
+                .query_sql("SELECT id FROM durable_ids WHERE label = 'durable'")
+                .expect("read UUID recovered from WAL");
+            assert_eq!(recovered.rows[0]["id"], Value::Uuid(value));
+            reopened.checkpoint().expect("checkpoint durable UUID");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen UUID checkpoint");
+            let recovered = reopened
+                .query_sql(&format!("SELECT id FROM durable_ids WHERE id = '{value}'"))
+                .expect("read UUID recovered from checkpoint");
+            assert_eq!(recovered.rows[0]["id"], Value::Uuid(value));
+        }
+        std::fs::remove_dir_all(path).expect("remove durable UUID test directory");
+    }
+
+    #[test]
+    fn relational_uuidv7_function_and_default_materialize_once_per_row() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE probe (id BIGINT PRIMARY KEY)")
+            .expect("create uuidv7 probe");
+        database
+            .query_sql("INSERT INTO probe (id) VALUES (1)")
+            .expect("insert uuidv7 probe row");
+        let projected = database
+            .query_sql("SELECT uuidv7() AS generated_id FROM probe LIMIT 1")
+            .expect("project uuidv7");
+        let Value::Uuid(projected_id) = projected.rows[0]["generated_id"] else {
+            panic!("uuidv7 projection must return a UUID");
+        };
+        assert_uuidv7(projected_id);
+
+        database
+            .query_sql(
+                "CREATE TABLE feeds (\
+                    id UUID PRIMARY KEY DEFAULT uuidv7(), \
+                    url TEXT NOT NULL UNIQUE\
+                )",
+            )
+            .expect("create uuidv7 default table");
+        let defaults = database
+            .query_sql(
+                "SELECT column_default FROM information_schema.columns \
+                 WHERE table_name = 'feeds' AND column_name = 'id'",
+            )
+            .expect("read uuidv7 default metadata");
+        assert_eq!(
+            defaults.rows[0]["column_default"],
+            Value::String("uuidv7()".to_string())
+        );
+
+        let inserted = database
+            .query_sql(
+                "INSERT INTO feeds (url) VALUES ('https://one.example'), ('https://two.example') \
+                 RETURNING id",
+            )
+            .expect("insert UUID default rows");
+        let ids = inserted
+            .rows
+            .iter()
+            .map(|row| match row["id"] {
+                Value::Uuid(value) => value,
+                _ => panic!("uuidv7 default must return a UUID"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids[0] < ids[1]);
+        ids.iter().copied().for_each(assert_uuidv7);
+
+        let explicit = uuidv7::generate_uuidv7().expect("generate explicit UUIDv7");
+        let explicit_insert = database
+            .query_sql(&format!(
+                "INSERT INTO feeds (id, url) VALUES ('{explicit}', 'https://explicit.example') \
+                 RETURNING id"
+            ))
+            .expect("insert explicit UUID");
+        assert_eq!(explicit_insert.rows[0]["id"], Value::Uuid(explicit));
+
+        let conflict = database
+            .query_sql(
+                "INSERT INTO feeds (url) VALUES ('https://one.example') \
+                 ON CONFLICT (url) DO NOTHING RETURNING id",
+            )
+            .expect("ignore UUID default conflict");
+        assert!(conflict.rows.is_empty());
+
+        let mut transaction = database.begin_transaction();
+        let staged = transaction
+            .query_sql_with_result(
+                "INSERT INTO feeds (url) VALUES ('https://transaction.example') RETURNING id",
+            )
+            .expect("stage UUID default insert");
+        let staged_id = match staged
+            .mutation
+            .expect("staged UUID mutation")
+            .rows
+            .first()
+            .expect("one staged UUID row")["id"]
+        {
+            Value::Uuid(value) => value,
+            _ => panic!("staged UUID default must be typed"),
+        };
+        let committed = transaction
+            .commit_with_result()
+            .expect("commit UUID default insert");
+        assert_eq!(committed.output.rows[0]["id"], Value::Uuid(staged_id));
+
+        let mut rollback = database.begin_transaction();
+        let staged = rollback
+            .query_sql_with_result(
+                "INSERT INTO feeds (url) VALUES ('https://rollback.example') RETURNING id",
+            )
+            .expect("stage rollback UUID default insert");
+        assert_eq!(
+            staged.mutation.expect("rollback mutation").rows.len(),
+            1,
+            "uuidv7 is materialized while the statement is staged"
+        );
+        rollback.rollback();
+        assert!(database
+            .query_sql("SELECT id FROM feeds WHERE url = 'https://rollback.example'")
+            .expect("read rolled-back UUID default row")
+            .rows
+            .is_empty());
+
+        let error = database
+            .query_sql("CREATE TABLE invalid_uuid_default (id TEXT PRIMARY KEY DEFAULT uuidv7())")
+            .expect_err("uuidv7 default must require UUID column");
+        assert!(error
+            .to_string()
+            .contains("uuidv7() default but is not UUID"));
+    }
+
+    #[test]
+    fn relational_uuidv7_defaults_survive_wal_and_checkpoint_without_regeneration() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-uuidv7-{nonce}-{}",
+            std::process::id()
+        ));
+        let generated;
+        {
+            let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("open durable uuidv7 database");
+            database
+                .query_sql(
+                    "CREATE TABLE durable_feeds (\
+                        id UUID PRIMARY KEY DEFAULT uuidv7(), \
+                        url TEXT NOT NULL UNIQUE\
+                    )",
+                )
+                .expect("create durable uuidv7 table");
+            let inserted = database
+                .query_sql(
+                    "INSERT INTO durable_feeds (url) VALUES ('https://durable.example') \
+                     RETURNING id",
+                )
+                .expect("insert durable uuidv7 row");
+            generated = match inserted.rows[0]["id"] {
+                Value::Uuid(value) => value,
+                _ => panic!("durable uuidv7 default must return a UUID"),
+            };
+            database
+                .checkpoint()
+                .expect("checkpoint durable uuidv7 row");
+        }
+        let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+            .expect("reopen durable uuidv7 database");
+        let recovered = reopened
+            .query_sql("SELECT id FROM durable_feeds WHERE url = 'https://durable.example'")
+            .expect("read durable uuidv7 row");
+        assert_eq!(recovered.rows[0]["id"], Value::Uuid(generated));
+        assert_uuidv7(generated);
+        drop(reopened);
+        std::fs::remove_dir_all(path).expect("remove durable uuidv7 test directory");
+    }
+
+    fn assert_uuidv7(value: crate::Uuid) {
+        let bytes = value.as_bytes();
+        assert_eq!(bytes[6] >> 4, 7, "uuidv7 version bits");
+        assert_eq!(bytes[8] & 0b1100_0000, 0b1000_0000, "RFC 9562 variant bits");
+    }
 
     #[test]
     fn relational_keyset_pagination_uses_exclusive_forward_and_backward_index_seeks() {

@@ -704,6 +704,12 @@ impl ColumnGroupWriter {
                         Value::Bool(_) => ChunkEncoding::BoolBitmap,
                         Value::String(_) => ChunkEncoding::StringTable,
                         Value::Binary(_) => ChunkEncoding::ByteTable,
+                        Value::Uuid(_) => {
+                            return Err(unsupported(
+                                "streaming single-row column groups do not support UUID values"
+                                    .to_string(),
+                            ));
+                        }
                         Value::Null | Value::List(_) | Value::Map(_) => {
                             unreachable!("validated scalar cells")
                         }
@@ -731,6 +737,7 @@ impl ColumnGroupWriter {
                             sink.write_all(&length.to_le_bytes())?;
                             sink.write_all(value)?;
                         }
+                        Value::Uuid(_) => unreachable!("UUID values were rejected above"),
                         Value::Null | Value::List(_) | Value::Map(_) => {
                             unreachable!("validated scalar cells")
                         }

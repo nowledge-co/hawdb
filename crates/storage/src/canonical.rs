@@ -2703,6 +2703,10 @@ fn validate_encoded_value(
             cursor.read_exact(length)?;
             Ok(())
         }
+        9 => {
+            cursor.read_exact(16)?;
+            Ok(())
+        }
         tag => Err(CanonicalSegmentError::Corrupt(format!(
             "unknown canonical value tag {tag}"
         ))),
@@ -3245,6 +3249,10 @@ fn encode_value(
             output.extend_from_slice(&u32_len(value.len(), "binary")?.to_le_bytes());
             output.extend_from_slice(value);
         }
+        Value::Uuid(value) => {
+            output.push(9);
+            output.extend_from_slice(value.as_bytes());
+        }
         Value::List(values) => {
             output.push(5);
             output.extend_from_slice(&u32_len(values.len(), "value list")?.to_le_bytes());
@@ -3319,6 +3327,7 @@ fn encoded_value_len(value: &Value, depth: usize) -> Result<u64, CanonicalSegmen
             u32_len(value.len(), "binary")?;
             1 + 4 + value.len() as u64
         }
+        Value::Uuid(_) => 17,
         Value::List(values) => {
             u32_len(values.len(), "value list")?;
             let mut total = 1u64 + 4;
@@ -3371,6 +3380,10 @@ fn write_value_streaming<W: Write + ?Sized>(
             out.write_all(&[8])?;
             out.write_all(&u32_len(value.len(), "binary")?.to_le_bytes())?;
             out.write_all(value)?;
+        }
+        Value::Uuid(value) => {
+            out.write_all(&[9])?;
+            out.write_all(value.as_bytes())?;
         }
         Value::List(values) => {
             out.write_all(&[5])?;
@@ -3618,6 +3631,12 @@ fn decode_value_with_property_spills(
             let length = cursor.read_u32()? as usize;
             Ok(Value::Binary(cursor.read_exact(length)?.to_vec()))
         }
+        9 => Ok(Value::Uuid(skein_core::Uuid::from_bytes(
+            cursor
+                .read_exact(16)?
+                .try_into()
+                .expect("UUID has a fixed length"),
+        ))),
         tag => Err(CanonicalSegmentError::Corrupt(format!(
             "unknown canonical value tag {tag}"
         ))),

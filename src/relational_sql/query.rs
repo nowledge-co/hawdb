@@ -42,8 +42,8 @@ use skein_optimizer::{
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
     relational_unique_index_name, RelationalHydrationBudget, RelationalIndexRangeScan,
-    RelationalIndexScanDirection, RelationalKey, RelationalState, RelationalTableSchema,
-    RelationalValue, RelationalValueRef,
+    RelationalIndexScanDirection, RelationalKey, RelationalScalarType, RelationalState,
+    RelationalTableSchema, RelationalValue, RelationalValueRef,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2121,7 +2121,10 @@ fn choose_base_access(
         let Some(position) = schema.column_position(&column.name) else {
             continue;
         };
-        let value = value_to_relational(bind_sql_value(value, parameters)?)?;
+        let value = value_to_relational_as(
+            bind_sql_value(value, parameters)?,
+            schema.columns[position].scalar_type,
+        )?;
         if matches!(value, RelationalValue::Null) {
             continue;
         }
@@ -2461,10 +2464,13 @@ fn bind_canonical_keyset_bound(
     };
     let mut bound = prefix.0.clone();
     for (value, item) in [(first, &order_by[0]), (second, &order_by[1])] {
-        let value = value_to_relational(bind_sql_value(value, parameters)?)?;
         let Some(position) = schema.column_position(&item.column.name) else {
             return Ok(None);
         };
+        let value = value_to_relational_as(
+            bind_sql_value(value, parameters)?,
+            schema.columns[position].scalar_type,
+        )?;
         if schema.columns[position].nullable
             || matches!(value, RelationalValue::Null)
             || value.scalar_type() != Some(schema.columns[position].scalar_type)
@@ -3922,6 +3928,7 @@ fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Overflow(_) => Err(SkeinError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),
@@ -5455,6 +5462,7 @@ fn relational_ref_to_value(value: RelationalValueRef<'_>) -> Result<Value> {
         RelationalValueRef::DoublePrecision(value) => Ok(Value::Float(value)),
         RelationalValueRef::Text(value) => Ok(Value::String(value.to_owned())),
         RelationalValueRef::Bytea(value) => Ok(Value::Binary(value.to_vec())),
+        RelationalValueRef::Uuid(value) => Ok(Value::Uuid(value)),
         RelationalValueRef::Overflow(_) => Err(SkeinError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),
@@ -5486,11 +5494,14 @@ fn predicate_truth(
         SqlPredicate::Not(predicate) => {
             Ok(predicate_truth(predicate, row, parameters)?.map(|value| !value))
         }
-        SqlPredicate::Compare { left, op, right } => compare_values(
-            resolve_column(row, left)?,
-            &value_to_relational(bind_sql_value(right, parameters)?)?,
-            *op,
-        ),
+        SqlPredicate::Compare { left, op, right } => {
+            let (left_value, scalar_type) = resolve_column_with_type(row, left)?;
+            compare_values(
+                left_value,
+                &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
+                *op,
+            )
+        }
         SqlPredicate::CompareColumns { left, op, right } => {
             compare_values(resolve_column(row, left)?, resolve_column(row, right)?, *op)
         }
@@ -5499,13 +5510,13 @@ fn predicate_truth(
             values,
             negated,
         } => {
-            let left = resolve_column(row, left)?;
+            let (left, scalar_type) = resolve_column_with_type(row, left)?;
             let mut has_unknown = false;
             let mut matched = false;
             for value in values {
                 match compare_values(
                     left,
-                    &value_to_relational(bind_sql_value(value, parameters)?)?,
+                    &value_to_relational_as(bind_sql_value(value, parameters)?, scalar_type)?,
                     SqlComparisonOp::Eq,
                 )? {
                     Some(true) => matched = true,
@@ -5537,6 +5548,13 @@ fn compare_values(
 }
 
 fn resolve_column<'a>(row: &'a BoundRow<'a>, column: &SqlColumnRef) -> Result<&'a RelationalValue> {
+    resolve_column_with_type(row, column).map(|(value, _)| value)
+}
+
+fn resolve_column_with_type<'a>(
+    row: &'a BoundRow<'a>,
+    column: &SqlColumnRef,
+) -> Result<(&'a RelationalValue, RelationalScalarType)> {
     let bindings =
         row.bindings.iter().filter(|binding| {
             column.qualifier.as_deref().is_none_or(|qualifier| {
@@ -5555,7 +5573,10 @@ fn resolve_column<'a>(row: &'a BoundRow<'a>, column: &SqlColumnRef) -> Result<&'
         .schema
         .column_position(&column.name)
         .expect("filtered binding has column");
-    binding.value(position)
+    Ok((
+        binding.value(position)?,
+        binding.schema.columns[position].scalar_type,
+    ))
 }
 
 fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Result<Row> {
@@ -5579,14 +5600,37 @@ fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Res
                     value,
                 )?;
             }
-            SelectProjection::Expression { .. } => {
-                return Err(SkeinError::Semantic(
-                    "non-aggregate relational projection expressions are not supported".to_string(),
-                ));
-            }
+            SelectProjection::Expression { expression, alias } => insert_output(
+                &mut output,
+                alias.clone().unwrap_or_else(|| expression_name(expression)),
+                relational_to_value(&evaluate_projection_expression(expression, row)?)?,
+            )?,
         }
     }
     Ok(output)
+}
+
+fn evaluate_projection_expression(
+    expression: &SqlExpression,
+    row: &BoundRow<'_>,
+) -> Result<RelationalValue> {
+    match expression {
+        SqlExpression::Column(column) => Ok(resolve_column(row, column)?.clone()),
+        SqlExpression::Value(SqlValue::Literal(value)) => value_to_relational(value.clone()),
+        SqlExpression::Value(SqlValue::Parameter(position)) => Err(SkeinError::Semantic(format!(
+            "projection expression cannot bind parameter ${position}"
+        ))),
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct: false,
+        } if name == "uuidv7" && arguments.is_empty() => {
+            Ok(RelationalValue::Uuid(super::uuidv7::generate_uuidv7()?))
+        }
+        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+            "unsupported relational projection function {name}"
+        ))),
+    }
 }
 
 fn resolve_binding<'a>(
@@ -5668,10 +5712,18 @@ fn value_to_relational(value: Value) -> Result<RelationalValue> {
         Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
+        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
             "relational SQL values must be scalar".to_string(),
         )),
     }
+}
+
+fn value_to_relational_as(
+    value: Value,
+    scalar_type: RelationalScalarType,
+) -> Result<RelationalValue> {
+    super::coerce_relational_value(value_to_relational(value)?, scalar_type)
 }
 
 fn relational_to_value(value: &RelationalValue) -> Result<Value> {
@@ -5682,6 +5734,7 @@ fn relational_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Overflow(_) => Err(SkeinError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),

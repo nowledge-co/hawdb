@@ -4703,6 +4703,7 @@ fn value_to_projection_string(value: &Value) -> String {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         ),
+        Value::Uuid(value) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(value_to_projection_string)

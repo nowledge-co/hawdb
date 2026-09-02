@@ -48,6 +48,7 @@ pub enum ScanScalar {
     Float(u64),
     String(String),
     Binary(Vec<u8>),
+    Uuid(skein_core::Uuid),
 }
 
 impl ScanScalar {
@@ -58,6 +59,7 @@ impl ScanScalar {
             Value::Float(value) if value.is_finite() => Some(Self::Float(value.to_bits())),
             Value::String(value) => Some(Self::String(value.clone())),
             Value::Binary(value) => Some(Self::Binary(value.clone())),
+            Value::Uuid(value) => Some(Self::Uuid(*value)),
             Value::Null | Value::Float(_) | Value::List(_) | Value::Map(_) => None,
         }
     }
@@ -83,6 +85,11 @@ impl ScanScalar {
             Self::Binary(value) => {
                 let mut bytes = vec![4];
                 bytes.extend(value);
+                bytes
+            }
+            Self::Uuid(value) => {
+                let mut bytes = vec![5];
+                bytes.extend(value.as_bytes());
                 bytes
             }
         }

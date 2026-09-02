@@ -445,6 +445,7 @@ pub use search_route_ownership::{
     REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
 };
 pub use skein_core::LogicalType;
+pub use skein_core::Uuid;
 pub use skein_core::{
     GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
     GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,

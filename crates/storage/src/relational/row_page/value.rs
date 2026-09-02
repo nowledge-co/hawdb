@@ -1,4 +1,5 @@
 use super::*;
+use skein_core::Uuid;
 
 pub(super) fn encode_row(
     row: &RelationalRow,
@@ -83,6 +84,10 @@ fn encode_value(
             encoded.push(5);
             encoded.extend_from_slice(&u32_len(value.len(), "BYTEA length")?.to_le_bytes());
             encoded.extend_from_slice(value);
+        }
+        RelationalValue::Uuid(value) => {
+            encoded.push(7);
+            encoded.extend_from_slice(value.as_bytes());
         }
         RelationalValue::Overflow(reference) => {
             validate_overflow_shape(reference, limits, ErrorClass::Admission)?;
@@ -288,10 +293,11 @@ fn validate_value(
             };
             validate_overflow_shape(&reference, limits, ErrorClass::Corrupt)
         }
+        7 if encoded.len() == 17 => Ok(()),
         1 => Err(RelationalRowPageError::Corrupt(
             "invalid BOOLEAN value encoding".to_string(),
         )),
-        0 | 2 | 3 => Err(RelationalRowPageError::Corrupt(format!(
+        0 | 2 | 3 | 7 => Err(RelationalRowPageError::Corrupt(format!(
             "value tag {tag} has an invalid encoded length {}",
             encoded.len()
         ))),
@@ -329,6 +335,11 @@ fn decode_validated_value(encoded: &[u8]) -> Result<RelationalValue, RelationalR
             compressed_bytes: read_u64(&encoded[2..10]),
             uncompressed_bytes: read_u64(&encoded[10..18]),
         })),
+        7 => Ok(RelationalValue::Uuid(Uuid::from_bytes(
+            encoded[1..17]
+                .try_into()
+                .expect("UUID value has a fixed length"),
+        ))),
         _ => unreachable!("validated row value tag"),
     }
 }
@@ -361,6 +372,11 @@ fn decode_validated_value_ref(
             compressed_bytes: read_u64(&encoded[2..10]),
             uncompressed_bytes: read_u64(&encoded[10..18]),
         })),
+        7 => Ok(RelationalValueRef::Uuid(Uuid::from_bytes(
+            encoded[1..17]
+                .try_into()
+                .expect("UUID value has a fixed length"),
+        ))),
         _ => unreachable!("validated row value tag"),
     }
 }
@@ -471,6 +487,7 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::DoublePrecision => 3,
         RelationalScalarType::Text => 4,
         RelationalScalarType::Bytea => 5,
+        RelationalScalarType::Uuid => 6,
     }
 }
 

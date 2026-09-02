@@ -2137,7 +2137,9 @@ fn add_column_externalizes_one_shared_default_for_all_rewritten_rows() {
                         name: "kind".to_string(),
                         scalar_type: RelationalScalarType::Text,
                         nullable: false,
-                        default: Some(RelationalValue::Text(default.clone())),
+                        default: Some(RelationalColumnDefault::Literal(RelationalValue::Text(
+                            default.clone(),
+                        ))),
                     },
                 }],
             },
@@ -3041,7 +3043,9 @@ fn wal_codec_preserves_upsert_and_delete_predicates() {
                     name: "kind".to_string(),
                     scalar_type: RelationalScalarType::Text,
                     nullable: false,
-                    default: Some(RelationalValue::Text("text".to_string())),
+                    default: Some(RelationalColumnDefault::Literal(RelationalValue::Text(
+                        "text".to_string(),
+                    ))),
                 },
             },
         ],
@@ -5311,7 +5315,9 @@ fn relational_schema_change_requires_a_canonical_row_checkpoint() {
                         name: "kind".to_string(),
                         scalar_type: RelationalScalarType::Text,
                         nullable: false,
-                        default: Some(RelationalValue::Text("text".to_string())),
+                        default: Some(RelationalColumnDefault::Literal(RelationalValue::Text(
+                            "text".to_string(),
+                        ))),
                     },
                 }],
             },

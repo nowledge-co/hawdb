@@ -2,7 +2,7 @@ use crate::{
     FileSegmentRangeReader, SegmentRangeReader, SegmentReadRange, SnapshotCommitError,
     SnapshotCoordinator, SnapshotReadGuard,
 };
-use skein_core::LogicalType;
+use skein_core::{LogicalType, Uuid};
 use skein_integrity::Sha256Digest;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -209,6 +209,7 @@ pub enum RelationalScalarType {
     DoublePrecision,
     Text,
     Bytea,
+    Uuid,
 }
 
 impl RelationalScalarType {
@@ -219,6 +220,7 @@ impl RelationalScalarType {
             Self::DoublePrecision => LogicalType::Float64,
             Self::Text => LogicalType::Text,
             Self::Bytea => LogicalType::Binary,
+            Self::Uuid => LogicalType::Uuid,
         }
     }
 }
@@ -231,6 +233,7 @@ pub enum RelationalValue {
     DoublePrecision(f64),
     Text(String),
     Bytea(Vec<u8>),
+    Uuid(Uuid),
     Overflow(RelationalOverflowRef),
 }
 
@@ -247,6 +250,7 @@ pub enum RelationalValueRef<'a> {
     DoublePrecision(f64),
     Text(&'a str),
     Bytea(&'a [u8]),
+    Uuid(Uuid),
     Overflow(RelationalOverflowRef),
 }
 
@@ -263,6 +267,7 @@ impl RelationalValue {
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
+            Self::Uuid(_) => Some(RelationalScalarType::Uuid),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -278,6 +283,7 @@ impl RelationalValue {
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
+            Self::Uuid(_) => 16,
             Self::Overflow(_) => std::mem::size_of::<RelationalOverflowRef>(),
         }
     }
@@ -290,7 +296,8 @@ impl RelationalValue {
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
-            Self::Overflow(_) => 6,
+            Self::Uuid(_) => 6,
+            Self::Overflow(_) => 7,
         }
     }
 }
@@ -304,6 +311,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
+            Self::Uuid(_) => Some(RelationalScalarType::Uuid),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -322,6 +330,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
+            Self::Uuid(_) => 16,
             Self::Overflow(_) => std::mem::size_of::<RelationalOverflowRef>(),
         }
     }
@@ -334,6 +343,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::DoublePrecision(value) => RelationalValue::DoublePrecision(value),
             Self::Text(value) => RelationalValue::Text(value.to_owned()),
             Self::Bytea(value) => RelationalValue::Bytea(value.to_vec()),
+            Self::Uuid(value) => RelationalValue::Uuid(value),
             Self::Overflow(reference) => RelationalValue::Overflow(reference),
         }
     }
@@ -346,7 +356,8 @@ impl<'a> RelationalValueRef<'a> {
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
-            Self::Overflow(_) => 6,
+            Self::Uuid(_) => 6,
+            Self::Overflow(_) => 7,
         }
     }
 }
@@ -360,6 +371,7 @@ impl<'a> From<&'a RelationalValue> for RelationalValueRef<'a> {
             RelationalValue::DoublePrecision(value) => Self::DoublePrecision(*value),
             RelationalValue::Text(value) => Self::Text(value),
             RelationalValue::Bytea(value) => Self::Bytea(value),
+            RelationalValue::Uuid(value) => Self::Uuid(*value),
             RelationalValue::Overflow(reference) => Self::Overflow(*reference),
         }
     }
@@ -392,6 +404,7 @@ impl Ord for RelationalValueRef<'_> {
                 }
                 (Self::Text(left), Self::Text(right)) => left.cmp(right),
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
+                (Self::Uuid(left), Self::Uuid(right)) => left.cmp(&right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(&right),
                 _ => Ordering::Equal,
             })
@@ -425,6 +438,7 @@ impl Ord for RelationalValue {
                 }
                 (Self::Text(left), Self::Text(right)) => left.cmp(right),
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
+                (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(right),
                 _ => Ordering::Equal,
             })
@@ -441,6 +455,7 @@ impl Hash for RelationalValue {
             Self::DoublePrecision(value) => value.to_bits().hash(state),
             Self::Text(value) => value.hash(state),
             Self::Bytea(value) => value.hash(state),
+            Self::Uuid(value) => value.hash(state),
             Self::Overflow(reference) => reference.hash(state),
         }
     }
@@ -451,7 +466,13 @@ pub struct RelationalColumnSchema {
     pub name: String,
     pub scalar_type: RelationalScalarType,
     pub nullable: bool,
-    pub default: Option<RelationalValue>,
+    pub default: Option<RelationalColumnDefault>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationalColumnDefault {
+    Literal(RelationalValue),
+    UuidV7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4503,7 +4524,19 @@ fn apply_transaction_inner(
                         limits.max_rows
                     )));
                 }
-                let fill = column.default.clone().unwrap_or(RelationalValue::Null);
+                let fill = match column.default.clone() {
+                    None => RelationalValue::Null,
+                    Some(RelationalColumnDefault::Literal(value)) => value,
+                    Some(RelationalColumnDefault::UuidV7) if row_count == 0 => {
+                        RelationalValue::Null
+                    }
+                    Some(RelationalColumnDefault::UuidV7) => {
+                        return Err(RelationalError::Schema(format!(
+                            "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
+                            column.name
+                        )));
+                    }
+                };
                 if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
                     return Err(RelationalError::Constraint(format!(
                         "ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table",
@@ -5252,7 +5285,17 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
             )));
         }
         if let Some(default) = &column.default {
-            validate_value_type(column, default)?;
+            match default {
+                RelationalColumnDefault::Literal(value) => validate_value_type(column, value)?,
+                RelationalColumnDefault::UuidV7
+                    if column.scalar_type == RelationalScalarType::Uuid => {}
+                RelationalColumnDefault::UuidV7 => {
+                    return Err(RelationalError::Schema(format!(
+                        "column {} uses uuidv7() default but is not UUID",
+                        column.name
+                    )));
+                }
+            }
         }
     }
     validate_column_list(schema, &schema.primary_key, "primary key")?;
@@ -5824,6 +5867,7 @@ fn estimated_relational_key_encoding_bytes(key: &RelationalKey) -> Option<usize>
             RelationalValue::Bytea(value) => 3usize
                 .checked_add(value.iter().filter(|byte| **byte == 0).count())?
                 .checked_add(value.len())?,
+            RelationalValue::Uuid(_) => 17,
             RelationalValue::Overflow(_) => return None,
         };
         bytes.checked_add(value_bytes)

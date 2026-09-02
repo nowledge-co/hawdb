@@ -3904,7 +3904,12 @@ fn compute_statistics_with_basic(
 
 fn property_value_supports_optimizer_statistics(value: &Value) -> bool {
     match value {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_) => true,
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Uuid(_) => true,
         Value::Binary(_) | Value::List(_) | Value::Map(_) => false,
     }
 }
@@ -5717,6 +5722,7 @@ pub(crate) fn encode_value(value: &Value) -> String {
         Value::Int(value) => format!("i{value}"),
         Value::Float(value) => format!("f{}", value.to_bits()),
         Value::String(value) => format!("s{}", encode_string(value)),
+        Value::Uuid(value) => format!("u{value}"),
         Value::Binary(value) => format!(
             "x{}",
             value
@@ -5764,6 +5770,9 @@ pub(crate) fn decode_value(input: &str) -> Result<Value> {
             .map(f64::from_bits)
             .map(Value::Float),
         "s" => decode_string(rest).map(Value::String),
+        "u" => skein_core::Uuid::parse_str(rest)
+            .map(Value::Uuid)
+            .map_err(|error| SkeinError::Storage(format!("invalid UUID value: {error}"))),
         "x" => decode_hex_value(rest),
         "l" => decode_list_value(rest),
         "m" => decode_map_value(rest),
@@ -6187,6 +6196,7 @@ fn estimated_value_bytes(value: &Value) -> u64 {
         Value::Int(_) | Value::Float(_) => 8,
         Value::String(value) => value.len() as u64,
         Value::Binary(value) => value.len() as u64,
+        Value::Uuid(_) => 16,
         Value::List(values) => values.iter().fold(16u64, |bytes, value| {
             bytes.saturating_add(estimated_value_bytes(value))
         }),

@@ -250,6 +250,7 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Float(_) => "float",
         Value::String(_) => "string",
         Value::Binary(_) => "binary",
+        Value::Uuid(_) => "uuid",
         Value::List(_) => "list",
         Value::Map(_) => "map",
     }

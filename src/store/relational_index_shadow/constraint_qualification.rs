@@ -534,6 +534,9 @@ fn synthetic_value(kind: RelationalScalarType, ordinal: usize, salt: usize) -> R
             u8::try_from(ordinal % 256).expect("ordinal was reduced modulo 256"),
             u8::try_from(salt % 256).expect("salt was reduced modulo 256"),
         ]),
+        RelationalScalarType::Uuid => RelationalValue::Uuid(skein_core::Uuid::from_u128(
+            ((salt as u128) << 64) | ordinal as u128,
+        )),
     }
 }
 

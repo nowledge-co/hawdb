@@ -16,6 +16,7 @@ pub enum LogicalType {
     /// An unbounded UTF-8 payload that is excluded from value statistics.
     Text,
     Binary,
+    Uuid,
     List,
     Map,
 }
@@ -55,6 +56,7 @@ impl Display for LogicalType {
             Self::String => "STRING",
             Self::Text => "TEXT",
             Self::Binary => "BYTEA",
+            Self::Uuid => "UUID",
             Self::List => "LIST",
             Self::Map => "MAP",
         })

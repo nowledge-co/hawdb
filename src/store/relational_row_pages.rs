@@ -2392,10 +2392,10 @@ mod tests {
     use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
     use skein_storage::{
         relational_overflow_extent_file, relational_overflow_manifest_generation_file,
-        relational_row_page_manifest_generation_file, DurabilityPolicy, RelationalColumnSchema,
-        RelationalComparisonOp, RelationalConflictAction, RelationalHydrationBudget,
-        RelationalIndexMode, RelationalInsertMode, RelationalKey, RelationalMutationLimits,
-        RelationalOverflowConfig, RelationalPredicate, RelationalRow,
+        relational_row_page_manifest_generation_file, DurabilityPolicy, RelationalColumnDefault,
+        RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
+        RelationalHydrationBudget, RelationalIndexMode, RelationalInsertMode, RelationalKey,
+        RelationalMutationLimits, RelationalOverflowConfig, RelationalPredicate, RelationalRow,
         RelationalRowPagePublicationConfig, RelationalRowPagePublisher,
         RelationalRowPageRootReader, RelationalRowPageSnapshotReadLimits, RelationalScalarType,
         RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
@@ -2545,7 +2545,9 @@ mod tests {
                             name: "archived".to_string(),
                             scalar_type: RelationalScalarType::Boolean,
                             nullable: false,
-                            default: Some(RelationalValue::Boolean(false)),
+                            default: Some(RelationalColumnDefault::Literal(
+                                RelationalValue::Boolean(false),
+                            )),
                         },
                     }],
                 },
@@ -3831,7 +3833,9 @@ mod tests {
                             name: "archived".to_string(),
                             scalar_type: RelationalScalarType::Boolean,
                             nullable: false,
-                            default: Some(RelationalValue::Boolean(false)),
+                            default: Some(RelationalColumnDefault::Literal(
+                                RelationalValue::Boolean(false),
+                            )),
                         },
                     }],
                 },

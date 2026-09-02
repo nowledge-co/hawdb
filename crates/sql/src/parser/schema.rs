@@ -1,5 +1,5 @@
 use super::{
-    lower_column_expr, lower_literal_expr, lower_table_name, normalize_ident, object_name_parts,
+    lower_column_expr, lower_sql_expression, lower_table_name, normalize_ident, object_name_parts,
 };
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
@@ -226,7 +226,7 @@ fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColu
         match &option.option {
             ColumnOption::Null => nullable = true,
             ColumnOption::NotNull => nullable = false,
-            ColumnOption::Default(expr) => default = Some(lower_literal_expr(expr)?),
+            ColumnOption::Default(expr) => default = Some(lower_column_default(expr)?),
             ColumnOption::PrimaryKey(_) => {
                 primary_key = true;
                 nullable = false;
@@ -253,6 +253,23 @@ fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColu
     })
 }
 
+fn lower_column_default(expr: &Expr) -> Result<SqlColumnDefault> {
+    match lower_sql_expression(expr)? {
+        SqlExpression::Value(value) => Ok(SqlColumnDefault::Literal(value)),
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct: false,
+        } if name == "uuidv7" && arguments.is_empty() => Ok(SqlColumnDefault::UuidV7),
+        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+            "unsupported PostgreSQL column default function {name}"
+        ))),
+        SqlExpression::Column(_) => Err(SkeinError::Semantic(
+            "column defaults cannot reference a column".to_string(),
+        )),
+    }
+}
+
 fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
     match data_type {
         DataType::Boolean | DataType::Bool => Ok(SqlDataType::Boolean),
@@ -260,6 +277,7 @@ fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
         DataType::DoublePrecision | DataType::Float8 => Ok(SqlDataType::DoublePrecision),
         DataType::Text => Ok(SqlDataType::Text),
         DataType::Bytea => Ok(SqlDataType::Bytea),
+        DataType::Uuid => Ok(SqlDataType::Uuid),
         _ => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL data type {data_type}"
         ))),

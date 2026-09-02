@@ -291,6 +291,15 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
             {
                 return decode_binary_hex(encoded).map(Value::Binary);
             }
+            if values.len() == 1
+                && let Some(serde_json::Value::String(encoded)) = values.get("$uuid")
+            {
+                return skein_core::Uuid::parse_str(encoded)
+                    .map(Value::Uuid)
+                    .map_err(|error| {
+                        SkeinError::Semantic(format!("invalid external UUID: {error}"))
+                    });
+            }
             values
                 .iter()
                 .map(|(key, value)| Ok((key.clone(), external_shadow_value_from_json(value)?)))
@@ -310,6 +319,7 @@ pub fn external_shadow_json_from_value(value: Value) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         Value::String(value) => serde_json::Value::String(value),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(&value) }),
+        Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
         Value::List(values) => serde_json::Value::Array(
             values
                 .into_iter()
@@ -1205,6 +1215,7 @@ fn json_from_value(value: &Value) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         Value::String(value) => serde_json::Value::String(value.clone()),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(value) }),
+        Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(json_from_value).collect())
         }

@@ -459,6 +459,13 @@ fn candidate_encodings(values: &[Value]) -> Vec<ChunkEncoding> {
                 all_bool = false;
                 all_string = false;
             }
+            Value::Uuid(_) => {
+                all_int = false;
+                all_float = false;
+                all_bool = false;
+                all_string = false;
+                all_binary = false;
+            }
             Value::List(_) | Value::Map(_) => {
                 all_int = false;
                 all_float = false;
@@ -844,6 +851,7 @@ const SCALAR_INT: u8 = 2;
 const SCALAR_FLOAT: u8 = 3;
 const SCALAR_STRING: u8 = 4;
 const SCALAR_BINARY: u8 = 5;
+const SCALAR_UUID: u8 = 6;
 
 fn encode_scalar(value: &Value, out: &mut Vec<u8>) -> Result<(), ColumnGroupError> {
     match value {
@@ -872,6 +880,10 @@ fn encode_scalar(value: &Value, out: &mut Vec<u8>) -> Result<(), ColumnGroupErro
                 .map_err(|_| unsupported("scalar binary exceeds u32 bytes".to_string()))?;
             out.extend(length.to_le_bytes());
             out.extend(value);
+        }
+        Value::Uuid(value) => {
+            out.push(SCALAR_UUID);
+            out.extend(value.as_bytes());
         }
         other => {
             return Err(unsupported(format!(
@@ -905,6 +917,11 @@ fn decode_scalar(cursor: &mut Cursor<'_>) -> Result<Value, ColumnGroupError> {
             let bytes = cursor.read_bytes(length as usize, "scalar binary bytes")?;
             Ok(Value::Binary(bytes.to_vec()))
         }
+        SCALAR_UUID => cursor.read_bytes(16, "scalar UUID").map(|bytes| {
+            Value::Uuid(skein_core::Uuid::from_bytes(
+                bytes.try_into().expect("UUID has a fixed length"),
+            ))
+        }),
         tag => Err(corrupt(format!("unknown scalar tag {tag}"))),
     }
 }

@@ -69,6 +69,10 @@ pub(super) fn encode_ordered_relational_value(
             encoded.push(5);
             encode_escaped_bytes(encoded, value);
         }
+        RelationalValue::Uuid(value) => {
+            encoded.push(6);
+            encoded.extend_from_slice(value.as_bytes());
+        }
         RelationalValue::Overflow(_) => {
             return Err(OrderedRelationalKeyError::UnsupportedOverflow);
         }
@@ -212,6 +216,9 @@ impl<'a> OrderedKeyDecoder<'a> {
                 )?))
             }
             5 => Ok(RelationalValue::Bytea(self.escaped_bytes(true)?)),
+            6 => Ok(RelationalValue::Uuid(skein_core::Uuid::from_bytes(
+                self.fixed("UUID value")?,
+            ))),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
                 "invalid value tag {tag}"
             ))),
@@ -268,6 +275,10 @@ impl<'a> OrderedKeyDecoder<'a> {
                 self.escaped_bytes_into(&mut bytes)?;
                 *target = RelationalValue::Bytea(bytes);
             }
+            6 => {
+                *target =
+                    RelationalValue::Uuid(skein_core::Uuid::from_bytes(self.fixed("UUID value")?));
+            }
             tag => {
                 return Err(OrderedRelationalKeyError::Corrupt(format!(
                     "invalid value tag {tag}"
@@ -289,6 +300,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             2 => self.skip_fixed(8, "BIGINT value").map(|()| false),
             3 => self.skip_fixed(8, "DOUBLE PRECISION value").map(|()| false),
             4 | 5 => self.escaped_bytes(false).map(|_| false),
+            6 => self.skip_fixed(16, "UUID value").map(|()| false),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
                 "invalid value tag {tag}"
             ))),

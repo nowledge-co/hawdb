@@ -5304,6 +5304,7 @@ fn value_json(value: &Value) -> serde_json::Value {
         Value::Binary(value) => serde_json::json!({
             "$binary": value.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         }),
+        Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(value_json).collect::<Vec<_>>())
         }
@@ -5342,6 +5343,15 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
                 && let Some(serde_json::Value::String(encoded)) = values.get("$binary")
             {
                 return decode_json_binary(encoded).map(Value::Binary);
+            }
+            if values.len() == 1
+                && let Some(serde_json::Value::String(encoded)) = values.get("$uuid")
+            {
+                return skein_core::Uuid::parse_str(encoded)
+                    .map(Value::Uuid)
+                    .map_err(|error| {
+                        SkeinError::Semantic(format!("invalid $uuid value: {error}"))
+                    });
             }
             values
                 .iter()

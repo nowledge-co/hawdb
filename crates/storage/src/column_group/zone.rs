@@ -164,6 +164,7 @@ impl ChunkZoneMap {
                     ));
                 }
                 Value::Binary(_) => type_bits |= HAS_BINARY,
+                Value::Uuid(_) => type_bits |= HAS_NESTED,
                 Value::List(_) | Value::Map(_) => type_bits |= HAS_NESTED,
             }
         }
@@ -233,7 +234,7 @@ impl ChunkZoneMap {
             }
             Value::Binary(_) => self.type_bits & HAS_BINARY != 0,
             // Nested equality is never pruned by zone maps.
-            Value::List(_) | Value::Map(_) => self.type_bits & HAS_NESTED != 0,
+            Value::Uuid(_) | Value::List(_) | Value::Map(_) => self.type_bits & HAS_NESTED != 0,
         }
     }
 

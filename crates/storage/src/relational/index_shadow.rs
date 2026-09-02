@@ -3,10 +3,10 @@ use super::ordered_key::{
     ordered_relational_key_prefix_ends, OrderedRelationalKeyError,
 };
 use super::{
-    RelationalError, RelationalForeignKeySchema, RelationalIndexRole, RelationalKey,
-    RelationalReferentialAction, RelationalScalarType, RelationalState, RelationalTableSchema,
-    RelationalValue, RELATIONAL_FOREIGN_KEY_INDEX_PREFIX, RELATIONAL_PRIMARY_INDEX_NAME,
-    RELATIONAL_UNIQUE_INDEX_PREFIX,
+    RelationalColumnDefault, RelationalError, RelationalForeignKeySchema, RelationalIndexRole,
+    RelationalKey, RelationalReferentialAction, RelationalScalarType, RelationalState,
+    RelationalTableSchema, RelationalValue, RELATIONAL_FOREIGN_KEY_INDEX_PREFIX,
+    RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
 use crate::{
@@ -2050,9 +2050,13 @@ pub(super) fn relational_schema_digest(
         encode_bytes(&mut encoded, column.name.as_bytes())?;
         encoded.push(scalar_type_tag(column.scalar_type));
         encoded.push(u8::from(column.nullable));
-        encoded.push(u8::from(column.default.is_some()));
-        if let Some(default) = &column.default {
-            encode_ordered_relational_value(&mut encoded, default)?;
+        match &column.default {
+            None => encoded.push(0),
+            Some(RelationalColumnDefault::Literal(value)) => {
+                encoded.push(1);
+                encode_ordered_relational_value(&mut encoded, value)?;
+            }
+            Some(RelationalColumnDefault::UuidV7) => encoded.push(2),
         }
     }
     encode_string_list(&mut encoded, &schema.primary_key)?;
@@ -2254,6 +2258,7 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::DoublePrecision => 3,
         RelationalScalarType::Text => 4,
         RelationalScalarType::Bytea => 5,
+        RelationalScalarType::Uuid => 6,
     }
 }
 

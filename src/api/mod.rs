@@ -19196,6 +19196,7 @@ fn value_to_external_id(value: &Value) -> String {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         ),
+        Value::Uuid(value) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(value_to_external_id)
@@ -20233,6 +20234,7 @@ fn relational_value_to_query_value(value: &skein_storage::RelationalValue) -> Re
         skein_storage::RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
         skein_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         skein_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        skein_storage::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         skein_storage::RelationalValue::Overflow(_) => Err(SkeinError::StorageIntegrity(
             "logical relational mutation outcome contains an overflow reference".to_string(),
         )),

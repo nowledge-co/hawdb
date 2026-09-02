@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use uuid::Uuid;
 
 use crate::LogicalType;
 
@@ -13,6 +14,7 @@ pub enum Value {
     Float(f64),
     String(String),
     Binary(Vec<u8>),
+    Uuid(Uuid),
     List(Vec<Value>),
     Map(BTreeMap<String, Value>),
 }
@@ -30,6 +32,7 @@ pub enum ValueRef<'a> {
     Float(f64),
     String(&'a str),
     Binary(&'a [u8]),
+    Uuid(Uuid),
     List(&'a [Value]),
     Map(&'a BTreeMap<String, Value>),
 }
@@ -59,6 +62,7 @@ impl Ord for Value {
                 (Value::Float(left), Value::Float(right)) => left.total_cmp(right),
                 (Value::String(left), Value::String(right)) => left.cmp(right),
                 (Value::Binary(left), Value::Binary(right)) => left.cmp(right),
+                (Value::Uuid(left), Value::Uuid(right)) => left.cmp(right),
                 (Value::List(left), Value::List(right)) => left.cmp(right),
                 (Value::Map(left), Value::Map(right)) => left.cmp(right),
                 _ => Ordering::Equal,
@@ -76,6 +80,7 @@ impl Hash for Value {
             Value::Float(value) => value.to_bits().hash(state),
             Value::String(value) => value.hash(state),
             Value::Binary(value) => value.hash(state),
+            Value::Uuid(value) => value.hash(state),
             Value::List(values) => values.hash(state),
             Value::Map(values) => values.hash(state),
         }
@@ -99,8 +104,9 @@ impl Value {
             Value::Float(_) => 3,
             Value::String(_) => 4,
             Value::Binary(_) => 5,
-            Value::List(_) => 6,
-            Value::Map(_) => 7,
+            Value::Uuid(_) => 6,
+            Value::List(_) => 7,
+            Value::Map(_) => 8,
         }
     }
 }
@@ -118,6 +124,7 @@ impl<'a> ValueRef<'a> {
             Self::Float(_) => Some(LogicalType::Float64),
             Self::String(_) => Some(LogicalType::String),
             Self::Binary(_) => Some(LogicalType::Binary),
+            Self::Uuid(_) => Some(LogicalType::Uuid),
             Self::List(_) => Some(LogicalType::List),
             Self::Map(_) => Some(LogicalType::Map),
         }
@@ -158,6 +165,13 @@ impl<'a> ValueRef<'a> {
         }
     }
 
+    pub const fn as_uuid(self) -> Option<Uuid> {
+        match self {
+            Self::Uuid(value) => Some(value),
+            _ => None,
+        }
+    }
+
     pub const fn as_list(self) -> Option<&'a [Value]> {
         match self {
             Self::List(value) => Some(value),
@@ -180,6 +194,7 @@ impl<'a> ValueRef<'a> {
             Self::Float(value) => Value::Float(value),
             Self::String(value) => Value::String(value.to_owned()),
             Self::Binary(value) => Value::Binary(value.to_vec()),
+            Self::Uuid(value) => Value::Uuid(value),
             Self::List(value) => Value::List(value.to_vec()),
             Self::Map(value) => Value::Map(value.clone()),
         }
@@ -193,8 +208,9 @@ impl<'a> ValueRef<'a> {
             Self::Float(_) => 3,
             Self::String(_) => 4,
             Self::Binary(_) => 5,
-            Self::List(_) => 6,
-            Self::Map(_) => 7,
+            Self::Uuid(_) => 6,
+            Self::List(_) => 7,
+            Self::Map(_) => 8,
         }
     }
 }
@@ -208,6 +224,7 @@ impl<'a> From<&'a Value> for ValueRef<'a> {
             Value::Float(value) => Self::Float(*value),
             Value::String(value) => Self::String(value),
             Value::Binary(value) => Self::Binary(value),
+            Value::Uuid(value) => Self::Uuid(*value),
             Value::List(value) => Self::List(value),
             Value::Map(value) => Self::Map(value),
         }
@@ -239,6 +256,7 @@ impl Ord for ValueRef<'_> {
                 (Self::Float(left), Self::Float(right)) => left.total_cmp(right),
                 (Self::String(left), Self::String(right)) => left.cmp(right),
                 (Self::Binary(left), Self::Binary(right)) => left.cmp(right),
+                (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
                 (Self::List(left), Self::List(right)) => left.cmp(right),
                 (Self::Map(left), Self::Map(right)) => left.cmp(right),
                 _ => Ordering::Equal,
@@ -256,6 +274,7 @@ impl Hash for ValueRef<'_> {
             Self::Float(value) => value.to_bits().hash(state),
             Self::String(value) => value.hash(state),
             Self::Binary(value) => value.hash(state),
+            Self::Uuid(value) => value.hash(state),
             Self::List(value) => value.hash(state),
             Self::Map(value) => value.hash(state),
         }
@@ -295,6 +314,7 @@ impl Display for ValueRef<'_> {
             Self::Float(value) => write!(f, "{value}"),
             Self::String(value) => write!(f, "{value}"),
             Self::Binary(value) => write_binary(f, value),
+            Self::Uuid(value) => write!(f, "{value}"),
             Self::List(values) => {
                 let values = values
                     .iter()
@@ -324,6 +344,7 @@ impl Display for Value {
             Value::Float(value) => write!(f, "{value}"),
             Value::String(value) => write!(f, "{value}"),
             Value::Binary(value) => write_binary(f, value),
+            Value::Uuid(value) => write!(f, "{value}"),
             Value::List(values) => {
                 let values = values
                     .iter()

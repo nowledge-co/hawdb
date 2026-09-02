@@ -3420,6 +3420,7 @@ fn append_canonical_value(body: &mut String, value: &Value) {
             body.push(':');
             append_hex(body, value);
         }
+        Value::Uuid(value) => body.push_str(&format!("uuid:{value}")),
         Value::List(values) => {
             body.push_str(&format!("list:{}:[", values.len()));
             for value in values {

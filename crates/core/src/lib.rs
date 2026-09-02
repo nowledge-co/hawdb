@@ -33,4 +33,5 @@ pub use schema::{
     PropertyId, PropertyType, RelType, RelTypeId, SchemaObjectState, TableDescriptor, TableId,
     TableKind,
 };
+pub use uuid::Uuid;
 pub use value::{Value, ValueRef};

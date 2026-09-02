@@ -130,6 +130,7 @@ const VALUE_FIELD_STRING: u32 = 5;
 const VALUE_FIELD_ELEMENT: u32 = 6;
 const VALUE_FIELD_MAP_ENTRY: u32 = 7;
 const VALUE_FIELD_BINARY: u32 = 8;
+const VALUE_FIELD_UUID: u32 = 9;
 
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
@@ -306,6 +307,7 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         Value::Float(value) => encode_fixed64_field(VALUE_FIELD_FLOAT, value.to_bits(), out),
         Value::String(value) => encode_string_field(VALUE_FIELD_STRING, value, out),
         Value::Binary(value) => encode_len_field(VALUE_FIELD_BINARY, value, out),
+        Value::Uuid(value) => encode_len_field(VALUE_FIELD_UUID, value.as_bytes(), out),
         Value::List(values) => {
             for value in values {
                 let mut body = Vec::new();
@@ -362,6 +364,13 @@ fn decode_value_message(bytes: &[u8]) -> Result<Value> {
             }
             (VALUE_FIELD_BINARY, WIRE_TYPE_LEN) => {
                 value = Some(Value::Binary(decode_len_body(bytes, &mut pos)?.to_vec()));
+            }
+            (VALUE_FIELD_UUID, WIRE_TYPE_LEN) => {
+                let encoded = decode_len_body(bytes, &mut pos)?;
+                let bytes: [u8; 16] = encoded.try_into().map_err(|_| {
+                    SkeinError::Storage("WAL UUID value must contain 16 bytes".to_string())
+                })?;
+                value = Some(Value::Uuid(skein_core::Uuid::from_bytes(bytes)));
             }
             (VALUE_FIELD_ELEMENT, WIRE_TYPE_LEN) => {
                 let body = decode_len_body(bytes, &mut pos)?;
