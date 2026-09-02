@@ -379,6 +379,8 @@ impl<'a> RelationalRowRuntime<'a> {
                 schema.primary_key.len()
             )));
         }
+        // Covering index values still belong to the pinned row snapshot.
+        self.bind_snapshot_identity()?;
 
         let mut values = BTreeMap::new();
         for (column, value) in index_columns.iter().zip(&index_key.0) {
@@ -1123,6 +1125,13 @@ impl<'a> RelationalRowRuntime<'a> {
             report.overlay_entries,
             report.overlay_resident_bytes,
         )
+    }
+
+    fn bind_snapshot_identity(&self) -> Result<()> {
+        let RelationalRowBackend::Snapshot(reader) = &self.backend else {
+            return Ok(());
+        };
+        self.record(reader.identity(), &Default::default(), 0, 0)
     }
 
     fn record(

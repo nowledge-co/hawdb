@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 27 ]]; then
+if [[ "$#" -lt 8 ]]; then
   echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ OPTIMIZER_FUZZ BENCHMARK..." >&2
   exit 2
 fi
@@ -17,6 +17,8 @@ readonly optimizer_fuzz="$6"
 shift 6
 readonly -a benchmark_smokes=("$@")
 readonly optimizer_smoke="${benchmark_smokes[0]}"
+readonly optimizer_benchmark_group_size=6
+readonly final_optimizer_benchmark_group_start=$((1 + 2 * optimizer_benchmark_group_size))
 
 for executable in \
   "$skein_cli" \
@@ -141,6 +143,10 @@ PY
 run_optimizer_benchmark_group_smoke() {
   local start="$1"
   local length="$2"
+  if (( length <= 0 || start + length > ${#benchmark_smokes[@]} )); then
+    echo "optimizer benchmark group [$start, $((start + length))) exceeds ${#benchmark_smokes[@]} benchmarks" >&2
+    exit 2
+  fi
   local root="$work_root/optimizer-benchmarks-$start"
   mkdir -p "$root"
   local benchmark
@@ -676,9 +682,9 @@ RS
 case "$smoke" in
   fuzz) run_fuzz_smokes ;;
   optimizer_summary) run_optimizer_summary_smoke ;;
-  optimizer_group_1) run_optimizer_benchmark_group_smoke 1 6 ;;
-  optimizer_group_2) run_optimizer_benchmark_group_smoke 7 6 ;;
-  optimizer_group_3) run_optimizer_benchmark_group_smoke 13 7 ;;
+  optimizer_group_1) run_optimizer_benchmark_group_smoke 1 "$optimizer_benchmark_group_size" ;;
+  optimizer_group_2) run_optimizer_benchmark_group_smoke "$((1 + optimizer_benchmark_group_size))" "$optimizer_benchmark_group_size" ;;
+  optimizer_group_3) run_optimizer_benchmark_group_smoke "$final_optimizer_benchmark_group_start" "$(( ${#benchmark_smokes[@]} - final_optimizer_benchmark_group_start ))" ;;
   fixture_contract) run_fixture_contract_smoke ;;
   storage_recovery) run_storage_recovery_smoke ;;
   background_maintenance) run_background_maintenance_smoke ;;

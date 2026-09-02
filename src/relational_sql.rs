@@ -2765,7 +2765,7 @@ mod tests {
             )
             .expect("profile fully consumed join");
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 11);
+        assert_eq!(full.profile.intermediate_rows, 8);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
@@ -2799,7 +2799,7 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 6);
+        assert_eq!(limited.profile.intermediate_rows, 5);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
             Some(1)
@@ -3120,6 +3120,18 @@ mod tests {
             assert!(info.contains("row_logical_pages=1"));
             assert!(info.contains("row_rows=3"));
             assert!(info.contains("row_index_covered_rows=3"));
+
+            let index_only = database
+                .query_sql("EXPLAIN ANALYZE SELECT id FROM join_documents WHERE owner = 'owner-a'")
+                .expect("execute fully covering index scan");
+            let index_only_info =
+                relational_explain_operator_info(&index_only, "IndexRangeScanExec");
+            assert!(index_only_info.contains("covering=true"));
+            assert!(index_only_info.contains("row_fetch=false"));
+            assert!(index_only_info.contains("row_runtime_path=snapshot_rows"));
+            assert!(!index_only_info.contains("row_base_generation=none"));
+            assert!(index_only_info.contains("row_logical_pages=0"));
+            assert!(index_only_info.contains("row_index_covered_rows=2"));
             database
                 .query_sql("INSERT INTO join_keys (id, owner) VALUES ('key-4', 'owner-c')")
                 .expect("append live join key");
