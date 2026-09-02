@@ -4065,6 +4065,23 @@ pub struct RelationalUpsertAssignment {
 pub enum RelationalUpdateValue {
     Column(String),
     Value(RelationalValue),
+    BigIntArithmetic {
+        left: RelationalBigIntOperand,
+        operator: RelationalBigIntArithmeticOperator,
+        right: RelationalBigIntOperand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationalBigIntOperand {
+    Column(String),
+    Value(RelationalValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalBigIntArithmeticOperator {
+    Add,
+    Subtract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5311,7 +5328,7 @@ fn apply_update(
                     assignment.column
                 ))
             })?;
-            let source = match &assignment.value {
+            let value = match &assignment.value {
                 RelationalUpdateValue::Column(column) => {
                     let source = schema.column_position(column).ok_or_else(|| {
                         RelationalError::Schema(format!(
@@ -5323,14 +5340,31 @@ fn apply_update(
                             "UPDATE assignment from {column} has an incompatible type"
                         )));
                     }
-                    Some(source)
+                    ResolvedUpdateValue::Column(source)
                 }
                 RelationalUpdateValue::Value(value) => {
                     validate_value_type(&schema.columns[target], value)?;
-                    None
+                    ResolvedUpdateValue::Value(value.clone())
+                }
+                RelationalUpdateValue::BigIntArithmetic {
+                    left,
+                    operator,
+                    right,
+                } => {
+                    if schema.columns[target].scalar_type != RelationalScalarType::BigInt {
+                        return Err(RelationalError::Schema(format!(
+                            "UPDATE arithmetic assignment target {} must be BIGINT",
+                            assignment.column
+                        )));
+                    }
+                    ResolvedUpdateValue::BigIntArithmetic {
+                        left: resolve_bigint_operand(&schema, left)?,
+                        operator: *operator,
+                        right: resolve_bigint_operand(&schema, right)?,
+                    }
                 }
             };
-            Ok((target, source, &assignment.value))
+            Ok((target, value))
         })
         .collect::<Result<Vec<_>, RelationalError>>()?;
     let segment = state
@@ -5356,13 +5390,17 @@ fn apply_update(
     let mut updates = Vec::with_capacity(matched.len());
     for (old_key, row) in &matched {
         let mut values = row.values().to_vec();
-        for (target, source, assignment) in &resolved {
-            values[*target] = match (source, *assignment) {
-                (Some(source), _) => row.values()[*source].clone(),
-                (None, RelationalUpdateValue::Value(value)) => value.clone(),
-                (None, RelationalUpdateValue::Column(_)) => {
-                    unreachable!("update source position was resolved")
-                }
+        for (target, value) in &resolved {
+            values[*target] = match value {
+                ResolvedUpdateValue::Column(source) => row.values()[*source].clone(),
+                ResolvedUpdateValue::Value(value) => value.clone(),
+                ResolvedUpdateValue::BigIntArithmetic {
+                    left,
+                    operator,
+                    right,
+                } => RelationalValue::BigInt(evaluate_bigint_arithmetic(
+                    row, left, *operator, right,
+                )?),
             };
         }
         let mut updated = RelationalRow::new(values);
@@ -5389,6 +5427,77 @@ fn apply_update(
         }
     }
     Ok(())
+}
+
+enum ResolvedUpdateValue {
+    Column(usize),
+    Value(RelationalValue),
+    BigIntArithmetic {
+        left: ResolvedBigIntOperand,
+        operator: RelationalBigIntArithmeticOperator,
+        right: ResolvedBigIntOperand,
+    },
+}
+
+enum ResolvedBigIntOperand {
+    Column(usize),
+    Value(i64),
+}
+
+fn resolve_bigint_operand(
+    schema: &RelationalTableSchema,
+    operand: &RelationalBigIntOperand,
+) -> Result<ResolvedBigIntOperand, RelationalError> {
+    match operand {
+        RelationalBigIntOperand::Column(column) => {
+            let position = schema.column_position(column).ok_or_else(|| {
+                RelationalError::Schema(format!(
+                    "UPDATE arithmetic references unknown source column {column}"
+                ))
+            })?;
+            if schema.columns[position].scalar_type != RelationalScalarType::BigInt {
+                return Err(RelationalError::Schema(format!(
+                    "UPDATE arithmetic source column {column} must be BIGINT"
+                )));
+            }
+            Ok(ResolvedBigIntOperand::Column(position))
+        }
+        RelationalBigIntOperand::Value(RelationalValue::BigInt(value)) => {
+            Ok(ResolvedBigIntOperand::Value(*value))
+        }
+        RelationalBigIntOperand::Value(value) => Err(RelationalError::Schema(format!(
+            "UPDATE arithmetic value must be a non-null BIGINT, got {:?}",
+            value.scalar_type()
+        ))),
+    }
+}
+
+fn evaluate_bigint_arithmetic(
+    row: &RelationalRow,
+    left: &ResolvedBigIntOperand,
+    operator: RelationalBigIntArithmeticOperator,
+    right: &ResolvedBigIntOperand,
+) -> Result<i64, RelationalError> {
+    let operand = |operand: &ResolvedBigIntOperand| match operand {
+        ResolvedBigIntOperand::Value(value) => Ok(*value),
+        ResolvedBigIntOperand::Column(position) => match row.values()[*position] {
+            RelationalValue::BigInt(value) => Ok(value),
+            RelationalValue::Null => Err(RelationalError::Constraint(
+                "UPDATE BIGINT arithmetic does not accept NULL operands".to_string(),
+            )),
+            ref value => Err(RelationalError::Corruption(format!(
+                "UPDATE BIGINT arithmetic source has unexpected type {:?}",
+                value.scalar_type()
+            ))),
+        },
+    };
+    let left = operand(left)?;
+    let right = operand(right)?;
+    match operator {
+        RelationalBigIntArithmeticOperator::Add => left.checked_add(right),
+        RelationalBigIntArithmeticOperator::Subtract => left.checked_sub(right),
+    }
+    .ok_or_else(|| RelationalError::Constraint("UPDATE BIGINT arithmetic overflow".to_string()))
 }
 
 fn validate_predicate(

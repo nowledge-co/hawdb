@@ -1,8 +1,8 @@
 use super::{
-    parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlBound, SqlColumnRef,
-    SqlComparisonOp, SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument,
-    SqlJoinKind, SqlLockStrength, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableName,
-    SqlValue,
+    parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlArithmeticOperand,
+    SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp,
+    SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument, SqlJoinKind,
+    SqlLockStrength, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableName, SqlValue,
 };
 use skein_core::Value;
 
@@ -351,6 +351,58 @@ fn parses_insert_on_conflict_update() {
         insert.on_conflict.map(|conflict| conflict.action),
         Some(SqlConflictAction::DoUpdate(assignments)) if assignments.len() == 2
     ));
+}
+
+#[test]
+fn parses_prepared_bigint_update_arithmetic() {
+    let prepared = prepare_postgres_sql(
+        "UPDATE feeds SET failure_count = failure_count + $2, retry_count = $3 + retry_count, \
+         success_count = success_count - $4 WHERE id = $1",
+    )
+    .expect("supported BIGINT UPDATE arithmetic");
+    assert_eq!(
+        prepared
+            .parameters
+            .iter()
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    let SqlStatement::Update(update) = prepared.statement else {
+        panic!("expected UPDATE statement");
+    };
+    assert!(matches!(
+        update.assignments[0].value,
+        SqlAssignmentValue::Arithmetic {
+            left: SqlArithmeticOperand::Column(_),
+            operator: SqlArithmeticOperator::Add,
+            right: SqlArithmeticOperand::Value(SqlValue::Parameter(2)),
+        }
+    ));
+    assert!(matches!(
+        update.assignments[1].value,
+        SqlAssignmentValue::Arithmetic {
+            left: SqlArithmeticOperand::Value(SqlValue::Parameter(3)),
+            operator: SqlArithmeticOperator::Add,
+            right: SqlArithmeticOperand::Column(_),
+        }
+    ));
+    assert!(matches!(
+        update.assignments[2].value,
+        SqlAssignmentValue::Arithmetic {
+            left: SqlArithmeticOperand::Column(_),
+            operator: SqlArithmeticOperator::Subtract,
+            right: SqlArithmeticOperand::Value(SqlValue::Parameter(4)),
+        }
+    ));
+
+    for sql in [
+        "UPDATE feeds SET failure_count = 1 - failure_count WHERE id = $1",
+        "UPDATE feeds SET failure_count = failure_count * 2 WHERE id = $1",
+    ] {
+        let error = parse_postgres_sql(sql).expect_err("unsupported arithmetic shape");
+        assert!(error.to_string().contains("arithmetic"));
+    }
 }
 
 #[test]

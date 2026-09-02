@@ -1,14 +1,15 @@
 use super::{
     column_positions, rebuild_indexes, validate_foreign_keys, validate_row, validate_table_schema,
-    RelationalColumnDefault, RelationalColumnSchema, RelationalComparisonOp,
-    RelationalConflictAction, RelationalError, RelationalForeignKeySchema, RelationalIndexSchema,
-    RelationalInsertMode, RelationalKey, RelationalOverflowRef, RelationalOverflowSegment,
-    RelationalPredicate, RelationalPrimaryKeyChangeCapture,
-    RelationalPrimaryKeyChangeRebuildReason, RelationalReferentialAction, RelationalReplayAccess,
-    RelationalReplayAccessSet, RelationalRow, RelationalScalarType, RelationalState,
-    RelationalTablePrimaryKeyChanges, RelationalTableSchema, RelationalTableSegment,
-    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
-    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWrite, Uuid,
+    RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
+    RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction, RelationalError,
+    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
+    RelationalOverflowRef, RelationalOverflowSegment, RelationalPredicate,
+    RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
+    RelationalReferentialAction, RelationalReplayAccess, RelationalReplayAccessSet, RelationalRow,
+    RelationalScalarType, RelationalState, RelationalTablePrimaryKeyChanges, RelationalTableSchema,
+    RelationalTableSegment, RelationalTransaction, RelationalUpdateAssignment,
+    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
+    RelationalWrite, Uuid,
 };
 use crate::{
     ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
@@ -1272,6 +1273,19 @@ impl Encoder {
                             self.u8(1);
                             self.logical_value(value)?;
                         }
+                        RelationalUpdateValue::BigIntArithmetic {
+                            left,
+                            operator,
+                            right,
+                        } => {
+                            self.u8(2);
+                            self.bigint_arithmetic_operand(left)?;
+                            self.u8(match operator {
+                                RelationalBigIntArithmeticOperator::Add => 0,
+                                RelationalBigIntArithmeticOperator::Subtract => 1,
+                            });
+                            self.bigint_arithmetic_operand(right)?;
+                        }
                     }
                 }
                 self.predicate(predicate)?;
@@ -1287,6 +1301,22 @@ impl Encoder {
             ));
         }
         self.value(value)
+    }
+
+    fn bigint_arithmetic_operand(
+        &mut self,
+        operand: &RelationalBigIntOperand,
+    ) -> Result<(), RelationalError> {
+        match operand {
+            RelationalBigIntOperand::Column(column) => {
+                self.u8(0);
+                self.string(column)
+            }
+            RelationalBigIntOperand::Value(value) => {
+                self.u8(1);
+                self.logical_value(value)
+            }
+        }
     }
 
     fn predicate(&mut self, predicate: &RelationalPredicate) -> Result<(), RelationalError> {
@@ -1942,6 +1972,19 @@ impl<I: DecodeInput> Decoder<I> {
                     let value = match self.u8()? {
                         0 => RelationalUpdateValue::Column(self.string()?),
                         1 => RelationalUpdateValue::Value(self.logical_value()?),
+                        2 => RelationalUpdateValue::BigIntArithmetic {
+                            left: self.bigint_arithmetic_operand()?,
+                            operator: match self.u8()? {
+                                0 => RelationalBigIntArithmeticOperator::Add,
+                                1 => RelationalBigIntArithmeticOperator::Subtract,
+                                tag => {
+                                    return Err(RelationalError::Corruption(format!(
+                                        "invalid BIGINT arithmetic operator tag {tag}"
+                                    )))
+                                }
+                            },
+                            right: self.bigint_arithmetic_operand()?,
+                        },
                         tag => {
                             return Err(RelationalError::Corruption(format!(
                                 "invalid update assignment tag {tag}"
@@ -1974,6 +2017,16 @@ impl<I: DecodeInput> Decoder<I> {
             }
             tag => Err(RelationalError::Corruption(format!(
                 "invalid relational WAL write tag {tag}"
+            ))),
+        }
+    }
+
+    fn bigint_arithmetic_operand(&mut self) -> Result<RelationalBigIntOperand, RelationalError> {
+        match self.u8()? {
+            0 => Ok(RelationalBigIntOperand::Column(self.string()?)),
+            1 => Ok(RelationalBigIntOperand::Value(self.logical_value()?)),
+            tag => Err(RelationalError::Corruption(format!(
+                "invalid BIGINT arithmetic operand tag {tag}"
             ))),
         }
     }

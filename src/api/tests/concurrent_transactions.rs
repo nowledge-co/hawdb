@@ -350,6 +350,7 @@ fn graph_create_allocation_lock_prevents_duplicate_physical_ids() {
     assert!(error
         .to_string()
         .contains("transaction lock wait timed out"));
+    waiter.rollback();
     owner.commit().unwrap();
 }
 
@@ -1591,6 +1592,53 @@ fn for_update_point_lock_blocks_exact_update_until_owner_finishes() {
         .to_string()
         .contains("transaction lock wait timed out"));
     owner.rollback();
+}
+
+#[test]
+fn bigint_arithmetic_update_uses_the_existing_point_lock_contract() {
+    let db = Database::new().into_concurrent();
+    db.query_sql("CREATE TABLE public.counters (id BIGINT PRIMARY KEY, count BIGINT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO public.counters (id, count) VALUES (1, 0)")
+        .unwrap();
+
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    owner
+        .query_sql("UPDATE public.counters SET count = count + 1 WHERE id = 1")
+        .unwrap();
+
+    let mut waiter = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_millis(25),
+        ))
+        .unwrap();
+    let error = waiter
+        .query_sql("UPDATE public.counters SET count = count + 1 WHERE id = 1")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    owner.commit().unwrap();
+
+    let mut retry = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    retry
+        .query_sql("UPDATE public.counters SET count = count + 1 WHERE id = 1")
+        .unwrap();
+    retry.commit().unwrap();
+    assert_eq!(
+        db.query_sql("SELECT count FROM public.counters WHERE id = 1")
+            .unwrap()
+            .rows[0]["count"],
+        Value::Int(2)
+    );
 }
 
 #[test]

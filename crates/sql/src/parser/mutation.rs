@@ -5,8 +5,8 @@ use super::{
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, Expr, FromTable, OnConflictAction, OnInsert, SelectItem, SetExpr,
-    TableObject,
+    Assignment, AssignmentTarget, BinaryOperator, Expr, FromTable, OnConflictAction, OnInsert,
+    SelectItem, SetExpr, TableObject,
 };
 
 pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<SqlStatement> {
@@ -185,7 +185,58 @@ fn lower_assignment_value(expr: &Expr) -> Result<SqlAssignmentValue> {
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
             Ok(SqlAssignmentValue::Column(super::lower_column_expr(expr)?))
         }
+        Expr::BinaryOp { left, op, right }
+            if matches!(op, BinaryOperator::Plus | BinaryOperator::Minus) =>
+        {
+            let left = lower_arithmetic_operand(left)?;
+            let right = lower_arithmetic_operand(right)?;
+            match (op, &left, &right) {
+                (
+                    BinaryOperator::Plus,
+                    SqlArithmeticOperand::Column(_),
+                    SqlArithmeticOperand::Value(_),
+                )
+                | (
+                    BinaryOperator::Plus,
+                    SqlArithmeticOperand::Value(_),
+                    SqlArithmeticOperand::Column(_),
+                )
+                | (
+                    BinaryOperator::Minus,
+                    SqlArithmeticOperand::Column(_),
+                    SqlArithmeticOperand::Value(_),
+                ) => {}
+                _ => {
+                    return Err(SkeinError::Semantic(
+                        "UPDATE arithmetic supports column + value, value + column, and column - value"
+                            .to_string(),
+                    ));
+                }
+            }
+            Ok(SqlAssignmentValue::Arithmetic {
+                left,
+                operator: match op {
+                    BinaryOperator::Plus => SqlArithmeticOperator::Add,
+                    BinaryOperator::Minus => SqlArithmeticOperator::Subtract,
+                    _ => unreachable!("arithmetic operator was filtered before lowering"),
+                },
+                right,
+            })
+        }
+        Expr::BinaryOp { .. } => Err(SkeinError::Semantic(
+            "UPDATE arithmetic supports column + value, value + column, and column - value"
+                .to_string(),
+        )),
         _ => lower_literal_expr(expr).map(SqlAssignmentValue::Value),
+    }
+}
+
+fn lower_arithmetic_operand(expr: &Expr) -> Result<SqlArithmeticOperand> {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Ok(SqlArithmeticOperand::Column(
+            super::lower_column_expr(expr)?,
+        )),
+        _ => lower_literal_expr(expr).map(SqlArithmeticOperand::Value),
     }
 }
 

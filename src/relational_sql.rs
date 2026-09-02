@@ -1,18 +1,19 @@
 use crate::error::{Result, SkeinError};
 use crate::sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlAssignmentValue,
-    SqlColumnDefault, SqlColumnDefinition, SqlComparisonOp, SqlConflictAction, SqlDataType,
-    SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage,
-    SqlValue,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlArithmeticOperand,
+    SqlAssignmentValue, SqlColumnDefault, SqlColumnDefinition, SqlComparisonOp, SqlConflictAction,
+    SqlDataType, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
+    SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
 use skein_storage::{
-    RelationalColumnDefault, RelationalColumnSchema, RelationalComparisonOp,
-    RelationalConflictAction, RelationalForeignKeySchema, RelationalIndexSchema,
-    RelationalInsertMode, RelationalPredicate, RelationalReferentialAction, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalTransaction,
-    RelationalUpdateAssignment, RelationalUpdateValue, RelationalUpsertAssignment,
-    RelationalUpsertValue, RelationalValue, RelationalWrite,
+    RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
+    RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
+    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,
+    RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
+    RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
+    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
+    RelationalWrite,
 };
 mod append;
 mod cardinality;
@@ -229,6 +230,12 @@ fn compile_relational_mutation(
                                             value, parameters,
                                         )?)
                                     }
+                                    SqlAssignmentValue::Arithmetic { .. } => {
+                                        return Err(SkeinError::Semantic(
+                                            "ON CONFLICT assignments do not support arithmetic expressions"
+                                                .to_string(),
+                                        ));
+                                    }
                                 };
                                 Ok(RelationalUpsertAssignment {
                                     column: assignment.column,
@@ -312,6 +319,42 @@ fn compile_relational_mutation(
                         SqlAssignmentValue::Value(value) => RelationalUpdateValue::Value(
                             bind_relational_value_as(value, parameters, target_type)?,
                         ),
+                        SqlAssignmentValue::Arithmetic {
+                            left,
+                            operator,
+                            right,
+                        } => {
+                            if target_type != RelationalScalarType::BigInt {
+                                return Err(SkeinError::Semantic(format!(
+                                    "UPDATE arithmetic assignment target {} must be BIGINT",
+                                    assignment.column
+                                )));
+                            }
+                            RelationalUpdateValue::BigIntArithmetic {
+                                left: compile_bigint_arithmetic_operand(
+                                    left,
+                                    parameters,
+                                    schema,
+                                    update.alias.as_deref(),
+                                    &update.table.name,
+                                )?,
+                                operator: match operator {
+                                    crate::sql::SqlArithmeticOperator::Add => {
+                                        RelationalBigIntArithmeticOperator::Add
+                                    }
+                                    crate::sql::SqlArithmeticOperator::Subtract => {
+                                        RelationalBigIntArithmeticOperator::Subtract
+                                    }
+                                },
+                                right: compile_bigint_arithmetic_operand(
+                                    right,
+                                    parameters,
+                                    schema,
+                                    update.alias.as_deref(),
+                                    &update.table.name,
+                                )?,
+                            }
+                        }
                     };
                     Ok(RelationalUpdateAssignment {
                         column: assignment.column,
@@ -347,6 +390,42 @@ fn compile_relational_mutation(
         },
         returning,
     })
+}
+
+fn compile_bigint_arithmetic_operand(
+    operand: SqlArithmeticOperand,
+    parameters: &[Value],
+    schema: &RelationalTableSchema,
+    alias: Option<&str>,
+    table: &str,
+) -> Result<RelationalBigIntOperand> {
+    match operand {
+        SqlArithmeticOperand::Column(column) => {
+            validate_mutation_column(&column, schema, alias, table)?;
+            let position = schema.column_position(&column.name).ok_or_else(|| {
+                SkeinError::Semantic(format!(
+                    "table {} has no column {}",
+                    schema.name, column.name
+                ))
+            })?;
+            if schema.columns[position].scalar_type != RelationalScalarType::BigInt {
+                return Err(SkeinError::Semantic(format!(
+                    "UPDATE arithmetic source column {} must be BIGINT",
+                    column.name
+                )));
+            }
+            Ok(RelationalBigIntOperand::Column(column.name))
+        }
+        SqlArithmeticOperand::Value(value) => {
+            let value = bind_relational_value_as(value, parameters, RelationalScalarType::BigInt)?;
+            if !matches!(value, RelationalValue::BigInt(_)) {
+                return Err(SkeinError::Semantic(
+                    "UPDATE arithmetic values must be non-null BIGINT scalars".to_string(),
+                ));
+            }
+            Ok(RelationalBigIntOperand::Value(value))
+        }
+    }
 }
 
 fn compile_mutation_predicate(
@@ -1263,6 +1342,211 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(path).expect("remove durable cascade test directory");
+    }
+
+    #[test]
+    fn relational_bigint_update_arithmetic_is_checked_and_transactional() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE counters (\
+                    id BIGINT PRIMARY KEY, \
+                    count BIGINT NOT NULL, \
+                    label TEXT NOT NULL, \
+                    nullable_count BIGINT\
+                )",
+            )
+            .expect("create counter table");
+        for (id, count, label) in [
+            (1, 5, "one"),
+            (2, -2, "two"),
+            (3, i64::MAX, "maximum"),
+            (4, i64::MIN, "minimum"),
+            (5, 0, "nullable"),
+        ] {
+            database
+                .query_sql_with_params(
+                    "INSERT INTO counters (id, count, label) VALUES ($1, $2, $3)",
+                    &[
+                        Value::Int(id),
+                        Value::Int(count),
+                        Value::String(label.to_string()),
+                    ],
+                )
+                .expect("insert counter row");
+        }
+
+        database
+            .query_sql("UPDATE counters SET count = count + 3 WHERE id = 1")
+            .expect("increment literal counter");
+        database
+            .query_sql("UPDATE counters SET count = 2 + count WHERE id = 1")
+            .expect("reverse increment literal counter");
+        database
+            .query_sql_with_params(
+                "UPDATE counters SET count = count - $1 WHERE id = $2",
+                &[Value::Int(-2), Value::Int(1)],
+            )
+            .expect("parameterized counter subtraction");
+        let addition_summary = database
+            .query_sql(
+                "SELECT digest FROM system.statement_summary \
+                 WHERE query_text = 'UPDATE counters SET count = count + 3 WHERE id = 1'",
+            )
+            .expect("read addition statement summary");
+        let subtraction_summary = database
+            .query_sql(
+                "SELECT digest FROM system.statement_summary \
+                 WHERE query_text = 'UPDATE counters SET count = count - $1 WHERE id = $2'",
+            )
+            .expect("read subtraction statement summary");
+        assert_eq!(addition_summary.rows.len(), 1);
+        assert_eq!(subtraction_summary.rows.len(), 1);
+        assert_ne!(
+            addition_summary.rows[0]["digest"], subtraction_summary.rows[0]["digest"],
+            "statement summaries must retain the arithmetic expression shape"
+        );
+        database
+            .query_sql("UPDATE counters SET count = count + 1 WHERE id <= 2")
+            .expect("update multiple counter rows");
+        assert_eq!(
+            database
+                .query_sql("SELECT count FROM counters WHERE id = 1")
+                .expect("read incremented counter")
+                .rows[0]["count"],
+            Value::Int(13)
+        );
+        assert_eq!(
+            database
+                .query_sql("SELECT count FROM counters WHERE id = 2")
+                .expect("read second incremented counter")
+                .rows[0]["count"],
+            Value::Int(-1)
+        );
+
+        let mut transaction = database.begin_transaction();
+        transaction
+            .query_sql("UPDATE counters SET count = count + 1 WHERE id = 1")
+            .expect("stage first transaction-local increment");
+        transaction
+            .query_sql("UPDATE counters SET count = count + 1 WHERE id = 1")
+            .expect("stage second transaction-local increment");
+        assert_eq!(
+            transaction
+                .query_sql("SELECT count FROM counters WHERE id = 1")
+                .expect("read transaction-local increment")
+                .rows[0]["count"],
+            Value::Int(15)
+        );
+        transaction
+            .commit()
+            .expect("commit transaction-local increments");
+
+        let overflow = database
+            .query_sql("UPDATE counters SET count = count + 1 WHERE id >= 3")
+            .expect_err("BIGINT overflow must reject the complete UPDATE");
+        assert!(overflow.to_string().contains("arithmetic overflow"));
+        for (id, expected) in [(3, i64::MAX), (4, i64::MIN)] {
+            assert_eq!(
+                database
+                    .query_sql(&format!("SELECT count FROM counters WHERE id = {id}"))
+                    .expect("read after rejected arithmetic overflow")
+                    .rows[0]["count"],
+                Value::Int(expected)
+            );
+        }
+
+        for (sql, parameters, expected) in [
+            (
+                "UPDATE counters SET label = label + 1 WHERE id = 1",
+                Vec::new(),
+                "target",
+            ),
+            (
+                "UPDATE counters SET count = label + 1 WHERE id = 1",
+                Vec::new(),
+                "source",
+            ),
+            (
+                "UPDATE counters SET count = count + $1 WHERE id = 1",
+                vec![Value::String("one".to_string())],
+                "BIGINT",
+            ),
+            (
+                "UPDATE counters SET count = count + $1 WHERE id = 1",
+                vec![Value::Null],
+                "non-null",
+            ),
+        ] {
+            let error = database
+                .query_sql_with_params(sql, &parameters)
+                .expect_err("invalid arithmetic assignment must fail before publication");
+            assert!(error.to_string().contains(expected));
+        }
+
+        let null_operand = database
+            .query_sql("UPDATE counters SET nullable_count = nullable_count + 1 WHERE id = 5")
+            .expect_err("NULL arithmetic operand must fail");
+        assert!(null_operand.to_string().contains("NULL operands"));
+        database
+            .query_sql("UPDATE counters SET nullable_count = count + 1 WHERE id = 5")
+            .expect("non-null source can update a nullable BIGINT target");
+    }
+
+    #[test]
+    fn relational_bigint_update_arithmetic_survives_wal_and_checkpoint_reopen() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skein-relational-arithmetic-{nonce}-{}",
+            std::process::id()
+        ));
+        {
+            let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("open durable arithmetic database");
+            database
+                .query_sql(
+                    "CREATE TABLE durable_counters (\
+                        id BIGINT PRIMARY KEY, \
+                        count BIGINT NOT NULL\
+                    )",
+                )
+                .expect("create durable counter table");
+            database
+                .query_sql("INSERT INTO durable_counters (id, count) VALUES (1, 7)")
+                .expect("insert durable counter");
+            database
+                .query_sql("UPDATE durable_counters SET count = count + 1 WHERE id = 1")
+                .expect("update durable counter");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen arithmetic WAL");
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT count FROM durable_counters WHERE id = 1")
+                    .expect("read durable arithmetic WAL result")
+                    .rows[0]["count"],
+                Value::Int(8)
+            );
+            reopened
+                .checkpoint()
+                .expect("checkpoint durable arithmetic result");
+        }
+        {
+            let mut reopened = Database::open_with_durability(&path, DurabilityPolicy::default())
+                .expect("reopen arithmetic checkpoint");
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT count FROM durable_counters WHERE id = 1")
+                    .expect("read durable arithmetic checkpoint result")
+                    .rows[0]["count"],
+                Value::Int(8)
+            );
+        }
+        std::fs::remove_dir_all(path).expect("remove durable arithmetic test directory");
     }
 
     fn assert_uuidv7(value: crate::Uuid) {

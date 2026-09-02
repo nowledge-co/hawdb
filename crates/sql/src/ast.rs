@@ -73,6 +73,23 @@ pub struct SqlAssignment {
 pub enum SqlAssignmentValue {
     Value(SqlValue),
     Column(SqlColumnRef),
+    Arithmetic {
+        left: SqlArithmeticOperand,
+        operator: SqlArithmeticOperator,
+        right: SqlArithmeticOperand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlArithmeticOperand {
+    Value(SqlValue),
+    Column(SqlColumnRef),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlArithmeticOperator {
+    Add,
+    Subtract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

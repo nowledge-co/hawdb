@@ -1,7 +1,7 @@
 use crate::{
-    DeleteStatement, InsertStatement, SelectProjection, SelectStatement, SqlAssignment,
-    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlFunctionArgument,
-    SqlPredicate, SqlStatement, SqlValue, UpdateStatement,
+    DeleteStatement, InsertStatement, SelectProjection, SelectStatement, SqlArithmeticOperand,
+    SqlAssignment, SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression,
+    SqlFunctionArgument, SqlPredicate, SqlStatement, SqlValue, UpdateStatement,
 };
 use skein_core::{Result, SkeinError};
 use std::collections::BTreeSet;
@@ -124,9 +124,23 @@ fn collect_delete_parameters(delete: &DeleteStatement, positions: &mut BTreeSet<
 
 fn collect_assignment_parameters(assignments: &[SqlAssignment], positions: &mut BTreeSet<usize>) {
     for assignment in assignments {
-        if let SqlAssignmentValue::Value(value) = &assignment.value {
-            collect_value_parameter(value, positions);
+        match &assignment.value {
+            SqlAssignmentValue::Value(value) => collect_value_parameter(value, positions),
+            SqlAssignmentValue::Column(_) => {}
+            SqlAssignmentValue::Arithmetic { left, right, .. } => {
+                collect_arithmetic_operand_parameter(left, positions);
+                collect_arithmetic_operand_parameter(right, positions);
+            }
         }
+    }
+}
+
+fn collect_arithmetic_operand_parameter(
+    operand: &SqlArithmeticOperand,
+    positions: &mut BTreeSet<usize>,
+) {
+    if let SqlArithmeticOperand::Value(value) = operand {
+        collect_value_parameter(value, positions);
     }
 }
 
