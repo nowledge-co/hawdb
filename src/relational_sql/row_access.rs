@@ -75,6 +75,7 @@ pub(crate) struct RelationalRowExecutionEvidence {
     pub rows_visited: usize,
     pub borrowed_rows_visited: usize,
     pub owned_rows_visited: usize,
+    pub index_covered_rows: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
     pub projection_generation: Option<String>,
@@ -186,6 +187,27 @@ impl RelationalFieldPlan {
 
     fn uses_any_table(&self, tables: &BTreeSet<String>) -> bool {
         self.scan_fields.keys().any(|table| tables.contains(table))
+    }
+
+    pub(crate) fn index_covers_table(
+        &self,
+        table: &str,
+        schema: &RelationalTableSchema,
+        index_columns: &[String],
+    ) -> Result<bool> {
+        let fields = self.scan_fields.get(table).ok_or_else(|| {
+            SkeinError::StorageIntegrity(format!(
+                "relational query has no field plan for table {table}"
+            ))
+        })?;
+        let mut covered = BTreeSet::new();
+        for column in index_columns.iter().chain(&schema.primary_key) {
+            let Some(ordinal) = schema.column_position(column) else {
+                return Ok(false);
+            };
+            covered.insert(ordinal);
+        }
+        Ok(fields.iter().all(|field| covered.contains(field)))
     }
 }
 
@@ -321,6 +343,101 @@ impl<'a> RelationalRowRuntime<'a> {
         let fields = self.fields(&self.fields.scan_fields, table)?;
         let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
         self.read_points_with_fields(table, keys, fields, hydration_fields)
+    }
+
+    /// Builds a scan projection directly from a secondary-index key and its
+    /// primary-key locator. It is valid only when the query field plan is
+    /// completely covered by those two key tuples.
+    pub(crate) fn read_index_covered(
+        &self,
+        table: &str,
+        index_columns: &[String],
+        index_key: &RelationalKey,
+        primary_key: &RelationalKey,
+    ) -> Result<Option<RelationalReadRow>> {
+        let schema = self
+            .state
+            .table_schema(table)
+            .ok_or_else(|| SkeinError::Semantic(format!("unknown relational table {table}")))?;
+        if !self
+            .fields
+            .index_covers_table(table, schema, index_columns)?
+        {
+            return Ok(None);
+        }
+        if index_key.0.len() != index_columns.len() {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "relational index key for table {table} has {} values but its descriptor has {} columns",
+                index_key.0.len(),
+                index_columns.len()
+            )));
+        }
+        if primary_key.0.len() != schema.primary_key.len() {
+            return Err(SkeinError::StorageIntegrity(format!(
+                "relational primary-key locator for table {table} has {} values but the schema has {} primary-key columns",
+                primary_key.0.len(),
+                schema.primary_key.len()
+            )));
+        }
+
+        let mut values = BTreeMap::new();
+        for (column, value) in index_columns.iter().zip(&index_key.0) {
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                SkeinError::StorageIntegrity(format!(
+                    "relational index coverage references unknown column {column} on table {table}"
+                ))
+            })?;
+            values.insert(ordinal, value.clone());
+        }
+        for (column, value) in schema.primary_key.iter().zip(&primary_key.0) {
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                SkeinError::StorageIntegrity(format!(
+                    "relational primary-key coverage references unknown column {column} on table {table}"
+                ))
+            })?;
+            values.entry(ordinal).or_insert_with(|| value.clone());
+        }
+        let fields = self.fields(&self.fields.scan_fields, table)?;
+        let fields = fields
+            .iter()
+            .map(|ordinal| {
+                values
+                    .get(ordinal)
+                    .cloned()
+                    .map(|value| RelationalProjectedField {
+                        ordinal: *ordinal,
+                        value,
+                    })
+                    .ok_or_else(|| {
+                        SkeinError::StorageIntegrity(format!(
+                            "relational index coverage omitted required field {ordinal} on table {table}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut projected = RelationalProjectedRow {
+            primary_key: primary_key.clone(),
+            fields,
+        };
+        let hydration_fields = self.fields(&self.fields.scan_hydration_fields, table)?;
+        self.state
+            .hydrate_projected_row_fields_with_context(
+                table,
+                &mut projected,
+                hydration_fields,
+                &mut self.hydration.borrow_mut(),
+                Some(self.task),
+            )
+            .map_err(map_state_error)?;
+        let mut evidence = self.evidence.borrow_mut();
+        add_counter(
+            &mut evidence.index_covered_rows,
+            1,
+            "relational index-covered row",
+        )?;
+        Ok(Some(RelationalReadRow {
+            row: Arc::new(projected),
+        }))
     }
 
     fn read_point_with_fields(
@@ -656,7 +773,18 @@ impl<'a> RelationalRowRuntime<'a> {
             ))
         })?;
         let mut found = None;
-        self.visit_projection_members(table, &mut |member| match member
+        let cursor = self
+            .projection
+            .as_ref()
+            .ok_or_else(|| {
+                SkeinError::StorageIntegrity(
+                    "projection row path was selected without a pinned generation".to_string(),
+                )
+            })?
+            .reader
+            .seek_cursor(table, &encoded_key)
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), &mut |member| match member
             .key
             .as_slice()
             .cmp(encoded_key.as_slice())
@@ -698,7 +826,24 @@ impl<'a> RelationalRowRuntime<'a> {
                 "projection row path was selected without a pinned generation".to_string(),
             )
         })?;
-        let mut cursor = None;
+        let cursor = projection
+            .reader
+            .seek_prefix_cursor(table, &[])
+            .map_err(map_projection_read_error)?;
+        self.visit_projection_members_from(table, Some(cursor), visit)
+    }
+
+    fn visit_projection_members_from(
+        &self,
+        table: &str,
+        mut cursor: Option<skein_storage::ProjectionGenerationCursor>,
+        visit: &mut dyn FnMut(&skein_storage::ProjectionGenerationMember) -> Result<bool>,
+    ) -> Result<bool> {
+        let projection = self.projection.as_ref().ok_or_else(|| {
+            SkeinError::StorageIntegrity(
+                "projection row path was selected without a pinned generation".to_string(),
+            )
+        })?;
         loop {
             self.task.checkpoint().map_err(|reason| {
                 SkeinError::Execution(format!("runtime task stopped: {reason}"))

@@ -414,29 +414,7 @@ fn bound_relationship_exists(
     let Some(rel_type_id) = catalog.rel_type_id(rel_type) else {
         return Ok(false);
     };
-    let mut found = false;
-    visit_one_hop_relationships_with_budget(
-        store,
-        OneHopRelationshipSpec {
-            source: source.id,
-            rel_type_id: Some(rel_type_id),
-            target_label_ids: None,
-            rel_properties: &BTreeMap::new(),
-            relationship_scan_filter: None,
-            direction,
-        },
-        context.adjacency_memory,
-        context.observer,
-        &mut |_, candidate| {
-            if candidate.id == target.id {
-                found = true;
-                Ok(ScanControl::Stop)
-            } else {
-                Ok(ScanControl::Continue)
-            }
-        },
-    )?;
-    Ok(found)
+    crate::scan::adjacency_exists(store, source.id, target.id, rel_type_id, direction, None)
 }
 
 fn predicate_expression_value(

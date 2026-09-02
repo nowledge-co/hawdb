@@ -893,6 +893,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::IndexNodeRangeSeek { .. }
         | PhysicalPlan::IndexNodeTextSeek { .. }
         | PhysicalPlan::AdjacencyExpandExec { .. }
+        | PhysicalPlan::AdjacencyExistsExec { .. }
         | PhysicalPlan::OptionalDegreeExec { .. }
         | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
         | PhysicalPlan::ThreadRepairStatsExec { .. }
