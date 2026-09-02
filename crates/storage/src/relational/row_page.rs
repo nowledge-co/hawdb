@@ -65,10 +65,11 @@ pub use publication::{
     RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 pub use snapshot::{
-    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotRangeReport,
-    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
-    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
+    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
+    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
+    RelationalRowPageSnapshotRowSource, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
 };
 
 #[cfg(test)]

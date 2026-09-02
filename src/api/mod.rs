@@ -358,10 +358,8 @@ fn relational_query_limits_with_payload(
             ..skein_storage::RelationalHydrationBudget::default()
         },
         index_read: skein_storage::RelationalIndexReadLimits {
-            max_rows: NonZeroUsize::new(
-                max_intermediate_rows.clamp(1, skein_storage::DEFAULT_RELATIONAL_INDEX_READ_ROWS),
-            )
-            .expect("relational index query row budget is non-zero"),
+            max_rows: NonZeroUsize::new(max_intermediate_rows.max(1))
+                .expect("relational index query row budget is non-zero"),
             max_bytes: max_index_read_bytes,
             ..skein_storage::RelationalIndexReadLimits::default()
         },
@@ -20658,6 +20656,7 @@ fn profiled_relational_sql_output(
         hydration,
         index_execution_evidence,
         row_execution_evidence,
+        blocking_operator_memory_reports,
         ..
     } = output;
     let profile = RelationalSqlReadProfile {
@@ -20711,6 +20710,7 @@ fn profiled_relational_sql_output(
             overlay_entries: row_execution_evidence.overlay_entries,
             overlay_resident_bytes: row_execution_evidence.overlay_resident_bytes,
         },
+        blocking_operator_memory_reports,
     };
     ProfiledRelationalSqlQueryOutput {
         output: QueryOutput { rows },

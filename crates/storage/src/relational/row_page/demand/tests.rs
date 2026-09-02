@@ -141,6 +141,51 @@ fn point_projection_hydrates_only_selected_overflow_and_reuses_cache() {
 }
 
 #[test]
+fn multi_point_projection_groups_keys_by_row_page() {
+    let fixture = DemandFixture::new("multi-point-projection");
+    let task = RuntimeTaskContext::default();
+    let mut hydration = RelationalHydrationBudget::default();
+    let (rows, report) = fixture
+        .reader
+        .points_projected_fields(
+            "documents",
+            &[key(1), key(2), key(2), key(4), key(9)],
+            RelationalRowPageProjectedFields {
+                requested_fields: &[0, 3],
+                hydration_fields: &[],
+            },
+            RelationalRowPageDemandReadLimits::default(),
+            &mut hydration,
+            &task,
+        )
+        .expect("multi-point projection");
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[&key(1)].fields[1].value,
+        RelationalValue::Text("inline-1".to_string())
+    );
+    assert_eq!(
+        rows[&key(2)].fields[1].value,
+        RelationalValue::Text("inline-2".to_string())
+    );
+    assert_eq!(
+        rows[&key(4)].fields[1].value,
+        RelationalValue::Text("inline-4".to_string())
+    );
+    assert!(!rows.contains_key(&key(9)));
+    assert_eq!(report.pages_read, 2);
+    assert_eq!(report.rows_decoded, 3);
+    assert_eq!(report.rows_emitted, 3);
+    assert_eq!(report.owned_rows_emitted, 3);
+    assert_eq!(report.hydrated_values, 0);
+    assert_eq!(hydration.hydrated_rows, 0);
+    assert_eq!(fixture.cache.snapshot().pinned_bytes, 0);
+
+    fixture.remove();
+}
+
+#[test]
 fn range_cursor_is_ordered_bounded_and_applies_lower_bound_once() {
     let fixture = DemandFixture::new("range");
     let mut hydration = RelationalHydrationBudget::default();
