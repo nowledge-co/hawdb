@@ -629,6 +629,14 @@ fn like_matcher_handles_wildcards_escaping_and_unicode_case_insensitivity() {
         super::sql_like_matches("Straße", "%STRASSE%", SqlLikeEscape::Character('\\'), true,)
             .expect("default case folding expands sharp s")
     );
+    assert!(
+        super::sql_like_matches("ß", "_", SqlLikeEscape::Character('\\'), true,)
+            .expect("wildcard consumes one source character after case folding")
+    );
+    assert!(
+        !super::sql_like_matches("ß", "__", SqlLikeEscape::Character('\\'), true,)
+            .expect("wildcards do not consume case-folded expansions")
+    );
     assert!(!super::sql_like_matches(
         "roadXmap",
         r"road\_map",

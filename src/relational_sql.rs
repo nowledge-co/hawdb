@@ -2869,6 +2869,12 @@ mod tests {
         assert_eq!(case_folded.rows.len(), 1);
         assert_eq!(case_folded.rows[0]["id"], text("doc-7"));
 
+        let case_folded_wildcard = database
+            .query_sql("SELECT id FROM like_documents WHERE title ILIKE 'Stra_e'")
+            .expect("preserve wildcard cardinality across case folding");
+        assert_eq!(case_folded_wildcard.rows.len(), 1);
+        assert_eq!(case_folded_wildcard.rows[0]["id"], text("doc-7"));
+
         let bounded = database
             .query_sql(
                 "SELECT id FROM like_documents WHERE title ILIKE 'road%' \

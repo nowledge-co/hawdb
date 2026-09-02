@@ -349,7 +349,6 @@ pub fn sql_like_matches(
     escape: SqlLikeEscape,
     case_insensitive: bool,
 ) -> Result<bool> {
-    let value = normalize_like_value(value, case_insensitive);
     let tokens = tokenize_like_pattern(pattern, escape, case_insensitive)?;
     let value = value.chars().collect::<Vec<_>>();
 
@@ -358,29 +357,40 @@ pub fn sql_like_matches(
     let mut wildcard_index = None;
     let mut wildcard_value_index = 0;
     while value_index < value.len() {
-        match tokens.get(pattern_index) {
-            Some(LikeToken::Literal(expected)) if value[value_index] == *expected => {
-                value_index += 1;
-                pattern_index += 1;
+        let matched = match tokens.get(pattern_index) {
+            Some(LikeToken::Literal(expected)) => {
+                if let Some(consumed) =
+                    match_like_literal(&value[value_index..], expected, case_insensitive)
+                {
+                    value_index += consumed;
+                    pattern_index += 1;
+                    true
+                } else {
+                    false
+                }
             }
             Some(LikeToken::One) => {
                 value_index += 1;
                 pattern_index += 1;
+                true
             }
             Some(LikeToken::Many) => {
                 wildcard_index = Some(pattern_index);
                 wildcard_value_index = value_index;
                 pattern_index += 1;
+                true
             }
-            _ => {
-                let Some(wildcard_index) = wildcard_index else {
-                    return Ok(false);
-                };
-                wildcard_value_index += 1;
-                value_index = wildcard_value_index;
-                pattern_index = wildcard_index + 1;
-            }
+            None => false,
+        };
+        if matched {
+            continue;
         }
+        let Some(wildcard_index) = wildcard_index else {
+            return Ok(false);
+        };
+        wildcard_value_index += 1;
+        value_index = wildcard_value_index;
+        pattern_index = wildcard_index + 1;
     }
     while matches!(tokens.get(pattern_index), Some(LikeToken::Many)) {
         pattern_index += 1;
@@ -388,19 +398,11 @@ pub fn sql_like_matches(
     Ok(pattern_index == tokens.len())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum LikeToken {
-    Literal(char),
+    Literal(String),
     One,
     Many,
-}
-
-fn normalize_like_value(value: &str, case_insensitive: bool) -> String {
-    if case_insensitive {
-        value.chars().default_case_fold().collect()
-    } else {
-        value.to_string()
-    }
 }
 
 fn tokenize_like_pattern(
@@ -433,17 +435,34 @@ fn tokenize_like_pattern(
 }
 
 fn push_like_literal(tokens: &mut Vec<LikeToken>, literal: char, case_insensitive: bool) {
-    if case_insensitive {
-        tokens.extend(
-            literal
-                .to_string()
-                .chars()
-                .default_case_fold()
-                .map(LikeToken::Literal),
-        );
+    let literal = if case_insensitive {
+        std::iter::once(literal).default_case_fold().collect()
+    } else {
+        literal.to_string()
+    };
+    if let Some(LikeToken::Literal(previous)) = tokens.last_mut() {
+        previous.push_str(&literal);
     } else {
         tokens.push(LikeToken::Literal(literal));
     }
+}
+
+fn match_like_literal(value: &[char], expected: &str, case_insensitive: bool) -> Option<usize> {
+    let mut actual = String::new();
+    for (index, character) in value.iter().copied().enumerate() {
+        if case_insensitive {
+            actual.extend(std::iter::once(character).default_case_fold());
+        } else {
+            actual.push(character);
+        }
+        if !expected.starts_with(&actual) {
+            return None;
+        }
+        if actual == expected {
+            return Some(index + 1);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
