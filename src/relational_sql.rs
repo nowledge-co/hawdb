@@ -2135,6 +2135,7 @@ mod tests {
             assert!(recovered_info.contains("runtime_path=demand_paged"));
             assert!(recovered_info.contains("order_prefix=1"));
             assert!(!recovered_info.contains("delta_generation=none"));
+            assert!(recovered_info.contains("delta_pages_skipped="));
             assert!(recovered_info.contains("delta_entries="));
             assert!(recovered_info.contains("row_runtime_path=snapshot_rows"));
             assert!(!recovered_info.contains("row_delta_generation=none"));
@@ -2400,12 +2401,13 @@ mod tests {
             )
             .expect("open authoritative SQL reader");
             let output = database
-                .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
+                .query_sql("EXPLAIN ANALYZE SELECT body FROM documents WHERE owner = 'owner-1'")
                 .expect("read authoritative SQL index");
             let info = relational_explain_operator_info(&output, "IndexRangeScanExec");
             assert!(info.contains("runtime_path=authoritative"));
             assert!(info.contains("authoritative=1"));
             assert!(info.contains("canonical_fallback=0"));
+            assert!(info.contains("covering=false"));
         }
         {
             let mut database = Database::open_with_durability_and_config(
@@ -2419,12 +2421,13 @@ mod tests {
             )
             .expect("open authoritative SQL reader with an undersized cache");
             let output = database
-                .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
+                .query_sql("EXPLAIN ANALYZE SELECT body FROM documents WHERE owner = 'owner-1'")
                 .expect("cache admission rejection should retain bounded positioned reads");
             let info = relational_explain_operator_info(&output, "IndexRangeScanExec");
             assert!(info.contains("runtime_path=authoritative"));
             assert!(info.contains("authoritative=1"));
             assert!(info.contains("canonical_fallback=0"));
+            assert!(info.contains("covering=false"));
             assert!(info.contains("cache_admission_rejections="));
             assert!(!info.contains("cache_admission_rejections=0"));
         }
@@ -2762,7 +2765,7 @@ mod tests {
             )
             .expect("profile fully consumed join");
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 8);
+        assert_eq!(full.profile.intermediate_rows, 11);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
@@ -2782,6 +2785,11 @@ mod tests {
         assert_eq!(join.estimated_rows, 6);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
+        assert!(full
+            .profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(
@@ -2791,7 +2799,7 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 5);
+        assert_eq!(limited.profile.intermediate_rows, 6);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
             Some(1)
@@ -2938,8 +2946,8 @@ mod tests {
                 .checkpoint()
                 .expect("publish fresh index statistics");
 
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 7);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 4);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 4);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 2);
 
             database
                 .query_sql(
@@ -2964,8 +2972,8 @@ mod tests {
             database
                 .checkpoint()
                 .expect("refresh index statistics after WAL recovery");
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 3);
         }
 
         {
@@ -2975,8 +2983,8 @@ mod tests {
                 config,
             )
             .expect("reopen fresh index statistics");
-            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 8);
-            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_ONE_SELECT), 5);
+            assert_eq!(estimated_join_rows(&database, PREFIX_TWO_SELECT), 3);
         }
 
         std::fs::remove_dir_all(path).expect("remove probe-fanout fixture");
@@ -3047,18 +3055,79 @@ mod tests {
                 },
             )
             .expect("open authoritative batched-index reader");
-            let output = database
+            let non_covering = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.body AS document_body \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute non-covering batched index join");
+            let non_covering_info =
+                relational_explain_operator_info(&non_covering, "BatchedIndexNestedLoopJoinExec");
+            assert!(non_covering_info.contains("covering=false"));
+            assert!(non_covering_info.contains("row_fetch=true"));
+            assert!(non_covering_info.contains("row_logical_pages=2"));
+            assert!(non_covering_info.contains("row_rows=6"));
+
+            let covering = database
                 .query_sql(
                     "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
                      FROM join_keys AS k \
                      INNER JOIN join_documents AS d ON d.owner = k.owner",
                 )
                 .expect("execute batched index join");
-            let info = relational_explain_operator_info(&output, "BatchedIndexNestedLoopJoinExec");
+            let info =
+                relational_explain_operator_info(&covering, "BatchedIndexNestedLoopJoinExec");
             assert!(info.contains("runtime_path=authoritative"));
+            assert!(info.contains("lookups=1"));
+            assert!(info.contains("covering=true"));
+            assert!(info.contains("row_fetch=false"));
             assert!(info.contains("row_runtime_path=snapshot_rows"));
-            assert!(info.contains("row_logical_pages=2"));
-            assert!(info.contains("row_rows=6"));
+            assert!(info.contains("row_logical_pages=1"));
+            assert!(info.contains("row_rows=3"));
+            assert!(info.contains("row_index_covered_rows=3"));
+            database
+                .query_sql("INSERT INTO join_keys (id, owner) VALUES ('key-4', 'owner-c')")
+                .expect("append live join key");
+            database
+                .query_sql(
+                    "INSERT INTO join_documents (id, owner, body) \
+                     VALUES ('doc-4', 'owner-c', 'body-4')",
+                )
+                .expect("append live join document");
+            let live = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute live batched index join");
+            let live_info =
+                relational_explain_operator_info(&live, "BatchedIndexNestedLoopJoinExec");
+            assert!(live_info.contains("lookups=1"));
+            assert!(!live_info.contains("live_batches=0"));
+        }
+        {
+            let mut database = Database::open_with_durability_and_config(
+                &path,
+                DurabilityPolicy::default(),
+                DatabaseConfig {
+                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .expect("reopen recovered batched-index reader");
+            let recovered = database
+                .query_sql(
+                    "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
+                     FROM join_keys AS k \
+                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                )
+                .expect("execute recovered batched index join");
+            let recovered_info =
+                relational_explain_operator_info(&recovered, "BatchedIndexNestedLoopJoinExec");
+            assert!(recovered_info.contains("lookups=1"));
+            assert!(!recovered_info.contains("delta_generation=none"));
         }
         std::fs::remove_dir_all(path).expect("remove batched-index fixture");
     }

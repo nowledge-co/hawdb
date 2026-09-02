@@ -2,7 +2,7 @@ use crate::{
     compare_rows, error_class, row_json, typed_value_json, ExecutionOutcome, ResultSemantics,
 };
 use serde_json::{json, Value as JsonValue};
-use skein::api::{Database, DatabaseReadTransaction};
+use skein::api::{Database, DatabaseConfig, DatabaseReadTransaction};
 use skein::{
     QueryStreamOptions, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
     RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, SkeinError, Value,
@@ -1404,6 +1404,121 @@ mod tests {
         assert!(selected_orders.len() >= 6, "{selected_orders:?}");
         assert!(memo_profiles.len() >= 4, "{memo_profiles:?}");
         assert!(plan_signatures.len() >= 8, "{plan_signatures:?}");
+    }
+
+    #[test]
+    fn grace_hash_join_matches_the_in_memory_reference_across_skewed_cases() {
+        const QUERY: &str = "SELECT l.id AS left_id, r.id AS right_id \
+            FROM fuzz_hash_left AS l \
+            LEFT JOIN fuzz_hash_right AS r \
+            ON r.join_key = l.join_key AND r.tag = l.tag AND r.keep = true \
+            WHERE l.tenant = 1";
+
+        for case_index in 0..16u64 {
+            let mut config = DatabaseConfig::default();
+            let spill_directory = std::env::temp_dir().join(format!(
+                "skein-fuzz-grace-hash-{}-{}-{}",
+                std::process::id(),
+                case_index,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_nanos()
+            ));
+            config.execution_memory = skein::executor::ExecutionMemoryConfig {
+                blocking_operator_bytes: std::num::NonZeroUsize::new(512)
+                    .expect("non-zero blocking budget"),
+                max_spill_bytes: std::num::NonZeroU64::new(2 * 1024 * 1024)
+                    .expect("non-zero spill budget"),
+                max_spill_runs: std::num::NonZeroUsize::new(4).expect("non-zero spill run budget"),
+                min_spill_free_bytes: std::num::NonZeroU64::MIN,
+                spill_directory: spill_directory.clone(),
+                ..skein::executor::ExecutionMemoryConfig::default()
+            };
+            let mut in_memory = Database::new();
+            let mut grace = Database::new_with_config(config);
+            for database in [&mut in_memory, &mut grace] {
+                for statement in [
+                    "CREATE TABLE fuzz_hash_left (id BIGINT PRIMARY KEY, tenant BIGINT NOT NULL, join_key BIGINT, tag BIGINT NOT NULL)",
+                    "CREATE TABLE fuzz_hash_right (id BIGINT PRIMARY KEY, join_key BIGINT, tag BIGINT NOT NULL, keep BOOLEAN NOT NULL)",
+                    "CREATE INDEX fuzz_hash_left_tenant ON fuzz_hash_left (tenant)",
+                ] {
+                    database.query_sql(statement).expect("create hash fuzz fixture");
+                }
+                let mut seed = 0x9e37_79b9_7f4a_7c15u64 ^ case_index;
+                let next = |seed: &mut u64| {
+                    *seed ^= *seed << 13;
+                    *seed ^= *seed >> 7;
+                    *seed ^= *seed << 17;
+                    *seed
+                };
+                let left_rows = (0..24u64)
+                    .map(|id| {
+                        let join_key = if next(&mut seed).is_multiple_of(7) {
+                            "NULL".to_string()
+                        } else {
+                            ((next(&mut seed) % 5) as i64).to_string()
+                        };
+                        format!(
+                            "({id}, {}, {join_key}, {})",
+                            if id.is_multiple_of(3) { 1 } else { 2 },
+                            next(&mut seed) % 3
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                database
+                    .query_sql(&format!(
+                        "INSERT INTO fuzz_hash_left (id, tenant, join_key, tag) VALUES {}",
+                        left_rows.join(", ")
+                    ))
+                    .expect("insert left hash fuzz rows");
+                let right_rows = (0..48u64)
+                    .map(|id| {
+                        let join_key = if id.is_multiple_of(13) {
+                            "NULL".to_string()
+                        } else if !id.is_multiple_of(5) {
+                            "1".to_string()
+                        } else {
+                            ((next(&mut seed) % 5) as i64).to_string()
+                        };
+                        format!(
+                            "({id}, {join_key}, {}, {})",
+                            next(&mut seed) % 3,
+                            if next(&mut seed).is_multiple_of(4) {
+                                "false"
+                            } else {
+                                "true"
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                database
+                    .query_sql(&format!(
+                        "INSERT INTO fuzz_hash_right (id, join_key, tag, keep) VALUES {}",
+                        right_rows.join(", ")
+                    ))
+                    .expect("insert right hash fuzz rows");
+            }
+
+            let normalize = |database: &mut Database| {
+                let mut rows = database
+                    .query_sql(QUERY)
+                    .expect("execute hash join fuzz query")
+                    .rows
+                    .iter()
+                    .map(|row| (row["left_id"].clone(), row["right_id"].clone()))
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            };
+            assert_eq!(
+                normalize(&mut grace),
+                normalize(&mut in_memory),
+                "case {case_index}"
+            );
+            drop(grace);
+            let _ = std::fs::remove_dir_all(spill_directory);
+        }
     }
 
     #[test]
