@@ -75,6 +75,10 @@ pub(crate) struct RelationalQueryLimits {
     pub max_output_rows: usize,
     pub max_output_payload_bytes: usize,
     pub max_intermediate_rows: usize,
+    /// Maximum relation-join work units, including probe attempts and rows
+    /// considered by a join predicate. This remains separate from rows emitted
+    /// at relational operator boundaries.
+    pub max_candidate_work: usize,
     pub hydration: RelationalHydrationBudget,
     pub index_read: skein_storage::RelationalIndexReadLimits,
     pub row_read: skein_storage::RelationalRowPageSnapshotReadLimits,
@@ -1645,6 +1649,8 @@ struct RelationalPipelineState<'a> {
     rows_until_checkpoint: usize,
     intermediate_rows: usize,
     max_intermediate_rows: usize,
+    candidate_work: usize,
+    max_candidate_work: usize,
     operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
     operator_pipeline_started: bool,
 }
@@ -1758,6 +1764,8 @@ impl<'a> RelationalPipelineState<'a> {
             rows_until_checkpoint: batch_rows,
             intermediate_rows: 0,
             max_intermediate_rows: limits.max_intermediate_rows,
+            candidate_work: 0,
+            max_candidate_work: limits.max_candidate_work,
             operator_cardinality_profiles,
             operator_pipeline_started: false,
         }
@@ -1786,12 +1794,7 @@ impl<'a> RelationalPipelineState<'a> {
                 ))
             })?;
         profile.actual_rows = Some(profile.actual_rows.unwrap_or(0).saturating_add(1));
-        self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
-        if self.rows_until_checkpoint == 0 {
-            skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
-            self.rows_until_checkpoint = self.batch_rows;
-        }
-        Ok(())
+        self.checkpoint_after_work()
     }
 
     fn account_unprofiled_row(&mut self) -> Result<()> {
@@ -1799,11 +1802,24 @@ impl<'a> RelationalPipelineState<'a> {
     }
 
     fn account_candidate_work(&mut self) -> Result<()> {
-        self.account_unprofiled_work()
+        self.candidate_work = self.candidate_work.checked_add(1).ok_or_else(|| {
+            SkeinError::Execution("relational candidate work count overflow".to_string())
+        })?;
+        if self.candidate_work > self.max_candidate_work {
+            return Err(SkeinError::Execution(format!(
+                "relational SQL exceeds max_candidate_work {}",
+                self.max_candidate_work
+            )));
+        }
+        self.checkpoint_after_work()
     }
 
     fn account_unprofiled_work(&mut self) -> Result<()> {
         account_intermediate(&mut self.intermediate_rows, 1, self.max_intermediate_rows)?;
+        self.checkpoint_after_work()
+    }
+
+    fn checkpoint_after_work(&mut self) -> Result<()> {
         self.rows_until_checkpoint = self.rows_until_checkpoint.saturating_sub(1);
         if self.rows_until_checkpoint == 0 {
             skein_executor::pipeline::runtime_checkpoint(self.task_context)?;
@@ -4066,6 +4082,7 @@ fn flush_batched_index_join_rows<'a>(
     }
 
     for (left_row, probe_key) in batch {
+        pipeline.borrow_mut().account_candidate_work()?;
         let Some(probe_key) = probe_key else {
             if kind != SqlJoinKind::Left {
                 continue;
@@ -4090,6 +4107,7 @@ fn flush_batched_index_join_rows<'a>(
             SkeinError::Execution("batched index join lost a probe cache entry".to_string())
         })?;
         for right_row in rows {
+            pipeline.borrow_mut().account_candidate_work()?;
             let mut combined = left_row.clone();
             combined.bindings.extend(right_row.bindings.clone());
             let mut predicates_match = true;
@@ -4407,6 +4425,7 @@ fn visit_index_merge_join<'a>(
         index_runtime,
         row_runtime,
         &mut |left_row| {
+            pipeline.borrow_mut().account_candidate_work()?;
             let Some(left_key) = bound_join_key(&left_row, right_schema, &equi_join_keys.columns)?
             else {
                 return Ok(true);
@@ -4432,6 +4451,7 @@ fn visit_index_merge_join<'a>(
                 active_right_range = start..right_cursor;
             }
             for (_, right_row) in &right_rows[active_right_range.clone()] {
+                pipeline.borrow_mut().account_candidate_work()?;
                 let mut combined = left_row.clone();
                 combined.bindings.extend(right_row.bindings.clone());
                 let mut predicates_match = true;
@@ -4917,6 +4937,7 @@ fn visit_hash_join<'a>(
         index_runtime,
         row_runtime,
         &mut |left_row| {
+            pipeline.borrow_mut().account_candidate_work()?;
             let mut matched = false;
             if let Some(key) = bound_join_key(&left_row, right_schema, &equi_join_keys.columns)?
                 && let Some(right_rows) = build.get(&key)
@@ -5000,6 +5021,7 @@ fn visit_grace_hash_join<'a>(
         index_runtime,
         row_runtime,
         &mut |left_row| {
+            pipeline.borrow_mut().account_candidate_work()?;
             let Some(key) = bound_join_key(&left_row, right_schema, &equi_join_keys.columns)?
             else {
                 if let Some(null_right) = &null_right {
@@ -5463,6 +5485,7 @@ fn visit_prepared_physical_join_plan_node<'a>(
                 &mut |left_row| {
                     let mut matched = false;
                     let mut visit_right = |right_row: BoundRow<'a>| -> Result<bool> {
+                        pipeline.borrow_mut().account_candidate_work()?;
                         let mut combined = left_row.clone();
                         combined.bindings.extend(right_row.bindings);
                         for predicate in predicates {
@@ -5485,6 +5508,7 @@ fn visit_prepared_physical_join_plan_node<'a>(
                         }
                         completed
                     } else {
+                        pipeline.borrow_mut().account_candidate_work()?;
                         visit_prepared_physical_join_plan_node(
                             right,
                             Some(&left_row),
@@ -5624,6 +5648,7 @@ fn visit_joined_row<'a>(
     };
 
     let mut matched = false;
+    pipeline.account_candidate_work()?;
     let completed = visit_join_entries(
         state,
         index_runtime,
@@ -5631,6 +5656,7 @@ fn visit_joined_row<'a>(
         planned,
         &row,
         &mut |candidate| {
+            pipeline.account_candidate_work()?;
             let mut combined = row.clone();
             combined.bindings.push(Binding {
                 binding: planned.binding,
@@ -8038,6 +8064,52 @@ mod tests {
     use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
     use std::num::{NonZeroU64, NonZeroUsize};
 
+    #[test]
+    fn candidate_work_has_an_independent_budget_and_checkpoint() {
+        let limits = RelationalQueryLimits {
+            max_output_rows: 1,
+            max_output_payload_bytes: 1,
+            max_intermediate_rows: 1,
+            max_candidate_work: 1,
+            hydration: RelationalHydrationBudget::default(),
+            index_read: skein_storage::RelationalIndexReadLimits::default(),
+            row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        };
+        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+        let mut pipeline = RelationalPipelineState::new(
+            Some(&task_context),
+            limits,
+            NonZeroUsize::MIN,
+            Vec::new(),
+        );
+
+        pipeline
+            .account_candidate_work()
+            .expect("first candidate fits");
+        let error = pipeline
+            .account_candidate_work()
+            .expect_err("second candidate exceeds its separate budget");
+        assert!(error.to_string().contains("max_candidate_work 1"));
+
+        let mut cancellable = RelationalPipelineState::new(
+            Some(&task_context),
+            RelationalQueryLimits {
+                max_candidate_work: 2,
+                ..limits
+            },
+            NonZeroUsize::MIN,
+            Vec::new(),
+        );
+        cancellation.cancel();
+        let error = cancellable
+            .account_candidate_work()
+            .expect_err("candidate work must reach a runtime checkpoint");
+        assert!(error
+            .to_string()
+            .contains("runtime task stopped: cancelled"));
+    }
+
     fn batched_index_join_state() -> RelationalState {
         let mut state = RelationalState::default();
         for sql in [
@@ -8065,6 +8137,7 @@ mod tests {
             max_output_rows: 16,
             max_output_payload_bytes: 64 * 1024,
             max_intermediate_rows: 128,
+            max_candidate_work: 128,
             hydration: RelationalHydrationBudget::default(),
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
@@ -8871,6 +8944,7 @@ mod tests {
             max_output_rows: 8,
             max_output_payload_bytes: 64 * 1024,
             max_intermediate_rows: 128,
+            max_candidate_work: 128,
             hydration: RelationalHydrationBudget::default(),
             index_read: skein_storage::RelationalIndexReadLimits::default(),
             row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),

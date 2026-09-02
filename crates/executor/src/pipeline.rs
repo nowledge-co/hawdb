@@ -45,7 +45,7 @@ impl TransformBatchBuilder {
         );
         let reservation = account.reserve(memory_budget.get())?;
         Ok(Self {
-            bindings: Vec::with_capacity(batch_rows),
+            bindings: Vec::new(),
             batch_rows,
             payload_bytes: memory_budget.get(),
             reservation,
@@ -58,7 +58,7 @@ impl TransformBatchBuilder {
             self.reservation.grow(self.payload_bytes)?;
         }
         if self.bindings.capacity() == 0 {
-            self.bindings.reserve(self.batch_rows);
+            self.bindings.reserve_exact(self.batch_rows);
         }
         Ok(())
     }
@@ -396,6 +396,9 @@ mod tests {
         let mut builder = TransformBatchBuilder::new("project", 2, budget, &ledger).unwrap();
 
         assert_eq!(ledger.snapshot().used_bytes, 4096);
+        assert_eq!(builder.bindings.capacity(), 0);
+        builder.reserve_before_allocation().unwrap();
+        assert!(builder.bindings.capacity() >= 2);
         builder.push(binding(1));
         let control = builder
             .emit(&mut |batch| {

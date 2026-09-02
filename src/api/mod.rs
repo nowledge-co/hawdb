@@ -360,6 +360,7 @@ fn relational_query_limits_with_payload(
         max_output_rows,
         max_output_payload_bytes,
         max_intermediate_rows,
+        max_candidate_work: max_intermediate_rows,
         hydration: skein_storage::RelationalHydrationBudget {
             max_rows: max_row_read_rows,
             max_compressed_bytes: config.max_relational_hydration_bytes.get(),
