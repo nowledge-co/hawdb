@@ -108,6 +108,10 @@ pub(crate) fn hash_value(hasher: &mut Sha256, value: &Value) {
             hasher.update([7]);
             hash_bytes(hasher, value);
         }
+        Value::Uuid(value) => {
+            hasher.update([8]);
+            hasher.update(value.as_bytes());
+        }
         Value::List(values) => {
             hasher.update([5]);
             hasher.update((values.len() as u64).to_le_bytes());
@@ -129,4 +133,30 @@ pub(crate) fn hash_value(hasher: &mut Sha256, value: &Value) {
 pub(crate) fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skein::Uuid;
+
+    #[test]
+    fn uuid_values_have_a_distinct_canonical_digest() {
+        let uuid = Uuid::parse_str("0198f7c9-64a1-7d6a-8e67-5df1dcb3e319").unwrap();
+        let value = Value::Uuid(uuid);
+        let mut first = Sha256::new();
+        let mut second = Sha256::new();
+        let mut binary = Sha256::new();
+
+        hash_value(&mut first, &value);
+        hash_value(&mut second, &value);
+        hash_value(&mut binary, &Value::Binary(uuid.as_bytes().to_vec()));
+
+        let first_digest = first.finalize();
+        let second_digest = second.finalize();
+        let binary_digest = binary.finalize();
+
+        assert_eq!(first_digest, second_digest);
+        assert_ne!(second_digest, binary_digest);
+    }
 }

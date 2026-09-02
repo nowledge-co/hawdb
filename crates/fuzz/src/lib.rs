@@ -2,7 +2,7 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use skein::api::{Database, DatabaseReadTransaction};
 use skein::executor::Row;
 use skein::optimizer::OptimizerSearchDirective;
-use skein::{SkeinError, Uuid, Value};
+use skein::{SkeinError, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -2263,8 +2263,8 @@ mod tests {
 
     #[test]
     fn typed_value_json_preserves_uuid_values() {
-        let value =
-            Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab").expect("parse UUID fixture");
+        let value = skein::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
+            .expect("parse UUID fixture");
         assert_eq!(
             typed_value_json(&Value::Uuid(value)),
             json!({"type": "uuid", "value": value.to_string()})

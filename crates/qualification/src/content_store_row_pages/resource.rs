@@ -175,6 +175,7 @@ fn value_payload_bytes(value: &Value) -> u64 {
         Value::Int(_) | Value::Float(_) => 8,
         Value::String(value) => value.len() as u64,
         Value::Binary(value) => value.len() as u64,
+        Value::Uuid(_) => 16,
         Value::List(values) => values_payload_bytes(values),
         Value::Map(values) => values.iter().fold(0u64, |total, (key, value)| {
             total
@@ -237,4 +238,17 @@ pub(super) fn runtime_memory_evidence(
 fn ratio_per_million(numerator: u64, denominator: u64) -> u64 {
     u64::try_from(u128::from(numerator).saturating_mul(1_000_000) / u128::from(denominator.max(1)))
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skein::Uuid;
+
+    #[test]
+    fn uuid_payload_size_is_fixed_width() {
+        let uuid = Uuid::parse_str("0198f7c9-64a1-7d6a-8e67-5df1dcb3e319").unwrap();
+
+        assert_eq!(value_payload_bytes(&Value::Uuid(uuid)), 16);
+    }
 }
