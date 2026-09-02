@@ -868,7 +868,7 @@ name = "skein"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "getrandom 0.4.3",
+ "getrandom",
  "jieba-rs",
  "loom",
  "serde",
