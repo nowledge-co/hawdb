@@ -5,19 +5,60 @@ use crate::schema::{
     ConstraintId, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId,
     PropertyType, RelTypeId, SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
-use crate::search::search_projection_document_id_for_node;
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
 use skein_integrity::{checksum_u64, integrity_digest, Sha256Digest};
+use skein_storage::projection_document_id_for_node as search_projection_document_id_for_node;
+
+#[derive(Debug)]
+struct RuntimeGovernorBackgroundAdmission(skein_qos::RuntimeGovernor);
+
+struct RootStorageTelemetry(Arc<dyn TelemetrySink>);
+
+impl std::fmt::Debug for RootStorageTelemetry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RootStorageTelemetry")
+    }
+}
+
+impl skein_storage::StorageTelemetrySink for RootStorageTelemetry {
+    fn record_wal_append(&self, event: skein_storage::WalAppendTelemetry) {
+        self.0.record_kernel(skein_telemetry::KernelTelemetry {
+            operation: skein_telemetry::KernelTelemetryOperation::WalAppend,
+            success: event.success,
+            elapsed_micros: event.elapsed_micros,
+            item_count: event.operation_count,
+            byte_count: event.byte_count,
+            fsync_micros: event.fsync_micros,
+            generation: Some(event.generation),
+        });
+    }
+}
+
+impl skein_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmission {
+    fn try_admit(
+        &self,
+        request: skein_storage::BackgroundWorkRequest,
+    ) -> std::result::Result<Box<dyn skein_storage::BackgroundWorkPermit>, String> {
+        self.0
+            .try_admit(skein_qos::RuntimeWorkRequest {
+                priority: skein_qos::RuntimeWorkPriority::Background,
+                kind: skein_qos::RuntimeWorkKind::Control,
+                cpu_slots: request.cpu_slots,
+                memory_bytes: request.memory_bytes,
+                io_slots: request.io_slots,
+                result_bytes: 0,
+                blocking: false,
+            })
+            .map(|permit| Box::new(permit) as Box<dyn skein_storage::BackgroundWorkPermit>)
+            .map_err(|error| error.to_string())
+    }
+}
 #[path = "store/append_tables.rs"]
 mod append_tables;
-#[path = "store/artifact_files.rs"]
-mod artifact_files;
 #[path = "store/backup.rs"]
 mod backup;
-#[path = "store/cow.rs"]
-mod cow;
 #[path = "store/derived_repair.rs"]
 mod derived_repair;
 #[path = "store/doctor.rs"]
@@ -32,8 +73,6 @@ mod graph_checkpoint;
 mod graph_columnar_shadow;
 #[path = "store/graph_commit.rs"]
 mod graph_commit;
-#[path = "store/graph_index_metrics.rs"]
-mod graph_index_metrics;
 #[path = "store/graph_indexes.rs"]
 mod graph_indexes;
 #[path = "store/graph_mutation.rs"]
@@ -42,8 +81,6 @@ mod graph_mutation;
 mod graph_read;
 #[path = "store/graph_recovery.rs"]
 mod graph_recovery;
-#[path = "store/read_view.rs"]
-mod read_view;
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
@@ -54,33 +91,11 @@ mod source_scan;
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
-use artifact_files::{
-    canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
-    canonical_manifest_generation_file, checkpoint_generation_file,
-    cleanup_abandoned_checkpoint_preparations, has_storage_artifacts,
-    parse_append_manifest_generation_file, parse_append_segment_generation_file,
-    parse_canonical_adjacency_descriptor_generation_file, parse_canonical_manifest_generation_file,
-    parse_canonical_segment_descriptor_generation_file, parse_generation_file,
-    parse_property_projection_descriptor_generation_file,
-    parse_property_projection_manifest_generation_file,
-    parse_property_spill_descriptor_generation_file, parse_property_spill_manifest_generation_file,
-    parse_relational_index_artifact_generation_file,
-    parse_relational_index_manifest_generation_file,
-    parse_relational_overflow_extent_generation_file, parse_relational_overflow_generation_file,
-    parse_relational_row_generation_file, parse_relational_row_page_artifact_generation_file,
-    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
-    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
-    relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
-    wal_generation_file,
-};
 pub use backup::restore_storage_backup;
 use backup::{
     copy_backup_file, copy_file_with_checksum, file_checksum, remove_source_scan_artifacts,
     validate_backup_files, validate_new_backup_destination,
 };
-#[cfg(test)]
-use cow::COW_MAP_TARGET_SEGMENT_BYTES;
-use cow::{CowSegment, CowSegmentedMap};
 pub use derived_repair::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
@@ -93,18 +108,15 @@ pub use doctor::{
 pub(crate) use durable::PreparedCheckpoint;
 use durable::{
     artifact_metadata_presence_consistent, load_published_canonical_adjacency,
-    load_published_property_projection, BackupFileEntry, BackupManifest, CheckpointImage,
-    CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableArtifactMetadata,
-    DurableManifest, DurableOpenMode, DurableStore, GraphManifestOpenBudget,
+    load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
+    DerivedArtifactBuildConfig, DurableArtifactMetadata, DurableManifest, DurableOpenMode,
+    DurableStore, GraphManifestOpenBudget,
 };
 use graph_columnar_shadow::ColumnarShadowState;
 pub use graph_columnar_shadow::{
     ColumnarShadowAdmission, ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
     ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
 };
-use graph_index_metrics::GraphIndexReadMetrics;
-pub use graph_index_metrics::{GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass};
-pub use read_view::PublishedReadView;
 use relational_index_shadow::RelationalIndexShadowState;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
@@ -121,6 +133,23 @@ pub(crate) use relational_index_shadow::{
 pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
 pub(crate) use relational_row_pages::RelationalTransactionRowView;
+use skein_storage::artifact_files::{
+    canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
+    canonical_manifest_generation_file, checkpoint_generation_file,
+    cleanup_abandoned_checkpoint_preparations, has_storage_artifacts,
+    parse_append_manifest_generation_file, parse_append_segment_generation_file,
+    parse_generation_file, parse_relational_index_artifact_generation_file,
+    parse_relational_index_manifest_generation_file,
+    parse_relational_overflow_extent_generation_file, parse_relational_overflow_generation_file,
+    parse_relational_row_generation_file, parse_relational_row_page_artifact_generation_file,
+    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
+    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
+    relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
+    wal_generation_file,
+};
+use skein_storage::GraphIndexReadMetrics;
+#[cfg(test)]
+use skein_storage::COW_MAP_TARGET_SEGMENT_BYTES;
 use skein_storage::{
     available_storage_space, decode_append_wal_batch,
     decode_relational_checkpoint_file_with_index_load,
@@ -140,15 +169,15 @@ pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
     AdjacencyLayout, AppendGeneratedRow, AppendMutationOutcome, AppendOrderMode,
     AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow, AppendTableSchema,
-    AppendTransaction, AppendWrite, CanonicalAdjacencyBuildReport, CanonicalAdjacencyConfig,
-    CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport, CanonicalAdjacencyReader,
-    CanonicalAdjacencyWriter, CanonicalScanControl, CanonicalSegmentConfig,
-    CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter, ConnectedNodesCreate,
-    DurabilityPolicy, DurableCompression, FileSegmentRangeReader, GraphMutation,
-    ManifestGeneration, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
-    MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeId, NodeRecord, NodeSetAssignment,
-    NodeSetValue, OrderedAdjacencyEntry, PersistentPropertyProjectionConfig,
+    AppendTransaction, AppendWrite, BackupFileEntry, BackupManifest, CanonicalAdjacencyBuildReport,
+    CanonicalAdjacencyConfig, CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport,
+    CanonicalAdjacencyReader, CanonicalAdjacencyWriter, CanonicalScanControl,
+    CanonicalSegmentConfig, CanonicalSegmentManifest, CanonicalSegmentReader,
+    CanonicalSegmentWriter, ConnectedNodesCreate, DurabilityPolicy, DurableCompression,
+    FileSegmentRangeReader, GraphMutation, ManifestGeneration, MatchedRelationshipCopyMerge,
+    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
+    MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeId, NodeRecord,
+    NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, PersistentPropertyProjectionConfig,
     PersistentPropertyProjectionDefinition, PersistentPropertyProjectionError,
     PersistentPropertyProjectionKind, PersistentPropertyProjectionManifest,
     PersistentPropertyProjectionReader, PersistentPropertyProjectionWriter,
@@ -171,6 +200,12 @@ pub use skein_storage::{
     StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode, StorageRestoreReport,
     StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
     STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+};
+use skein_storage::{
+    CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,
+};
+pub use skein_storage::{
+    GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass, PublishedReadView,
 };
 pub use skein_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
 pub(crate) use skein_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
@@ -197,12 +232,10 @@ const STORAGE_VERSION: &str = "skein-storage-v1";
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-const RELATIONAL_CHECKPOINT_FILE_PREFIX: &str = "relational";
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
 const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
 const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
-const BACKUP_HEADER_V1: &str = "SKEIN_BACKUP_V1";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
 const PROPERTY_PROJECTION_MANIFEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -500,13 +533,6 @@ pub struct ScanPrunedRelationshipScan<'a> {
     pub report: ScanPruningReport,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MutationSummary {
-    pub rows: Vec<BTreeMap<String, Value>>,
-    pub relational_mutation_outcomes: Vec<skein_storage::RelationalMutationOutcome>,
-    pub append_mutation_outcomes: Vec<skein_storage::AppendMutationOutcome>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelWriteBatch {
     pub graph: Vec<GraphMutation>,
@@ -649,14 +675,6 @@ fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> Resu
                 limits.max_operations
             ))
         })
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ProjectedGraphArtifact {
-    projection_epoch: u64,
-    commit_epoch: u64,
-    definition: ProjectedGraphDefinition,
-    graph: ProjectedGraph,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1024,7 +1042,7 @@ pub struct GraphStore {
     /// The engine's runtime governor, threaded down from the embedding
     /// layer (`SkeinEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
-    runtime_governor: Option<skein_qos::RuntimeGovernor>,
+    runtime_governor: Option<Arc<dyn skein_storage::BackgroundWorkAdmission>>,
     durable: Option<DurableStore>,
 }
 
@@ -2362,7 +2380,7 @@ impl GraphStore {
 
     pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn TelemetrySink>>) {
         if let Some(durable) = &mut self.durable {
-            durable.telemetry = telemetry;
+            durable.telemetry = telemetry.map(|sink| Arc::new(RootStorageTelemetry(sink)) as _);
         }
     }
 
@@ -2519,7 +2537,7 @@ impl GraphStore {
     /// shadow work can request admission (`WorkClass::Shadow`, background
     /// priority). The store never constructs a governor of its own.
     pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
-        self.runtime_governor = Some(governor);
+        self.runtime_governor = Some(Arc::new(RuntimeGovernorBackgroundAdmission(governor)));
     }
 
     pub fn register_projected_graph(
@@ -2543,10 +2561,20 @@ impl GraphStore {
         &self,
         name: &str,
         definition: &ProjectedGraphDefinition,
-    ) -> Option<&ProjectedGraph> {
+    ) -> Option<ProjectedGraph> {
         let artifact = self.projected_graph_artifacts.get(name)?;
-        (artifact.commit_epoch == self.commit_epoch && &artifact.definition == definition)
-            .then_some(&artifact.graph)
+        (artifact.commit_epoch == self.commit_epoch && &artifact.definition == definition).then(
+            || {
+                ProjectedGraph::from_parts(
+                    artifact.data.nodes.clone(),
+                    artifact.data.csr_offsets.clone(),
+                    artifact.data.csr_targets.clone(),
+                    artifact.data.csc_offsets.clone(),
+                    artifact.data.csc_sources.clone(),
+                )
+                .expect("validated projected graph artifact")
+            },
+        )
     }
 
     pub fn projected_graph_statuses(&self) -> Vec<ProjectedGraphStatus> {
@@ -2563,8 +2591,8 @@ impl GraphStore {
                     rel_types: definition.rel_types.clone(),
                     projection_epoch: artifact.map(|artifact| artifact.projection_epoch),
                     commit_epoch: artifact.map(|artifact| artifact.commit_epoch),
-                    node_count: artifact.map(|artifact| artifact.graph.node_count()),
-                    edge_count: artifact.map(|artifact| artifact.graph.edge_count()),
+                    node_count: artifact.map(|artifact| artifact.data.node_count()),
+                    edge_count: artifact.map(|artifact| artifact.data.edge_count()),
                     reusable,
                 }
             })
@@ -2959,33 +2987,41 @@ fn encode_projected_graph_artifacts(
     body.push_str(&format!("commit_epoch\t{}\n", store.commit_epoch));
     for (name, definition) in store.projected_graphs.iter() {
         let graph = projected_graph_from_definition(catalog, store, definition);
+        let data = ProjectedGraphArtifactData::new(
+            graph.nodes().to_vec(),
+            graph.csr_offsets().to_vec(),
+            graph.csr_targets().to_vec(),
+            graph.csc_offsets().to_vec(),
+            graph.csc_sources().to_vec(),
+        )
+        .expect("fresh analytics projection is structurally valid");
         body.push_str(&format!(
             "graph\t{}\t{}\t{}\t{}\t{}\n",
             encode_string(name),
             encode_string_vec(&definition.node_labels),
             encode_string_vec(&definition.rel_types),
-            graph.node_count(),
-            graph.edge_count()
+            data.node_count(),
+            data.edge_count()
         ));
         body.push_str(&format!(
             "nodes\t{}\n",
-            encode_u64_vec(graph.nodes().iter().map(|node| node.0))
+            encode_u64_vec(data.nodes.iter().map(|node| node.0))
         ));
         body.push_str(&format!(
             "csr_offsets\t{}\n",
-            encode_usize_vec(graph.csr_offsets().iter().copied())
+            encode_usize_vec(data.csr_offsets.iter().copied())
         ));
         body.push_str(&format!(
             "csr_targets\t{}\n",
-            encode_usize_vec(graph.csr_targets().iter().copied())
+            encode_usize_vec(data.csr_targets.iter().copied())
         ));
         body.push_str(&format!(
             "csc_offsets\t{}\n",
-            encode_usize_vec(graph.csc_offsets().iter().copied())
+            encode_usize_vec(data.csc_offsets.iter().copied())
         ));
         body.push_str(&format!(
             "csc_sources\t{}\n",
-            encode_usize_vec(graph.csc_sources().iter().copied())
+            encode_usize_vec(data.csc_sources.iter().copied())
         ));
     }
     body
@@ -3082,7 +3118,7 @@ fn decode_projected_graph_artifacts(
                         "projected graph artifact edge count mismatch for {name}"
                     )));
                 }
-                let graph = ProjectedGraph::from_parts(
+                let data = ProjectedGraphArtifactData::new(
                     nodes,
                     csr_offsets,
                     csr_targets,
@@ -3096,7 +3132,7 @@ fn decode_projected_graph_artifacts(
                         projection_epoch,
                         commit_epoch,
                         definition,
-                        graph,
+                        data,
                     },
                 );
             }
@@ -5987,33 +6023,6 @@ fn decode_bytes(input: &str) -> Result<Vec<u8>> {
         bytes.push(byte);
     }
     Ok(bytes)
-}
-
-#[cfg(test)]
-const BASE64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-#[cfg(test)]
-fn encode_bytes_base64(input: &[u8]) -> String {
-    let mut output = String::with_capacity(input.len().div_ceil(3).saturating_mul(4));
-    for chunk in input.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(BASE64_ALPHABET[(first >> 2) as usize] as char);
-        output.push(BASE64_ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            output.push(BASE64_ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(BASE64_ALPHABET[(third & 0x3f) as usize] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
 }
 
 pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {

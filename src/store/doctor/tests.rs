@@ -99,11 +99,11 @@ fn apply_requires_acknowledgement_for_the_exact_plan() {
     let error = DatabaseDoctor::apply_wal_tail_repair(
         &path,
         &plan,
-        WalRepairAcknowledgement {
-            protocol: WAL_DOCTOR_REPAIR_PROTOCOL.to_string(),
-            plan_id: "different-plan".to_string(),
-            accepts_potential_data_loss: true,
-        },
+        WalRepairAcknowledgement::with_parts(
+            WAL_DOCTOR_REPAIR_PROTOCOL.to_string(),
+            "different-plan".to_string(),
+            true,
+        ),
         WalDoctorOptions::default(),
     )
     .unwrap_err();

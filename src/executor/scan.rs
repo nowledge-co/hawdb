@@ -176,7 +176,7 @@ pub(super) fn stream_visited_node_batches(
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-    visit: impl FnOnce(&mut dyn FnMut(NodeRecord) -> GraphScanControl) -> Result<GraphScanControl>,
+    visit: impl FnOnce(&mut dyn FnMut(NodeRecord) -> Result<ScanControl>) -> Result<ScanControl>,
 ) -> Result<BatchControl> {
     let mut batch = AccountedBindingBatch::with_ledger(
         "IndexNodeScanExec",
@@ -189,31 +189,31 @@ pub(super) fn stream_visited_node_batches(
     let mut consumer = |node| {
         if let Err(error) = runtime_checkpoint(context.task_context) {
             callback_error = Some(error);
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         match batch.push(single_node_binding(variable, node), emit) {
             Ok(BatchControl::Continue) => {}
-            Ok(BatchControl::Stop) => return GraphScanControl::Stop,
+            Ok(BatchControl::Stop) => return Ok(ScanControl::Stop),
             Err(error) => {
                 callback_error = Some(error);
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
         }
         emitted = emitted.saturating_add(1);
         if batch.is_full() {
             match batch.emit(emit) {
                 Ok(BatchControl::Continue) => {}
-                Ok(BatchControl::Stop) => return GraphScanControl::Stop,
+                Ok(BatchControl::Stop) => return Ok(ScanControl::Stop),
                 Err(error) => {
                     callback_error = Some(error);
-                    return GraphScanControl::Stop;
+                    return Ok(ScanControl::Stop);
                 }
             }
         }
         if execution_limit.is_reached(emitted) {
-            GraphScanControl::Stop
+            Ok(ScanControl::Stop)
         } else {
-            GraphScanControl::Continue
+            Ok(ScanControl::Continue)
         }
     };
     let control = visit(&mut consumer)?;
@@ -223,7 +223,7 @@ pub(super) fn stream_visited_node_batches(
     if !batch.is_empty() && batch.emit(emit)? == BatchControl::Stop {
         return Ok(BatchControl::Stop);
     }
-    Ok(if control == GraphScanControl::Stop {
+    Ok(if control == ScanControl::Stop {
         BatchControl::Stop
     } else {
         BatchControl::Continue
@@ -279,19 +279,19 @@ pub(super) fn stream_source_segment_scan_batches(
         emitted.set(emitted.get().saturating_add(batch.len()));
         emit(batch)
     };
-    let visit = store.visit_published_source_scan_candidates_bounded(
+    let visit = store.visit_source_scan_candidates(
         &storage_predicate,
-        SourceScanCandidateLimits::bounded(
+        SourceScanReadLimits {
             io_depth,
             max_coalesced_bytes,
             max_wave_bytes,
-            memory.blocking_operator_bytes,
-        ),
+            max_live_candidate_bytes: memory.blocking_operator_bytes,
+        },
         task_context,
         &mut |row| {
             runtime_checkpoint(task_context)?;
             if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {
-                return Ok(GraphScanControl::Stop);
+                return Ok(ScanControl::Stop);
             }
             let Some(node) = store.node_owned(NodeId(row.node_id))? else {
                 return Err(SkeinError::StorageIntegrity(
@@ -313,16 +313,16 @@ pub(super) fn stream_source_segment_scan_batches(
                 relationships: BTreeMap::new(),
             };
             if output.push(binding, &mut emit_output)? == BatchControl::Stop {
-                return Ok(GraphScanControl::Stop);
+                return Ok(ScanControl::Stop);
             }
             if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
-                return Ok(GraphScanControl::Stop);
+                return Ok(ScanControl::Stop);
             }
             Ok(
                 if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {
-                    GraphScanControl::Stop
+                    ScanControl::Stop
                 } else {
-                    GraphScanControl::Continue
+                    ScanControl::Continue
                 },
             )
         },

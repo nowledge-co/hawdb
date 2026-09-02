@@ -19,6 +19,14 @@ pub struct MutationLimits {
     pub max_result_payload_bytes: NonZeroUsize,
 }
 
+/// Storage-neutral outcome of an atomically committed graph mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationSummary {
+    pub rows: Vec<BTreeMap<String, Value>>,
+    pub relational_mutation_outcomes: Vec<crate::RelationalMutationOutcome>,
+    pub append_mutation_outcomes: Vec<crate::AppendMutationOutcome>,
+}
+
 impl Default for MutationLimits {
     fn default() -> Self {
         Self {

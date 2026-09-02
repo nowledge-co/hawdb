@@ -1,6 +1,7 @@
 //! Root facade wiring for storage-independent expression evaluation.
 
 use super::*;
+use skein_executor::store::GraphExecutionRead;
 
 pub(super) use skein_executor::expression::{
     exact_relationship_scan_filter_from_predicate, insert_projected_value,
@@ -11,7 +12,7 @@ pub(super) use skein_executor::expression::{
 pub(super) fn evaluate_predicate(
     predicate: &Predicate,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     binding: &Binding,
 ) -> Result<bool> {
     evaluate_predicate_observed(
@@ -30,7 +31,7 @@ pub(super) fn evaluate_predicate(
 pub(super) fn evaluate_predicate_observed(
     predicate: &Predicate,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     binding: &Binding,
     observer: &dyn skein_executor::observer::ExecutionObserver,
     adjacency_memory: skein_executor::store::AdjacencyReadMemory<'_>,

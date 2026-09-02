@@ -1,11 +1,15 @@
 use crate::error::{Result, SkeinError};
 use crate::sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlArithmeticOperand,
-    SqlAssignmentValue, SqlColumnDefault, SqlColumnDefinition, SqlComparisonOp, SqlConflictAction,
-    SqlDataType, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
-    SqlTableStorage, SqlValue,
+    SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate, SqlReferentialAction,
+    SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
+pub(crate) use skein_relational::{
+    bind_relational_value, compile_append_explain_sql, compile_append_select_sql,
+    compile_append_statement_sql, compile_column, format_append_explain, project_append_rows,
+    reject_non_public_schema,
+};
 use skein_storage::{
     RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
@@ -15,31 +19,20 @@ use skein_storage::{
     RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
     RelationalWrite,
 };
-mod append;
-mod cardinality;
-mod uuidv7;
-
-pub(crate) use append::{
-    compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
-    format_append_explain, project_append_rows,
-};
 
 mod index_access;
-mod planning;
 mod query;
 mod row_access;
-mod template_cache;
-mod timing;
 
-pub use cardinality::{
-    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
-};
-pub use planning::{
+pub use skein_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
 };
-pub use timing::RelationalSqlStageTimings;
+pub use skein_optimizer::{
+    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
+};
+pub use skein_sql::RelationalSqlStageTimings;
 
 pub(crate) use index_access::RelationalIndexReadMode;
 #[cfg(test)]
@@ -49,7 +42,7 @@ pub(crate) use query::{
     RelationalQueryReadModes, RelationalQueryResourceContext,
 };
 pub(crate) use row_access::RelationalRowReadMode;
-pub(crate) use template_cache::{PreparedRelationalSql, RelationalPlanTemplateCache};
+pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,
@@ -550,33 +543,6 @@ fn compile_comparison_op(op: SqlComparisonOp) -> RelationalComparisonOp {
     }
 }
 
-pub(crate) fn bind_relational_value(
-    value: SqlValue,
-    parameters: &[Value],
-) -> Result<RelationalValue> {
-    let value = match value {
-        SqlValue::Literal(value) => value,
-        SqlValue::Parameter(position) => parameters
-            .get(position.saturating_sub(1))
-            .cloned()
-            .ok_or_else(|| {
-                SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-            })?,
-    };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
-            "relational SQL parameters must be scalar".to_string(),
-        )),
-    }
-}
-
 fn compile_schema_statement(statement: SqlStatement) -> Result<Vec<RelationalWrite>> {
     match statement {
         SqlStatement::CreateTable(create) => Ok(vec![RelationalWrite::CreateTable(
@@ -690,65 +656,14 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
     })
 }
 
-fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSchema> {
-    let scalar_type = compile_data_type(column.data_type);
-    Ok(RelationalColumnSchema {
-        name: column.name,
-        scalar_type,
-        nullable: column.nullable,
-        default: column
-            .default
-            .map(|default| match default {
-                SqlColumnDefault::Literal(value) => {
-                    compile_schema_value(value, scalar_type).map(RelationalColumnDefault::Literal)
-                }
-                SqlColumnDefault::UuidV7 => Ok(RelationalColumnDefault::UuidV7),
-            })
-            .transpose()?,
-    })
-}
-
 fn materialize_column_default(column: &RelationalColumnSchema) -> Result<RelationalValue> {
     Ok(match &column.default {
         None => RelationalValue::Null,
         Some(RelationalColumnDefault::Literal(value)) => value.clone(),
-        Some(RelationalColumnDefault::UuidV7) => RelationalValue::Uuid(uuidv7::generate_uuidv7()?),
+        Some(RelationalColumnDefault::UuidV7) => {
+            RelationalValue::Uuid(skein_core::generate_uuidv7()?)
+        }
     })
-}
-
-fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
-    match data_type {
-        SqlDataType::Boolean => RelationalScalarType::Boolean,
-        SqlDataType::BigInt => RelationalScalarType::BigInt,
-        SqlDataType::DoublePrecision => RelationalScalarType::DoublePrecision,
-        SqlDataType::Text => RelationalScalarType::Text,
-        SqlDataType::Bytea => RelationalScalarType::Bytea,
-        SqlDataType::Uuid => RelationalScalarType::Uuid,
-    }
-}
-
-fn compile_schema_value(
-    value: SqlValue,
-    scalar_type: RelationalScalarType,
-) -> Result<RelationalValue> {
-    let SqlValue::Literal(value) = value else {
-        return Err(SkeinError::Semantic(
-            "schema defaults cannot contain parameters".to_string(),
-        ));
-    };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
-            "relational schema defaults must be scalar".to_string(),
-        )),
-    }
-    .and_then(|value| coerce_relational_value(value, scalar_type))
 }
 
 fn bind_relational_value_as(
@@ -841,21 +756,6 @@ fn compile_add_column(alter: AlterTableAddColumnStatement) -> Result<Vec<Relatio
         table: alter.table.name,
         column: compile_column(alter.column)?,
     }])
-}
-
-fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
-    if matches!(schema, Some("system" | "information_schema" | "pg_catalog")) {
-        return Err(SkeinError::Semantic(format!(
-            "PostgreSQL compatibility catalog {} is read-only",
-            schema.unwrap_or_default()
-        )));
-    }
-    if schema.is_some_and(|schema| schema != "public") {
-        return Err(SkeinError::Semantic(
-            "relational content tables must use the public schema".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1102,7 +1002,7 @@ mod tests {
         assert!(ids[0] < ids[1]);
         ids.iter().copied().for_each(assert_uuidv7);
 
-        let explicit = uuidv7::generate_uuidv7().expect("generate explicit UUIDv7");
+        let explicit = skein_core::generate_uuidv7().expect("generate explicit UUIDv7");
         let explicit_insert = database
             .query_sql(&format!(
                 "INSERT INTO feeds (id, url) VALUES ('{explicit}', 'https://explicit.example') \

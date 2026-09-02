@@ -1,14 +1,22 @@
 pub mod adjacency;
 pub mod append_table;
+#[doc(hidden)]
+pub mod artifact_files;
+pub mod background;
 pub mod backup;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
 pub mod column_group;
 pub mod config;
+#[doc(hidden)]
+pub mod cow;
+pub mod doctor;
 pub mod durability;
 pub mod graph_descriptor_page;
 pub mod graph_descriptor_tree;
+#[doc(hidden)]
+pub mod graph_index_metrics;
 pub mod ids;
 pub mod index_page;
 pub mod mutation;
@@ -18,10 +26,15 @@ pub mod projection;
 pub mod projection_generation;
 pub mod property_projection;
 pub mod property_spill;
+#[doc(hidden)]
+pub mod read_view;
 pub mod relational;
 pub mod scan;
 pub mod snapshot;
 pub mod stable_identity;
+pub mod telemetry;
+#[doc(hidden)]
+pub mod wal;
 pub mod wire;
 
 pub use adjacency::{
@@ -42,7 +55,12 @@ pub use append_table::{
     AppendTableError, AppendTableRow, AppendTableSchema, AppendTransaction, AppendWalBatch,
     AppendWrite, DEFAULT_MAX_APPEND_MUTATION_BYTES, DEFAULT_MAX_APPEND_MUTATION_ROWS,
 };
-pub use backup::{StorageBackupReport, StorageRestoreReport, StorageScrubReport};
+pub use background::{BackgroundWorkAdmission, BackgroundWorkPermit, BackgroundWorkRequest};
+pub use backup::{
+    validate_backup_file_name, BackupFileEntry, BackupManifest, StorageBackupReport,
+    StorageRestoreReport, StorageScrubReport, BACKUP_HEADER_V1, BACKUP_MANIFEST_FILE,
+    STABLE_ID_MAPPING_FILE, STORAGE_MANIFEST_FILE,
+};
 pub use cache::{
     content_digest, ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache,
     SegmentCacheError, SegmentCacheKey, SegmentCacheLease, SegmentCacheSnapshot, StoreId,
@@ -92,6 +110,11 @@ pub use config::{
     DEFAULT_MAX_WAL_BATCH_OPERATIONS, DEFAULT_MAX_WAL_RECORD_BYTES, DEFAULT_MAX_WAL_REPLAY_BYTES,
     DEFAULT_MAX_WAL_REPLAY_ENTRIES, DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
 };
+pub use cow::{CowPageWeight, CowSegment, CowSegmentedMap, COW_MAP_TARGET_SEGMENT_BYTES};
+pub use doctor::{
+    WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan, WalTailRepairReason,
+    WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
+};
 pub use durability::{
     durable_replace_file, sync_directory, sync_parent_directory, WalSyncGroupFlush,
     WalSyncGroupProgress, WalSyncGroupState,
@@ -110,6 +133,9 @@ pub use graph_descriptor_tree::{
     GraphDescriptorTreePaths, GraphDescriptorTreeRoot, GraphDescriptorTreeRootReader,
     GraphDescriptorTreeWriteOutput, PreparedGraphDescriptorTree,
 };
+pub use graph_index_metrics::{
+    GraphIndexReadMetrics, GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass,
+};
 pub use ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
 pub use index_page::{
     ImmutableIndexPage, ImmutableIndexPageBody, ImmutableIndexPageError, ImmutableIndexPageLimits,
@@ -122,8 +148,8 @@ pub use index_page::{
 pub use mutation::{
     ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
     MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeSetAssignment, NodeSetValue,
-    PropertyFilter, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
+    MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeSetAssignment,
+    NodeSetValue, PropertyFilter, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
     RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
     RelationshipTargetNodeDelete, DEFAULT_MAX_MUTATION_AFFECTED_ROWS,
     DEFAULT_MAX_MUTATION_OPERATIONS, DEFAULT_MAX_MUTATION_RESULT_PAYLOAD_BYTES,
@@ -138,11 +164,12 @@ pub use pressure::{
     STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
 };
 pub use projection::{
-    ProjectedGraphDefinition, ProjectedGraphStatus, PropertyIndexProjectionRebuildAction,
-    SchemaMaintenanceAction, SchemaMaintenancePlanItem, SearchProjectionChange,
-    SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus,
-    SearchProjectionGraphChange, SearchProjectionMutationId, StorageOpenTimings,
-    StorageReclamationWatermark, StorageRecoveryReport, StoreStableIdMapping,
+    projection_document_id_for_label_and_properties, projection_document_id_for_node,
+    ProjectedGraphArtifact, ProjectedGraphArtifactData, ProjectedGraphDefinition,
+    ProjectedGraphStatus, PropertyIndexProjectionRebuildAction, SchemaMaintenanceAction,
+    SchemaMaintenancePlanItem, SearchProjectionChange, SearchProjectionChangefeedReadiness,
+    SearchProjectionChangefeedStatus, SearchProjectionGraphChange, SearchProjectionMutationId,
+    StorageOpenTimings, StorageReclamationWatermark, StorageRecoveryReport, StoreStableIdMapping,
 };
 pub use projection_generation::{
     decode_projection_relational_member, encode_projection_relational_member,
@@ -173,6 +200,7 @@ pub use property_spill::{
     PropertySpillReader, PropertySpillScrubReport, PropertySpillWriteOptions,
     PropertySpillWriteOutput, PropertySpillWriter,
 };
+pub use read_view::PublishedReadView;
 pub use relational::RelationalMutationOutcome;
 pub use relational::{
     decode_relational_checkpoint, decode_relational_checkpoint_file,
@@ -311,3 +339,4 @@ pub use stable_identity::{
     DEFAULT_STABLE_IDENTITY_PAGE_BYTES, DEFAULT_STABLE_IDENTITY_PAGE_ENTRIES,
     DEFAULT_STABLE_IDENTITY_VALUE_BYTES,
 };
+pub use telemetry::{StorageTelemetrySink, WalAppendTelemetry};

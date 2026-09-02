@@ -13964,15 +13964,15 @@ mod tests {
         );
         assert_eq!(
             evidence["pushdown_evidence"]["shadow_segment_pruning_candidate_document_count"],
-            6
+            130
         );
         assert_eq!(
             evidence["pushdown_evidence"]["shadow_segment_pruned_document_count"],
-            4
+            2
         );
         assert_eq!(
             evidence["pushdown_evidence"]["shadow_segment_scanned_document_count"],
-            2
+            128
         );
         assert_eq!(evidence["blocker_codes"], serde_json::json!([]));
     }
@@ -15612,6 +15612,7 @@ mod tests {
                     })
                     .unwrap();
             }
+            upsert_excluded_search_projection_rows(&mut index, "excluded", 126, None);
             index.checkpoint().unwrap();
         }
         let projection = NowledgeMemSearchProjection::open(&root).unwrap();
@@ -15641,7 +15642,7 @@ mod tests {
         assert!(output.report.persisted_segment_descriptor_used);
         assert_eq!(output.report.physical_range_read_count, 1);
         assert!(output.report.physical_bytes_read > 0);
-        assert_eq!(output.report.filtered_out_count, 2);
+        assert_eq!(output.report.filtered_out_count, 128);
         assert_eq!(
             output.report.json()["candidate_set"]["metadata_predicate_pushdown"]["field_summaries"]
                 [0]["field"],
@@ -16306,6 +16307,7 @@ mod tests {
                     })
                     .unwrap();
             }
+            upsert_excluded_search_projection_rows(&mut index, "excluded", 126, None);
             index.checkpoint().unwrap();
         }
 
@@ -16339,7 +16341,7 @@ mod tests {
         assert_eq!(output.report.scanned_segment_count, 1);
         assert_eq!(output.report.physical_range_read_count, 1);
         assert!(output.report.physical_bytes_read > 0);
-        assert_eq!(output.report.filtered_out_count, 2);
+        assert_eq!(output.report.filtered_out_count, 128);
         assert!(output
             .report
             .candidate_set
@@ -16404,6 +16406,12 @@ mod tests {
                     })
                     .unwrap();
             }
+            upsert_excluded_search_projection_rows(
+                &mut index,
+                "aac-excluded",
+                126,
+                Some(vec![1.0, 0.0]),
+            );
             index.checkpoint().unwrap();
         }
         let projection = NowledgeMemSearchProjection::open(&root).unwrap();
@@ -16452,7 +16460,7 @@ mod tests {
         );
         assert_eq!(output.report.pushed_predicate_count, 1);
         assert_eq!(output.report.pruned_segment_count, 1);
-        assert_eq!(output.report.filtered_out_count, 2);
+        assert_eq!(output.report.filtered_out_count, 128);
         assert!(output.report.persisted_segment_descriptor_used);
         assert_eq!(output.report.json()["query_embedding_dimension"], 2);
         assert_eq!(output.report.json()["offset"], 1);
@@ -17444,14 +17452,49 @@ mod tests {
     }
 
     fn nowledge_projection_evidence_rows() -> Vec<SearchProjectionRow> {
-        vec![
+        let mut rows = vec![
             nowledge_projection_evidence_row(SearchProjectionKind::Memory, "mem_1", true),
             nowledge_projection_evidence_row(SearchProjectionKind::Message, "msg_1", false),
             nowledge_projection_evidence_row(SearchProjectionKind::Community, "community_1", true),
             nowledge_projection_evidence_row(SearchProjectionKind::Entity, "entity_1", true),
             nowledge_projection_evidence_row(SearchProjectionKind::Source, "source_1", true),
             nowledge_projection_evidence_row(SearchProjectionKind::SourceChunk, "chunk_1", true),
-        ]
+        ];
+        rows.extend((0..124).map(|ordinal| {
+            nowledge_projection_evidence_row(
+                SearchProjectionKind::Memory,
+                &format!("mem_filler_{ordinal:03}"),
+                true,
+            )
+        }));
+        rows
+    }
+
+    fn upsert_excluded_search_projection_rows(
+        index: &mut SearchIndex,
+        external_id_prefix: &str,
+        count: usize,
+        embedding: Option<Vec<f32>>,
+    ) {
+        for ordinal in 0..count {
+            let external_id = format!("{external_id_prefix}-{ordinal:03}");
+            index
+                .upsert_projection_row(SearchProjectionRow {
+                    kind: SearchProjectionKind::Memory,
+                    external_id: external_id.clone(),
+                    title: format!("{external_id} candidate"),
+                    body: "metadata filtered candidate read".to_string(),
+                    embedding: embedding.clone(),
+                    source_id: Some("source-1".to_string()),
+                    metadata: BTreeMap::from([
+                        ("space_id".to_string(), "default".to_string()),
+                        ("unit_type".to_string(), "memory".to_string()),
+                        ("lifecycle_state".to_string(), "deleted".to_string()),
+                        ("importance".to_string(), "0.95".to_string()),
+                    ]),
+                })
+                .unwrap();
+        }
     }
 
     fn persisted_nowledge_projection_evidence_index(name: &str) -> SearchIndex {

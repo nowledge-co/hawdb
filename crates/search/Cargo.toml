@@ -1,0 +1,36 @@
+[package]
+name = "skein-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+jieba-rs = "0.10.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+simsimd = { version = "6.5", optional = true }
+zstd = "0.13"
+skein-core = { path = "../core" }
+skein-evidence = { path = "../evidence" }
+skein-executor = { path = "../executor" }
+skein-integrity = { path = "../integrity" }
+skein-optimizer = { path = "../optimizer" }
+skein-plan = { path = "../plan" }
+skein-qos = { path = "../qos" }
+skein-storage = { path = "../storage" }
+skein-telemetry = { path = "../telemetry" }
+skein-vector-projection = { path = "../vector-projection", optional = true }
+
+[features]
+default = ["background-maintenance", "full-text-search", "vector-search"]
+acl = []
+background-maintenance = []
+full-text-search = []
+graph-analytics = []
+qualification = []
+vector-search = ["dep:simsimd", "dep:skein-vector-projection"]
+
+[dev-dependencies]
+skein-vector-projection = { path = "../vector-projection" }

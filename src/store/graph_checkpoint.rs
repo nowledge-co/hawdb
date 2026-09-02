@@ -142,14 +142,10 @@ impl GraphStore {
         let _permit = match &self.runtime_governor {
             Some(governor) => Some(
                 governor
-                    .try_admit(skein_qos::RuntimeWorkRequest {
-                        priority: skein_qos::RuntimeWorkPriority::Background,
-                        kind: skein_qos::RuntimeWorkKind::Control,
+                    .try_admit(skein_storage::BackgroundWorkRequest {
                         cpu_slots: 1,
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
-                        result_bytes: 0,
-                        blocking: false,
                     })
                     .map_err(|error| {
                         SkeinError::Storage(format!(

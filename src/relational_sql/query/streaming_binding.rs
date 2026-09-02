@@ -308,9 +308,7 @@ impl BoundStreamingProjection {
                 BoundStreamingValue::Column(ordinal) => {
                     relational_ref_to_value(row.value(ordinal)?)?
                 }
-                BoundStreamingValue::UuidV7 => {
-                    Value::Uuid(super::super::uuidv7::generate_uuidv7()?)
-                }
+                BoundStreamingValue::UuidV7 => Value::Uuid(skein_core::generate_uuidv7()?),
             };
             *payload_bytes =
                 payload_bytes.saturating_add(skein_executor::query_value_payload_bytes(&value));

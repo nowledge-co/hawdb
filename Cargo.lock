@@ -878,11 +878,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom",
- "jieba-rs",
  "loom",
  "serde",
  "serde_json",
- "simsimd",
  "skein-analytics",
  "skein-core",
  "skein-cypher",
@@ -897,8 +895,10 @@ dependencies = [
  "skein-qos",
  "skein-query",
  "skein-readiness",
+ "skein-relational",
  "skein-route-ownership",
  "skein-runtime-tokio",
+ "skein-search",
  "skein-sql",
  "skein-storage",
  "skein-telemetry",
@@ -923,6 +923,7 @@ version = "0.1.0"
 name = "skein-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "regex",
  "uuid",
 ]
@@ -1056,6 +1057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skein-relational"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-sql",
+ "skein-storage",
+]
+
+[[package]]
 name = "skein-route-ownership"
 version = "0.1.0"
 dependencies = [
@@ -1072,12 +1082,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "skein-search"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jieba-rs",
+ "serde",
+ "serde_json",
+ "simsimd",
+ "skein-core",
+ "skein-evidence",
+ "skein-executor",
+ "skein-integrity",
+ "skein-optimizer",
+ "skein-plan",
+ "skein-qos",
+ "skein-storage",
+ "skein-telemetry",
+ "skein-vector-projection",
+ "zstd",
+]
+
+[[package]]
 name = "skein-sql"
 version = "0.1.0"
 dependencies = [
  "caseless",
  "skein-core",
  "skein-plan",
+ "skein-plan-cache",
  "skein-sql-syntax",
  "sqlparser",
 ]
@@ -1094,6 +1127,7 @@ dependencies = [
  "fs2",
  "rayon",
  "roaring",
+ "serde",
  "skein-core",
  "skein-integrity",
  "zstd",

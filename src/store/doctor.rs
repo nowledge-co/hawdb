@@ -5,89 +5,17 @@ use super::{
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_integrity::IntegrityHasher;
-use skein_storage::{DatabaseDirectoryLease, DEFAULT_MAX_WAL_RECORD_BYTES};
+pub use skein_storage::{
+    DatabaseDirectoryLease, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
+    WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "skein-wal-doctor-repair-v1";
 const DOCTOR_DIRECTORY: &str = "doctor";
 const DOCTOR_QUARANTINE_DIRECTORY: &str = "quarantine";
 const MAX_DOCTOR_AUDIT_BYTES: u64 = 1024 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WalDoctorOptions {
-    pub max_wal_bytes: Option<u64>,
-    pub max_record_bytes: Option<usize>,
-    pub max_batch_operations: Option<usize>,
-}
-
-impl Default for WalDoctorOptions {
-    fn default() -> Self {
-        Self {
-            max_wal_bytes: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
-            max_record_bytes: Some(DEFAULT_MAX_WAL_RECORD_BYTES),
-            max_batch_operations: Some(skein_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WalTailRepairReason {
-    IncompleteFinalRecord,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalTailRepairPlan {
-    pub protocol: String,
-    pub plan_id: String,
-    pub wal_generation: u64,
-    pub wal_replay_start_lsn: u64,
-    pub next_lsn_after_repair: u64,
-    pub manifest_len: u64,
-    pub manifest_crc32c: u64,
-    pub manifest_sha256: String,
-    pub original_wal_len: u64,
-    pub original_wal_crc32c: u64,
-    pub original_wal_sha256: String,
-    pub retained_wal_len: u64,
-    pub retained_wal_crc32c: u64,
-    pub retained_wal_sha256: String,
-    pub discarded_wal_tail_bytes: u64,
-    pub reason: WalTailRepairReason,
-    pub data_loss_possible: bool,
-}
-
-impl WalTailRepairPlan {
-    pub fn acknowledge_potential_data_loss(&self) -> WalRepairAcknowledgement {
-        WalRepairAcknowledgement {
-            protocol: WAL_DOCTOR_REPAIR_PROTOCOL.to_string(),
-            plan_id: self.plan_id.clone(),
-            accepts_potential_data_loss: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalRepairAcknowledgement {
-    protocol: String,
-    plan_id: String,
-    accepts_potential_data_loss: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalTailRepairReport {
-    pub protocol: String,
-    pub plan_id: String,
-    pub wal_generation: u64,
-    pub retained_wal_len: u64,
-    pub discarded_wal_tail_bytes: u64,
-    pub next_lsn_after_repair: u64,
-    pub quarantine_file: String,
-    pub repair_record_file: String,
-    pub resumed_interrupted_repair: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WalRepairAuditRecord {
@@ -164,10 +92,7 @@ fn validate_acknowledgement(
     plan: &WalTailRepairPlan,
     acknowledgement: &WalRepairAcknowledgement,
 ) -> Result<()> {
-    if acknowledgement.protocol != WAL_DOCTOR_REPAIR_PROTOCOL
-        || acknowledgement.plan_id != plan.plan_id
-        || !acknowledgement.accepts_potential_data_loss
-    {
+    if !acknowledgement.accepts(plan) {
         return Err(SkeinError::Storage(
             "WAL doctor repair requires explicit acknowledgement of the exact plan and potential data loss"
                 .to_string(),

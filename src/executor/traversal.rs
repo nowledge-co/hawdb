@@ -1,6 +1,7 @@
 //! Root facade wiring for storage-independent traversal operators.
 
 use super::*;
+use skein_executor::store::GraphExecutionRead;
 use skein_executor::traversal as executor_traversal;
 
 #[cfg(test)]
@@ -9,7 +10,7 @@ pub(super) use executor_traversal::{ShortestPathExecInput, TraversalExecutionCon
 
 pub(super) fn execute_shortest_path(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     input: ShortestPathExecInput<'_>,
     execution_limit: ExecutionLimit,
     context: TraversalExecutionContext<'_>,
@@ -19,7 +20,7 @@ pub(super) fn execute_shortest_path(
 
 #[cfg(test)]
 pub(super) fn all_shortest_paths(
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     search: ShortestPathSearch<'_>,
     memory_budget: NonZeroUsize,
     result_limit: usize,
@@ -44,7 +45,7 @@ pub(super) fn all_shortest_paths(
 
 pub(super) fn relationship_count_sum_leg(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     source: NodeId,
     leg: &RelationshipCountLeg,
     memory: skein_executor::store::AdjacencyReadMemory<'_>,
@@ -65,7 +66,7 @@ pub(super) fn relationship_count_sum_leg(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn thread_repair_stats_rows(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     label: &str,
     identity_label: &str,
     identity_ref_property: &str,

@@ -760,7 +760,7 @@ fn estimated_shadow_value_bytes(value: &Value) -> u64 {
 /// byte allowance.
 #[derive(Debug)]
 pub struct ColumnarShadowAdmission {
-    _permit: Option<skein_qos::RuntimePermit>,
+    _permit: Option<Box<dyn skein_storage::BackgroundWorkPermit>>,
     /// `None` = unmetered; `Some` = the admitted builder-lifetime bytes.
     allowance_bytes: Option<u64>,
 }
@@ -778,7 +778,7 @@ impl ColumnarShadowAdmission {
         }
     }
 
-    fn owned(permit: skein_qos::RuntimePermit, allowance_bytes: u64) -> Self {
+    fn owned(permit: Box<dyn skein_storage::BackgroundWorkPermit>, allowance_bytes: u64) -> Self {
         Self {
             _permit: Some(permit),
             allowance_bytes: Some(allowance_bytes),
@@ -1534,14 +1534,10 @@ impl GraphStore {
             return Ok(ColumnarShadowAdmission::unmetered());
         };
         let allowance = self.columnar_shadow_admission_bytes();
-        let request = skein_qos::RuntimeWorkRequest {
-            priority: skein_qos::RuntimeWorkPriority::Background,
-            kind: skein_qos::RuntimeWorkKind::Control,
+        let request = skein_storage::BackgroundWorkRequest {
             cpu_slots: 1,
             memory_bytes: allowance,
             io_slots: 1,
-            result_bytes: 0,
-            blocking: false,
         };
         match governor.try_admit(request) {
             Ok(permit) => Ok(ColumnarShadowAdmission::owned(permit, allowance)),

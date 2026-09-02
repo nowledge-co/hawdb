@@ -7,7 +7,6 @@ use super::{
     RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
-use crate::relational_sql::timing::measure_nanos;
 use crate::relational_sql::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
     RelationalJoinPlanningStrategy,
@@ -30,6 +29,7 @@ use skein_optimizer::{
     RelationalJoinRelation, RelationalJoinRewriteError, RelationalJoinRewritePlan,
     RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
 };
+use skein_sql::timing::measure_nanos;
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
 

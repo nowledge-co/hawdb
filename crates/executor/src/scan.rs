@@ -1188,6 +1188,13 @@ mod tests {
             }))
         }
 
+        fn scan_nodes_borrowed<'a>(
+            &'a self,
+            _label_id: Option<LabelId>,
+        ) -> Box<dyn Iterator<Item = &'a NodeRecord> + 'a> {
+            panic!("borrowed node scans are not used by adjacency expansion tests")
+        }
+
         fn node_count_for_label(&self, _label_id: Option<LabelId>) -> usize {
             self.degree.saturating_add(1)
         }
@@ -1212,6 +1219,62 @@ mod tests {
             _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
         ) -> Result<ScanControl> {
             panic!("property scans are not used by adjacency expansion tests")
+        }
+
+        fn visit_nodes_by_composite_property_owned(
+            &self,
+            _label_id: LabelId,
+            _predicates: &[(String, Value)],
+            _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            panic!("composite scans are not used by adjacency expansion tests")
+        }
+
+        fn visit_nodes_by_composite_range_owned(
+            &self,
+            _label_id: LabelId,
+            _seek: &skein_plan::CompositeRangeSeek,
+            _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            panic!("composite range scans are not used by adjacency expansion tests")
+        }
+
+        fn visit_nodes_by_property_range_owned(
+            &self,
+            _label_id: LabelId,
+            _property: &str,
+            _lower: Option<&(Value, bool)>,
+            _upper: Option<&(Value, bool)>,
+            _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            panic!("property range scans are not used by adjacency expansion tests")
+        }
+
+        fn visit_nodes_by_full_text_property_owned(
+            &self,
+            _label_id: LabelId,
+            _property: &str,
+            _query: &str,
+            _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            panic!("full-text scans are not used by adjacency expansion tests")
+        }
+
+        fn projected_graph_definition(
+            &self,
+            _name: &str,
+        ) -> Option<skein_storage::ProjectedGraphDefinition> {
+            panic!("graph projections are not used by adjacency expansion tests")
+        }
+
+        fn visit_source_scan_candidates(
+            &self,
+            _predicate: &ScanPredicate,
+            _limits: crate::store::SourceScanReadLimits,
+            _task_context: Option<&RuntimeTaskContext>,
+            _consumer: &mut dyn FnMut(crate::store::SourceScanCandidateRow) -> Result<ScanControl>,
+        ) -> Result<crate::store::SourceScanCandidateVisit> {
+            panic!("source scans are not used by adjacency expansion tests")
         }
 
         fn visit_projected_nodes_by_access_owned(

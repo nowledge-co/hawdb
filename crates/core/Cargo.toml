@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+getrandom = "0.4"
 uuid = "1"
 regex = "1"

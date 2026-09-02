@@ -21,16 +21,15 @@ use super::{
     split_projected_graph_artifact_checksum, storage_generation_for_file, store_id_for_path,
     sync_parent_dir, validate_backup_files, validate_new_backup_destination,
     validate_search_projection_checkpoint_changes, validate_storage_version, verify_integrity,
-    wal_generation_file, wal_group_sync_failpoint, CheckpointPublishStage, ProjectedGraphArtifact,
-    WalCursorEvent, WalEntry, WalOp, WalOpenOutcome, WalRecordCursor, BACKUP_MANIFEST_FILE,
-    CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1, MANIFEST_FILE, MANIFEST_HEADER_V1,
-    PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
+    wal_generation_file, wal_group_sync_failpoint, BackupManifest, CheckpointPublishStage,
+    ProjectedGraphArtifact, WalCursorEvent, WalEntry, WalOp, WalOpenOutcome, WalRecordCursor,
+    BACKUP_MANIFEST_FILE, CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1, MANIFEST_FILE,
+    MANIFEST_HEADER_V1, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, STORAGE_VERSION,
     WAL_BINARY_FILE_HEADER_BYTES,
 };
 use crate::error::{Result, SkeinError};
 use crate::schema::{Catalog, GraphStatistics};
-use crate::telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
 use crate::value::Value;
 use skein_integrity::{integrity_digest, Sha256Digest};
 use skein_storage::{
@@ -57,9 +56,9 @@ use skein_storage::{
     ScanSegmentManifest, SearchProjectionGraphChange, SegmentCache, StableIdentityKey,
     StableIdentityMappingConfig, StableIdentityMappingError, StableIdentityMappingReader,
     StableIdentityMappingWriter, StableIdentityMaterializeLimits, StorageBackupReport,
-    StorageDebtController, StoragePressureSignals, StorageScrubReport, StoreId,
-    StoreStableIdMapping, WalReplayConfig, WalSyncGroupFlush, WalSyncGroupProgress,
-    WalSyncGroupState,
+    StorageDebtController, StoragePressureSignals, StorageScrubReport, StorageTelemetrySink,
+    StoreId, StoreStableIdMapping, WalAppendTelemetry, WalReplayConfig, WalSyncGroupFlush,
+    WalSyncGroupProgress, WalSyncGroupState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -128,7 +127,7 @@ pub(super) struct DurableStore {
     pub(super) read_only: bool,
     max_record_bytes: Option<usize>,
     max_batch_operations: Option<usize>,
-    pub(super) telemetry: Option<Arc<dyn TelemetrySink>>,
+    pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
 }
 
@@ -297,22 +296,6 @@ pub(super) struct CheckpointManifestArtifacts {
     pub(super) relational_overflow: RelationalOverflowGenerationArtifacts,
     pub(super) relational_index: Option<RelationalIndexGenerationArtifacts>,
     pub(super) append: AppendGenerationArtifacts,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BackupFileEntry {
-    pub(super) name: String,
-    pub(super) encoded_len: u64,
-    pub(super) encoded_checksum: u64,
-    pub(super) sha256: Sha256Digest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BackupManifest {
-    pub(super) generation: u64,
-    pub(super) checkpoint_commit_epoch: u64,
-    pub(super) files: Vec<BackupFileEntry>,
-    pub(super) checksum: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1853,14 +1836,13 @@ impl DurableStore {
             }),
         };
         if let Some(telemetry) = &self.telemetry {
-            telemetry.record_kernel(KernelTelemetry {
-                operation: KernelTelemetryOperation::WalAppend,
+            telemetry.record_wal_append(WalAppendTelemetry {
                 success: result.is_ok(),
                 elapsed_micros: elapsed_micros(started),
-                item_count: operation_count,
+                operation_count,
                 byte_count,
                 fsync_micros: result.as_ref().copied().unwrap_or_default(),
-                generation: Some(self.wal_generation),
+                generation: self.wal_generation,
             });
         }
         if result.is_ok() {

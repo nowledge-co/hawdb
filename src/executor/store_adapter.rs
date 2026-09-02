@@ -5,12 +5,15 @@ use crate::schema::Catalog;
 use crate::store::{GraphScanControl, GraphStore};
 use skein_core::{LabelId, RelTypeId};
 use skein_executor::store::{
-    AdjacencyReadMemory, GraphExecutionRead, PrunedNodeScan, PrunedRelationshipScan, ScanControl,
+    AdjacencyReadMemory, GraphExecutionRead, GraphExecutionWrite, PrunedNodeScan,
+    PrunedRelationshipScan, ScanControl, SourceScanCandidateRow, SourceScanCandidateVisit,
+    SourceScanReadLimits,
 };
 use skein_executor::QueryMemoryLease;
 use skein_plan::NodeProjectionAccess;
 use skein_storage::{
-    AdjacencyDirection, NodeId, NodeRecord, ProjectedNodeRecord, PropertyFilter, RelId, RelRecord,
+    AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
+    NodeSetAssignment, ProjectedNodeRecord, PropertyFilter, RelId, RelRecord,
 };
 use std::collections::BTreeSet;
 
@@ -28,6 +31,24 @@ fn to_execution_control(control: GraphScanControl) -> ScanControl {
     }
 }
 
+fn adapt_node_consumer(
+    consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    visit: impl FnOnce(&mut dyn FnMut(NodeRecord) -> GraphScanControl) -> Result<GraphScanControl>,
+) -> Result<ScanControl> {
+    let mut consumer_error = None;
+    let control = visit(&mut |node| match consumer(node) {
+        Ok(control) => to_store_control(control),
+        Err(error) => {
+            consumer_error = Some(error);
+            GraphScanControl::Stop
+        }
+    })?;
+    match consumer_error {
+        Some(error) => Err(error),
+        None => Ok(to_execution_control(control)),
+    }
+}
+
 impl GraphExecutionRead for GraphStore {
     fn is_out_of_core(&self) -> bool {
         GraphStore::is_out_of_core(self)
@@ -35,6 +56,13 @@ impl GraphExecutionRead for GraphStore {
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         GraphStore::node_owned(self, id)
+    }
+
+    fn scan_nodes_borrowed<'a>(
+        &'a self,
+        label_id: Option<LabelId>,
+    ) -> Box<dyn Iterator<Item = &'a NodeRecord> + 'a> {
+        Box::new(GraphStore::scan_nodes(self, label_id))
     }
 
     fn node_count_for_label(&self, label_id: Option<LabelId>) -> usize {
@@ -157,6 +185,116 @@ impl GraphExecutionRead for GraphStore {
             Some(error) => Err(error),
             None => Ok(to_execution_control(control)),
         }
+    }
+
+    fn visit_nodes_by_composite_property_owned(
+        &self,
+        label_id: LabelId,
+        predicates: &[(String, skein_core::Value)],
+        consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        adapt_node_consumer(consumer, |consumer| {
+            GraphStore::visit_nodes_by_composite_property_owned(
+                self, label_id, predicates, consumer,
+            )
+        })
+    }
+
+    fn visit_nodes_by_composite_range_owned(
+        &self,
+        label_id: LabelId,
+        seek: &skein_plan::CompositeRangeSeek,
+        consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        adapt_node_consumer(consumer, |consumer| {
+            GraphStore::visit_nodes_by_composite_range_owned(self, label_id, seek, consumer)
+        })
+    }
+
+    fn visit_nodes_by_property_range_owned(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        lower: Option<&(skein_core::Value, bool)>,
+        upper: Option<&(skein_core::Value, bool)>,
+        consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        adapt_node_consumer(consumer, |consumer| {
+            GraphStore::visit_nodes_by_property_range_owned(
+                self, label_id, property, lower, upper, consumer,
+            )
+        })
+    }
+
+    fn visit_nodes_by_full_text_property_owned(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        query: &str,
+        consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        adapt_node_consumer(consumer, |consumer| {
+            GraphStore::visit_nodes_by_full_text_property_owned(
+                self, label_id, property, query, consumer,
+            )
+        })
+    }
+
+    fn projected_graph_definition(
+        &self,
+        name: &str,
+    ) -> Option<skein_storage::ProjectedGraphDefinition> {
+        GraphStore::projected_graph_definition(self, name).cloned()
+    }
+
+    fn visit_source_scan_candidates(
+        &self,
+        predicate: &skein_storage::ScanPredicate,
+        limits: SourceScanReadLimits,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
+        consumer: &mut dyn FnMut(SourceScanCandidateRow) -> Result<ScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
+        let mut consumer_error = None;
+        let visit = GraphStore::visit_published_source_scan_candidates_bounded(
+            self,
+            predicate,
+            crate::store::SourceScanCandidateLimits::bounded(
+                limits.io_depth,
+                limits.max_coalesced_bytes,
+                limits.max_wave_bytes,
+                limits.max_live_candidate_bytes,
+            ),
+            task_context,
+            &mut |row| match consumer(SourceScanCandidateRow {
+                node_id: row.node_id,
+                properties: row.properties,
+            }) {
+                Ok(control) => Ok(to_store_control(control)),
+                Err(error) => {
+                    consumer_error = Some(error);
+                    Ok(crate::store::GraphScanControl::Stop)
+                }
+            },
+        )?;
+        if let Some(error) = consumer_error {
+            return Err(error);
+        }
+        Ok(match visit {
+            crate::store::SourceScanCandidateVisit::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                candidate_count,
+            } => SourceScanCandidateVisit::Rows {
+                graph_epoch,
+                skipped_segment_count,
+                report,
+                candidate_count,
+            },
+            crate::store::SourceScanCandidateVisit::Fallback(reason) => {
+                SourceScanCandidateVisit::Fallback(reason)
+            }
+        })
     }
 
     fn visit_adjacent_relationships_owned(
@@ -295,6 +433,37 @@ impl GraphExecutionRead for GraphStore {
             nodes: Box::new(scan.nodes.into_iter().cloned()),
             report: scan.report,
         })
+    }
+}
+
+impl GraphExecutionWrite for GraphStore {
+    fn commit_mutation_with_limits(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        GraphStore::commit_mutation_with_limits(self, catalog, mutation, limits)
+    }
+
+    fn set_node_properties_by_ids_with_limits(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[NodeId],
+        assignments: &[NodeSetAssignment],
+        limits: MutationLimits,
+    ) -> Result<Vec<NodeId>> {
+        GraphStore::set_node_properties_by_ids_with_limits(self, catalog, ids, assignments, limits)
+    }
+
+    fn delete_node_ids_with_limits(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[NodeId],
+        detach: bool,
+        limits: MutationLimits,
+    ) -> Result<Vec<NodeId>> {
+        GraphStore::delete_node_ids_with_limits(self, catalog, ids, detach, limits)
     }
 }
 

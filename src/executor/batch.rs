@@ -202,7 +202,7 @@ impl OptionalDegreeSpec<'_> {
 #[derive(Clone, Copy)]
 pub(super) struct BatchReadContext<'a> {
     pub(super) catalog: &'a Catalog,
-    pub(super) store: &'a GraphStore,
+    pub(super) store: &'a dyn skein_executor::store::GraphExecutionRead,
     pub(super) parameters: &'a BTreeMap<String, Value>,
     pub(super) external: &'a dyn BatchExternalRead,
     pub(super) memory: &'a ExecutionMemoryConfig,
@@ -252,7 +252,7 @@ impl<'a> BatchPlanRef<'a> {
 pub(super) fn collect_batch_pipeline(
     plan: BatchPlanRef<'_>,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn skein_executor::store::GraphExecutionRead,
     execution_context: &mut ExecutionContext<'_>,
     execution_limit: ExecutionLimit,
 ) -> Result<Vec<Binding>> {
@@ -948,11 +948,11 @@ fn execute_binding_batches_inner(
             );
             let mut total = 0usize;
             let mut callback_error = None;
-            store.visit_nodes_owned(None, |node| {
+            store.visit_nodes_owned(None, &mut |node| {
                 if !node_matches_label_pattern(&node, label_ids.as_deref())
                     || !node_properties_match(&node, properties)
                 {
-                    return GraphScanControl::Continue;
+                    return Ok(ScanControl::Continue);
                 }
                 for leg in legs {
                     match relationship_count_sum_leg(
@@ -970,11 +970,11 @@ fn execute_binding_batches_inner(
                         Ok(count) => total = total.saturating_add(count),
                         Err(error) => {
                             callback_error = Some(error);
-                            return GraphScanControl::Stop;
+                            return Ok(ScanControl::Stop);
                         }
                     }
                 }
-                GraphScanControl::Continue
+                Ok(ScanControl::Continue)
             })?;
             if let Some(error) = callback_error {
                 return Err(error);

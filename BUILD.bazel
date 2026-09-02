@@ -23,7 +23,9 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/qualification",
     "crates/query",
     "crates/readiness",
+    "crates/relational",
     "crates/route-ownership",
+    "crates/search",
     "crates/runtime-tokio",
     "crates/sql",
     "crates/sql-syntax",
@@ -63,7 +65,6 @@ _SKEIN_SRCS = glob(
 _SKEIN_BASE_DEPS = [
     "@crate_index//:chrono",
     "@crate_index//:getrandom",
-    "@crate_index//:jieba-rs",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@crate_index//:unicode-width",
@@ -82,7 +83,9 @@ _SKEIN_BASE_DEPS = [
     "//crates/qos:skein_qos",
     "//crates/query:skein_query",
     "//crates/readiness:skein_readiness",
+    "//crates/relational:skein_relational",
     "//crates/route-ownership:skein_route_ownership",
+    "//crates/search:skein_search",
     "//crates/sql:skein_sql",
     "//crates/storage:skein_storage",
     "//crates/telemetry:skein_telemetry",
@@ -91,7 +94,6 @@ _SKEIN_BASE_DEPS = [
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
 _SKEIN_VECTOR_DEPS = [
-    "@crate_index//:simsimd",
     "//crates/vector-projection:skein_vector_projection",
 ]
 

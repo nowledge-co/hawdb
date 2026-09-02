@@ -65,12 +65,16 @@ crate split includes `skein-core` for common graph primitives,
 local resource classes, background admission, and expected-value ranking,
 `skein-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
 SQL/PGQ syntax AST, `skein-sql` for semantic relational/SQL/PGQ lowering,
+`skein-relational` for storage-neutral relational statement compilation and
+strict-append access planning,
 `skein-plan` for Cypher logical/physical IR, typed phase roots, deterministic
 fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
 lowering logic. `skein-analytics` owns the storage-neutral immutable CSR/CSC
 kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
 owns release identity validation and storage crash-recovery evidence contracts.
+`skein-search` owns lexical/vector search, generation publication, recall
+validation, and the storage-neutral `SearchProjectionSource` boundary.
 
 ```text
 crates/
@@ -83,6 +87,8 @@ crates/
   cypher/              token cursor, parser, AST, parameter model
   sql-syntax/           PostgreSQL tokens, spans, errors, SQL/PGQ syntax AST
   sql/                  relational and SQL/PGQ semantic lowering
+  relational/           relational compilation and strict-append planning
+  search/               lexical/vector indexing and search generations
   storage/             storage protocols, durable primitives, MVCC, indexes
   executor/            physical operators and query execution
   fuzz/                development-only differential oracles and replay bundles
@@ -104,6 +110,27 @@ database, WAL, query executor, or embedded runtime. This keeps projection scan
 and recovery ownership in the embedding layer while making the algorithm
 kernel reusable over immutable snapshots.
 
+`src/search.rs` follows the same pattern: it preserves the public `skein` paths
+and implements `SearchProjectionSource` for the root `GraphStore`, while index
+state, generation cleanup/publication, query execution, and recall validation
+belong to `skein-search`. Search document identity is a storage protocol and is
+therefore owned by `skein-storage`, preventing storage mutation code from
+depending back on the search crate.
+
+`skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
+scan, index seek, traversal, projected-graph lookup, and checkpoint-published
+Source sidecar reads. `GraphExecutionWrite` contains only the bounded mutation
+operations needed after executor preflight. The root executor keeps public
+entrypoints and implements both traits for `GraphStore`; batch and traversal
+kernels do not depend on the concrete store.
+
+`skein-relational` is intentionally narrower than the complete relational
+runtime. It owns shared scalar/column binding plus strict-append statement and
+access-plan compilation over `skein-sql` IR and `skein-storage` state. The
+row/index query runtime remains in the root until its transaction-private
+`GraphStore` read views have a storage-neutral contract; moving that composite
+module earlier would only recreate the root dependency fan-out in a new crate.
+
 `src/production_evidence.rs` and `src/crash_recovery_evidence.rs` remain public
 compatibility facades over `skein-evidence`. The evidence crate depends only on
 `skein-core` plus serialization, so qualification and recovery tools can share
@@ -119,14 +146,17 @@ resource policy can be reused by projection, import, schema maintenance, and
 retrieval loops without creating ownership cycles.
 
 The storage split is intentionally transitional. `skein-storage` owns reusable
-durability primitives, WAL group accounting, immutable snapshot coordination,
-canonical segment formats, relational state, and storage indexes. The root
+durability primitives, WAL model/codec and group accounting, immutable snapshot
+coordination, copy-on-write state, artifact naming, backup/doctor protocols,
+canonical segment formats, relational state, storage metrics, and indexes. QoS
+admission and WAL telemetry cross this boundary through storage-owned traits;
+the root adapts them to its runtime governor and telemetry sink. The root
 `src/store.rs` still owns the concrete `DurableStore` adapter because checkpoint
-encoding currently depends on the root catalog, graph statistics, WAL operation
-model, and telemetry facade. New protocol state must move inward to
-`skein-storage`; the concrete adapter should move only after those dependencies
-have stable inward-facing contracts. This avoids presenting the root facade or
-the internal storage crate as an accidental second production API.
+encoding and transaction-private relational views still depend on root catalog
+and graph-statistics orchestration. The concrete adapter should move only after
+those dependencies have stable inward-facing contracts. This avoids presenting
+the root facade or the internal storage crate as an accidental second
+production API.
 
 Cypher exposes lightweight runtime resource intent through session-scoped
 system variables instead of query-shape-specific typed APIs.

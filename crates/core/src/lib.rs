@@ -6,6 +6,7 @@ pub mod graph_rag;
 pub mod logical_type;
 pub mod regex;
 pub mod schema;
+pub mod uuidv7;
 pub mod value;
 
 pub use cancellation::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
@@ -34,4 +35,5 @@ pub use schema::{
     TableKind,
 };
 pub use uuid::Uuid;
+pub use uuidv7::generate_uuidv7;
 pub use value::{Value, ValueRef};

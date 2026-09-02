@@ -2477,14 +2477,21 @@ mod tests {
     }
 
     fn nowledge_probe_rows() -> Vec<SearchProjectionRow> {
-        vec![
+        let mut rows = vec![
             nowledge_probe_row(SearchProjectionKind::Memory, "mem_1"),
             nowledge_probe_row_without_embedding(SearchProjectionKind::Message, "msg_1"),
             nowledge_probe_row(SearchProjectionKind::Community, "community_1"),
             nowledge_probe_row(SearchProjectionKind::Entity, "entity_1"),
             nowledge_probe_row(SearchProjectionKind::Source, "source_1"),
             nowledge_probe_row(SearchProjectionKind::SourceChunk, "chunk_1"),
-        ]
+        ];
+        rows.extend((0..124).map(|ordinal| {
+            nowledge_probe_row(
+                SearchProjectionKind::Memory,
+                &format!("mem_filler_{ordinal:03}"),
+            )
+        }));
+        rows
     }
 
     fn nowledge_probe_row(kind: SearchProjectionKind, external_id: &str) -> SearchProjectionRow {

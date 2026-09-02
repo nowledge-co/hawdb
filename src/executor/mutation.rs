@@ -1,11 +1,23 @@
 //! Mutation preflight, translation, and execution.
 
 use super::*;
+use skein_executor::store::{GraphExecutionRead, GraphExecutionWrite, ScanControl};
+use skein_storage::RelRecord;
 
 pub fn execute_mutation_with_limits(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
     store: &mut GraphStore,
+    limits: MutationLimits,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<Vec<Row>> {
+    execute_mutation_with_store(plan, catalog, store, limits, task_context)
+}
+
+fn execute_mutation_with_store(
+    plan: &PhysicalPlan,
+    catalog: &mut Catalog,
+    store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
@@ -52,7 +64,7 @@ pub fn execute_mutation_with_limits(
 pub fn project_staged_mutation_return_rows(
     plan: &PhysicalPlan,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     mutation_rows: &[Row],
     limits: MutationLimits,
 ) -> Result<Option<Vec<Row>>> {
@@ -129,7 +141,7 @@ pub fn project_staged_mutation_return_rows(
 fn execute_node_mutation_with_limits(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Option<Vec<Row>>> {
@@ -177,19 +189,19 @@ fn execute_node_mutation_with_limits(
     let mut ids = Vec::with_capacity(limits.max_affected_rows.get().min(1024));
     let mut visited = 0usize;
     let mut callback_error = None;
-    store.visit_nodes_owned(None, |node| {
+    store.visit_nodes_owned(None, &mut |node| {
         if callback_error.is_some() {
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         visited = visited.saturating_add(1);
         if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS)
             && let Err(error) = runtime_checkpoint(task_context)
         {
             callback_error = Some(error);
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         if !node_matches_label_pattern(&node, label_ids.as_deref()) {
-            return GraphScanControl::Continue;
+            return Ok(ScanControl::Continue);
         }
         let binding = Binding {
             values: BTreeMap::new(),
@@ -199,10 +211,10 @@ fn execute_node_mutation_with_limits(
         if let Some(predicate) = predicate {
             match evaluate_predicate(predicate, catalog, store, &binding) {
                 Ok(true) => {}
-                Ok(false) => return GraphScanControl::Continue,
+                Ok(false) => return Ok(ScanControl::Continue),
                 Err(error) => {
                     callback_error = Some(error);
-                    return GraphScanControl::Stop;
+                    return Ok(ScanControl::Stop);
                 }
             }
         }
@@ -211,10 +223,10 @@ fn execute_node_mutation_with_limits(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         ids.push(binding.nodes[variable].id);
-        GraphScanControl::Continue
+        Ok(ScanControl::Continue)
     })?;
     if let Some(error) = callback_error {
         return Err(error);
@@ -262,7 +274,7 @@ fn execute_set_node_properties_return_with_limits(
     assignments: &[crate::planner::SetAssignment],
     returns: &SetNodePropertiesReturnMode,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut dyn GraphExecutionWrite,
     limits: MutationLimits,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
@@ -276,19 +288,19 @@ fn execute_set_node_properties_return_with_limits(
     let mut projected_payload_bytes = 0usize;
     let mut visited = 0usize;
     let mut callback_error = None;
-    store.visit_nodes_owned(None, |node| {
+    store.visit_nodes_owned(None, &mut |node| {
         if callback_error.is_some() {
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         visited = visited.saturating_add(1);
         if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS)
             && let Err(error) = runtime_checkpoint(task_context)
         {
             callback_error = Some(error);
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         if !node_matches_label_pattern(&node, label_ids.as_deref()) {
-            return GraphScanControl::Continue;
+            return Ok(ScanControl::Continue);
         }
         let original_binding = Binding {
             values: BTreeMap::new(),
@@ -298,10 +310,10 @@ fn execute_set_node_properties_return_with_limits(
         if let Some(predicate) = predicate {
             match evaluate_predicate(predicate, catalog, store, &original_binding) {
                 Ok(true) => {}
-                Ok(false) => return GraphScanControl::Continue,
+                Ok(false) => return Ok(ScanControl::Continue),
                 Err(error) => {
                     callback_error = Some(error);
-                    return GraphScanControl::Stop;
+                    return Ok(ScanControl::Stop);
                 }
             }
         }
@@ -310,7 +322,7 @@ fn execute_set_node_properties_return_with_limits(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
-            return GraphScanControl::Stop;
+            return Ok(ScanControl::Stop);
         }
         let id = node.id;
         ids.push(id);
@@ -320,7 +332,7 @@ fn execute_set_node_properties_return_with_limits(
                     "mutation would exceed max_mutation_result_rows {}",
                     limits.max_result_rows
                 )));
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
             let mut projected_node = node;
             for assignment in &assignments {
@@ -331,7 +343,7 @@ fn execute_set_node_properties_return_with_limits(
                     Ok(value) => value,
                     Err(error) => {
                         callback_error = Some(error);
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                 };
                 projected_node
@@ -353,7 +365,7 @@ fn execute_set_node_properties_return_with_limits(
                 Ok(values) => values,
                 Err(error) => {
                     callback_error = Some(error);
-                    return GraphScanControl::Stop;
+                    return Ok(ScanControl::Stop);
                 }
             };
             let next_payload = projected_payload_bytes.saturating_add(map_payload_bytes(&values));
@@ -362,12 +374,12 @@ fn execute_set_node_properties_return_with_limits(
                     "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                     limits.max_result_payload_bytes
                 )));
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
             projected_payload_bytes = next_payload;
             projected_rows.push(values);
         }
-        GraphScanControl::Continue
+        Ok(ScanControl::Continue)
     })?;
     if let Some(error) = callback_error {
         return Err(error);
@@ -959,16 +971,17 @@ pub(super) fn relationship_on_create_property_value(
 
 pub(super) fn try_projected_graph_with_node_filter(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn GraphExecutionRead,
     node_labels: &[String],
     rel_types: &[String],
     include_node: impl Fn(&NodeRecord) -> bool,
     layout: ProjectionLayout,
     budget: ProjectionMemoryBudget,
 ) -> Result<ProjectedGraph> {
+    let source = GraphExecutionProjectionSource(store);
     if node_labels.is_empty() && rel_types.is_empty() {
         return ProjectedGraph::try_from_store_with_node_filter_and_layout(
-            store,
+            &source,
             None,
             include_node,
             layout,
@@ -982,7 +995,7 @@ pub(super) fn try_projected_graph_with_node_filter(
         .collect::<Vec<_>>();
     if !node_labels.is_empty() && label_ids.is_empty() {
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
-            store,
+            &source,
             &[],
             include_node,
             layout,
@@ -997,7 +1010,7 @@ pub(super) fn try_projected_graph_with_node_filter(
     if !rel_types.is_empty() && rel_type_ids.is_empty() {
         if label_ids.is_empty() {
             return ProjectedGraph::try_from_store_without_edges_with_node_filter_and_layout(
-                store,
+                &source,
                 include_node,
                 layout,
                 budget,
@@ -1005,7 +1018,7 @@ pub(super) fn try_projected_graph_with_node_filter(
             .map_err(|error| SkeinError::Execution(error.to_string()));
         }
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
-            store,
+            &source,
             &label_ids,
             include_node,
             layout,
@@ -1014,7 +1027,7 @@ pub(super) fn try_projected_graph_with_node_filter(
         .map_err(|error| SkeinError::Execution(error.to_string()));
     }
     ProjectedGraph::try_from_store_labels_and_rel_types_with_node_filter_and_layout(
-        store,
+        &source,
         &label_ids,
         &rel_type_ids,
         include_node,
@@ -1022,4 +1035,42 @@ pub(super) fn try_projected_graph_with_node_filter(
         budget,
     )
     .map_err(|error| SkeinError::Execution(error.to_string()))
+}
+
+struct GraphExecutionProjectionSource<'a>(&'a dyn GraphExecutionRead);
+
+impl skein_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
+    fn visit_projection_nodes(
+        &self,
+        visitor: &mut dyn FnMut(NodeRecord) -> skein_analytics::ProjectionScanControl,
+    ) -> std::result::Result<skein_analytics::ProjectionScanControl, String> {
+        self.0
+            .visit_nodes_owned(None, &mut |node| {
+                Ok(match visitor(node) {
+                    skein_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
+                    skein_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
+                })
+            })
+            .map(|control| match control {
+                ScanControl::Continue => skein_analytics::ProjectionScanControl::Continue,
+                ScanControl::Stop => skein_analytics::ProjectionScanControl::Stop,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn visit_projection_relationships(
+        &self,
+        visitor: &mut dyn FnMut(RelRecord) -> skein_analytics::ProjectionScanControl,
+    ) -> std::result::Result<skein_analytics::ProjectionScanControl, String> {
+        let scan = self
+            .0
+            .scan_relationships_with_filter_pruning(None, None)
+            .map_err(|error| error.to_string())?;
+        for relationship in scan.relationships {
+            if visitor(relationship) == skein_analytics::ProjectionScanControl::Stop {
+                return Ok(skein_analytics::ProjectionScanControl::Stop);
+            }
+        }
+        Ok(skein_analytics::ProjectionScanControl::Continue)
+    }
 }

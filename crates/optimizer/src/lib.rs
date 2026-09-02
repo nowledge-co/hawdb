@@ -11,6 +11,8 @@ pub mod relational_join;
 mod relational_join_cost;
 pub mod relational_join_hypergraph;
 pub mod relational_join_rewrite;
+pub mod relational_planning;
+pub mod relational_profile;
 pub mod rule;
 pub mod search;
 pub mod stage;
@@ -64,6 +66,14 @@ pub use relational_join_rewrite::{
     RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
     RelationalJoinRewriteEnumeration, RelationalJoinRewriteError, RelationalJoinRewritePlan,
     RelationalJoinRewriteProblem, RelationalJoinRewriteStep, RelationalJoinTree,
+};
+pub use relational_planning::{
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
+    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+};
+pub use relational_profile::{
+    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
 pub use rule::{
     apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,

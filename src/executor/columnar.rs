@@ -90,7 +90,7 @@ pub(super) fn supports_parallel_morsel_execution(plan: &PhysicalPlan, catalog: &
 pub(super) fn default_morsel_parallelism(
     plan: &PhysicalPlan,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn skein_executor::store::GraphExecutionRead,
     memory: &ExecutionMemoryConfig,
 ) -> usize {
     match plan {
@@ -262,7 +262,7 @@ impl<'a> NumericFragment<'a> {
         self,
         items: &[Projection],
         catalog: &Catalog,
-        store: &GraphStore,
+        store: &dyn skein_executor::store::GraphExecutionRead,
         memory: &ExecutionMemoryConfig,
     ) -> usize {
         if store.is_out_of_core() {
@@ -572,7 +572,7 @@ fn stream_parallel_borrowed_numeric_nodes(
         wave_budget,
     );
     let _wave_lease = wave_account.reserve(wave_bytes)?;
-    let mut nodes = context.store.scan_nodes(Some(label_id));
+    let mut nodes = context.store.scan_nodes_borrowed(Some(label_id));
     let mut wave = Vec::with_capacity(wave_capacity);
     let mut batch_emitter = NumericBatchEmitter::new(
         fragment,
@@ -657,7 +657,7 @@ fn stream_lending_numeric_nodes(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<(usize, bool)> {
     let mut cursor = NumericNodeBatchCursor::new(
-        context.store.scan_nodes(Some(label_id)),
+        context.store.scan_nodes_borrowed(Some(label_id)),
         fragment,
         scan.batch_rows,
         scan.needs_node_ids,
@@ -699,7 +699,7 @@ fn stream_borrowed_numeric_nodes(
         emit,
     );
     let mut stopped = false;
-    for node in context.store.scan_nodes(Some(label_id)) {
+    for node in context.store.scan_nodes_borrowed(Some(label_id)) {
         nodes.push(node);
         if nodes.len() == context.memory.batch_rows.get() {
             stopped = batch_emitter.emit_nodes(&nodes)? == BatchControl::Stop;
@@ -739,7 +739,7 @@ fn stream_owned_numeric_nodes(
     {
         let mut consume = |node: NodeRecord| {
             if stopped {
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
             let node_bytes = skein_executor::binding::node_memory_bytes(&node);
             if !nodes.is_empty()
@@ -750,12 +750,12 @@ fn stream_owned_numeric_nodes(
                     Ok(BatchControl::Continue) => buffered_bytes = 0,
                     Ok(BatchControl::Stop) => {
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                     Err(error) => {
                         callback_error = Some(error);
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                 }
             }
@@ -768,20 +768,20 @@ fn stream_owned_numeric_nodes(
                     Ok(BatchControl::Continue) => buffered_bytes = 0,
                     Ok(BatchControl::Stop) => {
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                     Err(error) => {
                         callback_error = Some(error);
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                 }
             }
             if batch_emitter.limit_reached() {
                 stopped = true;
-                GraphScanControl::Stop
+                Ok(ScanControl::Stop)
             } else {
-                GraphScanControl::Continue
+                Ok(ScanControl::Continue)
             }
         };
         context
@@ -821,32 +821,32 @@ fn stream_owned_typed_numeric_nodes(
     {
         let mut consume = |node: NodeRecord| {
             if stopped {
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
             if let Err(error) = buffer.push_owned(node) {
                 callback_error = Some(error);
                 stopped = true;
-                return GraphScanControl::Stop;
+                return Ok(ScanControl::Stop);
             }
             if buffer.is_full() {
                 match batch_emitter.emit_typed(buffer.take_batch()) {
                     Ok(BatchControl::Continue) => buffer.clear(),
                     Ok(BatchControl::Stop) => {
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                     Err(error) => {
                         callback_error = Some(error);
                         stopped = true;
-                        return GraphScanControl::Stop;
+                        return Ok(ScanControl::Stop);
                     }
                 }
             }
             if batch_emitter.limit_reached() {
                 stopped = true;
-                GraphScanControl::Stop
+                Ok(ScanControl::Stop)
             } else {
-                GraphScanControl::Continue
+                Ok(ScanControl::Continue)
             }
         };
         context

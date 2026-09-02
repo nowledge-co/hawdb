@@ -17,12 +17,13 @@ use crate::store::{
     NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, ProjectedGraphDefinition, PropertyFilter,
     RelationshipDeleteRequest, RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
     RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPruningReport, SourceScanCandidateLimits, SourceScanCandidateVisit,
+    ScanPruningReport,
 };
 use crate::value::Value;
 use skein_analytics::ProjectedGraphExecution;
 use skein_core::RuntimeTaskContext;
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
+use skein_executor::store::{ScanControl, SourceScanCandidateVisit, SourceScanReadLimits};
 use skein_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -124,7 +125,7 @@ pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: 
 pub(crate) fn default_morsel_parallelism(
     plan: &PhysicalPlan,
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &dyn skein_executor::store::GraphExecutionRead,
     memory: &ExecutionMemoryConfig,
 ) -> usize {
     columnar::default_morsel_parallelism(plan, catalog, store, memory)
@@ -170,7 +171,7 @@ pub(super) struct PreparedPhysicalPlan<'a> {
 impl<'a> PreparedPhysicalPlan<'a> {
     pub(super) fn prepare(
         plan: &'a PhysicalPlan,
-        store: &GraphStore,
+        store: &dyn skein_executor::store::GraphExecutionRead,
         memory: &ExecutionMemoryConfig,
     ) -> Self {
         let batch_plan = BatchPlanRef::try_new(plan);

@@ -55,9 +55,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::template_cache::PreparedRelationalSql;
-use super::timing::{elapsed_nanos, measure_nanos};
+use super::PreparedRelationalSql;
 use super::RelationalSqlStageTimings;
+use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
 mod columnar_aggregate;
 mod join_order;
@@ -8253,7 +8253,7 @@ fn evaluate_projection_expression(
             distinct: false,
             filter: None,
         } if name == "uuidv7" && arguments.is_empty() => {
-            Ok(RelationalValue::Uuid(super::uuidv7::generate_uuidv7()?))
+            Ok(RelationalValue::Uuid(skein_core::generate_uuidv7()?))
         }
         SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
             "unsupported relational projection function {name}"

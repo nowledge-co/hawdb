@@ -10,6 +10,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 fs2 = "0.4.3"
 rayon = "1.11"
 roaring = "0.10"
+serde = { version = "1", features = ["derive"] }
 skein-core = { path = "../core" }
 skein-integrity = { path = "../integrity" }
 zstd = "0.13"

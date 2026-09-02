@@ -8,10 +8,8 @@ license = "Apache-2.0"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 getrandom = "0.4"
-jieba-rs = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-simsimd = { version = "6.5", optional = true }
 skein-core = { path = "crates/core" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
@@ -26,7 +24,9 @@ skein-plan-cache = { path = "crates/plan-cache" }
 skein-qos = { path = "crates/qos" }
 skein-query = { path = "crates/query" }
 skein-readiness = { path = "crates/readiness" }
+skein-relational = { path = "crates/relational" }
 skein-route-ownership = { path = "crates/route-ownership" }
+skein-search = { path = "crates/search", default-features = false }
 skein-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
 skein-sql = { path = "crates/sql" }
 skein-storage = { path = "crates/storage" }
@@ -45,14 +45,14 @@ default = [
   "graph-analytics",
   "vector-search",
 ]
-acl = []
-background-maintenance = []
-full-text-search = []
-graph-analytics = []
-vector-search = ["dep:simsimd", "dep:skein-vector-projection"]
+acl = ["skein-search/acl"]
+background-maintenance = ["skein-search/background-maintenance"]
+full-text-search = ["skein-search/full-text-search"]
+graph-analytics = ["skein-search/graph-analytics"]
+vector-search = ["skein-search/vector-search", "dep:skein-vector-projection"]
 loom-tests = []
 opentelemetry = ["skein-telemetry/opentelemetry"]
-qualification = []
+qualification = ["skein-search/qualification"]
 tokio-runtime = ["dep:skein-runtime-tokio"]
 
 [workspace]
@@ -74,7 +74,9 @@ members = [
   "crates/query",
   "crates/qualification",
   "crates/readiness",
+  "crates/relational",
   "crates/route-ownership",
+  "crates/search",
   "crates/sql",
   "crates/sql-syntax",
   "crates/storage",

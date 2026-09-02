@@ -1,11 +1,164 @@
-use crate::{NodeId, RelId, RelationalPrimaryKeyChangeCapture};
-use skein_core::{SchemaObjectState, Value};
+use crate::{NodeId, NodeRecord, RelId, RelationalPrimaryKeyChangeCapture};
+use skein_core::{Catalog, SchemaObjectState, Value};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedGraphDefinition {
     pub node_labels: Vec<String>,
     pub rel_types: Vec<String>,
+}
+
+/// Stable graph-to-search projection identity owned by the storage contract.
+pub fn projection_document_id_for_node(catalog: &Catalog, node: &NodeRecord) -> Option<String> {
+    let kind = node.labels.iter().find_map(|label_id| {
+        catalog
+            .label_name(*label_id)
+            .and_then(projection_kind_for_label)
+    })?;
+    let external_id = node
+        .properties
+        .get("id")
+        .map(projection_value_to_string)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| node.id.0.to_string());
+    Some(format!("{kind}:{external_id}"))
+}
+
+pub fn projection_document_id_for_label_and_properties(
+    label: &str,
+    properties: &BTreeMap<String, Value>,
+    node_id: NodeId,
+) -> Option<String> {
+    let kind = projection_kind_for_label(label)?;
+    let external_id = properties
+        .get("id")
+        .map(projection_value_to_string)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| node_id.0.to_string());
+    Some(format!("{kind}:{external_id}"))
+}
+
+fn projection_kind_for_label(label: &str) -> Option<&'static str> {
+    match label {
+        "Memory" | "memory" => Some("memory"),
+        "Message" | "message" => Some("message"),
+        "Entity" | "entity" => Some("entity"),
+        "Source" | "source" => Some("source"),
+        "SourceChunk" | "source_chunk" | "chunk" => Some("source_chunk"),
+        "Community" | "community" => Some("community"),
+        _ => None,
+    }
+}
+
+fn projection_value_to_string(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Binary(value) => format!(
+            "\\x{}",
+            value
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ),
+        Value::Uuid(value) => value.to_string(),
+        Value::List(values) => values
+            .iter()
+            .map(projection_value_to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Map(values) => values
+            .iter()
+            .map(|(key, value)| format!("{key}:{}", projection_value_to_string(value)))
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+/// Durable, storage-neutral representation of a materialized graph projection.
+///
+/// Analytics runtimes may construct their own execution view from these CSR and
+/// CSC arrays, but storage never depends on a particular graph algorithm crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedGraphArtifactData {
+    pub nodes: Vec<NodeId>,
+    pub csr_offsets: Vec<usize>,
+    pub csr_targets: Vec<usize>,
+    pub csc_offsets: Vec<usize>,
+    pub csc_sources: Vec<usize>,
+}
+
+/// Checkpointed materialized projection metadata and its storage representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedGraphArtifact {
+    pub projection_epoch: u64,
+    pub commit_epoch: u64,
+    pub definition: ProjectedGraphDefinition,
+    pub data: ProjectedGraphArtifactData,
+}
+
+impl ProjectedGraphArtifactData {
+    pub fn new(
+        nodes: Vec<NodeId>,
+        csr_offsets: Vec<usize>,
+        csr_targets: Vec<usize>,
+        csc_offsets: Vec<usize>,
+        csc_sources: Vec<usize>,
+    ) -> std::result::Result<Self, String> {
+        validate_offsets("csr_offsets", nodes.len(), &csr_offsets, csr_targets.len())?;
+        validate_offsets("csc_offsets", nodes.len(), &csc_offsets, csc_sources.len())?;
+        validate_indexes("csr_targets", nodes.len(), &csr_targets)?;
+        validate_indexes("csc_sources", nodes.len(), &csc_sources)?;
+        if csr_targets.len() != csc_sources.len() {
+            return Err("projected graph CSR and CSC edge counts differ".to_string());
+        }
+        Ok(Self {
+            nodes,
+            csr_offsets,
+            csr_targets,
+            csc_offsets,
+            csc_sources,
+        })
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn edge_count(&self) -> usize {
+        self.csr_targets.len()
+    }
+}
+
+fn validate_offsets(
+    name: &str,
+    node_count: usize,
+    offsets: &[usize],
+    edge_count: usize,
+) -> std::result::Result<(), String> {
+    if offsets.len() != node_count.saturating_add(1)
+        || offsets.first() != Some(&0)
+        || offsets.last() != Some(&edge_count)
+        || offsets.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        return Err(format!("invalid projected graph {name}"));
+    }
+    Ok(())
+}
+
+fn validate_indexes(
+    name: &str,
+    node_count: usize,
+    indexes: &[usize],
+) -> std::result::Result<(), String> {
+    if indexes.iter().any(|index| *index >= node_count) {
+        return Err(format!(
+            "projected graph {name} contains an out-of-range node index"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,5 +426,61 @@ impl SearchProjectionChangefeedStatus {
             max_operations,
             blocker_codes,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{projection_document_id_for_node, ProjectedGraphArtifactData};
+    use crate::{NodeId, NodeRecord};
+    use skein_core::{Catalog, Value};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn projected_graph_artifact_data_validates_both_adjacency_views() {
+        let artifact = ProjectedGraphArtifactData::new(
+            vec![NodeId(4), NodeId(9)],
+            vec![0, 1, 2],
+            vec![1, 0],
+            vec![0, 1, 2],
+            vec![1, 0],
+        )
+        .unwrap();
+        assert_eq!(artifact.node_count(), 2);
+        assert_eq!(artifact.edge_count(), 2);
+
+        assert!(ProjectedGraphArtifactData::new(
+            vec![NodeId(4)],
+            vec![0, 2],
+            vec![0],
+            vec![0, 1],
+            vec![0],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn projection_document_identity_preserves_label_aliases_and_id_fallback() {
+        let mut catalog = Catalog::default();
+        let source_chunk = catalog.get_or_create_label("SourceChunk");
+        let node = NodeRecord {
+            id: NodeId(7),
+            labels: BTreeSet::from([source_chunk]),
+            properties: BTreeMap::from([("id".to_string(), Value::Int(42))]),
+        };
+        assert_eq!(
+            projection_document_id_for_node(&catalog, &node),
+            Some("source_chunk:42".to_string())
+        );
+
+        let fallback = NodeRecord {
+            id: NodeId(9),
+            labels: BTreeSet::from([source_chunk]),
+            properties: BTreeMap::new(),
+        };
+        assert_eq!(
+            projection_document_id_for_node(&catalog, &fallback),
+            Some("source_chunk:9".to_string())
+        );
     }
 }

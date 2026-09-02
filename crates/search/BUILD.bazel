@@ -1,0 +1,45 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+_SEARCH_DEFAULT_FEATURES = [
+    "background-maintenance",
+    "full-text-search",
+    "vector-search",
+]
+
+_SEARCH_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:skein_core",
+    "//crates/evidence:skein_evidence",
+    "//crates/executor:skein_executor",
+    "//crates/integrity:skein_integrity",
+    "//crates/optimizer:skein_optimizer",
+    "//crates/plan:skein_plan",
+    "//crates/qos:skein_qos",
+    "//crates/storage:skein_storage",
+    "//crates/telemetry:skein_telemetry",
+    "//crates/vector-projection:skein_vector_projection",
+]
+
+rust_library(
+    name = "skein_search",
+    crate_name = "skein_search",
+    crate_root = "src/lib.rs",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _SEARCH_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_search_tests",
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
