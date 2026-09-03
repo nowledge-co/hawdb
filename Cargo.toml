@@ -167,6 +167,10 @@ name = "search_generation"
 harness = false
 
 [[bench]]
+name = "search_tokenization"
+harness = false
+
+[[bench]]
 name = "index_restart_cost"
 harness = false
 

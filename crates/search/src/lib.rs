@@ -29,7 +29,7 @@ use skein_telemetry::{
 };
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::num::NonZeroUsize;
@@ -6380,7 +6380,7 @@ fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<St
 }
 
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
-    let mut tokens = Vec::new();
+    let mut tokens = TokenSequence::default();
     let mut previous_part = None::<String>;
     for raw in text.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
         let parts = identifier_parts(raw);
@@ -6392,7 +6392,7 @@ fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<St
             previous_part = Some(last.clone());
         }
     }
-    tokens
+    tokens.into_vec()
 }
 
 fn normalized_alias_rule_terms(text: &str) -> Vec<String> {
@@ -6408,14 +6408,12 @@ fn identifier_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec
     if raw.is_empty() {
         return Vec::new();
     }
-    let mut tokens = Vec::new();
+    let mut tokens = TokenSequence::default();
     push_unique_token(&mut tokens, raw.to_lowercase(), analyzer_lexicon);
     for token in chinese_search_tokens(raw) {
         push_analyzed_token(&mut tokens, token, analyzer_lexicon);
     }
-    for token in cjk_ngram_tokens(raw, analyzer_lexicon) {
-        push_unique_token(&mut tokens, token, analyzer_lexicon);
-    }
+    push_cjk_ngram_tokens(&mut tokens, raw, analyzer_lexicon);
     let parts = identifier_parts(raw);
     for part in &parts {
         push_analyzed_token(&mut tokens, part.clone(), analyzer_lexicon);
@@ -6423,26 +6421,28 @@ fn identifier_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec
     for pair in parts.windows(2) {
         push_analyzed_token(&mut tokens, pair.join("_"), analyzer_lexicon);
     }
-    tokens
+    tokens.into_vec()
 }
 
-fn cjk_ngram_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
-    let mut tokens = Vec::new();
+fn push_cjk_ngram_tokens(
+    tokens: &mut TokenSequence,
+    raw: &str,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+) {
     let mut run = Vec::new();
     for ch in raw.chars() {
         if is_cjk_search_char(ch) {
             run.push(ch);
         } else {
-            push_cjk_ngram_tokens(&mut tokens, &run, analyzer_lexicon);
+            push_cjk_ngram_run_tokens(tokens, &run, analyzer_lexicon);
             run.clear();
         }
     }
-    push_cjk_ngram_tokens(&mut tokens, &run, analyzer_lexicon);
-    tokens
+    push_cjk_ngram_run_tokens(tokens, &run, analyzer_lexicon);
 }
 
-fn push_cjk_ngram_tokens(
-    tokens: &mut Vec<String>,
+fn push_cjk_ngram_run_tokens(
+    tokens: &mut TokenSequence,
     run: &[char],
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) {
@@ -6498,20 +6498,17 @@ fn push_identifier_part(parts: &mut Vec<String>, current: &mut String) {
 }
 
 fn push_unique_token(
-    tokens: &mut Vec<String>,
+    tokens: &mut TokenSequence,
     token: String,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) {
-    if !token.is_empty()
-        && !analyzer_lexicon.is_stopword(&token)
-        && !tokens.iter().any(|existing| existing == &token)
-    {
-        tokens.push(token);
+    if !token.is_empty() && !analyzer_lexicon.is_stopword(&token) {
+        tokens.push_unique(token);
     }
 }
 
 fn push_analyzed_token(
-    tokens: &mut Vec<String>,
+    tokens: &mut TokenSequence,
     token: String,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) {
@@ -6521,6 +6518,65 @@ fn push_analyzed_token(
     }
     for alias in analyzer_lexicon.semantic_aliases(&token) {
         push_unique_token(tokens, alias, analyzer_lexicon);
+    }
+}
+
+#[derive(Debug, Default)]
+struct TokenSequence {
+    token_ids: HashMap<String, usize>,
+    order: Vec<usize>,
+}
+
+impl TokenSequence {
+    fn push_unique(&mut self, token: String) {
+        let next_id = self.token_ids.len();
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.token_ids.entry(token) {
+            entry.insert(next_id);
+            self.order.push(next_id);
+        }
+    }
+
+    fn push(&mut self, token: String) {
+        let next_id = self.token_ids.len();
+        let token_id = *self.token_ids.entry(token).or_insert(next_id);
+        self.order.push(token_id);
+    }
+
+    fn extend(&mut self, tokens: impl IntoIterator<Item = String>) {
+        for token in tokens {
+            self.push(token);
+        }
+    }
+
+    fn into_vec(self) -> Vec<String> {
+        let mut tokens_by_id = (0..self.token_ids.len())
+            .map(|_| None)
+            .collect::<Vec<Option<String>>>();
+        for (token, token_id) in self.token_ids {
+            tokens_by_id[token_id] = Some(token);
+        }
+
+        let mut remaining = vec![0_usize; tokens_by_id.len()];
+        for token_id in &self.order {
+            remaining[*token_id] += 1;
+        }
+
+        self.order
+            .into_iter()
+            .map(|token_id| {
+                remaining[token_id] -= 1;
+                if remaining[token_id] == 0 {
+                    tokens_by_id[token_id]
+                        .take()
+                        .expect("token sequence IDs must resolve")
+                } else {
+                    tokens_by_id[token_id]
+                        .as_ref()
+                        .expect("token sequence IDs must resolve")
+                        .clone()
+                }
+            })
+            .collect()
     }
 }
 
@@ -8935,6 +8991,20 @@ mod tests {
 
         assert_eq!(underscore_hits[0].id, "memory");
         assert_eq!(punctuation_hits[0].id, "memory");
+    }
+
+    #[test]
+    fn tokenizer_preserves_local_dedup_and_cross_identifier_frequency() {
+        let lexicon = SearchAnalyzerLexicon::empty();
+
+        assert_eq!(
+            identifier_tokens("Running_running", &lexicon),
+            vec!["running_running", "running", "run"]
+        );
+        assert_eq!(
+            tokenize_list("Graph Graph Graph", &lexicon),
+            vec!["graph", "graph_graph", "graph", "graph"]
+        );
     }
 
     #[test]

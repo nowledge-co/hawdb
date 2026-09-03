@@ -19,6 +19,7 @@ SKEIN_BENCHMARKS = [
     "relational_row_page_lending",
     "search_checkpoint",
     "search_generation",
+    "search_tokenization",
     "storage_segment_read",
     "store_cow_feasibility",
     "vector_projection_scan",
