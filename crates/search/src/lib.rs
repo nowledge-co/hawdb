@@ -2584,6 +2584,19 @@ impl SearchIndex {
         &self,
         options: VectorRecallValidationOptions,
     ) -> VectorRecallValidationReport {
+        self.validate_sampled_vector_recall_with_controls(
+            options,
+            AdaptiveVectorExecutionControls::IN_MEMORY,
+            AdaptiveVectorExecutionControls::RECALL_CANDIDATES,
+        )
+    }
+
+    fn validate_sampled_vector_recall_with_controls(
+        &self,
+        options: VectorRecallValidationOptions,
+        exact_controls: AdaptiveVectorExecutionControls<'_>,
+        approximate_controls: AdaptiveVectorExecutionControls<'_>,
+    ) -> VectorRecallValidationReport {
         let predicate_pushdown = search_metadata_predicate_pushdown(&options.metadata_filters);
         let eligible = || {
             self.documents.values().filter(|document| {
@@ -2625,7 +2638,7 @@ impl SearchIndex {
                 metadata_filters: options.metadata_filters.clone(),
                 policy_epoch: None,
             };
-            let exact = self
+            let Ok(exact) = self
                 .try_search_with_options_compressed_vector_projection_mode_internal(
                     "",
                     Some(embedding),
@@ -2633,23 +2646,29 @@ impl SearchIndex {
                     exact_query_options.clone(),
                     AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Disabled)
                         .as_recall_validation_probe(),
-                    AdaptiveVectorExecutionControls::IN_MEMORY,
+                    exact_controls,
                 )
-                .expect("in-memory recall validation does not perform fallible range I/O");
+            else {
+                accumulator.mark_probe_execution_failed();
+                break;
+            };
             let approximate_query_options = SearchQueryOptions {
                 rank_window: Some(accumulator.candidate_limit().saturating_add(1)),
                 ..exact_query_options
             };
-            let approximate = self
+            let Ok(approximate) = self
                 .try_search_with_options_compressed_vector_projection_mode_internal(
                     "",
                     Some(embedding),
                     SearchMode::Vector,
                     approximate_query_options,
                     AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Required),
-                    AdaptiveVectorExecutionControls::RECALL_CANDIDATES,
+                    approximate_controls,
                 )
-                .expect("in-memory recall validation does not perform fallible range I/O");
+            else {
+                accumulator.mark_probe_execution_failed();
+                break;
+            };
             let exact_ids =
                 recall_validation_hit_ids(&exact, document.id.as_str(), accumulator.top_k());
             let approximate_ids =
@@ -10226,6 +10245,54 @@ mod tests {
         assert!(!json.contains("Bounded sampled query"));
 
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sampled_vector_recall_reports_probe_memory_exhaustion() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(doc(
+                "memory:a",
+                "Recall A",
+                "Budgeted recall validation",
+                [1.0, 0.0],
+            ))
+            .unwrap();
+        index
+            .upsert(doc(
+                "memory:b",
+                "Recall B",
+                "Budgeted recall validation",
+                [0.9, 0.1],
+            ))
+            .unwrap();
+        let mut exact_controls = AdaptiveVectorExecutionControls::IN_MEMORY;
+        exact_controls.vector_execution_options.max_working_bytes = 0;
+
+        let report = index.validate_sampled_vector_recall_with_controls(
+            VectorRecallValidationOptions {
+                max_samples: 1,
+                top_k: 1,
+                candidate_limit: 1,
+                minimum_recall_per_million: 1_000_000,
+                metadata_filters: BTreeMap::new(),
+            },
+            exact_controls,
+            AdaptiveVectorExecutionControls::RECALL_CANDIDATES,
+        );
+
+        assert!(!report.ready);
+        assert_eq!(report.protocol, VECTOR_RECALL_VALIDATION_PROTOCOL);
+        assert_eq!(report.requested_sample_count, 1);
+        assert_eq!(report.executed_sample_count, 0);
+        assert_eq!(
+            report.blocker_codes,
+            vec![VectorRecallValidationBlocker::ProbeExecutionFailed]
+        );
+        assert_eq!(
+            report.json()["blocker_codes"],
+            serde_json::json!(["probe_execution_failed"])
+        );
     }
 
     #[test]

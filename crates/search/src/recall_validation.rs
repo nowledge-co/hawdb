@@ -39,6 +39,7 @@ pub enum VectorRecallValidationBlocker {
     TopKZero,
     CandidateLimitBelowTopK,
     MetadataFilterInvalid,
+    ProbeExecutionFailed,
     NoEligibleVectors,
     GroundTruthEmpty,
     ApproximateBackendUnavailable,
@@ -55,6 +56,7 @@ impl VectorRecallValidationBlocker {
             Self::TopKZero => "top_k_zero",
             Self::CandidateLimitBelowTopK => "candidate_limit_below_top_k",
             Self::MetadataFilterInvalid => "metadata_filter_invalid",
+            Self::ProbeExecutionFailed => "probe_execution_failed",
             Self::NoEligibleVectors => "no_eligible_vectors",
             Self::GroundTruthEmpty => "ground_truth_empty",
             Self::ApproximateBackendUnavailable => "approximate_backend_unavailable",
@@ -341,6 +343,7 @@ pub(super) struct VectorRecallValidationAccumulator {
     filter_selectivity_sum: u64,
     max_filter_selectivity_per_million: u32,
     metadata_filter_valid: bool,
+    probe_execution_failed: bool,
 }
 
 impl VectorRecallValidationAccumulator {
@@ -371,6 +374,7 @@ impl VectorRecallValidationAccumulator {
             filter_selectivity_sum: 0,
             max_filter_selectivity_per_million: 0,
             metadata_filter_valid: true,
+            probe_execution_failed: false,
         }
     }
 
@@ -388,6 +392,10 @@ impl VectorRecallValidationAccumulator {
 
     pub(super) fn mark_metadata_filter_invalid(&mut self) {
         self.metadata_filter_valid = false;
+    }
+
+    pub(super) fn mark_probe_execution_failed(&mut self) {
+        self.probe_execution_failed = true;
     }
 
     pub(super) fn record(
@@ -460,14 +468,19 @@ impl VectorRecallValidationAccumulator {
         if !self.metadata_filter_valid {
             blocker_codes.insert(VectorRecallValidationBlocker::MetadataFilterInvalid);
         }
+        if self.probe_execution_failed {
+            blocker_codes.insert(VectorRecallValidationBlocker::ProbeExecutionFailed);
+        }
         if self.sample_candidate_count == 0 {
             blocker_codes.insert(VectorRecallValidationBlocker::NoEligibleVectors);
         }
-        if self.exact_hit_count == 0 {
-            blocker_codes.insert(VectorRecallValidationBlocker::GroundTruthEmpty);
-        }
-        if self.approximate_backend_count != self.executed_sample_count {
-            blocker_codes.insert(VectorRecallValidationBlocker::ApproximateBackendUnavailable);
+        if !self.probe_execution_failed {
+            if self.exact_hit_count == 0 {
+                blocker_codes.insert(VectorRecallValidationBlocker::GroundTruthEmpty);
+            }
+            if self.approximate_backend_count != self.executed_sample_count {
+                blocker_codes.insert(VectorRecallValidationBlocker::ApproximateBackendUnavailable);
+            }
         }
         if self.fallback_count > 0 {
             blocker_codes.insert(VectorRecallValidationBlocker::ApproximateFallbackObserved);
@@ -475,12 +488,16 @@ impl VectorRecallValidationAccumulator {
         if self.index_coverage_incomplete_count > 0 {
             blocker_codes.insert(VectorRecallValidationBlocker::IndexCoverageIncomplete);
         }
-        if self.exact_hit_count > 0
+        if !self.probe_execution_failed
+            && self.exact_hit_count > 0
             && candidate_recall_at_k_per_million < self.minimum_recall_per_million
         {
             blocker_codes.insert(VectorRecallValidationBlocker::CandidateRecallBelowThreshold);
         }
-        if self.exact_hit_count > 0 && recall_at_k_per_million < self.minimum_recall_per_million {
+        if !self.probe_execution_failed
+            && self.exact_hit_count > 0
+            && recall_at_k_per_million < self.minimum_recall_per_million
+        {
             blocker_codes.insert(VectorRecallValidationBlocker::RecallBelowThreshold);
         }
         let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
