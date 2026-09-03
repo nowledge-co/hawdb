@@ -136,6 +136,10 @@ impl OptimizationSearchReport {
         self.stage_events.push(event);
     }
 
+    pub(crate) fn push_warning(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
+    }
+
     pub fn push_decision(&mut self, decision: impl Into<String>) {
         let decision = decision.into();
         if let Some(event) = RuleEvent::from_decision(&decision) {

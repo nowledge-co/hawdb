@@ -212,8 +212,14 @@ impl CascadesOptimizer {
     }
 }
 
-fn record_logical_rewrite(report: &mut OptimizationSearchReport, rewrite: &LogicalRewriteOutput) {
+pub(super) fn record_logical_rewrite(
+    report: &mut OptimizationSearchReport,
+    rewrite: &LogicalRewriteOutput,
+) {
     report.push_stage_event(rewrite.trace().clone());
+    if let Some(warning) = rewrite.warning() {
+        report.push_warning(warning);
+    }
     for event in rewrite.events().iter().cloned() {
         report.push_rule_event(event);
     }

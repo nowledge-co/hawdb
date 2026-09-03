@@ -10,6 +10,7 @@ pub(super) struct LogicalRewriteOutput {
     plan: LogicalPlan,
     events: Vec<RuleEvent>,
     trace: StageTrace,
+    warning: Option<String>,
 }
 
 impl LogicalRewriteOutput {
@@ -24,15 +25,29 @@ impl LogicalRewriteOutput {
     pub(super) fn trace(&self) -> &StageTrace {
         &self.trace
     }
+
+    pub(super) fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
 }
 
 pub(super) fn rewrite_logical_plan(plan: &LogicalPlan) -> LogicalRewriteOutput {
-    let original = plan.clone();
+    rewrite_logical_plan_with_pass_limit(plan, MAX_FIXED_POINT_PASSES)
+}
+
+fn rewrite_logical_plan_with_pass_limit(
+    plan: &LogicalPlan,
+    max_passes: usize,
+) -> LogicalRewriteOutput {
+    assert!(
+        max_passes > 0,
+        "logical rewrite pass limit must be non-zero"
+    );
     let input_count = logical_node_count(plan);
-    let mut current = original.clone();
+    let mut current = plan.clone();
     let mut events = Vec::new();
 
-    for pass in 1..=MAX_FIXED_POINT_PASSES {
+    for pass in 1..=max_passes {
         let mut pass_events = Vec::new();
         let next = rewrite_bottom_up(current.clone(), &mut pass_events);
         if next == current {
@@ -44,20 +59,29 @@ pub(super) fn rewrite_logical_plan(plan: &LogicalPlan) -> LogicalRewriteOutput {
                 ),
                 plan: current,
                 events,
+                warning: None,
             };
         }
         events.extend(pass_events);
         current = next;
 
-        if pass == MAX_FIXED_POINT_PASSES {
+        if pass == max_passes {
+            let warning = format!(
+                "fixed_point_not_reached: logical rewrite still changed after {max_passes} passes; retained the last-pass logical plan"
+            );
+            let applied_rules = events.len();
+            events.push(RuleEvent::skipped(
+                "transformation:logical_rewrite_fixed_point",
+                warning.clone(),
+            ));
             return LogicalRewriteOutput {
-                trace: LOGICAL_REWRITE_STAGE
-                    .trace(StageStats::new(input_count, input_count).with_rule_counts(0, 1)),
-                plan: original,
-                events: vec![RuleEvent::skipped(
-                    "transformation:logical_rewrite_fixed_point",
-                    "fixed-point pass limit reached; retained the original logical plan",
-                )],
+                trace: LOGICAL_REWRITE_STAGE.trace(
+                    StageStats::new(input_count, logical_node_count(&current))
+                        .with_rule_counts(applied_rules, 1),
+                ),
+                plan: current,
+                events,
+                warning: Some(warning),
             };
         }
     }
@@ -974,6 +998,7 @@ fn logical_node_count(plan: &LogicalPlan) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{OptimizationSearchReport, RuleOutcome};
     use skein_cypher::RelationshipDirection;
     use skein_plan::{
         AggregateFunction, AggregateTarget, Aggregation, SortDirection, SortItem, SortKey,
@@ -1042,6 +1067,41 @@ mod tests {
             .events()
             .iter()
             .any(|event| { event.rule() == "transformation:fuse_adjacent_filters" }));
+    }
+
+    #[test]
+    fn fixed_point_limit_retains_last_rewrite_and_reports_non_convergence() {
+        let plan = LogicalPlan::Filter {
+            predicate: Predicate::ConstantBool(true),
+            input: Box::new(scan()),
+        };
+
+        let output = rewrite_logical_plan_with_pass_limit(&plan, 1);
+
+        assert_eq!(output.plan(), &scan());
+        assert!(output.events().iter().any(|event| {
+            event.rule() == "transformation:remove_true_filter"
+                && event.outcome() == RuleOutcome::Applied
+        }));
+        assert!(output.events().iter().any(|event| {
+            event.rule() == "transformation:logical_rewrite_fixed_point"
+                && event.outcome() == RuleOutcome::Skipped
+                && event.detail().contains("fixed_point_not_reached")
+        }));
+        assert!(output
+            .warning()
+            .is_some_and(|warning| warning.contains("fixed_point_not_reached")));
+        assert_eq!(output.trace().stats().input_count, 2);
+        assert_eq!(output.trace().stats().output_count, 1);
+        assert_eq!(output.trace().stats().applied_rules, 1);
+        assert_eq!(output.trace().stats().skipped_rules, 1);
+
+        let mut report = OptimizationSearchReport::memo(1);
+        super::super::lowering::record_logical_rewrite(&mut report, &output);
+        assert!(report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("fixed_point_not_reached")));
     }
 
     #[test]
