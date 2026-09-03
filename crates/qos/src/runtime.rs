@@ -1,3 +1,4 @@
+use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
 use skein_core::RuntimeCancellationReason;
 use std::error::Error;
@@ -366,6 +367,7 @@ struct RuntimeGovernorInner {
     config: RuntimeGovernorConfig,
     storage_io: IoConcurrencyBudget,
     state: Mutex<RuntimeGovernorState>,
+    resource_detector: Mutex<Option<RuntimeResourceDetector>>,
     telemetry: RwLock<Option<Arc<dyn RuntimeTelemetrySink>>>,
 }
 
@@ -427,13 +429,18 @@ impl RuntimeGovernor {
                     deadline_exceeded: 0,
                     pressure_adjustments: 0,
                 }),
+                resource_detector: Mutex::new(None),
                 telemetry: RwLock::new(None),
             }),
         }
     }
 
     pub fn detect(config: RuntimeGovernorConfig, storage_io: IoConcurrencyBudget) -> Self {
-        Self::new(config, RuntimeResourceSnapshot::detect(), storage_io)
+        let mut detector = RuntimeResourceDetector::new();
+        let resources = detector.detect();
+        let governor = Self::new(config, resources, storage_io);
+        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
+        governor
     }
 
     pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn RuntimeTelemetrySink>>) {
@@ -532,7 +539,13 @@ impl RuntimeGovernor {
         if mutex_lock(&self.inner.state).resources_pinned {
             return false;
         }
-        self.update_resources(RuntimeResourceSnapshot::detect())
+        let resources = mutex_lock(&self.inner.resource_detector)
+            .get_or_insert_with(RuntimeResourceDetector::new)
+            .detect();
+        if mutex_lock(&self.inner.state).resources_pinned {
+            return false;
+        }
+        self.update_resources(resources)
     }
 
     pub fn update_resources(&self, resources: RuntimeResourceSnapshot) -> bool {

@@ -58,6 +58,49 @@ pub struct RuntimeResourceSnapshot {
     pub memory: RuntimeMemorySnapshot,
 }
 
+#[derive(Debug)]
+pub(crate) struct RuntimeResourceDetector {
+    system: System,
+}
+
+impl RuntimeResourceDetector {
+    pub(crate) fn new() -> Self {
+        Self {
+            system: System::new(),
+        }
+    }
+
+    pub(crate) fn detect(&mut self) -> RuntimeResourceSnapshot {
+        let host_parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+        self.system.refresh_memory();
+        let host_total_bytes = non_zero_memory(self.system.total_memory());
+        let host_available_bytes = non_zero_memory(self.system.available_memory());
+
+        #[cfg(target_os = "linux")]
+        {
+            let cgroup = LinuxCgroupSnapshot::detect();
+            return resource_snapshot_from_cgroup(
+                host_parallelism,
+                host_total_bytes,
+                host_available_bytes,
+                &cgroup,
+            );
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(host_parallelism, None, None),
+            RuntimeMemorySnapshot::from_limits(
+                host_total_bytes,
+                host_available_bytes,
+                None,
+                None,
+                None,
+            ),
+        )
+    }
+}
+
 impl RuntimeResourceBudget {
     pub fn detect() -> Self {
         let host = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
@@ -160,15 +203,38 @@ impl RuntimeMemorySnapshot {
 
 impl RuntimeResourceSnapshot {
     pub fn detect() -> Self {
-        Self {
-            cpu: RuntimeResourceBudget::detect(),
-            memory: RuntimeMemorySnapshot::detect(),
-        }
+        RuntimeResourceDetector::new().detect()
     }
 
     pub const fn from_parts(cpu: RuntimeResourceBudget, memory: RuntimeMemorySnapshot) -> Self {
         Self { cpu, memory }
     }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resource_snapshot_from_cgroup(
+    host_parallelism: NonZeroUsize,
+    host_total_bytes: Option<u64>,
+    host_available_bytes: Option<u64>,
+    cgroup: &LinuxCgroupSnapshot,
+) -> RuntimeResourceSnapshot {
+    let (cgroup_quota_parallelism, cpuset_parallelism) = cgroup_cpu_limits_from(cgroup);
+    let (cgroup_limit_bytes, cgroup_high_bytes, cgroup_current_bytes) =
+        cgroup_memory_limits_from(cgroup);
+    RuntimeResourceSnapshot::from_parts(
+        RuntimeResourceBudget::from_limits(
+            host_parallelism,
+            cgroup_quota_parallelism,
+            cpuset_parallelism,
+        ),
+        RuntimeMemorySnapshot::from_limits(
+            host_total_bytes,
+            host_available_bytes,
+            cgroup_limit_bytes,
+            cgroup_high_bytes,
+            cgroup_current_bytes,
+        ),
+    )
 }
 
 impl IoConcurrencyBudget {
@@ -389,6 +455,33 @@ mod tests {
         assert_eq!(memory.effective_limit_bytes, Some(0));
         assert_eq!(memory.effective_available_bytes, Some(0));
         assert_eq!(memory.pressure, RuntimeMemoryPressure::Critical);
+    }
+
+    #[test]
+    fn resource_snapshot_derives_cpu_and_memory_from_one_cgroup_sample() {
+        let cgroup = LinuxCgroupSnapshot {
+            version: LinuxCgroupVersion::V2,
+            cpu_quota_parallelism: LinuxCgroupValue::Value(NonZeroUsize::new(6).unwrap()),
+            cpuset_parallelism: LinuxCgroupValue::Value(NonZeroUsize::new(4).unwrap()),
+            memory_limit_bytes: LinuxCgroupValue::Value(4 << 30),
+            memory_high_bytes: LinuxCgroupValue::Value(3 << 30),
+            memory_current_bytes: LinuxCgroupValue::Value(2 << 30),
+        };
+        let snapshot = resource_snapshot_from_cgroup(
+            NonZeroUsize::new(16).unwrap(),
+            Some(16 << 30),
+            Some(8 << 30),
+            &cgroup,
+        );
+
+        assert_eq!(snapshot.cpu.cgroup_quota_parallelism.unwrap().get(), 6);
+        assert_eq!(snapshot.cpu.cpuset_parallelism.unwrap().get(), 4);
+        assert_eq!(snapshot.cpu.effective_parallelism.get(), 4);
+        assert_eq!(snapshot.memory.cgroup_limit_bytes, Some(4 << 30));
+        assert_eq!(snapshot.memory.cgroup_high_bytes, Some(3 << 30));
+        assert_eq!(snapshot.memory.cgroup_current_bytes, Some(2 << 30));
+        assert_eq!(snapshot.memory.effective_limit_bytes, Some(3 << 30));
+        assert_eq!(snapshot.memory.effective_available_bytes, Some(1 << 30));
     }
 
     #[test]
