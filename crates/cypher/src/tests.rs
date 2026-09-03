@@ -235,6 +235,20 @@ fn parser_keeps_keyword_boundaries() {
 }
 
 #[test]
+fn parser_rejects_non_ascii_tokens_without_panicking() {
+    for query in ["日本", "MATCH (n) RETURN 日本語"] {
+        let error = parse(query).unwrap_err();
+        assert!(error.to_string().contains("expected"), "{error}");
+    }
+}
+
+#[test]
+fn parser_rejects_non_ascii_predicate_keyword_probe_without_panicking() {
+    let error = parse("MATCH (n) WHERE (日本) = 1 RETURN n").unwrap_err();
+    assert!(error.to_string().contains("expected"), "{error}");
+}
+
+#[test]
 fn parser_reports_trailing_input_position() {
     let error = parse("MATCH (m:Memory) RETURN m.title unexpected").unwrap_err();
     let message = error.to_string();
