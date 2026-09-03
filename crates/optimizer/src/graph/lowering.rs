@@ -10,7 +10,7 @@ use super::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
         PHYSICAL_SEARCH_STAGE, PLAN_FINALIZATION_STAGE, SELECTED_PLAN_COSTING_STAGE,
     },
-    LogicalPlanRoot, OptimizationSearchReport, OptimizedLogicalPlanRoot, OptimizerCatalog,
+    LogicalPlanRoot, LoweringReadyLogicalPlanRoot, OptimizationSearchReport, OptimizerCatalog,
     OptimizerConfig, OptimizerTrace, PhysicalPlan, PhysicalPlanRoot, StageStats,
 };
 use crate::{
@@ -93,20 +93,20 @@ impl CascadesOptimizer {
         root: &LogicalPlanRoot,
         catalog: &OptimizerCatalog,
     ) -> PhysicalPlanRoot {
-        self.optimize_optimized_root_with_catalog_and_directive(
-            &root.clone().into_optimized(),
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
+            &root.clone().into_lowering_ready(),
             catalog,
             OptimizerSearchDirective::Auto,
         )
         .expect("automatic optimizer search cannot reject its directive")
     }
 
-    pub fn optimize_optimized_root_with_catalog(
+    pub fn optimize_lowering_ready_root_with_catalog(
         &self,
-        root: &OptimizedLogicalPlanRoot,
+        root: &LoweringReadyLogicalPlanRoot,
         catalog: &OptimizerCatalog,
     ) -> PhysicalPlanRoot {
-        self.optimize_optimized_root_with_catalog_and_directive(
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
             root,
             catalog,
             OptimizerSearchDirective::Auto,
@@ -120,16 +120,16 @@ impl CascadesOptimizer {
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
-        self.optimize_optimized_root_with_catalog_and_directive(
-            &root.clone().into_optimized(),
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
+            &root.clone().into_lowering_ready(),
             catalog,
             directive,
         )
     }
 
-    pub fn optimize_optimized_root_with_catalog_and_directive(
+    pub fn optimize_lowering_ready_root_with_catalog_and_directive(
         &self,
-        root: &OptimizedLogicalPlanRoot,
+        root: &LoweringReadyLogicalPlanRoot,
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {

@@ -25,7 +25,7 @@ pub use context::{
 pub use cost::{PlanCost, PlanCostBreakdown};
 pub use graph::{
     CascadesOptimizer, FastPathPhysicalPhase, FastPathPhysicalPlanRoot, LogicalPhase,
-    LogicalPlanRoot, OptimizedLogicalPhase, OptimizedLogicalPlanRoot, OptimizerCatalog,
+    LogicalPlanRoot, LoweringReadyLogicalPlanRoot, LoweringReadyPhase, OptimizerCatalog,
     OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics, PhysicalPhase,
     PhysicalPlanRoot, PlanPhase, PlanPhaseKind,
 };
