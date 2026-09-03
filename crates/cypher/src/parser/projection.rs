@@ -241,6 +241,10 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_return_value_expression(&mut self) -> Result<ReturnValueExpression> {
+        self.with_recursion(|parser| parser.parse_return_value_expression_inner())
+    }
+
+    fn parse_return_value_expression_inner(&mut self) -> Result<ReturnValueExpression> {
         self.skip_ws();
         if matches!(
             self.peek_char(),

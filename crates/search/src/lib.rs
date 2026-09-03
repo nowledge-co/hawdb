@@ -1401,7 +1401,7 @@ impl SearchIndex {
         };
         for (generation, artifact_path) in rabitq_artifacts_descending(path) {
             let identity = self.rabitq_projection_identity(generation);
-            match RaBitQCandidateProjection::load_from_path(
+            match RaBitQCandidateProjection::load_from_path_classified(
                 &artifact_path,
                 &self.documents,
                 &identity,
@@ -1414,11 +1414,12 @@ impl SearchIndex {
                         Some(Arc::new(projection));
                     return;
                 }
-                Err(_) => {
+                Err(error) if error.should_quarantine() => {
                     if let Some(name) = artifact_path.file_name().and_then(|name| name.to_str()) {
                         quarantine_rebuildable_artifact(path, name);
                     }
                 }
+                Err(_) => {}
             }
         }
     }
@@ -9906,6 +9907,50 @@ mod tests {
 
     #[test]
     #[cfg(feature = "vector-search")]
+    fn rabitq_reopen_preserves_stale_valid_generation() {
+        let path = unique_test_dir("rabitq_stale_generation");
+        {
+            let mut index = SearchIndex::open(&path).unwrap();
+            index
+                .upsert(doc(
+                    "memory:a",
+                    "Vector A",
+                    "Original projection",
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ))
+                .unwrap();
+            index.checkpoint().unwrap();
+            index
+                .upsert(doc(
+                    "memory:a",
+                    "Vector A",
+                    "Updated projection",
+                    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ))
+                .unwrap();
+            index.checkpoint().unwrap();
+        }
+
+        let stale = path.join(rabitq_artifact_file(1));
+        let stale_bytes = std::fs::read(&stale).unwrap();
+        std::fs::remove_file(path.join(rabitq_artifact_file(2))).unwrap();
+
+        for _ in 0..2 {
+            let index = SearchIndex::open(&path).unwrap();
+            assert!(index.rabitq_projection().is_none());
+            assert_eq!(std::fs::read(&stale).unwrap(), stale_bytes);
+            assert!(!std::fs::read_dir(&path).unwrap().flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("search_rabitq.1.skein.corrupt.")
+            }));
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "vector-search")]
     fn rabitq_reopen_falls_back_to_previous_valid_generation() {
         let path = unique_test_dir("rabitq_generation_fallback");
         {
@@ -9934,12 +9979,14 @@ mod tests {
         });
         assert_eq!(probe["compressed_vector_projection"]["ready"], true);
         assert_eq!(probe["compressed_vector_projection"]["generation"], 1);
-        assert!(std::fs::read_dir(&path).unwrap().flatten().any(|entry| {
+        assert!(!latest.exists());
+        assert!(!std::fs::read_dir(&path).unwrap().flatten().any(|entry| {
             entry
                 .file_name()
                 .to_string_lossy()
                 .starts_with("search_rabitq.2.skein.corrupt.")
         }));
+        assert!(index.projection_cleanup_report().deleted_files >= 1);
 
         let result = index.search_with_options_compressed_vector_projection_mode(
             "",

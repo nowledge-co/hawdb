@@ -82,7 +82,8 @@ use super::wire::{
     encode_varint_u64, skip_field, zigzag_decode_i64, zigzag_encode_i64, WIRE_TYPE_FIXED64,
     WIRE_TYPE_LEN, WIRE_TYPE_VARINT,
 };
-use super::{WalEntry, WalOp};
+use super::{validate_wal_op_values, WalEntry, WalOp};
+use crate::canonical::MAX_VALUE_DEPTH;
 use crate::{NodeId, RelId};
 use skein_core::Value;
 use skein_core::{PropertyType, SchemaObjectState, TableKind};
@@ -144,7 +145,8 @@ pub enum BinaryWalRecordDecode {
     Corrupt(String),
 }
 
-pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Vec<u8> {
+pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Result<Vec<u8>> {
+    validate_wal_op_values(std::slice::from_ref(&entry.op))?;
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&entry.lsn.to_le_bytes());
     match &entry.op {
@@ -163,7 +165,7 @@ pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Vec<u8> 
             encode_op_frame(op, &mut out);
         }
     }
-    out
+    Ok(out)
 }
 
 pub fn decode_binary_wal_record(bytes: &[u8]) -> Result<BinaryWalRecordDecode> {
@@ -336,7 +338,8 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
-fn decode_value_message(bytes: &[u8]) -> Result<Value> {
+fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
+    ensure_value_depth(depth)?;
     let mut pos = 0usize;
     let mut value: Option<Value> = None;
     while pos < bytes.len() {
@@ -377,7 +380,7 @@ fn decode_value_message(bytes: &[u8]) -> Result<Value> {
                 let list = match value.take() {
                     Some(Value::List(mut values)) => {
                         if !body.is_empty() {
-                            values.push(decode_value_message(body)?);
+                            values.push(decode_value_message(body, depth.saturating_add(1))?);
                         }
                         values
                     }
@@ -385,7 +388,7 @@ fn decode_value_message(bytes: &[u8]) -> Result<Value> {
                         if body.is_empty() {
                             Vec::new()
                         } else {
-                            vec![decode_value_message(body)?]
+                            vec![decode_value_message(body, depth.saturating_add(1))?]
                         }
                     }
                 };
@@ -398,7 +401,7 @@ fn decode_value_message(bytes: &[u8]) -> Result<Value> {
                     None | Some(_) => BTreeMap::new(),
                 };
                 if !body.is_empty() {
-                    let (key, entry_value) = decode_map_entry(body)?;
+                    let (key, entry_value) = decode_map_entry(body, depth.saturating_add(2))?;
                     map.insert(key, entry_value);
                 }
                 value = Some(Value::Map(map));
@@ -409,7 +412,7 @@ fn decode_value_message(bytes: &[u8]) -> Result<Value> {
     value.ok_or_else(|| SkeinError::Storage("WAL value message is empty".to_string()))
 }
 
-fn decode_map_entry(bytes: &[u8]) -> Result<(String, Value)> {
+fn decode_map_entry(bytes: &[u8], value_depth: usize) -> Result<(String, Value)> {
     let mut pos = 0usize;
     let mut key = None;
     let mut value = None;
@@ -418,7 +421,10 @@ fn decode_map_entry(bytes: &[u8]) -> Result<(String, Value)> {
         match (field_id, wire_type) {
             (ENTRY_FIELD_KEY, WIRE_TYPE_LEN) => key = Some(decode_string_body(bytes, &mut pos)?),
             (ENTRY_FIELD_VALUE, WIRE_TYPE_LEN) => {
-                value = Some(decode_value_message(decode_len_body(bytes, &mut pos)?)?);
+                value = Some(decode_value_message(
+                    decode_len_body(bytes, &mut pos)?,
+                    value_depth,
+                )?);
             }
             (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
         }
@@ -429,6 +435,15 @@ fn decode_map_entry(bytes: &[u8]) -> Result<(String, Value)> {
             "WAL map entry is missing its key or value".to_string(),
         )),
     }
+}
+
+fn ensure_value_depth(depth: usize) -> Result<()> {
+    if depth > MAX_VALUE_DEPTH {
+        return Err(SkeinError::Storage(format!(
+            "WAL value nesting exceeds {MAX_VALUE_DEPTH}"
+        )));
+    }
+    Ok(())
 }
 
 fn encode_properties_fields(
@@ -729,7 +744,7 @@ impl<'a> OpFields<'a> {
         let mut properties = BTreeMap::new();
         for (id, body) in &self.messages {
             if *id == field_id {
-                let (key, value) = decode_map_entry(body)?;
+                let (key, value) = decode_map_entry(body, 1)?;
                 properties.insert(key, value);
             }
         }
@@ -890,7 +905,7 @@ fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
             Ok(WalOp::SetNodeProperty {
                 id: NodeId(fields.required_varint(1, "node id")?),
                 property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?)?,
+                value: decode_value_message(fields.required_message(3, "value")?, 1)?,
             })
         }
         OP_SET_RELATIONSHIP_PROPERTY => {
@@ -898,7 +913,7 @@ fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
             Ok(WalOp::SetRelationshipProperty {
                 id: RelId(fields.required_varint(1, "relationship id")?),
                 property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?)?,
+                value: decode_value_message(fields.required_message(3, "value")?, 1)?,
             })
         }
         OP_DELETE_NODE => {
@@ -957,7 +972,7 @@ mod tests {
     use crate::wal::wire;
 
     fn round_trip(entry: &WalEntry, commit_epoch: u64) -> (WalEntry, u64) {
-        let encoded = encode_binary_wal_record(entry, commit_epoch);
+        let encoded = encode_binary_wal_record(entry, commit_epoch).unwrap();
         match decode_binary_wal_record(&encoded).unwrap() {
             BinaryWalRecordDecode::Entry {
                 entry,
@@ -998,6 +1013,40 @@ mod tests {
                 )])),
             ),
         ])
+    }
+
+    fn value_at_depth(depth: usize) -> Value {
+        assert!(depth > 0);
+        (1..depth).fold(Value::Null, |value, _| Value::List(vec![value]))
+    }
+
+    fn encoded_value_at_depth(depth: usize) -> Vec<u8> {
+        assert!(depth > 0);
+        let mut encoded = Vec::new();
+        encode_varint_field(VALUE_FIELD_NULL, 0, &mut encoded);
+        for _ in 1..depth {
+            let inner = encoded;
+            encoded = Vec::new();
+            encode_len_field(VALUE_FIELD_ELEMENT, &inner, &mut encoded);
+        }
+        encoded
+    }
+
+    fn encoded_set_node_property_record(value: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        encode_varint_field(1, 7, &mut body);
+        encode_string_field(2, "payload", &mut body);
+        encode_len_field(3, value, &mut body);
+
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(&1u64.to_le_bytes());
+        encoded.push(RECORD_KIND_SINGLE);
+        encoded.extend_from_slice(&1u64.to_le_bytes());
+        encoded.extend_from_slice(&1u32.to_le_bytes());
+        encode_varint_u64(OP_SET_NODE_PROPERTY, &mut encoded);
+        encode_varint_u64(body.len() as u64, &mut encoded);
+        encoded.extend_from_slice(&body);
+        encoded
     }
 
     /// One WalOp sample per variant. The match is exhaustive on purpose:
@@ -1204,6 +1253,46 @@ mod tests {
     }
 
     #[test]
+    fn wal_encoder_rejects_values_beyond_the_canonical_depth_limit() {
+        let entry_at_limit = WalEntry {
+            lsn: 1,
+            op: WalOp::SetNodeProperty {
+                id: NodeId(7),
+                property: "payload".to_string(),
+                value: value_at_depth(MAX_VALUE_DEPTH),
+            },
+        };
+        encode_binary_wal_record(&entry_at_limit, 1).unwrap();
+
+        let entry_over_limit = WalEntry {
+            lsn: 1,
+            op: WalOp::SetNodeProperty {
+                id: NodeId(7),
+                property: "payload".to_string(),
+                value: value_at_depth(MAX_VALUE_DEPTH + 1),
+            },
+        };
+        let error = encode_binary_wal_record(&entry_over_limit, 1).unwrap_err();
+        assert!(error.to_string().contains("nesting exceeds 32"));
+    }
+
+    #[test]
+    fn wal_decoder_rejects_nested_headers_beyond_the_depth_limit() {
+        let at_limit = encoded_set_node_property_record(&encoded_value_at_depth(MAX_VALUE_DEPTH));
+        assert!(matches!(
+            decode_binary_wal_record(&at_limit).unwrap(),
+            BinaryWalRecordDecode::Entry { .. }
+        ));
+
+        let over_limit =
+            encoded_set_node_property_record(&encoded_value_at_depth(MAX_VALUE_DEPTH + 1));
+        assert!(matches!(
+            decode_binary_wal_record(&over_limit).unwrap(),
+            BinaryWalRecordDecode::Corrupt(reason) if reason.contains("nesting exceeds 32")
+        ));
+    }
+
+    #[test]
     fn batch_of_one_stays_distinct_from_a_bare_op() {
         let bare = WalEntry {
             lsn: 1,
@@ -1288,7 +1377,7 @@ mod tests {
             lsn: 3,
             op: WalOp::DeleteNode { id: NodeId(4) },
         };
-        let encoded = encode_binary_wal_record(&entry, 2);
+        let encoded = encode_binary_wal_record(&entry, 2).unwrap();
         assert!(matches!(
             decode_binary_wal_record(&encoded[..encoded.len() - 1]).unwrap(),
             BinaryWalRecordDecode::Corrupt(_)

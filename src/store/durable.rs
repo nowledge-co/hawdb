@@ -1792,7 +1792,7 @@ impl DurableStore {
             lsn: self.next_lsn,
             op,
         };
-        let payload = encode_binary_wal_record(&entry, self.wal_commit_epoch.saturating_add(1));
+        let payload = encode_binary_wal_record(&entry, self.wal_commit_epoch.saturating_add(1))?;
         if self
             .max_record_bytes
             .is_some_and(|limit| payload.len() > limit)

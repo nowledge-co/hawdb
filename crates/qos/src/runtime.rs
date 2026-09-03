@@ -353,6 +353,7 @@ pub struct RuntimeGovernorSnapshot {
     pub deadline_exceeded: u64,
     pub pressure_adjustments: u64,
     pub overcommitted: bool,
+    pub resources_pinned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +372,7 @@ struct RuntimeGovernorInner {
 #[derive(Debug, Clone, Copy)]
 struct RuntimeGovernorState {
     resources: RuntimeResourceSnapshot,
+    resources_pinned: bool,
     limits: RuntimeGovernorLimits,
     active_foreground_tasks: usize,
     active_background_tasks: usize,
@@ -408,6 +410,7 @@ impl RuntimeGovernor {
                 storage_io,
                 state: Mutex::new(RuntimeGovernorState {
                     resources,
+                    resources_pinned: false,
                     limits,
                     active_foreground_tasks: 0,
                     active_background_tasks: 0,
@@ -517,7 +520,18 @@ impl RuntimeGovernor {
         });
     }
 
+    /// Pin the current resource snapshot: later `refresh_from_host` calls
+    /// become no-ops so a caller-supplied snapshot cannot be clobbered by
+    /// periodic background detection. Explicit `update_resources` calls
+    /// still apply and keep the pin.
+    pub fn pin_resources(&self) {
+        mutex_lock(&self.inner.state).resources_pinned = true;
+    }
+
     pub fn refresh_from_host(&self) -> bool {
+        if mutex_lock(&self.inner.state).resources_pinned {
+            return false;
+        }
         self.update_resources(RuntimeResourceSnapshot::detect())
     }
 
@@ -569,6 +583,7 @@ impl RuntimeGovernor {
             deadline_exceeded: state.deadline_exceeded,
             pressure_adjustments: state.pressure_adjustments,
             overcommitted: is_overcommitted(&state),
+            resources_pinned: state.resources_pinned,
         }
     }
 }
@@ -952,6 +967,26 @@ mod tests {
             resources(cpu, available_memory),
             IoConcurrencyBudget::new(4, 1),
         )
+    }
+
+    #[test]
+    fn pinned_resources_survive_host_refresh() {
+        let governor = governor(4, 6 * 1024 * 1024 * 1024);
+        let pinned = resources(2, 2 * 1024 * 1024 * 1024);
+        governor.update_resources(pinned);
+        governor.pin_resources();
+
+        assert!(!governor.refresh_from_host());
+        let snapshot = governor.snapshot();
+        assert!(snapshot.resources_pinned);
+        assert_eq!(snapshot.resources, pinned);
+
+        // Explicit updates still apply and keep the pin.
+        let updated = resources(3, 3 * 1024 * 1024 * 1024);
+        assert!(governor.update_resources(updated));
+        let snapshot = governor.snapshot();
+        assert!(snapshot.resources_pinned);
+        assert_eq!(snapshot.resources, updated);
     }
 
     #[test]

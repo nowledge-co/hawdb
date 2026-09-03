@@ -29,7 +29,7 @@ const ARTIFACT_HEADER: &[u8; 16] = b"SKEINCANONICAL01";
 const MANIFEST_HEADER_V1: &str = "SKEIN_CANONICAL_MANIFEST_V1";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
-const MAX_VALUE_DEPTH: usize = 32;
+pub(crate) const MAX_VALUE_DEPTH: usize = 32;
 const BLOOM_MIN_WORDS: usize = 4;
 const BLOOM_MAX_WORDS: usize = 16 * 1024;
 const BLOOM_BITS_PER_ITEM: usize = 10;
@@ -3348,6 +3348,10 @@ fn encoded_value_len(value: &Value, depth: usize) -> Result<u64, CanonicalSegmen
             total
         }
     })
+}
+
+pub(crate) fn validate_property_value(value: &Value) -> Result<(), CanonicalSegmentError> {
+    encoded_value_len(value, 1).map(|_| ())
 }
 
 /// Streams one value's canonical tagged encoding into `out` without an

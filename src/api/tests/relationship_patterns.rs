@@ -137,6 +137,27 @@ fn untyped_one_hop_relationship_patterns_project_relationship_type() {
 }
 
 #[test]
+fn untyped_one_hop_relationship_patterns_without_a_variable_match_all_types() {
+    let mut db = Database::new();
+    db.query("CREATE (:Source {id: 1})-[:FIRST]->(:Target {id: 10})")
+        .unwrap();
+    db.query("CREATE (:Source {id: 2})-[:SECOND]->(:Target {id: 20})")
+        .unwrap();
+
+    let output = db
+        .query(
+            "MATCH (a:Source)-[]->(b:Target) RETURN a.id AS source, b.id AS target ORDER BY source ASC",
+        )
+        .unwrap();
+
+    assert_eq!(output.rows.len(), 2);
+    assert_eq!(output.rows[0].get("source"), Some(&Value::Int(1)));
+    assert_eq!(output.rows[0].get("target"), Some(&Value::Int(10)));
+    assert_eq!(output.rows[1].get("source"), Some(&Value::Int(2)));
+    assert_eq!(output.rows[1].get("target"), Some(&Value::Int(20)));
+}
+
+#[test]
 fn creates_and_expands_relationships_with_cypher() {
     let mut db = Database::new();
     db.query(

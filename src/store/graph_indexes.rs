@@ -1167,6 +1167,10 @@ impl GraphStore {
         catalog: &Catalog,
         ops: &[WalOp],
     ) -> Result<()> {
+        wal_codec::validate_wal_op_values(ops).map_err(|error| match error {
+            SkeinError::Storage(message) => SkeinError::Semantic(message),
+            error => error,
+        })?;
         self.ensure_out_of_core_delta_admission(ops)?;
         if self.canonical_base_out_of_core {
             return self.validate_out_of_core_record_changes(catalog, ops);

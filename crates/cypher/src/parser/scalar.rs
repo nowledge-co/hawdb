@@ -27,6 +27,10 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_value(&mut self) -> Result<ValueExpression> {
+        self.with_recursion(|parser| parser.parse_value_inner())
+    }
+
+    fn parse_value_inner(&mut self) -> Result<ValueExpression> {
         self.skip_ws();
         match self.peek_char() {
             Some('$') => {

@@ -1,8 +1,6 @@
 use crate::{StorageDeviceProfile, StorageMediaKind};
-#[cfg(target_os = "linux")]
-use skein_cgroup::LinuxCgroupSnapshot;
 #[cfg(any(target_os = "linux", test))]
-use skein_cgroup::LinuxCgroupValue;
+use skein_cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};
 use std::num::NonZeroUsize;
 use sysinfo::System;
 
@@ -224,11 +222,34 @@ impl IoConcurrencyBudget {
 
 #[cfg(target_os = "linux")]
 fn linux_cgroup_cpu_limits() -> (Option<NonZeroUsize>, Option<NonZeroUsize>) {
-    let snapshot = LinuxCgroupSnapshot::detect();
+    cgroup_cpu_limits_from(&LinuxCgroupSnapshot::detect())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn cgroup_cpu_limits_from(
+    snapshot: &LinuxCgroupSnapshot,
+) -> (Option<NonZeroUsize>, Option<NonZeroUsize>) {
+    if !cgroup_limits_are_sensed(snapshot.version) {
+        return (None, None);
+    }
     (
         admitted_cpu_limit(snapshot.cpu_quota_parallelism),
         admitted_cpu_limit(snapshot.cpuset_parallelism),
     )
+}
+
+/// Whether the sensed cgroup hierarchy carries limits this crate reads.
+///
+/// Cgroup v1 and hybrid hierarchies are deliberately not parsed. Their
+/// `V1Unsupported` marker means "limits may exist but Skein does not read
+/// them", not "sensing failed": treating it as a failure would derive a
+/// zero memory capacity and permanently reject every query on such hosts.
+/// Host totals govern instead, and any v1-enforced limit remains the
+/// kernel's to enforce. `Unknown` (unreadable procfs, unresolvable v2
+/// mount) and per-file `Invalid` values stay fail-closed.
+#[cfg(any(target_os = "linux", test))]
+const fn cgroup_limits_are_sensed(version: LinuxCgroupVersion) -> bool {
+    !matches!(version, LinuxCgroupVersion::V1Unsupported)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -242,7 +263,16 @@ fn admitted_cpu_limit(value: LinuxCgroupValue<NonZeroUsize>) -> Option<NonZeroUs
 
 #[cfg(target_os = "linux")]
 fn linux_cgroup_memory_limits() -> (Option<u64>, Option<u64>, Option<u64>) {
-    let snapshot = LinuxCgroupSnapshot::detect();
+    cgroup_memory_limits_from(&LinuxCgroupSnapshot::detect())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn cgroup_memory_limits_from(
+    snapshot: &LinuxCgroupSnapshot,
+) -> (Option<u64>, Option<u64>, Option<u64>) {
+    if !cgroup_limits_are_sensed(snapshot.version) {
+        return (None, None, None);
+    }
     (
         admitted_memory_limit(snapshot.memory_limit_bytes),
         admitted_memory_limit(snapshot.memory_high_bytes),
@@ -310,6 +340,31 @@ mod tests {
         assert_eq!(budget.effective_parallelism.get(), 4);
         assert_eq!(budget.foreground_parallelism.get(), 4);
         assert_eq!(budget.background_parallelism.get(), 1);
+    }
+
+    #[test]
+    fn v1_cgroup_snapshot_falls_back_to_host_limits() {
+        let snapshot = LinuxCgroupSnapshot::fail_closed(LinuxCgroupVersion::V1Unsupported);
+        assert_eq!(cgroup_cpu_limits_from(&snapshot), (None, None));
+        assert_eq!(cgroup_memory_limits_from(&snapshot), (None, None, None));
+
+        let memory =
+            RuntimeMemorySnapshot::from_limits(Some(16 << 30), Some(8 << 30), None, None, None);
+        assert_eq!(memory.effective_limit_bytes, Some(16 << 30));
+        assert_eq!(memory.effective_available_bytes, Some(8 << 30));
+    }
+
+    #[test]
+    fn unknown_cgroup_snapshot_remains_fail_closed() {
+        let snapshot = LinuxCgroupSnapshot::fail_closed(LinuxCgroupVersion::Unknown);
+        assert_eq!(
+            cgroup_cpu_limits_from(&snapshot),
+            (Some(NonZeroUsize::MIN), Some(NonZeroUsize::MIN))
+        );
+        assert_eq!(
+            cgroup_memory_limits_from(&snapshot),
+            (Some(0), Some(0), Some(u64::MAX))
+        );
     }
 
     #[test]

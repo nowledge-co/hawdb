@@ -139,6 +139,34 @@ fn queued_candidate_is_revalidated_before_retry() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn quarantined_generation_is_deleted_without_removing_the_live_artifact() {
+    let root = test_root("quarantine");
+    fs::create_dir_all(&root).unwrap();
+    let live = root.join("search_rabitq.7.skein");
+    let quarantined = root.join("search_rabitq.7.skein.corrupt.42.9");
+    let malformed = root.join("search_rabitq.7.skein.corrupt.unknown.9");
+    fs::write(&live, b"live").unwrap();
+    fs::write(&quarantined, b"corrupt").unwrap();
+    fs::write(&malformed, b"unrecognized").unwrap();
+
+    let report = SearchProjectionCleanupState::default().run(
+        &root,
+        SearchProjectionGenerations {
+            rabitq: Some(7),
+            ..SearchProjectionGenerations::default()
+        },
+        SearchProjectionCleanupOptions::default(),
+    );
+
+    assert_eq!(report.eligible_files, 1);
+    assert_eq!(report.deleted_files, 1);
+    assert!(live.exists());
+    assert!(!quarantined.exists());
+    assert!(malformed.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn test_root(name: &str) -> std::path::PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
