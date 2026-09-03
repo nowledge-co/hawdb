@@ -75,6 +75,30 @@ pub trait SearchProjectionSource {
         catalog: &Catalog,
         node: &NodeRecord,
     ) -> Result<Vec<String>>;
+
+    /// Collects sorted, deduplicated business labels keyed by graph node.
+    ///
+    /// Sources with bulk relationship access should override this method so a
+    /// rebuild does not repeat the same relationship scan for every node.
+    fn projection_business_labels_by_node(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<HashMap<NodeId, Vec<String>>> {
+        let mut labels_by_node = HashMap::new();
+        self.visit_projection_nodes(&mut |node| {
+            if projection_row_from_node(catalog, &node).is_none() {
+                return Ok(());
+            }
+            let mut labels = self.projection_business_labels(catalog, &node)?;
+            labels.sort();
+            labels.dedup();
+            if !labels.is_empty() {
+                labels_by_node.insert(node.id, labels);
+            }
+            Ok(())
+        })?;
+        Ok(labels_by_node)
+    }
 }
 
 pub const fn compiled_runtime_capabilities() -> RuntimeCapabilities {
@@ -1909,11 +1933,17 @@ impl SearchIndex {
         let mut scanned_nodes = 0;
 
         let result = (|| {
+            let business_labels_by_node = store.projection_business_labels_by_node(catalog)?;
             store.visit_projection_nodes(&mut |node| {
                 scanned_nodes += 1;
-                let Some(row) =
-                    projection_row_from_node_with_graph_metadata(catalog, store, &node)?
-                else {
+                let Some(row) = projection_row_from_node_with_business_labels(
+                    catalog,
+                    &node,
+                    business_labels_by_node
+                        .get(&node.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                ) else {
                     return Ok(());
                 };
                 if options
@@ -2073,11 +2103,17 @@ impl SearchIndex {
         let mut missing_documents = 0;
 
         let result = (|| {
+            let business_labels_by_node = store.projection_business_labels_by_node(catalog)?;
             store.visit_projection_nodes(&mut |node| {
                 scanned_nodes += 1;
-                let Some(row) =
-                    projection_row_from_node_with_graph_metadata(catalog, store, &node)?
-                else {
+                let Some(row) = projection_row_from_node_with_business_labels(
+                    catalog,
+                    &node,
+                    business_labels_by_node
+                        .get(&node.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                ) else {
                     return Ok(());
                 };
                 let document = row.into_document();
@@ -4586,13 +4622,27 @@ pub fn projection_row_from_node_with_graph_metadata<S: SearchProjectionSource + 
         return Ok(None);
     };
     let labels = projection_business_labels_for_node(catalog, store, node)?;
+    apply_projection_business_labels(&mut row, &labels);
+    Ok(Some(row))
+}
+
+fn projection_row_from_node_with_business_labels(
+    catalog: &Catalog,
+    node: &NodeRecord,
+    labels: &[String],
+) -> Option<SearchProjectionRow> {
+    let mut row = projection_row_from_node(catalog, node)?;
+    apply_projection_business_labels(&mut row, labels);
+    Some(row)
+}
+
+fn apply_projection_business_labels(row: &mut SearchProjectionRow, labels: &[String]) {
     if !labels.is_empty() {
         row.metadata.insert(
             "labels".to_string(),
-            serde_json::to_string(&labels).expect("label metadata serializes as a string array"),
+            serde_json::to_string(labels).expect("label metadata serializes as a string array"),
         );
     }
-    Ok(Some(row))
 }
 
 fn projection_business_labels_for_node<S: SearchProjectionSource + ?Sized>(
@@ -7501,12 +7551,16 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 mod tests {
     use super::*;
     use skein_storage::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
+    use std::cell::Cell;
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[derive(Default)]
     struct TestProjectionSource {
         nodes: Vec<NodeRecord>,
         commit_epoch: u64,
+        business_labels: HashMap<NodeId, Vec<String>>,
+        business_label_bulk_scans: Cell<usize>,
+        business_label_point_lookups: Cell<usize>,
     }
 
     impl TestProjectionSource {
@@ -7561,9 +7615,24 @@ mod tests {
         fn projection_business_labels(
             &self,
             _catalog: &Catalog,
-            _node: &NodeRecord,
+            node: &NodeRecord,
         ) -> Result<Vec<String>> {
-            Ok(Vec::new())
+            self.business_label_point_lookups
+                .set(self.business_label_point_lookups.get().saturating_add(1));
+            Ok(self
+                .business_labels
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn projection_business_labels_by_node(
+            &self,
+            _catalog: &Catalog,
+        ) -> Result<HashMap<NodeId, Vec<String>>> {
+            self.business_label_bulk_scans
+                .set(self.business_label_bulk_scans.get().saturating_add(1));
+            Ok(self.business_labels.clone())
         }
     }
 
@@ -12204,6 +12273,50 @@ mod tests {
         );
         assert_eq!(hits.total_hits, 1);
         assert_eq!(hits.hits[0].source_id.as_deref(), Some("thread_1"));
+    }
+
+    #[test]
+    fn graph_rebuild_and_metadata_repair_collect_business_labels_once() {
+        let mut catalog = Catalog::default();
+        let mut store = TestProjectionSource::in_memory();
+        let memory_id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("id".to_string(), Value::String("mem_1".to_string())),
+                    (
+                        "title".to_string(),
+                        Value::String("Label projection".to_string()),
+                    ),
+                ]),
+            )
+            .unwrap();
+        store
+            .business_labels
+            .insert(memory_id, vec!["database".to_string(), "rust".to_string()]);
+
+        let mut index = SearchIndex::in_memory();
+        index
+            .rebuild_from_graph(&catalog, &store, SearchRebuildOptions::default())
+            .unwrap();
+
+        assert_eq!(store.business_label_bulk_scans.get(), 1);
+        assert_eq!(store.business_label_point_lookups.get(), 0);
+        assert_eq!(
+            index
+                .document("memory:mem_1")
+                .and_then(|document| document.metadata.get("labels"))
+                .map(String::as_str),
+            Some(r#"["database","rust"]"#)
+        );
+
+        index
+            .repair_metadata_from_graph(&catalog, &store, MetadataRepairOptions::default())
+            .unwrap();
+
+        assert_eq!(store.business_label_bulk_scans.get(), 2);
+        assert_eq!(store.business_label_point_lookups.get(), 0);
     }
 
     #[test]
