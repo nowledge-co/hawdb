@@ -514,7 +514,8 @@ mod tests {
 
     #[test]
     fn typed_top_n_spills_preserves_stability_and_releases_query_memory() {
-        let memory = test_memory("stable", 256);
+        let mut memory = test_memory("stable", 256);
+        memory.spill_free_space_probe_interval_bytes = NonZeroU64::new(1024).unwrap();
         let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
         let mut order = ExternalTopN::new("TypedTopN", "typed-topn", 1, 3, &memory, &ledger, None);
         for (key, marker) in [(5, 0), (1, 1), (1, 2), (4, 3), (2, 4), (3, 5)] {
@@ -535,6 +536,14 @@ mod tests {
 
         assert_eq!(output, [(1, 2), (2, 4), (3, 5)]);
         assert!(report.spill_run_count > 0);
+        let pool = memory.spill_pool_snapshot().unwrap();
+        assert!(pool.free_space_probe_count < report.spilled_rows as u64);
+        assert!(
+            pool.free_space_probe_count
+                <= report
+                    .spilled_bytes
+                    .div_ceil(memory.spill_free_space_probe_interval_bytes.get())
+        );
         assert_eq!(ledger.snapshot().used_bytes, 0);
         std::fs::remove_dir_all(&memory.spill_directory).unwrap();
     }
