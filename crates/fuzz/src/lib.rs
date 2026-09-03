@@ -37,13 +37,61 @@ pub use sql_oracle::{
     SQL_TLP_AGGREGATE_PROTOCOL, SQL_TLP_PROTOCOL,
 };
 
-pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v7";
+pub fn compiled_capabilities_json() -> JsonValue {
+    let capabilities = skein::compiled_runtime_capabilities();
+    json!({
+        "full_text_search": capabilities.is_enabled(skein::RuntimeCapability::FullTextSearch),
+        "vector_search": capabilities.is_enabled(skein::RuntimeCapability::VectorSearch),
+        "graph_analytics": capabilities.is_enabled(skein::RuntimeCapability::GraphAnalytics),
+        "background_maintenance": capabilities
+            .is_enabled(skein::RuntimeCapability::BackgroundMaintenance),
+        "access_control": capabilities.is_enabled(skein::RuntimeCapability::AccessControl),
+    })
+}
+
+#[cfg(test)]
+mod capability_parity_tests {
+    fn assert_parity(capability: skein::RuntimeCapability, forwarded: bool) {
+        assert_eq!(
+            skein::compiled_runtime_capabilities().is_enabled(capability),
+            forwarded,
+            "compiled capability {} diverged from the forwarded fuzz feature",
+            capability.as_str(),
+        );
+    }
+
+    #[test]
+    fn forwarded_features_match_compiled_skein_capabilities() {
+        assert_parity(
+            skein::RuntimeCapability::FullTextSearch,
+            cfg!(feature = "full-text-search"),
+        );
+        assert_parity(
+            skein::RuntimeCapability::VectorSearch,
+            cfg!(feature = "vector-search"),
+        );
+        assert_parity(
+            skein::RuntimeCapability::GraphAnalytics,
+            cfg!(feature = "graph-analytics"),
+        );
+        assert_parity(
+            skein::RuntimeCapability::BackgroundMaintenance,
+            cfg!(feature = "background-maintenance"),
+        );
+        assert_parity(
+            skein::RuntimeCapability::AccessControl,
+            cfg!(feature = "acl"),
+        );
+    }
+}
+
+pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v1";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "skein-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "skein-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "skein-graph-tlp-fuzz-v1";
 pub const METAMORPHIC_PROTOCOL: &str = "skein-graph-metamorphic-fuzz-v1";
 pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "skein-plan-differential-fuzz-v1";
-pub const REPLAY_BUNDLE_PROTOCOL: &str = "skein-multi-oracle-replay-v5";
+pub const REPLAY_BUNDLE_PROTOCOL: &str = "skein-multi-oracle-replay-v1";
 pub(crate) const QUERY_SHAPE_COUNT: usize = 12;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
@@ -1652,6 +1700,7 @@ pub struct CampaignCaseReport {
     pub reproduction_command: Option<String>,
     pub memo_plan_fingerprint: Option<String>,
     pub direct_fallback_plan_fingerprint: Option<String>,
+    pub optimizer_stages: Vec<String>,
     pub plan_coverage_novel: bool,
     pub sql: SqlCaseReport,
     pub failure: Option<FailureReport>,
@@ -1681,6 +1730,7 @@ impl CampaignCaseReport {
             "reproduction_command": self.reproduction_command,
             "memo_plan_fingerprint": self.memo_plan_fingerprint,
             "direct_fallback_plan_fingerprint": self.direct_fallback_plan_fingerprint,
+            "optimizer_stages": self.optimizer_stages,
             "plan_coverage_novel": self.plan_coverage_novel,
             "sql": self.sql.json(),
             "failure": self.failure.as_ref().map(FailureReport::json),
@@ -1809,20 +1859,31 @@ pub fn run_campaign_with_case_observer(
             plan_differential_success,
             memo_plan_fingerprint,
             direct_fallback_plan_fingerprint,
+            optimizer_stages,
             failure,
         ) = match plan_oracle.evaluate(&case) {
-            OracleResult::Equivalent(evidence) => (
-                true,
-                evidence.memo.plan_fingerprint,
-                evidence.direct_fallback.plan_fingerprint,
-                None,
-            ),
-            OracleResult::Failure(failure) => (
-                false,
-                failure.memo.plan_fingerprint.clone(),
-                failure.direct_fallback.plan_fingerprint.clone(),
-                Some(failure),
-            ),
+            OracleResult::Equivalent(evidence) => {
+                let mut stages = evidence.memo.optimizer_stages;
+                stages.extend(evidence.direct_fallback.optimizer_stages);
+                (
+                    true,
+                    evidence.memo.plan_fingerprint,
+                    evidence.direct_fallback.plan_fingerprint,
+                    stages,
+                    None,
+                )
+            }
+            OracleResult::Failure(failure) => {
+                let mut stages = failure.memo.optimizer_stages.clone();
+                stages.extend(failure.direct_fallback.optimizer_stages.iter().cloned());
+                (
+                    false,
+                    failure.memo.plan_fingerprint.clone(),
+                    failure.direct_fallback.plan_fingerprint.clone(),
+                    stages,
+                    Some(failure),
+                )
+            }
         };
         let (graph_tlp_success, graph_tlp_failure) = match graph_tlp_oracle.evaluate(&case) {
             GraphTlpOracleResult::Equivalent(_) => (true, None),
@@ -1853,6 +1914,7 @@ pub fn run_campaign_with_case_observer(
             memo_plan_fingerprint.as_deref(),
             direct_fallback_plan_fingerprint.as_deref(),
         );
+        plan_coverage.observe_optimizer_stages(&optimizer_stages);
         let direction_reversal_applicable = case.metamorphic.direction_reversal.is_some();
         cases.push(CampaignCaseReport {
             index,
@@ -1877,6 +1939,7 @@ pub fn run_campaign_with_case_observer(
             }),
             memo_plan_fingerprint,
             direct_fallback_plan_fingerprint,
+            optimizer_stages,
             plan_coverage_novel,
             sql,
             failure,
@@ -1952,6 +2015,14 @@ pub fn merge_campaign_report_json(
             case["direct_fallback_plan_fingerprint"].as_str(),
         );
         case["plan_coverage_novel"] = JsonValue::Bool(novel);
+        if let Some(stages) = case["optimizer_stages"].as_array() {
+            let stages = stages
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            plan_coverage.observe_optimizer_stages(&stages);
+        }
     }
     let cases = indexed.into_values().collect::<Vec<_>>();
     let failed_case_count = cases.iter().filter(|case| case["success"] == false).count();

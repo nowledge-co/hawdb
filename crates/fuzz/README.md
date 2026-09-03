@@ -22,10 +22,12 @@ campaign runs nine complementary oracles:
   the partition counts. This follows SQLancer's TLP Aggregate construction and exercises Skein's
   aggregate execution path without adding a reference executor or host-side graph semantics.
 - The graph predicate-rewrite oracle cycles through double negation, conjunction idempotence,
-  disjunction idempotence, and null totality. It compares the original and rewritten Cypher on one
-  pinned snapshot under bag semantics. Unlike TLP recombination, each relation must preserve the
-  selected rows directly, so a predicate-classification defect cannot be hidden by compensating
-  partitions.
+  disjunction idempotence, null totality, and the two predicate absorption laws. It
+  compares the original and rewritten Cypher on one pinned snapshot under bag semantics. Unlike
+  TLP recombination, each relation must preserve the selected rows directly, so a
+  predicate-classification defect cannot be hidden by compensating partitions. The absorption
+  relations combine the generated predicate with a nullable secondary predicate, so they also
+  stress nested three-valued logic without treating plan shape as truth.
 - The graph-metamorphic oracle executes an identifier-bijection transform for every query and a
   direction-reversal transform whenever the typed AST contains a directed relationship. The
   transformed graph, parameters, and relationship pattern change together; identifier values are

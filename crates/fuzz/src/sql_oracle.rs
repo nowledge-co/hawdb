@@ -2,7 +2,9 @@ use crate::{
     compare_rows, error_class, row_json, typed_value_json, ExecutionOutcome, ResultSemantics,
 };
 use serde_json::{json, Value as JsonValue};
-use skein::api::{Database, DatabaseConfig, DatabaseReadTransaction};
+#[cfg(test)]
+use skein::api::DatabaseConfig;
+use skein::api::{Database, DatabaseReadTransaction};
 use skein::{
     QueryStreamOptions, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
     RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, SkeinError, Value,
@@ -16,8 +18,8 @@ use generator::generate_sql_case;
 pub const SQL_TLP_PROTOCOL: &str = "skein-sql-tlp-fuzz-v1";
 pub const SQL_TLP_AGGREGATE_PROTOCOL: &str = "skein-sql-tlp-aggregate-fuzz-v1";
 pub const SQL_PREDICATE_REWRITE_PROTOCOL: &str = "skein-sql-predicate-rewrite-fuzz-v1";
-pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "skein-sql-join-rewrite-fuzz-v2";
-pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v4";
+pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "skein-sql-join-rewrite-fuzz-v1";
+pub const SQL_REPLAY_PROTOCOL: &str = "skein-sql-fuzz-replay-v1";
 
 const MAX_SQL_REDUCTION_ATTEMPTS: usize = 64;
 pub(crate) const SQL_QUERY_SHAPES: [&str; 8] = [
