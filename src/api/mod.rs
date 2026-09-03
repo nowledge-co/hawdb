@@ -45,8 +45,8 @@ use crate::store::{
     StoreStableIdMapping, WalReplayConfig,
 };
 use crate::telemetry::{
-    operations_telemetry_readiness, qos_telemetry_sink, KernelTelemetry, KernelTelemetryOperation,
-    OperationsTelemetryReadiness, TelemetrySink,
+    operations_telemetry_readiness, qos_telemetry_sink, runtime_telemetry_sink, KernelTelemetry,
+    KernelTelemetryOperation, OperationsTelemetryReadiness, TelemetrySink,
 };
 use crate::value::Value;
 use canonical_snapshot::export_canonical_graph_snapshot_for;
@@ -223,6 +223,7 @@ pub struct Database {
     next_derived_artifact_job_id: u64,
     derived_artifact_jobs: Vec<DerivedArtifactJob>,
     telemetry: Option<Arc<dyn TelemetrySink>>,
+    runtime_governor: Option<skein_qos::RuntimeGovernor>,
 }
 
 pub(crate) struct DatabaseCheckpointSource {
@@ -929,6 +930,7 @@ impl Default for Database {
             next_derived_artifact_job_id: 1,
             derived_artifact_jobs: Vec::new(),
             telemetry: None,
+            runtime_governor: None,
         }
     }
 }
@@ -1002,6 +1004,7 @@ impl Database {
             next_derived_artifact_job_id: 1,
             derived_artifact_jobs: Vec::new(),
             telemetry: None,
+            runtime_governor: None,
         }
     }
 
@@ -1124,6 +1127,7 @@ impl Database {
             next_derived_artifact_job_id: 1,
             derived_artifact_jobs: Vec::new(),
             telemetry: None,
+            runtime_governor: None,
         };
         if !database.config.read_only {
             database.complete_required_relational_row_checkpoint("writable recovery")?;
@@ -1148,6 +1152,13 @@ impl Database {
     }
 
     pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn TelemetrySink>>) {
+        if let Some(governor) = &self.runtime_governor {
+            governor.set_telemetry_sink(
+                telemetry
+                    .as_ref()
+                    .map(|telemetry| runtime_telemetry_sink(telemetry.clone())),
+            );
+        }
         if let Some(telemetry) = &telemetry {
             let recovery = self.store.storage_recovery_report();
             if recovery.durable {
@@ -1780,7 +1791,11 @@ impl Database {
     /// embedding layers that own the governor (`SkeinEmbedded`,
     /// `NowledgeMemGraph`); a second governor is never constructed here.
     pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
-        self.store.set_runtime_governor(governor);
+        if let Some(telemetry) = &self.telemetry {
+            governor.set_telemetry_sink(Some(runtime_telemetry_sink(telemetry.clone())));
+        }
+        self.store.set_runtime_governor(governor.clone());
+        self.runtime_governor = Some(governor);
     }
 
     /// Shadow write-amplification evidence of the most recent checkpoint,
