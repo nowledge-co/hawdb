@@ -502,11 +502,13 @@ pub struct QueryOutput {
     pub rows: executor::QueryRows,
 }
 
-/// Deterministic outcome for one relational INSERT statement.
+/// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
 /// A staged statement is provisional until its enclosing transaction commits.
 /// Conflict no-ops increment `conflict_rows`, never `affected_rows`, and never
-/// contribute a `RETURNING` row.
+/// contribute a `RETURNING` row. In the v1 contract, `rows` contains values for
+/// supported `INSERT ... RETURNING` statements and remains empty for count-only
+/// UPDATE and DELETE outcomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalMutationResult {
     pub affected_rows: usize,
