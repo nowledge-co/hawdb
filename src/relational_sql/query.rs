@@ -1873,6 +1873,7 @@ fn prepare_relational_select(
                 )));
             }
         }
+        validate_non_aggregate_coalesce_projections(&select, parameters, state)?;
         Ok(())
     })?;
     let planned = join_order::plan_select_join_order(
@@ -6032,7 +6033,7 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.index_runtime,
             self.row_runtime,
             &mut |row| {
-                let projected = project_bound_row(&row, &self.select.projection)?;
+                let projected = project_bound_row(&row, &self.select.projection, self.parameters)?;
                 control = batch.push(ExecutorBinding::values(projected), emit)?;
                 if control == BatchControl::Continue && batch.is_full() {
                     control = batch.emit(emit)?;
@@ -6296,6 +6297,7 @@ fn execute_blocking_projection<'a>(
                 &record.into_locator(),
                 &locator_layout,
                 select,
+                parameters,
                 row_runtime,
             )?;
             push_relational_output(row, &mut output, &mut payload_bytes, limits)?;
@@ -6504,10 +6506,11 @@ fn project_typed_locator(
     locator: &RelationalRowSetLocator,
     locator_layout: &RelationalLocatorLayout<'_>,
     select: &SelectStatement,
+    parameters: &[Value],
     row_runtime: &RelationalRowRuntime<'_>,
 ) -> Result<Row> {
     with_typed_locator_bound_row(locator, locator_layout, row_runtime, |bound| {
-        project_bound_row(bound, &select.projection)
+        project_bound_row(bound, &select.projection, parameters)
     })
 }
 
@@ -6640,7 +6643,7 @@ fn execute_ordered_index_projection<'a>(
                     row: Some(row),
                 }],
             };
-            let projected = project_bound_row(&bound, &select.projection)?;
+            let projected = project_bound_row(&bound, &select.projection, parameters)?;
             payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
             if payload_bytes > limits.max_output_payload_bytes {
                 return Err(SkeinError::Execution(format!(
@@ -6714,6 +6717,7 @@ fn execute_streaming_projection<'a>(
     if tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
         && joins.is_empty()
         && matches!(base_access, RelationalBaseAccess::FullScan)
+        && !projection_uses_non_aggregate_coalesce(&select.projection)
     {
         return execute_borrowed_streaming_full_scan(
             select,
@@ -6763,7 +6767,7 @@ fn execute_streaming_projection<'a>(
                         limits.max_output_rows
                     )));
                 }
-                let projected = project_bound_row(&row, &select.projection)?;
+                let projected = project_bound_row(&row, &select.projection, parameters)?;
                 payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
                 if payload_bytes > limits.max_output_payload_bytes {
                     return Err(SkeinError::Execution(format!(
@@ -7481,6 +7485,136 @@ fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
         }
         SelectProjection::Wildcard | SelectProjection::Column { .. } => false,
     }
+}
+
+fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
+    projection.iter().any(|projection| {
+        matches!(
+            projection,
+            SelectProjection::Expression {
+                expression: SqlExpression::Function { name, .. },
+                ..
+            } if name == "coalesce" && !projection_contains_aggregate(projection)
+        )
+    })
+}
+
+fn validate_non_aggregate_coalesce_projections(
+    select: &SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<()> {
+    for projection in &select.projection {
+        let SelectProjection::Expression { expression, .. } = projection else {
+            continue;
+        };
+        let SqlExpression::Function { name, .. } = expression else {
+            continue;
+        };
+        if name == "coalesce" && !projection_contains_aggregate(projection) {
+            infer_coalesce_scalar_type(expression, select, parameters, state)?;
+        }
+    }
+    Ok(())
+}
+
+fn infer_coalesce_scalar_type(
+    expression: &SqlExpression,
+    select: &SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<Option<RelationalScalarType>> {
+    match expression {
+        SqlExpression::Column(column) => {
+            resolve_projection_column_type(select, state, column).map(Some)
+        }
+        SqlExpression::Value(value) => {
+            Ok(value_to_relational(bind_sql_value(value, parameters)?)?.scalar_type())
+        }
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct,
+            filter,
+        } if name == "coalesce" => {
+            if *distinct {
+                return Err(SkeinError::Semantic(
+                    "COALESCE does not accept DISTINCT".to_string(),
+                ));
+            }
+            if filter.is_some() {
+                return Err(SkeinError::Semantic(
+                    "COALESCE does not accept FILTER".to_string(),
+                ));
+            }
+            if arguments.is_empty() {
+                return Err(SkeinError::Semantic(
+                    "COALESCE requires at least one argument".to_string(),
+                ));
+            }
+            let mut scalar_type = None;
+            for argument in arguments {
+                let SqlFunctionArgument::Expression(expression) = argument else {
+                    return Err(SkeinError::Semantic(
+                        "COALESCE does not accept wildcard".to_string(),
+                    ));
+                };
+                let candidate = infer_coalesce_scalar_type(expression, select, parameters, state)?;
+                if let Some(candidate) = candidate {
+                    if scalar_type.is_some_and(|scalar_type| scalar_type != candidate) {
+                        return Err(SkeinError::Semantic(
+                            "COALESCE arguments have incompatible scalar types".to_string(),
+                        ));
+                    }
+                    scalar_type = Some(candidate);
+                }
+            }
+            Ok(scalar_type)
+        }
+        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+            "unsupported COALESCE argument function {name}"
+        ))),
+    }
+}
+
+fn resolve_projection_column_type(
+    select: &SelectStatement,
+    state: &RelationalState,
+    column: &SqlColumnRef,
+) -> Result<RelationalScalarType> {
+    let base_qualifier = select.from_alias.as_deref().unwrap_or(&select.from.name);
+    let base = std::iter::once((select.from.name.as_str(), base_qualifier));
+    let joins = select.joins.iter().map(|join| {
+        (
+            join.table.name.as_str(),
+            join.alias.as_deref().unwrap_or(&join.table.name),
+        )
+    });
+    let mut matches = base.chain(joins).filter_map(|(table, qualifier)| {
+        if column
+            .qualifier
+            .as_deref()
+            .is_some_and(|candidate| candidate != table && candidate != qualifier)
+        {
+            return None;
+        }
+        let schema = state
+            .table_schema(table)
+            .expect("projection relation was validated before expression binding");
+        schema
+            .column_position(&column.name)
+            .map(|position| schema.columns[position].scalar_type)
+    });
+    let first = matches.next().ok_or_else(|| {
+        SkeinError::Semantic(format!("column {} is unknown or ambiguous", column.name))
+    })?;
+    if matches.next().is_some() {
+        return Err(SkeinError::Semantic(format!(
+            "column {} is unknown or ambiguous",
+            column.name
+        )));
+    }
+    Ok(first)
 }
 
 #[derive(Clone)]
@@ -8206,7 +8340,11 @@ fn resolve_column_with_type<'a>(
     ))
 }
 
-fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Result<Row> {
+fn project_bound_row(
+    row: &BoundRow<'_>,
+    projection: &[SelectProjection],
+    parameters: &[Value],
+) -> Result<Row> {
     let mut output = Row::new();
     for item in projection {
         match item {
@@ -8230,7 +8368,9 @@ fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Res
             SelectProjection::Expression { expression, alias } => insert_output(
                 &mut output,
                 alias.clone().unwrap_or_else(|| expression_name(expression)),
-                relational_to_value(&evaluate_projection_expression(expression, row)?)?,
+                relational_to_value(&evaluate_projection_expression(
+                    expression, row, parameters,
+                )?)?,
             )?,
         }
     }
@@ -8240,6 +8380,7 @@ fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Res
 fn evaluate_projection_expression(
     expression: &SqlExpression,
     row: &BoundRow<'_>,
+    parameters: &[Value],
 ) -> Result<RelationalValue> {
     match expression {
         SqlExpression::Column(column) => Ok(resolve_column(row, column)?.clone()),
@@ -8255,10 +8396,49 @@ fn evaluate_projection_expression(
         } if name == "uuidv7" && arguments.is_empty() => {
             Ok(RelationalValue::Uuid(skein_core::generate_uuidv7()?))
         }
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct: false,
+            filter: None,
+        } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters),
         SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
             "unsupported relational projection function {name}"
         ))),
     }
+}
+
+fn evaluate_coalesce(
+    arguments: &[SqlFunctionArgument],
+    row: &BoundRow<'_>,
+    parameters: &[Value],
+) -> Result<RelationalValue> {
+    for argument in arguments {
+        let SqlFunctionArgument::Expression(expression) = argument else {
+            return Err(SkeinError::Semantic(
+                "COALESCE does not accept wildcard".to_string(),
+            ));
+        };
+        let value = match expression {
+            SqlExpression::Column(column) => resolve_column(row, column)?.clone(),
+            SqlExpression::Value(value) => value_to_relational(bind_sql_value(value, parameters)?)?,
+            SqlExpression::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters)?,
+            SqlExpression::Function { name, .. } => {
+                return Err(SkeinError::Semantic(format!(
+                    "unsupported COALESCE argument function {name}"
+                )))
+            }
+        };
+        if !matches!(value, RelationalValue::Null) {
+            return Ok(value);
+        }
+    }
+    Ok(RelationalValue::Null)
 }
 
 fn resolve_binding<'a>(
