@@ -339,7 +339,7 @@ fn validate_wal_value(value: &Value) -> Result<()> {
 
 impl WalEntry {
     #[doc(hidden)]
-    pub fn encode(&self) -> String {
+    pub fn encode(&self) -> Result<String> {
         let payload = match &self.op {
             WalOp::CreateNodeLabel { label } => {
                 format!("create_node_label\t{}", encode_string(label))
@@ -517,22 +517,23 @@ impl WalEntry {
             WalOp::Append { record } => {
                 format!("append\t{}", encode_bytes_base64(record))
             }
-            WalOp::Batch(ops) => format!(
-                "batch\t{}",
-                ops.iter()
+            WalOp::Batch(ops) => {
+                let encoded = ops
+                    .iter()
                     .map(encode_wal_op_for_batch)
-                    .collect::<Vec<_>>()
-                    .join("|")
-            ),
+                    .collect::<Result<Vec<_>>>()?
+                    .join("|");
+                format!("batch\t{encoded}")
+            }
         };
         let body = format!("{}\t{payload}", self.lsn);
         let checksum = checksum_bytes(body.as_bytes());
-        format!("{body}\t{checksum}")
+        Ok(format!("{body}\t{checksum}"))
     }
 }
 
-fn encode_wal_op_for_batch(op: &WalOp) -> String {
-    match op {
+fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
+    let encoded = match op {
         WalOp::CreateNodeLabel { label } => {
             format!("create_node_label,{}", encode_string(label))
         }
@@ -727,8 +728,13 @@ fn encode_wal_op_for_batch(op: &WalOp) -> String {
         WalOp::Append { record } => {
             format!("append,{}", encode_bytes_base64(record))
         }
-        WalOp::Batch(_) => unreachable!("nested wal batches are not encoded"),
-    }
+        WalOp::Batch(_) => {
+            return Err(SkeinError::Storage(
+                "nested WAL batches cannot be encoded".to_string(),
+            ));
+        }
+    };
+    Ok(encoded)
 }
 
 fn checksum_bytes(bytes: &[u8]) -> u64 {

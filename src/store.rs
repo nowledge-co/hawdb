@@ -389,7 +389,7 @@ pub(crate) fn render_wal_records_for_test(path: &Path) -> std::io::Result<String
     loop {
         match cursor.next().map_err(|error| invalid(error.to_string()))? {
             WalCursorEvent::Entry { entry, .. } => {
-                out.push_str(&entry.encode());
+                out.push_str(&entry.encode().map_err(|error| invalid(error.to_string()))?);
                 out.push('\n');
             }
             WalCursorEvent::Corrupt { offset, reason } => {
@@ -6327,6 +6327,52 @@ mod tests {
         assert!(store
             .relationships
             .shares_storage_with(&snapshot.relationships));
+    }
+
+    #[test]
+    fn wal_append_handle_is_reused_and_rotated_with_its_generation() {
+        let path = unique_test_dir("wal_append_handle_cache");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        assert!(durable.wal_append_file.is_none());
+        assert_eq!(durable.wal_append_open_count, 0);
+
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        let durable = store.durable.as_ref().unwrap();
+        assert!(durable.wal_append_file.is_some());
+        assert_eq!(durable.wal_append_open_count, 1);
+        let checkpoint_source = store.checkpoint_source();
+        assert!(checkpoint_source
+            .durable
+            .as_ref()
+            .unwrap()
+            .wal_append_file
+            .is_none());
+        drop(checkpoint_source);
+
+        store.checkpoint(&catalog).unwrap();
+        assert!(store.durable.as_ref().unwrap().wal_append_file.is_none());
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        assert!(durable.wal_append_file.is_some());
+        assert_eq!(durable.wal_append_open_count, 2);
+        drop(store);
+
+        let mut reopened = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(reopened.durable.as_ref().unwrap().wal_append_open_count, 0);
+        reopened
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(4))]))
+            .unwrap();
+        assert_eq!(reopened.durable.as_ref().unwrap().wal_append_open_count, 1);
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

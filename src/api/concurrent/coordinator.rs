@@ -257,7 +257,7 @@ impl CommitSequencer {
                 );
                 for (_, result) in completed.iter_mut() {
                     if result.is_ok() {
-                        *result = Err(SkeinError::Storage(message.clone()));
+                        *result = Err(SkeinError::StorageIntegrity(message.clone()));
                     }
                 }
                 Default::default()
