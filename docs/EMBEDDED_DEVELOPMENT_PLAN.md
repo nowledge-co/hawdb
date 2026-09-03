@@ -331,10 +331,13 @@ not to copy Skein source files into the Nowledge Mem tree; adapter code in
 Nowledge Mem should depend on that submodule boundary during shadowing and
 cutover.
 The embedded front door now includes a bounded exact physical-plan LFU cache for
-literal and parameterized query/explain paths. Cache keys include Cypher text,
-bound parameter values, graph commit epoch, and optimizer group budget; any
-mutation, schema/index change, or statistics epoch change naturally misses
-instead of reusing a stale physical plan. This is intentionally not yet a
+literal and parameterized query/explain paths. Expected-constant-time lookup
+uses a hash key over semantically normalized Cypher, the parameter plan shape,
+the optimizer environment, optimizer group budget, and access-control policy.
+The normalization ignores whitespace, keyword case, and trailing semicolons but
+preserves identifiers, parameter names, and literal values that can change the
+physical plan. Schema/index or published-statistics generation changes naturally
+miss instead of reusing a stale physical plan. This is intentionally not yet a
 cross-parameter prepared-plan cache because the current logical plan stores
 bound `Value`s. Plan-cache stats also distinguish cache hits, misses,
 admissions, disabled-capacity misses, explicit bypasses, evictions, and
