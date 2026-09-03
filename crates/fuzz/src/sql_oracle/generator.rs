@@ -177,7 +177,9 @@ pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) ->
     setup.extend(join_indexes(index_profile));
 
     let specification = sql_query_spec(seed, index);
-    let rewrite_kind = PredicateRewriteKind::for_case(index + index / SQL_QUERY_SHAPE_COUNT);
+    let rewrite_kind = PredicateRewriteKind::for_case(
+        index % SQL_QUERY_SHAPE_COUNT + index / SQL_QUERY_SHAPE_COUNT,
+    );
     SqlFuzzCase {
         seed,
         shape: specification.name.to_string(),
@@ -616,6 +618,32 @@ impl SqlQuerySpec {
                     self.query(self.projection, Some(&rewritten), parameters),
                 )
             }
+            PredicateRewriteKind::ConjunctionAbsorption
+            | PredicateRewriteKind::DisjunctionAbsorption => {
+                let secondary = shift_positional_parameters(
+                    &self.null_predicate,
+                    self.predicate_parameters.len(),
+                );
+                let rewritten = match kind {
+                    PredicateRewriteKind::ConjunctionAbsorption => {
+                        format!("({0}) AND (({0}) OR ({secondary}))", self.predicate)
+                    }
+                    PredicateRewriteKind::DisjunctionAbsorption => {
+                        format!("({0}) OR (({0}) AND ({secondary}))", self.predicate)
+                    }
+                    _ => unreachable!("matched predicate absorption variants"),
+                };
+                let mut parameters = self.predicate_parameters.clone();
+                parameters.extend(self.null_parameters.clone());
+                (
+                    self.query(
+                        self.projection,
+                        Some(&self.predicate),
+                        self.predicate_parameters.clone(),
+                    ),
+                    self.query(self.projection, Some(&rewritten), parameters),
+                )
+            }
         };
 
         SqlPredicateRewriteCase {
@@ -778,6 +806,5 @@ mod tests {
         );
         assert_eq!(shift_positional_parameters("$1 = $10", 3), "$4 = $13");
         assert_eq!(shift_positional_parameters("café = $1", 1), "café = $2");
-        assert_eq!(crate::predicate_rewrite::PREDICATE_REWRITE_SHAPES.len(), 4);
     }
 }

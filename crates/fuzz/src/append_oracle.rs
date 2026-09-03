@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "skein-append-state-machine-fuzz-v2";
+pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "skein-append-state-machine-fuzz-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRow {

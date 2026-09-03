@@ -603,6 +603,32 @@ impl GraphTlpBuilder {
                     query(self.projection, Some(&rewritten)),
                 )
             }
+            PredicateRewriteKind::ConjunctionAbsorption => (
+                query(self.projection, Some(&predicate)),
+                query(
+                    self.projection,
+                    Some(&GeneratedPredicate::And(
+                        Box::new(predicate.clone()),
+                        Box::new(GeneratedPredicate::Or(
+                            Box::new(predicate.clone()),
+                            Box::new(GeneratedPredicate::IsNull(predicate.property())),
+                        )),
+                    )),
+                ),
+            ),
+            PredicateRewriteKind::DisjunctionAbsorption => (
+                query(self.projection, Some(&predicate)),
+                query(
+                    self.projection,
+                    Some(&GeneratedPredicate::Or(
+                        Box::new(predicate.clone()),
+                        Box::new(GeneratedPredicate::And(
+                            Box::new(predicate.clone()),
+                            Box::new(GeneratedPredicate::IsNull(predicate.property())),
+                        )),
+                    )),
+                ),
+            ),
         };
 
         GeneratedGraphTlpCases {

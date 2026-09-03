@@ -4,7 +4,7 @@ use skein::{
     RelationalKey, RelationalRow, RelationalScalarType, RelationalValue, SearchDocument,
     SearchIndex, SearchMode, Value, ValueRef,
 };
-use skein_fuzz::{emit_fuzz_report, DEFAULT_FUZZ_LOG_DIRECTORY};
+use skein_fuzz::{compiled_capabilities_json, emit_fuzz_report, DEFAULT_FUZZ_LOG_DIRECTORY};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -53,6 +53,7 @@ fn run() -> Result<bool, String> {
 
     let report = json!({
         "protocol": PROTOCOL,
+        "compiled_capabilities": compiled_capabilities_json(),
         "seed": options.seed,
         "requested_case_count": cases.len(),
         "failed_case_count": cases.iter().filter(|case| case["success"] == false).count(),

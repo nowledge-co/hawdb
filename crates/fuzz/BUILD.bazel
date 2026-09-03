@@ -3,16 +3,28 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+_SKEIN_FUZZ_DEFAULT_FEATURES = [
+    "background-maintenance",
+    "full-text-search",
+    "graph-analytics",
+    "vector-search",
+]
+
 rust_library(
     name = "skein_fuzz",
     crate_name = "skein_fuzz",
     crate_root = "src/lib.rs",
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = ["src/append_main.rs", "src/main.rs", "src/storage_main.rs"],
+        exclude = [
+            "src/append_main.rs",
+            "src/main.rs",
+            "src/storage_main.rs",
+        ],
     ),
     edition = "2024",
     aliases = aliases(),
+    crate_features = _SKEIN_FUZZ_DEFAULT_FEATURES,
     deps = all_crate_deps(normal = True) + ["//:skein"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -34,6 +46,7 @@ rust_test(
     crate = ":skein_fuzz",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    crate_features = _SKEIN_FUZZ_DEFAULT_FEATURES,
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
@@ -49,6 +62,7 @@ rust_test(
         crate = ":skein_fuzz",
         edition = "2024",
         aliases = aliases(normal_dev = True, proc_macro_dev = True),
+        crate_features = _SKEIN_FUZZ_DEFAULT_FEATURES,
         deps = all_crate_deps(normal_dev = True),
         proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     )

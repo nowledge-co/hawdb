@@ -1,8 +1,10 @@
-pub(crate) const PREDICATE_REWRITE_SHAPES: [&str; 4] = [
+pub(crate) const PREDICATE_REWRITE_SHAPES: [&str; 6] = [
     "double_negation",
     "conjunction_idempotence",
     "disjunction_idempotence",
     "null_totality",
+    "conjunction_absorption",
+    "disjunction_absorption",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +13,8 @@ pub(crate) enum PredicateRewriteKind {
     ConjunctionIdempotence,
     DisjunctionIdempotence,
     NullTotality,
+    ConjunctionAbsorption,
+    DisjunctionAbsorption,
 }
 
 impl PredicateRewriteKind {
@@ -19,7 +23,9 @@ impl PredicateRewriteKind {
             0 => Self::DoubleNegation,
             1 => Self::ConjunctionIdempotence,
             2 => Self::DisjunctionIdempotence,
-            _ => Self::NullTotality,
+            3 => Self::NullTotality,
+            4 => Self::ConjunctionAbsorption,
+            _ => Self::DisjunctionAbsorption,
         }
     }
 
@@ -29,6 +35,8 @@ impl PredicateRewriteKind {
             Self::ConjunctionIdempotence => PREDICATE_REWRITE_SHAPES[1],
             Self::DisjunctionIdempotence => PREDICATE_REWRITE_SHAPES[2],
             Self::NullTotality => PREDICATE_REWRITE_SHAPES[3],
+            Self::ConjunctionAbsorption => PREDICATE_REWRITE_SHAPES[4],
+            Self::DisjunctionAbsorption => PREDICATE_REWRITE_SHAPES[5],
         }
     }
 }
@@ -44,6 +52,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(observed, PREDICATE_REWRITE_SHAPES);
-        assert_eq!(PredicateRewriteKind::for_case(4).as_str(), observed[0]);
+        assert_eq!(PredicateRewriteKind::for_case(6).as_str(), observed[0]);
     }
 }
