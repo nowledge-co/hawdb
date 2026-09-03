@@ -304,7 +304,7 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
 }
 
 #[test]
-fn optimizer_uses_advanced_statistics_only_at_the_current_graph_epoch() {
+fn optimizer_retains_complete_advanced_statistics_after_graph_epoch_advances() {
     let path = unique_test_dir("optimizer_advanced_statistics_freshness");
     let spill_root = path.join("statistics-spill");
     let config = DatabaseConfig {
@@ -312,9 +312,14 @@ fn optimizer_uses_advanced_statistics_only_at_the_current_graph_epoch() {
         segment_cache_capacity_bytes: 1024 * 1024,
         ..DatabaseConfig::default()
     };
-    let mut db = Database::open_with_config(&path, config).unwrap();
-    db.query("CREATE (:Memory {id: 1})-[:MENTIONS {weight: 1}]->(:Entity {id: 2})")
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    for id in 0..16 {
+        db.query(&format!(
+            "CREATE (:Memory {{id: {id}}})-[:MENTIONS {{weight: 1}}]->(:Entity {{id: {}}})",
+            id + 100
+        ))
         .unwrap();
+    }
     db.checkpoint().unwrap();
     db.refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
         memory_budget_bytes: 4096,
@@ -336,11 +341,11 @@ fn optimizer_uses_advanced_statistics_only_at_the_current_graph_epoch() {
     }));
     assert!(fresh.trace.decisions.iter().any(|decision| {
         decision.contains("estimate AdjacencyExpand")
-            && decision.contains("path_count=1")
-            && decision.contains("hop_rows=[1:exact:1]")
+            && decision.contains("path_count=16")
+            && decision.contains("hop_rows=[1:exact:16]")
     }));
 
-    db.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 2")
+    db.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 0 SET r.weight = 2")
         .unwrap();
     let stale = db
         .explain_query("MATCH (m:Memory)-[:MENTIONS*1..1]->(e:Entity) RETURN e.id AS id")
@@ -348,11 +353,83 @@ fn optimizer_uses_advanced_statistics_only_at_the_current_graph_epoch() {
     assert!(stale.trace.decisions.iter().any(|decision| {
         decision.starts_with("optimizer advanced statistics freshness:")
             && decision.contains("status=stale")
+            && decision.contains("usable=true")
     }));
     assert!(stale.trace.decisions.iter().any(|decision| {
         decision.contains("estimate AdjacencyExpand")
-            && decision.contains("path_count=unknown")
-            && decision.contains("hop_rows=[1:fallback:1]")
+            && decision.contains("path_count=16")
+            && decision.contains("hop_rows=[1:exact:16]")
+    }));
+
+    db.checkpoint().unwrap();
+    drop(db);
+    let reopened = Database::open_with_config(&path, config).unwrap();
+    let recovered = reopened
+        .explain_query("MATCH (m:Memory)-[:MENTIONS*1..1]->(e:Entity) RETURN e.id AS recovered_id")
+        .unwrap();
+    assert!(recovered.trace.decisions.iter().any(|decision| {
+        decision.starts_with("optimizer advanced statistics freshness:")
+            && decision.contains("status=stale")
+            && decision.contains("usable=true")
+    }));
+    assert!(recovered.trace.decisions.iter().any(|decision| {
+        decision.contains("estimate AdjacencyExpand")
+            && decision.contains("path_count=16")
+            && decision.contains("hop_rows=[1:exact:16]")
+    }));
+
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn stale_advanced_statistics_keep_selective_index_plans_after_unrelated_writes() {
+    let path = unique_test_dir("optimizer_stale_statistics_index_plan");
+    let spill_root = path.join("statistics-spill");
+    let config = DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    for id in 0..100 {
+        db.query(&format!("CREATE (:Memory {{id: {id}, created_at: {id}}})"))
+            .unwrap();
+    }
+    db.query("CREATE INDEX ON :Memory(created_at)").unwrap();
+    db.checkpoint().unwrap();
+    db.refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
+        memory_budget_bytes: 64 * 1024,
+        max_spill_bytes: 1024 * 1024,
+        max_spill_runs: 64,
+        max_input_records: 1_000,
+        max_generated_facts: 10_000,
+        max_path_expansions: 1_000,
+        spill_directory: spill_root,
+    })
+    .unwrap();
+
+    let fresh = db
+        .explain_query("MATCH (m:Memory) WHERE m.created_at = 99 RETURN m.id AS fresh_memory_id")
+        .unwrap();
+    assert!(fresh.physical_plan.explain(0).contains("IndexNodeSeek"));
+    assert!(fresh.trace.decisions.iter().any(|decision| {
+        decision.contains("choose IndexNodeSeek") && decision.contains("distinct_count=100")
+    }));
+
+    db.query("MATCH (m:Memory) WHERE m.id = 0 SET m.note = 'updated'")
+        .unwrap();
+    let stale = db
+        .explain_query("MATCH (m:Memory) WHERE m.created_at = 99 RETURN m.id AS stale_memory_id")
+        .unwrap();
+    assert!(stale.trace.decisions.iter().any(|decision| {
+        decision.starts_with("optimizer advanced statistics freshness:")
+            && decision.contains("status=stale")
+            && decision.contains("usable=true")
+    }));
+    assert!(stale.physical_plan.explain(0).contains("IndexNodeSeek"));
+    assert!(stale.trace.decisions.iter().any(|decision| {
+        decision.contains("choose IndexNodeSeek") && decision.contains("distinct_count=100")
     }));
 
     drop(db);

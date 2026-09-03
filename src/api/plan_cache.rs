@@ -352,11 +352,12 @@ impl OptimizerPlanningCache {
             .expect("optimizer statistics exist after refresh check");
         let freshness = statistics.advanced_statistics_freshness(store.commit_epoch());
         decisions.push(format!(
-            "optimizer advanced statistics freshness: status={} statistics_epoch={} graph_commit_epoch={} commit_lag={}",
+            "optimizer advanced statistics freshness: status={} statistics_epoch={} graph_commit_epoch={} commit_lag={} usable={}",
             freshness.as_str(),
             statistics.computed_at_commit_epoch,
             store.commit_epoch(),
-            statistics.advanced_statistics_commit_lag(store.commit_epoch())
+            statistics.advanced_statistics_commit_lag(store.commit_epoch()),
+            statistics.advanced_statistics_complete
         ));
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
@@ -379,7 +380,7 @@ impl OptimizerPlanningCache {
             };
         }
 
-        let optimized = Arc::new(optimizer_catalog(catalog, statistics, store.commit_epoch()));
+        let optimized = Arc::new(optimizer_catalog(catalog, statistics));
         decisions.push(format!(
             "optimizer catalog cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
             statistics.computed_at_commit_epoch,

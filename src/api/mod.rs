@@ -14,9 +14,7 @@ use crate::qos::{
 };
 #[cfg(test)]
 use crate::schema::LabelId;
-use crate::schema::{
-    AdvancedStatisticsFreshness, Catalog, GraphStatistics, IndexKind, SchemaObjectState,
-};
+use crate::schema::{Catalog, GraphStatistics, IndexKind, SchemaObjectState};
 #[cfg(test)]
 use crate::schema::{
     CompositeIndexDescriptor, ConstraintDescriptor, IndexDescriptor, PropertyDescriptor,
@@ -18894,13 +18892,12 @@ impl Drop for ReaderPin {
     }
 }
 
-fn optimizer_catalog(
-    catalog: &Catalog,
-    statistics: &GraphStatistics,
-    graph_commit_epoch: u64,
-) -> OptimizerCatalog {
-    let advanced_statistics = (statistics.advanced_statistics_freshness(graph_commit_epoch)
-        == AdvancedStatisticsFreshness::Fresh)
+fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> OptimizerCatalog {
+    // Advanced statistics are cost hints, not execution preconditions. Keep a complete
+    // snapshot usable while background refresh catches up: GraphStore overlays current basic
+    // counts, and index samples enforce their own update budget.
+    let advanced_statistics = statistics
+        .advanced_statistics_complete
         .then_some(statistics);
     let equality_property_indexes = catalog.property_indexes().filter_map(|index| {
         if index.kind != IndexKind::Equality {
