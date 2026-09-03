@@ -11237,7 +11237,7 @@ mod tests {
         entries.last_mut().unwrap().lsn += 1;
         let mut rewritten = super::encode_binary_wal_header(generation, start_lsn);
         for (index, entry) in entries.iter().enumerate() {
-            let payload = super::encode_binary_wal_record(entry, index as u64 + 1);
+            let payload = super::encode_binary_wal_record(entry, index as u64 + 1).unwrap();
             let position = rewritten.len() as u64 - super::WAL_BINARY_FILE_HEADER_BYTES as u64;
             rewritten.extend_from_slice(&super::frame_binary_wal_record(
                 generation, &payload, position,
@@ -11252,6 +11252,47 @@ mod tests {
             std::fs::read_dir(path.join("quarantine")).unwrap().count(),
             1
         );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn mutation_rejects_over_depth_value_before_wal_append() {
+        fn value_at_depth(depth: usize) -> Value {
+            assert!(depth > 0);
+            (1..depth).fold(Value::Null, |value, _| Value::List(vec![value]))
+        }
+
+        let path = unique_test_dir("wal_value_depth_admission");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let accepted_id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("payload", value_at_depth(32))]),
+            )
+            .unwrap();
+        let commit_epoch = store.commit_epoch();
+        let wal_path = active_wal_path(&path);
+        let wal_len = std::fs::metadata(&wal_path).unwrap().len();
+
+        let error = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("payload", value_at_depth(33))]),
+            )
+            .unwrap_err();
+        assert!(matches!(error, SkeinError::Semantic(_)));
+        assert!(error.to_string().contains("nesting exceeds 32"));
+        assert_eq!(store.commit_epoch(), commit_epoch);
+        assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), wal_len);
+
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        let mut reopened_catalog = Catalog::default();
+        let reopened = GraphStore::open(&path, &mut reopened_catalog).unwrap();
+        assert!(reopened.node_owned(accepted_id).unwrap().is_some());
         std::fs::remove_dir_all(path).unwrap();
     }
 

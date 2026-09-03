@@ -310,6 +310,33 @@ pub enum WalOp {
     Batch(Vec<WalOp>),
 }
 
+/// Validates graph property values before they enter the WAL or live state.
+pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
+    for op in ops {
+        match op {
+            WalOp::CreateNode { properties, .. } | WalOp::CreateRelationship { properties, .. } => {
+                for value in properties.values() {
+                    validate_wal_value(value)?;
+                }
+            }
+            WalOp::SetNodeProperty { value, .. } | WalOp::SetRelationshipProperty { value, .. } => {
+                validate_wal_value(value)?;
+            }
+            WalOp::Batch(ops) => validate_wal_op_values(ops)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_wal_value(value: &Value) -> Result<()> {
+    crate::canonical::validate_property_value(value).map_err(|error| {
+        SkeinError::Storage(format!(
+            "WAL value violates canonical storage limits: {error}"
+        ))
+    })
+}
+
 impl WalEntry {
     #[doc(hidden)]
     pub fn encode(&self) -> String {
