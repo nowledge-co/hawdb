@@ -7,6 +7,17 @@ not replace the representative-replica qualification protocol.
 
 ## Modes
 
+The micro mode isolates the typed `Int64` and `Float64` comparison kernels and
+checks both results against row evaluation:
+
+```bash
+SKEIN_EXECUTOR_BENCH_MODE=micro \
+  cargo bench --bench executor_vectorization
+```
+
+This is a local code-generation and latency diagnostic, not end-to-end
+performance evidence.
+
 The scheduler mode measures bounded ordered morsel scheduling without graph
 storage or result projection:
 
