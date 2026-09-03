@@ -873,9 +873,14 @@ remains rebuildable.
 Persistent checkpoints also publish a generation-bound segmented lexical
 projection. Its immutable posting and document-length blocks are built with a
 bounded external sort and queried through bounded term streams. The persisted
-fallible path computes candidate-scoped BM25 statistics after metadata and ACL
-filtering, merges a bounded mutation mini-delta, and uses streaming TopK for a
-text page window or hybrid rank window. Declared corruption fails closed.
+fallible path uses the immutable manifest's unfiltered document count and
+average document length for BM25 normalization, while metadata and ACL filters
+still scope exact term document frequency and scored candidates. This v1
+approximation avoids decoding every document-length block for each filtered or
+mini-delta query. An empty base projection derives its initial normalization
+statistics from the bounded mini-delta. The scorer merges that mini-delta and
+uses streaming TopK for a text page window or hybrid rank window. Declared
+corruption fails closed.
 
 The larger-than-memory read owner is `SearchOutOfCoreReader`, not the mutable
 compatibility `SearchIndex`. Checkpoint publishes generation-named descriptor,
@@ -932,9 +937,12 @@ large-value blob spans. Callers that need bounded candidate growth can use
 candidates participate in RRF while still reporting each child's total candidate
 count. The same options also carry
 exact-match metadata filters such as `kind` or `source_id`; filters are applied
-before vector scoring, BM25 corpus statistics, retriever candidate counts, and
-final truncation so scoped retrieval does not leak unscoped candidates into
-ranking diagnostics. `SearchResultSet::candidate_set` reports the exact
+before vector scoring, BM25 term statistics and candidate scoring, retriever
+candidate counts, and final truncation so scoped retrieval does not leak
+unscoped candidates into ranking diagnostics. Segmented BM25 normalization is
+the documented exception: it uses the unfiltered immutable manifest statistics
+to keep query I/O independent of corpus size. `SearchResultSet::candidate_set`
+reports the exact
 projection-local pre-filter set using stable document IDs, including id-space,
 representation, cardinality, filtered-out count, exactness, the metadata
 filters that produced it, the source graph snapshot commit epoch when the

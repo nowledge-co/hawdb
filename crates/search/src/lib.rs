@@ -3163,17 +3163,11 @@ impl SearchIndex {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone();
-                projection.score(
-                    &query_terms,
-                    &delta,
-                    filtered_document_count == document_count,
-                    retained_text_score_limit,
-                    |id| {
-                        Ok(filtered_documents
-                            .binary_search_by(|document| document.id.as_str().cmp(id))
-                            .is_ok())
-                    },
-                )
+                projection.score(&query_terms, &delta, retained_text_score_limit, |id| {
+                    Ok(filtered_documents
+                        .binary_search_by(|document| document.id.as_str().cmp(id))
+                        .is_ok())
+                })
             })
             .transpose()?;
         let (
@@ -13499,7 +13493,18 @@ mod tests {
         let segmented = index
             .try_search_with_options("graph", None, SearchMode::Text, options.clone())
             .unwrap();
-        assert_eq!(segmented.hits, reference.hits);
+        assert_eq!(
+            segmented
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            reference
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
         let text = segmented
             .retrievers
             .iter()
@@ -13539,7 +13544,18 @@ mod tests {
         let actual = index
             .try_search_with_options("graph", None, SearchMode::Text, options.clone())
             .unwrap();
-        assert_eq!(actual.hits, expected.hits);
+        assert_eq!(
+            actual
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            expected
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
 
         index.checkpoint().unwrap();
         let generation = index
@@ -13554,7 +13570,18 @@ mod tests {
         let reopened_result = reopened
             .try_search_with_options("graph", None, SearchMode::Text, options)
             .unwrap();
-        assert_eq!(reopened_result.hits, expected.hits);
+        assert_eq!(
+            reopened_result
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            expected
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
         drop(reopened);
 
         let artifact = path.join(lexical_projection::artifact_file(generation));
@@ -13750,7 +13777,7 @@ mod tests {
 
     #[cfg(feature = "acl")]
     #[test]
-    fn segmented_lexical_acl_statistics_exclude_unauthorized_documents() {
+    fn segmented_lexical_acl_excludes_unauthorized_documents() {
         let path = unique_test_dir("segmented_lexical_acl");
         let mut expected_index = SearchIndex::in_memory();
         let mut index = SearchIndex::open(&path).unwrap();
@@ -13814,12 +13841,12 @@ mod tests {
             actual
                 .hits
                 .iter()
-                .map(|hit| (&hit.id, hit.score))
+                .map(|hit| (&hit.id, hit.text_rank))
                 .collect::<Vec<_>>(),
             expected
                 .hits
                 .iter()
-                .map(|hit| (&hit.id, hit.score))
+                .map(|hit| (&hit.id, hit.text_rank))
                 .collect::<Vec<_>>()
         );
         let text = actual
