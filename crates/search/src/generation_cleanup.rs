@@ -248,6 +248,7 @@ struct CleanupCandidate {
     name: String,
     kind: CleanupArtifactKind,
     generation: u64,
+    quarantined: bool,
 }
 
 impl CleanupCandidate {
@@ -260,30 +261,40 @@ impl CleanupCandidate {
             "search_projection_out_of_core_layout.",
             "search_lexical.manifest.",
         ];
-        if let Some(generation) = parse_generation(&name, "search_lexical.") {
+        let (artifact_name, quarantined) = match quarantined_artifact_name(&name) {
+            Some(artifact_name) => (artifact_name, true),
+            None => (name.as_str(), false),
+        };
+        if let Some(generation) = parse_generation(artifact_name, "search_lexical.") {
             return Some(Self {
                 name,
                 kind: CleanupArtifactKind::Lexical,
                 generation,
+                quarantined,
             });
         }
-        if let Some(generation) = parse_generation(&name, "search_rabitq.") {
+        if let Some(generation) = parse_generation(artifact_name, "search_rabitq.") {
             return Some(Self {
                 name,
                 kind: CleanupArtifactKind::RaBitQ,
                 generation,
+                quarantined,
             });
         }
         OUT_OF_CORE_PREFIXES.iter().find_map(|prefix| {
-            parse_generation(&name, prefix).map(|generation| Self {
+            parse_generation(artifact_name, prefix).map(|generation| Self {
                 name: name.clone(),
                 kind: CleanupArtifactKind::OutOfCore,
                 generation,
+                quarantined,
             })
         })
     }
 
     fn is_obsolete(&self, generations: SearchProjectionGenerations) -> bool {
+        if self.quarantined {
+            return true;
+        }
         match self.kind {
             CleanupArtifactKind::Lexical => {
                 older_than_previous(self.generation, generations.lexical)
@@ -295,6 +306,17 @@ impl CleanupCandidate {
             CleanupArtifactKind::RaBitQ => older_than_previous(self.generation, generations.rabitq),
         }
     }
+}
+
+fn quarantined_artifact_name(name: &str) -> Option<&str> {
+    let (artifact_name, quarantine_id) = name.split_once(".corrupt.")?;
+    let mut parts = quarantine_id.split('.');
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(artifact_name)
 }
 
 fn process_candidate<F>(

@@ -3,9 +3,9 @@ use crate::error::{Result, SkeinError};
 use skein_core::RuntimeTaskContext;
 use skein_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
-    ProjectionBuildReport, ProjectionBuilder, ProjectionIdentity, ProjectionManifest,
-    ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter, RaBitQBitWidth,
-    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
+    ProjectionBuildReport, ProjectionBuilder, ProjectionError, ProjectionIdentity,
+    ProjectionManifest, ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter,
+    RaBitQBitWidth, DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -83,6 +83,24 @@ pub struct RaBitQCandidateProjection {
 enum RaBitQCandidateProjectionStorage {
     InMemory(InMemoryProjection),
     File(FileProjection),
+}
+
+#[derive(Debug)]
+pub(crate) enum RaBitQCandidateProjectionLoadError {
+    Corrupt(SkeinError),
+    NotApplicable(SkeinError),
+}
+
+impl RaBitQCandidateProjectionLoadError {
+    pub(crate) const fn should_quarantine(&self) -> bool {
+        matches!(self, Self::Corrupt(_))
+    }
+
+    fn into_skein_error(self) -> SkeinError {
+        match self {
+            Self::Corrupt(error) | Self::NotApplicable(error) => error,
+        }
+    }
 }
 
 struct RaBitQDocumentIdMap {
@@ -167,29 +185,45 @@ impl RaBitQCandidateProjection {
         documents: &BTreeMap<String, SearchDocument>,
         expected_identity: &ProjectionIdentity,
     ) -> Result<Self> {
-        let projection = FileProjection::open(artifact_path).map_err(projection_error)?;
+        Self::load_from_path_classified(artifact_path, documents, expected_identity)
+            .map_err(RaBitQCandidateProjectionLoadError::into_skein_error)
+    }
+
+    pub(crate) fn load_from_path_classified(
+        artifact_path: impl AsRef<Path>,
+        documents: &BTreeMap<String, SearchDocument>,
+        expected_identity: &ProjectionIdentity,
+    ) -> std::result::Result<Self, RaBitQCandidateProjectionLoadError> {
+        let projection = FileProjection::open(artifact_path).map_err(classify_load_error)?;
         let Some(RaBitQDocumentIdMap {
             dimension,
             numeric_to_document_id,
             document_to_numeric_id,
-        }) = validate_and_map_documents(documents)?
+        }) = validate_and_map_documents(documents)
+            .map_err(RaBitQCandidateProjectionLoadError::NotApplicable)?
         else {
-            return Err(SkeinError::Storage(
-                "Skein RaBitQ projection exists without vector documents".to_string(),
+            return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
+                SkeinError::Storage(
+                    "Skein RaBitQ projection exists without vector documents".to_string(),
+                ),
             ));
         };
         let manifest = projection.manifest();
         if manifest.dimension != dimension {
-            return Err(SkeinError::Storage(format!(
-                "Skein RaBitQ projection dimension {} does not match search dimension {dimension}",
-                manifest.dimension
-            )));
+            return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
+                SkeinError::Storage(format!(
+                    "Skein RaBitQ projection dimension {} does not match search dimension {dimension}",
+                    manifest.dimension
+                )),
+            ));
         }
         if &manifest.identity != expected_identity {
-            return Err(SkeinError::Storage(format!(
-                "Skein RaBitQ projection identity {:?} does not match expected {:?}",
-                manifest.identity, expected_identity
-            )));
+            return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
+                SkeinError::Storage(format!(
+                    "Skein RaBitQ projection identity {:?} does not match expected {:?}",
+                    manifest.identity, expected_identity
+                )),
+            ));
         }
         let expected_digest =
             skein_vector_projection::source_digest(numeric_to_document_id.iter().map(
@@ -204,8 +238,11 @@ impl RaBitQCandidateProjection {
                 },
             ));
         if manifest.source_digest != expected_digest {
-            return Err(SkeinError::Storage(
-                "Skein RaBitQ projection source digest does not match search documents".to_string(),
+            return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
+                SkeinError::Storage(
+                    "Skein RaBitQ projection source digest does not match search documents"
+                        .to_string(),
+                ),
             ));
         }
         let build_report = projection.build_report();
@@ -418,6 +455,23 @@ fn stable_numeric_id(document_id: &str) -> u64 {
         hash = hash.wrapping_mul(NUMERIC_ID_PRIME);
     }
     hash
+}
+
+fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadError {
+    let corrupt = matches!(
+        &error,
+        ProjectionError::CorruptArtifact(_) | ProjectionError::Serialization(_)
+    ) || matches!(
+        &error,
+        ProjectionError::Io(error)
+            if matches!(error.kind(), std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof)
+    );
+    let error = projection_error(error);
+    if corrupt {
+        RaBitQCandidateProjectionLoadError::Corrupt(error)
+    } else {
+        RaBitQCandidateProjectionLoadError::NotApplicable(error)
+    }
 }
 
 fn projection_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
