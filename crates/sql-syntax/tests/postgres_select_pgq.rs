@@ -6,6 +6,7 @@
 use skein_sql_syntax::{
     parse_postgres_select, parse_postgres_statement, BinaryOperatorSyntax, ExpressionKindSyntax,
     PostgresFromItemSyntax, PostgresJoinKind, PostgresStatementSyntax, SyntaxErrorCode,
+    UnaryOperatorSyntax,
 };
 
 #[test]
@@ -166,6 +167,56 @@ fn builds_pratt_expression_trees_with_postgres_precedence() {
         right.kind,
         ExpressionKindSyntax::Binary {
             operator: BinaryOperatorSyntax::Multiply,
+            ..
+        }
+    ));
+
+    let comparison = parse_postgres_select("SELECT * FROM source WHERE NOT source.score = 1")
+        .expect("NOT comparison expression");
+    let ExpressionKindSyntax::Unary {
+        operator: UnaryOperatorSyntax::Not,
+        expression,
+    } = &comparison.selection.expect("WHERE predicate").kind
+    else {
+        panic!("NOT must be the comparison root");
+    };
+    assert!(matches!(
+        expression.kind,
+        ExpressionKindSyntax::Binary {
+            operator: BinaryOperatorSyntax::Equal,
+            ..
+        }
+    ));
+
+    let in_list = parse_postgres_select("SELECT * FROM source WHERE NOT source.score IN (1, 2)")
+        .expect("NOT IN-list expression");
+    let ExpressionKindSyntax::Unary {
+        operator: UnaryOperatorSyntax::Not,
+        expression,
+    } = &in_list.selection.expect("WHERE predicate").kind
+    else {
+        panic!("NOT must be the IN-list root");
+    };
+    assert!(matches!(
+        expression.kind,
+        ExpressionKindSyntax::InList { .. }
+    ));
+
+    let conjunction =
+        parse_postgres_select("SELECT * FROM source WHERE NOT source.deleted AND source.visible")
+            .expect("NOT conjunction expression");
+    let ExpressionKindSyntax::Binary {
+        left,
+        operator: BinaryOperatorSyntax::And,
+        ..
+    } = &conjunction.selection.expect("WHERE predicate").kind
+    else {
+        panic!("AND must be the conjunction root");
+    };
+    assert!(matches!(
+        left.kind,
+        ExpressionKindSyntax::Unary {
+            operator: UnaryOperatorSyntax::Not,
             ..
         }
     ));

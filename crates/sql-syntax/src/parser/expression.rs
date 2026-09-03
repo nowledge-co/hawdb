@@ -176,19 +176,22 @@ impl<'a> ExpressionParser<'a> {
     }
 
     fn parse_prefix(&mut self) -> Result<ExpressionSyntax, SyntaxError> {
+        const NOT_BINDING_POWER: u8 = 25;
+        const SIGN_BINDING_POWER: u8 = 65;
+
         let token = self.current();
         let unary = if self.consume_keyword("NOT") {
-            Some(UnaryOperatorSyntax::Not)
+            Some((UnaryOperatorSyntax::Not, NOT_BINDING_POWER))
         } else if self.consume_kind(TokenKind::Plus) {
-            Some(UnaryOperatorSyntax::Plus)
+            Some((UnaryOperatorSyntax::Plus, SIGN_BINDING_POWER))
         } else if self.consume_kind(TokenKind::Minus) {
-            Some(UnaryOperatorSyntax::Minus)
+            Some((UnaryOperatorSyntax::Minus, SIGN_BINDING_POWER))
         } else {
             None
         };
-        if let Some(operator) = unary {
+        if let Some((operator, binding_power)) = unary {
             self.enter_nesting(token.span)?;
-            let expression = self.parse_expression(65);
+            let expression = self.parse_expression(binding_power);
             self.nesting -= 1;
             let expression = expression?;
             return Ok(ExpressionSyntax {
