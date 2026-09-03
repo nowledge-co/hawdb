@@ -172,7 +172,7 @@ impl RuntimeResourceSnapshot {
 }
 
 impl IoConcurrencyBudget {
-    pub fn desktop_bound(_cpu: RuntimeResourceBudget) -> Self {
+    pub fn desktop_bound() -> Self {
         Self::desktop_bound_for_device(StorageDeviceProfile::default())
     }
 
@@ -191,7 +191,7 @@ impl IoConcurrencyBudget {
         Self::new(foreground, background)
     }
 
-    pub fn mobile_embedded(_cpu: RuntimeResourceBudget) -> Self {
+    pub fn mobile_embedded() -> Self {
         Self::mobile_embedded_for_device(StorageDeviceProfile::default())
     }
 
@@ -434,6 +434,12 @@ mod tests {
         let io = IoConcurrencyBudget::desktop_bound_for_device(device);
         assert_eq!(io.foreground_depth.get(), 12);
         assert_eq!(io.background_depth.get(), 3);
+
+        let default_ssd =
+            StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
+        let io = IoConcurrencyBudget::desktop_bound_for_device(default_ssd);
+        assert_eq!(io.foreground_depth.get(), 8);
+        assert_eq!(io.background_depth.get(), 2);
     }
 
     #[test]
@@ -448,18 +454,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_device_budget_is_not_derived_from_cpu_count() {
-        let low_cpu = RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None);
-        let high_cpu =
-            RuntimeResourceBudget::from_limits(NonZeroUsize::new(64).unwrap(), None, None);
-
+    fn unknown_device_budget_uses_conservative_defaults() {
         assert_eq!(
-            IoConcurrencyBudget::desktop_bound(low_cpu),
-            IoConcurrencyBudget::desktop_bound(high_cpu)
+            IoConcurrencyBudget::desktop_bound(),
+            IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::default())
         );
         assert_eq!(
-            IoConcurrencyBudget::mobile_embedded(low_cpu),
-            IoConcurrencyBudget::mobile_embedded(high_cpu)
+            IoConcurrencyBudget::mobile_embedded(),
+            IoConcurrencyBudget::mobile_embedded_for_device(StorageDeviceProfile::default())
         );
     }
 }
