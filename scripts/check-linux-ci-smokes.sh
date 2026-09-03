@@ -19,6 +19,7 @@ readonly -a benchmark_smokes=("$@")
 readonly optimizer_smoke="${benchmark_smokes[0]}"
 readonly optimizer_benchmark_group_size=6
 readonly final_optimizer_benchmark_group_start=$((1 + 2 * optimizer_benchmark_group_size))
+readonly wal_group_commit_benchmark_index=$((${#benchmark_smokes[@]} - 1))
 
 for executable in \
   "$skein_cli" \
@@ -684,7 +685,8 @@ case "$smoke" in
   optimizer_summary) run_optimizer_summary_smoke ;;
   optimizer_group_1) run_optimizer_benchmark_group_smoke 1 "$optimizer_benchmark_group_size" ;;
   optimizer_group_2) run_optimizer_benchmark_group_smoke "$((1 + optimizer_benchmark_group_size))" "$optimizer_benchmark_group_size" ;;
-  optimizer_group_3) run_optimizer_benchmark_group_smoke "$final_optimizer_benchmark_group_start" "$(( ${#benchmark_smokes[@]} - final_optimizer_benchmark_group_start ))" ;;
+  optimizer_group_3) run_optimizer_benchmark_group_smoke "$final_optimizer_benchmark_group_start" "$(( wal_group_commit_benchmark_index - final_optimizer_benchmark_group_start ))" ;;
+  wal_group_commit) run_optimizer_benchmark_group_smoke "$wal_group_commit_benchmark_index" 1 ;;
   fixture_contract) run_fixture_contract_smoke ;;
   storage_recovery) run_storage_recovery_smoke ;;
   background_maintenance) run_background_maintenance_smoke ;;
