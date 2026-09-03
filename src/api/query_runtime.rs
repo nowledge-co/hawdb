@@ -349,6 +349,7 @@ impl Database {
             statement,
             parameters,
             cache_mode,
+            PlanTraceMode::Template,
             PlanCacheContext {
                 catalog: &self.catalog,
                 store: &self.store,
@@ -662,7 +663,7 @@ impl Database {
         query_runtime_checkpoint(task_context)?;
         let work_request =
             query_work_request_for_statement(&self.system_variables, &explain.statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_explain_query_plan_with_access_control(
             cypher_text,
             &explain.statement,
             parameters,
