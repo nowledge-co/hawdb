@@ -6,7 +6,10 @@ use super::{
     SchemaTableKind, SetValueExpression, Statement, ValueExpression, VectorSearch, WithAliasFilter,
     WithAliasFilterExpression, WithAliasFilterOp,
 };
+use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use skein_core::Value;
+
+const EXCESSIVE_CYPHER_NESTING: usize = 100_000;
 
 #[test]
 fn parses_create_node() {
@@ -232,6 +235,67 @@ fn parses_variable_return_item() {
 fn parser_keeps_keyword_boundaries() {
     let error = parse("CREATEINDEX ON :Memory(id)").unwrap_err();
     assert!(error.to_string().contains("expected BEGIN"));
+}
+
+#[test]
+fn parser_rejects_input_over_the_byte_limit() {
+    let input = " ".repeat(MAX_CYPHER_INPUT_BYTES + 1);
+    let error = parse(&input).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Cypher input exceeds maximum length"),
+        "{error}"
+    );
+}
+
+#[test]
+fn parser_rejects_recursive_statement_nesting() {
+    let query = format!(
+        "{}MATCH (n) RETURN n",
+        "EXPLAIN ".repeat(EXCESSIVE_CYPHER_NESTING)
+    );
+    assert_parser_nesting_limit(&query);
+}
+
+#[test]
+fn parser_rejects_recursive_predicate_nesting() {
+    let query = format!(
+        "MATCH (n) WHERE {}n.id = 1{} RETURN n",
+        "(".repeat(EXCESSIVE_CYPHER_NESTING),
+        ")".repeat(EXCESSIVE_CYPHER_NESTING)
+    );
+    assert_parser_nesting_limit(&query);
+}
+
+#[test]
+fn parser_rejects_recursive_list_nesting() {
+    let query = format!(
+        "CREATE (:Memory {{values: {}0{}}})",
+        "[".repeat(EXCESSIVE_CYPHER_NESTING),
+        "]".repeat(EXCESSIVE_CYPHER_NESTING)
+    );
+    assert_parser_nesting_limit(&query);
+}
+
+#[test]
+fn parser_rejects_recursive_projection_nesting() {
+    let query = format!(
+        "MATCH (n) RETURN {}n.id{}",
+        "lower(".repeat(EXCESSIVE_CYPHER_NESTING),
+        ")".repeat(EXCESSIVE_CYPHER_NESTING)
+    );
+    assert_parser_nesting_limit(&query);
+}
+
+fn assert_parser_nesting_limit(query: &str) {
+    let error = parse(query).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Cypher parser nesting exceeds limit"),
+        "{error}"
+    );
 }
 
 #[test]

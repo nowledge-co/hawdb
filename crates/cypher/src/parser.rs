@@ -1,5 +1,5 @@
 use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
-use skein_core::Result;
+use skein_core::{Result, SkeinError};
 use std::time::Instant;
 
 mod cursor;
@@ -12,6 +12,13 @@ mod projection;
 mod query;
 mod scalar;
 
+pub(crate) const MAX_CYPHER_INPUT_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_CYPHER_PARSER_DEPTH: usize = 32;
+
+/// Parses one Cypher statement.
+///
+/// Input is limited to 16 MiB and recursive parser nesting is limited to 32
+/// entries. Inputs exceeding either limit return a parse error.
 pub fn parse(input: &str) -> Result<Statement> {
     parse_inner(input)
 }
@@ -41,6 +48,11 @@ pub fn parse_profiled(input: &str) -> ParseMeasurement {
 }
 
 fn parse_inner(input: &str) -> Result<Statement> {
+    if input.len() > MAX_CYPHER_INPUT_BYTES {
+        return Err(SkeinError::Parse(format!(
+            "Cypher input exceeds maximum length of {MAX_CYPHER_INPUT_BYTES} bytes"
+        )));
+    }
     let mut parser = Parser::new(input);
     let statement = parser.parse_statement()?;
     parser.consume_char(';');
@@ -83,6 +95,7 @@ pub(super) struct Parser<'a> {
     input: &'a str,
     pos: usize,
     anonymous_variable_id: usize,
+    recursion_depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -91,10 +104,15 @@ impl<'a> Parser<'a> {
             input,
             pos: 0,
             anonymous_variable_id: 0,
+            recursion_depth: 0,
         }
     }
 
     pub(super) fn parse_statement(&mut self) -> Result<Statement> {
+        self.with_recursion(|parser| parser.parse_statement_inner())
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Statement> {
         match self.parse_statement_dispatch()? {
             StatementDispatch::Begin => {
                 self.expect_keyword("TRANSACTION")?;
@@ -112,6 +130,21 @@ impl<'a> Parser<'a> {
             StatementDispatch::Commit => Ok(Statement::Commit),
             StatementDispatch::Rollback => Ok(Statement::Rollback),
         }
+    }
+
+    pub(super) fn with_recursion<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.recursion_depth >= MAX_CYPHER_PARSER_DEPTH {
+            return Err(self.error(&format!(
+                "Cypher parser nesting exceeds limit of {MAX_CYPHER_PARSER_DEPTH}"
+            )));
+        }
+        self.recursion_depth += 1;
+        let result = parse(self);
+        self.recursion_depth -= 1;
+        result
     }
 
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {

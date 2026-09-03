@@ -44,6 +44,10 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_property_predicate_atom(&mut self) -> Result<PropertyPredicate> {
+        self.with_recursion(|parser| parser.parse_property_predicate_atom_inner())
+    }
+
+    fn parse_property_predicate_atom_inner(&mut self) -> Result<PropertyPredicate> {
         self.skip_ws();
         if self.consume_keyword("NOT") {
             return Ok(PropertyPredicate::Not(Box::new(
