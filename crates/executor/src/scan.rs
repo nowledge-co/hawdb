@@ -124,7 +124,8 @@ pub fn stream_expand_binding(
     })?;
     let bound_target_id = binding.nodes.get(spec.target_variable).map(|node| node.id);
     let mut matched = false;
-    let control = if spec.rel_variable.is_some()
+    let control = if rel_type_id.is_none()
+        || spec.rel_variable.is_some()
         || !spec.rel_properties.is_empty()
         || filters.relationship_scan_filter.is_some()
         || spec.direction != RelationshipDirection::Outgoing
@@ -171,11 +172,16 @@ pub fn stream_expand_binding(
             },
         )?
     } else {
+        let Some(rel_type_id) = rel_type_id else {
+            return Err(SkeinError::Execution(
+                "typed bounded expand is missing a relationship type".to_string(),
+            ));
+        };
         visit_bounded_expand_targets(
             store,
             BoundedExpandSpec {
                 source: source.id,
-                rel_type_id: rel_type_id.expect("typed bounded expand checked by planner"),
+                rel_type_id,
                 target_label_ids,
                 min_hops: spec.min_hops,
                 max_hops: spec.max_hops,
