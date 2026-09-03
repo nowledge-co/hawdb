@@ -150,6 +150,7 @@ pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
+const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
@@ -6368,8 +6369,11 @@ fn document_tokens(
     document: &SearchDocument,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) -> Vec<String> {
-    let mut tokens = tokenize_list(&document.title, analyzer_lexicon);
-    tokens.extend(tokenize_list(&document.title, analyzer_lexicon));
+    let title_tokens = tokenize_list(&document.title, analyzer_lexicon);
+    let mut tokens = Vec::new();
+    for _ in 0..TITLE_TERM_FREQUENCY_WEIGHT {
+        tokens.extend(title_tokens.iter().cloned());
+    }
     tokens.extend(tokenize_list(&document.content, analyzer_lexicon));
     tokens.extend(searchable_metadata_tokens(document, analyzer_lexicon));
     tokens
@@ -8933,6 +8937,35 @@ mod tests {
         let hits = index.search("graph storage", None, SearchMode::Text, 10);
 
         assert_eq!(hits[0].id, "focused");
+        assert!(hits[0].text_score > hits[1].text_score);
+    }
+
+    #[test]
+    fn text_search_weights_title_terms_twice() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "title_match".to_string(),
+                title: "graph".to_string(),
+                content: "neutral".to_string(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "content_match".to_string(),
+                title: "neutral".to_string(),
+                content: "graph".to_string(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+
+        let hits = index.search("graph", None, SearchMode::Text, 10);
+
+        assert_eq!(hits[0].id, "title_match");
+        assert_eq!(hits[1].id, "content_match");
         assert!(hits[0].text_score > hits[1].text_score);
     }
 
