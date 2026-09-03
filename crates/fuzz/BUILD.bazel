@@ -19,6 +19,7 @@ rust_library(
         exclude = [
             "src/append_main.rs",
             "src/main.rs",
+            "src/parser_main.rs",
             "src/storage_main.rs",
         ],
     ),
@@ -81,6 +82,7 @@ test_suite(
         ":skein_fuzz_fast_tests",
         ":skein_fuzz_relational_join_rewrite_tests",
         ":skein_append_fuzz_cli_tests",
+        ":skein_parser_fuzz_cli_tests",
         ":skein_storage_fuzz_tests",
     ],
 )
@@ -130,6 +132,31 @@ rust_test(
     name = "skein_append_fuzz_cli_tests",
     crate_root = "src/append_main.rs",
     srcs = ["src/append_main.rs"],
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":skein_fuzz"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
+rust_binary(
+    name = "skein_parser_fuzz",
+    crate_root = "src/parser_main.rs",
+    srcs = ["src/parser_main.rs"],
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [":skein_fuzz"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_parser_fuzz_cli_tests",
+    crate_root = "src/parser_main.rs",
+    srcs = ["src/parser_main.rs"],
     edition = "2024",
     aliases = aliases(
         normal = True,

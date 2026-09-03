@@ -12,6 +12,7 @@ mod append_oracle;
 mod coverage;
 mod generator;
 mod output;
+mod parser_oracle;
 mod predicate_rewrite;
 mod query_ast;
 mod sql_oracle;
@@ -27,6 +28,10 @@ pub use output::{
     emit_fuzz_report, fuzz_current_report_path, read_fuzz_current_report,
     write_fuzz_current_report, FuzzReportPaths, DEFAULT_FUZZ_LOG_DIRECTORY,
     DEFAULT_FUZZ_PROGRESS_INTERVAL,
+};
+pub use parser_oracle::{
+    generate_parser_fuzz_case, parser_fuzz_seed_count, parser_input_fingerprint,
+    run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,

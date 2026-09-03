@@ -83,6 +83,18 @@ NoREC is intentionally deferred until the supported Cypher or SQL subset can exp
 row-wise `SUM(CASE WHEN predicate THEN 1 ELSE 0 END)` relation without adding a fuzz-only executor
 path.
 
+The parser byte campaign uses a corpus derived from the Cypher, relational SQL, and SQL/PGQ test
+suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions as exact seeds, then
+alternates arbitrary byte strings with deterministic byte mutations of the corpus. Every input is
+bounded and runs all four frontend entry points on an explicitly bounded worker stack. Parser
+acceptance and rejection are both valid; a panic or stack overflow fails the campaign. The stable
+seed and case index reproduce the exact bytes under `skein-parser-fuzz-v1`:
+
+```console
+make fuzz-parser FUZZ_SEED=7 FUZZ_CASES=256
+make fuzz-parser FUZZ_SEED=7 FUZZ_CASE_INDEX=19
+```
+
 The storage campaign mutates one bounded parser input in a generated graph and search fixture per
 case. A clean open or a typed storage error are both valid outcomes; a panic is a failure. Reports
 include the target artifact, mutation, case seed, and exact replay command:

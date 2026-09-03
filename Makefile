@@ -15,6 +15,7 @@ FUZZ_PRINT_REPORT ?=
 FUZZ_OPTIMIZER_ARGS ?=
 FUZZ_STORAGE_ARGS ?=
 FUZZ_APPEND_ARGS ?=
+FUZZ_PARSER_ARGS ?=
 
 FUZZ_CASES_ARG = $(if $(strip $(FUZZ_CASES)),--cases $(FUZZ_CASES),)
 FUZZ_CASE_INDEX_ARG = $(if $(strip $(FUZZ_CASE_INDEX)),--case-index $(FUZZ_CASE_INDEX),)
@@ -40,11 +41,12 @@ FUZZ_CAMPAIGN_EXECUTION_ARGS = $(strip \
 	fuzz-help \
 	fuzz-optimizer \
 	fuzz-optimizer-resume \
+	fuzz-parser \
 	fuzz-smoke \
 	fuzz-storage \
 	fuzz-test
 
-fuzz: fuzz-optimizer fuzz-storage fuzz-append
+fuzz: fuzz-optimizer fuzz-storage fuzz-append fuzz-parser
 
 fuzz-optimizer:
 	$(BAZEL) run //crates/fuzz:skein_optimizer_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
@@ -54,6 +56,9 @@ fuzz-optimizer-resume: fuzz-optimizer
 
 fuzz-storage:
 	$(BAZEL) run //crates/fuzz:skein_storage_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
+
+fuzz-parser:
+	$(BAZEL) run //crates/fuzz:skein_parser_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_PARSER_ARGS)
 
 fuzz-append:
 	$(BAZEL) run //crates/fuzz:skein_append_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
@@ -76,6 +81,7 @@ fuzz-help:
 		'  make fuzz                    Run all native fuzz campaigns.' \
 		'  make fuzz-optimizer          Run the optimizer/query campaign.' \
 		'  make fuzz-optimizer-resume   Resume the matching optimizer campaign.' \
+		'  make fuzz-parser             Run the frontend parser byte campaign.' \
 		'  make fuzz-storage            Run the storage corruption campaign.' \
 		'  make fuzz-append             Run the Strict Append state-machine campaign.' \
 		'  make fuzz-append-resume      Resume the matching Strict Append campaign.' \
@@ -88,4 +94,4 @@ fuzz-help:
 		'  FUZZ_SHARD_INDEX=0 FUZZ_SHARD_COUNT=4 FUZZ_PROGRESS_INTERVAL=16' \
 		'' \
 		'Advanced runner arguments:' \
-		'  FUZZ_OPTIMIZER_ARGS="..." FUZZ_STORAGE_ARGS="..." FUZZ_APPEND_ARGS="..."'
+		'  FUZZ_OPTIMIZER_ARGS="..." FUZZ_STORAGE_ARGS="..." FUZZ_APPEND_ARGS="..." FUZZ_PARSER_ARGS="..."'
