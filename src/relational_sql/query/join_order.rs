@@ -8,8 +8,8 @@ use super::{
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
-    RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
-    RelationalJoinPlanningStrategy,
+    resolve_relational_order_target, RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStrategy, RelationalOrderTarget,
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlJoin,
@@ -1255,8 +1255,20 @@ fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'
         && select
             .group_by
             .iter()
-            .chain(select.order_by.iter().map(|item| &item.column))
             .all(|column| resolve_column_binding(column, relations).is_some())
+        && select.order_by.iter().all(|item| {
+            resolve_relational_order_target(select, item).is_ok_and(|target| match target {
+                RelationalOrderTarget::InputColumn(column) => {
+                    resolve_column_binding(column, relations).is_some()
+                }
+                RelationalOrderTarget::ProjectionColumn { column, .. } => {
+                    resolve_column_binding(column, relations).is_some()
+                }
+                RelationalOrderTarget::ProjectionExpression { expression, .. } => {
+                    expression_columns_resolve(expression, relations)
+                }
+            })
+        })
 }
 
 fn expression_columns_resolve(expression: &SqlExpression, relations: &[BoundRelation<'_>]) -> bool {

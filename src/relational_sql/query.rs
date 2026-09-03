@@ -55,8 +55,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::PreparedRelationalSql;
-use super::RelationalSqlStageTimings;
+use super::{
+    resolve_relational_order_target, PreparedRelationalSql, RelationalOrderTarget,
+    RelationalSqlStageTimings,
+};
 use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
 mod columnar_aggregate;
@@ -1158,10 +1160,15 @@ struct PreparedRelationalExecutionDescriptor {
 }
 
 impl PreparedRelationalExecutionDescriptor {
-    fn prepare(select: &SelectStatement, access_plan: &PreparedRelationalAccessPlan) -> Self {
+    fn prepare(
+        select: &SelectStatement,
+        access_plan: &PreparedRelationalAccessPlan,
+    ) -> Result<Self> {
         let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+        let access_order_by = resolved_access_order_by(select)?;
         let ordered_index_projection = !select.order_by.is_empty()
-            && access_plan.base_access.descriptor.order_prefix_len == select.order_by.len()
+            && access_order_by.len() == select.order_by.len()
+            && access_plan.base_access.descriptor.order_prefix_len == access_order_by.len()
             && select.joins.is_empty()
             && !select.distinct
             && !has_aggregate
@@ -1169,7 +1176,7 @@ impl PreparedRelationalExecutionDescriptor {
             && predicate_is_covered_by_access(
                 select.selection.as_ref(),
                 &access_plan.base_access.descriptor,
-                &select.order_by,
+                &access_order_by,
                 &select.from.name,
                 select.from_alias.as_deref().unwrap_or(&select.from.name),
             );
@@ -1202,7 +1209,7 @@ impl PreparedRelationalExecutionDescriptor {
                 .as_ref()
                 .map_or(0, |tree| tree.root.materialized_right_count()),
         );
-        Self {
+        Ok(Self {
             mode,
             memory_shape: RelationalExecutionMemoryShape {
                 pipeline_batch_count: 1usize.saturating_add(
@@ -1213,7 +1220,7 @@ impl PreparedRelationalExecutionDescriptor {
                 ),
                 blocking_operator_count,
             },
-        }
+        })
     }
 
     fn admit<'state, 'runtime>(
@@ -1332,7 +1339,7 @@ impl PreparedRelationalSelect {
             }
         }
         if self.execution
-            != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)
+            != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)?
         {
             return Err(SkeinError::Execution(
                 "prepared relational SELECT has an inconsistent execution descriptor".to_string(),
@@ -1873,6 +1880,9 @@ fn prepare_relational_select(
                 )));
             }
         }
+        for item in &select.order_by {
+            resolve_relational_order_target(&select, item)?;
+        }
         Ok(())
     })?;
     let planned = join_order::plan_select_join_order(
@@ -1894,7 +1904,7 @@ fn prepare_relational_select(
     access_plan.finalize_physical_join_plan(&planned.statement, state, read_modes.index)?;
     access_plan.apply_physical_index_coverage(state, &field_plan)?;
     let execution =
-        PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
+        PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan)?;
     let prepare_nanos = elapsed_nanos(prepare_started);
     let prepared = PreparedRelationalSelect {
         statement: planned.statement,
@@ -1931,9 +1941,10 @@ fn prepare_syntax_access_plan(
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let prefer_ordered_access =
         select.joins.is_empty() && !select.distinct && !has_aggregate && select.group_by.is_empty();
+    let access_order_by = resolved_access_order_by(select)?;
     let base_access = choose_base_access(RelationalBaseAccessPlanning {
         predicate: select.selection.as_ref(),
-        order_by: &select.order_by,
+        order_by: &access_order_by,
         prefer_ordered_access,
         parameters,
         state,
@@ -1973,6 +1984,33 @@ fn prepare_syntax_access_plan(
     })
 }
 
+fn resolved_access_order_by(select: &SelectStatement) -> Result<Vec<crate::sql::SqlOrderItem>> {
+    let mut resolved = Vec::with_capacity(select.order_by.len());
+    let mut supports_ordered_access = true;
+    for item in &select.order_by {
+        let column = match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => Some(column),
+            RelationalOrderTarget::ProjectionColumn { column, .. } => Some(column),
+            RelationalOrderTarget::ProjectionExpression { .. } => {
+                supports_ordered_access = false;
+                None
+            }
+        };
+        if let Some(column) = column {
+            resolved.push(crate::sql::SqlOrderItem {
+                column: column.clone(),
+                direction: item.direction,
+                nulls: item.nulls,
+            });
+        }
+    }
+    Ok(if supports_ordered_access {
+        resolved
+    } else {
+        Vec::new()
+    })
+}
+
 fn prepared_access_descriptors(
     plan: &PreparedRelationalAccessPlan,
 ) -> (
@@ -2002,7 +2040,11 @@ fn plan_relational_field_plan(
 ) -> Result<RelationalFieldPlan> {
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let output_fields = plan_requested_fields(select, state)?;
-    let scan_fields = if (!select.order_by.is_empty() && !select.distinct && !has_aggregate)
+    let projects_before_order = order_by_uses_expression_alias(select)?;
+    let scan_fields = if (!select.order_by.is_empty()
+        && !select.distinct
+        && !has_aggregate
+        && !projects_before_order)
         || has_aggregate
         || !select.group_by.is_empty()
     {
@@ -5933,6 +5975,7 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     batch_rows: usize,
     batch_memory: NonZeroUsize,
     memory_ledger: &'pipeline QueryMemoryLedger,
+    add_order_keys: bool,
 }
 
 struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
@@ -6032,7 +6075,10 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.index_runtime,
             self.row_runtime,
             &mut |row| {
-                let projected = project_bound_row(&row, &self.select.projection)?;
+                let mut projected = project_bound_row(&row, &self.select.projection)?;
+                if self.add_order_keys {
+                    add_relational_order_keys(self.select, &row, &mut projected)?;
+                }
                 control = batch.push(ExecutorBinding::values(projected), emit)?;
                 if control == BatchControl::Continue && batch.is_full() {
                     control = batch.emit(emit)?;
@@ -6170,6 +6216,7 @@ fn execute_blocking_projection<'a>(
             batch_rows: memory.batch_rows.get(),
             batch_memory: memory.batch_payload_bytes,
             memory_ledger,
+            add_order_keys: false,
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
@@ -6244,6 +6291,45 @@ fn execute_blocking_projection<'a>(
                 },
             )?;
         }
+    } else if order_by_uses_expression_alias(select)? {
+        let mut projected = ProjectedBatchSource {
+            select,
+            parameters,
+            state,
+            base_schema,
+            base_qualifier,
+            base_access,
+            joins,
+            tree_execution,
+            pipeline,
+            index_runtime,
+            row_runtime,
+            batch_rows: memory.batch_rows.get(),
+            batch_memory: memory.batch_payload_bytes,
+            memory_ledger,
+            add_order_keys: true,
+        };
+        execute_relational_order(
+            &input_plan,
+            &mut projected,
+            select,
+            offset,
+            detection_limit,
+            &catalog,
+            memory,
+            memory_ledger,
+            task_context,
+            &observer,
+            &mut |batch| {
+                consume_projected_batch(
+                    batch,
+                    &mut output,
+                    &mut payload_bytes,
+                    detection_limit,
+                    limits,
+                )
+            },
+        )?;
     } else {
         let locator_layout = match tree_execution {
             Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
@@ -6277,8 +6363,15 @@ fn execute_blocking_projection<'a>(
                     .order_by
                     .iter()
                     .map(|item| {
+                        let column = match resolve_relational_order_target(select, item)? {
+                            RelationalOrderTarget::InputColumn(column) => column,
+                            RelationalOrderTarget::ProjectionColumn { column, .. } => column,
+                            RelationalOrderTarget::ProjectionExpression { .. } => unreachable!(
+                                "expression ORDER BY aliases use projected batch sorting"
+                            ),
+                        };
                         RelationalSortKey::new(
-                            resolve_column(&row, &item.column)?.clone(),
+                            resolve_column(&row, column)?.clone(),
                             item.direction,
                             item.nulls,
                         )
@@ -6409,6 +6502,43 @@ fn relational_sort_column(ordinal: usize) -> String {
     format!("{RELATIONAL_SORT_COLUMN_PREFIX}{ordinal}")
 }
 
+fn order_by_uses_expression_alias(select: &SelectStatement) -> Result<bool> {
+    select.order_by.iter().try_fold(false, |found, item| {
+        Ok(found
+            || matches!(
+                resolve_relational_order_target(select, item)?,
+                RelationalOrderTarget::ProjectionExpression { .. }
+            ))
+    })
+}
+
+fn add_relational_order_keys(
+    select: &SelectStatement,
+    row: &BoundRow<'_>,
+    projected: &mut Row,
+) -> Result<()> {
+    for (ordinal, item) in select.order_by.iter().enumerate() {
+        let value = match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => {
+                relational_sort_value(resolve_column(row, column)?)?
+            }
+            RelationalOrderTarget::ProjectionColumn { alias, .. }
+            | RelationalOrderTarget::ProjectionExpression { alias, .. } => {
+                projected.get(alias).cloned().ok_or_else(|| {
+                    SkeinError::Semantic(format!(
+                        "relational ORDER BY alias {alias} is not projected"
+                    ))
+                })?
+            }
+        };
+        projected.insert(
+            relational_sort_column(ordinal),
+            postgres_sort_key(value, item.direction, item.nulls),
+        );
+    }
+    Ok(())
+}
+
 fn strip_relational_sort_columns(row: &mut Row) {
     row.retain(|name, _| !name.starts_with(RELATIONAL_SORT_COLUMN_PREFIX));
 }
@@ -6450,23 +6580,31 @@ fn projected_order_columns(
         .order_by
         .iter()
         .map(|item| {
-            let output = select
-                .projection
-                .iter()
-                .find_map(|projection| match projection {
-                    SelectProjection::Wildcard => Some(item.column.name.clone()),
-                    SelectProjection::Column { name, alias }
-                        if name.name == item.column.name
-                            && item.column.qualifier.as_deref().is_none_or(|qualifier| {
-                                name.qualifier.as_deref() == Some(qualifier)
-                                    || select.from.name == qualifier
-                                    || select.from_alias.as_deref() == Some(qualifier)
-                            }) =>
-                    {
-                        Some(alias.clone().unwrap_or_else(|| name.name.clone()))
+            let output =
+                match resolve_relational_order_target(select, item)? {
+                    RelationalOrderTarget::ProjectionColumn { alias, .. }
+                    | RelationalOrderTarget::ProjectionExpression { alias, .. } => {
+                        Some(alias.to_string())
                     }
-                    SelectProjection::Column { .. } | SelectProjection::Expression { .. } => None,
-                });
+                    RelationalOrderTarget::InputColumn(column) => select
+                        .projection
+                        .iter()
+                        .find_map(|projection| match projection {
+                            SelectProjection::Wildcard => Some(column.name.clone()),
+                            SelectProjection::Column { name, alias }
+                                if name.name == column.name
+                                    && column.qualifier.as_deref().is_none_or(|qualifier| {
+                                        name.qualifier.as_deref() == Some(qualifier)
+                                            || select.from.name == qualifier
+                                            || select.from_alias.as_deref() == Some(qualifier)
+                                    }) =>
+                            {
+                                Some(alias.clone().unwrap_or_else(|| name.name.clone()))
+                            }
+                            SelectProjection::Column { .. }
+                            | SelectProjection::Expression { .. } => None,
+                        }),
+                };
             output.map(|output| (output, item.clone())).ok_or_else(|| {
                 SkeinError::Semantic(format!(
                     "SELECT DISTINCT requires ORDER BY column {} to appear in the projection",
@@ -9447,7 +9585,8 @@ mod tests {
         let mut access_plan = syntax_plan;
         access_plan.join_selection = None;
         access_plan.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
-        let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan);
+        let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan)
+            .expect("prepare relational execution descriptor");
         let prepared = PreparedRelationalSelect {
             statement: select,
             access_plan,
