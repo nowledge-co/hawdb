@@ -40,7 +40,7 @@ use skein_optimizer::{
     estimate_relational_access_cost, estimate_relational_join_cost,
     estimate_relational_probe_join_cost, select_relational_access_path, PlanCostBreakdown,
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
-    RelationalJoinEnumerationConfig, RelationalJoinRightInput,
+    RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective, RelationalJoinRightInput,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -86,7 +86,7 @@ pub(crate) struct RelationalQueryLimits {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelationalQueryResourceContext<'a> {
-    join_enumeration: RelationalJoinEnumerationConfig,
+    join_planning: RelationalJoinPlanningContext,
     limits: RelationalQueryLimits,
     execution_memory: &'a skein_executor::ExecutionMemoryConfig,
     task_context: Option<&'a skein_core::RuntimeTaskContext>,
@@ -100,10 +100,39 @@ impl<'a> RelationalQueryResourceContext<'a> {
         task_context: Option<&'a skein_core::RuntimeTaskContext>,
     ) -> Self {
         Self {
-            join_enumeration,
+            join_planning: RelationalJoinPlanningContext::new(
+                join_enumeration,
+                RelationalJoinPlanningDirective::Auto,
+            ),
             limits,
             execution_memory,
             task_context,
+        }
+    }
+
+    pub(crate) const fn with_join_planning(
+        mut self,
+        join_planning: RelationalJoinPlanningDirective,
+    ) -> Self {
+        self.join_planning.directive = join_planning;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct RelationalJoinPlanningContext {
+    enumeration: RelationalJoinEnumerationConfig,
+    directive: RelationalJoinPlanningDirective,
+}
+
+impl RelationalJoinPlanningContext {
+    const fn new(
+        enumeration: RelationalJoinEnumerationConfig,
+        directive: RelationalJoinPlanningDirective,
+    ) -> Self {
+        Self {
+            enumeration,
+            directive,
         }
     }
 }
@@ -178,7 +207,7 @@ pub(crate) fn execute_prepared_relational_query_with_resources<'a>(
                 state,
                 read_modes,
                 resources.limits,
-                resources.join_enumeration,
+                resources.join_planning,
                 initial_stage_timings,
             )?;
             let execution = prepared.execution.admit(state, read_modes, resources)?;
@@ -196,7 +225,7 @@ pub(crate) fn execute_prepared_relational_query_with_resources<'a>(
                 state,
                 read_modes,
                 resources.limits,
-                resources.join_enumeration,
+                resources.join_planning,
                 initial_stage_timings,
             )?;
             if !explain.analyze {
@@ -1851,7 +1880,7 @@ fn prepare_relational_select(
     state: &RelationalState,
     read_modes: RelationalQueryReadModes<'_>,
     limits: RelationalQueryLimits,
-    join_enumeration: RelationalJoinEnumerationConfig,
+    join_planning: RelationalJoinPlanningContext,
     initial_stage_timings: RelationalSqlStageTimings,
 ) -> Result<PreparedRelationalSelect> {
     let prepare_started = Instant::now();
@@ -1881,7 +1910,7 @@ fn prepare_relational_select(
         state,
         read_modes,
         limits,
-        join_enumeration,
+        join_planning,
         &mut current_state_bind_nanos,
     )?;
     let mut access_plan = match planned.access_plan {
@@ -8509,7 +8538,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             batched_index_join_limits(),
-            RelationalJoinEnumerationConfig::default(),
+            RelationalJoinPlanningContext::default(),
             RelationalSqlStageTimings::default(),
         )
         .expect("prepare batched index join")
@@ -8562,7 +8591,10 @@ mod tests {
             state,
             RelationalQueryReadModes::new(index_read_mode, RelationalRowReadMode::CanonicalMemory),
             batched_index_join_limits(),
-            RelationalJoinEnumerationConfig::default(),
+            RelationalJoinPlanningContext::new(
+                RelationalJoinEnumerationConfig::default(),
+                RelationalJoinPlanningDirective::SyntaxOrder,
+            ),
             RelationalSqlStageTimings::default(),
         )
         .expect("prepare merge join")
@@ -8611,7 +8643,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             batched_index_join_limits(),
-            RelationalJoinEnumerationConfig::default(),
+            RelationalJoinPlanningContext::default(),
             RelationalSqlStageTimings::default(),
         )
         .expect("prepare hash join")
@@ -8638,7 +8670,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             batched_index_join_limits(),
-            RelationalJoinEnumerationConfig::default(),
+            RelationalJoinPlanningContext::default(),
             RelationalSqlStageTimings::default(),
         )
         .expect("prepare hash left join")
@@ -9304,7 +9336,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             limits,
-            RelationalJoinEnumerationConfig::default(),
+            RelationalJoinPlanningContext::default(),
             &mut binding_nanos,
         )
         .expect("plan bushy candidate with probe-only CSG-CMP policy");

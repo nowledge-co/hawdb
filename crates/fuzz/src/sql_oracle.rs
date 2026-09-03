@@ -6,8 +6,9 @@ use serde_json::{json, Value as JsonValue};
 use skein::api::DatabaseConfig;
 use skein::api::{Database, DatabaseReadTransaction};
 use skein::{
-    QueryStreamOptions, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
-    RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, SkeinError, Value,
+    QueryStreamOptions, RelationalJoinPlanningDirective, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+    SkeinError, Value,
 };
 use std::collections::BTreeMap;
 
@@ -757,7 +758,12 @@ fn execute_sql_join_rewrite_queries(
 ) -> SqlJoinRewriteEvidence {
     SqlJoinRewriteEvidence {
         optimized: execute_sql_query(snapshot, snapshot_epoch, &queries.optimized),
-        syntax_reference: execute_sql_query(snapshot, snapshot_epoch, &queries.syntax_reference),
+        syntax_reference: execute_sql_query_with_join_planning(
+            snapshot,
+            snapshot_epoch,
+            &queries.syntax_reference,
+            RelationalJoinPlanningDirective::SyntaxOrder,
+        ),
     }
 }
 
@@ -766,8 +772,27 @@ fn execute_sql_query(
     snapshot_epoch: u64,
     query: &SqlQueryInvocation,
 ) -> SqlExecutionObservation {
+    execute_sql_query_with_join_planning(
+        snapshot,
+        snapshot_epoch,
+        query,
+        RelationalJoinPlanningDirective::Auto,
+    )
+}
+
+fn execute_sql_query_with_join_planning(
+    snapshot: &DatabaseReadTransaction,
+    snapshot_epoch: u64,
+    query: &SqlQueryInvocation,
+    join_planning: RelationalJoinPlanningDirective,
+) -> SqlExecutionObservation {
     let explain_sql = format!("EXPLAIN {}", query.sql);
-    let plan = match snapshot.query_sql_with_params(&explain_sql, &query.parameters) {
+    let plan = match snapshot.query_sql_with_params_options_with_join_planning(
+        &explain_sql,
+        &query.parameters,
+        QueryStreamOptions::default(),
+        join_planning,
+    ) {
         Ok(output) => Some(output.rows),
         Err(error) => {
             return SqlExecutionObservation {
@@ -778,10 +803,11 @@ fn execute_sql_query(
             };
         }
     };
-    match snapshot.query_sql_with_params_options_profiled(
+    match snapshot.query_sql_with_params_options_profiled_with_join_planning(
         &query.sql,
         &query.parameters,
         QueryStreamOptions::default(),
+        join_planning,
     ) {
         Ok(profiled) => SqlExecutionObservation {
             snapshot_epoch: Some(snapshot_epoch),
@@ -937,13 +963,21 @@ fn classify_sql_join_rewrite_failure(
     let syntax_reference = evidence.syntax_reference.join_planning.as_deref();
     if !syntax_reference.is_some_and(|outcome| {
         outcome.strategy == RelationalJoinPlanningStrategy::SyntaxOrder
-            && outcome.status == RelationalJoinPlanningStatus::NotEligible
-            && outcome.reason == RelationalJoinPlanningReason::UnstableOutputOrder
+            && outcome.status == RelationalJoinPlanningStatus::Selected
+            && outcome.reason == RelationalJoinPlanningReason::ExplicitSyntaxOrder
             && outcome.cost.is_none()
+            && matches!(
+                outcome.attempts.as_slice(),
+                [attempt]
+                    if attempt.strategy == RelationalJoinPlanningStrategy::SyntaxOrder
+                        && attempt.status == RelationalJoinPlanningStatus::Selected
+                        && attempt.reason == RelationalJoinPlanningReason::ExplicitSyntaxOrder
+                        && attempt.cost.is_none()
+            )
     }) {
         return Some(join_planning_failure(
             "syntax_reference",
-            format!("expected syntax-order unstable-output reference, got {syntax_reference:?}"),
+            format!("expected explicit syntax-order reference, got {syntax_reference:?}"),
         ));
     }
     let ExecutionOutcome::Rows(optimized) = &evidence.optimized.outcome else {

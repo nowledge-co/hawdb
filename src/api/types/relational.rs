@@ -1,10 +1,10 @@
 use super::super::QueryOutput;
 pub use crate::relational_sql::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
-    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
-    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
-    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
-    RelationalSqlStageTimings,
+    RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
+    RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStatus,
+    RelationalJoinPlanningStrategy, RelationalOperatorCardinalityProfile, RelationalOperatorId,
+    RelationalOperatorKind, RelationalSqlStageTimings,
 };
 pub use skein_executor::BlockingOperatorMemoryReport;
 

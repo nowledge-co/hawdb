@@ -3,6 +3,13 @@ use crate::{
     RelationalJoinRewriteError,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RelationalJoinPlanningDirective {
+    #[default]
+    Auto,
+    SyntaxOrder,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationalJoinPlanningStrategy {
     SyntaxOrder,
@@ -44,8 +51,7 @@ pub enum RelationalJoinPlanningReason {
     NoJoin,
     UnsupportedJoinKind,
     LockingSelect,
-    WildcardProjection,
-    UnstableOutputOrder,
+    ExplicitSyntaxOrder,
     UnresolvedColumns,
     UnsupportedJoinPredicate,
     UnavailableAccessBinding,
@@ -66,8 +72,7 @@ impl RelationalJoinPlanningReason {
             Self::NoJoin => "no_join",
             Self::UnsupportedJoinKind => "unsupported_join_kind",
             Self::LockingSelect => "locking_select",
-            Self::WildcardProjection => "wildcard_projection",
-            Self::UnstableOutputOrder => "unstable_output_order",
+            Self::ExplicitSyntaxOrder => "explicit_syntax_order",
             Self::UnresolvedColumns => "unresolved_columns",
             Self::UnsupportedJoinPredicate => "unsupported_join_predicate",
             Self::UnavailableAccessBinding => "unavailable_access_binding",
@@ -191,6 +196,18 @@ impl RelationalJoinPlanningAttempt {
             strategy: RelationalJoinPlanningStrategy::SyntaxOrder,
             status: RelationalJoinPlanningStatus::Selected,
             reason: RelationalJoinPlanningReason::SyntaxFallback,
+            fallback_class: None,
+            memo_groups: None,
+            memo_expressions: None,
+            cost: None,
+        }
+    }
+
+    pub fn explicit_syntax_order() -> Self {
+        Self {
+            strategy: RelationalJoinPlanningStrategy::SyntaxOrder,
+            status: RelationalJoinPlanningStatus::Selected,
+            reason: RelationalJoinPlanningReason::ExplicitSyntaxOrder,
             fallback_class: None,
             memo_groups: None,
             memo_expressions: None,
@@ -350,6 +367,24 @@ impl RelationalJoinPlanningOutcome {
             selected_order,
             cost,
             attempts,
+        }
+    }
+
+    pub fn explicit_syntax_order(
+        selected_order: Vec<String>,
+        config: RelationalJoinEnumerationConfig,
+    ) -> Self {
+        let attempt = RelationalJoinPlanningAttempt::explicit_syntax_order();
+        Self {
+            strategy: attempt.strategy,
+            status: attempt.status,
+            reason: attempt.reason,
+            memo_groups: None,
+            memo_expressions: None,
+            budget: config.into(),
+            selected_order,
+            cost: None,
+            attempts: vec![attempt],
         }
     }
 
