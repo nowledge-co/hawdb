@@ -242,6 +242,7 @@ impl SkeinEmbedded {
     }
 
     pub fn open_with_options(options: SkeinEmbeddedOpenOptions) -> Result<Self> {
+        let resource_snapshot_pinned = options.resource_snapshot.is_some();
         let resource_snapshot = options
             .resource_snapshot
             .unwrap_or_else(RuntimeResourceSnapshot::detect);
@@ -259,6 +260,9 @@ impl SkeinEmbedded {
             resource_snapshot,
             storage_io,
         );
+        if resource_snapshot_pinned {
+            runtime_governor.pin_resources();
+        }
         let mut database = Database::open_with_durability_and_config(
             &options.path,
             options.durability,
