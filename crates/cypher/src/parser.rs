@@ -60,6 +60,19 @@ fn parse_inner(input: &str) -> Result<Statement> {
     Ok(statement)
 }
 
+fn keyword_matches(input: &str, keyword: &str) -> bool {
+    let Some(prefix) = input.get(..keyword.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(keyword) {
+        return false;
+    }
+    let next = input
+        .get(keyword.len()..)
+        .and_then(|input| input.chars().next());
+    !matches!(next, Some(ch) if ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatementDispatch {
     Begin,

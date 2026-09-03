@@ -766,6 +766,7 @@ impl GraphStore {
         oldest_reader_commit_epoch: Option<u64>,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
+        let generation = prepared.generation;
         let durable = self.durable.as_mut().ok_or_else(|| {
             SkeinError::Storage("prepared checkpoint requires durable storage".to_string())
         })?;
@@ -853,6 +854,12 @@ impl GraphStore {
         // shadow report with dirty state preserved, and the next checkpoint
         // retries.
         self.record_columnar_shadow_checkpoint(prepared.source_commit_epoch, shadow_admission);
+        // Generation reclamation is post-commit maintenance. It must run only
+        // after every in-memory view has adopted the published generation, and
+        // its failure must not change the checkpoint outcome.
+        if let Some(durable) = self.durable.as_mut() {
+            durable.reclaim_old_generations(generation);
+        }
         Ok(())
     }
 
@@ -1034,8 +1041,19 @@ impl GraphStore {
             .durable
             .as_ref()
             .map_or(self.commit_epoch, |durable| durable.checkpoint_commit_epoch);
-        let (wal_bytes, wal_age_millis, max_wal_bytes, obsolete_generation_bytes) =
-            self.durable.as_ref().map_or((0, 0, None, 0), |durable| {
+        let (
+            wal_bytes,
+            wal_age_millis,
+            max_wal_bytes,
+            obsolete_generation_bytes,
+            generation_reclamation_retry_required,
+            generation_reclamation_pending_files,
+            generation_reclamation_pending_bytes,
+        ) = self
+            .durable
+            .as_ref()
+            .map_or((0, 0, None, 0, false, 0, 0), |durable| {
+                let reclamation = durable.generation_reclamation_debt();
                 (
                     durable.wal_bytes,
                     (self.commit_epoch > durable.checkpoint_commit_epoch)
@@ -1044,6 +1062,9 @@ impl GraphStore {
                         .unwrap_or_default(),
                     durable.max_wal_bytes,
                     durable.obsolete_generation_bytes(oldest_reader_commit_epoch),
+                    reclamation.retry_required,
+                    reclamation.pending_file_count,
+                    reclamation.pending_bytes,
                 )
             });
         let has_checkpoint_debt =
@@ -1085,6 +1106,9 @@ impl GraphStore {
             },
             adjacency_debt_entries: self.adjacency_consolidation_plan().estimated_entries,
             projection_debt_operations: property_projection_debt,
+            generation_reclamation_retry_required,
+            generation_reclamation_pending_files,
+            generation_reclamation_pending_bytes,
             oldest_reader_commit_epoch,
             obsolete_generation_bytes,
             estimated_checkpoint_temporary_bytes,

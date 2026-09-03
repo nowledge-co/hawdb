@@ -105,6 +105,7 @@ fn spill_test_config(name: &str) -> ExecutionMemoryConfig {
         max_total_spill_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
         max_total_spill_runs: NonZeroUsize::new(256).unwrap(),
         min_spill_free_bytes: NonZeroU64::new(1).unwrap(),
+        spill_free_space_probe_interval_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         spill_orphan_grace_period: std::time::Duration::ZERO,
         spill_directory: std::env::temp_dir().join(format!("skein-{name}-{nonce}")),
     }

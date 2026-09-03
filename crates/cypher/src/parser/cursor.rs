@@ -1,16 +1,12 @@
 use skein_core::{Result, SkeinError};
 
-use super::Parser;
+use super::{keyword_matches, Parser};
 
 impl Parser<'_> {
     pub(super) fn consume_keyword(&mut self, keyword: &str) -> bool {
         self.skip_ws();
         let rest = &self.input[self.pos..];
-        if rest.len() < keyword.len() || !rest[..keyword.len()].eq_ignore_ascii_case(keyword) {
-            return false;
-        }
-        let next = rest[keyword.len()..].chars().next();
-        if matches!(next, Some(ch) if ch.is_ascii_alphanumeric() || ch == '_') {
+        if !keyword_matches(rest, keyword) {
             return false;
         }
         self.pos += keyword.len();
@@ -41,11 +37,7 @@ impl Parser<'_> {
     pub(super) fn next_keyword_is(&mut self, keyword: &str) -> bool {
         self.skip_ws();
         let rest = &self.input[self.pos..];
-        if rest.len() < keyword.len() || !rest[..keyword.len()].eq_ignore_ascii_case(keyword) {
-            return false;
-        }
-        let next = rest[keyword.len()..].chars().next();
-        !matches!(next, Some(ch) if ch.is_ascii_alphanumeric() || ch == '_')
+        keyword_matches(rest, keyword)
     }
 
     pub(super) fn consume_char(&mut self, expected: char) -> bool {

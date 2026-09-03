@@ -304,6 +304,41 @@ fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
 
 #[cfg(test)]
 thread_local! {
+    static GENERATION_RECLAMATION_REMOVE_FAILPOINT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        let should_fail = GENERATION_RECLAMATION_REMOVE_FAILPOINT
+            .with(|failpoint| failpoint.borrow().as_deref() == file_name);
+        if should_fail {
+            GENERATION_RECLAMATION_REMOVE_FAILPOINT.with(|failpoint| {
+                failpoint.borrow_mut().take();
+            });
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "injected generation reclamation failure for {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    fs::remove_file(path)
+}
+
+#[cfg(test)]
+fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
+    GENERATION_RECLAMATION_REMOVE_FAILPOINT.with(|failpoint| {
+        *failpoint.borrow_mut() = file_name;
+    });
+}
+
+#[cfg(test)]
+thread_local! {
     static WAL_APPLY_FAILPOINT_REMAINING: std::cell::Cell<Option<usize>> = const {
         std::cell::Cell::new(None)
     };
@@ -6220,13 +6255,14 @@ mod tests {
         checksum_bytes, compute_statistics, encode_durable_text, estimated_properties_bytes,
         property_projection_artifact_generation_file, property_spill_artifact_generation_file,
         read_durable_text, restore_storage_backup, retain_supported_property_statistics,
-        set_checkpoint_failpoint, set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan,
-        AdjacencyDirection, AdjacencyGroupStats, AdjacencyLayout, CheckpointPublishStage,
-        ConnectedNodesCreate, CowSegmentedMap, DatabaseDoctor, DegreeStatisticsEntry,
-        DegreeStatisticsKey, DurableCompression, DurableManifest, GraphScanControl, GraphStore,
-        NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry,
-        PersistentGraphIndexClass, ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord,
-        RelTypeId, RelationshipDeleteRequest, ScanPruningStrategy, ScanPruningTargetKind,
+        set_checkpoint_failpoint, set_generation_reclamation_remove_failpoint,
+        set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan, AdjacencyDirection,
+        AdjacencyGroupStats, AdjacencyLayout, CheckpointPublishStage, ConnectedNodesCreate,
+        CowSegmentedMap, DatabaseDoctor, DegreeStatisticsEntry, DegreeStatisticsKey,
+        DurableCompression, DurableManifest, GraphScanControl, GraphStore, NodeId, NodeRecord,
+        NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, PersistentGraphIndexClass,
+        ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord, RelTypeId,
+        RelationshipDeleteRequest, ScanPruningStrategy, ScanPruningTargetKind,
         SearchProjectionGraphChange, SkeinError, SourceScanCandidateLimits,
         SourceScanCandidateRead, SourceScanCandidateVisit, SourceScanRow, WalDoctorOptions,
         COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD, DURABLE_COMPRESSION_HEADER,
@@ -9822,6 +9858,68 @@ mod tests {
             }
             std::fs::remove_dir_all(path).unwrap();
         }
+    }
+
+    #[test]
+    fn checkpoint_reclamation_failure_is_reported_and_retried_after_publication() {
+        let path = unique_test_dir("checkpoint_reclamation_retry");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.skein".to_string()));
+        let checkpoint_result = store.checkpoint(&catalog);
+        set_generation_reclamation_remove_failpoint(None);
+        checkpoint_result.unwrap();
+
+        assert_eq!(store.commit_epoch(), 3);
+        assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 3);
+        assert_eq!(store.scan_nodes(None).count(), 3);
+        assert!(path.join("checkpoint.1.skein").exists());
+        let pressure = store.storage_pressure_snapshot(None);
+        assert!(pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 1);
+        assert!(pressure.generation_reclamation_pending_bytes > 0);
+        assert!(pressure
+            .reason_codes
+            .contains(&skein_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+
+        drop(store);
+        let mut recovered_catalog = Catalog::default();
+        let mut recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 3);
+        assert_eq!(
+            recovered.storage_recovery_report().checkpoint_epoch,
+            Some(3)
+        );
+        assert_eq!(recovered.scan_nodes(None).count(), 3);
+
+        recovered.checkpoint(&recovered_catalog).unwrap();
+        assert!(!path.join("checkpoint.1.skein").exists());
+        let pressure = recovered.storage_pressure_snapshot(None);
+        assert!(!pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 0);
+        assert_eq!(pressure.generation_reclamation_pending_bytes, 0);
+        assert!(!pressure
+            .reason_codes
+            .contains(&skein_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+
+        drop(recovered);
+        let mut reopened_catalog = Catalog::default();
+        let reopened = GraphStore::open(&path, &mut reopened_catalog).unwrap();
+        assert_eq!(reopened.commit_epoch(), 3);
+        assert_eq!(reopened.storage_recovery_report().checkpoint_epoch, Some(4));
+        assert_eq!(reopened.scan_nodes(None).count(), 3);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

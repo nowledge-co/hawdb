@@ -40,6 +40,7 @@ pub enum StoragePressureReasonCode {
     DeltaSoftThreshold,
     AdjacencyDebt,
     ProjectionDebt,
+    GenerationReclamationDebt,
     ReaderPinnedObsoleteGenerations,
     CachePinnedPressure,
 }
@@ -57,6 +58,7 @@ impl StoragePressureReasonCode {
             Self::DeltaSoftThreshold => "delta_soft_threshold",
             Self::AdjacencyDebt => "adjacency_debt",
             Self::ProjectionDebt => "projection_debt",
+            Self::GenerationReclamationDebt => "generation_reclamation_debt",
             Self::ReaderPinnedObsoleteGenerations => "reader_pinned_obsolete_generations",
             Self::CachePinnedPressure => "cache_pinned_pressure",
         }
@@ -74,6 +76,9 @@ pub struct StoragePressureSignals {
     pub max_delta_bytes: Option<u64>,
     pub adjacency_debt_entries: usize,
     pub projection_debt_operations: usize,
+    pub generation_reclamation_retry_required: bool,
+    pub generation_reclamation_pending_files: usize,
+    pub generation_reclamation_pending_bytes: u64,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub obsolete_generation_bytes: u64,
     pub estimated_checkpoint_temporary_bytes: u64,
@@ -98,6 +103,9 @@ pub struct StoragePressureSnapshot {
     pub delta_pressure_ratio_per_million: Option<u32>,
     pub adjacency_debt_entries: usize,
     pub projection_debt_operations: usize,
+    pub generation_reclamation_retry_required: bool,
+    pub generation_reclamation_pending_files: usize,
+    pub generation_reclamation_pending_bytes: u64,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub oldest_reader_lag: u64,
     pub obsolete_generation_bytes: u64,
@@ -132,6 +140,7 @@ impl StoragePressureSnapshot {
                     | StoragePressureReasonCode::DeltaDelayThreshold
                     | StoragePressureReasonCode::WalSoftThreshold
                     | StoragePressureReasonCode::DeltaSoftThreshold
+                    | StoragePressureReasonCode::GenerationReclamationDebt
             )
         })
     }
@@ -186,6 +195,9 @@ impl StorageDebtController {
         if signals.projection_debt_operations > 0 {
             reasons.push(StoragePressureReasonCode::ProjectionDebt);
         }
+        if signals.generation_reclamation_retry_required {
+            reasons.push(StoragePressureReasonCode::GenerationReclamationDebt);
+        }
         if oldest_reader_lag > 0 && signals.obsolete_generation_bytes > 0 {
             reasons.push(StoragePressureReasonCode::ReaderPinnedObsoleteGenerations);
         }
@@ -232,6 +244,9 @@ impl StorageDebtController {
             delta_pressure_ratio_per_million: delta_ratio,
             adjacency_debt_entries: signals.adjacency_debt_entries,
             projection_debt_operations: signals.projection_debt_operations,
+            generation_reclamation_retry_required: signals.generation_reclamation_retry_required,
+            generation_reclamation_pending_files: signals.generation_reclamation_pending_files,
+            generation_reclamation_pending_bytes: signals.generation_reclamation_pending_bytes,
             oldest_reader_commit_epoch: signals.oldest_reader_commit_epoch,
             oldest_reader_lag,
             obsolete_generation_bytes: signals.obsolete_generation_bytes,
@@ -336,6 +351,25 @@ mod tests {
         assert!(snapshot.admits_mutation());
         assert_eq!(snapshot.oldest_reader_lag, 6);
         assert_eq!(snapshot.cache_reclaimable_bytes, 0);
+    }
+
+    #[test]
+    fn generation_reclamation_debt_accelerates_maintenance_without_blocking_writes() {
+        let snapshot = StorageDebtController.evaluate(StoragePressureSignals {
+            generation_reclamation_retry_required: true,
+            generation_reclamation_pending_files: 2,
+            generation_reclamation_pending_bytes: 4096,
+            ..StoragePressureSignals::default()
+        });
+
+        assert_eq!(snapshot.state, StoragePressureState::SpeedUpMaintenance);
+        assert!(snapshot.admits_mutation());
+        assert!(snapshot.recommends_checkpoint());
+        assert_eq!(snapshot.generation_reclamation_pending_files, 2);
+        assert_eq!(snapshot.generation_reclamation_pending_bytes, 4096);
+        assert!(snapshot
+            .reason_codes
+            .contains(&StoragePressureReasonCode::GenerationReclamationDebt));
     }
 
     #[test]

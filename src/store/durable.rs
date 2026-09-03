@@ -17,7 +17,8 @@ use super::{
     property_projection_artifact_generation_file, property_projection_manifest_generation_file,
     property_spill_artifact_generation_file, property_spill_manifest_generation_file,
     read_durable_text, read_durable_text_bytes_with_limit, relational_checkpoint_generation_file,
-    remove_source_scan_artifacts, safe_reclaim_commit_epoch, source_scan, split_manifest_checksum,
+    remove_generation_reclamation_candidate, remove_source_scan_artifacts,
+    safe_reclaim_commit_epoch, source_scan, split_manifest_checksum,
     split_projected_graph_artifact_checksum, storage_generation_for_file, store_id_for_path,
     sync_parent_dir, validate_backup_files, validate_new_backup_destination,
     validate_search_projection_checkpoint_changes, validate_storage_version, verify_integrity,
@@ -129,6 +130,14 @@ pub(super) struct DurableStore {
     max_batch_operations: Option<usize>,
     pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
+    generation_reclamation_debt: GenerationReclamationDebt,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct GenerationReclamationDebt {
+    pub(super) retry_required: bool,
+    pub(super) pending_file_count: usize,
+    pub(super) pending_bytes: u64,
 }
 
 struct StorageScrubCounters {
@@ -566,11 +575,16 @@ impl DurableStore {
             max_batch_operations,
             telemetry: None,
             wal_sync_group: None,
+            generation_reclamation_debt: GenerationReclamationDebt::default(),
         })
     }
 
     pub(super) fn root_path(&self) -> &Path {
         &self.root_path
+    }
+
+    pub(super) const fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {
+        self.generation_reclamation_debt
     }
 
     pub(super) fn store_id(&self) -> StoreId {
@@ -2913,19 +2927,50 @@ impl DurableStore {
             source_scan::SOURCE_SCAN_ARTIFACT_ID,
             self.root_path.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE),
         );
-        self.reclaim_old_generations(generation)
+        Ok(())
     }
 
-    fn reclaim_old_generations(&self, current_generation: u64) -> Result<()> {
+    pub(super) fn reclaim_old_generations(&mut self, current_generation: u64) {
+        self.generation_reclamation_debt = self.try_reclaim_old_generations(current_generation);
+    }
+
+    fn try_reclaim_old_generations(&self, current_generation: u64) -> GenerationReclamationDebt {
+        let mut debt = GenerationReclamationDebt::default();
         if self.oldest_reader_commit_epoch.is_some() {
-            return Ok(());
+            return debt;
         }
         let retain_from = current_generation.saturating_sub(1);
         let (retained_row_page_generations, retained_overflow_extent_generations) =
-            self.retained_relational_physical_generations(current_generation)?;
-        let retained_append_segment_generations = self.retained_append_physical_generations()?;
-        for entry in fs::read_dir(&self.root_path)? {
-            let entry = entry?;
+            match self.retained_relational_physical_generations(current_generation) {
+                Ok(generations) => generations,
+                Err(_) => {
+                    debt.retry_required = true;
+                    return debt;
+                }
+            };
+        let retained_append_segment_generations = match self.retained_append_physical_generations()
+        {
+            Ok(generations) => generations,
+            Err(_) => {
+                debt.retry_required = true;
+                return debt;
+            }
+        };
+        let entries = match fs::read_dir(&self.root_path) {
+            Ok(entries) => entries,
+            Err(_) => {
+                debt.retry_required = true;
+                return debt;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    debt.retry_required = true;
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
@@ -2943,10 +2988,18 @@ impl DurableStore {
                 {
                     continue;
                 }
-                fs::remove_file(entry.path())?;
+                let pending_bytes = entry.metadata().map_or(0, |metadata| metadata.len());
+                if remove_generation_reclamation_candidate(&entry.path()).is_err() {
+                    debt.retry_required = true;
+                    debt.pending_file_count = debt.pending_file_count.saturating_add(1);
+                    debt.pending_bytes = debt.pending_bytes.saturating_add(pending_bytes);
+                }
             }
         }
-        sync_parent_dir(&self.manifest_path)
+        if sync_parent_dir(&self.manifest_path).is_err() {
+            debt.retry_required = true;
+        }
+        debt
     }
 
     fn retained_relational_physical_generations(

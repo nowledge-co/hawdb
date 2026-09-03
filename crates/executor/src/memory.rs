@@ -17,6 +17,7 @@ const DEFAULT_EXECUTION_MAX_SPILL_RUNS: usize = 128;
 const DEFAULT_EXECUTION_MAX_TOTAL_SPILL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const DEFAULT_EXECUTION_MAX_TOTAL_SPILL_RUNS: usize = 512;
 const DEFAULT_EXECUTION_MIN_SPILL_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_SPILL_FREE_SPACE_PROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_SPILL_ORPHAN_GRACE_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 const MUTATION_OPERATION_BOOKKEEPING_BYTES: u64 = 64;
 const MUTATION_AFFECTED_ROW_BOOKKEEPING_BYTES: u64 = 16;
@@ -44,6 +45,8 @@ pub struct ExecutionMemoryConfig {
     pub max_total_spill_runs: NonZeroUsize,
     /// Free space preserved on the filesystem containing the spill directory.
     pub min_spill_free_bytes: NonZeroU64,
+    /// Reserved bytes between filesystem free-space probes for one spill pool.
+    pub spill_free_space_probe_interval_bytes: NonZeroU64,
     /// Minimum age before a spill file from an earlier process is removed.
     pub spill_orphan_grace_period: Duration,
     /// Directory governed as one shared spill pool.
@@ -71,6 +74,10 @@ impl Default for ExecutionMemoryConfig {
                 .expect("default total spill run budget is non-zero"),
             min_spill_free_bytes: NonZeroU64::new(DEFAULT_EXECUTION_MIN_SPILL_FREE_BYTES)
                 .expect("default spill free-space reserve is non-zero"),
+            spill_free_space_probe_interval_bytes: NonZeroU64::new(
+                DEFAULT_SPILL_FREE_SPACE_PROBE_INTERVAL_BYTES,
+            )
+            .expect("default spill free-space probe interval is non-zero"),
             spill_orphan_grace_period: DEFAULT_SPILL_ORPHAN_GRACE_PERIOD,
             spill_directory: std::env::temp_dir().join("skein-spill"),
         }
@@ -302,6 +309,7 @@ mod tests {
             max_total_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
             max_total_spill_runs: NonZeroUsize::new(32).unwrap(),
             min_spill_free_bytes: NonZeroU64::new(1).unwrap(),
+            spill_free_space_probe_interval_bytes: NonZeroU64::new(1024).unwrap(),
             spill_orphan_grace_period: Duration::from_secs(60),
             spill_directory: std::env::temp_dir(),
         }

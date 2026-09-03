@@ -99,12 +99,14 @@ fn main() {
         max_total_spill_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
         max_total_spill_runs: NonZeroUsize::new(256).unwrap(),
         min_spill_free_bytes: NonZeroU64::MIN,
+        spill_free_space_probe_interval_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         spill_orphan_grace_period: std::time::Duration::ZERO,
         spill_directory: spill_directory.clone(),
     };
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut spill_bytes = 0u64;
     let mut spill_runs = 0usize;
+    let mut total_spill_bytes = 0u64;
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let mut external = NoExternalReadOperator;
@@ -128,6 +130,7 @@ fn main() {
             .expect("benchmark aggregation must report memory");
         spill_bytes = report.spilled_bytes;
         spill_runs = report.spill_run_count;
+        total_spill_bytes = total_spill_bytes.saturating_add(report.spilled_bytes);
         black_box(output.rows);
     }
     samples.sort_unstable();
@@ -157,12 +160,20 @@ fn main() {
             .expect("benchmark compact aggregation must report memory");
         compact_spill_bytes = report.spilled_bytes;
         compact_spill_runs = report.spill_run_count;
+        total_spill_bytes = total_spill_bytes.saturating_add(report.spilled_bytes);
         black_box(output.rows);
     }
     compact_samples.sort_unstable();
     let full_binding_payload_bytes = (INPUT_ROWS * UNUSED_PAYLOAD_BYTES) as u64;
     assert!(spill_bytes < full_binding_payload_bytes);
     assert!(compact_spill_bytes < full_binding_payload_bytes);
+    let spill_pool = memory
+        .spill_pool_snapshot()
+        .expect("benchmark spill pool snapshot must succeed");
+    assert!(
+        spill_pool.free_space_probe_count
+            <= total_spill_bytes.div_ceil(memory.spill_free_space_probe_interval_bytes.get())
+    );
     println!(
         "aggregate_partial_spill {}",
         json!({
@@ -176,6 +187,9 @@ fn main() {
             "compact_spill_bytes": compact_spill_bytes,
             "compact_spill_reduction_ratio": full_binding_payload_bytes as f64 / compact_spill_bytes as f64,
             "compact_spill_run_count": compact_spill_runs,
+            "free_space_probe_interval_bytes": spill_pool.free_space_probe_interval_bytes,
+            "free_space_probe_count": spill_pool.free_space_probe_count,
+            "total_spill_bytes": total_spill_bytes,
             "compact_median_nanoseconds": compact_samples[compact_samples.len() / 2],
             "compact_min_nanoseconds": compact_samples[0],
             "compact_max_nanoseconds": compact_samples[compact_samples.len() - 1],

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skein_core::Result;
 
 use super::super::ast::*;
-use super::Parser;
+use super::{keyword_matches, Parser};
 
 type MatchRelationshipPattern = (
     Option<String>,
@@ -805,12 +805,9 @@ fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
 }
 
 fn keyword_matches_at(input: &str, index: usize, keyword: &str) -> bool {
-    let rest = &input[index..];
-    if rest.len() < keyword.len() || !rest[..keyword.len()].eq_ignore_ascii_case(keyword) {
-        return false;
-    }
-    let next = rest[keyword.len()..].chars().next();
-    !matches!(next, Some(ch) if ch.is_ascii_alphanumeric() || ch == '_')
+    input
+        .get(index..)
+        .is_some_and(|rest| keyword_matches(rest, keyword))
 }
 
 fn is_identifier_start(ch: char) -> bool {
