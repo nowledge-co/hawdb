@@ -231,6 +231,11 @@ fn run_corruption_probe(
     let reopened =
         SearchIndex::open(path).map_err(ProductionVectorQualificationError::from_error)?;
     let actual = reopened.vector_projection_qualification_identity();
+    // Rejection quarantines the corrupt artifact away from its original name,
+    // and generation cleanup may reclaim the quarantine copy within the same
+    // open. The durable rejection signal is therefore the original name no
+    // longer existing; a still-visible quarantine copy is equally acceptable.
+    let original_removed = !path.join(&corrupted_name).exists();
     let quarantine_visible = std::fs::read_dir(path)
         .map_err(ProductionVectorQualificationError::from_error)?
         .filter_map(Result::ok)
@@ -240,7 +245,7 @@ fn run_corruption_probe(
                 .to_str()
                 .is_some_and(|name| name.starts_with(&format!("{corrupted_name}.corrupt.")))
         });
-    if actual.as_ref() == Some(expected) || !quarantine_visible {
+    if actual.as_ref() == Some(expected) || !(original_removed || quarantine_visible) {
         return Ok(false);
     }
 
