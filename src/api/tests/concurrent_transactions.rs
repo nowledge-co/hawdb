@@ -7,8 +7,14 @@ use crate::{
     WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
 };
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::sync::{Arc, Barrier};
+use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
+
+fn release_autocommit_reads(release: &Arc<(Mutex<bool>, Condvar)>) {
+    let (released, available) = &**release;
+    *released.lock().unwrap() = true;
+    available.notify_all();
+}
 
 #[test]
 fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
@@ -27,6 +33,148 @@ fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
     assert_eq!(rows.rows[0].get("id"), Some(&Value::Int(1)));
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn read_only_autocommit_statements_overlap_after_snapshot_acquisition() {
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 1, title: 'graph'})")
+        .unwrap();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO messages (id, body) VALUES (1, 'relational')")
+        .unwrap();
+
+    let (snapshot_acquired, snapshots) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    db.set_autocommit_read_gate(snapshot_acquired, Arc::clone(&release))
+        .unwrap();
+
+    let graph_db = db.clone();
+    let graph = std::thread::spawn(move || {
+        graph_db.query("MATCH (m:Memory {id: 1}) RETURN m.title AS title")
+    });
+    let relational_db = db.clone();
+    let relational = std::thread::spawn(move || {
+        relational_db.query_sql("SELECT body FROM messages WHERE id = 1")
+    });
+
+    for _ in 0..2 {
+        snapshots
+            .recv_timeout(Duration::from_secs(5))
+            .expect("both read-only statements must acquire snapshots");
+    }
+    db.clear_autocommit_read_gate().unwrap();
+    release_autocommit_reads(&release);
+
+    let graph = graph.join().unwrap().unwrap();
+    assert_eq!(
+        graph.rows[0].get("title"),
+        Some(&Value::String("graph".to_string()))
+    );
+    let relational = relational.join().unwrap().unwrap();
+    assert_eq!(
+        relational.rows[0].get("body"),
+        Some(&Value::String("relational".to_string()))
+    );
+}
+
+#[test]
+fn snapshot_autocommit_read_does_not_hold_the_writer_gate() {
+    let db = Database::new().into_concurrent();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+        .unwrap();
+    db.query_sql("INSERT INTO messages (id, body) VALUES (1, 'before')")
+        .unwrap();
+
+    let (snapshot_acquired, snapshots) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    db.set_autocommit_read_gate(snapshot_acquired, Arc::clone(&release))
+        .unwrap();
+
+    let reader_db = db.clone();
+    let reader =
+        std::thread::spawn(move || reader_db.query_sql("SELECT body FROM messages WHERE id = 1"));
+    snapshots
+        .recv_timeout(Duration::from_secs(5))
+        .expect("read-only statement must acquire its snapshot");
+
+    let (writer_done, writer_result) = mpsc::channel();
+    let writer_db = db.clone();
+    let writer = std::thread::spawn(move || {
+        let result = writer_db.query_sql("UPDATE messages SET body = 'after' WHERE id = 1");
+        writer_done.send(result).unwrap();
+    });
+    let write = match writer_result.recv_timeout(Duration::from_secs(5)) {
+        Ok(write) => write,
+        Err(error) => {
+            db.clear_autocommit_read_gate().unwrap();
+            release_autocommit_reads(&release);
+            let _ = reader.join();
+            panic!("writer remained blocked after the read snapshot was acquired: {error}");
+        }
+    };
+    write.unwrap();
+
+    db.clear_autocommit_read_gate().unwrap();
+    release_autocommit_reads(&release);
+    writer.join().unwrap();
+    let pinned = reader.join().unwrap().unwrap();
+    assert_eq!(
+        pinned.rows[0].get("body"),
+        Some(&Value::String("before".to_string()))
+    );
+    let current = db
+        .query_sql("SELECT body FROM messages WHERE id = 1")
+        .unwrap();
+    assert_eq!(
+        current.rows[0].get("body"),
+        Some(&Value::String("after".to_string()))
+    );
+}
+
+#[test]
+fn snapshot_autocommit_reads_remain_observable() {
+    let db = Database::new_with_config(crate::DatabaseConfig {
+        slow_query_log_threshold_micros: 0,
+        ..crate::DatabaseConfig::default()
+    })
+    .into_concurrent();
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    db.query("MATCH (m:Memory {id: 1}) RETURN m.id AS id")
+        .unwrap();
+
+    let slow = db
+        .query_sql(
+            "SELECT query_language, statement_kind, row_count FROM system.slow_queries \
+             WHERE query_language = 'cypher' AND statement_kind = 'match_return'",
+        )
+        .unwrap();
+    assert_eq!(slow.rows.len(), 1);
+    assert_eq!(slow.rows[0].get("row_count"), Some(&Value::Int(1)));
+
+    let summary = db
+        .query_sql(
+            "SELECT query_language, statement_kind, execution_count, success_count \
+             FROM system.statement_summary \
+             WHERE query_language = 'cypher' AND statement_kind = 'match_return'",
+        )
+        .unwrap();
+    assert_eq!(summary.rows.len(), 1);
+    assert_eq!(summary.rows[0].get("execution_count"), Some(&Value::Int(1)));
+    assert_eq!(summary.rows[0].get("success_count"), Some(&Value::Int(1)));
+}
+
+#[test]
+fn autocommit_explain_of_a_mutation_remains_non_mutating() {
+    let db = Database::new().into_concurrent();
+    let explain = db.query("EXPLAIN CREATE (:Memory {id: 1})").unwrap();
+    assert_eq!(explain.rows.len(), 1);
+
+    let rows = db
+        .query("MATCH (m:Memory {id: 1}) RETURN m.id AS id")
+        .unwrap();
+    assert!(rows.rows.is_empty());
 }
 
 #[test]
@@ -1841,6 +1989,14 @@ fn database_without_lock_manager_rejects_locking_selects() {
         .query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY)")
         .unwrap();
 
+    let error = database
+        .query_sql("SELECT id FROM public.messages WHERE id = 1 FOR SHARE")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires a pessimistic concurrent transaction"));
+
+    let database = database.into_concurrent();
     let error = database
         .query_sql("SELECT id FROM public.messages WHERE id = 1 FOR SHARE")
         .unwrap_err();
