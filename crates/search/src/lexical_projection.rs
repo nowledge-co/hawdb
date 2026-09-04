@@ -121,6 +121,13 @@ struct BlockDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TermStatistics {
+    term: String,
+    document_frequency: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ManifestBody {
     format: String,
     generation: u64,
@@ -133,6 +140,7 @@ struct ManifestBody {
     document_count: u64,
     total_document_len: u64,
     posting_count: u64,
+    term_statistics: Vec<TermStatistics>,
     blocks: Vec<BlockDescriptor>,
 }
 
@@ -191,9 +199,30 @@ impl ManifestBody {
                 }
             }
         }
+        let mut previous_term: Option<&str> = None;
+        let mut term_postings = 0u64;
+        for statistics in &self.term_statistics {
+            if statistics.term.is_empty()
+                || statistics.document_frequency == 0
+                || previous_term.is_some_and(|previous| previous >= statistics.term.as_str())
+            {
+                return Err(SkeinError::Storage(
+                    "lexical projection term statistics are invalid or unordered".to_string(),
+                ));
+            }
+            term_postings = term_postings
+                .checked_add(statistics.document_frequency)
+                .ok_or_else(|| {
+                    SkeinError::Storage(
+                        "lexical projection term document frequency overflows".to_string(),
+                    )
+                })?;
+            previous_term = Some(&statistics.term);
+        }
         if previous_end != self.artifact_len
             || documents != self.document_count
             || postings != self.posting_count
+            || term_postings != self.posting_count
         {
             return Err(SkeinError::Storage(
                 "lexical projection manifest counts are inconsistent".to_string(),
@@ -226,6 +255,13 @@ impl ManifestBody {
         envelope.body.validate()?;
         Ok(envelope.body)
     }
+
+    fn document_frequency(&self, term: &str) -> u64 {
+        self.term_statistics
+            .binary_search_by(|statistics| statistics.term.as_str().cmp(term))
+            .ok()
+            .map_or(0, |index| self.term_statistics[index].document_frequency)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -256,12 +292,37 @@ struct DeltaDocument {
     document_len: u32,
     frequencies: BTreeMap<String, u32>,
     resident_bytes: u64,
+    base: Option<BaseDocumentTerms>,
+}
+
+impl DeltaDocument {
+    fn total_resident_bytes(&self) -> u64 {
+        self.resident_bytes
+            .saturating_add(self.base.as_ref().map_or(0, |base| base.resident_bytes))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BaseDocumentTerms {
+    document_len: u32,
+    terms: BTreeSet<String>,
+    resident_bytes: u64,
+}
+
+impl BaseDocumentTerms {
+    fn from_analyzed(document: DeltaDocument) -> Self {
+        Self {
+            document_len: document.document_len,
+            terms: document.frequencies.into_keys().collect(),
+            resident_bytes: document.resident_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LexicalMiniDelta {
     upserts: BTreeMap<String, DeltaDocument>,
-    deletes: BTreeSet<String>,
+    deletes: BTreeMap<String, BaseDocumentTerms>,
     resident_bytes: u64,
 }
 
@@ -269,59 +330,140 @@ impl LexicalMiniDelta {
     pub(super) fn upsert(
         &mut self,
         document: &SearchDocument,
+        previous_document: Option<&SearchDocument>,
         analyzer: &SearchAnalyzerLexicon,
         config: LexicalProjectionConfig,
     ) -> Result<()> {
-        let delta = analyze_delta_document(document, analyzer, config)?;
-        let removed = self
+        let mut delta = analyze_delta_document(document, analyzer, config)?;
+        let base = if let Some(previous) = self.upserts.get(&document.id) {
+            previous.base.clone()
+        } else if let Some(previous) = self.deletes.get(&document.id) {
+            Some(previous.clone())
+        } else {
+            previous_document
+                .map(|document| analyze_delta_document(document, analyzer, config))
+                .transpose()?
+                .map(BaseDocumentTerms::from_analyzed)
+        };
+        let removed_upsert = self
             .upserts
-            .remove(&document.id)
-            .map(|value| value.resident_bytes)
-            .unwrap_or(0);
-        let removed_delete = self.deletes.remove(&document.id);
+            .get(&document.id)
+            .map_or(0, DeltaDocument::total_resident_bytes);
+        let removed_delete = self
+            .deletes
+            .get(&document.id)
+            .map_or(0, |document| document.resident_bytes);
+        delta.base = base;
         let required = self
             .resident_bytes
-            .saturating_sub(removed)
-            .saturating_sub(if removed_delete {
-                document.id.len() as u64 + 24
-            } else {
-                0
-            })
-            .saturating_add(delta.resident_bytes);
+            .saturating_sub(removed_upsert)
+            .saturating_sub(removed_delete)
+            .saturating_add(delta.total_resident_bytes());
         if required > config.mini_delta_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical mini-delta requires {required} bytes, exceeding {}",
                 config.mini_delta_bytes
             )));
         }
+        self.upserts.remove(&document.id);
+        self.deletes.remove(&document.id);
         self.resident_bytes = required;
         self.upserts.insert(document.id.clone(), delta);
         Ok(())
     }
 
-    pub(super) fn delete(&mut self, document_id: &str, config: LexicalProjectionConfig) -> bool {
-        let removed = self
-            .upserts
-            .remove(document_id)
-            .map(|value| value.resident_bytes)
-            .unwrap_or(0);
-        self.resident_bytes = self.resident_bytes.saturating_sub(removed);
-        if self.deletes.contains(document_id) {
-            return true;
+    pub(super) fn delete(
+        &mut self,
+        document_id: &str,
+        previous_document: Option<&SearchDocument>,
+        analyzer: &SearchAnalyzerLexicon,
+        config: LexicalProjectionConfig,
+    ) -> Result<bool> {
+        if self.deletes.contains_key(document_id) {
+            return Ok(true);
         }
+        let existing_upsert = self.upserts.get(document_id);
+        let base = if let Some(previous) = existing_upsert {
+            previous.base.clone()
+        } else {
+            previous_document
+                .map(|document| analyze_delta_document(document, analyzer, config))
+                .transpose()?
+                .map(BaseDocumentTerms::from_analyzed)
+        };
+        let removed = existing_upsert.map_or(0, DeltaDocument::total_resident_bytes);
+        let Some(base) = base else {
+            self.upserts.remove(document_id);
+            self.resident_bytes = self.resident_bytes.saturating_sub(removed);
+            return Ok(true);
+        };
         let required = self
             .resident_bytes
-            .saturating_add(document_id.len() as u64 + 24);
+            .saturating_sub(removed)
+            .saturating_add(base.resident_bytes);
         if required > config.mini_delta_bytes.get() {
-            return false;
+            return Ok(false);
         }
-        self.deletes.insert(document_id.to_string());
+        self.upserts.remove(document_id);
+        self.deletes.insert(document_id.to_string(), base);
         self.resident_bytes = required;
-        true
+        Ok(true)
     }
 
     fn overrides(&self, document_id: &str) -> bool {
-        self.deletes.contains(document_id) || self.upserts.contains_key(document_id)
+        self.deletes.contains_key(document_id) || self.upserts.contains_key(document_id)
+    }
+
+    fn projected_document_frequency(&self, term: &str, base_frequency: u64) -> usize {
+        let removed = self
+            .upserts
+            .values()
+            .filter(|document| {
+                document
+                    .base
+                    .as_ref()
+                    .is_some_and(|base| base.terms.contains(term))
+            })
+            .count()
+            .saturating_add(
+                self.deletes
+                    .values()
+                    .filter(|document| document.terms.contains(term))
+                    .count(),
+            );
+        let added = self
+            .upserts
+            .values()
+            .filter(|document| document.frequencies.contains_key(term))
+            .count();
+        usize::try_from(base_frequency)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(removed)
+            .saturating_add(added)
+    }
+
+    fn projected_corpus(&self, base_document_count: u64, base_total_len: u64) -> (usize, u64) {
+        let mut document_count = base_document_count;
+        let mut total_document_len = base_total_len;
+        for document in self.upserts.values() {
+            if let Some(base) = &document.base {
+                document_count = document_count.saturating_sub(1);
+                total_document_len =
+                    total_document_len.saturating_sub(u64::from(base.document_len));
+            }
+            document_count = document_count.saturating_add(1);
+            total_document_len =
+                total_document_len.saturating_add(u64::from(document.document_len));
+        }
+        for document in self.deletes.values() {
+            document_count = document_count.saturating_sub(1);
+            total_document_len =
+                total_document_len.saturating_sub(u64::from(document.document_len));
+        }
+        (
+            usize::try_from(document_count).unwrap_or(usize::MAX),
+            total_document_len,
+        )
     }
 }
 
@@ -385,6 +527,7 @@ fn analyze_delta_document(
         document_len,
         frequencies,
         resident_bytes,
+        base: None,
     })
 }
 
@@ -524,7 +667,10 @@ impl LexicalProjectionReader {
                 self.config.query_memory_bytes
             )));
         }
-        let (document_count, total_document_len) = self.normalization_corpus(delta);
+        let (document_count, total_document_len) = delta.projected_corpus(
+            self.manifest.document_count,
+            self.manifest.total_document_len,
+        );
         let mut bytes_read = 0u64;
         if document_count == 0 {
             return Ok(LexicalQueryReport::default());
@@ -532,16 +678,10 @@ impl LexicalProjectionReader {
         let mut document_frequency = BTreeMap::new();
         let mut postings_visited = 0u64;
         for term in query_terms {
-            let (base_frequency, visited, bytes) = self.count_term(term, delta, &mut allowed)?;
-            postings_visited = postings_visited.saturating_add(visited);
-            bytes_read = bytes_read.saturating_add(bytes);
-            let mut delta_frequency = 0usize;
-            for (id, document) in &delta.upserts {
-                if allowed(id)? && document.frequencies.contains_key(term.as_str()) {
-                    delta_frequency = delta_frequency.saturating_add(1);
-                }
-            }
-            document_frequency.insert(term.clone(), base_frequency + delta_frequency);
+            document_frequency.insert(
+                term.clone(),
+                delta.projected_document_frequency(term, self.manifest.document_frequency(term)),
+            );
         }
         let average_document_len = (total_document_len as f64 / document_count as f64).max(1.0);
         let mut collector = ScoreCollector::new(
@@ -633,70 +773,6 @@ impl LexicalProjectionReader {
             postings_visited,
             bytes_read,
         })
-    }
-
-    fn normalization_corpus(&self, delta: &LexicalMiniDelta) -> (usize, u64) {
-        if self.manifest.document_count > 0 {
-            // A mini-delta does not retain the replaced base document lengths, so v1 keeps
-            // normalization bounded by using the immutable unfiltered manifest statistics.
-            return (
-                self.manifest.document_count as usize,
-                self.manifest.total_document_len,
-            );
-        }
-
-        let document_count = delta.upserts.len();
-        let total_document_len = delta.upserts.values().fold(0u64, |total, document| {
-            total.saturating_add(u64::from(document.document_len))
-        });
-        (document_count, total_document_len)
-    }
-
-    fn count_term(
-        &self,
-        term: &str,
-        delta: &LexicalMiniDelta,
-        allowed: &mut impl FnMut(&str) -> Result<bool>,
-    ) -> Result<(usize, u64, u64)> {
-        let mut count = 0usize;
-        let (visited, bytes) = self.visit_term(term, |posting| {
-            if !delta.overrides(&posting.document_id) && allowed(&posting.document_id)? {
-                count = count.saturating_add(1);
-            }
-            Ok(())
-        })?;
-        Ok((count, visited, bytes))
-    }
-
-    fn visit_term(
-        &self,
-        term: &str,
-        mut consumer: impl FnMut(Posting) -> Result<()>,
-    ) -> Result<(u64, u64)> {
-        let mut visited = 0u64;
-        let mut bytes_read = 0u64;
-        for block in self.manifest.blocks.iter().filter(|block| {
-            block.kind == BlockKind::Postings
-                && block.min_key.as_str() <= term
-                && term <= block.max_key.as_str()
-        }) {
-            let bytes = self.read_block(block)?;
-            bytes_read = bytes_read.saturating_add(bytes.len() as u64);
-            decode_posting_block(
-                &bytes,
-                self.manifest.generation,
-                block,
-                self.config.max_term_bytes.get(),
-                |posting| {
-                    visited = visited.saturating_add(1);
-                    if posting.term == term {
-                        consumer(posting)?;
-                    }
-                    Ok(())
-                },
-            )?;
-        }
-        Ok((visited, bytes_read))
     }
 
     fn read_block(&self, block: &BlockDescriptor) -> Result<Vec<u8>> {
@@ -994,9 +1070,7 @@ impl LexicalProjectionWriter {
         }
         runs.compact()?;
         artifact.merge_postings(&runs.paths, self.config)?;
-        let (artifact_len, artifact_checksum, posting_count, blocks) = artifact.finish()?;
-        durable_replace_file(&tmp_path, &artifact_path)?;
-        artifact_guard.disarm();
+        let artifact = artifact.finish()?;
         let manifest = ManifestBody {
             format: "SKEIN_LEXICAL_MANIFEST_V1".to_string(),
             generation,
@@ -1004,19 +1078,29 @@ impl LexicalProjectionWriter {
             analyzer_digest,
             documents_digest,
             artifact_file: artifact_name,
-            artifact_len,
-            artifact_checksum,
+            artifact_len: artifact.len,
+            artifact_checksum: artifact.checksum,
             document_count,
             total_document_len,
-            posting_count,
-            blocks,
+            posting_count: artifact.posting_count,
+            term_statistics: artifact.term_statistics,
+            blocks: artifact.blocks,
         };
+        let manifest_bytes = manifest.encode()?;
+        if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(SkeinError::Storage(format!(
+                "lexical projection manifest requires {} bytes, exceeding {MAX_MANIFEST_BYTES}",
+                manifest_bytes.len()
+            )));
+        }
+        durable_replace_file(&tmp_path, &artifact_path)?;
+        artifact_guard.disarm();
         let manifest_path = root.join(MANIFEST_FILE);
         let manifest_tmp = manifest_path.with_extension("skein.tmp");
         let mut manifest_guard = RemoveOnDrop::new(manifest_tmp.clone());
         {
             let mut file = File::create(&manifest_tmp)?;
-            file.write_all(&manifest.encode()?)?;
+            file.write_all(&manifest_bytes)?;
             file.sync_all()?;
         }
         durable_replace_file(&manifest_tmp, &manifest_path)?;
@@ -1044,6 +1128,15 @@ struct ArtifactBuilder {
     posting_pending: Vec<Posting>,
     posting_pending_bytes: u64,
     posting_count: u64,
+    term_statistics: Vec<TermStatistics>,
+    blocks: Vec<BlockDescriptor>,
+}
+
+struct ArtifactSummary {
+    len: u64,
+    checksum: u64,
+    posting_count: u64,
+    term_statistics: Vec<TermStatistics>,
     blocks: Vec<BlockDescriptor>,
 }
 
@@ -1087,6 +1180,7 @@ impl ArtifactBuilder {
             posting_pending: Vec::new(),
             posting_pending_bytes: 0,
             posting_count: 0,
+            term_statistics: Vec::new(),
             blocks: Vec::new(),
         })
     }
@@ -1157,6 +1251,27 @@ impl ArtifactBuilder {
     }
 
     fn push_posting(&mut self, posting: Posting) -> Result<()> {
+        match self.term_statistics.last_mut() {
+            Some(statistics) if statistics.term == posting.term => {
+                statistics.document_frequency = statistics
+                    .document_frequency
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        SkeinError::Storage(
+                            "lexical term document frequency exceeds u64".to_string(),
+                        )
+                    })?;
+            }
+            Some(statistics) if statistics.term > posting.term => {
+                return Err(SkeinError::Storage(
+                    "lexical merge produced unordered term statistics".to_string(),
+                ));
+            }
+            _ => self.term_statistics.push(TermStatistics {
+                term: posting.term.clone(),
+                document_frequency: 1,
+            }),
+        }
         let bytes = posting.encoded_len();
         if !self.posting_pending.is_empty()
             && self.posting_pending_bytes.saturating_add(bytes)
@@ -1227,11 +1342,17 @@ impl ArtifactBuilder {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<(u64, u64, u64, Vec<BlockDescriptor>)> {
+    fn finish(mut self) -> Result<ArtifactSummary> {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
         let (length, digest) = file_digest(&File::open(&self.path)?)?;
-        Ok((length, digest, self.posting_count, self.blocks))
+        Ok(ArtifactSummary {
+            len: length,
+            checksum: digest,
+            posting_count: self.posting_count,
+            term_statistics: self.term_statistics,
+            blocks: self.blocks,
+        })
     }
 }
 
@@ -1718,6 +1839,8 @@ mod tests {
         let report = reader
             .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
             .unwrap();
+        assert_eq!(reader.manifest.document_frequency("graph"), 2);
+        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
         let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
         for document in documents.values() {
             let expected = super::super::bm25_score(&terms, document, &corpus, &analyzer);
@@ -1730,6 +1853,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reopened.generation(), 1);
+        let mut invalid_manifest = reopened.manifest.clone();
+        invalid_manifest
+            .term_statistics
+            .iter_mut()
+            .find(|statistics| statistics.term == "graph")
+            .unwrap()
+            .document_frequency += 1;
+        assert!(invalid_manifest.validate().is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1743,7 +1874,7 @@ mod tests {
             ("a".to_string(), document("a", "Graph Graph", "storage")),
             (
                 "b".to_string(),
-                document("b", "Vector", "embedding index with several tokens"),
+                document("b", "Graph", "embedding index with several tokens"),
             ),
         ]);
         let reader = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
@@ -1751,8 +1882,10 @@ mod tests {
             .unwrap();
         let terms = BTreeSet::from(["graph".to_string()]);
 
+        let allowed_calls = std::cell::Cell::new(0usize);
         let report = reader
             .score(&terms, &LexicalMiniDelta::default(), None, |id| {
+                allowed_calls.set(allowed_calls.get().saturating_add(1));
                 Ok(id == "a")
             })
             .unwrap();
@@ -1760,7 +1893,8 @@ mod tests {
         let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
         let expected = super::super::bm25_score(&terms, &documents["a"], &corpus, &analyzer);
         assert_eq!(report.scores, BTreeMap::from([("a".to_string(), expected)]));
-        assert_eq!(report.bytes_read, 2 * term_posting_bytes(&reader, "graph"));
+        assert_eq!(allowed_calls.get(), 2);
+        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1780,14 +1914,56 @@ mod tests {
             .unwrap();
         let mut delta = LexicalMiniDelta::default();
         delta
-            .upsert(&document("c", "Graph", "query"), &analyzer, config)
+            .upsert(&document("c", "Graph", "query"), None, &analyzer, config)
             .unwrap();
         let terms = BTreeSet::from(["graph".to_string()]);
 
         let report = reader.score(&terms, &delta, None, |_| Ok(true)).unwrap();
 
         assert_eq!(report.scores.keys().collect::<Vec<_>>(), vec!["a", "c"]);
-        assert_eq!(report.bytes_read, 2 * term_posting_bytes(&reader, "graph"));
+        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mini_delta_updates_persisted_term_statistics_without_a_counting_pass() {
+        let root = projection_root("delta-term-statistics");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = BTreeMap::from([
+            ("a".to_string(), document("a", "Graph Graph", "storage")),
+            ("b".to_string(), document("b", "Graph", "memory")),
+            ("c".to_string(), document("c", "Vector", "embedding")),
+        ]);
+        let config = LexicalProjectionConfig::default();
+        let reader = LexicalProjectionWriter::new(config)
+            .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
+            .unwrap();
+        let first_update = document("a", "Graph", "updated");
+        let final_update = document("a", "Vector", "updated");
+        let inserted = document("d", "Graph", "query");
+        let mut delta = LexicalMiniDelta::default();
+        delta
+            .upsert(&first_update, Some(&documents["a"]), &analyzer, config)
+            .unwrap();
+        delta
+            .upsert(&final_update, Some(&first_update), &analyzer, config)
+            .unwrap();
+        assert!(delta
+            .delete("b", Some(&documents["b"]), &analyzer, config)
+            .unwrap());
+        delta.upsert(&inserted, None, &analyzer, config).unwrap();
+        let terms = BTreeSet::from(["graph".to_string()]);
+
+        let report = reader.score(&terms, &delta, None, |_| Ok(true)).unwrap();
+
+        let current_documents = [&final_update, &documents["c"], &inserted];
+        let corpus =
+            super::super::TextCorpusStats::from_documents(current_documents.into_iter(), &analyzer);
+        let expected = super::super::bm25_score(&terms, &inserted, &corpus, &analyzer);
+        assert_eq!(report.scores, BTreeMap::from([("d".to_string(), expected)]));
+        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1804,7 +1980,7 @@ mod tests {
             .unwrap();
         let mut delta = LexicalMiniDelta::default();
         delta
-            .upsert(&document("a", "Graph", "query"), &analyzer, config)
+            .upsert(&document("a", "Graph", "query"), None, &analyzer, config)
             .unwrap();
 
         let report = reader

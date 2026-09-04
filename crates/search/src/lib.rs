@@ -1505,7 +1505,12 @@ impl SearchIndex {
             .lexical_delta
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .upsert(document, &self.analyzer_lexicon, self.lexical_config);
+            .upsert(
+                document,
+                self.documents.get(&document.id),
+                &self.analyzer_lexicon,
+                self.lexical_config,
+            );
         if result.is_err() {
             self.invalidate_lexical_projection();
         }
@@ -1524,8 +1529,13 @@ impl SearchIndex {
             .lexical_delta
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .delete(document_id, self.lexical_config);
-        if !admitted {
+            .delete(
+                document_id,
+                self.documents.get(document_id),
+                &self.analyzer_lexicon,
+                self.lexical_config,
+            );
+        if !matches!(admitted, Ok(true)) {
             self.invalidate_lexical_projection();
         }
     }
@@ -2132,13 +2142,17 @@ impl SearchIndex {
             let repaired_documents = repairs.len();
             let mut repaired_projection_documents = Vec::with_capacity(repaired_documents);
             for (id, metadata) in repairs {
-                if let Some(existing) = self.documents.get_mut(&id) {
-                    existing.metadata = metadata;
-                    repaired_projection_documents.push(existing.clone());
+                if let Some(existing) = self.documents.get(&id) {
+                    let mut repaired = existing.clone();
+                    repaired.metadata = metadata;
+                    repaired_projection_documents.push(repaired);
                 }
             }
             for document in &repaired_projection_documents {
                 self.record_lexical_upsert(document);
+            }
+            for document in repaired_projection_documents {
+                self.documents.insert(document.id.clone(), document);
             }
             if missing_documents > 0 {
                 self.mark_full_reindex_needed("metadata repair found missing projection rows")?;
@@ -13172,6 +13186,62 @@ mod tests {
             document.metadata.get("space_id").map(String::as_str),
             Some("default")
         );
+    }
+
+    #[test]
+    fn metadata_repair_corrects_segmented_lexical_statistics_from_original_documents() {
+        let path = unique_test_dir("metadata_repair_lexical_statistics");
+        let mut catalog = Catalog::default();
+        let mut store = TestProjectionSource::in_memory();
+        for id in ["mem_1", "mem_2"] {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    BTreeMap::from([
+                        ("id".to_string(), Value::String(id.to_string())),
+                        ("title".to_string(), Value::String(id.to_string())),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let mut index = SearchIndex::open(&path).unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:mem_1".to_string(),
+                title: "First document".to_string(),
+                content: "Body".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("kind".to_string(), "stale".to_string())]),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "memory:mem_2".to_string(),
+                title: "Stale document".to_string(),
+                content: "Body".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("kind".to_string(), "stale".to_string())]),
+            })
+            .unwrap();
+        index.checkpoint().unwrap();
+
+        index
+            .repair_metadata_from_graph(&catalog, &store, MetadataRepairOptions::default())
+            .unwrap();
+        let mut reference = SearchIndex::in_memory();
+        for document in index.documents.values().cloned() {
+            reference.upsert(document).unwrap();
+        }
+
+        let actual = index.search("stale", None, SearchMode::Text, 10);
+        let expected = reference.search("stale", None, SearchMode::Text, 10);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].id, "memory:mem_2");
+        assert_eq!(actual[0].text_score, expected[0].text_score);
+
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -1029,20 +1029,23 @@ Persistent search checkpoints publish a rebuildable
 `search_lexical.<generation>.skein` artifact followed by a checksummed
 `search_lexical.manifest.skein`. The manifest binds the artifact to the source
 graph epoch, analyzer digest, document snapshot digest, corpus length totals,
-and immutable document-length and posting blocks. Builds use bounded external
-sort runs and bounded fan-in merges; readers admit one bounded block per query
-term and verify artifact and block checksums.
+projection-wide per-term document frequencies, and immutable document-length
+and posting blocks. Builds use bounded external sort runs and bounded fan-in
+merges; readers admit one bounded block per query term and verify artifact and
+block checksums.
 
 The fallible persisted search path reads only blocks that can contain analyzed
-query terms. It computes exact candidate-scoped term document frequency but
-uses the immutable manifest's unfiltered document count and average document
-length for BM25 normalization. This v1 approximation keeps filtered and
+query terms. It reads projection-wide term document frequency from the manifest
+and uses the manifest's document count and total document length for BM25
+normalization. The bounded mini-delta retains the original term set and length
+for each overridden base document, allowing upserts and deletes to correct the
+statistics to the current projection. Metadata and ACL membership still scope
+scored candidates, but do not redefine the BM25 corpus. This keeps filtered and
 mini-delta query I/O independent of corpus size: document-length blocks are not
-decoded during scoring. An empty base projection derives normalization
-statistics from its bounded mini-delta. The scorer merges that upsert/delete
-mini-delta and retains only the text page window or hybrid rank window in a
-streaming TopK. Reports expose posting bytes read, candidate postings visited,
-the exact matching-document count, and whether segmented BM25 was selected.
+decoded during scoring and every term uses one posting decode pass. The scorer
+retains only the text page window or hybrid rank window in a streaming TopK.
+Reports expose posting bytes read, candidate postings visited, the exact
+matching-document count, and whether segmented BM25 was selected.
 Checkpoint replaces the base generation and clears the mini-delta. A stale
 rebuildable projection falls back to the reference scorer; a declared corrupt
 artifact fails closed.
@@ -1063,9 +1066,9 @@ count rather than trusting the envelope length.
 complete document snapshot. Metadata and ACL predicates prune descriptors,
 decode only metadata sidecar ranges, and write matching ordered document IDs
 into a temporary, bounded, cross-platform candidate spill. The spill keeps one
-bounded ID block in memory; its fallible membership checks scope BM25 term
-statistics and scored candidates while normalization uses unfiltered lexical
-manifest statistics. Scalar vector search reads only vector
+bounded ID block in memory; its fallible membership checks scope scored BM25
+candidates, while document-frequency and normalization statistics cover the
+complete current lexical projection. Scalar vector search reads only vector
 sidecar ranges and retains the page window, hybrid rank window, or an explicitly
 bounded full-score map. Full title, content, embedding, and metadata payloads
 are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_documents`
