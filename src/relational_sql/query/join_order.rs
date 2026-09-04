@@ -1,10 +1,10 @@
 use super::{
-    choose_base_access, choose_join_access, projection_access_planning,
+    choose_base_access, choose_join_access, prepare_syntax_access_plan, projection_access_planning,
     projection_contains_aggregate, PreparedRelationalAccessPlan, PreparedRelationalJoinSelection,
     RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
-    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalOperatorId,
-    RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
-    RelationalQueryLimits, RelationalQueryReadModes,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalJoinPlanningContext,
+    RelationalOperatorId, RelationalPhysicalAccess, RelationalPhysicalJoinNode,
+    RelationalPhysicalJoinPlan, RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
@@ -25,9 +25,10 @@ use skein_optimizer::{
     RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
     RelationalJoinAccessPath, RelationalJoinEnumerationConfig, RelationalJoinEnumerationError,
     RelationalJoinGraph, RelationalJoinOperator, RelationalJoinOperatorId,
-    RelationalJoinOperatorKind, RelationalJoinPredicate, RelationalJoinPredicateId,
-    RelationalJoinRelation, RelationalJoinRewriteError, RelationalJoinRewritePlan,
-    RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
+    RelationalJoinOperatorKind, RelationalJoinPlanningDirective, RelationalJoinPredicate,
+    RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewriteError,
+    RelationalJoinRewritePlan, RelationalJoinRewriteProblem, RelationalJoinTree,
+    RequiredProperties,
 };
 use skein_sql::timing::measure_nanos;
 use skein_storage::{RelationalState, RelationalTableSchema};
@@ -75,10 +76,15 @@ pub(super) fn plan_select_join_order(
     state: &RelationalState,
     read_modes: RelationalQueryReadModes<'_>,
     limits: RelationalQueryLimits,
-    config: RelationalJoinEnumerationConfig,
+    planning: RelationalJoinPlanningContext,
     binding_nanos: &mut u64,
 ) -> Result<PlannedSelectStatement> {
+    let config = planning.enumeration;
     let syntax_order = select_relation_order(&select);
+    if planning.directive == RelationalJoinPlanningDirective::SyntaxOrder {
+        let outcome = RelationalJoinPlanningOutcome::explicit_syntax_order(syntax_order, config);
+        return Ok(unchanged(select, outcome));
+    }
     if let Err(reason) = join_enumeration_eligibility(&select) {
         let outcome = RelationalJoinPlanningOutcome::not_eligible(reason, syntax_order, config);
         return Ok(unchanged(select, outcome));
@@ -103,6 +109,23 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     };
+    if uses_relaxed_enumeration_gate(&select) && select.joins.len() == 1 {
+        let mut syntax_access_plan =
+            prepare_syntax_access_plan(&select, parameters, state, read_modes, limits)?;
+        syntax_access_plan.finalize_physical_join_plan(&select, state, read_modes.index)?;
+        if syntax_access_plan.uses_specialized_materialized_join() {
+            let outcome = RelationalJoinPlanningOutcome::not_eligible(
+                RelationalJoinPlanningReason::SpecializedJoinNotEnumerated,
+                syntax_order,
+                config,
+            );
+            return Ok(PlannedSelectStatement {
+                statement: select,
+                access_plan: Some(syntax_access_plan),
+                join_planning: outcome,
+            });
+        }
+    }
     let predicates = &bound_joins.predicates;
     let Some(graph_relations) = build_graph_relations(
         &select, parameters, state, read_modes, limits, &relations, predicates,
@@ -373,21 +396,18 @@ fn join_enumeration_eligibility(
     if select.lock_strength.is_some() {
         return Err(RelationalJoinPlanningReason::LockingSelect);
     }
-    if select
+    Ok(())
+}
+
+fn uses_relaxed_enumeration_gate(select: &SelectStatement) -> bool {
+    select
         .projection
         .iter()
         .any(|projection| matches!(projection, SelectProjection::Wildcard))
-    {
-        return Err(RelationalJoinPlanningReason::WildcardProjection);
-    }
-    if !(select.distinct
-        || !select.order_by.is_empty()
-        || !select.group_by.is_empty()
-        || select.projection.iter().any(projection_contains_aggregate))
-    {
-        return Err(RelationalJoinPlanningReason::UnstableOutputOrder);
-    }
-    Ok(())
+        || !(select.distinct
+            || !select.order_by.is_empty()
+            || !select.group_by.is_empty()
+            || select.projection.iter().any(projection_contains_aggregate))
 }
 
 fn select_relation_order(select: &SelectStatement) -> Vec<String> {
@@ -1243,7 +1263,7 @@ fn collect_predicate_columns<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&
 
 fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'_>]) -> bool {
     select.projection.iter().all(|projection| match projection {
-        SelectProjection::Wildcard => false,
+        SelectProjection::Wildcard => true,
         SelectProjection::Column { name, .. } => resolve_column_binding(name, relations).is_some(),
         SelectProjection::Expression { expression, .. } => {
             expression_columns_resolve(expression, relations)
@@ -1300,35 +1320,26 @@ mod tests {
     }
 
     #[test]
-    fn join_enumeration_accepts_multi_join_stable_shapes() {
+    fn join_enumeration_accepts_supported_join_shapes() {
         for sql in [
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id WHERE d.owner = $1 ORDER BY c.id",
             "SELECT COUNT(*) FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
             "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id INNER JOIN owners AS o ON o.id = d.owner_id ORDER BY c.id",
             "SELECT c.id FROM chunks AS c LEFT JOIN documents AS d ON d.id = c.document_id WHERE d.id IS NOT NULL ORDER BY c.id",
+            "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
+            "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
         ] {
             assert!(join_enumeration_eligibility(&select(sql)).is_ok(), "{sql}");
         }
     }
 
     #[test]
-    fn join_enumeration_rejects_semantically_unstable_shapes() {
-        for (sql, expected) in [
-            (
-                "SELECT * FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id",
-                RelationalJoinPlanningReason::WildcardProjection,
-            ),
-            (
-                "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id",
-                RelationalJoinPlanningReason::UnstableOutputOrder,
-            ),
-            (
-                "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id FOR UPDATE",
-                RelationalJoinPlanningReason::LockingSelect,
-            ),
-        ] {
-            assert_eq!(join_enumeration_eligibility(&select(sql)), Err(expected), "{sql}");
-        }
+    fn join_enumeration_rejects_locking_selects() {
+        let sql = "SELECT c.id FROM chunks AS c INNER JOIN documents AS d ON d.id = c.document_id ORDER BY c.id FOR UPDATE";
+        assert_eq!(
+            join_enumeration_eligibility(&select(sql)),
+            Err(RelationalJoinPlanningReason::LockingSelect)
+        );
     }
 
     #[test]

@@ -27,8 +27,9 @@ mod row_access;
 
 pub use skein_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
-    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
-    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+    RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
+    RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStatus,
+    RelationalJoinPlanningStrategy,
 };
 pub use skein_optimizer::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
@@ -3903,6 +3904,104 @@ mod tests {
     }
 
     #[test]
+    fn unordered_and_wildcard_joins_use_cost_based_planning() {
+        let mut database = Database::new();
+        database
+            .query_sql(
+                "CREATE TABLE wildcard_parents (parent_id BIGINT PRIMARY KEY, parent_name TEXT NOT NULL)",
+            )
+            .expect("create wildcard parent table");
+        database
+            .query_sql(
+                "CREATE TABLE wildcard_children (child_id BIGINT PRIMARY KEY, parent_ref BIGINT NOT NULL REFERENCES wildcard_parents(parent_id))",
+            )
+            .expect("create wildcard child table");
+        database
+            .query_sql(
+                "CREATE INDEX wildcard_children_parent_idx ON wildcard_children (parent_ref)",
+            )
+            .expect("create wildcard child parent index");
+        database
+            .query_sql("INSERT INTO wildcard_parents (parent_id, parent_name) VALUES (1, 'one'), (2, 'two')")
+            .expect("insert wildcard parents");
+        database
+            .query_sql(
+                "INSERT INTO wildcard_children (child_id, parent_ref) VALUES (11, 1), (21, 2)",
+            )
+            .expect("insert wildcard children");
+
+        let read = database.begin_read_transaction();
+        let wildcard_sql = "SELECT * FROM wildcard_parents AS p INNER JOIN wildcard_children AS c ON c.parent_ref = p.parent_id WHERE c.child_id = 11";
+        let wildcard = read
+            .query_sql_with_params_options_profiled(
+                wildcard_sql,
+                &[],
+                crate::QueryStreamOptions::default(),
+            )
+            .expect("plan unordered wildcard join");
+        assert_eq!(
+            wildcard.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::CsgCmpMemo
+        );
+        assert_eq!(
+            wildcard.profile.join_planning.status,
+            RelationalJoinPlanningStatus::Selected
+        );
+        assert_eq!(
+            wildcard.profile.join_planning.reason,
+            RelationalJoinPlanningReason::CostReordered
+        );
+        assert_eq!(wildcard.profile.join_planning.selected_order, ["c", "p"]);
+        assert_eq!(wildcard.output.rows.len(), 1);
+        assert_eq!(wildcard.output.rows[0]["parent_id"], Value::Int(1));
+        assert_eq!(
+            wildcard.output.rows[0]["parent_name"],
+            Value::String("one".to_string())
+        );
+        assert_eq!(wildcard.output.rows[0]["child_id"], Value::Int(11));
+        assert_eq!(wildcard.output.rows[0]["parent_ref"], Value::Int(1));
+
+        let syntax = read
+            .query_sql_with_params_options_profiled_with_join_planning(
+                wildcard_sql,
+                &[],
+                crate::QueryStreamOptions::default(),
+                RelationalJoinPlanningDirective::SyntaxOrder,
+            )
+            .expect("execute wildcard join in syntax order");
+        assert_eq!(
+            syntax.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::SyntaxOrder
+        );
+        assert_eq!(
+            syntax.profile.join_planning.status,
+            RelationalJoinPlanningStatus::Selected
+        );
+        assert_eq!(
+            syntax.profile.join_planning.reason,
+            RelationalJoinPlanningReason::ExplicitSyntaxOrder
+        );
+        assert_eq!(wildcard.output.rows, syntax.output.rows);
+        assert_eq!(wildcard.output.schema(), syntax.output.schema());
+
+        let projected = read
+            .query_sql_with_params_options_profiled(
+                "SELECT p.parent_name, c.child_id FROM wildcard_parents AS p INNER JOIN wildcard_children AS c ON c.parent_ref = p.parent_id WHERE c.child_id = 11",
+                &[],
+                crate::QueryStreamOptions::default(),
+            )
+            .expect("plan unordered projected join");
+        assert_eq!(
+            projected.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::CsgCmpMemo
+        );
+        assert_eq!(
+            projected.profile.join_planning.status,
+            RelationalJoinPlanningStatus::Selected
+        );
+    }
+
+    #[test]
     fn relational_operator_cardinality_profiles_track_join_boundaries_and_early_stop() {
         const SELECT: &str = "SELECT p.id AS parent_id, c.id AS child_id \
             FROM profile_parents AS p \
@@ -3937,6 +4036,18 @@ mod tests {
                 crate::QueryStreamOptions::default(),
             )
             .expect("profile fully consumed join");
+        assert_eq!(
+            full.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::SyntaxOrder
+        );
+        assert_eq!(
+            full.profile.join_planning.status,
+            RelationalJoinPlanningStatus::NotEligible
+        );
+        assert_eq!(
+            full.profile.join_planning.reason,
+            RelationalJoinPlanningReason::SpecializedJoinNotEnumerated
+        );
         assert_eq!(full.output.rows.len(), 3);
         assert_eq!(full.profile.intermediate_rows, 8);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
@@ -5003,17 +5114,25 @@ mod tests {
             Some(Value::String(info)) if info.contains("order_prefix=2")
         ));
 
-        let joined = execute_relational_query_sql_with_runtime(
-            "SELECT m.id FROM messages AS m INNER JOIN anchors AS a ON a.document_id = m.document_id AND a.message_id = m.id WHERE m.stream_id = $1",
+        let joined_sql = "SELECT m.id FROM messages AS m INNER JOIN anchors AS a ON a.document_id = m.document_id AND a.message_id = m.id WHERE m.stream_id = $1";
+        let joined_prepared = RelationalPlanTemplateCache::new(Some(1))
+            .prepare(joined_sql)
+            .expect("prepare indexed join");
+        let joined = execute_prepared_relational_query_with_resources(
+            joined_prepared,
             &[text("stream-1")],
             snapshot.value(),
             RelationalQueryReadModes::new(
                 RelationalIndexReadMode::Materialized,
                 RelationalRowReadMode::CanonicalMemory,
             ),
-            query_limits(2, 4 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
-            None,
+            RelationalQueryResourceContext::new(
+                skein_optimizer::RelationalJoinEnumerationConfig::default(),
+                query_limits(2, 4 * 1024),
+                &skein_executor::ExecutionMemoryConfig::default(),
+                None,
+            )
+            .with_join_planning(RelationalJoinPlanningDirective::SyntaxOrder),
         )
         .expect("indexed join");
         assert_eq!(joined.rows.len(), 1);
