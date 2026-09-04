@@ -95,12 +95,6 @@ struct OutputMetrics {
     payload_bytes: usize,
 }
 
-impl OutputLimits {
-    fn is_bounded(self) -> bool {
-        self.max_rows.is_some() || self.max_payload_bytes.is_some()
-    }
-}
-
 struct QueryOutputAccumulator<'a> {
     consumer: &'a mut dyn FnMut(Row) -> Result<()>,
     memory_mode: ConsumerMemoryMode,
@@ -299,13 +293,6 @@ pub(super) fn execute_profiled_consumer(
     } = resources;
     store.ensure_usable()?;
 
-    let output_memory = if matches!(output_memory, ConsumerMemoryMode::ReleasedAfterCall)
-        && request.output_limits.is_bounded()
-    {
-        ConsumerMemoryMode::DeferredUntilValidated
-    } else {
-        output_memory
-    };
     let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(
         request.memory,
         request.task_context,

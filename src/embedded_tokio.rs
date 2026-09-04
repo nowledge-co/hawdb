@@ -94,6 +94,8 @@ pub struct TokioQueryBatchStream {
 }
 
 impl TokioQueryBatchStream {
+    /// Returns the next batch or an in-band terminal error. A terminal error
+    /// can follow batches that were already delivered.
     pub async fn next_batch(&mut self) -> Result<Option<Vec<Row>>, SkeinTokioEmbeddedError> {
         if self.terminated {
             return Ok(None);
@@ -425,6 +427,7 @@ impl SkeinTokioEmbedded {
                             max_rows,
                             max_payload_bytes: Some(max_payload_bytes),
                         },
+                        crate::executor::StreamDelivery::Incremental,
                         task_context,
                         |row| {
                             let row_bytes = crate::executor::map_memory_bytes(&row);
@@ -513,6 +516,7 @@ impl SkeinTokioEmbedded {
                             max_rows,
                             max_payload_bytes: Some(max_payload_bytes),
                         },
+                        crate::executor::StreamDelivery::Incremental,
                         task_context,
                         |row| {
                             rows.push(row);
@@ -903,6 +907,54 @@ mod tests {
             usize::try_from(admitted_executor_bytes).unwrap()
         );
         assert_eq!(embedded.runtime_snapshot().completions, 1);
+    }
+
+    #[test]
+    fn asynchronous_row_stream_surfaces_a_terminal_limit_after_prior_batches() {
+        let path = unique_test_path("terminal-row-limit");
+        let mut config = crate::DatabaseConfig::default();
+        config.max_read_result_rows = Some(2);
+        config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
+        config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
+        let embedded = SkeinTokioEmbedded::open_owned(
+            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        )
+        .unwrap();
+        embedded.with_embedded_mut(|embedded| {
+            for value in 0..3 {
+                embedded
+                    .database_mut()
+                    .query(&format!("CREATE (:Probe {{value: {value}}})"))
+                    .unwrap();
+            }
+        });
+
+        let mut stream = embedded
+            .runtime()
+            .block_on(embedded.query_stream_with_options(
+                "MATCH (p:Probe) RETURN p.value AS value ORDER BY value",
+                TokioQueryStreamOptions {
+                    channel_capacity: NonZeroUsize::new(1).unwrap(),
+                },
+                RuntimeTaskContext::default(),
+            ))
+            .unwrap()
+            .unwrap();
+        let first_batch = embedded
+            .runtime()
+            .block_on(stream.next_batch())
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_batch.len(), 1);
+
+        let error = embedded
+            .runtime()
+            .block_on(stream.next_batch())
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("max_read_result_rows 2"));
+        assert!(stream.report().is_none());
     }
 
     #[test]
