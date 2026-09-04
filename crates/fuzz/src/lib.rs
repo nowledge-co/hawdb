@@ -16,6 +16,7 @@ mod parser_oracle;
 mod predicate_rewrite;
 mod query_ast;
 mod sql_oracle;
+mod wal_tail_oracle;
 
 use coverage::PlanCoverageTracker;
 use generator::StateAwareCaseGenerator;
@@ -41,6 +42,7 @@ pub use sql_oracle::{
     SQL_JOIN_REWRITE_PROTOCOL, SQL_PREDICATE_REWRITE_PROTOCOL, SQL_REPLAY_PROTOCOL,
     SQL_TLP_AGGREGATE_PROTOCOL, SQL_TLP_PROTOCOL,
 };
+pub use wal_tail_oracle::{run_wal_tail_recovery_case, WAL_TAIL_RECOVERY_PROTOCOL};
 
 pub fn compiled_capabilities_json() -> JsonValue {
     let capabilities = skein::compiled_runtime_capabilities();

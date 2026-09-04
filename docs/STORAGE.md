@@ -182,16 +182,43 @@ so repeated opens of the same bytes reuse one quarantine copy.
 `DatabaseConfig::max_wal_quarantine_bytes` bounds the aggregate automatic
 quarantine footprint and removes the oldest prior copies before admitting a
 different corrupt WAL. A WAL larger than that bound remains untouched in its
-authoritative location and is not copied. Doctor is a separate typed operation,
-not a database-open mode. Planning holds the exclusive database lease, validates
+authoritative location and is not copied. Explicit doctor planning holds the exclusive database lease, validates
 the manifest identity, WAL generation, framing, checksums, LSN continuity, and
 configured scan bounds, and reports the exact retained LSN plus discarded byte
 range without modifying files. Applying requires an acknowledgement bound to
 that plan, revalidates the manifest and WAL CRC32C/SHA-256 identities, persists
 an original-WAL quarantine copy and a prepared audit record, truncates and
 syncs the WAL, then publishes an applied audit record. A pending audit record
-blocks ordinary open. An interrupted apply can be finalized idempotently only
+blocks strict open. An interrupted apply can be finalized idempotently only
 when the manifest, retained WAL, and quarantine identities still match.
+
+Writable hosts may opt into `DatabaseConfig::recovery_mode =
+RecoveryMode::AutoRepairTornTail`. This uses the same doctor protocol under the
+database lease, preserving the complete original WAL and audit before truncation.
+It also resumes an interrupted repair after validating the same identities.
+Read-only opens reject this option; strict recovery remains the default, and
+the legacy `DoctorRepairTornTail` report value remains invalid for open.
+Automatic repair bounds the aggregate `doctor/quarantine` bytes by
+`max_wal_quarantine_bytes` independently of the corrupt-WAL quarantine; it fails
+without discarding prior evidence when the next copy would exceed the budget.
+The recovery report records repaired bytes and the tail reason. This policy
+accepts removal of physically missing EOF data, not a claim that arbitrary
+storage damage can never truncate previously acknowledged bytes.
+
+If a WAL write fails partway through an append, the writer truncates and syncs
+back to the preceding valid boundary before permitting a retry. No LSN, commit
+epoch, or in-memory mutation is published for the failed append. Failed rollback
+and failed synchronization of a complete record remain uncertain outcomes that
+poison the handle and require reopen. This distinction applies equally to
+ordinary and group-commit writes.
+
+The local WAL-tail oracle starts from a fresh database for each seed, records
+the complete pre-batch query result, truncates a fragmented batch at header,
+block, chain-tail, or seeded interior offsets, and checks strict rejection,
+exact prefix recovery, audit bytes, and a subsequent append/reopen. Run it with
+`bazel run //crates/fuzz:skein_storage_fuzz -- --wal-tail --seed 174 --cases 64`;
+every case report includes a `--case-index` replay command. These campaigns and
+the existing fuzz suites remain local verification, outside CI jobs.
 
 Integrity checks are layered for throughput. WAL records, immutable segment
 blocks, cache admission, manifests, and projection envelopes use CRC32C; the

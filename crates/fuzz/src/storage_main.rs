@@ -4,7 +4,10 @@ use skein::{
     RelationalKey, RelationalRow, RelationalScalarType, RelationalValue, SearchDocument,
     SearchIndex, SearchMode, Value, ValueRef,
 };
-use skein_fuzz::{compiled_capabilities_json, emit_fuzz_report, DEFAULT_FUZZ_LOG_DIRECTORY};
+use skein_fuzz::{
+    compiled_capabilities_json, emit_fuzz_report, run_wal_tail_recovery_case,
+    DEFAULT_FUZZ_LOG_DIRECTORY, WAL_TAIL_RECOVERY_PROTOCOL,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -32,11 +35,16 @@ fn run() -> Result<bool, String> {
     let options = Options::parse(std::env::args().skip(1))?;
     let workspace = unique_workspace();
     let fixture = workspace.join("fixture");
-    create_fixture(&fixture)?;
-    let targets = parser_targets(&fixture)?;
-    if targets.is_empty() {
-        return Err("generated fixture contains no parser targets".to_string());
-    }
+    let targets = if options.wal_tail {
+        Vec::new()
+    } else {
+        create_fixture(&fixture)?;
+        let targets = parser_targets(&fixture)?;
+        if targets.is_empty() {
+            return Err("generated fixture contains no parser targets".to_string());
+        }
+        targets
+    };
 
     let indexes = options.case_index.map_or_else(
         || (0..options.cases).collect::<Vec<_>>(),
@@ -45,14 +53,30 @@ fn run() -> Result<bool, String> {
     let mut cases = Vec::with_capacity(indexes.len());
     let mut success = true;
     for index in indexes {
-        let report = run_case(&workspace, &fixture, &targets, options.seed, index)?;
+        let report = if options.wal_tail {
+            let seed = mix_seed(options.seed, index as u64);
+            let outcome = catch_unwind(AssertUnwindSafe(|| run_wal_tail_recovery_case(seed)));
+            let mut report = match outcome {
+                Ok(Ok(report)) => report,
+                Ok(Err(error)) => json!({"success": false, "detail": error}),
+                Err(_) => json!({"success": false, "detail": "WAL tail recovery panicked"}),
+            };
+            report["case_seed"] = json!(seed);
+            report["index"] = json!(index);
+            report["reproduction_command"] = json!(format!(
+                "bazel run //crates/fuzz:skein_storage_fuzz -- --wal-tail --seed {} --case-index {index}", options.seed
+            ));
+            report
+        } else {
+            run_case(&workspace, &fixture, &targets, options.seed, index)?
+        };
         success &= report["success"].as_bool() == Some(true);
         cases.push(report);
     }
     let _ = fs::remove_dir_all(&workspace);
 
     let report = json!({
-        "protocol": PROTOCOL,
+        "protocol": if options.wal_tail { WAL_TAIL_RECOVERY_PROTOCOL } else { PROTOCOL },
         "compiled_capabilities": compiled_capabilities_json(),
         "seed": options.seed,
         "requested_case_count": cases.len(),
@@ -501,6 +525,7 @@ struct Options {
     case_index: Option<usize>,
     log_directory: PathBuf,
     print_report: bool,
+    wal_tail: bool,
 }
 
 impl Options {
@@ -511,6 +536,7 @@ impl Options {
             case_index: None,
             log_directory: PathBuf::from(DEFAULT_FUZZ_LOG_DIRECTORY),
             print_report: false,
+            wal_tail: false,
         };
         let mut args = args.into_iter();
         while let Some(argument) = args.next() {
@@ -539,6 +565,7 @@ impl Options {
                         PathBuf::from(next_value(&mut args, "--log-directory")?);
                 }
                 "--print-report" => options.print_report = true,
+                "--wal-tail" => options.wal_tail = true,
                 "--help" | "-h" => return Err(usage().to_string()),
                 _ => return Err(format!("unknown argument '{argument}'\n{}", usage())),
             }
@@ -559,13 +586,14 @@ fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<S
 }
 
 fn usage() -> &'static str {
-    "usage: skein-storage-fuzz [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
+    "usage: skein-storage-fuzz [--wal-tail] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
 }
 
 fn run_id(options: &Options) -> String {
+    let prefix = if options.wal_tail { "wal-tail-" } else { "" };
     options.case_index.map_or_else(
-        || format!("seed-{}-cases-{}", options.seed, options.cases),
-        |index| format!("seed-{}-case-{index}", options.seed),
+        || format!("{prefix}seed-{}-cases-{}", options.seed, options.cases),
+        |index| format!("{prefix}seed-{}-case-{index}", options.seed),
     )
 }
 

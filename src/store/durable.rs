@@ -116,6 +116,7 @@ pub(super) struct DurableStore {
     pub(super) wal_replay_start_lsn: u64,
     pub(super) next_lsn: u64,
     pub(super) wal_bytes: u64,
+    pub(super) wal_tail_repair: Option<skein_storage::WalTailRepairReport>,
     /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
     /// replay derives commit epochs from LSN order, exactly as before.
     pub(super) wal_commit_epoch: u64,
@@ -253,6 +254,7 @@ struct DurableStoreOpenOptions {
     max_wal_bytes: Option<u64>,
     max_record_bytes: Option<usize>,
     max_batch_operations: Option<usize>,
+    automatic_tail_repair: Option<WalReplayConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -334,13 +336,9 @@ impl DurableStore {
     pub(super) fn open(
         path: &Path,
         durability: DurabilityPolicy,
-        segment_cache_capacity_bytes: u64,
-        max_graph_manifest_open_bytes: u64,
-        max_wal_bytes: Option<u64>,
-        max_record_bytes: Option<usize>,
-        max_batch_operations: Option<usize>,
+        replay_config: WalReplayConfig,
     ) -> Result<Self> {
-        if max_graph_manifest_open_bytes == 0 {
+        if replay_config.max_graph_manifest_open_bytes == 0 {
             return Err(SkeinError::Storage(
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
@@ -353,11 +351,14 @@ impl DurableStore {
                 read_only: false,
                 initialize_if_empty: true,
                 load_rebuildable_artifacts: true,
-                segment_cache_capacity_bytes,
-                max_graph_manifest_open_bytes,
-                max_wal_bytes,
-                max_record_bytes,
-                max_batch_operations,
+                segment_cache_capacity_bytes: replay_config.segment_cache_capacity_bytes,
+                max_graph_manifest_open_bytes: replay_config.max_graph_manifest_open_bytes,
+                max_wal_bytes: replay_config.max_bytes,
+                max_record_bytes: replay_config.max_record_bytes,
+                max_batch_operations: replay_config.max_batch_operations,
+                automatic_tail_repair: (replay_config.recovery_mode
+                    == skein_storage::RecoveryMode::AutoRepairTornTail)
+                    .then_some(replay_config),
             },
         )
     }
@@ -390,6 +391,7 @@ impl DurableStore {
                 read_only: true,
                 initialize_if_empty: false,
                 load_rebuildable_artifacts: true,
+                automatic_tail_repair: None,
                 segment_cache_capacity_bytes,
                 max_graph_manifest_open_bytes,
                 max_wal_bytes,
@@ -421,6 +423,7 @@ impl DurableStore {
                 read_only: true,
                 initialize_if_empty: false,
                 load_rebuildable_artifacts: false,
+                automatic_tail_repair: None,
                 segment_cache_capacity_bytes,
                 max_graph_manifest_open_bytes,
                 max_wal_bytes,
@@ -444,6 +447,7 @@ impl DurableStore {
             max_wal_bytes,
             max_record_bytes,
             max_batch_operations,
+            automatic_tail_repair,
         } = options;
         if max_graph_manifest_open_bytes == 0 {
             return Err(SkeinError::Storage(
@@ -452,10 +456,16 @@ impl DurableStore {
         }
         let directory_lease = DatabaseDirectoryLease::acquire(path)
             .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        doctor::reject_pending_wal_doctor_repair(path)?;
         if load_rebuildable_artifacts {
             derived_repair::reject_pending_derived_artifact_repair(path)?;
         }
+        let wal_tail_repair = match automatic_tail_repair {
+            Some(config) => doctor::resume_automatic_wal_tail_repair_locked(path, config)?,
+            None => {
+                doctor::reject_pending_wal_doctor_repair(path)?;
+                None
+            }
+        };
         let manifest_path = path.join(MANIFEST_FILE);
         let manifest = if manifest_path.exists() {
             DurableManifest::load(&manifest_path)?
@@ -577,6 +587,7 @@ impl DurableStore {
             wal_replay_start_lsn: manifest.wal_replay_start_lsn,
             next_lsn: manifest.next_lsn,
             wal_bytes,
+            wal_tail_repair,
             wal_commit_epoch: manifest.checkpoint_commit_epoch,
             max_wal_bytes,
             source_scan_commit_epoch: manifest.source_scan_commit_epoch,
@@ -1827,27 +1838,75 @@ impl DurableStore {
         let result = match self.take_wal_append() {
             Err(error) => Err(error),
             Ok((file, created)) => {
-                let append_result: Result<u64> = (|| {
+                let write_result: Result<()> = (|| {
                     let mut writer = file.as_ref();
                     if self.wal_bytes == 0 {
                         writer.write_all(&header_bytes)?;
                     }
-                    writer.write_all(&record_bytes)?;
-                    process_crash_failpoint("after_wal_append");
-                    let fsync_micros = self.finish_wal_append(file.as_ref(), created)?;
-                    if !sync_deferred {
-                        process_crash_failpoint("after_wal_sync");
+                    #[cfg(test)]
+                    {
+                        if std::env::var(super::PROCESS_CRASH_POINT_ENV).as_deref()
+                            == Ok("during_wal_append")
+                        {
+                            writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
+                            process_crash_failpoint("during_wal_append");
+                        }
+                        if matches!(
+                            super::WAL_APPEND_FAILURE.get(),
+                            Some(
+                                super::WalAppendFailure::PartialWrite
+                                    | super::WalAppendFailure::Rollback
+                            )
+                        ) {
+                            writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
+                            if super::WAL_APPEND_FAILURE.get()
+                                == Some(super::WalAppendFailure::PartialWrite)
+                            {
+                                super::WAL_APPEND_FAILURE.take();
+                            }
+                            return Err(
+                                std::io::Error::from(std::io::ErrorKind::StorageFull).into()
+                            );
+                        }
                     }
-                    Ok(fsync_micros)
+                    writer.write_all(&record_bytes)?;
+                    Ok(())
                 })();
+                let append_result = match write_result {
+                    Err(error) => match self.rollback_failed_wal_write(created) {
+                        Ok(()) => {
+                            // A group may still need this handle to acknowledge
+                            // earlier entries even when no later write retries.
+                            if self.wal_bytes > 0 {
+                                self.wal_append_file = Some(Arc::clone(&file));
+                            }
+                            Err(SkeinError::Storage(format!(
+                                "WAL write failed and was rolled back to byte {}: {error}",
+                                self.wal_bytes
+                            )))
+                        }
+                        Err(rollback_error) => Err(SkeinError::StorageIntegrity(format!(
+                            "WAL write failed: {error}; rollback to byte {} failed: {rollback_error}; close and recover the database",
+                            self.wal_bytes
+                        ))),
+                    },
+                    Ok(()) => {
+                        process_crash_failpoint("after_wal_append");
+                        let sync_result = self.finish_wal_append(file.as_ref(), created);
+                        if sync_result.is_ok() && !sync_deferred {
+                            process_crash_failpoint("after_wal_sync");
+                        }
+                        sync_result.map_err(|error| SkeinError::StorageIntegrity(format!(
+                            "WAL append outcome is uncertain after writing the complete record: {error}"
+                        )))
+                    }
+                };
                 match append_result {
                     Ok(fsync_micros) => {
                         self.wal_append_file = Some(file);
                         Ok(fsync_micros)
                     }
-                    Err(error) => Err(SkeinError::StorageIntegrity(format!(
-                        "WAL append outcome is uncertain after opening the WAL: {error}"
-                    ))),
+                    Err(error) => Err(error),
                 }
             }
         };
@@ -1872,10 +1931,33 @@ impl DurableStore {
             if let Some(group) = &mut self.wal_sync_group {
                 group.record_entry(byte_count);
             }
-        } else if let Ok(metadata) = fs::metadata(&self.wal_path) {
-            self.wal_bytes = metadata.len();
         }
         result.map(|_| ())
+    }
+
+    fn rollback_failed_wal_write(&mut self, created: bool) -> Result<()> {
+        #[cfg(test)]
+        if super::WAL_APPEND_FAILURE.take() == Some(super::WalAppendFailure::Rollback) {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        }
+        // Windows append-only handles do not grant the access required to resize.
+        let file = OpenOptions::new().write(true).open(&self.wal_path)?;
+        if file.metadata()?.len() < self.wal_bytes {
+            return Err(SkeinError::Storage(
+                "WAL lost previously appended bytes before rollback".to_string(),
+            ));
+        }
+        file.set_len(self.wal_bytes)?;
+        file.sync_all()?;
+        if created {
+            if self.wal_bytes == 0 {
+                drop(file);
+                fs::remove_file(&self.wal_path)?;
+            }
+            sync_parent_dir(&self.wal_path)?;
+        }
+        self.wal_free_space_probe = WalFreeSpaceProbeState::default();
+        Ok(())
     }
 
     fn ensure_wal_admission(
@@ -2006,6 +2088,10 @@ impl DurableStore {
     }
 
     fn finish_wal_append(&mut self, file: &File, created: bool) -> Result<u64> {
+        #[cfg(test)]
+        if super::WAL_APPEND_FAILURE.take() == Some(super::WalAppendFailure::Sync) {
+            return Err(std::io::Error::other("injected WAL sync failure").into());
+        }
         let mut writer = file;
         writer.flush()?;
         if let Some(group) = &mut self.wal_sync_group {

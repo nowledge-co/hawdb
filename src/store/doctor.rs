@@ -72,6 +72,62 @@ pub(super) fn reject_pending_wal_doctor_repair(path: &Path) -> Result<()> {
     )))
 }
 
+// Callers hold the same directory lease used by explicit doctor operations.
+pub(super) fn resume_automatic_wal_tail_repair_locked(
+    path: &Path,
+    config: skein_storage::WalReplayConfig,
+) -> Result<Option<WalTailRepairReport>> {
+    if pending_repair_records(path)?.is_empty() {
+        return Ok(None);
+    }
+    automatic_wal_tail_repair_locked(path, config).map(Some)
+}
+
+pub(super) fn automatic_wal_tail_repair_locked(
+    path: &Path,
+    config: skein_storage::WalReplayConfig,
+) -> Result<WalTailRepairReport> {
+    let options = WalDoctorOptions {
+        max_wal_bytes: config.max_bytes,
+        max_record_bytes: config.max_record_bytes,
+        max_batch_operations: config.max_batch_operations,
+    };
+    let plan = inspect_wal_tail_locked(path, options)?;
+    if config
+        .max_bytes
+        .is_some_and(|limit| plan.original_wal_len > limit)
+    {
+        return Err(SkeinError::Storage(
+            "automatic WAL repair exceeds the configured replay byte limit".to_string(),
+        ));
+    }
+    let directory = doctor_directory(path).join(DOCTOR_QUARANTINE_DIRECTORY);
+    let mut retained_bytes = 0u64;
+    if directory.exists() {
+        for entry in fs::read_dir(&directory)? {
+            retained_bytes = retained_bytes
+                .checked_add(entry?.metadata()?.len())
+                .ok_or_else(|| {
+                    SkeinError::Storage("doctor quarantine size overflow".to_string())
+                })?;
+        }
+    }
+    if !directory.join(quarantine_file_name(&plan)).exists() {
+        retained_bytes = retained_bytes
+            .checked_add(plan.original_wal_len)
+            .ok_or_else(|| SkeinError::Storage("doctor quarantine size overflow".to_string()))?;
+    }
+    // Automatic recovery must preserve prior audit evidence, even when the
+    // quarantine budget is exhausted. Explicit doctor repair remains available.
+    if retained_bytes > config.max_quarantine_bytes {
+        return Err(SkeinError::Storage(format!(
+            "automatic WAL repair quarantine byte limit exceeded: required={retained_bytes}, max_wal_quarantine_bytes={}",
+            config.max_quarantine_bytes
+        )));
+    }
+    apply_wal_tail_repair_locked(path, &plan, options)
+}
+
 fn validate_existing_database_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(SkeinError::Storage(format!(
@@ -363,6 +419,7 @@ fn apply_wal_tail_repair_locked(
         None => prepare_repair(path, &wal_path, requested_plan)?,
     };
     validate_quarantine(path, &prepared)?;
+    super::process_crash_failpoint("after_wal_repair_prepare");
 
     validate_manifest_identity(path, requested_plan)?;
     let before_truncate = file_checksum(&wal_path)?;
@@ -381,6 +438,7 @@ fn apply_wal_tail_repair_locked(
     wal.set_len(requested_plan.retained_wal_len)?;
     wal.sync_all()?;
     sync_parent_dir(&wal_path)?;
+    super::process_crash_failpoint("after_wal_repair_truncate");
     let after_truncate = file_checksum(&wal_path)?;
     if !file_identity_matches(
         after_truncate,

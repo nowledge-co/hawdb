@@ -1,6 +1,7 @@
 name: Weekly Platform CI
 
 on:
+  workflow_dispatch:
   schedule:
     # Scheduled workflows run the latest revision of the default branch (main).
     - cron: "37 3 * * 1"

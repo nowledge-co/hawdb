@@ -2,6 +2,9 @@ use super::*;
 use crate::store::set_wal_apply_failpoint;
 use crate::StorageResidencyMode;
 
+#[path = "storage_recovery/wal_tail.rs"]
+mod wal_tail;
+
 #[test]
 fn strict_append_sql_replays_from_wal_after_reopen() {
     let path = unique_test_dir("strict_append_sql_reopen");

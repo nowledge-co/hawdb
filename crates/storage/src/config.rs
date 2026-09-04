@@ -9,6 +9,10 @@ pub enum DurabilityPolicy {
 pub enum RecoveryMode {
     #[default]
     Strict,
+    /// Repair only a physically incomplete final WAL record on writable open.
+    /// The original WAL and doctor audit must be durable before truncation.
+    AutoRepairTornTail,
+    /// Legacy report value; database open rejects this mode.
     DoctorRepairTornTail,
 }
 

@@ -8603,6 +8603,7 @@ fn is_simple_two_node_lookup(query: &cypher::MatchNodesReturn) -> bool {
 fn recovery_mode_name(mode: RecoveryMode) -> &'static str {
     match mode {
         RecoveryMode::Strict => "strict",
+        RecoveryMode::AutoRepairTornTail => "auto_repair_torn_tail",
         RecoveryMode::DoctorRepairTornTail => "doctor_repair_torn_tail",
     }
 }

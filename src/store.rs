@@ -272,6 +272,26 @@ fn process_crash_failpoint(point: &str) {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WalAppendFailure {
+    PartialWrite,
+    Rollback,
+    Sync,
+}
+
+#[cfg(test)]
+thread_local! {
+    static WAL_APPEND_FAILURE: std::cell::Cell<Option<WalAppendFailure>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn set_wal_append_failpoint(failure: WalAppendFailure) {
+    WAL_APPEND_FAILURE.set(Some(failure));
+}
+
+#[cfg(test)]
 thread_local! {
     static CHECKPOINT_FAILPOINT: std::cell::Cell<Option<CheckpointPublishStage>> = const {
         std::cell::Cell::new(None)
@@ -2066,24 +2086,25 @@ impl GraphStore {
         mode: DurableOpenMode,
         replay_config: WalReplayConfig,
     ) -> Result<Self> {
-        if replay_config.recovery_mode != RecoveryMode::Strict {
+        if replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
             return Err(SkeinError::Storage(
                 "WAL repair is not available through database open; use DatabaseDoctor to plan and explicitly apply repair before opening in strict mode"
                     .to_string(),
             ));
         }
+        if matches!(mode, DurableOpenMode::ExistingOnly)
+            && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
+        {
+            return Err(SkeinError::Storage(
+                "automatic WAL tail repair requires a writable database open".to_string(),
+            ));
+        }
         let total_open_started = std::time::Instant::now();
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = match mode {
-            DurableOpenMode::CreateIfMissing => DurableStore::open(
-                path.as_ref(),
-                durability,
-                replay_config.segment_cache_capacity_bytes,
-                replay_config.max_graph_manifest_open_bytes,
-                replay_config.max_bytes,
-                replay_config.max_record_bytes,
-                replay_config.max_batch_operations,
-            )?,
+            DurableOpenMode::CreateIfMissing => {
+                DurableStore::open(path.as_ref(), durability, replay_config)?
+            }
             DurableOpenMode::ExistingOnly => DurableStore::open_existing_only(
                 path.as_ref(),
                 durability,

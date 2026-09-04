@@ -936,6 +936,10 @@ impl GraphStore {
         let wal_replay_start_lsn = durable.wal_replay_start_lsn;
         let wal_generation = durable.wal_generation;
         let read_only = durable.read_only;
+        let mut tail_repair = durable.wal_tail_repair.clone();
+        let mut torn_tail_reason = tail_repair
+            .as_ref()
+            .map(|_| "resumed interrupted repair of an incomplete final WAL record".to_string());
         let checkpoint_present = durable.checkpoint_path.exists();
         let mut replayed_entries = 0_usize;
         let mut replayed_bytes = 0u64;
@@ -1010,6 +1014,23 @@ impl GraphStore {
             let (entry, record_start, record_encoded_len, payload_len, payload_sha256) =
                 match cursor.next()? {
                     WalCursorEvent::Eof => break,
+                    WalCursorEvent::TornTail { reason, .. }
+                        if config.recovery_mode == RecoveryMode::AutoRepairTornTail
+                            && !read_only =>
+                    {
+                        // Release the read handle before resizing the WAL on Windows.
+                        drop(cursor);
+                        let durable = self.durable.as_mut().expect("durable WAL replay");
+                        let repair = super::doctor::automatic_wal_tail_repair_locked(
+                            &durable.root_path,
+                            config,
+                        )?;
+                        durable.wal_bytes = repair.retained_wal_len;
+                        durable.wal_tail_repair = Some(repair.clone());
+                        tail_repair = Some(repair);
+                        torn_tail_reason = Some(reason);
+                        break;
+                    }
                     WalCursorEvent::TornTail { reason, .. } => {
                         return Err(SkeinError::Storage(format!(
                         "strict WAL recovery rejected torn tail: {reason}; use DatabaseDoctor to inspect and explicitly repair the incomplete final record"
@@ -1142,9 +1163,11 @@ impl GraphStore {
             replayed_wal_entries: replayed_entries,
             replayed_wal_bytes: replayed_bytes,
             torn_tail_ignored: false,
-            torn_tail_repaired: false,
-            discarded_wal_tail_bytes: 0,
-            torn_tail_reason: None,
+            torn_tail_repaired: tail_repair.is_some(),
+            discarded_wal_tail_bytes: tail_repair
+                .as_ref()
+                .map_or(0, |repair| repair.discarded_wal_tail_bytes),
+            torn_tail_reason,
             recovered_commit_epoch: self.commit_epoch,
         })
     }

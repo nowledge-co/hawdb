@@ -42,7 +42,8 @@
 //!   closed.
 //! - Physically missing data at end of file — a truncated fragment header,
 //!   a payload cut short by EOF, or a chain still awaiting MIDDLE/LAST —
-//!   is a torn tail, repairable only through the explicit doctor protocol.
+//!   is a torn tail, repairable through the audited doctor protocol (explicitly
+//!   or on a writable open with automatic tail repair enabled).
 //!   The torn tail begins at the first byte of the incomplete chain.
 //! - A well-formed fragment carrying a stale generation, or an all-zero
 //!   (unwritten) fragment header, marks end of log. If any block boundary

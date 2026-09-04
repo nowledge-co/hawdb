@@ -2738,6 +2738,7 @@ fn background_maintenance_work_classes() -> [WorkClass; WORK_CLASS_COUNT] {
 fn recovery_mode_name(recovery_mode: RecoveryMode) -> &'static str {
     match recovery_mode {
         RecoveryMode::Strict => "strict",
+        RecoveryMode::AutoRepairTornTail => "auto_repair_torn_tail",
         RecoveryMode::DoctorRepairTornTail => "doctor_repair_torn_tail",
     }
 }
