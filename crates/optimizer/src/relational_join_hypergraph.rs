@@ -4,7 +4,7 @@ use crate::{
     analyze_relational_join_conflicts,
     relational_join_cost::{
         estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
-        RelationalJoinRightInput,
+        RelationalJoinRightInput, RelationalJoinSelectivity,
     },
     relational_join_rewrite::validate_problem_relations,
     GroupId, Memo, PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
@@ -518,6 +518,7 @@ fn best_csg_cmp_plan(
                             right.cost_breakdown,
                             cardinality,
                             right_input,
+                            RelationalJoinSelectivity::Unknown,
                         ),
                         root: RelationalCsgCmpPlanNode::Join {
                             operator_id: *operator_id,
