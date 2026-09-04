@@ -11,7 +11,8 @@ pub mod value;
 
 pub use cancellation::{
     RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
-    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeMemoryReservation, RuntimeTaskContext,
+    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryReservation,
+    RuntimeTaskContext,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
 pub use error::{Result, SkeinError};

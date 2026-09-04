@@ -13,6 +13,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
         "//crates/qos:skein_qos",
+        "//crates/storage:skein_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )

@@ -730,6 +730,14 @@ mod tests {
     }
 
     impl RuntimeIoWaveController for RecordingIoWaveController {
+        fn try_acquire(
+            &self,
+            slots: NonZeroUsize,
+            context: &RuntimeTaskContext,
+        ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError> {
+            self.acquire(slots, context).map(Some)
+        }
+
         fn acquire(
             &self,
             slots: NonZeroUsize,

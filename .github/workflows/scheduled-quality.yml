@@ -5,6 +5,11 @@ on:
     - cron: "17 2 * * 6"
   workflow_dispatch:
     inputs:
+      run_async_io_spike:
+        description: Run only the portable async segment I/O benchmark
+        required: false
+        type: boolean
+        default: false
       soak_node_count:
         description: Synthetic nodes in the mixed runtime soak
         required: false
@@ -23,6 +28,7 @@ concurrency:
 
 jobs:
   supply-chain:
+    if: ${{ github.event_name == 'schedule' || !inputs.run_async_io_spike }}
     name: Supply Chain Refresh
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +42,7 @@ jobs:
           command: check advisories licenses
 
   vector-kernel-sanitizer:
+    if: ${{ github.event_name == 'schedule' || !inputs.run_async_io_spike }}
     name: Vector Kernel Address Sanitizer
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -59,6 +66,7 @@ jobs:
           kernel::tests
 
   mixed-runtime-soak:
+    if: ${{ github.event_name == 'schedule' || !inputs.run_async_io_spike }}
     name: Larger Than Memory Mixed Runtime Soak
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -131,3 +139,50 @@ jobs:
         if: always()
         shell: bash
         run: test "${{ steps.soak.outcome }}" = "success"
+
+  async-segment-io-spike:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_async_io_spike }}
+    name: Portable Async Segment I/O Spike
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Capture benchmark evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/async-segment-io
+          cargo bench --bench storage_async_segment_read --features tokio-runtime 2>&1 \
+            | tee artifacts/async-segment-io/run.log
+          sed -n 's/^storage_async_segment_read //p' \
+            artifacts/async-segment-io/run.log \
+            | tail -n 1 > artifacts/async-segment-io/report.json
+          jq -e '
+            .protocol == "skein-storage-async-segment-read-spike-v1" and
+            .production_eligible == false and
+            .fixture_bytes >= 536870912 and
+            .range_bytes == 4096 and
+            .range_count >= 8192 and
+            .samples_per_backend_and_depth >= 3 and
+            (.summaries | length) == 6 and
+            all(.samples[]; .cold_cache_requested == true) and
+            all(.summaries[];
+              .wall_time_ns_p50 != null and
+              .cpu_time_ns_p50 != null and
+              .peak_thread_count_p50 != null and
+              .peak_resident_bytes_p50 != null)
+          ' artifacts/async-segment-io/report.json > /dev/null
+
+      - name: Upload async I/O evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-segment-io-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/async-segment-io
+          if-no-files-found: error
+          retention-days: 30

@@ -455,7 +455,7 @@ pub use skein_core::{
     GraphRagRouteSummary, GraphRagSchemaContext, GraphRagSchemaContextOptions,
     GraphRagSchemaContextTruncation, RuntimeCancellationReason, RuntimeCancellationToken,
     RuntimeCapabilities, RuntimeCapability, RuntimeIoWaveController, RuntimeIoWaveError,
-    RuntimeIoWavePermit, RuntimeMemoryReservation, RuntimeTaskContext,
+    RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryReservation, RuntimeTaskContext,
     DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS, DEFAULT_GRAPH_RAG_MAX_LABELS,
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
@@ -476,7 +476,7 @@ pub use skein_qos::{
 #[cfg(feature = "tokio-runtime")]
 pub use skein_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
-    TokioTaskError,
+    TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
 };
 pub use skein_storage::ScanPredicate;
 pub use skein_storage::{

@@ -306,6 +306,34 @@ rust_binary(
 
 skein_benchmark_binaries(_SKEIN_DEFAULT_FEATURES)
 
+# This exploratory benchmark is intentionally separate from the routine Linux
+# smoke list. It creates an out-of-core fixture and must be run explicitly.
+rust_binary(
+    name = "skein_bench_storage_async_segment_read",
+    crate_root = "benches/storage_async_segment_read.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = ["benches/storage_async_segment_read.rs"],
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        ":skein",
+        "//crates/core:skein_core",
+        "//crates/qos:skein_qos",
+        "//crates/runtime-tokio:skein_runtime_tokio",
+        "//crates/storage:skein_storage",
+    ],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+)
+
 _SKEIN_LINUX_CI_SMOKE_ARGS = [
     "$(location :skein_cli)",
     "$(location :skein_shadow_self)",

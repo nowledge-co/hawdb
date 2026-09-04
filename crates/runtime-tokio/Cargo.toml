@@ -8,4 +8,5 @@ license.workspace = true
 [dependencies]
 skein-core = { path = "../core" }
 skein-qos = { path = "../qos" }
+skein-storage = { path = "../storage" }
 tokio = { version = "1.49", features = ["rt-multi-thread", "sync", "time"] }

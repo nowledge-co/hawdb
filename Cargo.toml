@@ -36,6 +36,7 @@ unicode-width = "0.2"
 skein-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
+libc = "0.2"
 loom = "0.7"
 
 [features]
@@ -181,6 +182,11 @@ harness = false
 [[bench]]
 name = "storage_segment_read"
 harness = false
+
+[[bench]]
+name = "storage_async_segment_read"
+harness = false
+required-features = ["tokio-runtime"]
 
 [[bench]]
 name = "vector_projection_scan"

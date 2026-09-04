@@ -13,6 +13,10 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 
+mod segment_read;
+
+pub use segment_read::{TokioSegmentReadExecutionError, TokioSegmentReadExecutor};
+
 pub use tokio::runtime::Handle as TokioHandle;
 pub use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
 

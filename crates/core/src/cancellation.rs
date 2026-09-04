@@ -63,6 +63,16 @@ impl<T: Debug + Send> RuntimeIoWavePermit for T {}
 
 /// Execution-owned hook for acquiring the I/O capacity declared at admission.
 pub trait RuntimeIoWaveController: Debug + Send + Sync {
+    /// Attempts to acquire one I/O wave without blocking the calling thread.
+    ///
+    /// `Ok(None)` means that the reservation is currently saturated. Async
+    /// runtime adapters must yield before retrying instead of spinning.
+    fn try_acquire(
+        &self,
+        slots: NonZeroUsize,
+        context: &RuntimeTaskContext,
+    ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError>;
+
     fn acquire(
         &self,
         slots: NonZeroUsize,
@@ -77,6 +87,14 @@ pub enum RuntimeIoWaveError {
         requested_slots: usize,
         reserved_slots: usize,
     },
+}
+
+#[derive(Debug)]
+pub enum RuntimeIoWaveTryAcquire {
+    /// Capacity is available. Ungoverned contexts carry no permit.
+    Acquired(Option<Box<dyn RuntimeIoWavePermit>>),
+    /// Capacity is currently saturated and the caller should yield.
+    Pending,
 }
 
 impl Display for RuntimeIoWaveError {
@@ -254,6 +272,25 @@ impl RuntimeTaskContext {
             .transpose()
     }
 
+    /// Attempts to acquire capacity for one storage I/O wave without blocking.
+    ///
+    /// Raw, ungoverned contexts return `Acquired(None)`. Governed contexts
+    /// return `Pending` while another wave owns the requested capacity.
+    pub fn try_acquire_io_wave(
+        &self,
+        slots: NonZeroUsize,
+    ) -> Result<RuntimeIoWaveTryAcquire, RuntimeIoWaveError> {
+        self.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+        let Some(controller) = &self.io_wave_controller else {
+            return Ok(RuntimeIoWaveTryAcquire::Acquired(None));
+        };
+        controller.try_acquire(slots, self).map(|permit| {
+            permit.map_or(RuntimeIoWaveTryAcquire::Pending, |permit| {
+                RuntimeIoWaveTryAcquire::Acquired(Some(permit))
+            })
+        })
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -329,6 +366,14 @@ mod tests {
     }
 
     impl RuntimeIoWaveController for RecordingIoController {
+        fn try_acquire(
+            &self,
+            slots: NonZeroUsize,
+            context: &RuntimeTaskContext,
+        ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError> {
+            self.acquire(slots, context).map(Some)
+        }
+
         fn acquire(
             &self,
             slots: NonZeroUsize,
@@ -423,5 +468,14 @@ mod tests {
         assert_eq!(active_slots.load(Ordering::Acquire), 2);
         drop(permit);
         assert_eq!(active_slots.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn ungoverned_try_acquire_is_immediately_ready() {
+        let acquired = RuntimeTaskContext::default()
+            .try_acquire_io_wave(NonZeroUsize::new(2).unwrap())
+            .unwrap();
+
+        assert!(matches!(acquired, RuntimeIoWaveTryAcquire::Acquired(None)));
     }
 }

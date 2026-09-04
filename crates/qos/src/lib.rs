@@ -22,7 +22,7 @@ pub use runtime::{
 };
 pub use skein_core::{
     RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
-    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeTaskContext,
+    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeTaskContext,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
