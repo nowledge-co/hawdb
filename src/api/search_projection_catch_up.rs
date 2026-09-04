@@ -192,16 +192,15 @@ impl Database {
         ))
     }
 
-    pub fn catch_up_search_projection_with_scheduler(
+    pub fn catch_up_search_projection_scheduled(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         max_operations_per_batch: usize,
         max_batches: usize,
     ) -> Result<ScheduledSearchProjectionCatchUpReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         validate_catch_up_request(search_index, max_operations_per_batch, max_batches)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
 
         let start = search_index.projection_freshness();
         let graph_commit_epoch = self.store.commit_epoch();
@@ -210,7 +209,7 @@ impl Database {
 
         if start.has_uncheckpointed_changes {
             let permit = match start_background_work(
-                scheduler,
+                &scheduler,
                 WorkRequest::background(WorkClass::Projection, max_operations_per_batch),
             ) {
                 Ok(permit) => permit,
@@ -226,7 +225,7 @@ impl Database {
                 }
             };
             let checkpoint = search_index.checkpoint();
-            scheduler.finish_with_outcome(permit, checkpoint.is_ok());
+            permit.finish_with_outcome(checkpoint.is_ok());
             checkpoint?;
         }
 
@@ -245,7 +244,8 @@ impl Database {
                     SearchProjectionCatchUpStopReason::CaughtUp,
                 ));
             };
-            let permit = match start_background_work(scheduler, request.background_work_request()) {
+            let permit = match start_background_work(&scheduler, request.background_work_request())
+            {
                 Ok(permit) => permit,
                 Err(stop_reason) => {
                     return Ok(scheduled_report(
@@ -264,7 +264,7 @@ impl Database {
                     search_index.checkpoint()?;
                     Ok(report)
                 });
-            scheduler.finish_with_outcome(permit, result.is_ok());
+            permit.finish_with_outcome(result.is_ok());
             let report = result?;
             applied_batch_count = applied_batch_count.saturating_add(1);
             applied_operation_count =
@@ -313,7 +313,7 @@ fn validate_catch_up_request(
 }
 
 fn start_background_work(
-    scheduler: &mut LocalQosScheduler,
+    scheduler: &LocalQosScheduler,
     request: WorkRequest,
 ) -> std::result::Result<LocalQosPermit, SearchProjectionCatchUpStopReason> {
     scheduler

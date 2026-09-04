@@ -79,8 +79,8 @@ use super::{
 };
 use crate::optimizer::PlanCost;
 use crate::qos::{
-    BackgroundWorkHint, BackgroundWorkReasonCode, LocalQosPolicy, LocalQosScheduler, LocalQosState,
-    QosAdmission, WorkClass, WorkPriority, WorkRequest,
+    BackgroundWorkHint, BackgroundWorkReasonCode, LocalQosPolicy, LocalQosState, QosAdmission,
+    WorkClass, WorkPriority, WorkRequest,
 };
 use crate::schema::{
     ConstraintKind, ConstraintSubject, IndexKind, PropertyType, SchemaObjectState, TableKind,

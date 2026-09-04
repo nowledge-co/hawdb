@@ -556,9 +556,9 @@ for executable/admitted/deferred/rejected search-projection graph deltas.
 Executable search deltas also report operation, upsert, delete, max-operation,
 and complete-through graph commit epoch fields, and the summary aggregates
 total/admitted delta operations plus the max complete-through graph commit
-epoch so caller-owned schedulers can distinguish precise incremental
-projection work from planning-only freshness signals. This object is resource
-readiness evidence for caller-owned scheduling. When
+epoch so host-owned loops can distinguish precise incremental projection work
+from planning-only freshness signals. This object is resource readiness
+evidence for host-owned scheduling. When
 `--require-background-maintenance-evidence` is passed, `cutover_evidence`
 reports `background_maintenance_required`, `background_maintenance_present`,
 `background_maintenance_ready`, `background_maintenance_protocol_matches`,

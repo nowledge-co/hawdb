@@ -896,24 +896,29 @@ fn bounded_background_schema_maintenance_admits_actual_work_not_caller_cap() {
 fn scheduled_background_schema_maintenance_tracks_mutation_budget() {
     let path = unique_test_dir("scheduled_schema_maintenance_budget");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
+        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(4),
+                    max_total_background_operations: Some(4),
+                    max_background_operations_by_class: class_limits,
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE INT NOT NULL")
             .unwrap();
         db.query("ALTER PROPERTY ON NODE TABLE Memory(id) SET STATE BACKFILL")
             .unwrap();
-        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
-        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(4),
-            max_total_background_operations: Some(4),
-            max_background_operations_by_class: class_limits,
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
 
-        let output = db
-            .run_scheduled_background_schema_maintenance(&mut scheduler, 2)
-            .unwrap();
+        let output = db.run_scheduled_background_schema_maintenance(2).unwrap();
 
         assert_eq!(output.rows.len(), 1);
         assert_eq!(
@@ -934,7 +939,18 @@ fn scheduled_background_schema_maintenance_tracks_mutation_budget() {
 fn bounded_scheduled_background_schema_maintenance_admits_actual_work_not_caller_cap() {
     let path = unique_test_dir("bounded_scheduled_schema_maintenance_actual_work");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(2),
+                    max_total_background_operations: Some(2),
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE (:Memory {id: 1})").unwrap();
         db.query("CREATE (:Memory {id: 2})").unwrap();
@@ -942,14 +958,10 @@ fn bounded_scheduled_background_schema_maintenance_admits_actual_work_not_caller
             .unwrap();
         db.query("ALTER PROPERTY ON NODE TABLE Memory(id) SET STATE BACKFILL")
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(2),
-            max_total_background_operations: Some(2),
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
 
         let output = db
-            .run_bounded_scheduled_background_schema_maintenance(&mut scheduler, 10)
+            .run_bounded_scheduled_background_schema_maintenance(10)
             .unwrap();
 
         assert_eq!(output.rows.len(), 1);
@@ -969,7 +981,21 @@ fn bounded_scheduled_background_schema_maintenance_admits_actual_work_not_caller
 fn bounded_scheduled_background_schema_maintenance_limits_execution_and_releases_budget() {
     let path = unique_test_dir("bounded_scheduled_schema_maintenance_budget");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
+        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(4),
+                    max_total_background_operations: Some(4),
+                    max_background_operations_by_class: class_limits,
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE (:Memory {id: 1, title: 'a'})").unwrap();
         db.query("CREATE (:Memory {id: 2, title: 'b'})").unwrap();
@@ -981,17 +1007,10 @@ fn bounded_scheduled_background_schema_maintenance_limits_execution_and_releases
             .unwrap();
         db.query("ALTER PROPERTY ON NODE TABLE Memory(title) SET STATE BACKFILL")
             .unwrap();
-        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
-        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(4),
-            max_total_background_operations: Some(4),
-            max_background_operations_by_class: class_limits,
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
 
         let output = db
-            .run_bounded_scheduled_background_schema_maintenance(&mut scheduler, 2)
+            .run_bounded_scheduled_background_schema_maintenance(2)
             .unwrap();
 
         assert_eq!(output.rows.len(), 1);
@@ -1019,7 +1038,21 @@ fn bounded_scheduled_background_schema_maintenance_limits_execution_and_releases
 fn planned_scheduled_background_schema_maintenance_tracks_estimated_mutation_budget() {
     let path = unique_test_dir("planned_scheduled_schema_maintenance_budget");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
+        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(4),
+                    max_total_background_operations: Some(4),
+                    max_background_operations_by_class: class_limits,
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE (:Memory {id: 1})").unwrap();
         db.query("CREATE (:Memory {id: 2})").unwrap();
@@ -1027,17 +1060,10 @@ fn planned_scheduled_background_schema_maintenance_tracks_estimated_mutation_bud
             .unwrap();
         db.query("ALTER PROPERTY ON NODE TABLE Memory(id) SET STATE BACKFILL")
             .unwrap();
-        let mut class_limits = [None; crate::WORK_CLASS_COUNT];
-        class_limits[crate::WorkClass::Mutation.as_index()] = Some(2);
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(4),
-            max_total_background_operations: Some(4),
-            max_background_operations_by_class: class_limits,
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
 
         let output = db
-            .run_planned_scheduled_background_schema_maintenance(&mut scheduler)
+            .run_planned_scheduled_background_schema_maintenance()
             .unwrap();
 
         assert_eq!(output.rows.len(), 1);
@@ -1068,10 +1094,10 @@ fn scheduled_background_schema_maintenance_releases_budget_on_validation_error()
         db.query("CREATE (:Memory {title: 'Missing id'})").unwrap();
         db.query("ALTER NODE TABLE Memory SET STATE VALIDATING")
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = db.local_qos_scheduler();
 
         let error = db
-            .run_scheduled_background_schema_maintenance(&mut scheduler, 1)
+            .run_scheduled_background_schema_maintenance(1)
             .unwrap_err();
 
         assert!(error.to_string().contains("property schema violation"));
@@ -1926,7 +1952,17 @@ fn bounded_background_property_index_projection_rebuild_admits_actual_batch_esti
 
 #[test]
 fn bounded_scheduled_background_property_index_projection_rebuild_releases_budget() {
-    let mut db = Database::new();
+    let mut class_limits = [None; crate::WORK_CLASS_COUNT];
+    class_limits[crate::WorkClass::Projection.as_index()] = Some(3);
+    let mut db = Database::new_with_config(DatabaseConfig {
+        local_qos_policy: LocalQosPolicy {
+            max_background_operations: Some(4),
+            max_total_background_operations: Some(4),
+            max_background_operations_by_class: class_limits,
+            ..LocalQosPolicy::default()
+        },
+        ..DatabaseConfig::default()
+    });
     db.query("CREATE (:Memory {kind: 'note', source_id: 'a', title: 'Graph foundations'})")
         .unwrap();
     db.query("CREATE (:Memory {kind: 'note', source_id: 'b', title: 'Vector search'})")
@@ -1936,17 +1972,10 @@ fn bounded_scheduled_background_property_index_projection_rebuild_releases_budge
     db.query("CREATE INDEX ON :Memory(kind, source_id)")
         .unwrap();
     db.query("CREATE FULLTEXT INDEX ON :Memory(title)").unwrap();
-    let mut class_limits = [None; crate::WORK_CLASS_COUNT];
-    class_limits[crate::WorkClass::Projection.as_index()] = Some(3);
-    let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-        max_background_operations: Some(4),
-        max_total_background_operations: Some(4),
-        max_background_operations_by_class: class_limits,
-        ..LocalQosPolicy::default()
-    });
+    let scheduler = db.local_qos_scheduler();
 
     let output = db
-        .rebuild_bounded_scheduled_background_property_index_projections(&mut scheduler, 3)
+        .rebuild_bounded_scheduled_background_property_index_projections(3)
         .unwrap();
 
     assert_eq!(output.rows.len(), 1);

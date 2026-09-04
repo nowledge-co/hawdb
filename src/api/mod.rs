@@ -218,6 +218,7 @@ pub struct Database {
     slow_query_log: SharedState<system_sql::SlowQueryLog>,
     statement_summary: SharedState<system_sql::StatementSummary>,
     config: DatabaseConfig,
+    local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
     reader_pins: Arc<Mutex<ReaderPins>>,
     next_derived_artifact_job_id: u64,
@@ -305,6 +306,9 @@ pub struct DatabaseConfig {
     pub slow_query_log_capacity: usize,
     pub slow_query_log_threshold_micros: u128,
     pub statement_summary_capacity: usize,
+    /// Background-work policy used for this database's full runtime lifetime
+    /// by its shared local QoS scheduler.
+    pub local_qos_policy: LocalQosPolicy,
     pub runtime_capabilities: skein_core::RuntimeCapabilities,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy,
@@ -491,6 +495,7 @@ impl Default for DatabaseConfig {
             slow_query_log_capacity: system_sql::DEFAULT_SLOW_QUERY_LOG_CAPACITY,
             slow_query_log_threshold_micros: system_sql::DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS,
             statement_summary_capacity: system_sql::DEFAULT_STATEMENT_SUMMARY_CAPACITY,
+            local_qos_policy: LocalQosPolicy::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy::default(),
@@ -906,6 +911,7 @@ fn configure_relational_fast_paths(store: &mut GraphStore, config: &DatabaseConf
 impl Default for Database {
     fn default() -> Self {
         let config = effective_database_config(DatabaseConfig::default());
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
@@ -925,6 +931,7 @@ impl Default for Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -979,6 +986,7 @@ impl Database {
 
     pub fn new_with_config(config: DatabaseConfig) -> Self {
         let config = effective_database_config(config);
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
@@ -999,6 +1007,7 @@ impl Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -1072,6 +1081,7 @@ impl Database {
         config: DatabaseConfig,
     ) -> Result<Self> {
         let config = effective_database_config(config);
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
         let replay_config = WalReplayConfig {
             recovery_mode: config.recovery_mode,
@@ -1122,6 +1132,7 @@ impl Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -1138,6 +1149,12 @@ impl Database {
 
     pub fn config(&self) -> &DatabaseConfig {
         &self.config
+    }
+
+    /// Returns a handle to the database-owned runtime QoS scheduler.
+    /// Cloned handles share the same policy, counters, and permit ownership.
+    pub fn local_qos_scheduler(&self) -> LocalQosScheduler {
+        self.local_qos_scheduler.clone()
     }
 
     pub(crate) fn runtime_capabilities(&self) -> skein_core::RuntimeCapabilities {
@@ -1174,6 +1191,11 @@ impl Database {
             }
         }
         self.store.set_telemetry_sink(telemetry.clone());
+        self.local_qos_scheduler.set_telemetry_sink(
+            telemetry
+                .as_ref()
+                .map(|telemetry| qos_telemetry_sink(telemetry.clone())),
+        );
         self.telemetry = telemetry;
     }
 
@@ -1193,10 +1215,8 @@ impl Database {
         )
     }
 
-    fn configure_qos_scheduler_telemetry(&self, scheduler: &mut LocalQosScheduler) {
-        if let Some(telemetry) = &self.telemetry {
-            scheduler.set_telemetry_sink(Some(qos_telemetry_sink(telemetry.clone())));
-        }
+    fn local_qos_scheduler_for_work(&self) -> LocalQosScheduler {
+        self.local_qos_scheduler()
     }
 
     pub fn system_variables(&self) -> &QuerySystemVariables {
@@ -2286,14 +2306,13 @@ impl Database {
 
     pub fn prepare_scheduled_background_skein_lightning_bootstrap_export(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
     ) -> Result<SkeinLightningBootstrapExport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self.skein_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
             return self.prepare_skein_lightning_bootstrap_export();
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Import,
             estimated_operations,
@@ -2313,7 +2332,7 @@ impl Database {
         };
 
         let result = self.prepare_skein_lightning_bootstrap_export();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2415,7 +2434,6 @@ impl Database {
 
     pub fn refresh_scheduled_background_optimizer_statistics(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         options: &crate::store::OptimizerStatisticsRefreshOptions,
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
@@ -2423,7 +2441,7 @@ impl Database {
         let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
             return Ok(None);
         };
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2442,7 +2460,7 @@ impl Database {
         let result = self
             .refresh_optimizer_statistics_external(options)
             .map(Some);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2511,16 +2529,12 @@ impl Database {
         }
     }
 
-    pub fn checkpoint_scheduled_background(
-        &mut self,
-        scheduler: &mut LocalQosScheduler,
-        hint: BackgroundWorkHint,
-    ) -> Result<()> {
+    pub fn checkpoint_scheduled_background(&mut self, hint: BackgroundWorkHint) -> Result<()> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
             return Ok(());
         };
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2536,7 +2550,7 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
         let result = self.checkpoint();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2591,7 +2605,6 @@ impl Database {
 
     pub fn consolidate_bounded_scheduled_background_adjacency_deltas(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_entries: usize,
     ) -> Result<AdjacencyConsolidationReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2601,7 +2614,7 @@ impl Database {
         if estimated_entries == 0 {
             return Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_entries,
@@ -2621,7 +2634,7 @@ impl Database {
         };
 
         let result = Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2711,7 +2724,6 @@ impl Database {
 
     pub fn rebuild_bounded_scheduled_background_property_index_projections(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2724,7 +2736,7 @@ impl Database {
         if estimated_operations == 0 {
             return Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Projection,
             estimated_operations,
@@ -2744,7 +2756,7 @@ impl Database {
         };
 
         let result = Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2904,11 +2916,10 @@ impl Database {
 
     pub fn run_scheduled_background_schema_maintenance(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
@@ -2928,13 +2939,12 @@ impl Database {
         };
 
         let result = self.run_schema_maintenance();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
     pub fn run_bounded_scheduled_background_schema_maintenance(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2943,7 +2953,7 @@ impl Database {
         if estimated_operations == 0 {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
@@ -2963,16 +2973,12 @@ impl Database {
         };
 
         let result = self.run_bounded_schema_maintenance(max_estimated_operations);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
-    pub fn run_planned_scheduled_background_schema_maintenance(
-        &mut self,
-        scheduler: &mut LocalQosScheduler,
-    ) -> Result<QueryOutput> {
+    pub fn run_planned_scheduled_background_schema_maintenance(&mut self) -> Result<QueryOutput> {
         self.run_scheduled_background_schema_maintenance(
-            scheduler,
             self.schema_maintenance_estimated_operations(),
         )
     }
@@ -3048,12 +3054,12 @@ impl Database {
     pub fn rebuild_scheduled_background_search_projection(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         options: SearchRebuildOptions,
     ) -> Result<SearchDerivedArtifactReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        let scheduler = self.local_qos_scheduler_for_work();
         search_index.rebuild_scheduled_background_derived_artifacts(
-            scheduler,
+            &scheduler,
             &self.catalog,
             &self.store,
             options,
@@ -3098,13 +3104,13 @@ impl Database {
     pub fn repair_scheduled_background_search_projection_metadata(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         options: MetadataRepairOptions,
         estimated_operations: usize,
     ) -> Result<MetadataRepairSummary> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        let scheduler = self.local_qos_scheduler_for_work();
         search_index.repair_scheduled_background_metadata_from_graph(
-            scheduler,
+            &scheduler,
             &self.catalog,
             &self.store,
             options,
@@ -3648,21 +3654,20 @@ impl Database {
     pub fn apply_scheduled_background_search_projection_delta(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        search_index.apply_scheduled_background_projection_delta(scheduler, delta)
+        let scheduler = self.local_qos_scheduler_for_work();
+        search_index.apply_scheduled_background_projection_delta(&scheduler, delta)
     }
 
     pub fn apply_scheduled_background_search_projection_graph_delta(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(request.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -3679,7 +3684,7 @@ impl Database {
         };
 
         let result = self.apply_search_projection_graph_delta(search_index, request);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 

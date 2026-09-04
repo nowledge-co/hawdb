@@ -1027,8 +1027,8 @@ or `Database::apply_background_search_projection_delta` to pass the same delta
 through `LocalQosPolicy` admission before applying it; callers that need
 in-flight background budget tracking can use
 `SearchIndex::apply_scheduled_background_projection_delta` or
-`Database::apply_scheduled_background_search_projection_delta` with
-`LocalQosScheduler`. Full search rebuilds expose a rankable background plan and
+`Database::apply_scheduled_background_search_projection_delta` with the
+database-owned `LocalQosScheduler`. Full search rebuilds expose a rankable background plan and
 background/scheduled rebuild wrappers so internal loops can charge the scan
 estimate before replacing the projection. Graph-derived metadata repair exposes
 the same split through `SearchIndex::metadata_repair_background_work_plan`,
@@ -1056,11 +1056,11 @@ Database-owned
 derived artifact jobs expose the same split through
 `Database::run_next_background_derived_artifact_job`, which admits internal
 background rebuild work through `LocalQosPolicy` while leaving the direct
-`run_next_derived_artifact_job` path available for explicit callers. Callers
-that want the engine to track in-flight background operation budgets can use
-`LocalQosScheduler` with
-`Database::run_next_scheduled_background_derived_artifact_job`; this remains
-synchronous and caller-driven rather than a built-in thread pool. Schema
+`run_next_derived_artifact_job` path available for explicit callers. Host loops
+that want the engine to track in-flight background operation budgets can call
+`Database::run_next_scheduled_background_derived_artifact_job`, which uses the
+database-owned shared scheduler; this remains synchronous and host-driven rather
+than a built-in thread pool. Schema
 maintenance follows the same foreground/background split:
 `Database::run_schema_maintenance` remains the explicit, ungated caller path,
 while `Database::run_planned_background_schema_maintenance` and

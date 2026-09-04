@@ -821,7 +821,7 @@ failures.
 Internal background callers can route the same pending jobs through
 `Database::run_next_background_derived_artifact_job` for stateless admission or
 `Database::run_next_scheduled_background_derived_artifact_job` for the
-caller-driven `LocalQosScheduler` path. The scheduler only tracks running
+database-owned `LocalQosScheduler` path. Shared scheduler handles track running
 background operation budgets between start and finish, including optional
 per-class budgets for projection, import, analytics, and shadow lanes; it does
 not own worker threads, reorder jobs, or gate foreground explicit rebuild
@@ -889,7 +889,7 @@ Internal parser/crawler loops can use
 `Database::run_next_background_external_content_artifact_job_with` for stateless
 `LocalQosPolicy` admission or
 `Database::run_next_scheduled_background_external_content_artifact_job_with` for
-`LocalQosScheduler` accounting. These paths charge external content work to the
+database-owned `LocalQosScheduler` accounting. These paths charge external content work to the
 `Import` class and keep direct caller-owned runtime APIs available for explicit
 foreground work. Runtimes that choose a concrete pending job from the bounded
 poll result can use `Database::run_background_external_content_artifact_job_with`
@@ -918,7 +918,7 @@ projection intact.
 Incremental search projection deltas can also run through
 `SearchIndex::apply_scheduled_background_projection_delta` or the matching
 `Database::apply_scheduled_background_search_projection_delta` facade, which
-uses `LocalQosScheduler` to account for in-flight internal background
+uses the database-owned `LocalQosScheduler` to account for in-flight internal background
 projection work while keeping the direct delta API available for explicit
 foreground callers.
 The metadata-only repair path follows the same boundary:
