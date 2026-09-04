@@ -3,7 +3,7 @@ use crate::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
-use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
+use skein_core::{RuntimeCancellationReason, RuntimeIoWaveError, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -112,6 +112,7 @@ pub enum SegmentReadExecutionError<E> {
     Read(SegmentReadError),
     Consume(E),
     Stopped(RuntimeCancellationReason),
+    RuntimeIo(RuntimeIoWaveError),
 }
 
 impl<E: Display> Display for SegmentReadExecutionError<E> {
@@ -120,6 +121,7 @@ impl<E: Display> Display for SegmentReadExecutionError<E> {
             Self::Read(error) => Display::fmt(error, formatter),
             Self::Consume(error) => write!(formatter, "segment payload consumer failed: {error}"),
             Self::Stopped(reason) => write!(formatter, "segment payload read stopped: {reason}"),
+            Self::RuntimeIo(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -130,6 +132,7 @@ impl<E: Error + 'static> Error for SegmentReadExecutionError<E> {
             Self::Read(error) => Some(error),
             Self::Consume(error) => Some(error),
             Self::Stopped(reason) => Some(reason),
+            Self::RuntimeIo(error) => Some(error),
         }
     }
 }
@@ -563,18 +566,33 @@ impl SegmentReadExecutor {
                 ));
             }
 
-            let payloads = match &self.pool {
-                Some(pool) => pool.read_wave(reader, &wave.ranges),
-                None => wave
-                    .ranges
-                    .iter()
-                    .map(|range| {
-                        reader.read_range(range).map(|bytes| SegmentReadPayload {
-                            range: range.clone(),
-                            bytes,
+            let payloads = {
+                let _io_permit = match (context, NonZeroUsize::new(wave.ranges.len())) {
+                    (Some(context), Some(slots)) => {
+                        context
+                            .acquire_io_wave(slots)
+                            .map_err(|error| match error {
+                                RuntimeIoWaveError::Stopped(reason) => {
+                                    SegmentReadExecutionError::Stopped(reason)
+                                }
+                                error => SegmentReadExecutionError::RuntimeIo(error),
+                            })?
+                    }
+                    _ => None,
+                };
+                match &self.pool {
+                    Some(pool) => pool.read_wave(reader, &wave.ranges),
+                    None => wave
+                        .ranges
+                        .iter()
+                        .map(|range| {
+                            reader.read_range(range).map(|bytes| SegmentReadPayload {
+                                range: range.clone(),
+                                bytes,
+                            })
                         })
-                    })
-                    .collect(),
+                        .collect(),
+                }
             }
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
@@ -638,7 +656,10 @@ fn range_io_error(range: &SegmentReadRange, source: std::io::Error) -> SegmentRe
 mod tests {
     use super::*;
     use crate::scan::SegmentReadScheduler;
-    use skein_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
+    use skein_core::{
+        RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
+        RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeTaskContext,
+    };
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -647,6 +668,43 @@ mod tests {
     struct ConcurrencyTrackingReader {
         active: AtomicUsize,
         peak: AtomicUsize,
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingIoWaveController {
+        active_slots: Arc<AtomicUsize>,
+        acquired_slots: Mutex<Vec<usize>>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingIoWavePermit {
+        active_slots: Arc<AtomicUsize>,
+        slots: usize,
+    }
+
+    impl Drop for RecordingIoWavePermit {
+        fn drop(&mut self) {
+            self.active_slots.fetch_sub(self.slots, Ordering::AcqRel);
+        }
+    }
+
+    impl RuntimeIoWaveController for RecordingIoWaveController {
+        fn acquire(
+            &self,
+            slots: NonZeroUsize,
+            context: &RuntimeTaskContext,
+        ) -> Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+            context.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+            self.acquired_slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(slots.get());
+            self.active_slots.fetch_add(slots.get(), Ordering::AcqRel);
+            Ok(Box::new(RecordingIoWavePermit {
+                active_slots: Arc::clone(&self.active_slots),
+                slots: slots.get(),
+            }))
+        }
     }
 
     impl SegmentRangeReader for ConcurrencyTrackingReader {
@@ -737,6 +795,37 @@ mod tests {
 
         assert_eq!(reader.active.load(Ordering::Acquire), 0);
         assert_eq!(reader.peak.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn runtime_io_slots_are_held_only_while_the_read_wave_is_live() {
+        let reader = ConcurrencyTrackingReader::default();
+        let ranges = (0..2)
+            .map(|segment_id| SegmentReadRange::new(1, segment_id, segment_id, NonZeroU64::MIN))
+            .collect::<Vec<_>>();
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
+            .schedule(ranges);
+        let pool = SegmentReadPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
+        let controller = Arc::new(RecordingIoWaveController::default());
+        let context = RuntimeTaskContext::default()
+            .with_io_wave_controller(controller.clone() as Arc<dyn RuntimeIoWaveController>);
+
+        SegmentReadExecutor::with_pool(NonZeroU64::new(2).unwrap(), pool)
+            .execute_with_context(&reader, &schedule, &context, |_| {
+                assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap();
+
+        assert_eq!(reader.peak.load(Ordering::Acquire), 2);
+        assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
+        assert_eq!(
+            *controller
+                .acquired_slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![2]
+        );
     }
 
     #[test]

@@ -69,7 +69,6 @@ use skein_qos::{
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
@@ -4691,9 +4690,7 @@ impl NowledgeMemGraph {
     ) -> Result<NowledgeMemQueryOutput> {
         self.check_runtime_context(task_context)?;
         let (permit, is_mutation) = self.admit_materialized_query(cypher, parameters)?;
-        let execution_task_context = task_context.clone().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let execution_task_context = permit.bind_task_context(task_context.clone());
         let started = Instant::now();
         let result = self.db.query_with_params_trace_and_external_with_context(
             cypher,
@@ -4892,9 +4889,7 @@ impl NowledgeMemGraph {
         self.check_runtime_context(task_context)?;
         let max_payload_bytes = self.admitted_streaming_result_bytes(options)?;
         let permit = self.admit_streaming_query(cypher, parameters, max_payload_bytes)?;
-        let execution_task_context = task_context.clone().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let execution_task_context = permit.bind_task_context(task_context.clone());
         let result = self
             .db
             .begin_read_transaction()
@@ -6349,9 +6344,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             &statement.parameters,
             limits.max_output_payload_bytes,
         )?;
-        let task_context = RuntimeTaskContext::default().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         store
             .graph
             .database()
