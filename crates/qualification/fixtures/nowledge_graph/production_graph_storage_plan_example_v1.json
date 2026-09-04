@@ -12,7 +12,7 @@
       "durable_format_version": 1,
       "schema_version": 1,
       "configuration_digest": "sha256:replace-with-qualified-config",
-      "deployment_profile": "desktop-bound-8-gib",
+      "deployment_profile": "shared-host-8-gib",
       "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
       "canonical_graph_commit_epoch": 1,
       "policy_version": 1
@@ -30,12 +30,12 @@
     "durable_format_version": 1,
     "schema_version": 1,
     "configuration_digest": "sha256:replace-with-qualified-config",
-    "deployment_profile": "desktop-bound-8-gib",
+    "deployment_profile": "shared-host-8-gib",
     "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
     "canonical_graph_commit_epoch": 1,
     "policy_version": 1
   },
-  "runtime_profile": "desktop_bound_8_gib",
+  "runtime_profile": "shared_host_8_gib",
   "database": {
     "max_read_result_rows": 100000,
     "max_read_result_payload_bytes": 67108864,

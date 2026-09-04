@@ -809,7 +809,7 @@ mod tests {
         let options = SkeinEmbeddedOpenOptions::new(&path).with_runtime_governor_config(
             skein_qos::RuntimeGovernorConfig {
                 result_budget_bytes: 64,
-                ..skein_qos::RuntimeGovernorConfig::desktop_bound()
+                ..skein_qos::RuntimeGovernorConfig::shared_host()
             },
         );
         let embedded = SkeinTokioEmbedded::open_owned(options).unwrap();

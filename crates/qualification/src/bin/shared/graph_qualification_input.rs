@@ -3,7 +3,7 @@ use skein::{
     DatabaseConfig, RuntimeGovernorConfig, StorageResidencyMode, StorageResourceProfileLimits,
 };
 use skein_qualification::{
-    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
 use std::num::NonZeroUsize;
 
@@ -12,8 +12,8 @@ use std::num::NonZeroUsize;
 pub(crate) enum RuntimeProfileInput {
     #[serde(rename = "capability_512_mib")]
     Capability512Mib,
-    #[serde(rename = "desktop_bound_8_gib")]
-    DesktopBound8Gib,
+    #[serde(rename = "shared_host_8_gib")]
+    SharedHost8Gib,
     ConfiguredWorkload {
         runtime_memory_ceiling_bytes: u64,
     },
@@ -26,13 +26,13 @@ pub(crate) struct ResolvedRuntimeProfile {
 
 impl RuntimeProfileInput {
     pub(crate) fn resolve(self) -> Result<ResolvedRuntimeProfile, String> {
-        let mut config = RuntimeGovernorConfig::desktop_bound();
+        let mut config = RuntimeGovernorConfig::shared_host();
         let max_resident_bytes = match self {
             Self::Capability512Mib => {
                 config.memory_budget_bytes = Some(CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
                 CONTENT_STORE_512_MIB_CAPABILITY_BYTES
             }
-            Self::DesktopBound8Gib => CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+            Self::SharedHost8Gib => CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
             Self::ConfiguredWorkload {
                 runtime_memory_ceiling_bytes,
             } => {

@@ -5,8 +5,8 @@ use super::content_store::{
 };
 use super::{validate_common_artifact, validate_exact_binding};
 use crate::{
-    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_DESKTOP_8_GIB_BYTES,
-    CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+    CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_QUALIFICATION_PROTOCOL,
 };
 use serde_json::Value;
@@ -18,7 +18,7 @@ const EVIDENCE_KIND: &str = "representative_production_relational_overflow_compa
 #[derive(Clone, Copy)]
 enum RequiredProfile {
     Capability512Mib,
-    DesktopBound8Gib,
+    SharedHost8Gib,
 }
 
 pub(super) fn validate_512_mib_overflow_compaction(
@@ -28,11 +28,11 @@ pub(super) fn validate_512_mib_overflow_compaction(
     validate(artifact, expected, RequiredProfile::Capability512Mib)
 }
 
-pub(super) fn validate_desktop_overflow_compaction(
+pub(super) fn validate_shared_host_overflow_compaction(
     artifact: &Value,
     expected: &ProductionQualificationIdentity,
 ) -> Vec<String> {
-    validate(artifact, expected, RequiredProfile::DesktopBound8Gib)
+    validate(artifact, expected, RequiredProfile::SharedHost8Gib)
 }
 
 fn validate(
@@ -199,12 +199,12 @@ fn validate_profile(artifact: &Value, required: RequiredProfile, blockers: &mut 
                 blockers.push("overflow_compaction_512_mib_profile_invalid".to_string());
             }
         }
-        RequiredProfile::DesktopBound8Gib => {
-            if string(artifact, "/resource_profile_kind") != Some("desktop_bound8_gib")
-                || configured != CONTENT_STORE_DESKTOP_8_GIB_BYTES
-                || peak > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+        RequiredProfile::SharedHost8Gib => {
+            if string(artifact, "/resource_profile_kind") != Some("shared_host8_gib")
+                || configured != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
+                || peak > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
             {
-                blockers.push("overflow_compaction_desktop_profile_invalid".to_string());
+                blockers.push("overflow_compaction_shared_host_profile_invalid".to_string());
             }
         }
     }
@@ -597,16 +597,16 @@ fn validate_governor(
                 blockers.push("overflow_compaction_512_mib_governor_invalid".to_string());
             }
         }
-        RequiredProfile::DesktopBound8Gib => {
+        RequiredProfile::SharedHost8Gib => {
             if unsigned(governor, "/effective_memory_limit_bytes")
-                != Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES)
+                != Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES)
                 || !governor
                     .pointer("/configured_memory_ceiling_bytes")
                     .is_some_and(Value::is_null)
-                || capacity > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
-                || budget > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+                || capacity > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
+                || budget > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
             {
-                blockers.push("overflow_compaction_desktop_governor_invalid".to_string());
+                blockers.push("overflow_compaction_shared_host_governor_invalid".to_string());
             }
         }
     }

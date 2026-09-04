@@ -185,7 +185,7 @@ pub fn run_production_morsel_profile(
         u64::try_from(execution_memory.batch_payload_bytes.get()).unwrap_or(u64::MAX);
     let query_identity = QueryIdentity::new("cypher", &config.statement.cypher);
     let parameter_digest = parameter_digest(&config.statement.parameters);
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.open_options.graph_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
@@ -953,7 +953,7 @@ mod tests {
                 blocking_task_limit: NonZeroUsize::new(1),
                 memory_budget_bytes: Some(64 * 1024 * 1024),
                 result_budget_bytes: 4 * 1024 * 1024,
-                ..RuntimeGovernorConfig::desktop_bound()
+                ..RuntimeGovernorConfig::shared_host()
             },
             statement: NowledgeGraphStatement {
                 cypher: "MATCH (m:Memory) RETURN m.id AS memory_id".to_string(),

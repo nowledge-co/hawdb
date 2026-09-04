@@ -31,7 +31,7 @@ pub struct RuntimeCapabilities {
 }
 
 impl RuntimeCapabilities {
-    pub const fn desktop_bound() -> Self {
+    pub const fn shared_host() -> Self {
         Self {
             access_control: false,
             full_text_search: true,
@@ -92,7 +92,7 @@ impl RuntimeCapabilities {
 
 impl Default for RuntimeCapabilities {
     fn default() -> Self {
-        Self::desktop_bound()
+        Self::shared_host()
     }
 }
 
@@ -128,11 +128,11 @@ mod tests {
 
     #[test]
     fn requested_capabilities_are_bounded_by_compiled_availability() {
-        let available = RuntimeCapabilities::desktop_bound()
+        let available = RuntimeCapabilities::shared_host()
             .with(RuntimeCapability::AccessControl, true)
             .with(RuntimeCapability::GraphAnalytics, false)
             .with(RuntimeCapability::BackgroundMaintenance, false);
-        let effective = RuntimeCapabilities::desktop_bound().intersection(available);
+        let effective = RuntimeCapabilities::shared_host().intersection(available);
 
         assert!(!effective.access_control);
         assert!(effective.full_text_search);

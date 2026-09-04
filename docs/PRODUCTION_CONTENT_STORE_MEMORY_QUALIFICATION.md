@@ -2,7 +2,7 @@
 
 This runbook collects the identity-bound memory-policy matrix required before
 Content Store workload evidence can be admitted. The collector evaluates the
-dynamic desktop policy and the explicit 512 MiB capability policy from one
+dynamic shared-host policy and the explicit 512 MiB capability policy from one
 actual host/cgroup resource snapshot. It does not open, copy, create,
 checkpoint, or mutate a Skein database.
 
@@ -15,7 +15,7 @@ behavior, and write amplification.
 
 - Run on the exact target OS, architecture, binary revision, and feature set
   named by the release identity.
-- The desktop case requires an effective host or cgroup memory limit of exactly
+- The shared-host case requires an effective host or cgroup memory limit of exactly
   8 GiB. A larger host can use a separate 8 GiB cgroup v2 envelope.
 - The storage path must exist and reside on the same device class used by the
   representative database so the runtime can derive the normal I/O budget.
@@ -46,7 +46,7 @@ cargo run -p skein-qualification \
 
 The report always contains both profiles:
 
-- `desktop_bound_8_gib` leaves the governor dynamic. Capacity is capped at
+- `shared_host_8_gib` leaves the governor dynamic. Capacity is capped at
   2 GiB; the budget is one quarter of detected headroom, normally around
   1--2 GiB and allowed to fall below 1 GiB under pressure.
 - `capability_512_mib` applies an explicit 512 MiB Skein ceiling on the same

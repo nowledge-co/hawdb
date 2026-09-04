@@ -60,8 +60,8 @@ fn run(
         content_store_512_mib_overflow_compaction: Some(read_value(
             &config.content_store_512_mib_overflow_compaction,
         )?),
-        content_store_desktop_overflow_compaction: Some(read_value(
-            &config.content_store_desktop_overflow_compaction,
+        content_store_shared_host_overflow_compaction: Some(read_value(
+            &config.content_store_shared_host_overflow_compaction,
         )?),
         content_store_mutation_matrix: Some(read_value(&config.content_store_mutation_matrix)?),
         graph_storage: Some(read_value(&config.graph)?),
@@ -95,7 +95,7 @@ struct Config {
     content_store_read: PathBuf,
     content_store_512_mib_read: PathBuf,
     content_store_512_mib_overflow_compaction: PathBuf,
-    content_store_desktop_overflow_compaction: PathBuf,
+    content_store_shared_host_overflow_compaction: PathBuf,
     content_store_mutation_matrix: PathBuf,
     graph: PathBuf,
     graph_index_matrix: PathBuf,
@@ -114,7 +114,7 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Option<Config>
     let mut content_store_read = None;
     let mut content_store_512_mib_read = None;
     let mut content_store_512_mib_overflow_compaction = None;
-    let mut content_store_desktop_overflow_compaction = None;
+    let mut content_store_shared_host_overflow_compaction = None;
     let mut content_store_mutation_matrix = None;
     let mut graph = None;
     let mut graph_index_matrix = None;
@@ -145,8 +145,8 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Option<Config>
             "--content-store-512-mib-overflow-compaction-json" => {
                 content_store_512_mib_overflow_compaction = Some(PathBuf::from(value));
             }
-            "--content-store-desktop-overflow-compaction-json" => {
-                content_store_desktop_overflow_compaction = Some(PathBuf::from(value));
+            "--content-store-shared-host-overflow-compaction-json" => {
+                content_store_shared_host_overflow_compaction = Some(PathBuf::from(value));
             }
             "--content-store-mutation-matrix-json" => {
                 content_store_mutation_matrix = Some(PathBuf::from(value));
@@ -192,9 +192,9 @@ fn parse_config(args: impl IntoIterator<Item = String>) -> Result<Option<Config>
             content_store_512_mib_overflow_compaction,
             "--content-store-512-mib-overflow-compaction-json",
         )?,
-        content_store_desktop_overflow_compaction: required(
-            content_store_desktop_overflow_compaction,
-            "--content-store-desktop-overflow-compaction-json",
+        content_store_shared_host_overflow_compaction: required(
+            content_store_shared_host_overflow_compaction,
+            "--content-store-shared-host-overflow-compaction-json",
         )?,
         content_store_mutation_matrix: required(
             content_store_mutation_matrix,
@@ -260,7 +260,7 @@ fn usage() -> &'static str {
      --expected-identity-json <path> --content-store-memory-profiles-json <path> \
      --content-store-read-json <path> --content-store-512-mib-read-json <path> \
      --content-store-512-mib-overflow-compaction-json <path> \
-     --content-store-desktop-overflow-compaction-json <path> \
+     --content-store-shared-host-overflow-compaction-json <path> \
      --content-store-mutation-matrix-json <path> --graph-json <path> \
      --graph-index-matrix-json <path> --search-json <path> \
      --vector-json <path>... --morsel-json <path>... --blocking-json <path> \
@@ -289,8 +289,8 @@ mod tests {
             "content-store-512-mib-read.json".to_string(),
             "--content-store-512-mib-overflow-compaction-json".to_string(),
             "content-store-512-mib-overflow-compaction.json".to_string(),
-            "--content-store-desktop-overflow-compaction-json".to_string(),
-            "content-store-desktop-overflow-compaction.json".to_string(),
+            "--content-store-shared-host-overflow-compaction-json".to_string(),
+            "content-store-shared-host-overflow-compaction.json".to_string(),
             "--content-store-mutation-matrix-json".to_string(),
             "content-store-mutation.json".to_string(),
             "--graph-json".to_string(),
@@ -334,8 +334,8 @@ mod tests {
             PathBuf::from("content-store-512-mib-overflow-compaction.json")
         );
         assert_eq!(
-            config.content_store_desktop_overflow_compaction,
-            PathBuf::from("content-store-desktop-overflow-compaction.json")
+            config.content_store_shared_host_overflow_compaction,
+            PathBuf::from("content-store-shared-host-overflow-compaction.json")
         );
         assert_eq!(
             config.content_store_mutation_matrix,

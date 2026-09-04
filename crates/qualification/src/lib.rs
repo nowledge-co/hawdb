@@ -715,7 +715,7 @@ fn embedded_options(config: &MixedSoakConfig) -> SkeinEmbeddedOpenOptions {
         blocking_task_limit: NonZeroUsize::new(concurrency),
         memory_budget_bytes: Some(config.runtime_memory_budget_bytes),
         result_budget_bytes: config.result_budget_bytes,
-        ..RuntimeGovernorConfig::desktop_bound()
+        ..RuntimeGovernorConfig::shared_host()
     };
     SkeinEmbeddedOpenOptions::new(&config.database_path)
         .with_config(database)

@@ -266,7 +266,7 @@ mod tests {
     };
     use skein_qualification::{
         ContentStoreResourceProfileKind, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
-        CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+        CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
     };
 
     #[test]
@@ -298,9 +298,9 @@ mod tests {
     }
 
     #[test]
-    fn desktop_profile_keeps_dynamic_memory_admission() {
+    fn shared_host_profile_keeps_dynamic_memory_admission() {
         let mut json = valid_plan_json();
-        json["resource_profile"] = serde_json::json!("desktop_bound_8_gib");
+        json["resource_profile"] = serde_json::json!("shared_host_8_gib");
         let plan: ContentStoreOverflowCompactionQualificationPlan =
             serde_json::from_value(json).unwrap();
         let config = plan
@@ -309,11 +309,11 @@ mod tests {
 
         assert_eq!(
             config.resource_profile_kind,
-            ContentStoreResourceProfileKind::DesktopBound8Gib
+            ContentStoreResourceProfileKind::SharedHost8Gib
         );
         assert_eq!(
             config.configured_available_memory_bytes,
-            CONTENT_STORE_DESKTOP_8_GIB_BYTES
+            CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
         );
         assert_eq!(config.runtime_governor_config.memory_budget_bytes, None);
     }

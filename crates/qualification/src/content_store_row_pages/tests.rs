@@ -774,16 +774,18 @@ fn capability_512_mib_is_evidence_identity_not_a_universal_limit() {
         .validate(&nowledge_content_store_sql_corpus().unwrap())
         .is_ok());
 
-    let mut desktop =
+    let mut shared_host =
         ContentStoreInitialRowPageQualificationConfig::synthetic(&path, "test-revision");
-    desktop.resource_profile_kind = ContentStoreResourceProfileKind::DesktopBound8Gib;
-    desktop.configured_available_memory_bytes = 9 * 1024 * 1024 * 1024;
-    let desktop_error = desktop
+    shared_host.resource_profile_kind = ContentStoreResourceProfileKind::SharedHost8Gib;
+    shared_host.configured_available_memory_bytes = 9 * 1024 * 1024 * 1024;
+    let shared_host_error = shared_host
         .validate(&nowledge_content_store_sql_corpus().unwrap())
-        .expect_err("the desktop profile cannot exceed the host profile limit");
-    assert!(desktop_error.to_string().contains("desktop 8 GiB profile"));
-    desktop.configured_available_memory_bytes = 3 * 1024 * 1024 * 1024;
-    assert!(desktop
+        .expect_err("the shared-host profile cannot exceed the host profile limit");
+    assert!(shared_host_error
+        .to_string()
+        .contains("shared-host 8 GiB profile"));
+    shared_host.configured_available_memory_bytes = 3 * 1024 * 1024 * 1024;
+    assert!(shared_host
         .validate(&nowledge_content_store_sql_corpus().unwrap())
         .is_ok());
 }

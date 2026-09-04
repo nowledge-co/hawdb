@@ -404,7 +404,7 @@ cross-platform evidence described below; implemented executor mechanics alone
 are not cutover evidence.
 
 Content Store memory evidence separates policy qualification from workload
-qualification. On an 8 GiB desktop limit, the default governor reserves 75% for
+qualification. On an 8 GiB shared-host limit, the default governor reserves 75% for
 the host process and derives at most 2 GiB of Skein capacity; sensed available
 headroom normally moves the budget through the 1--2 GiB range and may reduce it
 further under pressure. The 512 MiB capability case is a separately configured
@@ -616,8 +616,8 @@ Page-fault budgets whose names end in `per_run` apply independently to each
 read. The lifecycle profile records cumulative open/read faults for diagnosis,
 but MUST NOT compare that aggregate with a per-run limit.
 
-`DesktopBound8Gib`, `Capability512Mib`, and `ConfiguredWorkload` remain
-different evidence profiles. The desktop profile requires the observed 8 GiB
+`SharedHost8Gib`, `Capability512Mib`, and `ConfiguredWorkload` remain
+different evidence profiles. The shared-host profile requires the observed 8 GiB
 effective limit and uses the dynamic governor budget capped at 2 GiB. The 512
 MiB profile requires an explicit 512 MiB Skein governor ceiling, honors any
 smaller detected host or cgroup ceiling and available headroom, and proves that
@@ -665,7 +665,7 @@ release evaluator recomputes that invariant from raw evidence.
 The writer matrix uses the same resource-profile meanings as the read-only
 gate. `Capability512Mib` proves that an explicitly configured Skein workload can
 complete inside a 512 MiB envelope; it is neither the default capacity nor a
-universal release cutoff. `DesktopBound8Gib` continues to mean an 8 GiB host
+universal release cutoff. `SharedHost8Gib` continues to mean an 8 GiB host
 whose automatic Skein capacity is dynamically bounded at 2 GiB. Every initial
 source and replica row/index artifact MUST exceed the cache, so passing the
 matrix cannot depend on full database residency. Synthetic matrix tests prove

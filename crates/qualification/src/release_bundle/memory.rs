@@ -3,9 +3,10 @@ use super::{
     validate_exact_binding,
 };
 use crate::{
-    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_DESKTOP_8_GIB_BYTES,
-    CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES, CONTENT_STORE_DESKTOP_NOMINAL_AVAILABLE_BYTES,
-    CONTENT_STORE_DESKTOP_NOMINAL_MIN_BUDGET_BYTES,
+    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+    CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_SHARED_HOST_NOMINAL_AVAILABLE_BYTES,
+    CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES,
     PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL,
 };
 use serde_json::Value;
@@ -23,64 +24,65 @@ pub(super) fn validate_memory_profiles(
         &mut blockers,
     );
     validate_exact_binding(artifact, "/evidence_binding", expected, &mut blockers);
-    let desktop = artifact.pointer("/desktop_bound_8_gib");
+    let shared_host_profile = artifact.pointer("/shared_host_8_gib");
     let capability = artifact.pointer("/capability_512_mib");
-    let Some(desktop) = desktop else {
-        blockers.push("content_store_desktop_memory_profile_missing".to_string());
+    let Some(shared_host) = shared_host_profile else {
+        blockers.push("content_store_shared_host_memory_profile_missing".to_string());
         return deduplicate(blockers);
     };
     let Some(capability) = capability else {
         blockers.push("content_store_512_mib_memory_profile_missing".to_string());
         return deduplicate(blockers);
     };
-    validate_desktop_profile(desktop, &mut blockers);
+    validate_shared_host_profile(shared_host, &mut blockers);
     validate_capability_profile(capability, &mut blockers);
     for pointer in [
         "/observed_effective_limit_bytes",
         "/observed_effective_available_bytes",
     ] {
-        if desktop.pointer(pointer) != capability.pointer(pointer) {
+        if shared_host.pointer(pointer) != capability.pointer(pointer) {
             blockers.push("content_store_memory_profile_snapshot_mismatch".to_string());
         }
     }
     deduplicate(blockers)
 }
 
-fn validate_desktop_profile(profile: &Value, blockers: &mut Vec<String>) {
+fn validate_shared_host_profile(profile: &Value, blockers: &mut Vec<String>) {
     validate_profile_header(
         profile,
-        "desktop_bound8_gib",
-        "content_store_desktop",
+        "shared_host8_gib",
+        "content_store_shared_host",
         blockers,
     );
-    let fraction = u64::from(RuntimeGovernorConfig::desktop_bound().memory_fraction_per_million);
+    let fraction = u64::from(RuntimeGovernorConfig::shared_host().memory_fraction_per_million);
     let available = unsigned(profile, "/observed_effective_available_bytes");
     let expected_budget = available.map(|available| {
-        scale_memory(available, fraction).min(CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES)
+        scale_memory(available, fraction).min(CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES)
     });
     if unsigned(profile, "/required_effective_limit_bytes")
-        != Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES)
+        != Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES)
         || unsigned(profile, "/observed_effective_limit_bytes")
-            != Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES)
+            != Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES)
         || !is_null(profile, "/configured_memory_ceiling_bytes")
         || unsigned(profile, "/nominal_available_threshold_bytes")
-            != Some(CONTENT_STORE_DESKTOP_NOMINAL_AVAILABLE_BYTES)
+            != Some(CONTENT_STORE_SHARED_HOST_NOMINAL_AVAILABLE_BYTES)
         || unsigned(profile, "/memory_fraction_per_million") != Some(fraction)
         || unsigned(profile, "/memory_capacity_bytes")
-            != Some(CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES)
+            != Some(CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES)
         || unsigned(profile, "/expected_capacity_bytes")
-            != Some(CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES)
+            != Some(CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES)
         || unsigned(profile, "/memory_budget_bytes") != expected_budget
         || unsigned(profile, "/expected_dynamic_budget_bytes") != expected_budget
     {
-        blockers.push("content_store_desktop_memory_policy_invalid".to_string());
+        blockers.push("content_store_shared_host_memory_policy_invalid".to_string());
     }
     let nominal = expected_budget.is_some_and(|budget| {
-        (CONTENT_STORE_DESKTOP_NOMINAL_MIN_BUDGET_BYTES..=CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES)
+        (CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES
+            ..=CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES)
             .contains(&budget)
     });
     if boolean(profile, "/nominal_budget_range_observed") != Some(nominal) {
-        blockers.push("content_store_desktop_nominal_range_invalid".to_string());
+        blockers.push("content_store_shared_host_nominal_range_invalid".to_string());
     }
 }
 
@@ -91,7 +93,7 @@ fn validate_capability_profile(profile: &Value, blockers: &mut Vec<String>) {
         "content_store_512_mib",
         blockers,
     );
-    let fraction = u64::from(RuntimeGovernorConfig::desktop_bound().memory_fraction_per_million);
+    let fraction = u64::from(RuntimeGovernorConfig::shared_host().memory_fraction_per_million);
     let available = unsigned(profile, "/observed_effective_available_bytes");
     let expected_budget = available.map(|available| {
         scale_memory(available, fraction).min(CONTENT_STORE_512_MIB_CAPABILITY_BYTES)

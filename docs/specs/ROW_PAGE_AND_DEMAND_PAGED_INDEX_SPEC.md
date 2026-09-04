@@ -262,7 +262,7 @@ declared index cannot impersonate a constraint root. Trees use
 generation-specific fixed-size slots, so a `PageId` determines its offset
 without a cardinality-sized in-memory directory. Default slots are 64 KiB,
 with 16 KiB admission limits for encoded keys and logical row locators, to
-bound desktop random I/O and avoid one-megabyte amplification for sparse pages.
+bound shared-host random I/O and avoid one-megabyte amplification for sparse pages.
 The total required-root count is admitted before a candidate file is created,
 so an oversized catalog cannot first build an unselectable artifact.
 Every checkpoint attempt writes a generation-specific page artifact and then a
@@ -855,8 +855,8 @@ budget excess, absent physical deletion, scrub failure, or reopen drift blocks
 activation.
 
 The 512 MiB resource kind is an explicitly configured low-memory capability
-run. It is not selected automatically and does not redefine the desktop
-capacity policy. The 8 GiB desktop kind retains dynamic admission and a 2 GiB
+run. It is not selected automatically and does not redefine the shared-host
+capacity policy. The 8 GiB shared-host kind retains dynamic admission and a 2 GiB
 maximum Skein capacity; its measured RSS limits remain separately declared in
 the qualification input.
 
@@ -868,7 +868,7 @@ serializes every scan, overlay, rewrite, sort, spill, result, RSS, page-fault,
 latency, write-amplification, and physical-reclamation bound so the release
 evaluator can recompute admission from raw evidence. The final release bundle
 requires two current-identity artifacts: one explicit 512 MiB capability run
-and one dynamic 8 GiB desktop run. Neither artifact can satisfy the other's
+and one dynamic 8 GiB shared-host run. Neither artifact can satisfy the other's
 profile obligation, and a top-level `ready` value cannot override inconsistent
 raw policy, generation, digest, resource, or reclamation fields.
 

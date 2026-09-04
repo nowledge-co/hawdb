@@ -613,7 +613,7 @@ mod tests {
             ),
         );
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             resources,
             IoConcurrencyBudget::new(1, 1),
         );

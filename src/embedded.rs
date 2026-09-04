@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmbeddedDeploymentProfile {
     #[default]
-    DesktopBound,
+    SharedHost,
     MobileEmbedded,
 }
 
@@ -174,7 +174,7 @@ impl From<RuntimeAdmissionError> for EmbeddedQueryError {
 
 impl SkeinEmbeddedOpenOptions {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self::for_profile(path, EmbeddedDeploymentProfile::DesktopBound)
+        Self::for_profile(path, EmbeddedDeploymentProfile::SharedHost)
     }
 
     pub fn mobile(path: impl Into<PathBuf>) -> Self {
@@ -449,8 +449,8 @@ impl SkeinEmbedded {
     pub fn configure_search_index(&self, search_index: &mut SearchIndex) {
         search_index.set_runtime_capabilities(self.runtime_capabilities());
         let config = match self.deployment_profile {
-            EmbeddedDeploymentProfile::DesktopBound => {
-                SearchRangeReadConfig::desktop_bound(self.runtime_resources.storage_io)
+            EmbeddedDeploymentProfile::SharedHost => {
+                SearchRangeReadConfig::shared_host(self.runtime_resources.storage_io)
             }
             EmbeddedDeploymentProfile::MobileEmbedded => {
                 SearchRangeReadConfig::mobile_embedded(self.runtime_resources.storage_io)
@@ -487,7 +487,7 @@ impl SkeinEmbedded {
 
 fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig {
     match profile {
-        EmbeddedDeploymentProfile::DesktopBound => DatabaseConfig::default(),
+        EmbeddedDeploymentProfile::SharedHost => DatabaseConfig::default(),
         EmbeddedDeploymentProfile::MobileEmbedded => DatabaseConfig {
             max_read_result_rows: Some(512),
             max_optimizer_groups: Some(256),
@@ -531,8 +531,8 @@ fn default_io_budget(
     device: StorageDeviceProfile,
 ) -> IoConcurrencyBudget {
     match profile {
-        EmbeddedDeploymentProfile::DesktopBound => {
-            IoConcurrencyBudget::desktop_bound_for_device(device)
+        EmbeddedDeploymentProfile::SharedHost => {
+            IoConcurrencyBudget::shared_host_for_device(device)
         }
         EmbeddedDeploymentProfile::MobileEmbedded => {
             IoConcurrencyBudget::mobile_embedded_for_device(device)
@@ -542,7 +542,7 @@ fn default_io_budget(
 
 fn default_runtime_governor_config(profile: EmbeddedDeploymentProfile) -> RuntimeGovernorConfig {
     match profile {
-        EmbeddedDeploymentProfile::DesktopBound => RuntimeGovernorConfig::desktop_bound(),
+        EmbeddedDeploymentProfile::SharedHost => RuntimeGovernorConfig::shared_host(),
         EmbeddedDeploymentProfile::MobileEmbedded => RuntimeGovernorConfig::mobile_embedded(),
     }
 }
@@ -881,20 +881,20 @@ mod tests {
     }
 
     #[test]
-    fn desktop_and_mobile_profiles_share_storage_and_core_cypher_semantics() {
+    fn shared_host_and_mobile_profiles_share_storage_and_core_cypher_semantics() {
         let root = unique_test_dir("embedded-profile-compatibility");
         let graph_path = root.join("graph");
         let storage_version = {
-            let mut desktop = SkeinEmbedded::open(&graph_path).unwrap();
-            desktop
+            let mut shared_host = SkeinEmbedded::open(&graph_path).unwrap();
+            shared_host
                 .database_mut()
                 .query("CREATE NODE TABLE Memory")
                 .unwrap();
-            desktop
+            shared_host
                 .database_mut()
                 .query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE STRING NOT NULL")
                 .unwrap();
-            desktop
+            shared_host
                 .database_mut()
                 .query_with_params(
                     "CREATE (:Memory {id: $id, title: $title})",
@@ -907,7 +907,7 @@ mod tests {
                     ]),
                 )
                 .unwrap();
-            desktop.database().storage_version()
+            shared_host.database().storage_version()
         };
 
         {
@@ -953,8 +953,8 @@ mod tests {
                 .unwrap();
         }
 
-        let mut desktop = SkeinEmbedded::open(&graph_path).unwrap();
-        let output = desktop
+        let mut shared_host = SkeinEmbedded::open(&graph_path).unwrap();
+        let output = shared_host
             .database_mut()
             .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id ASC")
             .unwrap();

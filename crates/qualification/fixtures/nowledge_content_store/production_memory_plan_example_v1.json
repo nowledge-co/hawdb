@@ -12,7 +12,7 @@
       "durable_format_version": 1,
       "schema_version": 1,
       "configuration_digest": "sha256:replace-with-qualified-config",
-      "deployment_profile": "desktop-bound-8-gib",
+      "deployment_profile": "shared-host-8-gib",
       "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
       "canonical_graph_commit_epoch": 1,
       "policy_version": 1
@@ -30,7 +30,7 @@
     "durable_format_version": 1,
     "schema_version": 1,
     "configuration_digest": "sha256:replace-with-qualified-config",
-    "deployment_profile": "desktop-bound-8-gib",
+    "deployment_profile": "shared-host-8-gib",
     "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
     "canonical_graph_commit_epoch": 1,
     "policy_version": 1

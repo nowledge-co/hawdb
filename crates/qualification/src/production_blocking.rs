@@ -192,7 +192,7 @@ pub fn run_production_blocking_qualification(
         .expect("validated database config")
         .execution_memory
         .clone();
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.open_options.graph_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
@@ -485,7 +485,7 @@ mod tests {
             runtime_governor_config: RuntimeGovernorConfig {
                 memory_budget_bytes: Some(128 * 1024 * 1024),
                 result_budget_bytes: 16 * 1024 * 1024,
-                ..RuntimeGovernorConfig::desktop_bound()
+                ..RuntimeGovernorConfig::shared_host()
             },
             evidence_binding: ProductionEvidenceBinding {
                 identity: identity.clone(),

@@ -23,7 +23,7 @@ mod transaction;
 use crate::{
     nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
     ContentStoreSchemaIdentity, ContentStoreSqlCorpus, ContentStoreSqlCorpusIdentity,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
 };
 use corruption::qualify_content_store_corruption;
 use evidence::{execute_qualified_read, execute_read_set, require_matching_results};
@@ -63,7 +63,7 @@ pub const CONTENT_STORE_512_MIB_CAPABILITY_BYTES: u64 = 512 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum ContentStoreResourceProfileKind {
     Capability512Mib,
-    DesktopBound8Gib,
+    SharedHost8Gib,
     ConfiguredWorkload,
 }
 
@@ -169,11 +169,11 @@ impl ContentStoreInitialRowPageQualificationConfig {
                 "content-store 512 MiB capability profile must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} available bytes"
             )));
         }
-        if self.resource_profile_kind == ContentStoreResourceProfileKind::DesktopBound8Gib
-            && self.configured_available_memory_bytes > CONTENT_STORE_DESKTOP_8_GIB_BYTES
+        if self.resource_profile_kind == ContentStoreResourceProfileKind::SharedHost8Gib
+            && self.configured_available_memory_bytes > CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
         {
             return Err(SkeinError::Semantic(format!(
-                "content-store desktop 8 GiB profile cannot declare more than {CONTENT_STORE_DESKTOP_8_GIB_BYTES} available bytes"
+                "content-store shared-host 8 GiB profile cannot declare more than {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} available bytes"
             )));
         }
         if self.segment_cache_capacity_bytes > self.configured_available_memory_bytes {

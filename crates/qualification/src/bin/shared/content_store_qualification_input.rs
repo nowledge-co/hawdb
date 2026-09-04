@@ -4,7 +4,7 @@ use skein::RuntimeGovernorConfig;
 use skein_qualification::{
     ContentStoreResourceProfileKind, ProductionContentStoreReadCase,
     ProductionContentStoreResourceLimits, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
 };
 
 #[derive(Debug, Deserialize)]
@@ -12,8 +12,8 @@ use skein_qualification::{
 pub(crate) enum ResourceProfileInput {
     #[serde(rename = "capability_512_mib")]
     Capability512Mib,
-    #[serde(rename = "desktop_bound_8_gib")]
-    DesktopBound8Gib,
+    #[serde(rename = "shared_host_8_gib")]
+    SharedHost8Gib,
     ConfiguredWorkload {
         available_memory_bytes: u64,
         runtime_memory_ceiling_bytes: u64,
@@ -24,7 +24,7 @@ impl ResourceProfileInput {
     pub(crate) fn resolve(
         self,
     ) -> Result<(ContentStoreResourceProfileKind, u64, RuntimeGovernorConfig), String> {
-        let mut runtime = RuntimeGovernorConfig::desktop_bound();
+        let mut runtime = RuntimeGovernorConfig::shared_host();
         match self {
             Self::Capability512Mib => {
                 runtime.memory_budget_bytes = Some(CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
@@ -34,9 +34,9 @@ impl ResourceProfileInput {
                     runtime,
                 ))
             }
-            Self::DesktopBound8Gib => Ok((
-                ContentStoreResourceProfileKind::DesktopBound8Gib,
-                CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            Self::SharedHost8Gib => Ok((
+                ContentStoreResourceProfileKind::SharedHost8Gib,
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
                 runtime,
             )),
             Self::ConfiguredWorkload {

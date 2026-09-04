@@ -9,7 +9,7 @@ use crate::{
     latency_percentiles, nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
     ContentStoreSchemaIdentity, ContentStoreSqlCorpus, ContentStoreSqlCorpusIdentity,
     ContentStoreSqlStatementClassification, ContentStoreSqlStatementKind, LatencyPercentiles,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES, CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -716,19 +716,19 @@ fn validate_resource_profile(
                 "production Content Store mutation 512 MiB capability must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} bytes"
             )))
         }
-        ContentStoreResourceProfileKind::DesktopBound8Gib
-            if config.configured_available_memory_bytes != CONTENT_STORE_DESKTOP_8_GIB_BYTES =>
+        ContentStoreResourceProfileKind::SharedHost8Gib
+            if config.configured_available_memory_bytes != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES =>
         {
             Err(SkeinError::Semantic(format!(
-                "production Content Store mutation desktop profile must declare {CONTENT_STORE_DESKTOP_8_GIB_BYTES} bytes"
+                "production Content Store mutation shared-host profile must declare {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} bytes"
             )))
         }
-        ContentStoreResourceProfileKind::DesktopBound8Gib
+        ContentStoreResourceProfileKind::SharedHost8Gib
             if config.resource_limits.max_peak_resident_bytes
-                > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES =>
+                > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES =>
         {
             Err(SkeinError::Semantic(format!(
-                "production Content Store mutation desktop peak RSS budget must not exceed {CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES} bytes"
+                "production Content Store mutation shared-host peak RSS budget must not exceed {CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES} bytes"
             )))
         }
         _ => Ok(()),

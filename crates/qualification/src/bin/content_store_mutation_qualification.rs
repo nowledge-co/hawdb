@@ -22,7 +22,8 @@ use skein_qualification::{
     ProductionContentStoreMutationQualificationConfig,
     ProductionContentStoreMutationResourceLimits, ProductionContentStoreMutationVerificationCase,
     ProductionContentStoreMutationWorker, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES, PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+    PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_WRITER_MATRIX,
 };
 use std::collections::BTreeMap;
@@ -226,8 +227,8 @@ impl ContentStoreMutationQualificationPlan {
 enum MutationResourceProfileInput {
     #[serde(rename = "capability_512_mib")]
     Capability512Mib,
-    #[serde(rename = "desktop_bound_8_gib")]
-    DesktopBound8Gib,
+    #[serde(rename = "shared_host_8_gib")]
+    SharedHost8Gib,
     ConfiguredWorkload {
         available_memory_bytes: u64,
     },
@@ -240,9 +241,9 @@ impl MutationResourceProfileInput {
                 ContentStoreResourceProfileKind::Capability512Mib,
                 CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
             )),
-            Self::DesktopBound8Gib => Ok((
-                ContentStoreResourceProfileKind::DesktopBound8Gib,
-                CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            Self::SharedHost8Gib => Ok((
+                ContentStoreResourceProfileKind::SharedHost8Gib,
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             )),
             Self::ConfiguredWorkload {
                 available_memory_bytes,

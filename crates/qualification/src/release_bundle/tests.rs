@@ -2,8 +2,8 @@ use super::*;
 use crate::evidence_digest::hash_bytes;
 use crate::{
     nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
-    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_DESKTOP_8_GIB_BYTES,
-    CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+    CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_QUALIFICATION_PROTOCOL,
@@ -23,7 +23,7 @@ fn complete_raw_artifact_bundle_is_ready() {
         content_store_512_mib_overflow_compaction: Some(content_store_overflow_compaction(
             &expected, true,
         )),
-        content_store_desktop_overflow_compaction: Some(content_store_overflow_compaction(
+        content_store_shared_host_overflow_compaction: Some(content_store_overflow_compaction(
             &expected, false,
         )),
         content_store_mutation_matrix: Some(content_store_mutation_matrix(&expected)),
@@ -60,7 +60,7 @@ fn complete_raw_artifact_bundle_is_ready() {
     assert!(report.content_store_read.ready);
     assert!(report.content_store_512_mib_read.ready);
     assert!(report.content_store_512_mib_overflow_compaction.ready);
-    assert!(report.content_store_desktop_overflow_compaction.ready);
+    assert!(report.content_store_shared_host_overflow_compaction.ready);
     assert!(report.content_store_mutation_matrix.ready);
     assert!(report.graph_storage.ready);
     assert!(report.graph_index_matrix.ready);
@@ -77,10 +77,10 @@ fn complete_raw_artifact_bundle_is_ready() {
 }
 
 #[test]
-fn memory_profile_top_level_ready_cannot_hide_a_wrong_desktop_budget() {
+fn memory_profile_top_level_ready_cannot_hide_a_wrong_shared_host_budget() {
     let expected = identity("linux", "x86_64");
     let mut artifact = content_store_memory_profiles(&expected);
-    artifact["desktop_bound_8_gib"]["memory_budget_bytes"] = serde_json::json!(1);
+    artifact["shared_host_8_gib"]["memory_budget_bytes"] = serde_json::json!(1);
     let report = evaluate_production_release_qualification_bundle(
         ProductionReleaseQualificationArtifacts {
             content_store_memory_profiles: Some(artifact),
@@ -94,7 +94,7 @@ fn memory_profile_top_level_ready_cannot_hide_a_wrong_desktop_budget() {
     assert!(report
         .content_store_memory_profiles
         .blocker_codes
-        .contains(&"content_store_desktop_memory_policy_invalid".to_string()));
+        .contains(&"content_store_shared_host_memory_policy_invalid".to_string()));
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn overflow_compaction_profiles_cannot_substitute_for_each_other() {
             content_store_512_mib_overflow_compaction: Some(content_store_overflow_compaction(
                 &expected, false,
             )),
-            content_store_desktop_overflow_compaction: Some(content_store_overflow_compaction(
+            content_store_shared_host_overflow_compaction: Some(content_store_overflow_compaction(
                 &expected, true,
             )),
             ..ProductionReleaseQualificationArtifacts::default()
@@ -205,9 +205,9 @@ fn overflow_compaction_profiles_cannot_substitute_for_each_other() {
         .blocker_codes
         .contains(&"overflow_compaction_512_mib_profile_invalid".to_string()));
     assert!(report
-        .content_store_desktop_overflow_compaction
+        .content_store_shared_host_overflow_compaction
         .blocker_codes
-        .contains(&"overflow_compaction_desktop_profile_invalid".to_string()));
+        .contains(&"overflow_compaction_shared_host_profile_invalid".to_string()));
 }
 
 #[test]
@@ -653,7 +653,7 @@ fn content_store_statement_digest(statement_name: &str, mutation: bool) -> Strin
 
 fn content_store_memory_profiles(identity: &ProductionQualificationIdentity) -> Value {
     let available_bytes = 6 * 1024 * 1024 * 1024_u64;
-    let desktop_budget_bytes = available_bytes / 4;
+    let shared_host_budget_bytes = available_bytes / 4;
     serde_json::json!({
         "protocol": PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL,
         "evidence_kind": "production_content_store_memory_profiles",
@@ -661,21 +661,21 @@ fn content_store_memory_profiles(identity: &ProductionQualificationIdentity) -> 
         "ready": true,
         "blocker_codes": [],
         "evidence_binding": binding(identity),
-        "desktop_bound_8_gib": {
-            "profile_kind": "desktop_bound8_gib",
+        "shared_host_8_gib": {
+            "profile_kind": "shared_host8_gib",
             "ready": true,
             "blocker_codes": [],
-            "required_effective_limit_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "required_effective_limit_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "configured_memory_ceiling_bytes": null,
             "nominal_available_threshold_bytes": 4 * 1024 * 1024 * 1024_u64,
             "nominal_budget_range_observed": true,
-            "observed_effective_limit_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "observed_effective_limit_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "observed_effective_available_bytes": available_bytes,
             "memory_fraction_per_million": 250_000,
-            "memory_capacity_bytes": CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
-            "memory_budget_bytes": desktop_budget_bytes,
-            "expected_capacity_bytes": CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
-            "expected_dynamic_budget_bytes": desktop_budget_bytes,
+            "memory_capacity_bytes": CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
+            "memory_budget_bytes": shared_host_budget_bytes,
+            "expected_capacity_bytes": CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
+            "expected_dynamic_budget_bytes": shared_host_budget_bytes,
         },
         "capability_512_mib": {
             "profile_kind": "capability512_mib",
@@ -685,7 +685,7 @@ fn content_store_memory_profiles(identity: &ProductionQualificationIdentity) -> 
             "configured_memory_ceiling_bytes": CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
             "nominal_available_threshold_bytes": null,
             "nominal_budget_range_observed": false,
-            "observed_effective_limit_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "observed_effective_limit_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "observed_effective_available_bytes": available_bytes,
             "memory_fraction_per_million": 250_000,
             "memory_capacity_bytes": CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
@@ -901,17 +901,17 @@ fn content_store_512_mib_read(identity: &ProductionQualificationIdentity) -> Val
     artifact["configured_available_memory_bytes"] =
         serde_json::json!(CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
     artifact["runtime_memory"]["host_total_bytes"] =
-        serde_json::json!(CONTENT_STORE_DESKTOP_8_GIB_BYTES);
+        serde_json::json!(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES);
     artifact["runtime_memory"]["host_available_bytes"] =
         serde_json::json!(6 * 1024 * 1024 * 1024_u64);
     artifact["runtime_memory"]["effective_limit_bytes"] =
-        serde_json::json!(CONTENT_STORE_DESKTOP_8_GIB_BYTES);
+        serde_json::json!(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES);
     artifact["runtime_memory"]["effective_available_bytes"] =
         serde_json::json!(6 * 1024 * 1024 * 1024_u64);
     artifact["runtime_governor"]["configured_memory_ceiling_bytes"] =
         serde_json::json!(CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
     artifact["runtime_governor"]["effective_memory_limit_bytes"] =
-        serde_json::json!(CONTENT_STORE_DESKTOP_8_GIB_BYTES);
+        serde_json::json!(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES);
     artifact["runtime_governor"]["effective_available_memory_bytes"] =
         serde_json::json!(6 * 1024 * 1024 * 1024_u64);
     artifact["runtime_governor"]["memory_capacity_bytes"] =
@@ -1041,17 +1041,17 @@ fn content_store_overflow_compaction(
     let profile_kind = if capability_512_mib {
         "capability512_mib"
     } else {
-        "desktop_bound8_gib"
+        "shared_host8_gib"
     };
     let configured_available_memory_bytes = if capability_512_mib {
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES
     } else {
-        CONTENT_STORE_DESKTOP_8_GIB_BYTES
+        CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
     };
     let memory_capacity_bytes = if capability_512_mib {
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES
     } else {
-        CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+        CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
     };
     let memory_budget_bytes = if capability_512_mib {
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES
@@ -1105,12 +1105,12 @@ fn content_store_overflow_compaction(
             "max_physical_bytes_per_run": 10_000,
         }],
         "runtime_memory": {
-            "host_total_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "host_total_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "host_available_bytes": 6 * 1024 * 1024 * 1024_u64,
             "cgroup_limit_bytes": null,
             "cgroup_high_bytes": null,
             "cgroup_current_bytes": null,
-            "effective_limit_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "effective_limit_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "effective_available_bytes": 6 * 1024 * 1024 * 1024_u64,
             "pressure": "normal",
         },
@@ -1121,7 +1121,7 @@ fn content_store_overflow_compaction(
                 None
             },
             "memory_fraction_per_million": 250_000,
-            "effective_memory_limit_bytes": CONTENT_STORE_DESKTOP_8_GIB_BYTES,
+            "effective_memory_limit_bytes": CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
             "effective_available_memory_bytes": 6 * 1024 * 1024 * 1024_u64,
             "memory_capacity_bytes": memory_capacity_bytes,
             "memory_budget_bytes": memory_budget_bytes,

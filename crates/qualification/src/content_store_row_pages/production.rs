@@ -11,7 +11,7 @@ use crate::{
     nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
     ContentStoreSchemaIdentity, ContentStoreSqlCorpus, ContentStoreSqlCorpusIdentity,
     ContentStoreSqlStatementClassification, ContentStoreSqlStatementKind,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES, CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -256,7 +256,7 @@ pub fn run_production_content_store_storage_qualification(
 
     let lifecycle_start = ProcessMemorySnapshot::capture()?;
     let runtime_memory = runtime_memory_evidence(RuntimeMemorySnapshot::detect());
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.database_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
@@ -663,16 +663,16 @@ pub(super) fn validate_resource_profile(
                 "production Content Store 512 MiB capability must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} bytes"
             )));
         }
-        ContentStoreResourceProfileKind::DesktopBound8Gib
-            if configured_available_memory_bytes != CONTENT_STORE_DESKTOP_8_GIB_BYTES =>
+        ContentStoreResourceProfileKind::SharedHost8Gib
+            if configured_available_memory_bytes != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES =>
         {
             return Err(SkeinError::Semantic(format!(
-                "production Content Store desktop profile must declare {CONTENT_STORE_DESKTOP_8_GIB_BYTES} bytes"
+                "production Content Store shared-host profile must declare {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} bytes"
             )));
         }
         _ => {}
     }
-    let desktop_governor = RuntimeGovernorConfig::desktop_bound();
+    let shared_host_governor = RuntimeGovernorConfig::shared_host();
     match kind {
         ContentStoreResourceProfileKind::Capability512Mib
             if governor.memory_budget_bytes != Some(CONTENT_STORE_512_MIB_CAPABILITY_BYTES) =>
@@ -681,15 +681,15 @@ pub(super) fn validate_resource_profile(
                 "production Content Store 512 MiB capability requires an explicit {CONTENT_STORE_512_MIB_CAPABILITY_BYTES}-byte governor ceiling"
             )));
         }
-        ContentStoreResourceProfileKind::DesktopBound8Gib
+        ContentStoreResourceProfileKind::SharedHost8Gib
             if governor.memory_budget_bytes.is_some()
                 || governor.memory_fraction_per_million
-                    != desktop_governor.memory_fraction_per_million
+                    != shared_host_governor.memory_fraction_per_million
                 || governor.fallback_memory_budget_bytes
-                    != desktop_governor.fallback_memory_budget_bytes =>
+                    != shared_host_governor.fallback_memory_budget_bytes =>
         {
             return Err(SkeinError::Semantic(
-                "production Content Store desktop profile requires the dynamic desktop governor memory policy"
+                "production Content Store shared-host profile requires the dynamic shared-host governor memory policy"
                     .to_string(),
             ));
         }
@@ -1001,15 +1001,17 @@ pub(super) fn collect_runtime_memory_policy_blockers(
                 blockers.push("content_store_512_mib_governor_ceiling_not_effective".to_string());
             }
         }
-        ContentStoreResourceProfileKind::DesktopBound8Gib => {
-            if governor.effective_memory_limit_bytes != Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES) {
-                blockers.push("content_store_desktop_8_gib_limit_not_observed".to_string());
+        ContentStoreResourceProfileKind::SharedHost8Gib => {
+            if governor.effective_memory_limit_bytes != Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES)
+            {
+                blockers.push("content_store_shared_host_8_gib_limit_not_observed".to_string());
             }
             if governor.configured_memory_ceiling_bytes.is_some()
-                || governor.memory_capacity_bytes > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
-                || governor.memory_budget_bytes > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+                || governor.memory_capacity_bytes > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
+                || governor.memory_budget_bytes > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
             {
-                blockers.push("content_store_desktop_dynamic_memory_policy_mismatch".to_string());
+                blockers
+                    .push("content_store_shared_host_dynamic_memory_policy_mismatch".to_string());
             }
         }
         ContentStoreResourceProfileKind::ConfiguredWorkload => {}
@@ -1132,7 +1134,7 @@ mod tests {
             canonical_graph_commit_epoch: commit_epoch,
             policy_version: PRODUCTION_QUALIFICATION_POLICY_VERSION,
         };
-        let mut runtime_governor_config = RuntimeGovernorConfig::desktop_bound();
+        let mut runtime_governor_config = RuntimeGovernorConfig::shared_host();
         runtime_governor_config.memory_budget_bytes = Some(CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
         let report = run_production_content_store_storage_qualification(
             ProductionContentStoreStorageQualificationConfig {
@@ -1284,7 +1286,7 @@ mod tests {
             ProductionContentStoreStorageQualificationConfig {
                 database_path: path.clone(),
                 database_config: DatabaseConfig::default(),
-                runtime_governor_config: RuntimeGovernorConfig::desktop_bound(),
+                runtime_governor_config: RuntimeGovernorConfig::shared_host(),
                 resource_profile_kind: ContentStoreResourceProfileKind::ConfiguredWorkload,
                 configured_available_memory_bytes: 1024,
                 evidence_binding: ProductionEvidenceBinding {

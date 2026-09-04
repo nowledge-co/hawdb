@@ -57,7 +57,7 @@ fn qualification_requires_a_writable_disposable_replica() {
         ProductionContentStoreOverflowCompactionQualificationConfig {
             replica_path: path.clone(),
             database_config,
-            runtime_governor_config: RuntimeGovernorConfig::desktop_bound(),
+            runtime_governor_config: RuntimeGovernorConfig::shared_host(),
             resource_profile_kind: ContentStoreResourceProfileKind::ConfiguredWorkload,
             configured_available_memory_bytes: 1024,
             evidence_binding: ProductionEvidenceBinding {
@@ -165,7 +165,7 @@ fn qualification_proves_exact_rewrite_physical_reclaim_and_reopen() {
         canonical_graph_commit_epoch: commit_epoch,
         policy_version: PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
-    let mut runtime_governor_config = RuntimeGovernorConfig::desktop_bound();
+    let mut runtime_governor_config = RuntimeGovernorConfig::shared_host();
     runtime_governor_config.memory_budget_bytes =
         Some(super::super::CONTENT_STORE_512_MIB_CAPABILITY_BYTES);
     runtime_governor_config.result_budget_bytes = 128 * 1024 * 1024;

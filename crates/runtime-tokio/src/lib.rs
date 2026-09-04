@@ -467,7 +467,7 @@ mod tests {
             ),
         );
         RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             resources,
             IoConcurrencyBudget::new(4, 1),
         )
@@ -767,7 +767,7 @@ mod tests {
     fn waiting_admission_succeeds_after_refresh_restores_headroom() {
         let limit = 512 * 1024 * 1024;
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             cgroup_resources(limit, limit),
             IoConcurrencyBudget::new(4, 1),
         );
@@ -808,7 +808,7 @@ mod tests {
     fn waiting_admission_terminates_after_capacity_shrinks_below_request() {
         let initial_limit = 512 * 1024 * 1024;
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             cgroup_resources(initial_limit, initial_limit),
             IoConcurrencyBudget::new(4, 1),
         );

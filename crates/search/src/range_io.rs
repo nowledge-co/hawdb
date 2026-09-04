@@ -11,7 +11,7 @@ use skein_storage::{
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 
-const DESKTOP_SEARCH_RANGE_READ_MAX_WAVE_BYTES: u64 = 8 * 1024 * 1024;
+const SHARED_HOST_SEARCH_RANGE_READ_MAX_WAVE_BYTES: u64 = 8 * 1024 * 1024;
 const MOBILE_SEARCH_RANGE_READ_MAX_WAVE_BYTES: u64 = 2 * 1024 * 1024;
 const INDEPENDENT_SEARCH_SEGMENT_MAX_COALESCED_BYTES: u64 = 1;
 
@@ -33,11 +33,11 @@ impl SearchRangeReadConfig {
         Self::new(io.foreground_depth, max_wave_bytes)
     }
 
-    pub fn desktop_bound(io: IoConcurrencyBudget) -> Self {
+    pub fn shared_host(io: IoConcurrencyBudget) -> Self {
         Self::from_io_budget(
             io,
-            NonZeroU64::new(DESKTOP_SEARCH_RANGE_READ_MAX_WAVE_BYTES)
-                .expect("desktop search range-read wave budget is non-zero"),
+            NonZeroU64::new(SHARED_HOST_SEARCH_RANGE_READ_MAX_WAVE_BYTES)
+                .expect("shared-host search range-read wave budget is non-zero"),
         )
     }
 
@@ -52,7 +52,7 @@ impl SearchRangeReadConfig {
 
 impl Default for SearchRangeReadConfig {
     fn default() -> Self {
-        Self::desktop_bound(IoConcurrencyBudget::desktop_bound_for_device(
+        Self::shared_host(IoConcurrencyBudget::shared_host_for_device(
             StorageDeviceProfile::default(),
         ))
     }

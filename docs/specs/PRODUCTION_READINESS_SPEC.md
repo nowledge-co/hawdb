@@ -125,7 +125,7 @@ out-of-domain values, invalid digests, or an oversized plan MUST fail before
 the database is opened. The local database path, Cypher, parameters, and result
 rows MUST NOT enter retained evidence.
 
-The `desktop_bound_8_gib` plan profile leaves runtime memory derivation dynamic
+The `shared_host_8_gib` plan profile leaves runtime memory derivation dynamic
 and limits accepted peak RSS to 2 GiB. It does not independently prove that the
 detected host or cgroup limit is 8 GiB; release evidence MUST pair it with the
 fixed memory-policy qualification. The `capability_512_mib` profile installs an
@@ -147,7 +147,7 @@ page-fault budgets. It MUST NOT install a persistent-index requirement; the
 all-class matrix remains the only persistent graph-index release evidence.
 
 The general collector and all-class collector MUST share the same resource
-profile semantics. `desktop_bound_8_gib` leaves the governor dynamic, caps
+profile semantics. `shared_host_8_gib` leaves the governor dynamic, caps
 automatic capacity at 2 GiB, and permits the effective budget to fall below
 the nominal 1--2 GiB range under pressure. `capability_512_mib` installs an
 explicit 512 MiB ceiling only for the separately declared low-memory
@@ -166,7 +166,7 @@ cross-process evidence gate. It consumes the identity-bound Content Store
 memory-policy matrix, a representative production-profile Content Store read,
 a separate explicitly constrained 512 MiB Content Store read, the Content
 Store mutation-replica matrix, separate 512 MiB capability and dynamic 8 GiB
-desktop overflow-compaction runs, graph-storage, all-class graph index matrix,
+shared-host overflow-compaction runs, graph-storage, all-class graph index matrix,
 out-of-core search, per-target vector, per-worker morsel, active-route blocking,
 storage crash-recovery, and exact-revision release-control artifacts.
 The evaluator
@@ -183,10 +183,10 @@ paths, embeddings, or row payloads.
 
 The Content Store artifacts are independently re-evaluated from retained raw
 contracts and measurements. The memory-policy artifact MUST contain both the
-dynamic desktop and explicit 512 MiB policy reports from the same detected
+dynamic shared-host and explicit 512 MiB policy reports from the same detected
 resource snapshot, and the evaluator MUST recompute their capacities, dynamic
-budgets, nominal-range flag, and exact release binding. A nominal desktop
-budget below 1 GiB under pressure remains valid; a desktop capacity or budget
+budgets, nominal-range flag, and exact release binding. A nominal shared-host
+budget below 1 GiB under pressure remains valid; a shared-host capacity or budget
 above 2 GiB does not. Policy evidence cannot substitute for either workload
 run. The production read MUST NOT use the 512 MiB capability profile, and the
 separate capability read MUST use it. Both reads bind every frozen SQL
@@ -201,7 +201,7 @@ WAL-replay and manifest-only reopen boundaries plus result-digest parity. A
 child report's empty blocker list cannot override contradictory raw fields.
 
 The two overflow-compaction artifacts are not interchangeable. The capability
-artifact MUST carry an explicit 512 MiB governor ceiling. The desktop artifact
+artifact MUST carry an explicit 512 MiB governor ceiling. The shared-host artifact
 MUST observe an 8 GiB host or cgroup limit, retain dynamic memory derivation,
 and keep both capacity and budget at or below 2 GiB; pressure may reduce the
 budget below 1 GiB. For both artifacts, the evaluator independently validates
@@ -281,7 +281,7 @@ the intended workload. Synthetic ignored tests are useful development gates
 but do not qualify a production deployment.
 
 `qualify_content_store_memory_profile` is the typed policy gate for the two
-fixed Content Store memory profiles. `DesktopBound8Gib` requires an observed
+fixed Content Store memory profiles. `SharedHost8Gib` requires an observed
 effective host or cgroup limit of exactly 8 GiB. The default 25% policy must
 derive a 2 GiB capacity and a dynamic headroom-bound budget. With 4--8 GiB
 available, the report records the nominal 1--2 GiB range. Lower headroom may
@@ -294,11 +294,11 @@ whose peak RSS stays within its declared 512 MiB envelope. This is a supported
 capability profile, not the default profile or a universal release cutoff.
 
 `run_production_content_store_memory_qualification` is the identity-bound
-fixed-profile matrix. It MUST evaluate `DesktopBound8Gib` and
+fixed-profile matrix. It MUST evaluate `SharedHost8Gib` and
 `Capability512Mib` from the same detected `RuntimeResourceSnapshot` and I/O
 budget, bind the result to the exact current target and release identity, and
 retain both raw policy reports. Matrix readiness MUST be recomputed from their
-blockers rather than accepted from a caller-provided flag. The desktop report
+blockers rather than accepted from a caller-provided flag. The shared-host report
 MUST retain dynamic headroom derivation and MUST NOT reject a correct budget
 only because it is below 1 GiB. The capability report MUST install the explicit
 512 MiB ceiling without pretending that the OS limit is 512 MiB.
@@ -362,7 +362,7 @@ database budgets, or values outside Skein's parameter domain MUST be rejected
 before the database is opened. The wrapper MUST derive `read_only + OutOfCore +
 Authoritative`; callers cannot weaken those selectors in JSON. The
 `capability_512_mib` profile installs an explicit 512 MiB runtime ceiling, while
-`desktop_bound_8_gib` retains the dynamic desktop governor with its 2 GiB
+`shared_host_8_gib` retains the dynamic shared-host governor with its 2 GiB
 capacity ceiling. A configured-workload ceiling MUST be non-zero and no larger
 than its declared available memory.
 
@@ -400,7 +400,7 @@ before mutation begins.
 The wrapper derives writable `OutOfCore + Authoritative` database
 configuration. It MUST retain the fixed resource-profile identity and process
 RSS/page-fault limits but MUST NOT claim that the mutation runner owns a
-runtime-governor permit. `desktop_bound_8_gib` declares 8 GiB of available
+runtime-governor permit. `shared_host_8_gib` declares 8 GiB of available
 memory and caps accepted peak RSS at 2 GiB; `capability_512_mib` is the separate
 explicit low-memory capability run. A configured workload MUST declare a
 non-zero available-memory envelope. Paths, parameters, and rows MUST NOT enter

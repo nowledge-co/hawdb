@@ -115,7 +115,7 @@ pub struct ProductionReleaseQualificationArtifacts {
     pub content_store_read: Option<Value>,
     pub content_store_512_mib_read: Option<Value>,
     pub content_store_512_mib_overflow_compaction: Option<Value>,
-    pub content_store_desktop_overflow_compaction: Option<Value>,
+    pub content_store_shared_host_overflow_compaction: Option<Value>,
     pub content_store_mutation_matrix: Option<Value>,
     pub graph_storage: Option<Value>,
     pub graph_index_matrix: Option<Value>,
@@ -201,7 +201,7 @@ pub struct ProductionReleaseQualificationBundleReport {
     pub content_store_read: ProductionArtifactAssessment,
     pub content_store_512_mib_read: ProductionArtifactAssessment,
     pub content_store_512_mib_overflow_compaction: ProductionArtifactAssessment,
-    pub content_store_desktop_overflow_compaction: ProductionArtifactAssessment,
+    pub content_store_shared_host_overflow_compaction: ProductionArtifactAssessment,
     pub content_store_mutation_matrix: ProductionArtifactAssessment,
     pub graph_storage: ProductionArtifactAssessment,
     pub graph_index_matrix: ProductionArtifactAssessment,
@@ -226,7 +226,7 @@ impl ProductionReleaseQualificationBundleReport {
             "content_store_read": self.content_store_read,
             "content_store_512_mib_read": self.content_store_512_mib_read,
             "content_store_512_mib_overflow_compaction": self.content_store_512_mib_overflow_compaction,
-            "content_store_desktop_overflow_compaction": self.content_store_desktop_overflow_compaction,
+            "content_store_shared_host_overflow_compaction": self.content_store_shared_host_overflow_compaction,
             "content_store_mutation_matrix": self.content_store_mutation_matrix,
             "graph_storage": self.graph_storage,
             "graph_index_matrix": self.graph_index_matrix,
@@ -267,11 +267,16 @@ pub fn evaluate_production_release_qualification_bundle(
             overflow_compaction::validate_512_mib_overflow_compaction(artifact, &expected_identity)
         },
     );
-    let content_store_desktop_overflow_compaction = evaluate_optional(
+    let content_store_shared_host_overflow_compaction = evaluate_optional(
         "representative_production_relational_overflow_compaction",
-        artifacts.content_store_desktop_overflow_compaction.as_ref(),
+        artifacts
+            .content_store_shared_host_overflow_compaction
+            .as_ref(),
         |artifact| {
-            overflow_compaction::validate_desktop_overflow_compaction(artifact, &expected_identity)
+            overflow_compaction::validate_shared_host_overflow_compaction(
+                artifact,
+                &expected_identity,
+            )
         },
     );
     let content_store_mutation_matrix = evaluate_optional(
@@ -338,8 +343,8 @@ pub fn evaluate_production_release_qualification_bundle(
             content_store_512_mib_overflow_compaction.ready,
         ),
         (
-            "content_store_desktop_overflow_compaction",
-            content_store_desktop_overflow_compaction.ready,
+            "content_store_shared_host_overflow_compaction",
+            content_store_shared_host_overflow_compaction.ready,
         ),
         (
             "content_store_mutation_matrix",
@@ -370,7 +375,7 @@ pub fn evaluate_production_release_qualification_bundle(
         content_store_read,
         content_store_512_mib_read,
         content_store_512_mib_overflow_compaction,
-        content_store_desktop_overflow_compaction,
+        content_store_shared_host_overflow_compaction,
         content_store_mutation_matrix,
         graph_storage,
         graph_index_matrix,

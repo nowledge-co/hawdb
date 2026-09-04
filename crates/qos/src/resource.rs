@@ -238,11 +238,11 @@ fn resource_snapshot_from_cgroup(
 }
 
 impl IoConcurrencyBudget {
-    pub fn desktop_bound() -> Self {
-        Self::desktop_bound_for_device(StorageDeviceProfile::default())
+    pub fn shared_host() -> Self {
+        Self::shared_host_for_device(StorageDeviceProfile::default())
     }
 
-    pub fn desktop_bound_for_device(device: StorageDeviceProfile) -> Self {
+    pub fn shared_host_for_device(device: StorageDeviceProfile) -> Self {
         let foreground = match device.media_kind {
             StorageMediaKind::Rotational => 2,
             StorageMediaKind::NonRotational => device
@@ -519,18 +519,18 @@ mod tests {
     }
 
     #[test]
-    fn desktop_io_budget_uses_device_evidence_instead_of_cpu_count() {
+    fn shared_host_io_budget_uses_device_evidence_instead_of_cpu_count() {
         let device = StorageDeviceProfile::host_provided(
             StorageMediaKind::NonRotational,
             NonZeroUsize::new(12),
         );
-        let io = IoConcurrencyBudget::desktop_bound_for_device(device);
+        let io = IoConcurrencyBudget::shared_host_for_device(device);
         assert_eq!(io.foreground_depth.get(), 12);
         assert_eq!(io.background_depth.get(), 3);
 
         let default_ssd =
             StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
-        let io = IoConcurrencyBudget::desktop_bound_for_device(default_ssd);
+        let io = IoConcurrencyBudget::shared_host_for_device(default_ssd);
         assert_eq!(io.foreground_depth.get(), 8);
         assert_eq!(io.background_depth.get(), 2);
     }
@@ -549,8 +549,8 @@ mod tests {
     #[test]
     fn unknown_device_budget_uses_conservative_defaults() {
         assert_eq!(
-            IoConcurrencyBudget::desktop_bound(),
-            IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::default())
+            IoConcurrencyBudget::shared_host(),
+            IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::default())
         );
         assert_eq!(
             IoConcurrencyBudget::mobile_embedded(),

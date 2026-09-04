@@ -11,11 +11,11 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 const PER_MILLION: u64 = 1_000_000;
-const DESKTOP_MEMORY_FRACTION_PER_MILLION: u32 = 250_000;
+const SHARED_HOST_MEMORY_FRACTION_PER_MILLION: u32 = 250_000;
 const MOBILE_MEMORY_FRACTION_PER_MILLION: u32 = 500_000;
-const DESKTOP_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const SHARED_HOST_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 const MOBILE_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
-const DESKTOP_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+const SHARED_HOST_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -224,16 +224,16 @@ pub struct RuntimeGovernorConfig {
 }
 
 impl RuntimeGovernorConfig {
-    pub const fn desktop_bound() -> Self {
+    pub const fn shared_host() -> Self {
         Self {
             cpu_slot_limit: None,
             foreground_task_limit: None,
             background_task_limit: None,
             blocking_task_limit: None,
             memory_budget_bytes: None,
-            memory_fraction_per_million: DESKTOP_MEMORY_FRACTION_PER_MILLION,
-            fallback_memory_budget_bytes: DESKTOP_FALLBACK_MEMORY_BUDGET_BYTES,
-            result_budget_bytes: DESKTOP_RESULT_BUDGET_BYTES,
+            memory_fraction_per_million: SHARED_HOST_MEMORY_FRACTION_PER_MILLION,
+            fallback_memory_budget_bytes: SHARED_HOST_FALLBACK_MEMORY_BUDGET_BYTES,
+            result_budget_bytes: SHARED_HOST_RESULT_BUDGET_BYTES,
         }
     }
 
@@ -253,7 +253,7 @@ impl RuntimeGovernorConfig {
 
 impl Default for RuntimeGovernorConfig {
     fn default() -> Self {
-        Self::desktop_bound()
+        Self::shared_host()
     }
 }
 
@@ -1207,7 +1207,7 @@ mod tests {
 
     fn governor(cpu: usize, available_memory: u64) -> RuntimeGovernor {
         RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             resources(cpu, available_memory),
             IoConcurrencyBudget::new(4, 1),
         )
@@ -1234,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_default_reserves_three_quarters_for_the_host_process() {
+    fn shared_host_default_reserves_three_quarters_for_the_host_process() {
         let governor = governor(4, 6 * 1024 * 1024 * 1024);
         let limits = governor.snapshot().limits;
 
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn explicit_512_mib_profile_remains_supported() {
-        let mut config = RuntimeGovernorConfig::desktop_bound();
+        let mut config = RuntimeGovernorConfig::shared_host();
         config.memory_budget_bytes = Some(512 * 1024 * 1024);
         let governor = RuntimeGovernor::new(
             config,
@@ -1429,7 +1429,7 @@ mod tests {
         let error = governor
             .try_admit(RuntimeWorkRequest::foreground_query(
                 0,
-                DESKTOP_RESULT_BUDGET_BYTES + 1,
+                SHARED_HOST_RESULT_BUDGET_BYTES + 1,
             ))
             .unwrap_err();
         assert_eq!(error.code, RuntimeAdmissionCode::ResultBudgetExceeded);
@@ -1481,7 +1481,7 @@ mod tests {
             )
         };
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             snapshot(2 * 1024 * 1024 * 1024),
             IoConcurrencyBudget::new(4, 1),
         );
@@ -1516,7 +1516,7 @@ mod tests {
     #[test]
     fn zero_capacity_rejects_nonzero_memory_without_waiting() {
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             RuntimeResourceSnapshot::from_parts(
                 RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
                 RuntimeMemorySnapshot::from_limits(
@@ -1623,7 +1623,7 @@ mod tests {
     fn saturated_cgroup_rejects_admissions_despite_a_large_hard_limit() {
         let limit = 512 * 1024 * 1024;
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             RuntimeResourceSnapshot::from_parts(
                 RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
                 RuntimeMemorySnapshot::from_limits(
@@ -1657,7 +1657,7 @@ mod tests {
     fn over_capacity_requests_stay_non_retryable() {
         let limit = 512 * 1024 * 1024;
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             RuntimeResourceSnapshot::from_parts(
                 RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
                 RuntimeMemorySnapshot::from_limits(
@@ -1717,7 +1717,7 @@ mod tests {
     fn over_capacity_under_critical_pressure_stays_non_retryable() {
         let limit = 512 * 1024 * 1024;
         let governor = RuntimeGovernor::new(
-            RuntimeGovernorConfig::desktop_bound(),
+            RuntimeGovernorConfig::shared_host(),
             RuntimeResourceSnapshot::from_parts(
                 RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
                 RuntimeMemorySnapshot::from_limits(

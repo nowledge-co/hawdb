@@ -197,7 +197,7 @@ mod tests {
                 segment_cache_capacity_bytes: 1024,
                 ..DatabaseConfig::default()
             }),
-            runtime_governor_config: RuntimeGovernorConfig::desktop_bound(),
+            runtime_governor_config: RuntimeGovernorConfig::shared_host(),
             statement: NowledgeGraphStatement {
                 cypher: "MATCH (n) RETURN n".to_string(),
                 parameters: BTreeMap::new(),

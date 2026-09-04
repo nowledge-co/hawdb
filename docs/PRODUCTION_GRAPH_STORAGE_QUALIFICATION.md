@@ -22,7 +22,7 @@ class.
 - The identity records the exact revision, target, features, configuration,
   dataset, schema, and canonical graph epoch being qualified.
 - The detected memory profile has been qualified separately when the plan uses
-  the dynamic desktop profile.
+  the dynamic shared-host profile.
 
 ## Plan
 
@@ -37,13 +37,13 @@ at least two measurement runs. Unknown fields, empty statements, zero budgets,
 out-of-domain parameter values, or files larger than 32 MiB are rejected before
 opening the database.
 
-Use `desktop_bound_8_gib` only with separate evidence that the effective host
+Use `shared_host_8_gib` only with separate evidence that the effective host
 or cgroup limit is 8 GiB. It keeps runtime memory derivation dynamic: automatic
 Skein capacity is capped at 2 GiB, normally moves through roughly 1--2 GiB as
 headroom changes, and may fall below that range under pressure. It is not a
 fixed reservation. Use `capability_512_mib` for a separate explicitly bounded
 low-memory capability run. It installs a 512 MiB Skein ceiling; 512 MiB is not
-the desktop default, a universal production cutoff, or a minimum host size.
+the shared-host default, a universal production cutoff, or a minimum host size.
 
 ## Execute
 

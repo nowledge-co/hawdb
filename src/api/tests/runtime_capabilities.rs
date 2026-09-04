@@ -617,8 +617,7 @@ fn enabled_access_control_filters_before_ranking_without_exposing_policy_inputs(
 
 #[test]
 fn runtime_capabilities_cannot_exceed_compiled_availability() {
-    let requested =
-        RuntimeCapabilities::desktop_bound().with(RuntimeCapability::AccessControl, true);
+    let requested = RuntimeCapabilities::shared_host().with(RuntimeCapability::AccessControl, true);
     let db = Database::new_with_config(DatabaseConfig {
         runtime_capabilities: requested,
         ..DatabaseConfig::default()
@@ -645,7 +644,7 @@ fn runtime_capabilities_cannot_exceed_compiled_availability() {
 #[test]
 fn minimal_build_fails_closed_for_every_optional_capability() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        runtime_capabilities: RuntimeCapabilities::desktop_bound(),
+        runtime_capabilities: RuntimeCapabilities::shared_host(),
         ..DatabaseConfig::default()
     });
 

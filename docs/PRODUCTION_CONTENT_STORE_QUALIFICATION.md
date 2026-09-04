@@ -42,7 +42,7 @@ is parser-tested and can be copied as the starting point.
       "durable_format_version": 1,
       "schema_version": 1,
       "configuration_digest": "sha256:replace-with-qualified-config",
-      "deployment_profile": "desktop-bound-8-gib",
+      "deployment_profile": "shared-host-8-gib",
       "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
       "canonical_graph_commit_epoch": 1,
       "policy_version": 1
@@ -58,12 +58,12 @@ is parser-tested and can be copied as the starting point.
     "durable_format_version": 1,
     "schema_version": 1,
     "configuration_digest": "sha256:replace-with-qualified-config",
-    "deployment_profile": "desktop-bound-8-gib",
+    "deployment_profile": "shared-host-8-gib",
     "dataset_fingerprint": "sha256:replace-with-offline-dataset-digest",
     "canonical_graph_commit_epoch": 1,
     "policy_version": 1
   },
-  "resource_profile": "desktop_bound_8_gib",
+  "resource_profile": "shared_host_8_gib",
   "database": {
     "max_read_result_rows": 100000,
     "max_read_result_payload_bytes": 67108864,
@@ -107,7 +107,7 @@ Plan parsing rejects unknown fields and files larger than 32 MiB.
 
 Use `capability_512_mib` for the separately configured low-memory capability
 run. It sets an explicit 512 MiB Skein runtime ceiling. Use
-`desktop_bound_8_gib` for the dynamic desktop policy: Skein derives its budget
+`shared_host_8_gib` for the dynamic shared-host policy: Skein derives its budget
 from current headroom, caps automatic capacity at 2 GiB, normally operates in
 the 1--2 GiB range, and may fall below that range under pressure. A custom
 profile is represented as:
@@ -154,7 +154,7 @@ artifact together. A successful local run is not a release gate until those
 artifacts are reviewed and included in the production qualification bundle.
 The production-profile output and the 512 MiB capability output are independent
 mandatory release inputs; a successful capability run does not redefine the
-normal desktop budget.
+normal shared-host budget.
 
 ## Exact Overflow Compaction
 
@@ -175,7 +175,7 @@ cargo run -p skein-qualification \
 
 Retain two independent current-revision reports. The `capability_512_mib` plan
 installs an explicit 512 MiB Skein ceiling and proves the low-memory capability.
-The `desktop_bound_8_gib` plan observes an 8 GiB host or cgroup envelope and
+The `shared_host_8_gib` plan observes an 8 GiB host or cgroup envelope and
 keeps dynamic memory derivation; automatic capacity cannot exceed 2 GiB, while
 pressure may lower the budget below 1 GiB. The release bundle requires both
 reports and recomputes their raw scan, spill, rewrite, digest, RSS, page-fault,
@@ -200,9 +200,9 @@ ordered exactly as 1, 4, 8, and 10 writers. Plan parsing rejects unknown fields
 and files larger than 32 MiB.
 
 The resource profiles have the same meaning as for the read collector. The
-desktop profile declares an 8 GiB environment and enforces a peak RSS ceiling
+shared-host profile declares an 8 GiB environment and enforces a peak RSS ceiling
 no greater than 2 GiB. The 512 MiB capability profile is a separate explicitly
-configured run, not the desktop default or a universal capacity limit.
+configured run, not the shared-host default or a universal capacity limit.
 
 ```bash
 cargo run -p skein-qualification \

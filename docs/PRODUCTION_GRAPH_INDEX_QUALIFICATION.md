@@ -50,14 +50,14 @@ whole matrix. Unknown fields, reordered or incomplete cases, zero budgets,
 out-of-domain parameter values, invalid digests, and files larger than 32 MiB
 are rejected before opening the database.
 
-Use `desktop_bound_8_gib` only on a separately verified 8 GiB host or cgroup.
+Use `shared_host_8_gib` only on a separately verified 8 GiB host or cgroup.
 It leaves the governor dynamic and caps an accepted plan's peak RSS at 2 GiB;
 the effective budget normally falls in the 1--2 GiB range and may shrink below
 it under pressure. The observed effective limit and headroom policy still
 require the fixed memory profile evidence. Use `capability_512_mib` for the
 independent explicitly configured low-memory run. It installs a 512 MiB runtime
 ceiling and rejects a larger cache or RSS budget. The 512 MiB profile is not
-the desktop default or a universal machine requirement.
+the shared-host default or a universal machine requirement.
 
 ## Execute
 

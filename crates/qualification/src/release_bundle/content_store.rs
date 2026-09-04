@@ -3,7 +3,7 @@ use crate::evidence_digest::hash_bytes;
 use crate::{
     latency_percentiles, nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
     ContentStoreSqlCorpus, ContentStoreSqlStatementKind, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
-    CONTENT_STORE_DESKTOP_8_GIB_BYTES, CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+    CONTENT_STORE_SHARED_HOST_8_GIB_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     MAX_PRODUCTION_COMMIT_P95_REGRESSION_PER_MILLION,
     PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_STORAGE_QUALIFICATION_PROTOCOL,
@@ -351,11 +351,11 @@ fn validate_profile(artifact: &Value, mutation: bool, blockers: &mut Vec<String>
                 blockers.push(format!("{prefix}_512_mib_profile_invalid"));
             }
         }
-        Some("desktop_bound8_gib") => {
-            if configured != CONTENT_STORE_DESKTOP_8_GIB_BYTES
-                || peak > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+        Some("shared_host8_gib") => {
+            if configured != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
+                || peak > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
             {
-                blockers.push(format!("{prefix}_desktop_profile_invalid"));
+                blockers.push(format!("{prefix}_shared_host_profile_invalid"));
             }
         }
         Some("configured_workload") => {}
@@ -563,16 +563,16 @@ fn validate_read_governor(artifact: &Value, expected_runs: u64, blockers: &mut V
                 blockers.push("content_store_read_512_mib_governor_invalid".to_string());
             }
         }
-        Some("desktop_bound8_gib")
+        Some("shared_host8_gib")
             if unsigned(governor, "/effective_memory_limit_bytes")
-                != Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES)
+                != Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES)
                 || !governor
                     .pointer("/configured_memory_ceiling_bytes")
                     .is_some_and(Value::is_null)
-                || capacity > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
-                || budget > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES =>
+                || capacity > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
+                || budget > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES =>
         {
-            blockers.push("content_store_read_desktop_governor_invalid".to_string());
+            blockers.push("content_store_read_shared_host_governor_invalid".to_string());
         }
         _ => {}
     }

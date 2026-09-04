@@ -328,7 +328,7 @@ pub fn run_production_graph_storage_qualification(
         ProcessMemorySnapshot::capture().map_err(ProductionGraphQualificationError::from_error)?;
     let query_identity = QueryIdentity::new("cypher", &config.statement.cypher);
     let parameter_digest = parameter_digest(&config.statement.parameters);
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.open_options.graph_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
@@ -1039,7 +1039,7 @@ mod tests {
                     blocking_task_limit: NonZeroUsize::new(2),
                     memory_budget_bytes: Some(64 * 1024 * 1024),
                     result_budget_bytes: 1024 * 1024,
-                    ..RuntimeGovernorConfig::desktop_bound()
+                    ..RuntimeGovernorConfig::shared_host()
                 },
                 statement: NowledgeGraphStatement {
                     cypher: "MATCH (m:Memory) WHERE m.id = $id RETURN m.id AS memory_id"

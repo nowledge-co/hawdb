@@ -18,7 +18,7 @@ format or Cypher semantics.
 
 ### Desktop Bound
 
-`DesktopBound` runs inside a desktop application process. It behaves like a
+`SharedHost` runs inside a host application process on a desktop or server that Skein shares with other workloads. It behaves like a
 local MySQL or Neo4j data engine from the application's perspective, but its
 lifecycle, identity, configuration, and telemetry remain owned by the host
 application.
@@ -48,7 +48,7 @@ parallelism, and predictable battery and thermal behavior.
   disabled.
 - Disabling an optional capability MUST return a typed capability-unavailable
   error. It MUST NOT silently use an unbounded fallback.
-- Mobile and desktop profiles MUST be able to open the same format version when
+- Mobile and shared-host profiles MUST be able to open the same format version when
   the database does not require a disabled capability.
 
 Explicit configuration overrides MAY further lower resource limits. Raising a
@@ -59,7 +59,7 @@ mobile limit is allowed only through an explicit host decision.
 Runtime capability checks are independent from resource admission. The default
 capability matrix is:
 
-| Capability | DesktopBound | MobileEmbedded |
+| Capability | SharedHost | MobileEmbedded |
 | --- | --- | --- |
 | Full-text search | enabled | enabled |
 | Vector search | enabled | enabled |
@@ -79,9 +79,9 @@ for hosts that keep the corresponding capability enabled. Capability settings
 do not alter the durable format, WAL contract, or core Cypher semantics.
 
 Profile compatibility MUST be verified by reopening the same durable database
-in both directions. Data and schema written by `DesktopBound` remain readable
+in both directions. Data and schema written by `SharedHost` remain readable
 and writable through core parameterized Cypher under `MobileEmbedded`, and
-mobile writes remain readable after reopening as `DesktopBound`. A profile
+mobile writes remain readable after reopening as `SharedHost`. A profile
 switch does not migrate or rewrite the storage format. Queries that require a
 disabled optional capability fail before planning or mutation without
 invalidating the shared database.
@@ -299,7 +299,7 @@ requests MAY use the effective CPU budget. Internal background tasks MUST use a
 separate conservative budget and pass QoS admission. Background saturation MUST
 NOT reject an explicit foreground request.
 
-`DesktopBound` defaults reserve most process memory for the host application.
+`SharedHost` defaults reserve most process memory for the host application.
 Its stable Skein capacity is one quarter of the effective host or cgroup policy
 ceiling, and its dynamic budget is further bounded by one quarter of sensed
 headroom. On an 8 GiB machine this yields at most 2 GiB of automatic Skein
@@ -335,7 +335,7 @@ reservations and live wave-scoped reads independently for each priority class.
 - Foreground and background I/O MUST use separate admission budgets.
 - WAL commit ordering, manifest publication, and per-index delta ordering remain
   serialized even when data reads are parallel.
-- `DesktopBound` defaults SHOULD use multiple foreground I/O slots with a
+- `SharedHost` defaults SHOULD use multiple foreground I/O slots with a
   bounded upper limit. `MobileEmbedded` defaults MUST use a lower depth.
 - The host MAY override I/O depth using device-specific knowledge. The library
   MUST NOT infer a precise hardware queue count from CPU count alone.

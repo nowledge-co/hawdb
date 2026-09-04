@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 pub const PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL: &str =
     "skein-production-content-store-memory-qualification-v1";
-pub const CONTENT_STORE_DESKTOP_8_GIB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-pub const CONTENT_STORE_DESKTOP_NOMINAL_AVAILABLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-pub const CONTENT_STORE_DESKTOP_NOMINAL_MIN_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
-pub const CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const CONTENT_STORE_SHARED_HOST_8_GIB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const CONTENT_STORE_SHARED_HOST_NOMINAL_AVAILABLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+pub const CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContentStoreMemoryProfileQualificationReport {
@@ -45,7 +45,7 @@ pub struct ProductionContentStoreMemoryQualificationReport {
     pub ready: bool,
     pub blocker_codes: Vec<String>,
     pub evidence_binding: ProductionEvidenceBinding,
-    pub desktop_bound_8_gib: ContentStoreMemoryProfileQualificationReport,
+    pub shared_host_8_gib: ContentStoreMemoryProfileQualificationReport,
     pub capability_512_mib: ContentStoreMemoryProfileQualificationReport,
 }
 
@@ -58,7 +58,7 @@ impl ProductionContentStoreMemoryQualificationReport {
             "ready": self.ready,
             "blocker_codes": self.blocker_codes,
             "evidence_binding": self.evidence_binding.json(),
-            "desktop_bound_8_gib": self.desktop_bound_8_gib,
+            "shared_host_8_gib": self.shared_host_8_gib,
             "capability_512_mib": self.capability_512_mib,
         })
     }
@@ -84,10 +84,10 @@ pub fn qualify_content_store_memory_profile(
         configured_memory_ceiling_bytes,
         nominal_available_threshold_bytes,
     ) = match profile_kind {
-        ContentStoreResourceProfileKind::DesktopBound8Gib => (
-            Some(CONTENT_STORE_DESKTOP_8_GIB_BYTES),
+        ContentStoreResourceProfileKind::SharedHost8Gib => (
+            Some(CONTENT_STORE_SHARED_HOST_8_GIB_BYTES),
             None,
-            Some(CONTENT_STORE_DESKTOP_NOMINAL_AVAILABLE_BYTES),
+            Some(CONTENT_STORE_SHARED_HOST_NOMINAL_AVAILABLE_BYTES),
         ),
         ContentStoreResourceProfileKind::Capability512Mib => (
             None,
@@ -96,13 +96,13 @@ pub fn qualify_content_store_memory_profile(
         ),
         ContentStoreResourceProfileKind::ConfiguredWorkload => {
             return Err(SkeinError::Semantic(
-                "fixed Content Store memory qualification requires the desktop 8 GiB or 512 MiB capability profile"
+                "fixed Content Store memory qualification requires the shared-host 8 GiB or 512 MiB capability profile"
                     .to_string(),
             ));
         }
     };
 
-    let mut governor_config = RuntimeGovernorConfig::desktop_bound();
+    let mut governor_config = RuntimeGovernorConfig::shared_host();
     governor_config.memory_budget_bytes = configured_memory_ceiling_bytes;
     let governor = RuntimeGovernor::new(governor_config, resources, storage_io);
     let limits = governor.snapshot().limits;
@@ -144,13 +144,13 @@ pub fn qualify_content_store_memory_profile(
     }
 
     let nominal_budget_range_observed = match profile_kind {
-        ContentStoreResourceProfileKind::DesktopBound8Gib => {
-            if limits.memory_capacity_bytes > CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES {
+        ContentStoreResourceProfileKind::SharedHost8Gib => {
+            if limits.memory_capacity_bytes > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES {
                 blocker_codes
-                    .push("content_store_desktop_8_gib_capacity_exceeds_2_gib".to_string());
+                    .push("content_store_shared_host_8_gib_capacity_exceeds_2_gib".to_string());
             }
-            (CONTENT_STORE_DESKTOP_NOMINAL_MIN_BUDGET_BYTES
-                ..=CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES)
+            (CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES
+                ..=CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES)
                 .contains(&limits.memory_budget_bytes)
         }
         ContentStoreResourceProfileKind::Capability512Mib => {
@@ -189,7 +189,7 @@ pub fn qualify_content_store_memory_profile(
 }
 
 /// Binds both fixed memory-policy evaluations to one exact release identity.
-/// This proves policy derivation only; representative desktop and 512 MiB
+/// This proves policy derivation only; representative shared-host and 512 MiB
 /// workload reports remain separate release obligations.
 pub fn run_production_content_store_memory_qualification(
     config: ProductionContentStoreMemoryQualificationConfig,
@@ -205,7 +205,7 @@ pub fn run_production_content_store_memory_qualification(
         &config.expected_identity,
     )
     .map_err(|error| SkeinError::Semantic(error.to_string()))?;
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.storage_path,
     ));
     evaluate_production_content_store_memory_qualification(
@@ -220,8 +220,8 @@ fn evaluate_production_content_store_memory_qualification(
     resources: RuntimeResourceSnapshot,
     storage_io: IoConcurrencyBudget,
 ) -> Result<ProductionContentStoreMemoryQualificationReport, SkeinError> {
-    let desktop_bound_8_gib = qualify_content_store_memory_profile(
-        ContentStoreResourceProfileKind::DesktopBound8Gib,
+    let shared_host_8_gib = qualify_content_store_memory_profile(
+        ContentStoreResourceProfileKind::SharedHost8Gib,
         resources,
         storage_io,
     )?;
@@ -232,10 +232,10 @@ fn evaluate_production_content_store_memory_qualification(
     )?;
     let mut blocker_codes = Vec::new();
     blocker_codes.extend(
-        desktop_bound_8_gib
+        shared_host_8_gib
             .blocker_codes
             .iter()
-            .map(|blocker| format!("desktop_bound_8_gib_{blocker}")),
+            .map(|blocker| format!("shared_host_8_gib_{blocker}")),
     );
     blocker_codes.extend(
         capability_512_mib
@@ -249,7 +249,7 @@ fn evaluate_production_content_store_memory_qualification(
         ready: blocker_codes.is_empty(),
         blocker_codes,
         evidence_binding: config.evidence_binding,
-        desktop_bound_8_gib,
+        shared_host_8_gib,
         capability_512_mib,
     })
 }
@@ -304,7 +304,7 @@ mod tests {
             durable_format_version: 1,
             schema_version: 1,
             configuration_digest: "configuration".to_string(),
-            deployment_profile: "desktop-bound".to_string(),
+            deployment_profile: "shared-host".to_string(),
             dataset_fingerprint: "dataset".to_string(),
             canonical_graph_commit_epoch: 1,
             policy_version: PRODUCTION_QUALIFICATION_POLICY_VERSION,
@@ -324,13 +324,16 @@ mod tests {
     }
 
     #[test]
-    fn desktop_8_gib_profile_derives_headroom_bounded_budget() {
+    fn shared_host_8_gib_profile_derives_headroom_bounded_budget() {
         let report = qualify_content_store_memory_profile(
-            ContentStoreResourceProfileKind::DesktopBound8Gib,
-            resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 6 * 1024 * 1024 * 1024),
+            ContentStoreResourceProfileKind::SharedHost8Gib,
+            resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                6 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
-        .expect("fixed desktop profile should evaluate");
+        .expect("fixed shared-host profile should evaluate");
 
         assert!(
             report.ready,
@@ -339,20 +342,23 @@ mod tests {
         );
         assert_eq!(
             report.memory_capacity_bytes,
-            CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES
+            CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES
         );
         assert_eq!(report.memory_budget_bytes, 1536 * 1024 * 1024);
         assert!(report.nominal_budget_range_observed);
     }
 
     #[test]
-    fn desktop_profile_uses_effective_cgroup_limit_and_headroom() {
+    fn shared_host_profile_uses_effective_cgroup_limit_and_headroom() {
         let report = qualify_content_store_memory_profile(
-            ContentStoreResourceProfileKind::DesktopBound8Gib,
-            cgroup_resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 2 * 1024 * 1024 * 1024),
+            ContentStoreResourceProfileKind::SharedHost8Gib,
+            cgroup_resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                2 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
-        .expect("cgroup-bounded desktop profile should evaluate");
+        .expect("cgroup-bounded shared-host profile should evaluate");
 
         assert!(
             report.ready,
@@ -364,13 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn desktop_8_gib_profile_allows_budget_below_nominal_range_under_pressure() {
+    fn shared_host_8_gib_profile_allows_budget_below_nominal_range_under_pressure() {
         let report = qualify_content_store_memory_profile(
-            ContentStoreResourceProfileKind::DesktopBound8Gib,
-            resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 3 * 1024 * 1024 * 1024),
+            ContentStoreResourceProfileKind::SharedHost8Gib,
+            resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                3 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
-        .expect("fixed desktop profile should evaluate");
+        .expect("fixed shared-host profile should evaluate");
 
         assert!(
             report.ready,
@@ -385,7 +394,10 @@ mod tests {
     fn constrained_512_mib_profile_preserves_host_headroom() {
         let report = qualify_content_store_memory_profile(
             ContentStoreResourceProfileKind::Capability512Mib,
-            resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 6 * 1024 * 1024 * 1024),
+            resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                6 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
         .expect("fixed low-memory profile should evaluate");
@@ -408,7 +420,7 @@ mod tests {
     #[test]
     fn profile_identity_cannot_be_claimed_on_a_different_limit() {
         let report = qualify_content_store_memory_profile(
-            ContentStoreResourceProfileKind::DesktopBound8Gib,
+            ContentStoreResourceProfileKind::SharedHost8Gib,
             resources(16 * 1024 * 1024 * 1024, 12 * 1024 * 1024 * 1024),
             storage_io(),
         )
@@ -442,10 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn production_matrix_binds_dynamic_desktop_and_explicit_capability_profiles() {
+    fn production_matrix_binds_dynamic_shared_host_and_explicit_capability_profiles() {
         let report = evaluate_production_content_store_memory_qualification(
             production_config(),
-            resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 6 * 1024 * 1024 * 1024),
+            resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                6 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
         .expect("production memory profiles should evaluate");
@@ -456,7 +471,7 @@ mod tests {
             report.blocker_codes
         );
         assert_eq!(
-            report.desktop_bound_8_gib.memory_budget_bytes,
+            report.shared_host_8_gib.memory_budget_bytes,
             1536 * 1024 * 1024
         );
         assert_eq!(
@@ -470,13 +485,16 @@ mod tests {
     }
 
     #[test]
-    fn production_matrix_accepts_desktop_budget_below_nominal_range() {
+    fn production_matrix_accepts_shared_host_budget_below_nominal_range() {
         let report = evaluate_production_content_store_memory_qualification(
             production_config(),
-            resources(CONTENT_STORE_DESKTOP_8_GIB_BYTES, 3 * 1024 * 1024 * 1024),
+            resources(
+                CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
+                3 * 1024 * 1024 * 1024,
+            ),
             storage_io(),
         )
-        .expect("pressured desktop memory profiles should evaluate");
+        .expect("pressured shared-host memory profiles should evaluate");
 
         assert!(
             report.ready,
@@ -484,20 +502,20 @@ mod tests {
             report.blocker_codes
         );
         assert_eq!(
-            report.desktop_bound_8_gib.memory_budget_bytes,
+            report.shared_host_8_gib.memory_budget_bytes,
             768 * 1024 * 1024
         );
-        assert!(!report.desktop_bound_8_gib.nominal_budget_range_observed);
+        assert!(!report.shared_host_8_gib.nominal_budget_range_observed);
     }
 
     #[test]
-    fn production_matrix_reports_wrong_desktop_limit_and_rejects_stale_identity() {
+    fn production_matrix_reports_wrong_shared_host_limit_and_rejects_stale_identity() {
         let report = evaluate_production_content_store_memory_qualification(
             production_config(),
             resources(16 * 1024 * 1024 * 1024, 12 * 1024 * 1024 * 1024),
             storage_io(),
         )
-        .expect("wrong desktop limit should produce bounded evidence");
+        .expect("wrong shared-host limit should produce bounded evidence");
         assert!(!report.ready);
         assert!(report
             .blocker_codes

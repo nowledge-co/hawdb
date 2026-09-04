@@ -2757,7 +2757,7 @@ mod tests {
         let mut catalog = Catalog::default();
         let mut store = open_shadow_store(&root, &mut catalog);
         let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig::desktop_bound(),
+            skein_qos::RuntimeGovernorConfig::shared_host(),
             skein_qos::IoConcurrencyBudget::new(2, 1),
         );
         store.set_runtime_governor(governor.clone());
@@ -2798,7 +2798,7 @@ mod tests {
         let governor = skein_qos::RuntimeGovernor::detect(
             skein_qos::RuntimeGovernorConfig {
                 background_task_limit: std::num::NonZeroUsize::new(1),
-                ..skein_qos::RuntimeGovernorConfig::desktop_bound()
+                ..skein_qos::RuntimeGovernorConfig::shared_host()
             },
             skein_qos::IoConcurrencyBudget::new(2, 1),
         );

@@ -199,7 +199,7 @@ mod tests {
         NowledgeMemGraphMode, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     use skein_qualification::{
-        CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+        CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     };
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
             "durable_format_version": 1,
             "schema_version": 1,
             "configuration_digest": "config",
-            "deployment_profile": "desktop-bound-8-gib",
+            "deployment_profile": "shared-host-8-gib",
             "dataset_fingerprint": "dataset",
             "canonical_graph_commit_epoch": 1,
             "policy_version": PRODUCTION_QUALIFICATION_POLICY_VERSION
@@ -318,7 +318,7 @@ mod tests {
                 "generated_at_unix_seconds": 1
             },
             "expected_identity": identity,
-            "runtime_profile": "desktop_bound_8_gib",
+            "runtime_profile": "shared_host_8_gib",
             "database": {
                 "max_read_result_rows": 1000,
                 "max_read_result_payload_bytes": 1048576,
@@ -331,7 +331,7 @@ mod tests {
             "process_limits": {
                 "min_canonical_artifact_bytes": 1048577,
                 "max_steady_resident_bytes": 1073741824,
-                "max_peak_resident_bytes": CONTENT_STORE_DESKTOP_MAX_CAPACITY_BYTES,
+                "max_peak_resident_bytes": CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
                 "max_total_page_faults": null,
                 "max_minor_page_faults": null,
                 "max_major_page_faults": null,

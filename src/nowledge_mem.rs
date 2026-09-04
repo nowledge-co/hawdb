@@ -111,13 +111,13 @@ fn default_nowledge_mem_runtime_governor(
     database_config: &DatabaseConfig,
 ) -> RuntimeGovernor {
     let storage_device = StorageDeviceProfile::detect(path);
-    let mut governor_config = RuntimeGovernorConfig::desktop_bound();
+    let mut governor_config = RuntimeGovernorConfig::shared_host();
     if let Some(max_payload_bytes) = database_config.max_read_result_payload_bytes {
         governor_config.result_budget_bytes = u64::try_from(max_payload_bytes).unwrap_or(u64::MAX);
     }
     RuntimeGovernor::detect(
         governor_config,
-        IoConcurrencyBudget::desktop_bound_for_device(storage_device),
+        IoConcurrencyBudget::shared_host_for_device(storage_device),
     )
 }
 

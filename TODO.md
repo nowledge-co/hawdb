@@ -185,7 +185,7 @@ crash; read-only recovery remains fail closed.
     RSS, page faults, elapsed time, governor admission, and write amplification.
     Its thin bounded CLI now emits the declared scan/spill/rewrite policy, and
     the release bundle independently revalidates raw evidence from distinct
-    explicit 512 MiB capability and dynamic 8 GiB desktop runs. The desktop
+    explicit 512 MiB capability and dynamic 8 GiB shared-host runs. The shared-host
     run keeps automatic capacity at or below 2 GiB while permitting pressure
     to reduce its budget below the nominal 1--2 GiB range.
     Retain this item until representative production-copy reports under the
@@ -253,7 +253,7 @@ crash; read-only recovery remains fail closed.
     regular in-process run does not certify an OS-enforced 512 MiB limit: retain
     the isolated constrained-profile run and production-copy measurements as
     separate evidence gates.
-  - Qualify `DesktopBound` separately on an 8 GiB host: automatic Skein
+  - Qualify `SharedHost` separately on an 8 GiB host: automatic Skein
     capacity must remain at or below 2 GiB, while the effective budget tracks
     sensed headroom and is expected to move through the 1--2 GiB range rather
     than becoming a fixed reservation. Keep the explicit 512 MiB run as a
@@ -311,7 +311,7 @@ crash; read-only recovery remains fail closed.
   - The independent general graph-storage release artifact now has a bounded
     `skein-graph-storage-qualification` collector over the existing typed
     runner. It binds one caller-owned read-only database to a strict plan,
-    derives `ShadowReadOnly + OutOfCore`, keeps the desktop governor dynamic,
+    derives `ShadowReadOnly + OutOfCore`, keeps the shared-host governor dynamic,
     and treats explicit 512 MiB execution as a separate capability profile.
     Retain this item until a representative business-shaped graph artifact and
     the all-class index matrix are checked in for the same release identity.

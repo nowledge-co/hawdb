@@ -296,7 +296,7 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     let runtime_memory = runtime_memory_evidence(RuntimeMemorySnapshot::detect());
     let compaction_policy =
         ProductionRelationalOverflowCompactionPolicyEvidence::from_config(config.compaction)?;
-    let storage_io = IoConcurrencyBudget::desktop_bound_for_device(StorageDeviceProfile::detect(
+    let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.replica_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
