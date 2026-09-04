@@ -31,6 +31,10 @@ enum AggregateState {
     },
 }
 
+fn incompatible_partial_states_error() -> SkeinError {
+    SkeinError::Execution("AggregateExec encountered incompatible partial states".to_string())
+}
+
 #[derive(Default)]
 struct MemoryDelta {
     added_bytes: usize,
@@ -243,9 +247,7 @@ impl AggregateState {
                 *count = count.saturating_add(other_count);
                 Ok(MemoryDelta::default())
             }
-            _ => Err(SkeinError::Execution(
-                "AggregateExec encountered incompatible partial states".to_string(),
-            )),
+            _ => Err(incompatible_partial_states_error()),
         }
     }
 
@@ -258,6 +260,28 @@ impl AggregateState {
             | Self::Avg { .. }
             | Self::Collect { .. } => 0,
         })
+    }
+
+    fn partial_memory_bytes_after_merge(&self, other: &Self) -> Result<usize> {
+        let retained_value = match (self, other) {
+            (Self::Count { distinct: None, .. }, Self::Count { distinct: None, .. })
+            | (Self::Avg { .. }, Self::Avg { .. }) => return Ok(self.partial_memory_bytes()),
+            (Self::Min(current), Self::Min(incoming)) => match (current, incoming) {
+                (Some(current), Some(incoming)) if incoming < current => Some(incoming),
+                (Some(current), _) => Some(current),
+                (None, incoming) => incoming.as_ref(),
+            },
+            (Self::Max(current), Self::Max(incoming)) => match (current, incoming) {
+                (Some(current), Some(incoming)) if incoming > current => Some(incoming),
+                (Some(current), _) => Some(current),
+                (None, incoming) => incoming.as_ref(),
+            },
+            _ => return Err(incompatible_partial_states_error()),
+        };
+        Ok(
+            std::mem::size_of::<Self>()
+                .saturating_add(retained_value.map_or(0, value_memory_bytes)),
+        )
     }
 }
 

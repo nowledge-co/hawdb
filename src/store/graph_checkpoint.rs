@@ -248,6 +248,9 @@ impl GraphStore {
     pub(crate) fn checkpoint_source(&self) -> Self {
         let mut source = self.snapshot();
         source.durable = self.durable.clone();
+        if let Some(durable) = &mut source.durable {
+            durable.wal_append_file = None;
+        }
         source
     }
 

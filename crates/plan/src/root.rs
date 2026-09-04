@@ -5,7 +5,7 @@ use crate::{LogicalPlan, PhysicalPlan};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanPhaseKind {
     Logical,
-    OptimizedLogical,
+    LoweringReady,
     Physical,
     FastPathPhysical,
 }
@@ -18,7 +18,7 @@ pub trait PlanPhase {
 pub struct LogicalPhase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OptimizedLogicalPhase;
+pub struct LoweringReadyPhase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalPhase;
@@ -32,7 +32,7 @@ pub struct LogicalPlanRoot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct OptimizedLogicalPlanRoot {
+pub struct LoweringReadyLogicalPlanRoot {
     plan: LogicalPlan,
 }
 
@@ -49,8 +49,8 @@ impl PlanPhase for LogicalPhase {
     const KIND: PlanPhaseKind = PlanPhaseKind::Logical;
 }
 
-impl PlanPhase for OptimizedLogicalPhase {
-    const KIND: PlanPhaseKind = PlanPhaseKind::OptimizedLogical;
+impl PlanPhase for LoweringReadyPhase {
+    const KIND: PlanPhaseKind = PlanPhaseKind::LoweringReady;
 }
 
 impl PlanPhase for PhysicalPhase {
@@ -74,8 +74,8 @@ impl LogicalPlanRoot {
         LogicalPhase::KIND
     }
 
-    pub fn into_optimized(self) -> OptimizedLogicalPlanRoot {
-        OptimizedLogicalPlanRoot { plan: self.plan }
+    pub fn into_lowering_ready(self) -> LoweringReadyLogicalPlanRoot {
+        LoweringReadyLogicalPlanRoot { plan: self.plan }
     }
 
     pub fn into_plan(self) -> LogicalPlan {
@@ -83,7 +83,7 @@ impl LogicalPlanRoot {
     }
 }
 
-impl OptimizedLogicalPlanRoot {
+impl LoweringReadyLogicalPlanRoot {
     pub fn new(plan: LogicalPlan) -> Self {
         Self { plan }
     }
@@ -93,7 +93,7 @@ impl OptimizedLogicalPlanRoot {
     }
 
     pub fn phase(&self) -> PlanPhaseKind {
-        OptimizedLogicalPhase::KIND
+        LoweringReadyPhase::KIND
     }
 
     pub fn into_plan(self) -> LogicalPlan {

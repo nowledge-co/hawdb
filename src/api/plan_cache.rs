@@ -100,16 +100,16 @@ pub(super) struct CachedPlan {
 
 pub(super) type PlanCache = LfuCache<PlanCacheKey, CachedPlan>;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct PlanCacheKey {
-    cypher: String,
+    normalized_query: String,
     parameters: PlanParameterCacheKey,
     environment: OptimizerEnvironmentKey,
     max_optimizer_groups: Option<usize>,
     access_control: Option<AccessControlPlanCacheKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct AccessControlPlanCacheKey {
     policy_epoch: u64,
     visibility_property: String,
@@ -126,30 +126,13 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
     }
 }
 
-impl PlanCacheKey {
-    fn matches(
-        &self,
-        cypher: &str,
-        parameters: &BTreeMap<String, Value>,
-        environment: &OptimizerEnvironmentKey,
-        max_optimizer_groups: Option<usize>,
-        access_control: Option<&AccessControlPlanCacheKey>,
-    ) -> bool {
-        self.cypher == cypher
-            && &self.environment == environment
-            && self.max_optimizer_groups == max_optimizer_groups
-            && self.access_control.as_ref() == access_control
-            && self.parameters.matches(parameters)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
     statistics_generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct OptimizerSchemaKey {
     labels: Vec<String>,
     relationship_types: Vec<String>,
@@ -425,6 +408,8 @@ pub(super) fn optimized_query_plan_for(
     }
     let effective_max_optimizer_groups =
         optimizer_config_from_database_config(context.config).max_groups;
+    let normalized_plan_cache_query =
+        skein_query::normalize_query_for_plan_cache("cypher", cypher_text);
     let access_control_cache_key = context.access_control.map(AccessControlPlanCacheKey::from);
     let execution_parameters = parameters_with_access_control(parameters, context.access_control);
     let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
@@ -433,19 +418,21 @@ pub(super) fn optimized_query_plan_for(
             .borrow_mut()
             .environment_hint(context.catalog, context.store)
     });
+    let parameterized = (cache_mode == PlanCacheMode::Use)
+        .then(|| parameterize_logical_plan(statement_body(statement), parameters))
+        .transpose()?;
+    let mut key = parameterized.as_ref().map(|parameterized| PlanCacheKey {
+        normalized_query: normalized_plan_cache_query,
+        parameters: parameterized.cache_key().clone(),
+        environment: environment_hint
+            .clone()
+            .expect("optimizer environment exists for a parameterized plan"),
+        max_optimizer_groups: context.config.max_optimizer_groups,
+        access_control: access_control_cache_key,
+    });
     if cache_mode == PlanCacheMode::Use {
-        let environment = environment_hint
-            .as_ref()
-            .expect("optimizer environment exists in use mode");
-        let cached = context.cache.borrow_mut().get_matching(|key| {
-            key.matches(
-                cypher_text,
-                parameters,
-                environment,
-                context.config.max_optimizer_groups,
-                access_control_cache_key.as_ref(),
-            )
-        });
+        let key = key.as_ref().expect("cache key exists in use mode");
+        let cached = context.cache.borrow_mut().get(key);
         if let Some(cached) = cached {
             let physical_plan = bind_physical_plan_parameters(
                 &cached.physical_template,
@@ -463,15 +450,12 @@ pub(super) fn optimized_query_plan_for(
                 physical_plan,
                 trace,
                 plan_cache_lookup: PlanCacheLookup::Hit,
-                optimizer_environment: environment.clone(),
+                optimizer_environment: key.environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
                 effective_max_optimizer_groups,
             });
         }
     }
-    let parameterized = (cache_mode == PlanCacheMode::Use)
-        .then(|| parameterize_logical_plan(statement_body(statement), parameters))
-        .transpose()?;
     let mut logical = if let Some(parameterized) = &parameterized {
         parameterized.logical().clone()
     } else {
@@ -484,16 +468,6 @@ pub(super) fn optimized_query_plan_for(
             cache_mode == PlanCacheMode::Use,
         );
     }
-    let mut key = parameterized.as_ref().map(|parameterized| PlanCacheKey {
-        cypher: cypher_text.to_string(),
-        parameters: parameterized.cache_key().clone(),
-        environment: environment_hint
-            .clone()
-            .expect("optimizer environment exists for a parameterized plan"),
-        max_optimizer_groups: context.config.max_optimizer_groups,
-        access_control: access_control_cache_key,
-    });
-
     let catalog_access = context
         .planning_cache
         .borrow_mut()

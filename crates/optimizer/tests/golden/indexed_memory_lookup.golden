@@ -27,7 +27,7 @@ Project {
     },
 }
 
-[optimized-logical]
+[lowering-input]
 Project {
     items: [
         Projection {

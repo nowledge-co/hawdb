@@ -16,6 +16,11 @@ const FOOTER_MAGIC: &[u8; 8] = b"SKRQBF01";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+thread_local! {
+    static SEGMENT_CHECKSUM_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Debug)]
 pub struct ProjectionWriter {
     target: PathBuf,
@@ -218,46 +223,7 @@ impl FileProjection {
         // not part of Skein's supported artifact lifecycle.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
-        let mut previous_id = None;
-        let mut payload_hasher = Hasher::new();
-        for descriptor in &manifest.segments {
-            let buffer = segment_buffer(&mmap, descriptor)?;
-            payload_hasher.update(buffer.bytes);
-            let parts = buffer.parts(
-                manifest.dimension,
-                RaBitQBitWidth::from_bits(manifest.bit_width)?,
-                descriptor.row_count,
-            )?;
-            for row in 0..descriptor.row_count {
-                let id = parts.id(row);
-                if let Some(previous) = previous_id
-                    && id <= previous
-                {
-                    return Err(ProjectionError::CorruptArtifact(format!(
-                        "ids are not strictly increasing at {id} after {previous}"
-                    )));
-                }
-                previous_id = Some(id);
-                let scale = parts.reconstruction_scale(row);
-                if !scale.is_finite() || scale < 0.0 {
-                    return Err(ProjectionError::CorruptArtifact(format!(
-                        "invalid RaBitQ reconstruction scale in segment {} row {row}",
-                        descriptor.index
-                    )));
-                }
-                if !parts.reconstruction_offset(row).is_finite() {
-                    return Err(ProjectionError::CorruptArtifact(format!(
-                        "invalid RaBitQ reconstruction offset in segment {} row {row}",
-                        descriptor.index
-                    )));
-                }
-            }
-        }
-        if payload_hasher.finalize() != manifest.payload_checksum {
-            return Err(ProjectionError::CorruptArtifact(
-                "payload checksum mismatch".to_string(),
-            ));
-        }
+        verify_projection_payload(&mmap, &manifest)?;
         Ok(Self {
             path,
             manifest,
@@ -288,18 +254,70 @@ impl FileProjection {
         }
     }
 
+    /// Revalidates the mapped payload against the manifest and segment checksums.
+    ///
+    /// Normal searches trust the immutable artifact established by [`Self::open`]
+    /// and avoid checksum work on the query hot path. Scrub and deep-verification
+    /// callers can use this method to detect payload mutation after open.
+    pub fn verify(&self) -> Result<()> {
+        verify_projection_payload(&self.mmap, &self.manifest)
+    }
+
     /// Zero-copy view of a segment's payload backed by the projection's mmap.
     ///
     /// Unlike the previous per-call `File::open` + `seek` + `read_exact`, this
-    /// borrows directly from the mapping opened once in `open()`: no syscall
-    /// and no heap allocation/copy per search. The checksum is still verified
-    /// on every call to preserve the existing fail-closed guarantee.
+    /// borrows directly from the mapping opened and fully validated once in
+    /// `open()`: no syscall, checksum pass, or heap allocation/copy per search.
     pub(crate) fn read_segment(&self, index: usize) -> Result<SegmentBuffer<'_>> {
         let descriptor = self.manifest.segments.get(index).ok_or_else(|| {
             ProjectionError::CorruptArtifact(format!("missing segment descriptor {index}"))
         })?;
         segment_buffer(&self.mmap, descriptor)
     }
+}
+
+fn verify_projection_payload(mmap: &Mmap, manifest: &ProjectionManifest) -> Result<()> {
+    let mut previous_id = None;
+    let mut payload_hasher = Hasher::new();
+    for descriptor in &manifest.segments {
+        let buffer = verified_segment_buffer(mmap, descriptor)?;
+        payload_hasher.update(buffer.bytes);
+        let parts = buffer.parts(
+            manifest.dimension,
+            RaBitQBitWidth::from_bits(manifest.bit_width)?,
+            descriptor.row_count,
+        )?;
+        for row in 0..descriptor.row_count {
+            let id = parts.id(row);
+            if let Some(previous) = previous_id
+                && id <= previous
+            {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "ids are not strictly increasing at {id} after {previous}"
+                )));
+            }
+            previous_id = Some(id);
+            let scale = parts.reconstruction_scale(row);
+            if !scale.is_finite() || scale < 0.0 {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "invalid RaBitQ reconstruction scale in segment {} row {row}",
+                    descriptor.index
+                )));
+            }
+            if !parts.reconstruction_offset(row).is_finite() {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "invalid RaBitQ reconstruction offset in segment {} row {row}",
+                    descriptor.index
+                )));
+            }
+        }
+    }
+    if payload_hasher.finalize() != manifest.payload_checksum {
+        return Err(ProjectionError::CorruptArtifact(
+            "payload checksum mismatch".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -421,13 +439,37 @@ fn segment_buffer<'a>(mmap: &'a Mmap, descriptor: &SegmentDescriptor) -> Result<
             descriptor.index
         ))
     })?;
-    if crc32fast::hash(bytes) != descriptor.payload_checksum {
+    Ok(SegmentBuffer { bytes })
+}
+
+fn verified_segment_buffer<'a>(
+    mmap: &'a Mmap,
+    descriptor: &SegmentDescriptor,
+) -> Result<SegmentBuffer<'a>> {
+    let buffer = segment_buffer(mmap, descriptor)?;
+    if segment_checksum(buffer.bytes) != descriptor.payload_checksum {
         return Err(ProjectionError::CorruptArtifact(format!(
             "segment {} checksum mismatch",
             descriptor.index
         )));
     }
-    Ok(SegmentBuffer { bytes })
+    Ok(buffer)
+}
+
+fn segment_checksum(bytes: &[u8]) -> u32 {
+    #[cfg(test)]
+    SEGMENT_CHECKSUM_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+    crc32fast::hash(bytes)
+}
+
+#[cfg(test)]
+fn reset_segment_checksum_calls() {
+    SEGMENT_CHECKSUM_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn segment_checksum_calls() -> usize {
+    SEGMENT_CHECKSUM_CALLS.with(std::cell::Cell::get)
 }
 
 fn read_u64(reader: &mut impl Read) -> Result<u64> {
@@ -520,6 +562,35 @@ mod tests {
         file.sync_all().unwrap();
         let error = FileProjection::open(&artifact).unwrap_err();
         assert!(matches!(error, ProjectionError::CorruptArtifact(_)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repeated_segment_reads_skip_crc_but_explicit_verify_detects_mutation() {
+        let root = unique_test_dir("steady-state-checksum");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("search_rabitq.1.skein");
+        let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1));
+        let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
+        writer.push(10, &[1.0; 8]).unwrap();
+        let projection = writer.finish().unwrap();
+
+        reset_segment_checksum_calls();
+        projection.read_segment(0).unwrap();
+        projection.read_segment(0).unwrap();
+        assert_eq!(segment_checksum_calls(), 0);
+
+        let descriptor = &projection.manifest().segments[0];
+        let original = projection.read_segment(0).unwrap().bytes[0];
+        let mut file = OpenOptions::new().write(true).open(&artifact).unwrap();
+        file.seek(SeekFrom::Start(descriptor.payload_offset))
+            .unwrap();
+        file.write_all(&[original ^ 0xff]).unwrap();
+        file.sync_all().unwrap();
+
+        let error = projection.verify().unwrap_err();
+        assert!(matches!(error, ProjectionError::CorruptArtifact(_)));
+        assert_eq!(segment_checksum_calls(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

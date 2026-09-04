@@ -48,7 +48,13 @@ impl QueryIdentity {
 }
 
 pub fn normalize_query(query_language: &str, query_text: &str) -> String {
-    Normalizer::new(query_language, query_text).normalize()
+    Normalizer::new(query_language, query_text, NormalizationMode::Identity).normalize()
+}
+
+/// Normalizes syntax that does not affect planning while preserving every
+/// value and binding name that can change the resulting physical plan.
+pub fn normalize_query_for_plan_cache(query_language: &str, query_text: &str) -> String {
+    Normalizer::new(query_language, query_text, NormalizationMode::PlanCache).normalize()
 }
 
 fn versioned_hash(domain: &str, version: u16, prefix: &str, fields: &[&[u8]]) -> String {
@@ -78,16 +84,24 @@ struct Normalizer<'a> {
     position: usize,
     parameters: BTreeMap<String, usize>,
     tokens: Vec<String>,
+    mode: NormalizationMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizationMode {
+    Identity,
+    PlanCache,
 }
 
 impl<'a> Normalizer<'a> {
-    fn new(query_language: &'a str, input: &'a str) -> Self {
+    fn new(query_language: &'a str, input: &'a str, mode: NormalizationMode) -> Self {
         Self {
             query_language,
             input,
             position: 0,
             parameters: BTreeMap::new(),
             tokens: Vec::new(),
+            mode,
         }
     }
 
@@ -125,6 +139,10 @@ impl<'a> Normalizer<'a> {
             self.push_token("symbol", "$");
             return;
         }
+        if self.mode == NormalizationMode::PlanCache {
+            self.push_token("parameter", name);
+            return;
+        }
         let next_ordinal = self.parameters.len();
         let ordinal = *self
             .parameters
@@ -160,6 +178,8 @@ impl<'a> Normalizer<'a> {
                 self.advance();
                 if quote == '"' && !self.query_language.eq_ignore_ascii_case("cypher") {
                     self.push_token("quoted_identifier", value);
+                } else if self.mode == NormalizationMode::PlanCache {
+                    self.push_token("literal_value", &format!("{quote}{value}{quote}"));
                 } else {
                     self.push_token("literal", "string");
                 }
@@ -171,6 +191,7 @@ impl<'a> Normalizer<'a> {
     }
 
     fn normalize_number(&mut self) {
+        let start = self.position;
         if self.peek() == Some('-') {
             self.advance();
         }
@@ -181,17 +202,27 @@ impl<'a> Normalizer<'a> {
             self.advance();
             self.consume_while(|ch| ch.is_ascii_digit());
         }
-        self.push_token("literal", kind);
+        if self.mode == NormalizationMode::PlanCache {
+            let value = &self.input[start..self.position];
+            self.push_token("literal_value", value);
+        } else {
+            self.push_token("literal", kind);
+        }
     }
 
     fn normalize_word(&mut self) {
         let word = self.consume_while(is_identifier_continue).to_string();
-        if matches!(word.to_ascii_lowercase().as_str(), "true" | "false") {
-            self.push_token("literal", "bool");
+        let lowercase = word.to_ascii_lowercase();
+        if matches!(lowercase.as_str(), "true" | "false") {
+            if self.mode == NormalizationMode::PlanCache {
+                self.push_token("literal_value", &lowercase);
+            } else {
+                self.push_token("literal", "bool");
+            }
         } else if word.eq_ignore_ascii_case("null") {
             self.push_token("literal", "null");
         } else if is_keyword(&word) {
-            self.push_token("keyword", &word.to_ascii_lowercase());
+            self.push_token("keyword", &lowercase);
         } else {
             self.push_token("identifier", &word);
         }
@@ -401,5 +432,36 @@ mod tests {
         let simple = QueryIdentity::new("sql", "SELECT 'public'");
 
         assert_eq!(escaped.query_digest(), simple.query_digest());
+    }
+
+    #[test]
+    fn plan_cache_normalization_ignores_keyword_case_whitespace_and_trailing_semicolons() {
+        let first = normalize_query_for_plan_cache(
+            "cypher",
+            "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title",
+        );
+        let second = normalize_query_for_plan_cache(
+            "cypher",
+            "  match (m:Memory)\nwhere m.id=$id\nreturn m.title as title;;; ",
+        );
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn plan_cache_normalization_preserves_literals_and_parameter_names() {
+        let string_one = normalize_query_for_plan_cache("cypher", "RETURN 'one'");
+        let string_two = normalize_query_for_plan_cache("cypher", "RETURN 'two'");
+        let integer_one = normalize_query_for_plan_cache("cypher", "RETURN 1");
+        let integer_two = normalize_query_for_plan_cache("cypher", "RETURN 2");
+        let bool_true = normalize_query_for_plan_cache("cypher", "RETURN true");
+        let bool_false = normalize_query_for_plan_cache("cypher", "RETURN false");
+        let parameter_id = normalize_query_for_plan_cache("cypher", "RETURN $id");
+        let parameter_value = normalize_query_for_plan_cache("cypher", "RETURN $value");
+
+        assert_ne!(string_one, string_two);
+        assert_ne!(integer_one, integer_two);
+        assert_ne!(bool_true, bool_false);
+        assert_ne!(parameter_id, parameter_value);
     }
 }

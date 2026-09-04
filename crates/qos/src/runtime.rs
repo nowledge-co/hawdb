@@ -1,3 +1,4 @@
+use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
 use skein_core::{
     RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
@@ -356,6 +357,8 @@ pub struct RuntimeTelemetryEvent {
     pub priority: Option<RuntimeWorkPriority>,
     pub work_kind: Option<RuntimeWorkKind>,
     pub admission_code: Option<RuntimeAdmissionCode>,
+    pub retryable: Option<bool>,
+    pub elapsed_micros: u64,
 }
 
 pub trait RuntimeTelemetrySink: Debug + Send + Sync {
@@ -376,6 +379,7 @@ pub struct RuntimeGovernorSnapshot {
     pub admissions: u64,
     pub admission_waits: u64,
     pub admission_rejections: u64,
+    pub retryable_admission_rejections: u64,
     pub completions: u64,
     pub cancellations: u64,
     pub deadline_exceeded: u64,
@@ -395,6 +399,7 @@ struct RuntimeGovernorInner {
     storage_io: IoConcurrencyBudget,
     state: Mutex<RuntimeGovernorState>,
     io_available: Condvar,
+    resource_detector: Mutex<Option<RuntimeResourceDetector>>,
     telemetry: RwLock<Option<Arc<dyn RuntimeTelemetrySink>>>,
 }
 
@@ -413,6 +418,7 @@ struct RuntimeGovernorState {
     admissions: u64,
     admission_waits: u64,
     admission_rejections: u64,
+    retryable_admission_rejections: u64,
     completions: u64,
     cancellations: u64,
     deadline_exceeded: u64,
@@ -480,19 +486,25 @@ impl RuntimeGovernor {
                     admissions: 0,
                     admission_waits: 0,
                     admission_rejections: 0,
+                    retryable_admission_rejections: 0,
                     completions: 0,
                     cancellations: 0,
                     deadline_exceeded: 0,
                     pressure_adjustments: 0,
                 }),
                 io_available: Condvar::new(),
+                resource_detector: Mutex::new(None),
                 telemetry: RwLock::new(None),
             }),
         }
     }
 
     pub fn detect(config: RuntimeGovernorConfig, storage_io: IoConcurrencyBudget) -> Self {
-        Self::new(config, RuntimeResourceSnapshot::detect(), storage_io)
+        let mut detector = RuntimeResourceDetector::new();
+        let resources = detector.detect();
+        let governor = Self::new(config, resources, storage_io);
+        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
+        governor
     }
 
     pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn RuntimeTelemetrySink>>) {
@@ -507,7 +519,10 @@ impl RuntimeGovernor {
             let mut state = mutex_lock(&self.inner.state);
             match admission_error(&state, request) {
                 Some(error) => {
-                    if !error.is_retryable() {
+                    if error.is_retryable() {
+                        state.retryable_admission_rejections =
+                            state.retryable_admission_rejections.saturating_add(1);
+                    } else {
                         state.admission_rejections = state.admission_rejections.saturating_add(1);
                     }
                     Err(error)
@@ -540,19 +555,27 @@ impl RuntimeGovernor {
                 priority: Some(request.priority),
                 work_kind: Some(request.kind),
                 admission_code: None,
+                retryable: None,
+                elapsed_micros: 0,
             }),
-            Err(error) if !error.is_retryable() => self.inner.record(RuntimeTelemetryEvent {
+            Err(error) => self.inner.record(RuntimeTelemetryEvent {
                 kind: RuntimeTelemetryEventKind::AdmissionRejected,
                 priority: Some(request.priority),
                 work_kind: Some(request.kind),
                 admission_code: Some(error.code),
+                retryable: Some(error.retryable),
+                elapsed_micros: 0,
             }),
-            Err(_) => {}
         }
         result
     }
 
-    pub fn record_admission_wait(&self, request: RuntimeWorkRequest, code: RuntimeAdmissionCode) {
+    pub fn record_admission_wait(
+        &self,
+        request: RuntimeWorkRequest,
+        code: RuntimeAdmissionCode,
+        elapsed_micros: u64,
+    ) {
         {
             let mut state = mutex_lock(&self.inner.state);
             state.admission_waits = state.admission_waits.saturating_add(1);
@@ -562,6 +585,8 @@ impl RuntimeGovernor {
             priority: Some(request.priority),
             work_kind: Some(request.kind),
             admission_code: Some(code),
+            retryable: Some(true),
+            elapsed_micros,
         });
     }
 
@@ -587,6 +612,8 @@ impl RuntimeGovernor {
             priority: None,
             work_kind: None,
             admission_code: None,
+            retryable: None,
+            elapsed_micros: 0,
         });
     }
 
@@ -602,7 +629,13 @@ impl RuntimeGovernor {
         if mutex_lock(&self.inner.state).resources_pinned {
             return false;
         }
-        self.update_resources(RuntimeResourceSnapshot::detect())
+        let resources = mutex_lock(&self.inner.resource_detector)
+            .get_or_insert_with(RuntimeResourceDetector::new)
+            .detect();
+        if mutex_lock(&self.inner.state).resources_pinned {
+            return false;
+        }
+        self.update_resources(resources)
     }
 
     pub fn update_resources(&self, resources: RuntimeResourceSnapshot) -> bool {
@@ -628,6 +661,8 @@ impl RuntimeGovernor {
                 priority: None,
                 work_kind: None,
                 admission_code: None,
+                retryable: None,
+                elapsed_micros: 0,
             });
         }
         changed
@@ -648,6 +683,7 @@ impl RuntimeGovernor {
             admissions: state.admissions,
             admission_waits: state.admission_waits,
             admission_rejections: state.admission_rejections,
+            retryable_admission_rejections: state.retryable_admission_rejections,
             completions: state.completions,
             cancellations: state.cancellations,
             deadline_exceeded: state.deadline_exceeded,
@@ -695,6 +731,8 @@ impl RuntimePermit {
             priority: Some(self.request.priority),
             work_kind: Some(self.request.kind),
             admission_code: None,
+            retryable: None,
+            elapsed_micros: 0,
         });
         self.released = true;
     }
@@ -1488,7 +1526,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_telemetry_contains_only_stable_dimensions() {
+    fn typed_telemetry_records_bounded_rejection_and_wait_dimensions() {
         let governor = governor(1, 1024 * 1024 * 1024);
         let telemetry = Arc::new(RecordingTelemetry::default());
         governor.set_telemetry_sink(Some(telemetry.clone()));
@@ -1504,21 +1542,41 @@ mod tests {
                 0,
             ))
             .unwrap_err();
-        governor.record_admission_wait(permit.request(), error.code);
+        let terminal_error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                u64::MAX,
+            ))
+            .unwrap_err();
+        governor.record_admission_wait(permit.request(), error.code, 37);
         governor.record_cancellation(RuntimeCancellationReason::Cancelled);
         drop(permit);
 
         let events = mutex_lock(&telemetry.events);
         assert_eq!(events[0].kind, RuntimeTelemetryEventKind::Admitted);
-        assert!(events
-            .iter()
-            .any(|event| event.kind == RuntimeTelemetryEventKind::AdmissionWait));
+        assert!(error.is_retryable());
+        assert!(!terminal_error.is_retryable());
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeTelemetryEventKind::AdmissionRejected
+                && event.retryable == Some(true)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeTelemetryEventKind::AdmissionRejected
+                && event.retryable == Some(false)
+        }));
+        assert!(events.iter().any(
+            |event| event.kind == RuntimeTelemetryEventKind::AdmissionWait
+                && event.elapsed_micros == 37
+        ));
         assert!(events
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Cancelled));
         assert!(events
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Completed));
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.admission_rejections, 1);
+        assert_eq!(snapshot.retryable_admission_rejections, 1);
     }
 
     /// A saturated cgroup must reject new admissions even when the hard

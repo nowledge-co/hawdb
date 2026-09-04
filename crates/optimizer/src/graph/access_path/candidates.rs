@@ -246,8 +246,7 @@ pub(super) fn index_seek_from_conjunction(
         "node_composite_index_seek",
     );
     evaluate_candidate(
-        equality_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog)
-            .map(|(_, plan, decision)| (plan, decision)),
+        equality_index_seek_candidate(predicates, full_predicate, scan_variable, label, catalog),
         "node_conjunction_index_seek",
     );
     evaluate_candidate(
@@ -297,7 +296,7 @@ pub(super) fn equality_index_seek_candidate(
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> Option<(u64, PhysicalPlan, String)> {
+) -> Option<(PhysicalPlan, String)> {
     let label_count = catalog.label_count(label);
     let scan_cost = estimate_node_full_scan_cost(label_count);
     let mut best_candidate: Option<(u64, PhysicalPlan, String)> = None;
@@ -383,7 +382,7 @@ pub(super) fn equality_index_seek_candidate(
             }
         }
     }
-    best_candidate
+    best_candidate.map(|(_, plan, decision)| (plan, decision))
 }
 
 pub(super) fn composite_index_seek_candidate(

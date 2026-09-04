@@ -1,4 +1,5 @@
 use crate::error::{Result, SkeinError};
+use crate::relational_sql::{resolve_relational_order_target, RelationalOrderTarget};
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlPredicate,
@@ -1327,7 +1328,21 @@ pub(crate) fn plan_scan_hydration_fields(
         collect_predicate_columns(&join.on, &mut raw_references);
     }
     raw_references.extend(select.group_by.iter());
-    raw_references.extend(select.order_by.iter().map(|item| &item.column));
+    for item in &select.order_by {
+        match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => raw_references.push(column),
+            RelationalOrderTarget::ProjectionColumn { column, .. } => {
+                raw_references.push(column);
+            }
+            RelationalOrderTarget::ProjectionExpression { expression, .. } => {
+                collect_expression_hydration_columns(
+                    expression,
+                    &mut metadata_columns,
+                    &mut value_columns,
+                )
+            }
+        }
+    }
     value_columns.extend(raw_references.into_iter().cloned());
 
     let resolve = |column: &SqlColumnRef| {
@@ -1426,7 +1441,17 @@ fn plan_fields(
         collect_predicate_columns(&join.on, &mut columns);
     }
     columns.extend(select.group_by.iter());
-    columns.extend(select.order_by.iter().map(|item| &item.column));
+    for item in &select.order_by {
+        match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => columns.push(column),
+            RelationalOrderTarget::ProjectionColumn { column, .. } => {
+                columns.push(column);
+            }
+            RelationalOrderTarget::ProjectionExpression { expression, .. } => {
+                collect_expression_columns(expression, &mut columns)
+            }
+        }
+    }
     for column in columns {
         let first = resolve_field_binding(column, &bindings)?;
         planned

@@ -155,14 +155,14 @@ pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Result<V
             out.extend_from_slice(&commit_epoch.to_le_bytes());
             out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
             for op in ops {
-                encode_op_frame(op, &mut out);
+                encode_op_frame(op, &mut out)?;
             }
         }
         op => {
             out.push(RECORD_KIND_SINGLE);
             out.extend_from_slice(&commit_epoch.to_le_bytes());
             out.extend_from_slice(&1u32.to_le_bytes());
-            encode_op_frame(op, &mut out);
+            encode_op_frame(op, &mut out)?;
         }
     }
     Ok(out)
@@ -227,11 +227,12 @@ fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode>
     })
 }
 
-fn encode_op_frame(op: &WalOp, out: &mut Vec<u8>) {
-    let (op_code, body) = encode_op_body(op);
+fn encode_op_frame(op: &WalOp, out: &mut Vec<u8>) -> Result<()> {
+    let (op_code, body) = encode_op_body(op)?;
     encode_varint_u64(op_code, out);
     encode_varint_u64(body.len() as u64, out);
     out.extend_from_slice(&body);
+    Ok(())
 }
 
 fn table_kind_code(kind: TableKind) -> u64 {
@@ -461,7 +462,7 @@ fn encode_properties_fields(
     }
 }
 
-fn encode_op_body(op: &WalOp) -> (u64, Vec<u8>) {
+fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
     let mut body = Vec::new();
     let op_code = match op {
         WalOp::CreateNodeLabel { label } => {
@@ -659,9 +660,13 @@ fn encode_op_body(op: &WalOp) -> (u64, Vec<u8>) {
             encode_len_field(1, record, &mut body);
             OP_APPEND
         }
-        WalOp::Batch(_) => unreachable!("nested wal batches are not encoded"),
+        WalOp::Batch(_) => {
+            return Err(SkeinError::Storage(
+                "nested WAL batches cannot be encoded".to_string(),
+            ));
+        }
     };
-    (op_code, body)
+    Ok((op_code, body))
 }
 
 struct OpFields<'a> {
@@ -990,6 +995,21 @@ mod tests {
         // The legacy text renderer remains the canonical identity for
         // comparison because WalOp intentionally does not implement PartialEq.
         assert_eq!(decoded.encode(), entry.encode());
+    }
+
+    #[test]
+    fn nested_batches_fail_text_and_binary_encoding() {
+        let entry = WalEntry {
+            lsn: 42,
+            op: WalOp::Batch(vec![WalOp::Batch(vec![WalOp::DeleteNode {
+                id: NodeId(7),
+            }])]),
+        };
+
+        let text_error = entry.encode().unwrap_err();
+        assert!(text_error.to_string().contains("nested WAL batches"));
+        let binary_error = encode_binary_wal_record(&entry, 9).unwrap_err();
+        assert!(binary_error.to_string().contains("nested WAL batches"));
     }
 
     fn sample_properties() -> BTreeMap<String, Value> {
