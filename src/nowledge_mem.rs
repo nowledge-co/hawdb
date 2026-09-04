@@ -69,7 +69,6 @@ use skein_qos::{
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
@@ -4691,9 +4690,7 @@ impl NowledgeMemGraph {
     ) -> Result<NowledgeMemQueryOutput> {
         self.check_runtime_context(task_context)?;
         let (permit, is_mutation) = self.admit_materialized_query(cypher, parameters)?;
-        let execution_task_context = task_context.clone().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let execution_task_context = permit.execution_context(task_context);
         let started = Instant::now();
         let result = self.db.query_with_params_trace_and_external_with_context(
             cypher,
@@ -4892,9 +4889,7 @@ impl NowledgeMemGraph {
         self.check_runtime_context(task_context)?;
         let max_payload_bytes = self.admitted_streaming_result_bytes(options)?;
         let permit = self.admit_streaming_query(cypher, parameters, max_payload_bytes)?;
-        let execution_task_context = task_context.clone().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let execution_task_context = permit.execution_context(task_context);
         let result = self
             .db
             .begin_read_transaction()
@@ -5966,10 +5961,12 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         statements: &[NowledgeGraphStatement],
     ) -> Result<crate::NowledgeGraphTransactionOutput> {
-        let _permit = self.admit_transaction(statements)?;
+        let permit = self.admit_transaction(statements)?;
+        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let _permit = permit;
         let mut store = self.write_store()?;
         let db = store.graph_mut().database_mut();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction_with_context(&task_context);
         let mut statement_outputs = Vec::with_capacity(statements.len());
         for statement in statements {
             statement_outputs
@@ -5992,9 +5989,14 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         operation: impl FnOnce(&mut crate::DatabaseTransaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let _permit = self.admit_typed_mutation()?;
+        let permit = self.admit_typed_transaction()?;
+        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let _permit = permit;
         let mut store = self.write_store()?;
-        let mut transaction = store.graph_mut().database_mut().begin_transaction();
+        let mut transaction = store
+            .graph_mut()
+            .database_mut()
+            .begin_transaction_with_context(&task_context);
         match operation(&mut transaction) {
             Ok(output) => {
                 transaction.commit()?;
@@ -6014,9 +6016,14 @@ impl NowledgeMemEmbeddedStoreHandle {
         max_estimated_payload_bytes: usize,
         operation: impl FnOnce(&mut crate::DatabaseReadTransaction) -> Result<T>,
     ) -> Result<T> {
-        let _permit = self.admit_typed_read(max_estimated_payload_bytes)?;
+        let permit = self.admit_typed_read(max_estimated_payload_bytes)?;
+        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let _permit = permit;
         let store = self.read_store()?;
-        let mut transaction = store.graph().database().begin_read_transaction();
+        let mut transaction = store
+            .graph()
+            .database()
+            .begin_read_transaction_with_context(&task_context);
         operation(&mut transaction)
     }
 
@@ -6038,7 +6045,9 @@ impl NowledgeMemEmbeddedStoreHandle {
                 "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
             ));
         }
-        let _permit = self.admit_typed_read(budget.max_payload_bytes)?;
+        let permit = self.admit_typed_read(budget.max_payload_bytes)?;
+        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let _permit = permit;
         let store = self.read_store()?;
         let configured_rows = store
             .graph
@@ -6056,7 +6065,10 @@ impl NowledgeMemEmbeddedStoreHandle {
                 budget.max_rows
             )));
         }
-        let transaction = store.graph.database().begin_read_transaction();
+        let transaction = store
+            .graph
+            .database()
+            .begin_read_transaction_with_context(&task_context);
         let projection_freshness = match (
             store.search_projection.as_ref(),
             store.out_of_core_search_projection.as_ref(),
@@ -6349,9 +6361,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             &statement.parameters,
             limits.max_output_payload_bytes,
         )?;
-        let task_context = RuntimeTaskContext::default().with_admitted_parallelism(
-            NonZeroUsize::new(permit.request().cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let task_context = permit.execution_context(&RuntimeTaskContext::default());
         store
             .graph
             .database()
@@ -6596,6 +6606,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             )
     }
 
+    #[cfg(test)]
     fn admit_typed_mutation(&self) -> Result<RuntimePermit> {
         let store = self.read_store()?;
         let config = store.graph.database().config();
@@ -6608,6 +6619,29 @@ impl NowledgeMemEmbeddedStoreHandle {
             .try_admit_runtime(RuntimeWorkRequest::foreground_mutation(
                 estimated_memory_bytes,
             ))
+    }
+
+    fn admit_typed_transaction(&self) -> Result<RuntimePermit> {
+        let store = self.read_store()?;
+        let config = store.graph.database().config();
+        let memory_bytes = crate::executor::estimated_mutation_memory_bytes(
+            config.mutation_limits,
+            config.max_wal_record_bytes,
+        )
+        .max(u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX));
+        let result_bytes = u64::try_from(
+            config
+                .max_read_result_payload_bytes
+                .unwrap_or(config.mutation_limits.max_result_payload_bytes.get()),
+        )
+        .unwrap_or(u64::MAX);
+        store.graph.try_admit_runtime(
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Mutation)
+                .with_cpu_slots(1)
+                .with_memory_bytes(memory_bytes)
+                .with_result_bytes(result_bytes)
+                .with_blocking(true),
+        )
     }
 
     fn admit_typed_read(&self, max_estimated_payload_bytes: usize) -> Result<RuntimePermit> {
@@ -6623,17 +6657,13 @@ impl NowledgeMemEmbeddedStoreHandle {
                 "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
             )));
         }
-        let result_bytes = u64::try_from(max_estimated_payload_bytes).unwrap_or(u64::MAX);
+        let result_bytes = u64::try_from(configured_result_bytes).unwrap_or(u64::MAX);
         let working_memory_bytes =
-            u64::try_from(config.execution_memory.blocking_operator_bytes.get())
-                .unwrap_or(u64::MAX);
+            u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX);
         store.graph.try_admit_runtime(
-            RuntimeWorkRequest::foreground_query(
-                working_memory_bytes.saturating_add(result_bytes),
-                result_bytes,
-            )
-            .with_io_slots(1)
-            .with_blocking(true),
+            RuntimeWorkRequest::foreground_query(working_memory_bytes, result_bytes)
+                .with_io_slots(1)
+                .with_blocking(true),
         )
     }
 
@@ -11462,7 +11492,7 @@ mod tests {
                 "MATCH (m:Memory {id: 'mem-read'}) RETURN m.title AS title",
                 &NowledgeMemReadOptions {
                     max_rows: Some(4),
-                    max_estimated_payload_bytes: Some(128),
+                    max_estimated_payload_bytes: Some(512),
                 },
             )
             .unwrap();
@@ -11473,7 +11503,7 @@ mod tests {
         assert_eq!(read.report.row_count, 1);
         assert_eq!(read.report.max_rows, Some(4));
         assert_eq!(read.report.execution_row_cap, Some(5));
-        assert!(read.report.estimated_payload_bytes <= 128);
+        assert!(read.report.estimated_payload_bytes <= 512);
         assert!(!read.report.row_budget_exceeded);
         assert!(!read.report.payload_budget_exceeded);
         assert!(read.report.row_limit_enforced_before_output);
@@ -11637,6 +11667,10 @@ mod tests {
         handle
             .with_transaction(|transaction| {
                 transaction.query("CREATE (:Memory {id: 'memory-1'})")?;
+                let graph_rows = transaction
+                    .query("MATCH (m:Memory {id: 'memory-1'}) RETURN m.id AS id")?
+                    .rows;
+                assert_eq!(graph_rows.len(), 1);
                 transaction.query_sql(
                     "CREATE TABLE anchors (\
                        anchor_id TEXT PRIMARY KEY,\
@@ -11878,22 +11912,25 @@ mod tests {
             .query_with_report("CREATE (:Memory {id: 'memory-1'})")
             .unwrap();
 
-        let (epoch, rows) = handle
+        let (epoch, rows, memory_budget) = handle
             .with_read_transaction(64 * 1024, |transaction| {
                 let epoch = transaction.commit_epoch();
-                let rows = transaction
-                    .query_with_params_bounded(
-                        "MATCH (m:Memory) RETURN m.id AS id LIMIT 2",
-                        &BTreeMap::new(),
-                        Some(2),
-                    )?
-                    .rows;
-                Ok((epoch, rows))
+                let output = transaction.query_with_params_bounded_profile(
+                    "MATCH (m:Memory) RETURN m.id AS id LIMIT 2",
+                    &BTreeMap::new(),
+                    Some(2),
+                )?;
+                let memory_budget = output
+                    .execution_profile
+                    .pipeline_memory_report
+                    .query_memory_budget_bytes;
+                Ok((epoch, output.output.rows, memory_budget))
             })
             .unwrap();
 
         assert_eq!(epoch, 1);
         assert_eq!(rows.len(), 1);
+        assert_eq!(memory_budget, 256 * 1024 * 1024);
         assert_eq!(
             rows[0].get("id"),
             Some(&Value::String("memory-1".to_string()))
