@@ -377,7 +377,7 @@ impl SkeinEmbedded {
             Err(error) => {
                 if error.is_retryable() {
                     self.runtime_governor
-                        .record_admission_wait(request, error.code);
+                        .record_admission_wait(request, error.code, 0);
                 }
                 return Err(EmbeddedQueryError::Admission(error));
             }

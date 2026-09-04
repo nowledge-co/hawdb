@@ -1425,6 +1425,7 @@ fn wal_group_sync_failure_rejects_commit_and_poisons_until_reopen() {
 
     crate::store::set_wal_group_sync_failpoint(true);
     let error = transaction.commit().unwrap_err();
+    assert!(matches!(&error, SkeinError::StorageIntegrity(_)));
     assert!(error
         .to_string()
         .contains("WAL group durability barrier failed"));

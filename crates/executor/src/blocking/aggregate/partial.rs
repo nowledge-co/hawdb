@@ -2,6 +2,10 @@ use super::*;
 
 const PARTIAL_AGGREGATE_VALUE: &str = "__skein_partial_aggregate";
 
+fn partial_state_width_mismatch_error() -> SkeinError {
+    SkeinError::Execution("AggregateExec partial state width mismatch".to_string())
+}
+
 struct PartialGroup {
     ordinal: u64,
     states: Vec<AggregateState>,
@@ -9,18 +13,7 @@ struct PartialGroup {
 
 impl PartialGroup {
     fn memory_bytes(&self, key: &[Value]) -> usize {
-        std::mem::size_of::<Self>()
-            .saturating_add(
-                key.iter()
-                    .fold(std::mem::size_of::<Vec<Value>>(), |total, value| {
-                        total.saturating_add(value_memory_bytes(value))
-                    }),
-            )
-            .saturating_add(self.states.iter().fold(
-                std::mem::size_of::<Vec<AggregateState>>(),
-                |total, state| total.saturating_add(state.partial_memory_bytes()),
-            ))
-            .saturating_add(std::mem::size_of::<usize>() * 6)
+        partial_group_memory_bytes(key, &self.states)
     }
 }
 
@@ -48,6 +41,14 @@ pub(super) fn partial_aggregation_is_mergeable(item: &Aggregation) -> bool {
 }
 
 fn partial_group_memory_bytes(key: &[Value], states: &[AggregateState]) -> usize {
+    partial_group_base_memory_bytes(key).saturating_add(
+        states.iter().fold(0usize, |total, state| {
+            total.saturating_add(state.partial_memory_bytes())
+        }),
+    )
+}
+
+fn partial_group_base_memory_bytes(key: &[Value]) -> usize {
     std::mem::size_of::<PartialGroup>()
         .saturating_add(
             key.iter()
@@ -55,11 +56,24 @@ fn partial_group_memory_bytes(key: &[Value], states: &[AggregateState]) -> usize
                     total.saturating_add(value_memory_bytes(value))
                 }),
         )
-        .saturating_add(states.iter().fold(
-            std::mem::size_of::<Vec<AggregateState>>(),
-            |total, state| total.saturating_add(state.partial_memory_bytes()),
-        ))
+        .saturating_add(std::mem::size_of::<Vec<AggregateState>>())
         .saturating_add(std::mem::size_of::<usize>() * 6)
+}
+
+fn partial_group_memory_bytes_after_merge(
+    key: &[Value],
+    states: &[AggregateState],
+    incoming: &[AggregateState],
+) -> Result<usize> {
+    if states.len() != incoming.len() {
+        return Err(partial_state_width_mismatch_error());
+    }
+    states.iter().zip(incoming).try_fold(
+        partial_group_base_memory_bytes(key),
+        |total, (state, incoming)| {
+            Ok(total.saturating_add(state.partial_memory_bytes_after_merge(incoming)?))
+        },
+    )
 }
 
 fn partial_states_for_binding(
@@ -82,9 +96,7 @@ fn merge_partial_states(
     incoming: Vec<AggregateState>,
 ) -> Result<()> {
     if states.len() != incoming.len() {
-        return Err(SkeinError::Execution(
-            "AggregateExec partial state width mismatch".to_string(),
-        ));
+        return Err(partial_state_width_mismatch_error());
     }
     for (state, incoming) in states.iter_mut().zip(incoming) {
         state.merge_partial(incoming)?;
@@ -134,9 +146,8 @@ pub(super) fn stream_partial_aggregate_batches(
 
             if let Some(group) = groups.get(&key) {
                 let previous_bytes = group.memory_bytes(&key);
-                let mut states = group.states.clone();
-                merge_partial_states(&mut states, incoming.clone())?;
-                let next_bytes = partial_group_memory_bytes(&key, &states);
+                let next_bytes =
+                    partial_group_memory_bytes_after_merge(&key, &group.states, &incoming)?;
                 if next_bytes > partial_item_limit {
                     return Err(partial_item_limit_error(next_bytes, partial_item_limit));
                 }
@@ -157,9 +168,14 @@ pub(super) fn stream_partial_aggregate_batches(
                         partial_item_limit,
                     )?;
                 } else {
-                    tracker.release(delta.released_bytes);
+                    // Reserve growth before replacing retained Min/Max values;
+                    // release shrinkage only after the in-place merge.
                     tracker.try_charge(delta.added_bytes)?;
-                    groups.get_mut(&key).expect("partial group exists").states = states;
+                    merge_partial_states(
+                        &mut groups.get_mut(&key).expect("partial group exists").states,
+                        incoming,
+                    )?;
+                    tracker.release(delta.released_bytes);
                 }
             } else {
                 let bytes = partial_group_memory_bytes(&key, &incoming);
@@ -700,4 +716,77 @@ fn take_next_partial_row(
         }
     };
     Ok(Some(selection))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_merge_memory_preflight_matches_materialized_merge() {
+        let key = vec![Value::String("group".to_string())];
+        let states = vec![
+            AggregateState::Count {
+                count: 3,
+                distinct: None,
+            },
+            AggregateState::Min(Some(Value::String("z".repeat(8)))),
+            AggregateState::Max(Some(Value::String("a".repeat(128)))),
+            AggregateState::Avg {
+                sum: 12.0,
+                count: 3,
+            },
+        ];
+        let incoming = vec![
+            AggregateState::Count {
+                count: 2,
+                distinct: None,
+            },
+            AggregateState::Min(Some(Value::String("a".repeat(128)))),
+            AggregateState::Max(Some(Value::String("z".repeat(8)))),
+            AggregateState::Avg {
+                sum: 20.0,
+                count: 2,
+            },
+        ];
+
+        let expected = partial_group_memory_bytes_after_merge(&key, &states, &incoming).unwrap();
+        let mut materialized = states.clone();
+        merge_partial_states(&mut materialized, incoming).unwrap();
+
+        assert_eq!(expected, partial_group_memory_bytes(&key, &materialized));
+    }
+
+    #[test]
+    fn partial_merge_memory_preflight_preserves_budget_boundary() {
+        let key = vec![Value::Int(1)];
+        let states = vec![AggregateState::Min(Some(Value::String("z".repeat(8))))];
+        let incoming = vec![AggregateState::Min(Some(Value::String("a".repeat(128))))];
+        let previous_bytes = partial_group_memory_bytes(&key, &states);
+        let next_bytes = partial_group_memory_bytes_after_merge(&key, &states, &incoming).unwrap();
+        let delta = MemoryDelta::between(previous_bytes, next_bytes);
+        assert!(next_bytes > previous_bytes);
+
+        let mut exact = OperatorMemoryTracker::new(NonZeroUsize::new(next_bytes).unwrap());
+        exact.try_charge(previous_bytes).unwrap();
+        exact.try_charge(delta.added_bytes).unwrap();
+        exact.release(delta.released_bytes);
+        assert_eq!(exact.used_bytes, next_bytes);
+
+        let mut insufficient =
+            OperatorMemoryTracker::new(NonZeroUsize::new(next_bytes - 1).unwrap());
+        insufficient.try_charge(previous_bytes).unwrap();
+        let error = insufficient.try_charge(delta.added_bytes).unwrap_err();
+        assert!(error.to_string().contains("exceeding its"));
+    }
+
+    #[test]
+    fn partial_merge_memory_preflight_rejects_incompatible_states() {
+        let states = vec![AggregateState::Min(None)];
+        let incoming = vec![AggregateState::Max(None)];
+
+        let error = partial_group_memory_bytes_after_merge(&[], &states, &incoming).unwrap_err();
+
+        assert!(error.to_string().contains("incompatible partial states"));
+    }
 }

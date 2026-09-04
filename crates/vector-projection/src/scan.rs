@@ -4,7 +4,8 @@ use crate::kernel::{score_function, select_kernel, KernelPreference, ScanKernel}
 use crate::model::{encoded_vector_bytes, InMemoryProjection, ProjectionManifest, RaBitQBitWidth};
 use crate::transform::normalize_and_transform;
 use skein_core::RuntimeTaskContext;
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Mutex;
@@ -442,7 +443,7 @@ fn search_projection<R: SegmentReader>(
             let mut panic_payload = None;
             for handle in handles {
                 match handle.join() {
-                    Ok(local_top_k) => merged_top_k.extend(local_top_k.hits),
+                    Ok(local_top_k) => merged_top_k.extend(local_top_k.into_hits()),
                     Err(payload) => {
                         panic_payload.get_or_insert(payload);
                     }
@@ -760,14 +761,37 @@ impl ReportAccumulator {
 #[derive(Debug)]
 struct TopK {
     limit: usize,
-    hits: Vec<ProjectionHit>,
+    heap: BinaryHeap<Reverse<RankedHit>>,
+}
+
+#[derive(Debug)]
+struct RankedHit(ProjectionHit);
+
+impl PartialEq for RankedHit {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedHit {}
+
+impl PartialOrd for RankedHit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedHit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_best(&self.0, &other.0)
+    }
 }
 
 impl TopK {
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            hits: Vec::with_capacity(limit),
+            heap: BinaryHeap::with_capacity(limit),
         }
     }
 
@@ -775,19 +799,21 @@ impl TopK {
         if self.limit == 0 {
             return;
         }
-        if self.hits.len() < self.limit {
-            self.hits.push(hit);
+        let candidate = RankedHit(hit);
+        if self.heap.len() < self.limit {
+            self.heap.push(Reverse(candidate));
             return;
         }
-        let worst = self
-            .hits
-            .iter()
-            .enumerate()
-            .min_by(|(_, left), (_, right)| compare_best(left, right))
-            .map(|(index, _)| index)
-            .expect("non-empty bounded top-k");
-        if compare_best(&hit, &self.hits[worst]) == Ordering::Greater {
-            self.hits[worst] = hit;
+
+        // Reverse keeps the worst retained hit at the root, so each candidate
+        // takes O(log k) instead of scanning all k retained hits.
+        if self
+            .heap
+            .peek()
+            .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
+        {
+            self.heap.pop();
+            self.heap.push(Reverse(candidate));
         }
     }
 
@@ -797,9 +823,17 @@ impl TopK {
         }
     }
 
-    fn finish(mut self) -> Vec<ProjectionHit> {
-        self.hits.sort_by(|left, right| compare_best(right, left));
-        self.hits
+    fn into_hits(self) -> Vec<ProjectionHit> {
+        self.heap
+            .into_iter()
+            .map(|Reverse(RankedHit(hit))| hit)
+            .collect()
+    }
+
+    fn finish(self) -> Vec<ProjectionHit> {
+        let mut hits = self.into_hits();
+        hits.sort_by(|left, right| compare_best(right, left));
+        hits
     }
 }
 
@@ -820,6 +854,48 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn bounded_top_k_matches_full_sort_for_every_limit() {
+        let scores = [
+            f32::NEG_INFINITY,
+            -3.0,
+            -0.0,
+            0.0,
+            1.0,
+            1.0,
+            7.5,
+            f32::INFINITY,
+            f32::NAN,
+        ];
+        let hits = (0..257u64)
+            .map(|id| ProjectionHit {
+                id,
+                score: scores[(id as usize * 17 + 3) % scores.len()],
+            })
+            .collect::<Vec<_>>();
+
+        for limit in 0..=hits.len() + 1 {
+            let mut expected = hits.clone();
+            expected.sort_by(|left, right| compare_best(right, left));
+            expected.truncate(limit);
+
+            let mut top_k = TopK::new(limit);
+            top_k.extend(hits.clone());
+
+            let actual = top_k.finish();
+            assert_eq!(actual.len(), expected.len(), "limit={limit}");
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert_eq!(actual.id, expected.id, "limit={limit}");
+                assert_eq!(
+                    actual.score.to_bits(),
+                    expected.score.to_bits(),
+                    "limit={limit}, id={}",
+                    actual.id
+                );
+            }
+        }
+    }
 
     #[test]
     fn scalar_projection_finds_nearest_vector_and_honors_filter() {

@@ -75,6 +75,30 @@ pub trait SearchProjectionSource {
         catalog: &Catalog,
         node: &NodeRecord,
     ) -> Result<Vec<String>>;
+
+    /// Collects sorted, deduplicated business labels keyed by graph node.
+    ///
+    /// Sources with bulk relationship access should override this method so a
+    /// rebuild does not repeat the same relationship scan for every node.
+    fn projection_business_labels_by_node(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<HashMap<NodeId, Vec<String>>> {
+        let mut labels_by_node = HashMap::new();
+        self.visit_projection_nodes(&mut |node| {
+            if projection_row_from_node(catalog, &node).is_none() {
+                return Ok(());
+            }
+            let mut labels = self.projection_business_labels(catalog, &node)?;
+            labels.sort();
+            labels.dedup();
+            if !labels.is_empty() {
+                labels_by_node.insert(node.id, labels);
+            }
+            Ok(())
+        })?;
+        Ok(labels_by_node)
+    }
 }
 
 pub const fn compiled_runtime_capabilities() -> RuntimeCapabilities {
@@ -150,6 +174,7 @@ pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
+const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
@@ -1909,11 +1934,17 @@ impl SearchIndex {
         let mut scanned_nodes = 0;
 
         let result = (|| {
+            let business_labels_by_node = store.projection_business_labels_by_node(catalog)?;
             store.visit_projection_nodes(&mut |node| {
                 scanned_nodes += 1;
-                let Some(row) =
-                    projection_row_from_node_with_graph_metadata(catalog, store, &node)?
-                else {
+                let Some(row) = projection_row_from_node_with_business_labels(
+                    catalog,
+                    &node,
+                    business_labels_by_node
+                        .get(&node.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                ) else {
                     return Ok(());
                 };
                 if options
@@ -2073,11 +2104,17 @@ impl SearchIndex {
         let mut missing_documents = 0;
 
         let result = (|| {
+            let business_labels_by_node = store.projection_business_labels_by_node(catalog)?;
             store.visit_projection_nodes(&mut |node| {
                 scanned_nodes += 1;
-                let Some(row) =
-                    projection_row_from_node_with_graph_metadata(catalog, store, &node)?
-                else {
+                let Some(row) = projection_row_from_node_with_business_labels(
+                    catalog,
+                    &node,
+                    business_labels_by_node
+                        .get(&node.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                ) else {
                     return Ok(());
                 };
                 let document = row.into_document();
@@ -3163,17 +3200,11 @@ impl SearchIndex {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone();
-                projection.score(
-                    &query_terms,
-                    &delta,
-                    filtered_document_count == document_count,
-                    retained_text_score_limit,
-                    |id| {
-                        Ok(filtered_documents
-                            .binary_search_by(|document| document.id.as_str().cmp(id))
-                            .is_ok())
-                    },
-                )
+                projection.score(&query_terms, &delta, retained_text_score_limit, |id| {
+                    Ok(filtered_documents
+                        .binary_search_by(|document| document.id.as_str().cmp(id))
+                        .is_ok())
+                })
             })
             .transpose()?;
         let (
@@ -4586,13 +4617,27 @@ pub fn projection_row_from_node_with_graph_metadata<S: SearchProjectionSource + 
         return Ok(None);
     };
     let labels = projection_business_labels_for_node(catalog, store, node)?;
+    apply_projection_business_labels(&mut row, &labels);
+    Ok(Some(row))
+}
+
+fn projection_row_from_node_with_business_labels(
+    catalog: &Catalog,
+    node: &NodeRecord,
+    labels: &[String],
+) -> Option<SearchProjectionRow> {
+    let mut row = projection_row_from_node(catalog, node)?;
+    apply_projection_business_labels(&mut row, labels);
+    Some(row)
+}
+
+fn apply_projection_business_labels(row: &mut SearchProjectionRow, labels: &[String]) {
     if !labels.is_empty() {
         row.metadata.insert(
             "labels".to_string(),
-            serde_json::to_string(&labels).expect("label metadata serializes as a string array"),
+            serde_json::to_string(labels).expect("label metadata serializes as a string array"),
         );
     }
-    Ok(Some(row))
 }
 
 fn projection_business_labels_for_node<S: SearchProjectionSource + ?Sized>(
@@ -6368,8 +6413,11 @@ fn document_tokens(
     document: &SearchDocument,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) -> Vec<String> {
-    let mut tokens = tokenize_list(&document.title, analyzer_lexicon);
-    tokens.extend(tokenize_list(&document.title, analyzer_lexicon));
+    let title_tokens = tokenize_list(&document.title, analyzer_lexicon);
+    let mut tokens = Vec::new();
+    for _ in 0..TITLE_TERM_FREQUENCY_WEIGHT {
+        tokens.extend(title_tokens.iter().cloned());
+    }
     tokens.extend(tokenize_list(&document.content, analyzer_lexicon));
     tokens.extend(searchable_metadata_tokens(document, analyzer_lexicon));
     tokens
@@ -7501,12 +7549,16 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 mod tests {
     use super::*;
     use skein_storage::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
+    use std::cell::Cell;
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[derive(Default)]
     struct TestProjectionSource {
         nodes: Vec<NodeRecord>,
         commit_epoch: u64,
+        business_labels: HashMap<NodeId, Vec<String>>,
+        business_label_bulk_scans: Cell<usize>,
+        business_label_point_lookups: Cell<usize>,
     }
 
     impl TestProjectionSource {
@@ -7561,9 +7613,24 @@ mod tests {
         fn projection_business_labels(
             &self,
             _catalog: &Catalog,
-            _node: &NodeRecord,
+            node: &NodeRecord,
         ) -> Result<Vec<String>> {
-            Ok(Vec::new())
+            self.business_label_point_lookups
+                .set(self.business_label_point_lookups.get().saturating_add(1));
+            Ok(self
+                .business_labels
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn projection_business_labels_by_node(
+            &self,
+            _catalog: &Catalog,
+        ) -> Result<HashMap<NodeId, Vec<String>>> {
+            self.business_label_bulk_scans
+                .set(self.business_label_bulk_scans.get().saturating_add(1));
+            Ok(self.business_labels.clone())
         }
     }
 
@@ -8989,6 +9056,35 @@ mod tests {
         let hits = index.search("graph storage", None, SearchMode::Text, 10);
 
         assert_eq!(hits[0].id, "focused");
+        assert!(hits[0].text_score > hits[1].text_score);
+    }
+
+    #[test]
+    fn text_search_weights_title_terms_twice() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(SearchDocument {
+                id: "title_match".to_string(),
+                title: "graph".to_string(),
+                content: "neutral".to_string(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+        index
+            .upsert(SearchDocument {
+                id: "content_match".to_string(),
+                title: "neutral".to_string(),
+                content: "graph".to_string(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+
+        let hits = index.search("graph", None, SearchMode::Text, 10);
+
+        assert_eq!(hits[0].id, "title_match");
+        assert_eq!(hits[1].id, "content_match");
         assert!(hits[0].text_score > hits[1].text_score);
     }
 
@@ -12207,6 +12303,50 @@ mod tests {
     }
 
     #[test]
+    fn graph_rebuild_and_metadata_repair_collect_business_labels_once() {
+        let mut catalog = Catalog::default();
+        let mut store = TestProjectionSource::in_memory();
+        let memory_id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("id".to_string(), Value::String("mem_1".to_string())),
+                    (
+                        "title".to_string(),
+                        Value::String("Label projection".to_string()),
+                    ),
+                ]),
+            )
+            .unwrap();
+        store
+            .business_labels
+            .insert(memory_id, vec!["database".to_string(), "rust".to_string()]);
+
+        let mut index = SearchIndex::in_memory();
+        index
+            .rebuild_from_graph(&catalog, &store, SearchRebuildOptions::default())
+            .unwrap();
+
+        assert_eq!(store.business_label_bulk_scans.get(), 1);
+        assert_eq!(store.business_label_point_lookups.get(), 0);
+        assert_eq!(
+            index
+                .document("memory:mem_1")
+                .and_then(|document| document.metadata.get("labels"))
+                .map(String::as_str),
+            Some(r#"["database","rust"]"#)
+        );
+
+        index
+            .repair_metadata_from_graph(&catalog, &store, MetadataRepairOptions::default())
+            .unwrap();
+
+        assert_eq!(store.business_label_bulk_scans.get(), 2);
+        assert_eq!(store.business_label_point_lookups.get(), 0);
+    }
+
+    #[test]
     fn full_rebuild_projects_graph_nodes() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -13499,7 +13639,18 @@ mod tests {
         let segmented = index
             .try_search_with_options("graph", None, SearchMode::Text, options.clone())
             .unwrap();
-        assert_eq!(segmented.hits, reference.hits);
+        assert_eq!(
+            segmented
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            reference
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
         let text = segmented
             .retrievers
             .iter()
@@ -13539,7 +13690,18 @@ mod tests {
         let actual = index
             .try_search_with_options("graph", None, SearchMode::Text, options.clone())
             .unwrap();
-        assert_eq!(actual.hits, expected.hits);
+        assert_eq!(
+            actual
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            expected
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
 
         index.checkpoint().unwrap();
         let generation = index
@@ -13554,7 +13716,18 @@ mod tests {
         let reopened_result = reopened
             .try_search_with_options("graph", None, SearchMode::Text, options)
             .unwrap();
-        assert_eq!(reopened_result.hits, expected.hits);
+        assert_eq!(
+            reopened_result
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>(),
+            expected
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, hit.text_rank))
+                .collect::<Vec<_>>()
+        );
         drop(reopened);
 
         let artifact = path.join(lexical_projection::artifact_file(generation));
@@ -13750,7 +13923,7 @@ mod tests {
 
     #[cfg(feature = "acl")]
     #[test]
-    fn segmented_lexical_acl_statistics_exclude_unauthorized_documents() {
+    fn segmented_lexical_acl_excludes_unauthorized_documents() {
         let path = unique_test_dir("segmented_lexical_acl");
         let mut expected_index = SearchIndex::in_memory();
         let mut index = SearchIndex::open(&path).unwrap();
@@ -13814,12 +13987,12 @@ mod tests {
             actual
                 .hits
                 .iter()
-                .map(|hit| (&hit.id, hit.score))
+                .map(|hit| (&hit.id, hit.text_rank))
                 .collect::<Vec<_>>(),
             expected
                 .hits
                 .iter()
-                .map(|hit| (&hit.id, hit.score))
+                .map(|hit| (&hit.id, hit.text_rank))
                 .collect::<Vec<_>>()
         );
         let text = actual

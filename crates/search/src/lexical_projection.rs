@@ -323,10 +323,6 @@ impl LexicalMiniDelta {
     fn overrides(&self, document_id: &str) -> bool {
         self.deletes.contains(document_id) || self.upserts.contains_key(document_id)
     }
-
-    fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.deletes.is_empty()
-    }
 }
 
 fn analyze_delta_document(
@@ -506,7 +502,6 @@ impl LexicalProjectionReader {
         &self,
         query_terms: &BTreeSet<String>,
         delta: &LexicalMiniDelta,
-        all_documents_allowed: bool,
         retained_score_limit: Option<usize>,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
@@ -529,16 +524,8 @@ impl LexicalProjectionReader {
                 self.config.query_memory_bytes
             )));
         }
-        let (document_count, total_document_len, mut bytes_read) =
-            if all_documents_allowed && delta.is_empty() {
-                (
-                    self.manifest.document_count as usize,
-                    self.manifest.total_document_len,
-                    0,
-                )
-            } else {
-                self.candidate_corpus(delta, &mut allowed)?
-            };
+        let (document_count, total_document_len) = self.normalization_corpus(delta);
+        let mut bytes_read = 0u64;
         if document_count == 0 {
             return Ok(LexicalQueryReport::default());
         }
@@ -648,37 +635,21 @@ impl LexicalProjectionReader {
         })
     }
 
-    fn candidate_corpus(
-        &self,
-        delta: &LexicalMiniDelta,
-        allowed: &mut impl FnMut(&str) -> Result<bool>,
-    ) -> Result<(usize, u64, u64)> {
-        let mut count = 0usize;
-        let mut total_len = 0u64;
-        let mut bytes_read = 0u64;
-        for block in self
-            .manifest
-            .blocks
-            .iter()
-            .filter(|block| block.kind == BlockKind::Documents)
-        {
-            let bytes = self.read_block(block)?;
-            bytes_read = bytes_read.saturating_add(bytes.len() as u64);
-            decode_document_block(&bytes, self.manifest.generation, block, |id, length| {
-                if !delta.overrides(id) && allowed(id)? {
-                    count = count.saturating_add(1);
-                    total_len = total_len.saturating_add(u64::from(length));
-                }
-                Ok(())
-            })?;
+    fn normalization_corpus(&self, delta: &LexicalMiniDelta) -> (usize, u64) {
+        if self.manifest.document_count > 0 {
+            // A mini-delta does not retain the replaced base document lengths, so v1 keeps
+            // normalization bounded by using the immutable unfiltered manifest statistics.
+            return (
+                self.manifest.document_count as usize,
+                self.manifest.total_document_len,
+            );
         }
-        for (id, document) in &delta.upserts {
-            if allowed(id)? {
-                count = count.saturating_add(1);
-                total_len = total_len.saturating_add(u64::from(document.document_len));
-            }
-        }
-        Ok((count, total_len, bytes_read))
+
+        let document_count = delta.upserts.len();
+        let total_document_len = delta.upserts.values().fold(0u64, |total, document| {
+            total.saturating_add(u64::from(document.document_len))
+        });
+        (document_count, total_document_len)
     }
 
     fn count_term(
@@ -1488,36 +1459,6 @@ fn encode_posting(mut writer: impl Write, posting: &Posting) -> Result<()> {
     Ok(())
 }
 
-fn decode_document_block(
-    bytes: &[u8],
-    generation: u64,
-    descriptor: &BlockDescriptor,
-    mut consumer: impl FnMut(&str, u32) -> Result<()>,
-) -> Result<()> {
-    let mut cursor = SliceCursor::new(bytes);
-    let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Documents)?;
-    let mut first = None;
-    let mut previous = None;
-    for _ in 0..count {
-        let id = cursor.string(1024 * 1024)?;
-        let length = cursor.u32()?;
-        if previous
-            .as_ref()
-            .is_some_and(|previous: &String| previous >= &id)
-        {
-            return Err(SkeinError::Storage(
-                "lexical document block is not ordered".to_string(),
-            ));
-        }
-        if first.is_none() {
-            first = Some(id.clone());
-        }
-        consumer(&id, length)?;
-        previous = Some(id);
-    }
-    validate_block_tail(cursor, descriptor, first, previous)
-}
-
 fn decode_posting_block(
     bytes: &[u8],
     generation: u64,
@@ -1720,6 +1661,14 @@ fn checksum(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    fn projection_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "skein-lexical-projection-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
     fn document(id: &str, title: &str, content: &str) -> SearchDocument {
         SearchDocument {
             id: id.to_string(),
@@ -1730,13 +1679,23 @@ mod tests {
         }
     }
 
+    fn term_posting_bytes(reader: &LexicalProjectionReader, term: &str) -> u64 {
+        reader
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == BlockKind::Postings
+                    && block.min_key.as_str() <= term
+                    && term <= block.max_key.as_str()
+            })
+            .map(|block| block.length)
+            .sum()
+    }
+
     #[test]
     fn projection_scores_match_reference_bm25_and_reopens() {
-        let root = std::env::temp_dir().join(format!(
-            "skein-lexical-projection-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let root = projection_root("reference");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let analyzer = SearchAnalyzerLexicon::default();
@@ -1757,9 +1716,7 @@ mod tests {
             .unwrap();
         let terms = BTreeSet::from(["graph".to_string()]);
         let report = reader
-            .score(&terms, &LexicalMiniDelta::default(), true, None, |_| {
-                Ok(true)
-            })
+            .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
             .unwrap();
         let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
         for document in documents.values() {
@@ -1773,6 +1730,92 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reopened.generation(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filtered_scores_use_manifest_corpus_without_reading_document_blocks() {
+        let root = projection_root("filtered-manifest-corpus");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = BTreeMap::from([
+            ("a".to_string(), document("a", "Graph Graph", "storage")),
+            (
+                "b".to_string(),
+                document("b", "Vector", "embedding index with several tokens"),
+            ),
+        ]);
+        let reader = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
+            .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
+            .unwrap();
+        let terms = BTreeSet::from(["graph".to_string()]);
+
+        let report = reader
+            .score(&terms, &LexicalMiniDelta::default(), None, |id| {
+                Ok(id == "a")
+            })
+            .unwrap();
+
+        let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
+        let expected = super::super::bm25_score(&terms, &documents["a"], &corpus, &analyzer);
+        assert_eq!(report.scores, BTreeMap::from([("a".to_string(), expected)]));
+        assert_eq!(report.bytes_read, 2 * term_posting_bytes(&reader, "graph"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delta_scores_do_not_read_document_blocks() {
+        let root = projection_root("delta-postings-only");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = BTreeMap::from([
+            ("a".to_string(), document("a", "Graph", "storage")),
+            ("b".to_string(), document("b", "Vector", "embedding")),
+        ]);
+        let config = LexicalProjectionConfig::default();
+        let reader = LexicalProjectionWriter::new(config)
+            .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
+            .unwrap();
+        let mut delta = LexicalMiniDelta::default();
+        delta
+            .upsert(&document("c", "Graph", "query"), &analyzer, config)
+            .unwrap();
+        let terms = BTreeSet::from(["graph".to_string()]);
+
+        let report = reader.score(&terms, &delta, None, |_| Ok(true)).unwrap();
+
+        assert_eq!(report.scores.keys().collect::<Vec<_>>(), vec!["a", "c"]);
+        assert_eq!(report.bytes_read, 2 * term_posting_bytes(&reader, "graph"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_projection_uses_delta_normalization_corpus() {
+        let root = projection_root("empty-base-delta");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = BTreeMap::<String, SearchDocument>::new();
+        let config = LexicalProjectionConfig::default();
+        let reader = LexicalProjectionWriter::new(config)
+            .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
+            .unwrap();
+        let mut delta = LexicalMiniDelta::default();
+        delta
+            .upsert(&document("a", "Graph", "query"), &analyzer, config)
+            .unwrap();
+
+        let report = reader
+            .score(&BTreeSet::from(["graph".to_string()]), &delta, None, |_| {
+                Ok(true)
+            })
+            .unwrap();
+
+        assert!(report.scores["a"].is_finite());
+        assert!(report.scores["a"] > 0.0);
+        assert_eq!(report.bytes_read, 0);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -40,26 +40,31 @@ fn main() {
     assert!(
         matches!(
             mode.as_str(),
-            "full" | "scheduler" | "morsel" | "adjacency" | "value-ref"
+            "full" | "micro" | "scheduler" | "morsel" | "adjacency" | "value-ref"
         ),
-        "{EXECUTOR_BENCH_MODE_ENV} must be full, scheduler, morsel, adjacency, or value-ref"
+        "{EXECUTOR_BENCH_MODE_ENV} must be full, micro, scheduler, morsel, adjacency, or value-ref"
     );
     let full = mode == "full";
-    let micro = full.then(micro_benchmark);
+    let micro = matches!(mode.as_str(), "full" | "micro").then(micro_benchmark);
+    let float_micro = matches!(mode.as_str(), "full" | "micro").then(float_micro_benchmark);
     let value_ref = matches!(mode.as_str(), "full" | "value-ref").then(value_ref_benchmark);
-    let (end_to_end, production_morsel, morsel_selectivity) =
-        if matches!(mode.as_str(), "scheduler" | "adjacency" | "value-ref") {
-            (None, None, None)
-        } else {
-            let (comparison, production, selectivity) =
-                end_to_end_benchmark(requested_workers, full);
-            (comparison, Some(production), selectivity)
-        };
+    let (end_to_end, production_morsel, morsel_selectivity) = if matches!(
+        mode.as_str(),
+        "micro" | "scheduler" | "adjacency" | "value-ref"
+    ) {
+        (None, None, None)
+    } else {
+        let (comparison, production, selectivity) = end_to_end_benchmark(requested_workers, full);
+        (comparison, Some(production), selectivity)
+    };
     let morsel = matches!(mode.as_str(), "full" | "scheduler")
         .then(|| morsel::scheduler_benchmark(requested_workers));
     let adjacency_limit = matches!(mode.as_str(), "full" | "adjacency").then(adjacency::benchmark);
     if let Some(micro) = micro {
         assert_eq!(micro.row_checksum, micro.columnar_checksum);
+    }
+    if let Some(float_micro) = float_micro {
+        assert_eq!(float_micro.row_checksum, float_micro.columnar_checksum);
     }
     if let Some(end_to_end) = end_to_end {
         assert_eq!(end_to_end.row_checksum, end_to_end.columnar_checksum);
@@ -69,6 +74,7 @@ fn main() {
         "executor_vectorization {}",
         json!({
             "micro": micro.map(ComparisonReport::json),
+            "float_micro": float_micro.map(ComparisonReport::json),
             "value_ref": value_ref,
             "end_to_end": end_to_end.map(ComparisonReport::json),
             "morsel": morsel,
@@ -180,6 +186,68 @@ fn micro_benchmark() -> ComparisonReport {
                     NumericLiteral::Int(threshold),
                 )
                 .expect("columnar filter must succeed");
+                black_box(
+                    selection
+                        .iter()
+                        .fold(0u64, |total, row| total.wrapping_add(row as u64)),
+                )
+            }
+        });
+
+    ComparisonReport {
+        rows: MICRO_ROWS,
+        iterations: MICRO_ITERATIONS,
+        row_ns,
+        columnar_ns,
+        row_checksum,
+        columnar_checksum,
+    }
+}
+
+fn float_micro_benchmark() -> ComparisonReport {
+    let rows = (0..MICRO_ROWS)
+        .map(|row| {
+            BTreeMap::from([
+                ("score".to_string(), Value::Float(row as f64)),
+                ("row".to_string(), Value::Int(row as i64)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let column = ColumnVector::float64(
+        (0..MICRO_ROWS).map(|row| row as f64).collect(),
+        Validity::all(MICRO_ROWS),
+    )
+    .expect("float micro benchmark column must be valid");
+    let threshold = (MICRO_ROWS * 7 / 8) as f64;
+    let expected = Value::Float(threshold);
+
+    let (row_ns, row_checksum, columnar_ns, columnar_checksum) =
+        paired_median_sample(MICRO_ITERATIONS, |path| match path {
+            ExecutionPath::Row => {
+                let mut checksum = 0u64;
+                for row in black_box(&rows) {
+                    let value = row.get("score").expect("score must exist");
+                    if skein_executor::predicate::compare_property_values(
+                        value,
+                        ComparisonOp::Gte,
+                        &expected,
+                    ) {
+                        checksum = checksum.wrapping_add(match row.get("row") {
+                            Some(Value::Int(row)) => *row as u64,
+                            _ => unreachable!("row is an integer"),
+                        });
+                    }
+                }
+                black_box(checksum)
+            }
+            ExecutionPath::Columnar => {
+                let selection = filter_numeric_column(
+                    black_box(&column),
+                    &Selection::all(MICRO_ROWS),
+                    ComparisonOp::Gte,
+                    NumericLiteral::Float(threshold),
+                )
+                .expect("columnar float filter must succeed");
                 black_box(
                     selection
                         .iter()
