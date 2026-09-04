@@ -509,6 +509,15 @@ enum RelationalPhysicalJoinNode {
     },
 }
 
+struct RelationalPhysicalJoinSpec {
+    operator_id: RelationalOperatorId,
+    kind: SqlJoinKind,
+    algorithm: RelationalPhysicalJoinAlgorithm,
+    equi_join_keys: Option<RelationalEquiJoinKeys>,
+    selectivity: RelationalJoinSelectivity,
+    predicates: Vec<SqlPredicate>,
+}
+
 impl RelationalPhysicalJoinNode {
     fn relation(
         binding: BindingId,
@@ -566,12 +575,14 @@ impl RelationalPhysicalJoinNode {
             Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
         };
         Self::join_with_algorithm(
-            operator_id,
-            kind,
-            algorithm,
-            None,
-            RelationalJoinSelectivity::Unknown,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind,
+                algorithm,
+                equi_join_keys: None,
+                selectivity: RelationalJoinSelectivity::Unknown,
+                predicates,
+            },
             left,
             right,
         )
@@ -586,12 +597,14 @@ impl RelationalPhysicalJoinNode {
         right: Self,
     ) -> Result<Self> {
         Self::join_with_algorithm(
-            operator_id,
-            SqlJoinKind::Inner,
-            RelationalPhysicalJoinAlgorithm::Merge,
-            Some(equi_join_keys),
-            selectivity,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind: SqlJoinKind::Inner,
+                algorithm: RelationalPhysicalJoinAlgorithm::Merge,
+                equi_join_keys: Some(equi_join_keys),
+                selectivity,
+                predicates,
+            },
             left,
             right,
         )
@@ -607,27 +620,32 @@ impl RelationalPhysicalJoinNode {
         right: Self,
     ) -> Result<Self> {
         Self::join_with_algorithm(
-            operator_id,
-            kind,
-            RelationalPhysicalJoinAlgorithm::Hash,
-            Some(equi_join_keys),
-            selectivity,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind,
+                algorithm: RelationalPhysicalJoinAlgorithm::Hash,
+                equi_join_keys: Some(equi_join_keys),
+                selectivity,
+                predicates,
+            },
             left,
             right,
         )
     }
 
     fn join_with_algorithm(
-        operator_id: RelationalOperatorId,
-        kind: SqlJoinKind,
-        algorithm: RelationalPhysicalJoinAlgorithm,
-        equi_join_keys: Option<RelationalEquiJoinKeys>,
-        selectivity: RelationalJoinSelectivity,
-        predicates: Vec<SqlPredicate>,
+        spec: RelationalPhysicalJoinSpec,
         left: Self,
         right: Self,
     ) -> Result<Self> {
+        let RelationalPhysicalJoinSpec {
+            operator_id,
+            kind,
+            algorithm,
+            equi_join_keys,
+            selectivity,
+            predicates,
+        } = spec;
         let output_schema =
             RelationalPhysicalOutputSchema::join(left.output_schema(), right.output_schema())?;
         Ok(Self::Join {
@@ -2590,9 +2608,9 @@ fn format_relational_explain(
         operator_info: format!("implementation=fused, columns={}", select.projection.len()),
         report_operator: None,
     });
-    if select.selection.is_some()
+    if let Some(selection) = &select.selection
         && !predicate_is_covered_by_access(
-            select.selection.as_ref(),
+            Some(selection),
             &output.access_path,
             &select.order_by,
             &select.from.name,
@@ -2606,7 +2624,7 @@ fn format_relational_explain(
             access_object: String::new(),
             operator_info: format!(
                 "implementation=fused, residual_predicate={}",
-                explain_predicate(select.selection.as_ref().expect("selection is present"))
+                explain_predicate(selection)
             ),
             report_operator: None,
         });
@@ -5104,10 +5122,7 @@ fn spill_hash_join_build(
 }
 
 fn visit_hash_join_candidate<'a>(
-    operator_id: RelationalOperatorId,
-    predicates: &[SqlPredicate],
-    output_schema: &RelationalPhysicalOutputSchema,
-    parameters: &[Value],
+    context: &HashJoinCandidateContext<'_>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
     left_row: &BoundRow<'a>,
     right_row: &BoundRow<'a>,
@@ -5117,15 +5132,24 @@ fn visit_hash_join_candidate<'a>(
     pipeline.borrow_mut().account_candidate_work()?;
     let mut combined = left_row.clone();
     combined.bindings.extend(right_row.bindings.clone());
-    for predicate in predicates {
-        if predicate_truth(predicate, &combined, parameters)? != Some(true) {
+    for predicate in context.predicates {
+        if predicate_truth(predicate, &combined, context.parameters)? != Some(true) {
             return Ok(true);
         }
     }
     *matched = true;
-    output_schema.ensure_matches(&combined)?;
-    pipeline.borrow_mut().account_operator_row(operator_id)?;
+    context.output_schema.ensure_matches(&combined)?;
+    pipeline
+        .borrow_mut()
+        .account_operator_row(context.operator_id)?;
     visit(combined)
+}
+
+struct HashJoinCandidateContext<'a> {
+    operator_id: RelationalOperatorId,
+    predicates: &'a [SqlPredicate],
+    output_schema: &'a RelationalPhysicalOutputSchema,
+    parameters: &'a [Value],
 }
 
 fn visit_hash_join_unmatched<'a>(
@@ -5304,6 +5328,12 @@ fn visit_hash_join<'a>(
     let null_right = (kind == SqlJoinKind::Left)
         .then(|| null_extended_tree_row(right, state))
         .transpose()?;
+    let candidate_context = HashJoinCandidateContext {
+        operator_id,
+        predicates,
+        output_schema,
+        parameters,
+    };
     visit_prepared_physical_join_plan_node(
         left,
         None,
@@ -5327,10 +5357,7 @@ fn visit_hash_join<'a>(
                         row_runtime,
                         |right_row| {
                             visit_hash_join_candidate(
-                                operator_id,
-                                predicates,
-                                output_schema,
-                                parameters,
+                                &candidate_context,
                                 pipeline,
                                 &left_row,
                                 right_row,
@@ -5384,6 +5411,12 @@ fn visit_grace_hash_join<'a>(
     let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
         SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
+    let candidate_context = HashJoinCandidateContext {
+        operator_id,
+        predicates,
+        output_schema,
+        parameters,
+    };
     let null_right = (kind == SqlJoinKind::Left)
         .then(|| null_extended_tree_row(right, state))
         .transpose()?;
@@ -5606,10 +5639,7 @@ fn visit_grace_hash_join<'a>(
                                                 return Ok(true);
                                             }
                                             visit_hash_join_candidate(
-                                                operator_id,
-                                                predicates,
-                                                output_schema,
-                                                parameters,
+                                                &candidate_context,
                                                 pipeline,
                                                 left_row,
                                                 right_row,
@@ -5632,10 +5662,7 @@ fn visit_grace_hash_join<'a>(
                                     row_runtime,
                                     |right_row| {
                                         visit_hash_join_candidate(
-                                            operator_id,
-                                            predicates,
-                                            output_schema,
-                                            parameters,
+                                            &candidate_context,
                                             pipeline,
                                             left_row,
                                             right_row,

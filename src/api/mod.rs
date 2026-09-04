@@ -19931,10 +19931,18 @@ fn execute_database_transaction_sql(
         sql_text,
         prepared,
         parameters,
-        allow_system_schema_registry_write,
-        allow_locking_select,
-        task_context,
+        DatabaseTransactionSqlOptions {
+            allow_system_schema_registry_write,
+            allow_locking_select,
+            task_context,
+        },
     )
+}
+
+pub(super) struct DatabaseTransactionSqlOptions<'a> {
+    allow_system_schema_registry_write: bool,
+    allow_locking_select: bool,
+    task_context: Option<&'a skein_core::RuntimeTaskContext>,
 }
 
 pub(super) fn execute_database_transaction_prepared_sql(
@@ -19943,12 +19951,10 @@ pub(super) fn execute_database_transaction_prepared_sql(
     sql_text: &str,
     prepared: crate::relational_sql::PreparedRelationalSql,
     parameters: &[Value],
-    allow_system_schema_registry_write: bool,
-    allow_locking_select: bool,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    options: DatabaseTransactionSqlOptions<'_>,
 ) -> Result<SqlStatementResult> {
-    reject_locking_select_without_manager(prepared.statement(), allow_locking_select)?;
-    if !allow_system_schema_registry_write
+    reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
+    if !options.allow_system_schema_registry_write
         && crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
     {
         return Err(SkeinError::Semantic(
@@ -20105,7 +20111,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 &runtime.config,
                 runtime.config.max_read_result_rows,
                 runtime.config.max_read_result_payload_bytes,
-                task_context,
+                options.task_context,
             ),
         )?;
         return Ok(sql_query_result(QueryOutput { rows: output.rows }));
