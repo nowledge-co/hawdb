@@ -101,6 +101,12 @@ the provisional statement outcome and recomputes the same result at commit.
 Only the commit result is confirmed. Result row, payload, and affected-row
 limits fail the statement before its transaction workspace is advanced.
 
+The same v1 typed outcome reports the target-row count for every bounded
+`UPDATE` and `DELETE`, including zero-row matches. These count-only outcomes
+have zero `conflict_rows` and no returned rows. A `DELETE` count excludes rows
+removed only by referential cascades. Provisional counts are recomputed during
+commit replay, and an optimistic conflict never confirms its staged count.
+
 ## Concurrent locking
 
 Ordinary `SELECT` is a snapshot read and acquires no logical row lock. An

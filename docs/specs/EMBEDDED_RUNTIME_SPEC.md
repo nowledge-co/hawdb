@@ -317,6 +317,17 @@ CPU concurrency and storage I/O depth are separate budgets. Modern SSD and NVMe
 devices expose multiple queues and channels, so foreground scans MAY issue
 independent segment reads concurrently up to a bounded I/O depth.
 
+Every admitted operation declares both an I/O slot count and a reservation
+scope. A task-scoped reservation occupies those slots for the operation's full
+lifetime and is the conservative default for storage paths that do not yet
+expose explicit I/O waves. A wave-scoped reservation is checked for static
+feasibility at task admission, then acquired and released around each actual
+storage wave. `SourceSegmentScan` MUST use wave-scoped reservations, carry its
+admitted priority and maximum depth through `RuntimeTaskContext`, and acquire
+the declared number of slots before `SegmentReadExecutor` schedules a wave.
+The foreground and background counters therefore bound the sum of task-scoped
+reservations and live wave-scoped reads independently for each priority class.
+
 - Candidate selection and segment pruning MUST happen before issuing payload
   reads.
 - Parallel reads SHOULD operate on coarse, independent ranges; the engine MUST

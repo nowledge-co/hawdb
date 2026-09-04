@@ -17,6 +17,55 @@ pub enum RelationalJoinRightInput {
     Materialized,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalJoinSelectivity {
+    /// No trustworthy predicate statistics are available. Materialized joins
+    /// use the documented 10% fallback; probe inputs ignore this value because
+    /// their row estimate is already a per-outer-row fanout.
+    #[default]
+    Unknown,
+    /// Distinct-value counts for the complete equality key on either side.
+    /// One known side is still a useful conservative denominator; when both
+    /// sides are known, the standard `1 / max(left_ndv, right_ndv)` estimate is
+    /// used.
+    EquiJoin {
+        left_distinct_values: Option<u64>,
+        right_distinct_values: Option<u64>,
+    },
+}
+
+impl RelationalJoinSelectivity {
+    pub const fn equi_join(
+        left_distinct_values: Option<u64>,
+        right_distinct_values: Option<u64>,
+    ) -> Self {
+        Self::EquiJoin {
+            left_distinct_values,
+            right_distinct_values,
+        }
+    }
+
+    fn materialized_divisor(self, left_rows: u64, right_rows: u64) -> u64 {
+        const DEFAULT_SELECTIVITY_DIVISOR: u64 = 10;
+
+        let cap = |distinct_values: u64, rows: u64| distinct_values.max(1).min(rows.max(1));
+        match self {
+            Self::Unknown => DEFAULT_SELECTIVITY_DIVISOR,
+            Self::EquiJoin {
+                left_distinct_values,
+                right_distinct_values,
+            } => left_distinct_values
+                .map(|distinct_values| cap(distinct_values, left_rows))
+                .into_iter()
+                .chain(
+                    right_distinct_values.map(|distinct_values| cap(distinct_values, right_rows)),
+                )
+                .max()
+                .unwrap_or(DEFAULT_SELECTIVITY_DIVISOR),
+        }
+    }
+}
+
 pub fn estimate_relational_access_cost(estimated_rows: usize) -> PlanCostBreakdown {
     let rows = u64::try_from(estimated_rows).unwrap_or(u64::MAX).max(1);
     PlanCostBreakdown::new(rows, rows, 0, 0, 0)
@@ -34,6 +83,7 @@ pub fn estimate_relational_probe_join_cost(
         estimate_relational_access_cost(inner_estimated_rows),
         cardinality,
         RelationalJoinRightInput::Probe,
+        RelationalJoinSelectivity::Unknown,
     )
 }
 
@@ -42,15 +92,21 @@ pub fn estimate_relational_join_cost(
     right: PlanCostBreakdown,
     cardinality: RelationalJoinCardinality,
     right_input: RelationalJoinRightInput,
+    selectivity: RelationalJoinSelectivity,
 ) -> PlanCostBreakdown {
-    let joined_rows = left.estimated_rows.saturating_mul(right.estimated_rows);
+    let candidate_pairs = left.estimated_rows.saturating_mul(right.estimated_rows);
+    let joined_rows = match right_input {
+        RelationalJoinRightInput::Probe => candidate_pairs,
+        RelationalJoinRightInput::Materialized => candidate_pairs
+            .div_ceil(selectivity.materialized_divisor(left.estimated_rows, right.estimated_rows)),
+    };
     let estimated_rows = match cardinality {
         RelationalJoinCardinality::Inner => joined_rows,
         RelationalJoinCardinality::PreserveLeft => joined_rows.max(left.estimated_rows),
     };
     let (right_multiplier, join_cpu) = match right_input {
         RelationalJoinRightInput::Probe => (left.estimated_rows, 0),
-        RelationalJoinRightInput::Materialized => (1, joined_rows),
+        RelationalJoinRightInput::Materialized => (1, candidate_pairs),
     };
     PlanCostBreakdown::new(
         estimated_rows,
@@ -95,15 +151,49 @@ mod tests {
             right,
             RelationalJoinCardinality::Inner,
             RelationalJoinRightInput::Materialized,
+            RelationalJoinSelectivity::Unknown,
         );
 
         assert_eq!(
             cost.as_plan_cost(),
             PlanCost {
-                estimated_rows: 6,
+                estimated_rows: 1,
                 cost: 11,
             }
         );
+    }
+
+    #[test]
+    fn materialized_equi_join_uses_the_larger_distinct_count() {
+        let left = estimate_relational_access_cost(10_000);
+        let right = estimate_relational_access_cost(20_000);
+
+        let cost = estimate_relational_join_cost(
+            left,
+            right,
+            RelationalJoinCardinality::Inner,
+            RelationalJoinRightInput::Materialized,
+            RelationalJoinSelectivity::equi_join(Some(10_000), Some(5_000)),
+        );
+
+        assert_eq!(cost.estimated_rows, 20_000);
+        assert_eq!(cost.cpu, 200_030_000);
+    }
+
+    #[test]
+    fn materialized_equi_join_uses_one_known_distinct_count() {
+        let left = estimate_relational_access_cost(10_000);
+        let right = estimate_relational_access_cost(20_000);
+
+        let cost = estimate_relational_join_cost(
+            left,
+            right,
+            RelationalJoinCardinality::Inner,
+            RelationalJoinRightInput::Materialized,
+            RelationalJoinSelectivity::equi_join(Some(10_000), None),
+        );
+
+        assert_eq!(cost.estimated_rows, 20_000);
     }
 
     #[test]
@@ -116,6 +206,7 @@ mod tests {
             right,
             RelationalJoinCardinality::Inner,
             RelationalJoinRightInput::Probe,
+            RelationalJoinSelectivity::equi_join(Some(2), Some(3)),
         );
 
         assert_eq!(cost.estimated_rows, 6);
@@ -143,6 +234,7 @@ mod tests {
             empty_right,
             RelationalJoinCardinality::PreserveLeft,
             RelationalJoinRightInput::Probe,
+            RelationalJoinSelectivity::Unknown,
         );
 
         assert_eq!(cost.estimated_rows, 4);

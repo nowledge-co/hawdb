@@ -3955,7 +3955,7 @@ mod tests {
             join.access_path.kind,
             skein_optimizer::RelationalAccessPathKind::FullScan
         );
-        assert_eq!(join.estimated_rows, 6);
+        assert_eq!(join.estimated_rows, 3);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
         assert!(full
@@ -4003,7 +4003,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(analyzed_ids.len(), analyzed.rows.len());
         for (table, expected_id, estimated_rows, actual_rows) in
-            [("profile_parents", 1, 2, 2), ("profile_children", 2, 6, 3)]
+            [("profile_parents", 1, 2, 2), ("profile_children", 2, 3, 3)]
         {
             let plain_row = relational_explain_access_row(&plain, table);
             let analyzed_row = relational_explain_access_row(&analyzed, table);

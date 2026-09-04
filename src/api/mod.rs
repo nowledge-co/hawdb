@@ -505,11 +505,13 @@ pub struct QueryOutput {
     pub rows: executor::QueryRows,
 }
 
-/// Deterministic outcome for one relational INSERT statement.
+/// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
 /// A staged statement is provisional until its enclosing transaction commits.
 /// Conflict no-ops increment `conflict_rows`, never `affected_rows`, and never
-/// contribute a `RETURNING` row.
+/// contribute a `RETURNING` row. In the v1 contract, `rows` contains values for
+/// supported `INSERT ... RETURNING` statements and remains empty for count-only
+/// UPDATE and DELETE outcomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalMutationResult {
     pub affected_rows: usize,
@@ -19143,6 +19145,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 .label_name(*label_id)
                 .map(|label| ((label.to_string(), property.clone()), values.clone()))
         });
+    let sampled_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_property_histograms.iter())
+        .filter_map(|((label_id, property), sampled)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *sampled))
+        });
     let rel_property_distinct_counts = advanced_statistics
         .into_iter()
         .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
@@ -19158,6 +19168,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
             catalog
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
+        });
+    let sampled_rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), sampled)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), *sampled))
         });
     let property_index_statistics = catalog.property_indexes().filter_map(|index| {
         if index.kind == IndexKind::FullText {
@@ -19212,7 +19230,9 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
         .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
         .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
-        .with_relationship_property_histograms(rel_property_histograms),
+        .with_relationship_property_histograms(rel_property_histograms)
+        .with_sampled_property_histograms(sampled_property_histograms)
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
     )
 }
 

@@ -297,7 +297,7 @@ impl SkeinTokioEmbedded {
         };
         let limits = self.with_embedded(|embedded| embedded.runtime_governor().snapshot().limits);
         let minimum_io_slots = admission.runtime_work_request(0, limits).io_slots;
-        let request = request.with_io_slots(request.io_slots.max(minimum_io_slots));
+        let request = apply_segment_io_requirement(request, minimum_io_slots);
         let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
         let request = if admission.is_mutation {
             request
@@ -401,9 +401,7 @@ impl SkeinTokioEmbedded {
         let request =
             request.with_memory_bytes(request.memory_bytes.saturating_add(buffered_payload_bytes));
         let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
-        let producer_context = task_context.child().with_admitted_parallelism(
-            NonZeroUsize::new(request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
+        let producer_context = task_context.child();
         let cancellation = producer_context.cancellation().clone();
         let (terminal_sender, receiver) = tokio_bounded_channel(options.channel_capacity);
         let batch_sender = terminal_sender.clone();
@@ -480,9 +478,6 @@ impl SkeinTokioEmbedded {
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
         let embedded = Arc::clone(&self.embedded);
-        let task_context = task_context.with_admitted_parallelism(
-            NonZeroUsize::new(request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
         if request.kind == RuntimeWorkKind::Mutation {
             self.runtime
                 .execute_blocking(request, task_context, move |task_context| {
@@ -526,6 +521,17 @@ impl SkeinTokioEmbedded {
                 .await
                 .map_err(SkeinTokioEmbeddedError::Task)
         }
+    }
+}
+
+fn apply_segment_io_requirement(
+    request: RuntimeWorkRequest,
+    minimum_io_slots: usize,
+) -> RuntimeWorkRequest {
+    if minimum_io_slots > 0 {
+        request.with_io_wave_slots(request.io_slots.max(minimum_io_slots))
+    } else {
+        request
     }
 }
 
@@ -582,6 +588,32 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(event);
         }
+    }
+
+    #[test]
+    fn custom_request_preserves_task_scope_without_segment_io() {
+        let request = RuntimeWorkRequest::io(skein_qos::RuntimeWorkPriority::Foreground, 1, 0);
+
+        let normalized = apply_segment_io_requirement(request, 0);
+
+        assert_eq!(normalized.io_slots, 1);
+        assert_eq!(
+            normalized.io_reservation_scope,
+            skein_qos::RuntimeIoReservationScope::Task
+        );
+    }
+
+    #[test]
+    fn custom_request_uses_wave_scope_for_segment_io() {
+        let request = RuntimeWorkRequest::io(skein_qos::RuntimeWorkPriority::Foreground, 1, 0);
+
+        let normalized = apply_segment_io_requirement(request, 2);
+
+        assert_eq!(normalized.io_slots, 2);
+        assert_eq!(
+            normalized.io_reservation_scope,
+            skein_qos::RuntimeIoReservationScope::Wave
+        );
     }
 
     #[test]

@@ -317,7 +317,7 @@ impl TokioRuntimeAdapter {
         let request = request.with_blocking(true);
         let observe_post_operation_cancellation = request.kind != RuntimeWorkKind::Mutation;
         let permit = self.acquire(request, &context).await?;
-        let task_context = context.clone();
+        let task_context = permit.bind_task_context(context);
         let join = self.handle.spawn_blocking(move || {
             let _permit = permit;
             task_context.checkpoint().map_err(TokioTaskError::Stopped)?;
@@ -344,7 +344,7 @@ impl TokioRuntimeAdapter {
     {
         let observe_post_operation_cancellation = request.kind != RuntimeWorkKind::Mutation;
         let permit = self.acquire(request, &context).await?;
-        let task_context = context.clone();
+        let task_context = permit.bind_task_context(context);
         let join = self.handle.spawn(async move {
             let _permit = permit;
             task_context.checkpoint().map_err(TokioTaskError::Stopped)?;

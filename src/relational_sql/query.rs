@@ -40,7 +40,7 @@ use skein_optimizer::{
     estimate_relational_access_cost, estimate_relational_join_cost,
     estimate_relational_probe_join_cost, select_relational_access_path, PlanCostBreakdown,
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
-    RelationalJoinEnumerationConfig, RelationalJoinRightInput,
+    RelationalJoinEnumerationConfig, RelationalJoinRightInput, RelationalJoinSelectivity,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -471,6 +471,7 @@ enum RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
         equi_join_keys: Option<RelationalEquiJoinKeys>,
+        selectivity: RelationalJoinSelectivity,
         predicates: Vec<SqlPredicate>,
         left: Box<Self>,
         right: Box<Self>,
@@ -534,13 +535,23 @@ impl RelationalPhysicalJoinNode {
             Self::Relation(_) => RelationalPhysicalJoinAlgorithm::Probe,
             Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
         };
-        Self::join_with_algorithm(operator_id, kind, algorithm, None, predicates, left, right)
+        Self::join_with_algorithm(
+            operator_id,
+            kind,
+            algorithm,
+            None,
+            RelationalJoinSelectivity::Unknown,
+            predicates,
+            left,
+            right,
+        )
     }
 
     fn merge_join(
         operator_id: RelationalOperatorId,
         predicates: Vec<SqlPredicate>,
         equi_join_keys: RelationalEquiJoinKeys,
+        selectivity: RelationalJoinSelectivity,
         left: Self,
         right: Self,
     ) -> Result<Self> {
@@ -549,6 +560,7 @@ impl RelationalPhysicalJoinNode {
             SqlJoinKind::Inner,
             RelationalPhysicalJoinAlgorithm::Merge,
             Some(equi_join_keys),
+            selectivity,
             predicates,
             left,
             right,
@@ -560,6 +572,7 @@ impl RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         predicates: Vec<SqlPredicate>,
         equi_join_keys: RelationalEquiJoinKeys,
+        selectivity: RelationalJoinSelectivity,
         left: Self,
         right: Self,
     ) -> Result<Self> {
@@ -568,6 +581,7 @@ impl RelationalPhysicalJoinNode {
             kind,
             RelationalPhysicalJoinAlgorithm::Hash,
             Some(equi_join_keys),
+            selectivity,
             predicates,
             left,
             right,
@@ -579,6 +593,7 @@ impl RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
         equi_join_keys: Option<RelationalEquiJoinKeys>,
+        selectivity: RelationalJoinSelectivity,
         predicates: Vec<SqlPredicate>,
         left: Self,
         right: Self,
@@ -590,6 +605,7 @@ impl RelationalPhysicalJoinNode {
             kind,
             algorithm,
             equi_join_keys,
+            selectivity,
             predicates,
             left: Box::new(left),
             right: Box::new(right),
@@ -933,6 +949,77 @@ fn hash_join_inputs(
     ))
 }
 
+fn materialized_equi_join_selectivity(
+    state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
+    left: &RelationalPhysicalJoinNode,
+    right: &RelationalPhysicalJoinNode,
+    keys: &RelationalEquiJoinKeys,
+) -> RelationalJoinSelectivity {
+    let (RelationalPhysicalJoinNode::Relation(left), RelationalPhysicalJoinNode::Relation(right)) =
+        (left, right)
+    else {
+        return RelationalJoinSelectivity::Unknown;
+    };
+    let left_columns = keys
+        .columns
+        .iter()
+        .map(|(_, column)| column.name.clone())
+        .collect::<Vec<_>>();
+    let right_columns = keys
+        .columns
+        .iter()
+        .map(|(column, _)| column.clone())
+        .collect::<Vec<_>>();
+    RelationalJoinSelectivity::equi_join(
+        relational_join_distinct_values(state, index_read_mode, left, &left_columns),
+        relational_join_distinct_values(state, index_read_mode, right, &right_columns),
+    )
+}
+
+fn relational_join_distinct_values(
+    state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
+    relation: &RelationalPhysicalRelation,
+    columns: &[String],
+) -> Option<u64> {
+    if columns.is_empty() {
+        return None;
+    }
+    let schema = state.table_schema(&relation.table)?;
+    let requested_columns = columns.iter().collect::<BTreeSet<_>>();
+    // Planning must not scan relational rows to manufacture NDV. Use a fresh
+    // persisted prefix statistic when available, or the exact cardinality of
+    // a complete non-null unique key; otherwise retain the cost model's
+    // documented fallback.
+    for definition in schema.required_index_definitions() {
+        if definition.columns.len() < columns.len()
+            || definition.columns[..columns.len()]
+                .iter()
+                .collect::<BTreeSet<_>>()
+                != requested_columns
+        {
+            continue;
+        }
+        if let Some(statistics) =
+            index_read_mode.probe_statistics(&relation.table, &definition.name, columns.len())
+        {
+            return Some(statistics.distinct_non_null_values);
+        }
+        let complete_non_null_unique_key = definition.role.is_unique()
+            && definition.columns.len() == columns.len()
+            && columns.iter().all(|column| {
+                schema
+                    .column_position(column)
+                    .is_some_and(|position| !schema.columns[position].nullable)
+            });
+        if complete_non_null_unique_key {
+            return Some(u64::try_from(state.row_count(&relation.table)).unwrap_or(u64::MAX));
+        }
+    }
+    None
+}
+
 impl PreparedRelationalAccessPlan {
     fn apply_physical_index_coverage(
         &mut self,
@@ -989,16 +1076,25 @@ impl PreparedRelationalAccessPlan {
                 right_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(right_access.clone()),
             );
+            let selectivity = materialized_equi_join_selectivity(
+                state,
+                index_read_mode,
+                &left,
+                &right,
+                &merge_keys,
+            );
             let cost = estimate_relational_join_cost(
                 estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
                 estimate_relational_access_cost(right_access.descriptor.estimated_rows),
                 RelationalJoinCardinality::Inner,
                 RelationalJoinRightInput::Materialized,
+                selectivity,
             );
             let root = RelationalPhysicalJoinNode::merge_join(
                 RelationalOperatorId::from_plan_index(1),
                 vec![join.on.clone()],
                 merge_keys,
+                selectivity,
                 left,
                 right,
             )?;
@@ -1036,6 +1132,13 @@ impl PreparedRelationalAccessPlan {
                 right_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(right_access.clone()),
             );
+            let selectivity = materialized_equi_join_selectivity(
+                state,
+                index_read_mode,
+                &left,
+                &right,
+                &equi_join_keys,
+            );
             let cost = estimate_relational_join_cost(
                 estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
                 estimate_relational_access_cost(right_access.descriptor.estimated_rows),
@@ -1044,12 +1147,14 @@ impl PreparedRelationalAccessPlan {
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
                 },
                 RelationalJoinRightInput::Materialized,
+                selectivity,
             );
             let root = RelationalPhysicalJoinNode::hash_join(
                 RelationalOperatorId::from_plan_index(1),
                 join.kind,
                 vec![join.on.clone()],
                 equi_join_keys,
+                selectivity,
                 left,
                 right,
             )?;
@@ -1455,6 +1560,7 @@ fn planned_tree_operator_cardinality_profiles(
                 operator_id,
                 kind,
                 algorithm,
+                selectivity,
                 left,
                 right,
                 ..
@@ -1480,6 +1586,7 @@ fn planned_tree_operator_cardinality_profiles(
                             RelationalJoinRightInput::Materialized
                         }
                     },
+                    *selectivity,
                 );
                 let index = operator_id.get().checked_sub(1).ok_or_else(|| {
                     SkeinError::Execution("physical join has an invalid operator id".to_string())
@@ -5581,6 +5688,7 @@ fn visit_prepared_physical_join_plan_node<'a>(
             left,
             right,
             output_schema,
+            ..
         } => {
             if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
                 let equi_join_keys = equi_join_keys.as_ref().ok_or_else(|| {
@@ -9573,6 +9681,7 @@ mod tests {
             right_cost,
             RelationalJoinCardinality::Inner,
             RelationalJoinRightInput::Materialized,
+            RelationalJoinSelectivity::Unknown,
         );
         let root = RelationalPhysicalJoinNode::join(
             RelationalOperatorId::from_plan_index(3),

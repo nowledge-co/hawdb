@@ -10,7 +10,8 @@ use lending::{
 use skein_executor::columnar::{
     filter_float64_values, filter_int64_values, select_float64_values_view,
     select_int64_values_view, BindingSchema, ColumnVector, ColumnarBatch, NumericLiteral,
-    Selection, SlotDescriptor, SlotId, SlotType, ValidityBuilder,
+    NumericPredicate, Selection, SlotDescriptor, SlotId, SlotType, Validity, ValidityBuilder,
+    ValidityView,
 };
 use skein_executor::morsel::{
     MorselAdmission, MorselAdmissionRequest, MorselOutput, MorselStreamControl,
@@ -31,7 +32,7 @@ struct NumericFragment<'a> {
     label: &'a str,
     property: &'a str,
     property_type: crate::schema::PropertyType,
-    op: skein_plan::ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
     fused_operators: Option<FusedNumericOperators<'a>>,
 }
@@ -187,14 +188,19 @@ impl<'a> NumericFragment<'a> {
         predicate: &'a Predicate,
         catalog: &Catalog,
     ) -> Option<Self> {
-        let Predicate::PropertyCompare {
-            variable,
-            property,
-            op,
-            value,
-        } = predicate
-        else {
-            return None;
+        let (variable, property, numeric_predicate, value) = match predicate {
+            Predicate::PropertyEq {
+                variable,
+                property,
+                value,
+            } => (variable, property, NumericPredicate::Eq, value),
+            Predicate::PropertyCompare {
+                variable,
+                property,
+                op,
+                value,
+            } => (variable, property, NumericPredicate::Compare(*op), value),
+            _ => return None,
         };
         if variable != scan_variable || label.is_empty() || label.contains('|') {
             return None;
@@ -225,10 +231,62 @@ impl<'a> NumericFragment<'a> {
             label,
             property,
             property_type: descriptor.value_type,
-            op: *op,
+            predicate: numeric_predicate,
             expected,
             fused_operators: None,
         })
+    }
+
+    fn select_int64_values(
+        self,
+        values: &[i64],
+        validity: ValidityView<'_>,
+        selected_rows: &mut Vec<u32>,
+    ) -> Result<()> {
+        select_int64_values_view(
+            values,
+            validity,
+            self.predicate,
+            self.expected,
+            selected_rows,
+        )
+    }
+
+    fn select_float64_values(
+        self,
+        values: &[f64],
+        validity: ValidityView<'_>,
+        selected_rows: &mut Vec<u32>,
+    ) -> Result<()> {
+        select_float64_values_view(
+            values,
+            validity,
+            self.predicate,
+            self.expected,
+            selected_rows,
+        )
+    }
+
+    fn filter_int64_values(
+        self,
+        values: &[i64],
+        validity: &Validity,
+        input: &Selection,
+    ) -> Result<Selection> {
+        filter_int64_values(values, validity, input, self.predicate, self.expected)
+    }
+
+    fn filter_float64_values(
+        self,
+        values: &[f64],
+        validity: &Validity,
+        input: &Selection,
+    ) -> Result<Selection> {
+        filter_float64_values(values, validity, input, self.predicate, self.expected)
+    }
+
+    fn filter_batch(self, batch: ColumnarBatch) -> Result<ColumnarBatch> {
+        batch.filter_numeric(PREDICATE_VALUE_SLOT, self.predicate, self.expected)
     }
 
     fn start_fused_operators(self, observer: &QueryExecutionObserver) {
@@ -1004,20 +1062,12 @@ fn prepare_typed_batch(
     selected_rows: &mut Vec<u32>,
 ) -> Result<PreparedNumericBatch> {
     match input.values {
-        lending::NumericBatchValues::Int(values) => select_int64_values_view(
-            values,
-            input.validity,
-            fragment.op,
-            fragment.expected,
-            selected_rows,
-        )?,
-        lending::NumericBatchValues::Float(values) => select_float64_values_view(
-            values,
-            input.validity,
-            fragment.op,
-            fragment.expected,
-            selected_rows,
-        )?,
+        lending::NumericBatchValues::Int(values) => {
+            fragment.select_int64_values(values, input.validity, selected_rows)?
+        }
+        lending::NumericBatchValues::Float(values) => {
+            fragment.select_float64_values(values, input.validity, selected_rows)?
+        }
     }
     let selected_count = selected_rows.len();
     let mut output = Vec::with_capacity(selected_count);
@@ -1071,12 +1121,10 @@ fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
                     Some(value) => return Err(schema_value_mismatch(fragment, value)),
                 }
             }
-            filter_int64_values(
+            fragment.filter_int64_values(
                 &values,
                 &validity.finish(),
                 &Selection::all(input.len()),
-                fragment.op,
-                fragment.expected,
             )?
         }
         crate::schema::PropertyType::Float => {
@@ -1095,12 +1143,10 @@ fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
                     Some(value) => return Err(schema_value_mismatch(fragment, value)),
                 }
             }
-            filter_float64_values(
+            fragment.filter_float64_values(
                 &values,
                 &validity.finish(),
                 &Selection::all(input.len()),
-                fragment.op,
-                fragment.expected,
             )?
         }
         _ => unreachable!("numeric fragment eligibility checks the property type"),
@@ -1192,11 +1238,7 @@ fn prepare_owned_columnar_batch(
     if let Some(node_ids) = node_ids {
         columns.push(Arc::new(ColumnVector::node_ids(node_ids)));
     }
-    let batch = ColumnarBatch::try_new(schema, columns)?.filter_numeric(
-        PREDICATE_VALUE_SLOT,
-        fragment.op,
-        fragment.expected,
-    )?;
+    let batch = fragment.filter_batch(ColumnarBatch::try_new(schema, columns)?)?;
     Ok(PreparedColumnarBatch {
         input_rows: input.len(),
         batch,
@@ -1337,7 +1379,7 @@ fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> SkeinE
 mod tests {
     use super::{
         default_morsel_worker_count, numeric_columnar_schema, numeric_morsel_memory,
-        prepare_lending_numeric_morsel, LendingNumericScan, NumericFragment,
+        prepare_lending_numeric_morsel, LendingNumericScan, NumericFragment, NumericPredicate,
         DEFAULT_BATCHES_PER_MORSEL, DEFAULT_MIN_MORSELS_PER_WORKER,
     };
     use crate::planner::ComparisonOp;
@@ -1370,7 +1412,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: PropertyType::Int,
-            op: ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(ComparisonOp::Gte),
             expected: NumericLiteral::Int(0),
             fused_operators: None,
         };
@@ -1420,7 +1462,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: PropertyType::Int,
-            op: ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(ComparisonOp::Gte),
             expected: NumericLiteral::Int(0),
             fused_operators: None,
         };
@@ -1457,7 +1499,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: PropertyType::Int,
-            op: ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(ComparisonOp::Gte),
             expected: NumericLiteral::Int(4),
             fused_operators: None,
         };
@@ -1497,7 +1539,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: PropertyType::Int,
-            op: ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(ComparisonOp::Gte),
             expected: NumericLiteral::Int(0),
             fused_operators: None,
         };

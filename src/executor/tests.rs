@@ -1739,6 +1739,115 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
 }
 
 #[test]
+fn columnar_numeric_equality_matches_row_pipeline_and_parallelizes() {
+    let mut catalog = Catalog::default();
+    let table = catalog.get_or_create_table(crate::schema::TableKind::Node, "Item");
+    catalog.get_or_create_property(table, "score", crate::schema::PropertyType::Int, true);
+    let mut store = GraphStore::in_memory();
+    for row in 0..513i64 {
+        let values = if row % 11 == 0 {
+            BTreeMap::new()
+        } else {
+            properties([("score", Value::Int(row % 17))])
+        };
+        store.create_node(&mut catalog, "Item", values).unwrap();
+    }
+    let equality = Predicate::PropertyEq {
+        variable: "n".to_string(),
+        property: "score".to_string(),
+        value: Value::Int(5),
+    };
+    let items = vec![
+        Projection {
+            expression: ProjectionExpression::Id {
+                variable: "n".to_string(),
+            },
+            name: "node_id".to_string(),
+        },
+        Projection {
+            expression: ProjectionExpression::Property {
+                variable: "n".to_string(),
+                property: "score".to_string(),
+            },
+            name: "score".to_string(),
+        },
+    ];
+    let scan = PhysicalPlan::SeqNodeScan {
+        variable: "n".to_string(),
+        label: "Item".to_string(),
+    };
+    let columnar_plan = PhysicalPlan::ProjectExec {
+        items: items.clone(),
+        input: Box::new(PhysicalPlan::FilterExec {
+            predicate: equality.clone(),
+            input: Box::new(scan.clone()),
+        }),
+    };
+    let row_plan = PhysicalPlan::ProjectExec {
+        items,
+        input: Box::new(PhysicalPlan::FilterExec {
+            predicate: Predicate::And(vec![equality]),
+            input: Box::new(scan),
+        }),
+    };
+    let memory = ExecutionMemoryConfig {
+        batch_rows: NonZeroUsize::new(4).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let morsel_rows = 4 * 16;
+    let morsel_count = 513usize.div_ceil(morsel_rows);
+    let memory_workers = memory.query_memory_bytes.get()
+        / (memory.batch_payload_bytes.get() + morsel_rows * std::mem::size_of::<&NodeRecord>());
+    let expected_workers = skein_executor::SharedExecutorPool::shared_default()
+        .map(|pool| pool.worker_count())
+        .unwrap_or(1)
+        .min(MAX_MORSEL_PARALLELISM)
+        .min(memory_workers)
+        .min(morsel_count / 4)
+        .max(1);
+    let task_context = RuntimeTaskContext::default().with_admitted_parallelism(
+        NonZeroUsize::new(MAX_MORSEL_PARALLELISM).expect("default morsel parallelism is non-zero"),
+    );
+    let mut external = NoExternalReadOperator;
+    let columnar = execute_with_output_limits_profile_and_external_and_context_and_memory(
+        &columnar_plan,
+        &mut catalog,
+        &mut store,
+        &BTreeMap::new(),
+        &mut external,
+        None,
+        None,
+        &task_context,
+        &memory,
+    )
+    .unwrap();
+    let row = execute_with_row_limit_profile_and_external_and_memory(
+        &row_plan,
+        &mut catalog,
+        &mut store,
+        &BTreeMap::new(),
+        &mut external,
+        None,
+        &memory,
+    )
+    .unwrap();
+
+    assert_eq!(columnar.rows, row.rows);
+    assert!(!columnar.rows.is_empty());
+    assert!(columnar
+        .rows
+        .iter()
+        .all(|binding| binding.get("score") == Some(&Value::Int(5))));
+    let report = &columnar.profile.pipeline_memory_report;
+    assert!(report.columnar_batches > 0);
+    assert!(report.columnar_batches > report.morsel_count);
+    assert_eq!(report.morsel_count, morsel_count);
+    assert_eq!(report.morsel_max_admitted_workers, expected_workers);
+    assert_eq!(report.morsel_peak_active_workers, expected_workers);
+    assert_eq!(row.profile.pipeline_memory_report.columnar_batches, 0);
+}
+
+#[test]
 fn columnar_lending_fragment_matches_row_for_narrow_numeric_projection() {
     let mut catalog = Catalog::default();
     let table = catalog.get_or_create_table(crate::schema::TableKind::Node, "Item");
