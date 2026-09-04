@@ -517,8 +517,8 @@ mod tests {
         let second = governor
             .try_admit(RuntimeWorkRequest::foreground_query(96, 16))
             .unwrap();
-        let first_context = first.execution_context(&RuntimeTaskContext::default());
-        let second_context = second.execution_context(&RuntimeTaskContext::default());
+        let first_context = first.bind_task_context(RuntimeTaskContext::default());
+        let second_context = second.bind_task_context(RuntimeTaskContext::default());
         let memory = ExecutionMemoryConfig::default();
         let ledgers = [&first_context, &second_context].map(|context| {
             QueryMemoryLedger::new(enforced_query_memory_budget(&memory, Some(context)).unwrap())

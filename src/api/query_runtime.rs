@@ -144,7 +144,7 @@ impl RuntimeAdmissionPlan {
         )
         .with_cpu_slots(cpu_slots)
         .with_kind(kind)
-        .with_io_slots(self.required_io_slots)
+        .with_io_wave_slots(self.required_io_slots)
     }
 
     fn admitted_cpu_slots(
@@ -355,6 +355,7 @@ impl Database {
             statement,
             parameters,
             cache_mode,
+            PlanTraceMode::Template,
             PlanCacheContext {
                 catalog: &self.catalog,
                 store: &self.store,
@@ -668,7 +669,7 @@ impl Database {
         query_runtime_checkpoint(task_context)?;
         let work_request =
             query_work_request_for_statement(&self.system_variables, &explain.statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_explain_query_plan_with_access_control(
             cypher_text,
             &explain.statement,
             parameters,
@@ -783,6 +784,20 @@ mod tests {
 
         assert_eq!(request.cpu_slots, 4);
         assert_eq!(request.memory_bytes, 4 * 1024);
+    }
+
+    #[test]
+    fn source_segment_io_uses_wave_scoped_runtime_slots() {
+        let mut admission = admission(false);
+        admission.required_io_slots = 2;
+
+        let request = admission.runtime_work_request(1024, limits(8, 64 * 1024));
+
+        assert_eq!(request.io_slots, 2);
+        assert_eq!(
+            request.io_reservation_scope,
+            skein_qos::RuntimeIoReservationScope::Wave
+        );
     }
 
     #[test]

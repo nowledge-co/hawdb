@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     GroupId, Memo, OptimizerContext, OptimizerSearchDirective, OptimizerSearchDirectiveError,
-    StageTrace,
+    RuleEvent, RuleOutcome, SelectedPlanTrace, StageTrace,
 };
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
@@ -62,6 +62,15 @@ impl CascadesOptimizer {
 
     pub fn context(&self) -> &OptimizerContext {
         &self.context
+    }
+
+    pub fn refresh_trace_for_physical_plan(
+        &self,
+        trace: &mut OptimizerTrace,
+        plan: &PhysicalPlan,
+        catalog: &OptimizerCatalog,
+    ) {
+        refresh_selected_plan_trace(trace, selected_plan_trace(plan, catalog, &self.context));
     }
 
     pub fn optimize(&self, logical: &LogicalPlan) -> PhysicalPlan {
@@ -210,6 +219,43 @@ impl CascadesOptimizer {
         }
         Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)))
     }
+}
+
+fn refresh_selected_plan_trace(trace: &mut OptimizerTrace, selected: SelectedPlanTrace) {
+    let selected_cost = selected.cost.with_cardinality_floor();
+    let selected_cost_breakdown = selected.cost_breakdown.with_cardinality_floor();
+    let cost_detail = format!(
+        "estimated_rows={} cost={}",
+        selected_cost.estimated_rows, selected_cost.cost
+    );
+    let cost_decision = format!("selected physical plan cost: {cost_detail}");
+    if let Some(decision) = trace
+        .decisions
+        .iter_mut()
+        .find(|decision| decision.starts_with("selected physical plan cost: "))
+    {
+        *decision = cost_decision;
+    } else {
+        trace.decisions.push(cost_decision);
+    }
+    let cost_event = RuleEvent::selected("physical plan cost", cost_detail);
+    if let Some(event) = trace.rule_events.iter_mut().find(|event| {
+        event.rule() == "physical plan cost" && event.outcome() == RuleOutcome::Selected
+    }) {
+        *event = cost_event;
+    } else {
+        trace.rule_events.push(cost_event);
+    }
+
+    trace.query_digest = selected.query_digest;
+    trace.selected_plan = selected.explain;
+    trace.selected_plan_fingerprint = selected.fingerprint;
+    trace.selected_plan_cost = selected_cost;
+    trace.selected_plan_cost_breakdown = selected_cost_breakdown;
+    trace.selected_plan_properties = selected.properties;
+    trace.selected_plan_cardinality_estimates = selected.cardinality_estimates;
+    trace.selected_plan_operator_counts = selected.operator_counts;
+    trace.selected_plan_class_counts = selected.class_counts;
 }
 
 pub(super) fn record_logical_rewrite(

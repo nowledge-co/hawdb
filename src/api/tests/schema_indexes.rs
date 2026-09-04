@@ -2177,6 +2177,17 @@ fn property_histograms_are_bounded_deterministic_samples() {
         .unwrap();
     assert!(*sampled);
 
+    let explain = db
+        .explain_query("MATCH (m:Memory) WHERE m.score < 10 RETURN m.score AS score")
+        .unwrap();
+    let scan_estimate = explain
+        .trace
+        .selected_plan_cardinality_estimates
+        .iter()
+        .find(|estimate| estimate.operator == skein_plan::PhysicalPlanKind::NodeProjectionScanExec)
+        .unwrap();
+    assert_eq!(scan_estimate.estimated_rows, 13);
+
     db.query("CREATE (:Memory {exact_score: 1})").unwrap();
     db.query("CREATE (:Memory {exact_score: 2})").unwrap();
     let statistics = db.statistics();

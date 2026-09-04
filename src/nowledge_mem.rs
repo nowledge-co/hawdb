@@ -4690,7 +4690,7 @@ impl NowledgeMemGraph {
     ) -> Result<NowledgeMemQueryOutput> {
         self.check_runtime_context(task_context)?;
         let (permit, is_mutation) = self.admit_materialized_query(cypher, parameters)?;
-        let execution_task_context = permit.execution_context(task_context);
+        let execution_task_context = permit.bind_task_context(task_context.clone());
         let started = Instant::now();
         let result = self.db.query_with_params_trace_and_external_with_context(
             cypher,
@@ -4889,7 +4889,7 @@ impl NowledgeMemGraph {
         self.check_runtime_context(task_context)?;
         let max_payload_bytes = self.admitted_streaming_result_bytes(options)?;
         let permit = self.admit_streaming_query(cypher, parameters, max_payload_bytes)?;
-        let execution_task_context = permit.execution_context(task_context);
+        let execution_task_context = permit.bind_task_context(task_context.clone());
         let result = self
             .db
             .begin_read_transaction()
@@ -5962,7 +5962,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         statements: &[NowledgeGraphStatement],
     ) -> Result<crate::NowledgeGraphTransactionOutput> {
         let permit = self.admit_transaction(statements)?;
-        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         let _permit = permit;
         let mut store = self.write_store()?;
         let db = store.graph_mut().database_mut();
@@ -5990,7 +5990,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         operation: impl FnOnce(&mut crate::DatabaseTransaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let permit = self.admit_typed_transaction()?;
-        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         let _permit = permit;
         let mut store = self.write_store()?;
         let mut transaction = store
@@ -6017,7 +6017,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         operation: impl FnOnce(&mut crate::DatabaseReadTransaction) -> Result<T>,
     ) -> Result<T> {
         let permit = self.admit_typed_read(max_estimated_payload_bytes)?;
-        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         let _permit = permit;
         let store = self.read_store()?;
         let mut transaction = store
@@ -6046,7 +6046,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             ));
         }
         let permit = self.admit_typed_read(budget.max_payload_bytes)?;
-        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         let _permit = permit;
         let store = self.read_store()?;
         let configured_rows = store
@@ -6361,7 +6361,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             &statement.parameters,
             limits.max_output_payload_bytes,
         )?;
-        let task_context = permit.execution_context(&RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         store
             .graph
             .database()
