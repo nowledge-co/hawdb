@@ -19078,6 +19078,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 .label_name(*label_id)
                 .map(|label| ((label.to_string(), property.clone()), values.clone()))
         });
+    let sampled_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_property_histograms.iter())
+        .filter_map(|((label_id, property), sampled)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *sampled))
+        });
     let rel_property_distinct_counts = advanced_statistics
         .into_iter()
         .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
@@ -19093,6 +19101,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
             catalog
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
+        });
+    let sampled_rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), sampled)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), *sampled))
         });
     let property_index_statistics = catalog.property_indexes().filter_map(|index| {
         if index.kind == IndexKind::FullText {
@@ -19147,7 +19163,9 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
         .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
         .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
-        .with_relationship_property_histograms(rel_property_histograms),
+        .with_relationship_property_histograms(rel_property_histograms)
+        .with_sampled_property_histograms(sampled_property_histograms)
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
     )
 }
 

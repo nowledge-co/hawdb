@@ -51,6 +51,8 @@ pub struct OptimizerCatalog {
     pub(super) rel_property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
+    pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
+    pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -80,6 +82,8 @@ pub struct OptimizerCatalogStatistics {
     pub(super) rel_property_distinct_counts: BTreeMap<(String, String), u64>,
     pub(super) property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
+    pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
+    pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
 }
 
 impl OptimizerCatalog {
@@ -106,6 +110,8 @@ impl OptimizerCatalog {
             rel_property_distinct_counts: statistics.rel_property_distinct_counts,
             property_histograms: statistics.property_histograms,
             rel_property_histograms: statistics.rel_property_histograms,
+            sampled_property_histograms: statistics.sampled_property_histograms,
+            sampled_rel_property_histograms: statistics.sampled_rel_property_histograms,
         }
     }
 
@@ -493,9 +499,10 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
+        let key = (rel_type.to_string(), property.to_string());
         let Some(histogram) = self
             .rel_property_histograms
-            .get(&(rel_type.to_string(), property.to_string()))
+            .get(&key)
             .filter(|values| !values.is_empty())
         else {
             return input_rows.div_ceil(2).max(1);
@@ -504,11 +511,15 @@ impl OptimizerCatalog {
             .iter()
             .filter(|candidate| compare_histogram_value(candidate, op, value))
             .count() as u64;
-        let distinct_count = histogram.len() as u64;
-        input_rows
-            .saturating_mul(matching_values)
-            .div_ceil(distinct_count)
-            .max(1)
+        estimate_histogram_rows(
+            input_rows,
+            matching_values,
+            histogram.len() as u64,
+            self.sampled_rel_property_histograms
+                .get(&key)
+                .copied()
+                .unwrap_or(false),
+        )
     }
 
     pub(super) fn estimate_range_rows(
@@ -519,9 +530,10 @@ impl OptimizerCatalog {
         value: &Value,
     ) -> u64 {
         let label_count = self.label_count(label);
+        let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
             .property_histograms
-            .get(&(label.to_string(), property.to_string()))
+            .get(&key)
             .filter(|values| !values.is_empty())
         else {
             return label_count.div_ceil(2).max(1);
@@ -530,11 +542,15 @@ impl OptimizerCatalog {
             .iter()
             .filter(|candidate| compare_histogram_value(candidate, op, value))
             .count() as u64;
-        let distinct_count = histogram.len() as u64;
-        label_count
-            .saturating_mul(matching_values)
-            .div_ceil(distinct_count)
-            .max(1)
+        estimate_histogram_rows(
+            label_count,
+            matching_values,
+            histogram.len() as u64,
+            self.sampled_property_histograms
+                .get(&key)
+                .copied()
+                .unwrap_or(false),
+        )
     }
 
     pub(super) fn estimate_property_eq_rows(
@@ -623,9 +639,10 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
+        let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
             .property_histograms
-            .get(&(label.to_string(), property.to_string()))
+            .get(&key)
             .filter(|values| !values.is_empty())
         else {
             return input_rows.div_ceil(2).max(1);
@@ -634,11 +651,15 @@ impl OptimizerCatalog {
             .iter()
             .filter(|candidate| compare_histogram_value(candidate, op, value))
             .count() as u64;
-        let distinct_count = histogram.len() as u64;
-        input_rows
-            .saturating_mul(matching_values)
-            .div_ceil(distinct_count)
-            .max(1)
+        estimate_histogram_rows(
+            input_rows,
+            matching_values,
+            histogram.len() as u64,
+            self.sampled_property_histograms
+                .get(&key)
+                .copied()
+                .unwrap_or(false),
+        )
     }
 
     pub(super) fn estimate_range_bounds_rows(
@@ -649,9 +670,10 @@ impl OptimizerCatalog {
         upper: Option<&ValueRangeBound>,
     ) -> u64 {
         let label_count = self.label_count(label);
+        let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
             .property_histograms
-            .get(&(label.to_string(), property.to_string()))
+            .get(&key)
             .filter(|values| !values.is_empty())
         else {
             return label_count.div_ceil(2).max(1);
@@ -660,11 +682,15 @@ impl OptimizerCatalog {
             .iter()
             .filter(|candidate| range_bound_matches(candidate, lower, upper))
             .count() as u64;
-        let distinct_count = histogram.len() as u64;
-        label_count
-            .saturating_mul(matching_values)
-            .div_ceil(distinct_count)
-            .max(1)
+        estimate_histogram_rows(
+            label_count,
+            matching_values,
+            histogram.len() as u64,
+            self.sampled_property_histograms
+                .get(&key)
+                .copied()
+                .unwrap_or(false),
+        )
     }
 
     pub(super) fn estimate_expand_rows(
@@ -740,6 +766,29 @@ impl OptimizerCatalog {
     }
 }
 
+fn estimate_histogram_rows(
+    input_rows: u64,
+    matching_values: u64,
+    histogram_values: u64,
+    sampled: bool,
+) -> u64 {
+    // A sampled CDF is finite evidence rather than an exhaustive rank table. Add-one
+    // smoothing shrinks it toward the existing 50% fallback by a weight determined by
+    // the actual sample size, while leaving complete histograms exact.
+    let (matching_values, histogram_values) = if sampled {
+        (
+            matching_values.saturating_add(1),
+            histogram_values.saturating_add(2),
+        )
+    } else {
+        (matching_values, histogram_values)
+    };
+    input_rows
+        .saturating_mul(matching_values)
+        .div_ceil(histogram_values.max(1))
+        .max(1)
+}
+
 impl OptimizerCatalogIndexes {
     pub fn new(
         equality_property_indexes: impl IntoIterator<Item = (String, String)>,
@@ -783,6 +832,8 @@ impl OptimizerCatalogStatistics {
             rel_property_distinct_counts: BTreeMap::new(),
             property_histograms: property_histograms.into_iter().collect(),
             rel_property_histograms: BTreeMap::new(),
+            sampled_property_histograms: BTreeMap::new(),
+            sampled_rel_property_histograms: BTreeMap::new(),
         }
     }
 
@@ -863,6 +914,23 @@ impl OptimizerCatalogStatistics {
         self.rel_property_histograms = rel_property_histograms.into_iter().collect();
         self
     }
+
+    pub fn with_sampled_property_histograms(
+        mut self,
+        sampled_property_histograms: impl IntoIterator<Item = ((String, String), bool)>,
+    ) -> Self {
+        self.sampled_property_histograms = sampled_property_histograms.into_iter().collect();
+        self
+    }
+
+    pub fn with_sampled_relationship_property_histograms(
+        mut self,
+        sampled_rel_property_histograms: impl IntoIterator<Item = ((String, String), bool)>,
+    ) -> Self {
+        self.sampled_rel_property_histograms =
+            sampled_rel_property_histograms.into_iter().collect();
+        self
+    }
 }
 
 #[cfg(test)]
@@ -895,6 +963,79 @@ mod tests {
                 Some(&(Value::Int(20), false)),
             ),
             100
+        );
+    }
+
+    #[test]
+    fn sampled_histograms_shrink_range_selectivity_toward_default() {
+        let property_key = ("Memory".to_string(), "score".to_string());
+        let rel_property_key = ("MENTIONS".to_string(), "score".to_string());
+        let histogram = (0..100).map(Value::Int).collect::<Vec<_>>();
+        let statistics = OptimizerCatalogStatistics::new(
+            [("Memory".to_string(), 1_000)],
+            [],
+            [],
+            [],
+            [],
+            [(property_key.clone(), 100)],
+            [(property_key.clone(), histogram.clone())],
+        )
+        .with_relationship_property_histograms([(rel_property_key.clone(), histogram)]);
+        let exhaustive =
+            OptimizerCatalog::new(OptimizerCatalogIndexes::default(), statistics.clone());
+        let sampled = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::default(),
+            statistics
+                .with_sampled_property_histograms([(property_key, true)])
+                .with_sampled_relationship_property_histograms([(rel_property_key, true)]),
+        );
+
+        assert_eq!(
+            exhaustive.estimate_range_rows("Memory", "score", ComparisonOp::Lt, &Value::Int(10)),
+            100
+        );
+        assert_eq!(
+            sampled.estimate_range_rows("Memory", "score", ComparisonOp::Lt, &Value::Int(10)),
+            108
+        );
+        assert_eq!(
+            sampled.estimate_property_range_rows(
+                "Memory",
+                "score",
+                ComparisonOp::Lt,
+                &Value::Int(10),
+                1_000,
+            ),
+            108
+        );
+        assert_eq!(
+            sampled.estimate_range_bounds_rows(
+                "Memory",
+                "score",
+                None,
+                Some(&(Value::Int(10), false)),
+            ),
+            108
+        );
+        assert_eq!(
+            exhaustive.estimate_rel_property_range_rows(
+                "MENTIONS",
+                "score",
+                ComparisonOp::Lt,
+                &Value::Int(10),
+                1_000,
+            ),
+            100
+        );
+        assert_eq!(
+            sampled.estimate_rel_property_range_rows(
+                "MENTIONS",
+                "score",
+                ComparisonOp::Lt,
+                &Value::Int(10),
+                1_000,
+            ),
+            108
         );
     }
 
