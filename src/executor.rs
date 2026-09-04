@@ -109,6 +109,25 @@ const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
 pub(crate) const SOURCE_SEGMENT_SCAN_IO_DEPTH: usize = 2;
 const SOURCE_SEGMENT_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamDelivery {
+    /// Keep bounded rows query-owned until every output limit is validated.
+    Validated,
+    /// Deliver rows as produced and let the caller surface terminal failures.
+    Incremental,
+}
+
+impl StreamDelivery {
+    fn consumer_memory_mode(self, bounded: bool) -> ConsumerMemoryMode {
+        match (self, bounded) {
+            (Self::Validated, true) => ConsumerMemoryMode::DeferredUntilValidated,
+            (Self::Validated, false) | (Self::Incremental, _) => {
+                ConsumerMemoryMode::ReleasedAfterCall
+            }
+        }
+    }
+}
+
 pub(crate) fn enforced_query_memory_budget(
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
@@ -458,9 +477,9 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
 }
 
 /// Executes a read plan and transfers ownership of each output row to a
-/// bounded consumer. Consumer calls are provisional until this function
-/// returns `Ok`: callers that cannot surface a terminal error must buffer or
-/// otherwise roll back their response when a later row exceeds a budget.
+/// consumer. When either output limit is present, rows remain query-owned
+/// until execution validates the complete result against both limits. With
+/// both limits disabled, rows are transferred as they are produced.
 pub fn execute_with_row_consumer_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -519,12 +538,18 @@ pub fn execute_with_row_consumer_profile_and_external_and_memory(
     consumer: &mut dyn FnMut(Row) -> Result<()>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryStream> {
-    execute_profiled_consumer(
-        ExecutionRequest::new(plan, parameters, memory)
-            .with_output_limits(max_rows, max_payload_bytes),
-        ExecutionResources::new(catalog, store, external),
-        ConsumerMemoryMode::ReleasedAfterCall,
+    execute_with_row_consumer_profile_with_delivery(
+        plan,
+        catalog,
+        store,
+        parameters,
+        external,
+        max_rows,
+        max_payload_bytes,
         consumer,
+        None,
+        memory,
+        StreamDelivery::Validated,
     )
 }
 
@@ -567,12 +592,42 @@ pub fn execute_with_row_consumer_profile_and_external_and_context_and_memory(
     task_context: &RuntimeTaskContext,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryStream> {
+    execute_with_row_consumer_profile_with_delivery(
+        plan,
+        catalog,
+        store,
+        parameters,
+        external,
+        max_rows,
+        max_payload_bytes,
+        consumer,
+        Some(task_context),
+        memory,
+        StreamDelivery::Validated,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_with_row_consumer_profile_with_delivery(
+    plan: &PhysicalPlan,
+    catalog: &mut Catalog,
+    store: &mut GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    external: &mut dyn ExternalReadOperator,
+    max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
+    consumer: &mut dyn FnMut(Row) -> Result<()>,
+    task_context: Option<&RuntimeTaskContext>,
+    memory: &ExecutionMemoryConfig,
+    delivery: StreamDelivery,
+) -> Result<ProfiledQueryStream> {
+    let bounded = max_rows.is_some() || max_payload_bytes.is_some();
     execute_profiled_consumer(
         ExecutionRequest::new(plan, parameters, memory)
             .with_output_limits(max_rows, max_payload_bytes)
-            .with_task_context(task_context),
+            .with_optional_task_context(task_context),
         ExecutionResources::new(catalog, store, external),
-        ConsumerMemoryMode::ReleasedAfterCall,
+        delivery.consumer_memory_mode(bounded),
         consumer,
     )
 }

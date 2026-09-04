@@ -406,19 +406,27 @@ impl<'a> NumericFragment<'a> {
         let typed_batch_fits = typed_morsel_memory.is_some_and(|memory| {
             memory.output_reservation_bytes.get() <= context.memory.batch_payload_bytes.get()
         });
-        let pool = (!context.store.is_out_of_core())
-            .then(SharedExecutorPool::shared_default)
-            .transpose()
-            .ok()
-            .flatten();
-        let pool_parallelism = pool
-            .as_ref()
-            .map_or(1, SharedExecutorPool::worker_count)
-            .min(MAX_MORSEL_PARALLELISM);
         let admitted_parallelism = context
             .task_context
             .map(|task_context| task_context.admitted_parallelism().get())
             .unwrap_or(1);
+        let pool = if context.store.is_out_of_core() {
+            None
+        } else {
+            let pool = match context
+                .task_context
+                .and_then(RuntimeTaskContext::executor_thread_limit)
+            {
+                Some(worker_limit) => SharedExecutorPool::shared_bounded(worker_limit),
+                None => SharedExecutorPool::shared_default(),
+            }
+            .map_err(|error| SkeinError::Execution(error.to_string()))?;
+            Some(pool)
+        };
+        let pool_parallelism = pool
+            .as_ref()
+            .map_or(1, SharedExecutorPool::worker_count)
+            .min(MAX_MORSEL_PARALLELISM);
         let morsel_count = candidate_count.div_ceil(morsel_rows.get());
         let parallel_eligible = use_lending && typed_batch_fits && pool.is_some();
         let requested_parallelism = NonZeroUsize::new(if parallel_eligible {

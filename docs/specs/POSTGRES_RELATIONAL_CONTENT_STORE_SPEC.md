@@ -101,6 +101,14 @@ the provisional statement outcome and recomputes the same result at commit.
 Only the commit result is confirmed. Result row, payload, and affected-row
 limits fail the statement before its transaction workspace is advanced.
 
+A non-aggregate `COALESCE` projection accepts bound columns, parameters, and
+literals in scans and existing bounded joins. It evaluates arguments from left
+to right and returns the first non-null value. Parameter values and the common
+scalar type are bound before scanning; every non-null argument must have the
+same scalar type. Empty argument lists, wildcard arguments, incompatible types,
+and unsupported nested functions fail during binding. Projection rows and
+payloads remain subject to the ordinary result budgets.
+
 The same v1 typed outcome reports the target-row count for every bounded
 `UPDATE` and `DELETE`, including zero-row matches. These count-only outcomes
 have zero `conflict_rows` and no returned rows. A `DELETE` count excludes rows

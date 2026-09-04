@@ -509,6 +509,15 @@ enum RelationalPhysicalJoinNode {
     },
 }
 
+struct RelationalPhysicalJoinSpec {
+    operator_id: RelationalOperatorId,
+    kind: SqlJoinKind,
+    algorithm: RelationalPhysicalJoinAlgorithm,
+    equi_join_keys: Option<RelationalEquiJoinKeys>,
+    selectivity: RelationalJoinSelectivity,
+    predicates: Vec<SqlPredicate>,
+}
+
 impl RelationalPhysicalJoinNode {
     fn relation(
         binding: BindingId,
@@ -566,12 +575,14 @@ impl RelationalPhysicalJoinNode {
             Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
         };
         Self::join_with_algorithm(
-            operator_id,
-            kind,
-            algorithm,
-            None,
-            RelationalJoinSelectivity::Unknown,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind,
+                algorithm,
+                equi_join_keys: None,
+                selectivity: RelationalJoinSelectivity::Unknown,
+                predicates,
+            },
             left,
             right,
         )
@@ -586,12 +597,14 @@ impl RelationalPhysicalJoinNode {
         right: Self,
     ) -> Result<Self> {
         Self::join_with_algorithm(
-            operator_id,
-            SqlJoinKind::Inner,
-            RelationalPhysicalJoinAlgorithm::Merge,
-            Some(equi_join_keys),
-            selectivity,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind: SqlJoinKind::Inner,
+                algorithm: RelationalPhysicalJoinAlgorithm::Merge,
+                equi_join_keys: Some(equi_join_keys),
+                selectivity,
+                predicates,
+            },
             left,
             right,
         )
@@ -607,27 +620,32 @@ impl RelationalPhysicalJoinNode {
         right: Self,
     ) -> Result<Self> {
         Self::join_with_algorithm(
-            operator_id,
-            kind,
-            RelationalPhysicalJoinAlgorithm::Hash,
-            Some(equi_join_keys),
-            selectivity,
-            predicates,
+            RelationalPhysicalJoinSpec {
+                operator_id,
+                kind,
+                algorithm: RelationalPhysicalJoinAlgorithm::Hash,
+                equi_join_keys: Some(equi_join_keys),
+                selectivity,
+                predicates,
+            },
             left,
             right,
         )
     }
 
     fn join_with_algorithm(
-        operator_id: RelationalOperatorId,
-        kind: SqlJoinKind,
-        algorithm: RelationalPhysicalJoinAlgorithm,
-        equi_join_keys: Option<RelationalEquiJoinKeys>,
-        selectivity: RelationalJoinSelectivity,
-        predicates: Vec<SqlPredicate>,
+        spec: RelationalPhysicalJoinSpec,
         left: Self,
         right: Self,
     ) -> Result<Self> {
+        let RelationalPhysicalJoinSpec {
+            operator_id,
+            kind,
+            algorithm,
+            equi_join_keys,
+            selectivity,
+            predicates,
+        } = spec;
         let output_schema =
             RelationalPhysicalOutputSchema::join(left.output_schema(), right.output_schema())?;
         Ok(Self::Join {
@@ -2033,6 +2051,7 @@ fn prepare_relational_select(
                 )));
             }
         }
+        validate_non_aggregate_coalesce_projections(&select, parameters, state)?;
         for item in &select.order_by {
             resolve_relational_order_target(&select, item)?;
         }
@@ -2590,9 +2609,9 @@ fn format_relational_explain(
         operator_info: format!("implementation=fused, columns={}", select.projection.len()),
         report_operator: None,
     });
-    if select.selection.is_some()
+    if let Some(selection) = &select.selection
         && !predicate_is_covered_by_access(
-            select.selection.as_ref(),
+            Some(selection),
             &output.access_path,
             &select.order_by,
             &select.from.name,
@@ -2606,7 +2625,7 @@ fn format_relational_explain(
             access_object: String::new(),
             operator_info: format!(
                 "implementation=fused, residual_predicate={}",
-                explain_predicate(select.selection.as_ref().expect("selection is present"))
+                explain_predicate(selection)
             ),
             report_operator: None,
         });
@@ -5104,10 +5123,7 @@ fn spill_hash_join_build(
 }
 
 fn visit_hash_join_candidate<'a>(
-    operator_id: RelationalOperatorId,
-    predicates: &[SqlPredicate],
-    output_schema: &RelationalPhysicalOutputSchema,
-    parameters: &[Value],
+    context: &HashJoinCandidateContext<'_>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
     left_row: &BoundRow<'a>,
     right_row: &BoundRow<'a>,
@@ -5117,15 +5133,24 @@ fn visit_hash_join_candidate<'a>(
     pipeline.borrow_mut().account_candidate_work()?;
     let mut combined = left_row.clone();
     combined.bindings.extend(right_row.bindings.clone());
-    for predicate in predicates {
-        if predicate_truth(predicate, &combined, parameters)? != Some(true) {
+    for predicate in context.predicates {
+        if predicate_truth(predicate, &combined, context.parameters)? != Some(true) {
             return Ok(true);
         }
     }
     *matched = true;
-    output_schema.ensure_matches(&combined)?;
-    pipeline.borrow_mut().account_operator_row(operator_id)?;
+    context.output_schema.ensure_matches(&combined)?;
+    pipeline
+        .borrow_mut()
+        .account_operator_row(context.operator_id)?;
     visit(combined)
+}
+
+struct HashJoinCandidateContext<'a> {
+    operator_id: RelationalOperatorId,
+    predicates: &'a [SqlPredicate],
+    output_schema: &'a RelationalPhysicalOutputSchema,
+    parameters: &'a [Value],
 }
 
 fn visit_hash_join_unmatched<'a>(
@@ -5304,6 +5329,12 @@ fn visit_hash_join<'a>(
     let null_right = (kind == SqlJoinKind::Left)
         .then(|| null_extended_tree_row(right, state))
         .transpose()?;
+    let candidate_context = HashJoinCandidateContext {
+        operator_id,
+        predicates,
+        output_schema,
+        parameters,
+    };
     visit_prepared_physical_join_plan_node(
         left,
         None,
@@ -5327,10 +5358,7 @@ fn visit_hash_join<'a>(
                         row_runtime,
                         |right_row| {
                             visit_hash_join_candidate(
-                                operator_id,
-                                predicates,
-                                output_schema,
-                                parameters,
+                                &candidate_context,
                                 pipeline,
                                 &left_row,
                                 right_row,
@@ -5384,6 +5412,12 @@ fn visit_grace_hash_join<'a>(
     let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
         SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
+    let candidate_context = HashJoinCandidateContext {
+        operator_id,
+        predicates,
+        output_schema,
+        parameters,
+    };
     let null_right = (kind == SqlJoinKind::Left)
         .then(|| null_extended_tree_row(right, state))
         .transpose()?;
@@ -5606,10 +5640,7 @@ fn visit_grace_hash_join<'a>(
                                                 return Ok(true);
                                             }
                                             visit_hash_join_candidate(
-                                                operator_id,
-                                                predicates,
-                                                output_schema,
-                                                parameters,
+                                                &candidate_context,
                                                 pipeline,
                                                 left_row,
                                                 right_row,
@@ -5632,10 +5663,7 @@ fn visit_grace_hash_join<'a>(
                                     row_runtime,
                                     |right_row| {
                                         visit_hash_join_candidate(
-                                            operator_id,
-                                            predicates,
-                                            output_schema,
-                                            parameters,
+                                            &candidate_context,
                                             pipeline,
                                             left_row,
                                             right_row,
@@ -6229,7 +6257,8 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.index_runtime,
             self.row_runtime,
             &mut |row| {
-                let mut projected = project_bound_row(&row, &self.select.projection)?;
+                let mut projected =
+                    project_bound_row(&row, &self.select.projection, self.parameters)?;
                 if self.add_order_keys {
                     add_relational_order_keys(self.select, &row, &mut projected)?;
                 }
@@ -6543,6 +6572,7 @@ fn execute_blocking_projection<'a>(
                 &record.into_locator(),
                 &locator_layout,
                 select,
+                parameters,
                 row_runtime,
             )?;
             push_relational_output(row, &mut output, &mut payload_bytes, limits)?;
@@ -6796,10 +6826,11 @@ fn project_typed_locator(
     locator: &RelationalRowSetLocator,
     locator_layout: &RelationalLocatorLayout<'_>,
     select: &SelectStatement,
+    parameters: &[Value],
     row_runtime: &RelationalRowRuntime<'_>,
 ) -> Result<Row> {
     with_typed_locator_bound_row(locator, locator_layout, row_runtime, |bound| {
-        project_bound_row(bound, &select.projection)
+        project_bound_row(bound, &select.projection, parameters)
     })
 }
 
@@ -6932,7 +6963,7 @@ fn execute_ordered_index_projection<'a>(
                     row: Some(row),
                 }],
             };
-            let projected = project_bound_row(&bound, &select.projection)?;
+            let projected = project_bound_row(&bound, &select.projection, parameters)?;
             payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
             if payload_bytes > limits.max_output_payload_bytes {
                 return Err(SkeinError::Execution(format!(
@@ -7006,6 +7037,7 @@ fn execute_streaming_projection<'a>(
     if tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
         && joins.is_empty()
         && matches!(base_access, RelationalBaseAccess::FullScan)
+        && !projection_uses_non_aggregate_coalesce(&select.projection)
     {
         return execute_borrowed_streaming_full_scan(
             select,
@@ -7055,7 +7087,7 @@ fn execute_streaming_projection<'a>(
                         limits.max_output_rows
                     )));
                 }
-                let projected = project_bound_row(&row, &select.projection)?;
+                let projected = project_bound_row(&row, &select.projection, parameters)?;
                 payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
                 if payload_bytes > limits.max_output_payload_bytes {
                     return Err(SkeinError::Execution(format!(
@@ -7773,6 +7805,136 @@ fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
         }
         SelectProjection::Wildcard | SelectProjection::Column { .. } => false,
     }
+}
+
+fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
+    projection.iter().any(|projection| {
+        matches!(
+            projection,
+            SelectProjection::Expression {
+                expression: SqlExpression::Function { name, .. },
+                ..
+            } if name == "coalesce" && !projection_contains_aggregate(projection)
+        )
+    })
+}
+
+fn validate_non_aggregate_coalesce_projections(
+    select: &SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<()> {
+    for projection in &select.projection {
+        let SelectProjection::Expression { expression, .. } = projection else {
+            continue;
+        };
+        let SqlExpression::Function { name, .. } = expression else {
+            continue;
+        };
+        if name == "coalesce" && !projection_contains_aggregate(projection) {
+            infer_coalesce_scalar_type(expression, select, parameters, state)?;
+        }
+    }
+    Ok(())
+}
+
+fn infer_coalesce_scalar_type(
+    expression: &SqlExpression,
+    select: &SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<Option<RelationalScalarType>> {
+    match expression {
+        SqlExpression::Column(column) => {
+            resolve_projection_column_type(select, state, column).map(Some)
+        }
+        SqlExpression::Value(value) => {
+            Ok(value_to_relational(bind_sql_value(value, parameters)?)?.scalar_type())
+        }
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct,
+            filter,
+        } if name == "coalesce" => {
+            if *distinct {
+                return Err(SkeinError::Semantic(
+                    "COALESCE does not accept DISTINCT".to_string(),
+                ));
+            }
+            if filter.is_some() {
+                return Err(SkeinError::Semantic(
+                    "COALESCE does not accept FILTER".to_string(),
+                ));
+            }
+            if arguments.is_empty() {
+                return Err(SkeinError::Semantic(
+                    "COALESCE requires at least one argument".to_string(),
+                ));
+            }
+            let mut scalar_type = None;
+            for argument in arguments {
+                let SqlFunctionArgument::Expression(expression) = argument else {
+                    return Err(SkeinError::Semantic(
+                        "COALESCE does not accept wildcard".to_string(),
+                    ));
+                };
+                let candidate = infer_coalesce_scalar_type(expression, select, parameters, state)?;
+                if let Some(candidate) = candidate {
+                    if scalar_type.is_some_and(|scalar_type| scalar_type != candidate) {
+                        return Err(SkeinError::Semantic(
+                            "COALESCE arguments have incompatible scalar types".to_string(),
+                        ));
+                    }
+                    scalar_type = Some(candidate);
+                }
+            }
+            Ok(scalar_type)
+        }
+        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+            "unsupported COALESCE argument function {name}"
+        ))),
+    }
+}
+
+fn resolve_projection_column_type(
+    select: &SelectStatement,
+    state: &RelationalState,
+    column: &SqlColumnRef,
+) -> Result<RelationalScalarType> {
+    let base_qualifier = select.from_alias.as_deref().unwrap_or(&select.from.name);
+    let base = std::iter::once((select.from.name.as_str(), base_qualifier));
+    let joins = select.joins.iter().map(|join| {
+        (
+            join.table.name.as_str(),
+            join.alias.as_deref().unwrap_or(&join.table.name),
+        )
+    });
+    let mut matches = base.chain(joins).filter_map(|(table, qualifier)| {
+        if column
+            .qualifier
+            .as_deref()
+            .is_some_and(|candidate| candidate != table && candidate != qualifier)
+        {
+            return None;
+        }
+        let schema = state
+            .table_schema(table)
+            .expect("projection relation was validated before expression binding");
+        schema
+            .column_position(&column.name)
+            .map(|position| schema.columns[position].scalar_type)
+    });
+    let first = matches.next().ok_or_else(|| {
+        SkeinError::Semantic(format!("column {} is unknown or ambiguous", column.name))
+    })?;
+    if matches.next().is_some() {
+        return Err(SkeinError::Semantic(format!(
+            "column {} is unknown or ambiguous",
+            column.name
+        )));
+    }
+    Ok(first)
 }
 
 #[derive(Clone)]
@@ -8498,7 +8660,11 @@ fn resolve_column_with_type<'a>(
     ))
 }
 
-fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Result<Row> {
+fn project_bound_row(
+    row: &BoundRow<'_>,
+    projection: &[SelectProjection],
+    parameters: &[Value],
+) -> Result<Row> {
     let mut output = Row::new();
     for item in projection {
         match item {
@@ -8522,7 +8688,9 @@ fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Res
             SelectProjection::Expression { expression, alias } => insert_output(
                 &mut output,
                 alias.clone().unwrap_or_else(|| expression_name(expression)),
-                relational_to_value(&evaluate_projection_expression(expression, row)?)?,
+                relational_to_value(&evaluate_projection_expression(
+                    expression, row, parameters,
+                )?)?,
             )?,
         }
     }
@@ -8532,6 +8700,7 @@ fn project_bound_row(row: &BoundRow<'_>, projection: &[SelectProjection]) -> Res
 fn evaluate_projection_expression(
     expression: &SqlExpression,
     row: &BoundRow<'_>,
+    parameters: &[Value],
 ) -> Result<RelationalValue> {
     match expression {
         SqlExpression::Column(column) => Ok(resolve_column(row, column)?.clone()),
@@ -8547,10 +8716,49 @@ fn evaluate_projection_expression(
         } if name == "uuidv7" && arguments.is_empty() => {
             Ok(RelationalValue::Uuid(skein_core::generate_uuidv7()?))
         }
+        SqlExpression::Function {
+            name,
+            arguments,
+            distinct: false,
+            filter: None,
+        } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters),
         SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
             "unsupported relational projection function {name}"
         ))),
     }
+}
+
+fn evaluate_coalesce(
+    arguments: &[SqlFunctionArgument],
+    row: &BoundRow<'_>,
+    parameters: &[Value],
+) -> Result<RelationalValue> {
+    for argument in arguments {
+        let SqlFunctionArgument::Expression(expression) = argument else {
+            return Err(SkeinError::Semantic(
+                "COALESCE does not accept wildcard".to_string(),
+            ));
+        };
+        let value = match expression {
+            SqlExpression::Column(column) => resolve_column(row, column)?.clone(),
+            SqlExpression::Value(value) => value_to_relational(bind_sql_value(value, parameters)?)?,
+            SqlExpression::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters)?,
+            SqlExpression::Function { name, .. } => {
+                return Err(SkeinError::Semantic(format!(
+                    "unsupported COALESCE argument function {name}"
+                )))
+            }
+        };
+        if !matches!(value, RelationalValue::Null) {
+            return Ok(value);
+        }
+    }
+    Ok(RelationalValue::Null)
 }
 
 fn resolve_binding<'a>(

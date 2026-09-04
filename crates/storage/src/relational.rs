@@ -4484,18 +4484,32 @@ struct CascadeDelete {
     row: RelationalRow,
 }
 
-fn apply_delete_cascades(
-    state: &mut RelationalState,
-    deleted_rows: &mut VecDeque<CascadeDelete>,
+struct DeleteCascadeContext<'a> {
     limits: RelationalMutationLimits,
     admitted_rows: usize,
     admitted_payload_bytes: usize,
     unbounded_delete_rows: usize,
     unbounded_delete_payload_bytes: usize,
-    changed_keys: &mut BTreeMap<String, BTreeSet<RelationalKey>>,
-    touched: &mut BTreeSet<String>,
-    mut replay_access_tracker: Option<&mut RelationalReplayAccessTracker>,
+    changed_keys: &'a mut BTreeMap<String, BTreeSet<RelationalKey>>,
+    touched: &'a mut BTreeSet<String>,
+    replay_access_tracker: Option<&'a mut RelationalReplayAccessTracker>,
+}
+
+fn apply_delete_cascades(
+    state: &mut RelationalState,
+    deleted_rows: &mut VecDeque<CascadeDelete>,
+    context: DeleteCascadeContext<'_>,
 ) -> Result<(), RelationalError> {
+    let DeleteCascadeContext {
+        limits,
+        admitted_rows,
+        admitted_payload_bytes,
+        unbounded_delete_rows,
+        unbounded_delete_payload_bytes,
+        changed_keys,
+        touched,
+        mut replay_access_tracker,
+    } = context;
     let mut cascade_rows = 0usize;
     let mut cascade_payload_bytes = 0usize;
     while let Some(CascadeDelete { table, row }) = deleted_rows.pop_front() {
@@ -4992,14 +5006,16 @@ fn apply_transaction_inner(
     apply_delete_cascades(
         &mut next,
         &mut deleted_rows,
-        limits,
-        admitted_rows,
-        admitted_payload_bytes,
-        unbounded_delete_rows,
-        unbounded_delete_payload_bytes,
-        &mut changed_keys,
-        &mut touched,
-        replay_access_tracker.as_mut(),
+        DeleteCascadeContext {
+            limits,
+            admitted_rows,
+            admitted_payload_bytes,
+            unbounded_delete_rows,
+            unbounded_delete_payload_bytes,
+            changed_keys: &mut changed_keys,
+            touched: &mut touched,
+            replay_access_tracker: replay_access_tracker.as_mut(),
+        },
     )?;
     overflow::prune_unreachable_segments(&mut next);
     if index_mode == TransactionIndexMode::Materialized {

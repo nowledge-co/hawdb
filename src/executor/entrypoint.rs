@@ -79,6 +79,8 @@ pub(super) enum ConsumerMemoryMode {
     Retained,
     /// Each row can be uncharged as soon as the consumer call returns.
     ReleasedAfterCall,
+    /// Rows remain query-owned until all output budgets have been validated.
+    DeferredUntilValidated,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -100,6 +102,7 @@ struct QueryOutputAccumulator<'a> {
     max_payload_bytes: Option<usize>,
     result_account: QueryMemoryAccount,
     retained_result_lease: QueryMemoryLease,
+    deferred_rows: Vec<Row>,
     metrics: OutputMetrics,
 }
 
@@ -124,6 +127,7 @@ impl<'a> QueryOutputAccumulator<'a> {
             max_payload_bytes: limits.max_payload_bytes,
             result_account,
             retained_result_lease,
+            deferred_rows: Vec::new(),
             metrics: OutputMetrics::default(),
         })
     }
@@ -149,7 +153,7 @@ impl<'a> QueryOutputAccumulator<'a> {
         }
         let row_memory_bytes = map_memory_bytes(&row);
         let transient_result_lease = match self.memory_mode {
-            ConsumerMemoryMode::Retained => {
+            ConsumerMemoryMode::Retained | ConsumerMemoryMode::DeferredUntilValidated => {
                 self.retained_result_lease.grow(row_memory_bytes)?;
                 None
             }
@@ -158,7 +162,12 @@ impl<'a> QueryOutputAccumulator<'a> {
             }
         };
 
-        (self.consumer)(row)?;
+        match self.memory_mode {
+            ConsumerMemoryMode::Retained | ConsumerMemoryMode::ReleasedAfterCall => {
+                (self.consumer)(row)?;
+            }
+            ConsumerMemoryMode::DeferredUntilValidated => self.deferred_rows.push(row),
+        }
         drop(transient_result_lease);
         self.metrics.rows = self.metrics.rows.saturating_add(1);
         self.metrics.payload_bytes = next_payload_bytes;
@@ -167,6 +176,19 @@ impl<'a> QueryOutputAccumulator<'a> {
 
     fn metrics(&self) -> OutputMetrics {
         self.metrics
+    }
+
+    fn finish_delivery(&mut self, task_context: Option<&RuntimeTaskContext>) -> Result<()> {
+        if !matches!(self.memory_mode, ConsumerMemoryMode::DeferredUntilValidated) {
+            return Ok(());
+        }
+        for row in self.deferred_rows.drain(..) {
+            runtime_checkpoint(task_context)?;
+            (self.consumer)(row)?;
+            runtime_checkpoint(task_context)?;
+        }
+        self.retained_result_lease.reset();
+        Ok(())
     }
 }
 
@@ -353,6 +375,7 @@ pub(super) fn execute_profiled_consumer(
         }
     }
 
+    output.finish_delivery(request.task_context)?;
     let profile = profile.finish(observer, &memory_ledger, output.metrics());
     Ok(ProfiledQueryStream {
         fully_streamed,
@@ -446,7 +469,7 @@ mod tests {
             request.output_limits,
             request.memory.query_memory_bytes,
             &ledger,
-            ConsumerMemoryMode::ReleasedAfterCall,
+            ConsumerMemoryMode::DeferredUntilValidated,
             &mut consumer,
         )
         .unwrap();
@@ -457,7 +480,74 @@ mod tests {
         assert!(error.to_string().contains("max_read_result_rows 1"));
         assert_eq!(output.metrics().rows, 1);
         drop(output);
-        assert_eq!(rows, 1);
+        assert_eq!(rows, 0);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn bounded_consumer_flushes_only_after_validation() {
+        let memory = ExecutionMemoryConfig::default();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let plan = PhysicalPlan::EmptyExec;
+        let parameters = BTreeMap::new();
+        let request =
+            ExecutionRequest::new(&plan, &parameters, &memory).with_output_limits(Some(2), None);
+        let mut rows = Vec::new();
+        let mut consumer = |row| {
+            rows.push(row);
+            Ok(())
+        };
+        let mut output = QueryOutputAccumulator::new(
+            request.output_limits,
+            request.memory.query_memory_bytes,
+            &ledger,
+            ConsumerMemoryMode::DeferredUntilValidated,
+            &mut consumer,
+        )
+        .unwrap();
+
+        output.emit(binding("first")).unwrap();
+        output.emit(binding("second")).unwrap();
+        assert!(ledger.snapshot().used_bytes > 0);
+        output.finish_delivery(None).unwrap();
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        drop(output);
+
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn payload_limit_discards_rows_deferred_across_calls() {
+        let memory = ExecutionMemoryConfig::default();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let plan = PhysicalPlan::EmptyExec;
+        let parameters = BTreeMap::new();
+        let first = binding("first");
+        let first_payload_bytes = map_payload_bytes(&first.values);
+        let request = ExecutionRequest::new(&plan, &parameters, &memory)
+            .with_output_limits(None, Some(first_payload_bytes));
+        let mut rows = 0usize;
+        let mut consumer = |_| {
+            rows = rows.saturating_add(1);
+            Ok(())
+        };
+        let mut output = QueryOutputAccumulator::new(
+            request.output_limits,
+            request.memory.query_memory_bytes,
+            &ledger,
+            ConsumerMemoryMode::DeferredUntilValidated,
+            &mut consumer,
+        )
+        .unwrap();
+
+        output.emit(first).unwrap();
+        let error = output.emit(binding("second")).unwrap_err();
+
+        assert!(error.to_string().contains(&format!(
+            "max_read_result_payload_bytes {first_payload_bytes}"
+        )));
+        drop(output);
+        assert_eq!(rows, 0);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 

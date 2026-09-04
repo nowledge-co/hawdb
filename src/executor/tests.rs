@@ -1615,15 +1615,20 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
     };
     let morsel_rows = 4 * 16;
     let morsel_count = 513usize.div_ceil(morsel_rows);
-    let expected_workers = skein_executor::SharedExecutorPool::shared_default()
-        .map(|pool| pool.worker_count())
-        .unwrap_or(1)
-        .min(MAX_MORSEL_PARALLELISM)
-        .min(morsel_count / 4)
-        .max(1);
-    let task_context = RuntimeTaskContext::default().with_admitted_parallelism(
-        NonZeroUsize::new(MAX_MORSEL_PARALLELISM).expect("default morsel parallelism is non-zero"),
-    );
+    let executor_thread_limit = NonZeroUsize::new(2).unwrap();
+    let expected_workers =
+        skein_executor::SharedExecutorPool::shared_bounded(executor_thread_limit)
+            .map(|pool| pool.worker_count())
+            .unwrap_or(1)
+            .min(MAX_MORSEL_PARALLELISM)
+            .min(morsel_count / 4)
+            .max(1);
+    let task_context = RuntimeTaskContext::default()
+        .with_admitted_parallelism(
+            NonZeroUsize::new(MAX_MORSEL_PARALLELISM)
+                .expect("default morsel parallelism is non-zero"),
+        )
+        .with_executor_thread_limit(executor_thread_limit);
     let mut external = NoExternalReadOperator;
     let columnar = execute_with_output_limits_profile_and_external_and_context_and_memory(
         &columnar_plan,

@@ -15,17 +15,12 @@ pub const DEFAULT_SEGMENT_ROWS: usize = 1_024;
 pub const DEFAULT_BUILD_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const BUILD_FIXED_WORKING_BYTES: usize = 1_024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum RaBitQBitWidth {
+    #[default]
     One = 1,
     Four = 4,
-}
-
-impl Default for RaBitQBitWidth {
-    fn default() -> Self {
-        Self::One
-    }
 }
 
 impl RaBitQBitWidth {

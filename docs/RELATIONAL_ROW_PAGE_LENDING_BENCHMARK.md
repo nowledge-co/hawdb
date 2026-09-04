@@ -33,12 +33,14 @@ match and either:
 - allocated bytes fall by at least 50%.
 
 The point-read safety net compares direct point lookup with the existing owned
-exact-range path over identical probes. It uses a paired median and admits at
-most a 5% relative regression, with a 100 microsecond total-run noise floor.
-Allocated bytes have the same 5% relative budget with a 4 KiB noise floor.
-Both paths must produce the same checksum. This is a gross-regression guard for
-the unchanged point path, not a claim that exact-range lookup is its historical
-latency baseline.
+exact-range path over identical probes. Optimized release evidence uses a
+paired median and admits at most a 5% relative latency regression, with a 100
+microsecond total-run noise floor. Allocated bytes have the same 5% relative
+budget with a 4 KiB noise floor. Debug smoke runs still report the latency
+comparison but do not use scheduler-sensitive wall-clock evidence as a hard
+gate; they continue to enforce the allocation budget. Both paths must produce
+the same checksum. This is a gross-regression guard for the unchanged point
+path, not a claim that exact-range lookup is its historical latency baseline.
 
 A separate fresh-cache point probe is a behavioral gate rather than a timing
 comparison. Its first lookup must report exactly one page-cache miss and one
@@ -48,9 +50,12 @@ of the evidence instead of relying on process-wide cache counters.
 
 Debug execution uses 4,096 rows and three samples so `cargo test --benches`
 remains bounded. Release evidence uses 32,768 rows, eleven alternating samples,
-and 2,048 point probes. The emitted JSON protocol is
-`skein-relational-row-page-lending-evidence-v2`; a rejected gate exits
-non-zero.
+and 2,048 point probes. The point evidence reports `latency_gate_required`,
+`latency_admitted`, and `allocation_admitted` so CI failures remain
+diagnosable. The emitted JSON protocol is
+`skein-relational-row-page-lending-evidence-v1`; a rejected gate exits
+non-zero. The Linux smoke wrapper prints rejected benchmark evidence to the
+test log.
 
 ## Recorded release evidence
 
