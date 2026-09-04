@@ -273,6 +273,10 @@ end-to-end result; a faster isolated kernel does not qualify a slower query
 pipeline.
 
 `SKEIN_EXECUTOR_BENCH_MODE=scheduler` isolates shared-pool scheduling.
+`SKEIN_EXECUTOR_BENCH_MODE=micro` isolates the `Int64` and `Float64` comparison
+kernels while still checking each columnar result against row evaluation. This
+mode is diagnostic evidence only; end-to-end conclusions still require the
+default full mode.
 `SKEIN_EXECUTOR_BENCH_MODE=morsel` exercises the complete streaming production
 fragment with `SKEIN_MORSEL_BENCH_WORKERS` set to 4, 8, or 16. An optional
 `SKEIN_MORSEL_BENCH_ROWS` selects one common dataset size, but the benchmark

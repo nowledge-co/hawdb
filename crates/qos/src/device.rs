@@ -133,16 +133,21 @@ fn detect_platform_device(path: &Path) -> StorageDeviceProfile {
     let Some(file_system) = apple_file_system_type(path) else {
         return StorageDeviceProfile::default();
     };
-    let media_kind = match file_system.as_str() {
+    StorageDeviceProfile {
+        media_kind: classify_apple_file_system(&file_system),
+        queue_depth_hint: None,
+        discovery_source: StorageDeviceDiscoverySource::AppleFileSystem,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+fn classify_apple_file_system(file_system: &str) -> StorageMediaKind {
+    match file_system {
+        "apfs" | "hfs" => StorageMediaKind::NonRotational,
         "tmpfs" => StorageMediaKind::Memory,
         "nfs" | "smbfs" | "webdav" | "afpfs" => StorageMediaKind::Network,
         "devfs" | "procfs" => StorageMediaKind::Virtual,
         _ => StorageMediaKind::Unknown,
-    };
-    StorageDeviceProfile {
-        media_kind,
-        queue_depth_hint: None,
-        discovery_source: StorageDeviceDiscoverySource::AppleFileSystem,
     }
 }
 
@@ -214,6 +219,34 @@ mod tests {
             StorageDeviceDiscoverySource::HostProvided
         );
         assert_eq!(profile.queue_depth_hint, NonZeroUsize::new(16));
+    }
+
+    #[test]
+    fn apple_file_system_classification_recognizes_local_storage() {
+        assert_eq!(
+            classify_apple_file_system("apfs"),
+            StorageMediaKind::NonRotational
+        );
+        assert_eq!(
+            classify_apple_file_system("hfs"),
+            StorageMediaKind::NonRotational
+        );
+        assert_eq!(
+            classify_apple_file_system("smbfs"),
+            StorageMediaKind::Network
+        );
+        assert_eq!(
+            classify_apple_file_system("tmpfs"),
+            StorageMediaKind::Memory
+        );
+        assert_eq!(
+            classify_apple_file_system("devfs"),
+            StorageMediaKind::Virtual
+        );
+        assert_eq!(
+            classify_apple_file_system("unknown"),
+            StorageMediaKind::Unknown
+        );
     }
 
     #[test]

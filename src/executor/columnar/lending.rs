@@ -272,6 +272,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::NumericPredicate;
     use super::*;
     use skein_storage::NodeId;
     use std::collections::{BTreeMap, BTreeSet};
@@ -300,7 +301,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: crate::schema::PropertyType::Int,
-            op: skein_plan::ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
             expected: skein_executor::columnar::NumericLiteral::Int(0),
             fused_operators: None,
         };
@@ -351,7 +352,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: crate::schema::PropertyType::Float,
-            op: skein_plan::ComparisonOp::Gt,
+            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gt),
             expected: skein_executor::columnar::NumericLiteral::Float(1.0),
             fused_operators: None,
         };
@@ -372,7 +373,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: crate::schema::PropertyType::Int,
-            op: skein_plan::ComparisonOp::Gte,
+            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
             expected: skein_executor::columnar::NumericLiteral::Int(2),
             fused_operators: None,
         };

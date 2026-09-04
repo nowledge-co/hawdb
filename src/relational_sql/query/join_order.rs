@@ -1,15 +1,15 @@
 use super::{
-    choose_base_access, choose_join_access, projection_access_planning,
-    PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
-    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalJoinAccess,
-    RelationalJoinAccessCandidate, RelationalJoinPlanningContext, RelationalOperatorId,
-    RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
-    RelationalQueryLimits, RelationalQueryReadModes,
+    choose_base_access, choose_join_access, prepare_syntax_access_plan, projection_access_planning,
+    projection_contains_aggregate, PreparedRelationalAccessPlan, PreparedRelationalJoinSelection,
+    RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalJoinPlanningContext,
+    RelationalOperatorId, RelationalPhysicalAccess, RelationalPhysicalJoinNode,
+    RelationalPhysicalJoinPlan, RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
-    RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
-    RelationalJoinPlanningStrategy,
+    resolve_relational_order_target, RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome,
+    RelationalJoinPlanningReason, RelationalJoinPlanningStrategy, RelationalOrderTarget,
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlJoin,
@@ -109,6 +109,23 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     };
+    if uses_relaxed_enumeration_gate(&select) && select.joins.len() == 1 {
+        let mut syntax_access_plan =
+            prepare_syntax_access_plan(&select, parameters, state, read_modes, limits)?;
+        syntax_access_plan.finalize_physical_join_plan(&select, state, read_modes.index)?;
+        if syntax_access_plan.uses_specialized_materialized_join() {
+            let outcome = RelationalJoinPlanningOutcome::not_eligible(
+                RelationalJoinPlanningReason::SpecializedJoinNotEnumerated,
+                syntax_order,
+                config,
+            );
+            return Ok(PlannedSelectStatement {
+                statement: select,
+                access_plan: Some(syntax_access_plan),
+                join_planning: outcome,
+            });
+        }
+    }
     let predicates = &bound_joins.predicates;
     let Some(graph_relations) = build_graph_relations(
         &select, parameters, state, read_modes, limits, &relations, predicates,
@@ -380,6 +397,17 @@ fn join_enumeration_eligibility(
         return Err(RelationalJoinPlanningReason::LockingSelect);
     }
     Ok(())
+}
+
+fn uses_relaxed_enumeration_gate(select: &SelectStatement) -> bool {
+    select
+        .projection
+        .iter()
+        .any(|projection| matches!(projection, SelectProjection::Wildcard))
+        || !(select.distinct
+            || !select.order_by.is_empty()
+            || !select.group_by.is_empty()
+            || select.projection.iter().any(projection_contains_aggregate))
 }
 
 fn select_relation_order(select: &SelectStatement) -> Vec<String> {
@@ -1247,8 +1275,20 @@ fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'
         && select
             .group_by
             .iter()
-            .chain(select.order_by.iter().map(|item| &item.column))
             .all(|column| resolve_column_binding(column, relations).is_some())
+        && select.order_by.iter().all(|item| {
+            resolve_relational_order_target(select, item).is_ok_and(|target| match target {
+                RelationalOrderTarget::InputColumn(column) => {
+                    resolve_column_binding(column, relations).is_some()
+                }
+                RelationalOrderTarget::ProjectionColumn { column, .. } => {
+                    resolve_column_binding(column, relations).is_some()
+                }
+                RelationalOrderTarget::ProjectionExpression { expression, .. } => {
+                    expression_columns_resolve(expression, relations)
+                }
+            })
+        })
 }
 
 fn expression_columns_resolve(expression: &SqlExpression, relations: &[BoundRelation<'_>]) -> bool {

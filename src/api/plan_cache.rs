@@ -71,6 +71,12 @@ pub(super) enum PlanCacheMode {
     Bypass(PlanCacheBypassReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanTraceMode {
+    Template,
+    Bound,
+}
+
 pub(super) struct PlanCacheContext<'a> {
     pub(super) catalog: &'a Catalog,
     pub(super) store: &'a GraphStore,
@@ -100,16 +106,16 @@ pub(super) struct CachedPlan {
 
 pub(super) type PlanCache = LfuCache<PlanCacheKey, CachedPlan>;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct PlanCacheKey {
-    cypher: String,
+    normalized_query: String,
     parameters: PlanParameterCacheKey,
     environment: OptimizerEnvironmentKey,
     max_optimizer_groups: Option<usize>,
     access_control: Option<AccessControlPlanCacheKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct AccessControlPlanCacheKey {
     policy_epoch: u64,
     visibility_property: String,
@@ -126,30 +132,13 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
     }
 }
 
-impl PlanCacheKey {
-    fn matches(
-        &self,
-        cypher: &str,
-        parameters: &BTreeMap<String, Value>,
-        environment: &OptimizerEnvironmentKey,
-        max_optimizer_groups: Option<usize>,
-        access_control: Option<&AccessControlPlanCacheKey>,
-    ) -> bool {
-        self.cypher == cypher
-            && &self.environment == environment
-            && self.max_optimizer_groups == max_optimizer_groups
-            && self.access_control.as_ref() == access_control
-            && self.parameters.matches(parameters)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
     statistics_generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct OptimizerSchemaKey {
     labels: Vec<String>,
     relationship_types: Vec<String>,
@@ -405,6 +394,7 @@ pub(super) fn optimized_query_plan_for(
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
     cache_mode: PlanCacheMode,
+    trace_mode: PlanTraceMode,
     context: PlanCacheContext<'_>,
 ) -> Result<OptimizedQueryPlan> {
     let query_identity = skein_query::QueryIdentity::new("cypher", cypher_text);
@@ -425,6 +415,8 @@ pub(super) fn optimized_query_plan_for(
     }
     let effective_max_optimizer_groups =
         optimizer_config_from_database_config(context.config).max_groups;
+    let normalized_plan_cache_query =
+        skein_query::normalize_query_for_plan_cache("cypher", cypher_text);
     let access_control_cache_key = context.access_control.map(AccessControlPlanCacheKey::from);
     let execution_parameters = parameters_with_access_control(parameters, context.access_control);
     let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
@@ -433,19 +425,21 @@ pub(super) fn optimized_query_plan_for(
             .borrow_mut()
             .environment_hint(context.catalog, context.store)
     });
+    let parameterized = (cache_mode == PlanCacheMode::Use)
+        .then(|| parameterize_logical_plan(statement_body(statement), parameters))
+        .transpose()?;
+    let mut key = parameterized.as_ref().map(|parameterized| PlanCacheKey {
+        normalized_query: normalized_plan_cache_query,
+        parameters: parameterized.cache_key().clone(),
+        environment: environment_hint
+            .clone()
+            .expect("optimizer environment exists for a parameterized plan"),
+        max_optimizer_groups: context.config.max_optimizer_groups,
+        access_control: access_control_cache_key,
+    });
     if cache_mode == PlanCacheMode::Use {
-        let environment = environment_hint
-            .as_ref()
-            .expect("optimizer environment exists in use mode");
-        let cached = context.cache.borrow_mut().get_matching(|key| {
-            key.matches(
-                cypher_text,
-                parameters,
-                environment,
-                context.config.max_optimizer_groups,
-                access_control_cache_key.as_ref(),
-            )
-        });
+        let key = key.as_ref().expect("cache key exists in use mode");
+        let cached = context.cache.borrow_mut().get(key);
         if let Some(cached) = cached {
             let physical_plan = bind_physical_plan_parameters(
                 &cached.physical_template,
@@ -454,7 +448,13 @@ pub(super) fn optimized_query_plan_for(
             )?;
             let mut trace = cached.trace;
             trace.query_digest = Some(query_identity.query_digest().to_string());
-            refresh_materialized_plan_trace(&mut trace, &physical_plan);
+            refresh_plan_trace(
+                &query_optimizer,
+                &mut trace,
+                &physical_plan,
+                trace_mode,
+                &context,
+            );
             trace
                 .decisions
                 .push("plan cache hit: parameterized physical plan template".to_string());
@@ -463,15 +463,12 @@ pub(super) fn optimized_query_plan_for(
                 physical_plan,
                 trace,
                 plan_cache_lookup: PlanCacheLookup::Hit,
-                optimizer_environment: environment.clone(),
+                optimizer_environment: key.environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
                 effective_max_optimizer_groups,
             });
         }
     }
-    let parameterized = (cache_mode == PlanCacheMode::Use)
-        .then(|| parameterize_logical_plan(statement_body(statement), parameters))
-        .transpose()?;
     let mut logical = if let Some(parameterized) = &parameterized {
         parameterized.logical().clone()
     } else {
@@ -484,16 +481,6 @@ pub(super) fn optimized_query_plan_for(
             cache_mode == PlanCacheMode::Use,
         );
     }
-    let mut key = parameterized.as_ref().map(|parameterized| PlanCacheKey {
-        cypher: cypher_text.to_string(),
-        parameters: parameterized.cache_key().clone(),
-        environment: environment_hint
-            .clone()
-            .expect("optimizer environment exists for a parameterized plan"),
-        max_optimizer_groups: context.config.max_optimizer_groups,
-        access_control: access_control_cache_key,
-    });
-
     let catalog_access = context
         .planning_cache
         .borrow_mut()
@@ -521,7 +508,6 @@ pub(super) fn optimized_query_plan_for(
         execution_parameters.as_ref(),
         has_parameter_slots,
     )?;
-    refresh_materialized_plan_trace(&mut trace, &physical_plan);
     if let Some(parameterized) = &parameterized {
         trace.decisions.push(format!(
             "parameterized plan template: slots={} exact_variants={}",
@@ -531,6 +517,14 @@ pub(super) fn optimized_query_plan_for(
     }
     let mut cached_trace = trace.clone();
     refresh_materialized_plan_trace(&mut cached_trace, &physical_template);
+    match trace_mode {
+        PlanTraceMode::Template => refresh_materialized_plan_trace(&mut trace, &physical_plan),
+        PlanTraceMode::Bound => query_optimizer.refresh_trace_for_physical_plan(
+            &mut trace,
+            &physical_plan,
+            &catalog_access.catalog,
+        ),
+    }
     record_access_control_plan_decision(&mut trace, context.access_control);
     if cache_mode == PlanCacheMode::Use {
         let mut key = key.take().expect("cache key exists in use mode");
@@ -574,6 +568,29 @@ pub(super) fn optimized_query_plan_for(
 fn refresh_materialized_plan_trace(trace: &mut OptimizerTrace, physical_plan: &PhysicalPlan) {
     trace.selected_plan = physical_plan.explain(0);
     trace.selected_plan_fingerprint = physical_plan.fingerprint();
+}
+
+fn refresh_plan_trace(
+    optimizer: &CascadesOptimizer,
+    trace: &mut OptimizerTrace,
+    physical_plan: &PhysicalPlan,
+    trace_mode: PlanTraceMode,
+    context: &PlanCacheContext<'_>,
+) {
+    match trace_mode {
+        PlanTraceMode::Template => refresh_materialized_plan_trace(trace, physical_plan),
+        PlanTraceMode::Bound => {
+            let catalog = context
+                .planning_cache
+                .borrow_mut()
+                .optimizer_catalog(context.catalog, context.store)
+                .catalog;
+            optimizer.refresh_trace_for_physical_plan(trace, physical_plan, &catalog);
+            trace.decisions.push(
+                "selected physical plan estimates refreshed for bound parameters".to_string(),
+            );
+        }
+    }
 }
 
 fn required_runtime_capability(

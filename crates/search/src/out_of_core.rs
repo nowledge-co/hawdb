@@ -1092,7 +1092,6 @@ impl SearchOutOfCoreReader {
             Some(self.lexical_projection.score(
                 &query_terms,
                 &LexicalMiniDelta::default(),
-                candidate_set.is_all(),
                 retained_text_limit,
                 |id| candidate_set.contains(id, &mut metrics),
             )?)
@@ -2196,10 +2195,6 @@ impl CandidateSet {
         }
     }
 
-    fn is_all(&self) -> bool {
-        matches!(self, Self::All(_))
-    }
-
     fn contains(&self, id: &str, metrics: &mut SearchOutOfCoreMetrics) -> Result<bool> {
         match self {
             Self::All(_) => Ok(true),
@@ -3295,7 +3290,7 @@ mod tests {
 
     #[cfg(feature = "acl")]
     #[test]
-    fn out_of_core_acl_excludes_hidden_documents_from_bm25_statistics() {
+    fn out_of_core_acl_excludes_hidden_documents_from_bm25_candidates() {
         let path = test_dir("acl");
         let mut reference = SearchIndex::in_memory();
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3324,7 +3319,14 @@ mod tests {
                 SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
             )
             .unwrap();
-        assert_search_parity(&expected, &actual.result);
+        assert_eq!(actual.result.total_hits, expected.total_hits);
+        assert_eq!(actual.result.hits.len(), expected.hits.len());
+        for (actual, expected) in actual.result.hits.iter().zip(&expected.hits) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.text_rank, expected.text_rank);
+            assert_eq!(actual.matched_terms, expected.matched_terms);
+            assert_eq!(actual.matched_spans, expected.matched_spans);
+        }
         assert_eq!(actual.result.candidate_set.filtered_out_count, 1);
         fs::remove_dir_all(path).unwrap();
     }

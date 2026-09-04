@@ -1,9 +1,14 @@
+use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
-use skein_core::RuntimeCancellationReason;
+use skein_core::{
+    RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
+    RuntimeTaskContext,
+};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::time::Duration;
 
 const PER_MILLION: u64 = 1_000_000;
 const DESKTOP_MEMORY_FRACTION_PER_MILLION: u32 = 250_000;
@@ -12,6 +17,7 @@ const DESKTOP_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 const MOBILE_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const DESKTOP_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
+const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeWorkPriority {
@@ -51,6 +57,15 @@ impl RuntimeWorkKind {
     }
 }
 
+/// Selects when an admitted operation occupies its declared I/O slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeIoReservationScope {
+    /// Reserve capacity for the complete task when the storage path has no wave boundary.
+    Task,
+    /// Validate at task admission, then reserve capacity only around physical read waves.
+    Wave,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeWorkRequest {
     pub priority: RuntimeWorkPriority,
@@ -58,6 +73,7 @@ pub struct RuntimeWorkRequest {
     pub cpu_slots: usize,
     pub memory_bytes: u64,
     pub io_slots: usize,
+    pub io_reservation_scope: RuntimeIoReservationScope,
     pub result_bytes: u64,
     pub blocking: bool,
 }
@@ -70,6 +86,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 0,
             memory_bytes: 0,
             io_slots: 0,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes: 0,
             blocking: false,
         }
@@ -86,6 +103,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 1,
             memory_bytes,
             io_slots: 0,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes,
             blocking: true,
         }
@@ -102,6 +120,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 1,
             memory_bytes,
             io_slots: 0,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes: 0,
             blocking: true,
         }
@@ -118,6 +137,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 1,
             memory_bytes,
             io_slots: 0,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes: 0,
             blocking: false,
         }
@@ -130,6 +150,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 1,
             memory_bytes,
             io_slots: 0,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes: 0,
             blocking: true,
         }
@@ -142,6 +163,7 @@ impl RuntimeWorkRequest {
             cpu_slots: 0,
             memory_bytes,
             io_slots,
+            io_reservation_scope: RuntimeIoReservationScope::Task,
             result_bytes: 0,
             blocking: false,
         }
@@ -164,6 +186,13 @@ impl RuntimeWorkRequest {
 
     pub const fn with_io_slots(mut self, io_slots: usize) -> Self {
         self.io_slots = io_slots;
+        self
+    }
+
+    /// Declares the maximum wave width without holding the slots for the full task.
+    pub const fn with_io_wave_slots(mut self, io_slots: usize) -> Self {
+        self.io_slots = io_slots;
+        self.io_reservation_scope = RuntimeIoReservationScope::Wave;
         self
     }
 
@@ -328,6 +357,8 @@ pub struct RuntimeTelemetryEvent {
     pub priority: Option<RuntimeWorkPriority>,
     pub work_kind: Option<RuntimeWorkKind>,
     pub admission_code: Option<RuntimeAdmissionCode>,
+    pub retryable: Option<bool>,
+    pub elapsed_micros: u64,
 }
 
 pub trait RuntimeTelemetrySink: Debug + Send + Sync {
@@ -348,6 +379,7 @@ pub struct RuntimeGovernorSnapshot {
     pub admissions: u64,
     pub admission_waits: u64,
     pub admission_rejections: u64,
+    pub retryable_admission_rejections: u64,
     pub completions: u64,
     pub cancellations: u64,
     pub deadline_exceeded: u64,
@@ -366,6 +398,8 @@ struct RuntimeGovernorInner {
     config: RuntimeGovernorConfig,
     storage_io: IoConcurrencyBudget,
     state: Mutex<RuntimeGovernorState>,
+    io_available: Condvar,
+    resource_detector: Mutex<Option<RuntimeResourceDetector>>,
     telemetry: RwLock<Option<Arc<dyn RuntimeTelemetrySink>>>,
 }
 
@@ -384,6 +418,7 @@ struct RuntimeGovernorState {
     admissions: u64,
     admission_waits: u64,
     admission_rejections: u64,
+    retryable_admission_rejections: u64,
     completions: u64,
     cancellations: u64,
     deadline_exceeded: u64,
@@ -394,7 +429,36 @@ struct RuntimeGovernorState {
 pub struct RuntimePermit {
     governor: Arc<RuntimeGovernorInner>,
     request: RuntimeWorkRequest,
+    io_wave_controller: Arc<GovernorIoWaveController>,
     released: bool,
+}
+
+#[derive(Debug)]
+struct GovernorIoWaveController {
+    governor: Arc<RuntimeGovernorInner>,
+    priority: RuntimeWorkPriority,
+    reserved_slots: usize,
+    reservation_scope: RuntimeIoReservationScope,
+    task_reservation: Arc<TaskIoReservation>,
+}
+
+#[derive(Debug)]
+struct GovernorIoWavePermit {
+    governor: Arc<RuntimeGovernorInner>,
+    priority: RuntimeWorkPriority,
+    slots: usize,
+}
+
+#[derive(Debug)]
+struct TaskIoReservation {
+    active_slots: Mutex<usize>,
+    available: Condvar,
+}
+
+#[derive(Debug)]
+struct TaskReservedIoWavePermit {
+    reservation: Arc<TaskIoReservation>,
+    slots: usize,
 }
 
 impl RuntimeGovernor {
@@ -422,18 +486,25 @@ impl RuntimeGovernor {
                     admissions: 0,
                     admission_waits: 0,
                     admission_rejections: 0,
+                    retryable_admission_rejections: 0,
                     completions: 0,
                     cancellations: 0,
                     deadline_exceeded: 0,
                     pressure_adjustments: 0,
                 }),
+                io_available: Condvar::new(),
+                resource_detector: Mutex::new(None),
                 telemetry: RwLock::new(None),
             }),
         }
     }
 
     pub fn detect(config: RuntimeGovernorConfig, storage_io: IoConcurrencyBudget) -> Self {
-        Self::new(config, RuntimeResourceSnapshot::detect(), storage_io)
+        let mut detector = RuntimeResourceDetector::new();
+        let resources = detector.detect();
+        let governor = Self::new(config, resources, storage_io);
+        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
+        governor
     }
 
     pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn RuntimeTelemetrySink>>) {
@@ -448,7 +519,10 @@ impl RuntimeGovernor {
             let mut state = mutex_lock(&self.inner.state);
             match admission_error(&state, request) {
                 Some(error) => {
-                    if !error.is_retryable() {
+                    if error.is_retryable() {
+                        state.retryable_admission_rejections =
+                            state.retryable_admission_rejections.saturating_add(1);
+                    } else {
                         state.admission_rejections = state.admission_rejections.saturating_add(1);
                     }
                     Err(error)
@@ -456,9 +530,20 @@ impl RuntimeGovernor {
                 None => {
                     reserve(&mut state, request);
                     state.admissions = state.admissions.saturating_add(1);
+                    let governor = Arc::clone(&self.inner);
                     Ok(RuntimePermit {
-                        governor: Arc::clone(&self.inner),
+                        governor: Arc::clone(&governor),
                         request,
+                        io_wave_controller: Arc::new(GovernorIoWaveController {
+                            governor,
+                            priority: request.priority,
+                            reserved_slots: request.io_slots,
+                            reservation_scope: request.io_reservation_scope,
+                            task_reservation: Arc::new(TaskIoReservation {
+                                active_slots: Mutex::new(0),
+                                available: Condvar::new(),
+                            }),
+                        }),
                         released: false,
                     })
                 }
@@ -470,19 +555,27 @@ impl RuntimeGovernor {
                 priority: Some(request.priority),
                 work_kind: Some(request.kind),
                 admission_code: None,
+                retryable: None,
+                elapsed_micros: 0,
             }),
-            Err(error) if !error.is_retryable() => self.inner.record(RuntimeTelemetryEvent {
+            Err(error) => self.inner.record(RuntimeTelemetryEvent {
                 kind: RuntimeTelemetryEventKind::AdmissionRejected,
                 priority: Some(request.priority),
                 work_kind: Some(request.kind),
                 admission_code: Some(error.code),
+                retryable: Some(error.retryable),
+                elapsed_micros: 0,
             }),
-            Err(_) => {}
         }
         result
     }
 
-    pub fn record_admission_wait(&self, request: RuntimeWorkRequest, code: RuntimeAdmissionCode) {
+    pub fn record_admission_wait(
+        &self,
+        request: RuntimeWorkRequest,
+        code: RuntimeAdmissionCode,
+        elapsed_micros: u64,
+    ) {
         {
             let mut state = mutex_lock(&self.inner.state);
             state.admission_waits = state.admission_waits.saturating_add(1);
@@ -492,6 +585,8 @@ impl RuntimeGovernor {
             priority: Some(request.priority),
             work_kind: Some(request.kind),
             admission_code: Some(code),
+            retryable: Some(true),
+            elapsed_micros,
         });
     }
 
@@ -517,6 +612,8 @@ impl RuntimeGovernor {
             priority: None,
             work_kind: None,
             admission_code: None,
+            retryable: None,
+            elapsed_micros: 0,
         });
     }
 
@@ -532,7 +629,13 @@ impl RuntimeGovernor {
         if mutex_lock(&self.inner.state).resources_pinned {
             return false;
         }
-        self.update_resources(RuntimeResourceSnapshot::detect())
+        let resources = mutex_lock(&self.inner.resource_detector)
+            .get_or_insert_with(RuntimeResourceDetector::new)
+            .detect();
+        if mutex_lock(&self.inner.state).resources_pinned {
+            return false;
+        }
+        self.update_resources(resources)
     }
 
     pub fn update_resources(&self, resources: RuntimeResourceSnapshot) -> bool {
@@ -558,6 +661,8 @@ impl RuntimeGovernor {
                 priority: None,
                 work_kind: None,
                 admission_code: None,
+                retryable: None,
+                elapsed_micros: 0,
             });
         }
         changed
@@ -578,6 +683,7 @@ impl RuntimeGovernor {
             admissions: state.admissions,
             admission_waits: state.admission_waits,
             admission_rejections: state.admission_rejections,
+            retryable_admission_rejections: state.retryable_admission_rejections,
             completions: state.completions,
             cancellations: state.cancellations,
             deadline_exceeded: state.deadline_exceeded,
@@ -597,6 +703,15 @@ impl RuntimePermit {
         self.release_inner();
     }
 
+    /// Carries the admitted CPU and I/O ceilings into the execution tree.
+    pub fn bind_task_context(&self, context: RuntimeTaskContext) -> RuntimeTaskContext {
+        let admitted_parallelism =
+            NonZeroUsize::new(self.request.cpu_slots).unwrap_or(NonZeroUsize::MIN);
+        context
+            .with_admitted_parallelism(admitted_parallelism)
+            .with_io_wave_controller(self.io_wave_controller.clone())
+    }
+
     fn release_inner(&mut self) {
         if self.released {
             return;
@@ -606,13 +721,102 @@ impl RuntimePermit {
             release(&mut state, self.request);
             state.completions = state.completions.saturating_add(1);
         }
+        if self.request.io_reservation_scope == RuntimeIoReservationScope::Task
+            && self.request.io_slots > 0
+        {
+            self.governor.io_available.notify_all();
+        }
         self.governor.record(RuntimeTelemetryEvent {
             kind: RuntimeTelemetryEventKind::Completed,
             priority: Some(self.request.priority),
             work_kind: Some(self.request.kind),
             admission_code: None,
+            retryable: None,
+            elapsed_micros: 0,
         });
         self.released = true;
+    }
+}
+
+impl RuntimeIoWaveController for GovernorIoWaveController {
+    fn acquire(
+        &self,
+        slots: NonZeroUsize,
+        context: &RuntimeTaskContext,
+    ) -> Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+        let slots = slots.get();
+        if slots > self.reserved_slots {
+            return Err(RuntimeIoWaveError::ReservationExceeded {
+                requested_slots: slots,
+                reserved_slots: self.reserved_slots,
+            });
+        }
+        context.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+        if self.reservation_scope == RuntimeIoReservationScope::Task {
+            loop {
+                context.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+                let mut active_slots = mutex_lock(&self.task_reservation.active_slots);
+                if slots <= self.reserved_slots.saturating_sub(*active_slots) {
+                    *active_slots = active_slots.saturating_add(slots);
+                    return Ok(Box::new(TaskReservedIoWavePermit {
+                        reservation: Arc::clone(&self.task_reservation),
+                        slots,
+                    }));
+                }
+                let wait = context
+                    .remaining()
+                    .map(|remaining| remaining.min(IO_WAVE_WAIT_POLL_INTERVAL))
+                    .unwrap_or(IO_WAVE_WAIT_POLL_INTERVAL);
+                drop(
+                    self.task_reservation
+                        .available
+                        .wait_timeout(active_slots, wait)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+            }
+        }
+
+        loop {
+            context.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+            let mut state = mutex_lock(&self.governor.state);
+            if try_reserve_io_wave(&mut state, self.priority, slots) {
+                return Ok(Box::new(GovernorIoWavePermit {
+                    governor: Arc::clone(&self.governor),
+                    priority: self.priority,
+                    slots,
+                }));
+            }
+            let wait = context
+                .remaining()
+                .map(|remaining| remaining.min(IO_WAVE_WAIT_POLL_INTERVAL))
+                .unwrap_or(IO_WAVE_WAIT_POLL_INTERVAL);
+            drop(
+                self.governor
+                    .io_available
+                    .wait_timeout(state, wait)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+    }
+}
+
+impl Drop for GovernorIoWavePermit {
+    fn drop(&mut self) {
+        {
+            let mut state = mutex_lock(&self.governor.state);
+            release_io_wave(&mut state, self.priority, self.slots);
+        }
+        self.governor.io_available.notify_all();
+    }
+}
+
+impl Drop for TaskReservedIoWavePermit {
+    fn drop(&mut self) {
+        {
+            let mut active_slots = mutex_lock(&self.reservation.active_slots);
+            *active_slots = active_slots.saturating_sub(self.slots);
+        }
+        self.reservation.available.notify_all();
     }
 }
 
@@ -834,25 +1038,28 @@ fn admission_error(
             true,
         ));
     }
-    let (active_io, io_limit) = match request.priority {
-        RuntimeWorkPriority::Foreground => (
-            state.active_foreground_io_slots,
-            state.limits.foreground_io_depth.get(),
-        ),
-        RuntimeWorkPriority::Background => (
-            state.active_background_io_slots,
-            state.limits.background_io_depth.get(),
-        ),
-    };
-    let available_io = io_limit.saturating_sub(active_io);
-    (request.io_slots > available_io).then(|| {
-        admission_error_value(
-            RuntimeAdmissionCode::IoSaturated,
-            request.io_slots as u64,
-            available_io as u64,
-            true,
-        )
-    })
+    if request.io_reservation_scope == RuntimeIoReservationScope::Task {
+        let (active_io, io_limit) = match request.priority {
+            RuntimeWorkPriority::Foreground => (
+                state.active_foreground_io_slots,
+                state.limits.foreground_io_depth.get(),
+            ),
+            RuntimeWorkPriority::Background => (
+                state.active_background_io_slots,
+                state.limits.background_io_depth.get(),
+            ),
+        };
+        let available_io = io_limit.saturating_sub(active_io);
+        if request.io_slots > available_io {
+            return Some(admission_error_value(
+                RuntimeAdmissionCode::IoSaturated,
+                request.io_slots as u64,
+                available_io as u64,
+                true,
+            ));
+        }
+    }
+    None
 }
 
 const fn admission_error_value(
@@ -873,16 +1080,13 @@ fn reserve(state: &mut RuntimeGovernorState, request: RuntimeWorkRequest) {
     match request.priority {
         RuntimeWorkPriority::Foreground => {
             state.active_foreground_tasks = state.active_foreground_tasks.saturating_add(1);
-            state.active_foreground_io_slots = state
-                .active_foreground_io_slots
-                .saturating_add(request.io_slots);
         }
         RuntimeWorkPriority::Background => {
             state.active_background_tasks = state.active_background_tasks.saturating_add(1);
-            state.active_background_io_slots = state
-                .active_background_io_slots
-                .saturating_add(request.io_slots);
         }
+    }
+    if request.io_reservation_scope == RuntimeIoReservationScope::Task {
+        reserve_io_wave(state, request.priority, request.io_slots);
     }
     if request.blocking {
         state.active_blocking_tasks = state.active_blocking_tasks.saturating_add(1);
@@ -897,16 +1101,13 @@ fn release(state: &mut RuntimeGovernorState, request: RuntimeWorkRequest) {
     match request.priority {
         RuntimeWorkPriority::Foreground => {
             state.active_foreground_tasks = state.active_foreground_tasks.saturating_sub(1);
-            state.active_foreground_io_slots = state
-                .active_foreground_io_slots
-                .saturating_sub(request.io_slots);
         }
         RuntimeWorkPriority::Background => {
             state.active_background_tasks = state.active_background_tasks.saturating_sub(1);
-            state.active_background_io_slots = state
-                .active_background_io_slots
-                .saturating_sub(request.io_slots);
         }
+    }
+    if request.io_reservation_scope == RuntimeIoReservationScope::Task {
+        release_io_wave(state, request.priority, request.io_slots);
     }
     if request.blocking {
         state.active_blocking_tasks = state.active_blocking_tasks.saturating_sub(1);
@@ -915,6 +1116,41 @@ fn release(state: &mut RuntimeGovernorState, request: RuntimeWorkRequest) {
     state.admitted_memory_bytes = state
         .admitted_memory_bytes
         .saturating_sub(request.reserved_memory_bytes());
+}
+
+fn try_reserve_io_wave(
+    state: &mut RuntimeGovernorState,
+    priority: RuntimeWorkPriority,
+    slots: usize,
+) -> bool {
+    let (active, limit) = match priority {
+        RuntimeWorkPriority::Foreground => (
+            &mut state.active_foreground_io_slots,
+            state.limits.foreground_io_depth.get(),
+        ),
+        RuntimeWorkPriority::Background => (
+            &mut state.active_background_io_slots,
+            state.limits.background_io_depth.get(),
+        ),
+    };
+    if slots > limit.saturating_sub(*active) {
+        return false;
+    }
+    *active = active.saturating_add(slots);
+    true
+}
+
+fn reserve_io_wave(state: &mut RuntimeGovernorState, priority: RuntimeWorkPriority, slots: usize) {
+    let reserved = try_reserve_io_wave(state, priority, slots);
+    debug_assert!(reserved, "I/O capacity was checked before reservation");
+}
+
+fn release_io_wave(state: &mut RuntimeGovernorState, priority: RuntimeWorkPriority, slots: usize) {
+    let active = match priority {
+        RuntimeWorkPriority::Foreground => &mut state.active_foreground_io_slots,
+        RuntimeWorkPriority::Background => &mut state.active_background_io_slots,
+    };
+    *active = active.saturating_sub(slots);
 }
 
 fn is_overcommitted(state: &RuntimeGovernorState) -> bool {
@@ -1058,6 +1294,107 @@ mod tests {
     }
 
     #[test]
+    fn wave_scoped_io_is_reserved_only_while_a_wave_is_live() {
+        let governor = governor(4, 4 * 1024 * 1024 * 1024);
+        let request =
+            RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 0, 0).with_io_wave_slots(4);
+        let first = governor.try_admit(request).unwrap();
+        let second = governor.try_admit(request).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 0);
+
+        let first_context = first.bind_task_context(RuntimeTaskContext::default());
+        let wave = first_context
+            .acquire_io_wave(NonZeroUsize::new(4).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 4);
+
+        let background = governor
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Background, 0, 0).with_io_wave_slots(1),
+            )
+            .unwrap();
+        let background_context = background.bind_task_context(RuntimeTaskContext::default());
+        let background_wave = background_context
+            .acquire_io_wave(NonZeroUsize::MIN)
+            .unwrap()
+            .unwrap();
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 4);
+        assert_eq!(snapshot.active_background_io_slots, 1);
+        {
+            let mut state = mutex_lock(&governor.inner.state);
+            assert!(!try_reserve_io_wave(
+                &mut state,
+                RuntimeWorkPriority::Foreground,
+                1,
+            ));
+        }
+
+        let blocked_context =
+            second.bind_task_context(RuntimeTaskContext::with_timeout(Duration::from_millis(10)));
+        assert_eq!(
+            blocked_context
+                .acquire_io_wave(NonZeroUsize::MIN)
+                .unwrap_err(),
+            RuntimeIoWaveError::Stopped(RuntimeCancellationReason::DeadlineExceeded)
+        );
+
+        let second_context = second.bind_task_context(RuntimeTaskContext::default());
+        assert_eq!(
+            second_context
+                .acquire_io_wave(NonZeroUsize::new(5).unwrap())
+                .unwrap_err(),
+            RuntimeIoWaveError::ReservationExceeded {
+                requested_slots: 5,
+                reserved_slots: 4,
+            }
+        );
+        drop(background_wave);
+        drop(wave);
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 0);
+        assert_eq!(snapshot.active_background_io_slots, 0);
+
+        let next_wave = second_context
+            .acquire_io_wave(NonZeroUsize::new(4).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 4);
+        drop(next_wave);
+    }
+
+    #[test]
+    fn task_scoped_io_keeps_its_conservative_lifetime_reservation() {
+        let governor = governor(4, 4 * 1024 * 1024 * 1024);
+        let request = RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 4, 0);
+        let permit = governor.try_admit(request).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 4);
+
+        let context =
+            permit.bind_task_context(RuntimeTaskContext::with_timeout(Duration::from_millis(10)));
+        let wave = context
+            .acquire_io_wave(NonZeroUsize::new(4).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context
+                .child()
+                .acquire_io_wave(NonZeroUsize::MIN)
+                .unwrap_err(),
+            RuntimeIoWaveError::Stopped(RuntimeCancellationReason::DeadlineExceeded)
+        );
+        drop(wave);
+
+        let error = governor.try_admit(request).unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::IoSaturated);
+        assert!(error.is_retryable());
+
+        drop(permit);
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 0);
+    }
+
+    #[test]
     fn oversized_result_is_rejected_without_waiting() {
         let governor = governor(4, 1024 * 1024 * 1024);
         let error = governor
@@ -1189,7 +1526,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_telemetry_contains_only_stable_dimensions() {
+    fn typed_telemetry_records_bounded_rejection_and_wait_dimensions() {
         let governor = governor(1, 1024 * 1024 * 1024);
         let telemetry = Arc::new(RecordingTelemetry::default());
         governor.set_telemetry_sink(Some(telemetry.clone()));
@@ -1205,21 +1542,41 @@ mod tests {
                 0,
             ))
             .unwrap_err();
-        governor.record_admission_wait(permit.request(), error.code);
+        let terminal_error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                u64::MAX,
+            ))
+            .unwrap_err();
+        governor.record_admission_wait(permit.request(), error.code, 37);
         governor.record_cancellation(RuntimeCancellationReason::Cancelled);
         drop(permit);
 
         let events = mutex_lock(&telemetry.events);
         assert_eq!(events[0].kind, RuntimeTelemetryEventKind::Admitted);
-        assert!(events
-            .iter()
-            .any(|event| event.kind == RuntimeTelemetryEventKind::AdmissionWait));
+        assert!(error.is_retryable());
+        assert!(!terminal_error.is_retryable());
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeTelemetryEventKind::AdmissionRejected
+                && event.retryable == Some(true)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeTelemetryEventKind::AdmissionRejected
+                && event.retryable == Some(false)
+        }));
+        assert!(events.iter().any(
+            |event| event.kind == RuntimeTelemetryEventKind::AdmissionWait
+                && event.elapsed_micros == 37
+        ));
         assert!(events
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Cancelled));
         assert!(events
             .iter()
             .any(|event| event.kind == RuntimeTelemetryEventKind::Completed));
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.admission_rejections, 1);
+        assert_eq!(snapshot.retryable_admission_rejections, 1);
     }
 
     /// A saturated cgroup must reject new admissions even when the hard

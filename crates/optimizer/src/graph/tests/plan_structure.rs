@@ -1020,8 +1020,8 @@ fn optimizer_roots_preserve_logical_and_physical_phase_boundaries() {
     let logical_root = LogicalPlanRoot::new(logical);
     assert_eq!(logical_root.phase(), PlanPhaseKind::Logical);
 
-    let optimized_root = logical_root.clone().into_optimized();
-    assert_eq!(optimized_root.phase(), PlanPhaseKind::OptimizedLogical);
+    let lowering_ready_root = logical_root.clone().into_lowering_ready();
+    assert_eq!(lowering_ready_root.phase(), PlanPhaseKind::LoweringReady);
 
     let catalog = OptimizerCatalog::new(
         OptimizerCatalogIndexes::new([("Memory".to_string(), "id".to_string())], [], [], []),
@@ -1036,7 +1036,7 @@ fn optimizer_roots_preserve_logical_and_physical_phase_boundaries() {
         ),
     );
     let physical_root = CascadesOptimizer::new(OptimizerConfig { max_groups: 16 })
-        .optimize_optimized_root_with_catalog(&optimized_root, &catalog);
+        .optimize_lowering_ready_root_with_catalog(&lowering_ready_root, &catalog);
 
     assert_eq!(physical_root.phase(), PlanPhaseKind::Physical);
     assert_eq!(physical_root.plan().kind(), PhysicalPlanKind::IndexNodeSeek);
@@ -1045,6 +1045,15 @@ fn optimizer_roots_preserve_logical_and_physical_phase_boundaries() {
         .stage_events
         .iter()
         .any(|event| event.name() == "access_path_selection"));
+    assert_eq!(
+        physical_root
+            .trace()
+            .stage_events
+            .iter()
+            .filter(|event| event.name() == "logical_rewrite")
+            .count(),
+        1
+    );
 }
 
 #[test]

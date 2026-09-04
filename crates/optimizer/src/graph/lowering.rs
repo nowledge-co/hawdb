@@ -10,12 +10,12 @@ use super::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
         PHYSICAL_SEARCH_STAGE, PLAN_FINALIZATION_STAGE, SELECTED_PLAN_COSTING_STAGE,
     },
-    LogicalPlanRoot, OptimizationSearchReport, OptimizedLogicalPlanRoot, OptimizerCatalog,
+    LogicalPlanRoot, LoweringReadyLogicalPlanRoot, OptimizationSearchReport, OptimizerCatalog,
     OptimizerConfig, OptimizerTrace, PhysicalPlan, PhysicalPlanRoot, StageStats,
 };
 use crate::{
     GroupId, Memo, OptimizerContext, OptimizerSearchDirective, OptimizerSearchDirectiveError,
-    StageTrace,
+    RuleEvent, RuleOutcome, SelectedPlanTrace, StageTrace,
 };
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
@@ -64,6 +64,15 @@ impl CascadesOptimizer {
         &self.context
     }
 
+    pub fn refresh_trace_for_physical_plan(
+        &self,
+        trace: &mut OptimizerTrace,
+        plan: &PhysicalPlan,
+        catalog: &OptimizerCatalog,
+    ) {
+        refresh_selected_plan_trace(trace, selected_plan_trace(plan, catalog, &self.context));
+    }
+
     pub fn optimize(&self, logical: &LogicalPlan) -> PhysicalPlan {
         self.optimize_root(&LogicalPlanRoot::new(logical.clone()))
             .into_parts()
@@ -93,20 +102,20 @@ impl CascadesOptimizer {
         root: &LogicalPlanRoot,
         catalog: &OptimizerCatalog,
     ) -> PhysicalPlanRoot {
-        self.optimize_optimized_root_with_catalog_and_directive(
-            &root.clone().into_optimized(),
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
+            &root.clone().into_lowering_ready(),
             catalog,
             OptimizerSearchDirective::Auto,
         )
         .expect("automatic optimizer search cannot reject its directive")
     }
 
-    pub fn optimize_optimized_root_with_catalog(
+    pub fn optimize_lowering_ready_root_with_catalog(
         &self,
-        root: &OptimizedLogicalPlanRoot,
+        root: &LoweringReadyLogicalPlanRoot,
         catalog: &OptimizerCatalog,
     ) -> PhysicalPlanRoot {
-        self.optimize_optimized_root_with_catalog_and_directive(
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
             root,
             catalog,
             OptimizerSearchDirective::Auto,
@@ -120,16 +129,16 @@ impl CascadesOptimizer {
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
-        self.optimize_optimized_root_with_catalog_and_directive(
-            &root.clone().into_optimized(),
+        self.optimize_lowering_ready_root_with_catalog_and_directive(
+            &root.clone().into_lowering_ready(),
             catalog,
             directive,
         )
     }
 
-    pub fn optimize_optimized_root_with_catalog_and_directive(
+    pub fn optimize_lowering_ready_root_with_catalog_and_directive(
         &self,
-        root: &OptimizedLogicalPlanRoot,
+        root: &LoweringReadyLogicalPlanRoot,
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
@@ -212,8 +221,51 @@ impl CascadesOptimizer {
     }
 }
 
-fn record_logical_rewrite(report: &mut OptimizationSearchReport, rewrite: &LogicalRewriteOutput) {
+fn refresh_selected_plan_trace(trace: &mut OptimizerTrace, selected: SelectedPlanTrace) {
+    let selected_cost = selected.cost.with_cardinality_floor();
+    let selected_cost_breakdown = selected.cost_breakdown.with_cardinality_floor();
+    let cost_detail = format!(
+        "estimated_rows={} cost={}",
+        selected_cost.estimated_rows, selected_cost.cost
+    );
+    let cost_decision = format!("selected physical plan cost: {cost_detail}");
+    if let Some(decision) = trace
+        .decisions
+        .iter_mut()
+        .find(|decision| decision.starts_with("selected physical plan cost: "))
+    {
+        *decision = cost_decision;
+    } else {
+        trace.decisions.push(cost_decision);
+    }
+    let cost_event = RuleEvent::selected("physical plan cost", cost_detail);
+    if let Some(event) = trace.rule_events.iter_mut().find(|event| {
+        event.rule() == "physical plan cost" && event.outcome() == RuleOutcome::Selected
+    }) {
+        *event = cost_event;
+    } else {
+        trace.rule_events.push(cost_event);
+    }
+
+    trace.query_digest = selected.query_digest;
+    trace.selected_plan = selected.explain;
+    trace.selected_plan_fingerprint = selected.fingerprint;
+    trace.selected_plan_cost = selected_cost;
+    trace.selected_plan_cost_breakdown = selected_cost_breakdown;
+    trace.selected_plan_properties = selected.properties;
+    trace.selected_plan_cardinality_estimates = selected.cardinality_estimates;
+    trace.selected_plan_operator_counts = selected.operator_counts;
+    trace.selected_plan_class_counts = selected.class_counts;
+}
+
+pub(super) fn record_logical_rewrite(
+    report: &mut OptimizationSearchReport,
+    rewrite: &LogicalRewriteOutput,
+) {
     report.push_stage_event(rewrite.trace().clone());
+    if let Some(warning) = rewrite.warning() {
+        report.push_warning(warning);
+    }
     for event in rewrite.events().iter().cloned() {
         report.push_rule_event(event);
     }

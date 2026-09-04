@@ -353,6 +353,18 @@ pub use sort::*;
 mod tests {
     use super::*;
     use crate::observer::NoopExecutionObserver;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct RecordingExecutionObserver {
+        reports: RefCell<Vec<BlockingOperatorMemoryReport>>,
+    }
+
+    impl ExecutionObserver for RecordingExecutionObserver {
+        fn record_blocking_memory_report(&self, report: BlockingOperatorMemoryReport) {
+            self.reports.borrow_mut().push(report);
+        }
+    }
 
     struct FixedBatchSource {
         batches: Vec<BindingBatch>,
@@ -438,6 +450,107 @@ mod tests {
         .expect("distinct execution");
 
         assert_eq!(output, vec![value_binding(1), value_binding(2)]);
+    }
+
+    #[test]
+    fn distinct_operator_keeps_equal_values_from_different_schemas() {
+        let input = PhysicalPlan::SeqNodeScan {
+            variable: "node".to_string(),
+            label: String::new(),
+        };
+        let left = Binding::scalar("left", Value::Int(1));
+        let right = Binding::scalar("right", Value::Int(1));
+        let left_null = Binding::scalar("left", Value::Null);
+        let mut source = FixedBatchSource {
+            batches: vec![
+                vec![left.clone(), right.clone(), left_null.clone()],
+                vec![left.clone(), left_null.clone()],
+            ],
+        };
+        let catalog = Catalog::default();
+        let memory = ExecutionMemoryConfig::default();
+        let memory_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let observer = NoopExecutionObserver;
+        let mut output = Vec::new();
+
+        stream_distinct_batches(
+            &input,
+            &mut source,
+            BlockingExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &memory_ledger,
+                task_context: None,
+                observer: &observer,
+            },
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .expect("distinct execution");
+
+        assert_eq!(output, vec![left, right, left_null]);
+    }
+
+    #[test]
+    fn distinct_operator_preserves_mixed_schemas_and_null_across_spills() {
+        let input = PhysicalPlan::SeqNodeScan {
+            variable: "node".to_string(),
+            label: String::new(),
+        };
+        let mut expected = Vec::new();
+        for name in ["left", "right"] {
+            for index in 0..3 {
+                expected.push(Binding::scalar(
+                    name,
+                    Value::String(format!("{name}-{index}-{}", "x".repeat(96))),
+                ));
+            }
+            expected.push(Binding::scalar(name, Value::Null));
+        }
+        let mut source = FixedBatchSource {
+            batches: vec![expected.clone(), expected.clone()],
+        };
+        let catalog = Catalog::default();
+        let memory = ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+            ..ExecutionMemoryConfig::default()
+        };
+        let memory_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let observer = RecordingExecutionObserver::default();
+        let mut output = Vec::new();
+
+        stream_distinct_batches(
+            &input,
+            &mut source,
+            BlockingExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &memory_ledger,
+                task_context: None,
+                observer: &observer,
+            },
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .expect("distinct spill execution");
+
+        assert_eq!(output.len(), expected.len());
+        for binding in expected {
+            assert_eq!(output.iter().filter(|row| **row == binding).count(), 1);
+        }
+        let reports = observer.reports.borrow();
+        let report = reports
+            .iter()
+            .find(|report| report.operator == "DistinctExec")
+            .expect("distinct memory report");
+        assert!(report.spill_run_count > 0);
+        assert!(report.peak_tracked_bytes <= report.budget_bytes);
     }
 
     #[test]

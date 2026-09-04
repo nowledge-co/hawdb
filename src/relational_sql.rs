@@ -1,8 +1,9 @@
 use crate::error::{Result, SkeinError};
 use crate::sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlArithmeticOperand,
-    SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate, SqlReferentialAction,
-    SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SelectProjection,
+    SelectStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp, SqlConflictAction,
+    SqlOrderItem, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
+    SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
 pub(crate) use skein_relational::{
@@ -44,6 +45,59 @@ pub(crate) use query::{
 };
 pub(crate) use row_access::RelationalRowReadMode;
 pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RelationalOrderTarget<'a> {
+    InputColumn(&'a crate::sql::SqlColumnRef),
+    ProjectionColumn {
+        column: &'a crate::sql::SqlColumnRef,
+        alias: &'a str,
+    },
+    ProjectionExpression {
+        expression: &'a crate::sql::SqlExpression,
+        alias: &'a str,
+    },
+}
+
+pub(crate) fn resolve_relational_order_target<'a>(
+    select: &'a SelectStatement,
+    item: &'a SqlOrderItem,
+) -> Result<RelationalOrderTarget<'a>> {
+    if item.column.qualifier.is_some() {
+        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+    }
+    let mut aliases = select
+        .projection
+        .iter()
+        .filter_map(|projection| match projection {
+            SelectProjection::Column {
+                name,
+                alias: Some(alias),
+            } if alias == &item.column.name => Some(RelationalOrderTarget::ProjectionColumn {
+                column: name,
+                alias,
+            }),
+            SelectProjection::Expression {
+                expression,
+                alias: Some(alias),
+            } if alias == &item.column.name => {
+                Some(RelationalOrderTarget::ProjectionExpression { expression, alias })
+            }
+            SelectProjection::Wildcard
+            | SelectProjection::Column { .. }
+            | SelectProjection::Expression { .. } => None,
+        });
+    let Some(target) = aliases.next() else {
+        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+    };
+    if aliases.next().is_some() {
+        return Err(SkeinError::Semantic(format!(
+            "ambiguous relational ORDER BY alias {}",
+            item.column.name
+        )));
+    }
+    Ok(target)
+}
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,
@@ -3863,6 +3917,11 @@ mod tests {
             )
             .expect("create wildcard child table");
         database
+            .query_sql(
+                "CREATE INDEX wildcard_children_parent_idx ON wildcard_children (parent_ref)",
+            )
+            .expect("create wildcard child parent index");
+        database
             .query_sql("INSERT INTO wildcard_parents (parent_id, parent_name) VALUES (1, 'one'), (2, 'two')")
             .expect("insert wildcard parents");
         database
@@ -3977,31 +4036,44 @@ mod tests {
                 crate::QueryStreamOptions::default(),
             )
             .expect("profile fully consumed join");
+        assert_eq!(
+            full.profile.join_planning.strategy,
+            RelationalJoinPlanningStrategy::SyntaxOrder
+        );
+        assert_eq!(
+            full.profile.join_planning.status,
+            RelationalJoinPlanningStatus::NotEligible
+        );
+        assert_eq!(
+            full.profile.join_planning.reason,
+            RelationalJoinPlanningReason::SpecializedJoinNotEnumerated
+        );
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 6);
+        assert_eq!(full.profile.intermediate_rows, 8);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
         assert_eq!(base.operator, RelationalOperatorKind::TableFullScan);
-        assert_eq!(base.table, "profile_children");
-        assert_eq!(base.estimated_rows, 3);
-        assert_eq!(base.actual_rows, Some(3));
+        assert_eq!(base.table, "profile_parents");
+        assert_eq!(base.estimated_rows, 2);
+        assert_eq!(base.actual_rows, Some(2));
         assert!(base.fully_consumed);
         let join = &full.profile.operator_cardinality_profiles[1];
         assert_eq!(join.operator_id.get(), 2);
-        assert_eq!(
-            join.operator,
-            RelationalOperatorKind::BatchedIndexNestedLoopJoin
-        );
-        assert_eq!(join.table, "profile_parents");
+        assert_eq!(join.operator, RelationalOperatorKind::HashJoin);
+        assert_eq!(join.table, "profile_children");
         assert_eq!(
             join.access_path.kind,
-            skein_optimizer::RelationalAccessPathKind::PrimaryKey
+            skein_optimizer::RelationalAccessPathKind::FullScan
         );
         assert_eq!(join.estimated_rows, 3);
         assert_eq!(join.actual_rows, Some(3));
         assert!(join.fully_consumed);
-        assert!(full.profile.blocking_operator_memory_reports.is_empty());
+        assert!(full
+            .profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.operator == "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(
@@ -4011,10 +4083,10 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 4);
+        assert_eq!(limited.profile.intermediate_rows, 5);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
-            Some(3)
+            Some(1)
         );
         assert_eq!(
             limited.profile.operator_cardinality_profiles[1].actual_rows,
@@ -4042,7 +4114,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(analyzed_ids.len(), analyzed.rows.len());
         for (table, expected_id, estimated_rows, actual_rows) in
-            [("profile_children", 1, 3, 3), ("profile_parents", 2, 3, 3)]
+            [("profile_parents", 1, 2, 2), ("profile_children", 2, 3, 3)]
         {
             let plain_row = relational_explain_access_row(&plain, table);
             let analyzed_row = relational_explain_access_row(&analyzed, table);

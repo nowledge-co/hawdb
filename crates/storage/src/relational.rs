@@ -817,8 +817,9 @@ pub struct RelationalTransactionStageResult {
 /// Deterministic result of one relational write after it has been staged.
 ///
 /// Rows contain the logical values accepted by INSERT before overflow
-/// externalization. Conflict no-ops contribute to `conflict_rows`, never to
-/// `rows` or `affected_rows`.
+/// externalization. Count-only UPDATE and DELETE outcomes contain no rows.
+/// Conflict no-ops contribute to `conflict_rows`, never to `rows` or
+/// `affected_rows`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalMutationOutcome {
     pub table: String,
@@ -4936,6 +4937,7 @@ fn apply_transaction_inner(
                         limits.max_payload_bytes
                     )));
                 }
+                let affected_rows = keys.len();
                 for key in keys {
                     changed_keys
                         .entry(table.clone())
@@ -4948,6 +4950,14 @@ fn apply_transaction_inner(
                         });
                     }
                 }
+                if capture_mutation_outcomes {
+                    mutation_outcomes.push(RelationalMutationOutcome {
+                        table: table.clone(),
+                        affected_rows,
+                        conflict_rows: 0,
+                        rows: Vec::new(),
+                    });
+                }
                 touched.insert(table);
             }
             RelationalWrite::UpdateWhere {
@@ -4955,7 +4965,7 @@ fn apply_transaction_inner(
                 assignments,
                 predicate,
             } => {
-                apply_update(
+                let affected_rows = apply_update(
                     &mut next,
                     &table,
                     &assignments,
@@ -4967,6 +4977,14 @@ fn apply_transaction_inner(
                         replay_access_tracker: replay_access_tracker.as_mut(),
                     },
                 )?;
+                if capture_mutation_outcomes {
+                    mutation_outcomes.push(RelationalMutationOutcome {
+                        table: table.clone(),
+                        affected_rows,
+                        conflict_rows: 0,
+                        rows: Vec::new(),
+                    });
+                }
                 touched.insert(table);
             }
         }
@@ -5308,7 +5326,7 @@ fn apply_update(
     assignments: &[RelationalUpdateAssignment],
     predicate: &RelationalPredicate,
     context: UpdateApplyContext<'_>,
-) -> Result<(), RelationalError> {
+) -> Result<usize, RelationalError> {
     let UpdateApplyContext {
         limits,
         overflow_config,
@@ -5434,7 +5452,7 @@ fn apply_update(
             )));
         }
     }
-    Ok(())
+    Ok(matched.len())
 }
 
 enum ResolvedUpdateValue {

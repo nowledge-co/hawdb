@@ -41,6 +41,7 @@ use skein_optimizer::{
     estimate_relational_probe_join_cost, select_relational_access_path, PlanCostBreakdown,
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
     RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective, RelationalJoinRightInput,
+    RelationalJoinSelectivity,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
@@ -55,8 +56,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::PreparedRelationalSql;
-use super::RelationalSqlStageTimings;
+use super::{
+    resolve_relational_order_target, PreparedRelationalSql, RelationalOrderTarget,
+    RelationalSqlStageTimings,
+};
 use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
 mod columnar_aggregate;
@@ -498,6 +501,7 @@ enum RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
         equi_join_keys: Option<RelationalEquiJoinKeys>,
+        selectivity: RelationalJoinSelectivity,
         predicates: Vec<SqlPredicate>,
         left: Box<Self>,
         right: Box<Self>,
@@ -561,13 +565,23 @@ impl RelationalPhysicalJoinNode {
             Self::Relation(_) => RelationalPhysicalJoinAlgorithm::Probe,
             Self::Join { .. } => RelationalPhysicalJoinAlgorithm::Materialized,
         };
-        Self::join_with_algorithm(operator_id, kind, algorithm, None, predicates, left, right)
+        Self::join_with_algorithm(
+            operator_id,
+            kind,
+            algorithm,
+            None,
+            RelationalJoinSelectivity::Unknown,
+            predicates,
+            left,
+            right,
+        )
     }
 
     fn merge_join(
         operator_id: RelationalOperatorId,
         predicates: Vec<SqlPredicate>,
         equi_join_keys: RelationalEquiJoinKeys,
+        selectivity: RelationalJoinSelectivity,
         left: Self,
         right: Self,
     ) -> Result<Self> {
@@ -576,6 +590,7 @@ impl RelationalPhysicalJoinNode {
             SqlJoinKind::Inner,
             RelationalPhysicalJoinAlgorithm::Merge,
             Some(equi_join_keys),
+            selectivity,
             predicates,
             left,
             right,
@@ -587,6 +602,7 @@ impl RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         predicates: Vec<SqlPredicate>,
         equi_join_keys: RelationalEquiJoinKeys,
+        selectivity: RelationalJoinSelectivity,
         left: Self,
         right: Self,
     ) -> Result<Self> {
@@ -595,6 +611,7 @@ impl RelationalPhysicalJoinNode {
             kind,
             RelationalPhysicalJoinAlgorithm::Hash,
             Some(equi_join_keys),
+            selectivity,
             predicates,
             left,
             right,
@@ -606,6 +623,7 @@ impl RelationalPhysicalJoinNode {
         kind: SqlJoinKind,
         algorithm: RelationalPhysicalJoinAlgorithm,
         equi_join_keys: Option<RelationalEquiJoinKeys>,
+        selectivity: RelationalJoinSelectivity,
         predicates: Vec<SqlPredicate>,
         left: Self,
         right: Self,
@@ -617,6 +635,7 @@ impl RelationalPhysicalJoinNode {
             kind,
             algorithm,
             equi_join_keys,
+            selectivity,
             predicates,
             left: Box::new(left),
             right: Box::new(right),
@@ -960,7 +979,91 @@ fn hash_join_inputs(
     ))
 }
 
+fn materialized_equi_join_selectivity(
+    state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
+    left: &RelationalPhysicalJoinNode,
+    right: &RelationalPhysicalJoinNode,
+    keys: &RelationalEquiJoinKeys,
+) -> RelationalJoinSelectivity {
+    let (RelationalPhysicalJoinNode::Relation(left), RelationalPhysicalJoinNode::Relation(right)) =
+        (left, right)
+    else {
+        return RelationalJoinSelectivity::Unknown;
+    };
+    let left_columns = keys
+        .columns
+        .iter()
+        .map(|(_, column)| column.name.clone())
+        .collect::<Vec<_>>();
+    let right_columns = keys
+        .columns
+        .iter()
+        .map(|(column, _)| column.clone())
+        .collect::<Vec<_>>();
+    RelationalJoinSelectivity::equi_join(
+        relational_join_distinct_values(state, index_read_mode, left, &left_columns),
+        relational_join_distinct_values(state, index_read_mode, right, &right_columns),
+    )
+}
+
+fn relational_join_distinct_values(
+    state: &RelationalState,
+    index_read_mode: RelationalIndexReadMode<'_>,
+    relation: &RelationalPhysicalRelation,
+    columns: &[String],
+) -> Option<u64> {
+    if columns.is_empty() {
+        return None;
+    }
+    let schema = state.table_schema(&relation.table)?;
+    let requested_columns = columns.iter().collect::<BTreeSet<_>>();
+    // Planning must not scan relational rows to manufacture NDV. Use a fresh
+    // persisted prefix statistic when available, or the exact cardinality of
+    // a complete non-null unique key; otherwise retain the cost model's
+    // documented fallback.
+    for definition in schema.required_index_definitions() {
+        if definition.columns.len() < columns.len()
+            || definition.columns[..columns.len()]
+                .iter()
+                .collect::<BTreeSet<_>>()
+                != requested_columns
+        {
+            continue;
+        }
+        if let Some(statistics) =
+            index_read_mode.probe_statistics(&relation.table, &definition.name, columns.len())
+        {
+            return Some(statistics.distinct_non_null_values);
+        }
+        let complete_non_null_unique_key = definition.role.is_unique()
+            && definition.columns.len() == columns.len()
+            && columns.iter().all(|column| {
+                schema
+                    .column_position(column)
+                    .is_some_and(|position| !schema.columns[position].nullable)
+            });
+        if complete_non_null_unique_key {
+            return Some(u64::try_from(state.row_count(&relation.table)).unwrap_or(u64::MAX));
+        }
+    }
+    None
+}
+
 impl PreparedRelationalAccessPlan {
+    fn uses_specialized_materialized_join(&self) -> bool {
+        self.physical_join_plan.as_ref().is_some_and(|plan| {
+            matches!(
+                &plan.root,
+                RelationalPhysicalJoinNode::Join {
+                    algorithm: RelationalPhysicalJoinAlgorithm::Merge
+                        | RelationalPhysicalJoinAlgorithm::Hash,
+                    ..
+                }
+            )
+        })
+    }
+
     fn apply_physical_index_coverage(
         &mut self,
         state: &RelationalState,
@@ -1016,16 +1119,25 @@ impl PreparedRelationalAccessPlan {
                 right_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(right_access.clone()),
             );
+            let selectivity = materialized_equi_join_selectivity(
+                state,
+                index_read_mode,
+                &left,
+                &right,
+                &merge_keys,
+            );
             let cost = estimate_relational_join_cost(
                 estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
                 estimate_relational_access_cost(right_access.descriptor.estimated_rows),
                 RelationalJoinCardinality::Inner,
                 RelationalJoinRightInput::Materialized,
+                selectivity,
             );
             let root = RelationalPhysicalJoinNode::merge_join(
                 RelationalOperatorId::from_plan_index(1),
                 vec![join.on.clone()],
                 merge_keys,
+                selectivity,
                 left,
                 right,
             )?;
@@ -1063,6 +1175,13 @@ impl PreparedRelationalAccessPlan {
                 right_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(right_access.clone()),
             );
+            let selectivity = materialized_equi_join_selectivity(
+                state,
+                index_read_mode,
+                &left,
+                &right,
+                &equi_join_keys,
+            );
             let cost = estimate_relational_join_cost(
                 estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
                 estimate_relational_access_cost(right_access.descriptor.estimated_rows),
@@ -1071,12 +1190,14 @@ impl PreparedRelationalAccessPlan {
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
                 },
                 RelationalJoinRightInput::Materialized,
+                selectivity,
             );
             let root = RelationalPhysicalJoinNode::hash_join(
                 RelationalOperatorId::from_plan_index(1),
                 join.kind,
                 vec![join.on.clone()],
                 equi_join_keys,
+                selectivity,
                 left,
                 right,
             )?;
@@ -1187,10 +1308,15 @@ struct PreparedRelationalExecutionDescriptor {
 }
 
 impl PreparedRelationalExecutionDescriptor {
-    fn prepare(select: &SelectStatement, access_plan: &PreparedRelationalAccessPlan) -> Self {
+    fn prepare(
+        select: &SelectStatement,
+        access_plan: &PreparedRelationalAccessPlan,
+    ) -> Result<Self> {
         let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+        let access_order_by = resolved_access_order_by(select)?;
         let ordered_index_projection = !select.order_by.is_empty()
-            && access_plan.base_access.descriptor.order_prefix_len == select.order_by.len()
+            && access_order_by.len() == select.order_by.len()
+            && access_plan.base_access.descriptor.order_prefix_len == access_order_by.len()
             && select.joins.is_empty()
             && !select.distinct
             && !has_aggregate
@@ -1198,7 +1324,7 @@ impl PreparedRelationalExecutionDescriptor {
             && predicate_is_covered_by_access(
                 select.selection.as_ref(),
                 &access_plan.base_access.descriptor,
-                &select.order_by,
+                &access_order_by,
                 &select.from.name,
                 select.from_alias.as_deref().unwrap_or(&select.from.name),
             );
@@ -1231,7 +1357,7 @@ impl PreparedRelationalExecutionDescriptor {
                 .as_ref()
                 .map_or(0, |tree| tree.root.materialized_right_count()),
         );
-        Self {
+        Ok(Self {
             mode,
             memory_shape: RelationalExecutionMemoryShape {
                 pipeline_batch_count: 1usize.saturating_add(
@@ -1242,7 +1368,7 @@ impl PreparedRelationalExecutionDescriptor {
                 ),
                 blocking_operator_count,
             },
-        }
+        })
     }
 
     fn admit<'state, 'runtime>(
@@ -1361,7 +1487,7 @@ impl PreparedRelationalSelect {
             }
         }
         if self.execution
-            != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)
+            != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)?
         {
             return Err(SkeinError::Execution(
                 "prepared relational SELECT has an inconsistent execution descriptor".to_string(),
@@ -1477,6 +1603,7 @@ fn planned_tree_operator_cardinality_profiles(
                 operator_id,
                 kind,
                 algorithm,
+                selectivity,
                 left,
                 right,
                 ..
@@ -1502,6 +1629,7 @@ fn planned_tree_operator_cardinality_profiles(
                             RelationalJoinRightInput::Materialized
                         }
                     },
+                    *selectivity,
                 );
                 let index = operator_id.get().checked_sub(1).ok_or_else(|| {
                     SkeinError::Execution("physical join has an invalid operator id".to_string())
@@ -1902,6 +2030,9 @@ fn prepare_relational_select(
                 )));
             }
         }
+        for item in &select.order_by {
+            resolve_relational_order_target(&select, item)?;
+        }
         Ok(())
     })?;
     let planned = join_order::plan_select_join_order(
@@ -1923,7 +2054,7 @@ fn prepare_relational_select(
     access_plan.finalize_physical_join_plan(&planned.statement, state, read_modes.index)?;
     access_plan.apply_physical_index_coverage(state, &field_plan)?;
     let execution =
-        PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan);
+        PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan)?;
     let prepare_nanos = elapsed_nanos(prepare_started);
     let prepared = PreparedRelationalSelect {
         statement: planned.statement,
@@ -1960,9 +2091,10 @@ fn prepare_syntax_access_plan(
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let prefer_ordered_access =
         select.joins.is_empty() && !select.distinct && !has_aggregate && select.group_by.is_empty();
+    let access_order_by = resolved_access_order_by(select)?;
     let base_access = choose_base_access(RelationalBaseAccessPlanning {
         predicate: select.selection.as_ref(),
-        order_by: &select.order_by,
+        order_by: &access_order_by,
         prefer_ordered_access,
         parameters,
         state,
@@ -2002,6 +2134,33 @@ fn prepare_syntax_access_plan(
     })
 }
 
+fn resolved_access_order_by(select: &SelectStatement) -> Result<Vec<crate::sql::SqlOrderItem>> {
+    let mut resolved = Vec::with_capacity(select.order_by.len());
+    let mut supports_ordered_access = true;
+    for item in &select.order_by {
+        let column = match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => Some(column),
+            RelationalOrderTarget::ProjectionColumn { column, .. } => Some(column),
+            RelationalOrderTarget::ProjectionExpression { .. } => {
+                supports_ordered_access = false;
+                None
+            }
+        };
+        if let Some(column) = column {
+            resolved.push(crate::sql::SqlOrderItem {
+                column: column.clone(),
+                direction: item.direction,
+                nulls: item.nulls,
+            });
+        }
+    }
+    Ok(if supports_ordered_access {
+        resolved
+    } else {
+        Vec::new()
+    })
+}
+
 fn prepared_access_descriptors(
     plan: &PreparedRelationalAccessPlan,
 ) -> (
@@ -2031,7 +2190,11 @@ fn plan_relational_field_plan(
 ) -> Result<RelationalFieldPlan> {
     let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
     let output_fields = plan_requested_fields(select, state)?;
-    let scan_fields = if (!select.order_by.is_empty() && !select.distinct && !has_aggregate)
+    let projects_before_order = order_by_uses_expression_alias(select)?;
+    let scan_fields = if (!select.order_by.is_empty()
+        && !select.distinct
+        && !has_aggregate
+        && !projects_before_order)
         || has_aggregate
         || !select.group_by.is_empty()
     {
@@ -5568,6 +5731,7 @@ fn visit_prepared_physical_join_plan_node<'a>(
             left,
             right,
             output_schema,
+            ..
         } => {
             if *algorithm == RelationalPhysicalJoinAlgorithm::Merge {
                 let equi_join_keys = equi_join_keys.as_ref().ok_or_else(|| {
@@ -5962,6 +6126,7 @@ struct ProjectedBatchSource<'a, 'pipeline> {
     batch_rows: usize,
     batch_memory: NonZeroUsize,
     memory_ledger: &'pipeline QueryMemoryLedger,
+    add_order_keys: bool,
 }
 
 struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
@@ -6061,7 +6226,10 @@ impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
             self.index_runtime,
             self.row_runtime,
             &mut |row| {
-                let projected = project_bound_row(&row, &self.select.projection)?;
+                let mut projected = project_bound_row(&row, &self.select.projection)?;
+                if self.add_order_keys {
+                    add_relational_order_keys(self.select, &row, &mut projected)?;
+                }
                 control = batch.push(ExecutorBinding::values(projected), emit)?;
                 if control == BatchControl::Continue && batch.is_full() {
                     control = batch.emit(emit)?;
@@ -6199,6 +6367,7 @@ fn execute_blocking_projection<'a>(
             batch_rows: memory.batch_rows.get(),
             batch_memory: memory.batch_payload_bytes,
             memory_ledger,
+            add_order_keys: false,
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
@@ -6273,6 +6442,45 @@ fn execute_blocking_projection<'a>(
                 },
             )?;
         }
+    } else if order_by_uses_expression_alias(select)? {
+        let mut projected = ProjectedBatchSource {
+            select,
+            parameters,
+            state,
+            base_schema,
+            base_qualifier,
+            base_access,
+            joins,
+            tree_execution,
+            pipeline,
+            index_runtime,
+            row_runtime,
+            batch_rows: memory.batch_rows.get(),
+            batch_memory: memory.batch_payload_bytes,
+            memory_ledger,
+            add_order_keys: true,
+        };
+        execute_relational_order(
+            &input_plan,
+            &mut projected,
+            select,
+            offset,
+            detection_limit,
+            &catalog,
+            memory,
+            memory_ledger,
+            task_context,
+            &observer,
+            &mut |batch| {
+                consume_projected_batch(
+                    batch,
+                    &mut output,
+                    &mut payload_bytes,
+                    detection_limit,
+                    limits,
+                )
+            },
+        )?;
     } else {
         let locator_layout = match tree_execution {
             Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
@@ -6306,8 +6514,15 @@ fn execute_blocking_projection<'a>(
                     .order_by
                     .iter()
                     .map(|item| {
+                        let column = match resolve_relational_order_target(select, item)? {
+                            RelationalOrderTarget::InputColumn(column) => column,
+                            RelationalOrderTarget::ProjectionColumn { column, .. } => column,
+                            RelationalOrderTarget::ProjectionExpression { .. } => unreachable!(
+                                "expression ORDER BY aliases use projected batch sorting"
+                            ),
+                        };
                         RelationalSortKey::new(
-                            resolve_column(&row, &item.column)?.clone(),
+                            resolve_column(&row, column)?.clone(),
                             item.direction,
                             item.nulls,
                         )
@@ -6438,6 +6653,43 @@ fn relational_sort_column(ordinal: usize) -> String {
     format!("{RELATIONAL_SORT_COLUMN_PREFIX}{ordinal}")
 }
 
+fn order_by_uses_expression_alias(select: &SelectStatement) -> Result<bool> {
+    select.order_by.iter().try_fold(false, |found, item| {
+        Ok(found
+            || matches!(
+                resolve_relational_order_target(select, item)?,
+                RelationalOrderTarget::ProjectionExpression { .. }
+            ))
+    })
+}
+
+fn add_relational_order_keys(
+    select: &SelectStatement,
+    row: &BoundRow<'_>,
+    projected: &mut Row,
+) -> Result<()> {
+    for (ordinal, item) in select.order_by.iter().enumerate() {
+        let value = match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => {
+                relational_sort_value(resolve_column(row, column)?)?
+            }
+            RelationalOrderTarget::ProjectionColumn { alias, .. }
+            | RelationalOrderTarget::ProjectionExpression { alias, .. } => {
+                projected.get(alias).cloned().ok_or_else(|| {
+                    SkeinError::Semantic(format!(
+                        "relational ORDER BY alias {alias} is not projected"
+                    ))
+                })?
+            }
+        };
+        projected.insert(
+            relational_sort_column(ordinal),
+            postgres_sort_key(value, item.direction, item.nulls),
+        );
+    }
+    Ok(())
+}
+
 fn strip_relational_sort_columns(row: &mut Row) {
     row.retain(|name, _| !name.starts_with(RELATIONAL_SORT_COLUMN_PREFIX));
 }
@@ -6479,23 +6731,31 @@ fn projected_order_columns(
         .order_by
         .iter()
         .map(|item| {
-            let output = select
-                .projection
-                .iter()
-                .find_map(|projection| match projection {
-                    SelectProjection::Wildcard => Some(item.column.name.clone()),
-                    SelectProjection::Column { name, alias }
-                        if name.name == item.column.name
-                            && item.column.qualifier.as_deref().is_none_or(|qualifier| {
-                                name.qualifier.as_deref() == Some(qualifier)
-                                    || select.from.name == qualifier
-                                    || select.from_alias.as_deref() == Some(qualifier)
-                            }) =>
-                    {
-                        Some(alias.clone().unwrap_or_else(|| name.name.clone()))
+            let output =
+                match resolve_relational_order_target(select, item)? {
+                    RelationalOrderTarget::ProjectionColumn { alias, .. }
+                    | RelationalOrderTarget::ProjectionExpression { alias, .. } => {
+                        Some(alias.to_string())
                     }
-                    SelectProjection::Column { .. } | SelectProjection::Expression { .. } => None,
-                });
+                    RelationalOrderTarget::InputColumn(column) => select
+                        .projection
+                        .iter()
+                        .find_map(|projection| match projection {
+                            SelectProjection::Wildcard => Some(column.name.clone()),
+                            SelectProjection::Column { name, alias }
+                                if name.name == column.name
+                                    && column.qualifier.as_deref().is_none_or(|qualifier| {
+                                        name.qualifier.as_deref() == Some(qualifier)
+                                            || select.from.name == qualifier
+                                            || select.from_alias.as_deref() == Some(qualifier)
+                                    }) =>
+                            {
+                                Some(alias.clone().unwrap_or_else(|| name.name.clone()))
+                            }
+                            SelectProjection::Column { .. }
+                            | SelectProjection::Expression { .. } => None,
+                        }),
+                };
             output.map(|output| (output, item.clone())).ok_or_else(|| {
                 SkeinError::Semantic(format!(
                     "SELECT DISTINCT requires ORDER BY column {} to appear in the projection",
@@ -9467,6 +9727,7 @@ mod tests {
             right_cost,
             RelationalJoinCardinality::Inner,
             RelationalJoinRightInput::Materialized,
+            RelationalJoinSelectivity::Unknown,
         );
         let root = RelationalPhysicalJoinNode::join(
             RelationalOperatorId::from_plan_index(3),
@@ -9479,7 +9740,8 @@ mod tests {
         let mut access_plan = syntax_plan;
         access_plan.join_selection = None;
         access_plan.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
-        let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan);
+        let execution = PreparedRelationalExecutionDescriptor::prepare(&select, &access_plan)
+            .expect("prepare relational execution descriptor");
         let prepared = PreparedRelationalSelect {
             statement: select,
             access_plan,

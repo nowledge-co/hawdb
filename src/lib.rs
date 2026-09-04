@@ -454,7 +454,8 @@ pub use skein_core::{
     GraphRagQueryPredicateOperator, GraphRagQueryProjection, GraphRagRelationshipTypeSummary,
     GraphRagRouteSummary, GraphRagSchemaContext, GraphRagSchemaContextOptions,
     GraphRagSchemaContextTruncation, RuntimeCancellationReason, RuntimeCancellationToken,
-    RuntimeCapabilities, RuntimeCapability, RuntimeTaskContext, DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS,
+    RuntimeCapabilities, RuntimeCapability, RuntimeIoWaveController, RuntimeIoWaveError,
+    RuntimeIoWavePermit, RuntimeTaskContext, DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS,
     DEFAULT_GRAPH_RAG_MAX_LABELS, DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT,
     DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES, DEFAULT_GRAPH_RAG_MAX_ROUTES,
     GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
@@ -466,10 +467,11 @@ pub use skein_optimizer::{
 pub use skein_qos::{
     IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot,
     RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeMemoryPressure, RuntimeMemorySnapshot,
-    RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTelemetryEvent,
-    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
-    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
+    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
+    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
+    StorageMediaKind,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use skein_runtime_tokio::{
@@ -551,8 +553,27 @@ pub use workload_fixtures::{
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, NowledgeGraphAdapter, NowledgeGraphStatement, Value};
+    use super::{
+        Database, IoConcurrencyBudget, NowledgeGraphAdapter, NowledgeGraphStatement,
+        RuntimeGovernor, RuntimeGovernorConfig, RuntimeIoWaveError, RuntimeMemorySnapshot,
+        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTaskContext, RuntimeWorkPriority,
+        RuntimeWorkRequest, SegmentRangeReader, SegmentReadError, SegmentReadExecutionError,
+        SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler, Value,
+    };
     use std::collections::BTreeMap;
+    use std::num::{NonZeroU64, NonZeroUsize};
+    use std::sync::Arc;
+
+    struct GovernorObservingReader {
+        governor: RuntimeGovernor,
+    }
+
+    impl SegmentRangeReader for GovernorObservingReader {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+            assert_eq!(self.governor.snapshot().active_foreground_io_slots, 1);
+            Ok(Arc::from(vec![0; range.length.get() as usize]))
+        }
+    }
 
     #[test]
     fn crate_root_exports_query_runtime_front_door() {
@@ -577,5 +598,63 @@ mod tests {
             output.rows[0].get("title"),
             Some(&Value::String("Root".to_string()))
         );
+    }
+
+    #[test]
+    fn admitted_segment_read_holds_io_slots_only_during_the_physical_wave() {
+        let resources = RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(
+                Some(1024 * 1024),
+                Some(1024 * 1024),
+                None,
+                None,
+                None,
+            ),
+        );
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            resources,
+            IoConcurrencyBudget::new(1, 1),
+        );
+        let permit = governor
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 0, 0).with_io_wave_slots(1),
+            )
+            .unwrap();
+        let context = permit.bind_task_context(RuntimeTaskContext::default());
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::MIN, NonZeroU64::MIN)
+            .schedule([SegmentReadRange::new(1, 1, 0, NonZeroU64::MIN)]);
+        let reader = GovernorObservingReader {
+            governor: governor.clone(),
+        };
+
+        SegmentReadExecutor::new(NonZeroU64::MIN)
+            .execute_with_context(&reader, &schedule, &context, |_| {
+                assert_eq!(governor.snapshot().active_foreground_io_slots, 0);
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap();
+
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 0);
+
+        let overwide = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
+            .schedule([
+                SegmentReadRange::new(1, 1, 0, NonZeroU64::MIN),
+                SegmentReadRange::new(1, 2, 1, NonZeroU64::MIN),
+            ]);
+        let error = SegmentReadExecutor::new(NonZeroU64::new(2).unwrap())
+            .execute_with_context(&reader, &overwide, &context, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SegmentReadExecutionError::RuntimeIo(RuntimeIoWaveError::ReservationExceeded {
+                requested_slots: 2,
+                reserved_slots: 1,
+            })
+        ));
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 0);
     }
 }

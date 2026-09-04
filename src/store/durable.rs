@@ -81,6 +81,9 @@ pub(super) struct DurableStore {
     projected_graphs_path: PathBuf,
     stable_id_mapping_path: PathBuf,
     pub(super) wal_path: PathBuf,
+    pub(super) wal_append_file: Option<Arc<File>>,
+    #[cfg(test)]
+    pub(super) wal_append_open_count: usize,
     pub(super) checkpoint_encoded_len: Option<u64>,
     checkpoint_encoded_checksum: Option<u64>,
     checkpoint_encoded_sha256: Option<Sha256Digest>,
@@ -523,6 +526,9 @@ impl DurableStore {
             projected_graphs_path: path.join(PROJECTED_GRAPHS_FILE),
             stable_id_mapping_path: path.join(STABLE_ID_MAPPING_FILE),
             wal_path,
+            wal_append_file: None,
+            #[cfg(test)]
+            wal_append_open_count: 0,
             checkpoint_encoded_len: manifest.checkpoint_encoded_len,
             checkpoint_encoded_checksum: manifest.checkpoint_encoded_checksum,
             checkpoint_encoded_sha256: manifest.checkpoint_encoded_sha256,
@@ -691,7 +697,11 @@ impl DurableStore {
         }
         wal_group_sync_failpoint()?;
         let started = std::time::Instant::now();
-        let file = OpenOptions::new().write(true).open(&self.wal_path)?;
+        let file = self.wal_append_file.as_ref().ok_or_else(|| {
+            SkeinError::Storage(
+                "WAL sync group has entries without an open append handle".to_string(),
+            )
+        })?;
         file.sync_data()?;
         if group.requires_parent_sync() {
             sync_parent_dir(&self.wal_path)?;
@@ -1829,25 +1839,32 @@ impl DurableStore {
         self.ensure_wal_admission(self.wal_bytes.saturating_add(byte_count))?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
-        let result = match self.open_wal_append() {
+        let result = match self.take_wal_append() {
             Err(error) => Err(error),
-            Ok((mut file, created)) => (|| {
-                if self.wal_bytes == 0 {
-                    file.write_all(&header_bytes)?;
+            Ok((file, created)) => {
+                let append_result: Result<u64> = (|| {
+                    let mut writer = file.as_ref();
+                    if self.wal_bytes == 0 {
+                        writer.write_all(&header_bytes)?;
+                    }
+                    writer.write_all(&record_bytes)?;
+                    process_crash_failpoint("after_wal_append");
+                    let fsync_micros = self.finish_wal_append(file.as_ref(), created)?;
+                    if !sync_deferred {
+                        process_crash_failpoint("after_wal_sync");
+                    }
+                    Ok(fsync_micros)
+                })();
+                match append_result {
+                    Ok(fsync_micros) => {
+                        self.wal_append_file = Some(file);
+                        Ok(fsync_micros)
+                    }
+                    Err(error) => Err(SkeinError::StorageIntegrity(format!(
+                        "WAL append outcome is uncertain after opening the WAL: {error}"
+                    ))),
                 }
-                file.write_all(&record_bytes)?;
-                process_crash_failpoint("after_wal_append");
-                let fsync_micros = self.finish_wal_append(&mut file, created)?;
-                if !sync_deferred {
-                    process_crash_failpoint("after_wal_sync");
-                }
-                Ok(fsync_micros)
-            })()
-            .map_err(|error: SkeinError| {
-                SkeinError::StorageIntegrity(format!(
-                    "WAL append outcome is uncertain after opening the WAL: {error}"
-                ))
-            }),
+            }
         };
         if let Some(telemetry) = &self.telemetry {
             telemetry.record_wal_append(WalAppendTelemetry {
@@ -1894,17 +1911,36 @@ impl DurableStore {
         )))
     }
 
-    fn open_wal_append(&self) -> Result<(File, bool)> {
-        let created = !self.wal_path.exists();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.wal_path)?;
-        Ok((file, created))
+    fn take_wal_append(&mut self) -> Result<(Arc<File>, bool)> {
+        if let Some(file) = self.wal_append_file.take() {
+            return Ok((file, false));
+        }
+        let open_existing = || OpenOptions::new().append(true).open(&self.wal_path);
+        let (file, created) = if self.wal_bytes == 0 {
+            match OpenOptions::new()
+                .append(true)
+                .create_new(true)
+                .open(&self.wal_path)
+            {
+                Ok(file) => (file, true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    (open_existing()?, false)
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            (open_existing()?, false)
+        };
+        #[cfg(test)]
+        {
+            self.wal_append_open_count = self.wal_append_open_count.saturating_add(1);
+        }
+        Ok((Arc::new(file), created))
     }
 
-    fn finish_wal_append(&mut self, file: &mut File, created: bool) -> Result<u64> {
-        file.flush()?;
+    fn finish_wal_append(&mut self, file: &File, created: bool) -> Result<u64> {
+        let mut writer = file;
+        writer.flush()?;
         if let Some(group) = &mut self.wal_sync_group {
             if created {
                 group.record_wal_created();
@@ -2844,6 +2880,7 @@ impl DurableStore {
         manifest.write(&self.manifest_path)?;
         checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished)?;
 
+        self.wal_append_file = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
         self.wal_path = manifest.wal_path(&self.root_path);
         self.checkpoint_encoded_len = manifest.checkpoint_encoded_len;

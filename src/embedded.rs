@@ -16,7 +16,7 @@ use skein_storage::SegmentReadScheduler;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -369,19 +369,17 @@ impl SkeinEmbedded {
         );
         let is_mutation = admission.is_mutation;
         let streaming_eligible = admission.streaming_eligible;
-        let execution_task_context = task_context.clone().with_admitted_parallelism(
-            NonZeroUsize::new(request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
-        );
-        let _permit = match self.runtime_governor.try_admit(request) {
+        let permit = match self.runtime_governor.try_admit(request) {
             Ok(permit) => permit,
             Err(error) => {
                 if error.is_retryable() {
                     self.runtime_governor
-                        .record_admission_wait(request, error.code);
+                        .record_admission_wait(request, error.code, 0);
                 }
                 return Err(EmbeddedQueryError::Admission(error));
             }
         };
+        let execution_task_context = permit.bind_task_context(task_context.clone());
         let result = if is_mutation || !streaming_eligible {
             self.database.query_with_params_context(
                 cypher_text,

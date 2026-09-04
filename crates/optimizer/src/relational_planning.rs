@@ -56,6 +56,7 @@ pub enum RelationalJoinPlanningReason {
     UnsupportedJoinPredicate,
     UnavailableAccessBinding,
     UnsupportedPostJoinFilter,
+    SpecializedJoinNotEnumerated,
     GroupBudgetExceeded,
     ExpressionBudgetExceeded,
     DisconnectedGraph,
@@ -77,6 +78,7 @@ impl RelationalJoinPlanningReason {
             Self::UnsupportedJoinPredicate => "unsupported_join_predicate",
             Self::UnavailableAccessBinding => "unavailable_access_binding",
             Self::UnsupportedPostJoinFilter => "unsupported_post_join_filter",
+            Self::SpecializedJoinNotEnumerated => "specialized_join_not_enumerated",
             Self::GroupBudgetExceeded => "group_budget_exceeded",
             Self::ExpressionBudgetExceeded => "expression_budget_exceeded",
             Self::DisconnectedGraph => "disconnected_graph",
@@ -436,6 +438,10 @@ mod tests {
         assert_eq!(
             RelationalJoinPlanningReason::ExpressionBudgetExceeded.as_str(),
             "expression_budget_exceeded"
+        );
+        assert_eq!(
+            RelationalJoinPlanningReason::SpecializedJoinNotEnumerated.as_str(),
+            "specialized_join_not_enumerated"
         );
     }
 

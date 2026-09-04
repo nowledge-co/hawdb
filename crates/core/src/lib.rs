@@ -9,7 +9,10 @@ pub mod schema;
 pub mod uuidv7;
 pub mod value;
 
-pub use cancellation::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
+pub use cancellation::{
+    RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
+    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeTaskContext,
+};
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
 pub use error::{Result, SkeinError};
 pub use graph::RelationshipDirection;

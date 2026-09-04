@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fmt::Debug;
 use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,11 +56,59 @@ impl RuntimeCancellationToken {
     }
 }
 
+/// A drop guard for one admitted storage I/O wave.
+pub trait RuntimeIoWavePermit: Debug + Send {}
+
+impl<T: Debug + Send> RuntimeIoWavePermit for T {}
+
+/// Execution-owned hook for acquiring the I/O capacity declared at admission.
+pub trait RuntimeIoWaveController: Debug + Send + Sync {
+    fn acquire(
+        &self,
+        slots: NonZeroUsize,
+        context: &RuntimeTaskContext,
+    ) -> Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeIoWaveError {
+    Stopped(RuntimeCancellationReason),
+    ReservationExceeded {
+        requested_slots: usize,
+        reserved_slots: usize,
+    },
+}
+
+impl Display for RuntimeIoWaveError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stopped(reason) => write!(formatter, "runtime I/O wave stopped: {reason}"),
+            Self::ReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            } => write!(
+                formatter,
+                "runtime I/O wave requested {requested_slots} slots, exceeding the {reserved_slots}-slot reservation"
+            ),
+        }
+    }
+}
+
+impl Error for RuntimeIoWaveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Stopped(reason) => Some(reason),
+            Self::ReservationExceeded { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeTaskContext {
     cancellation: RuntimeCancellationToken,
     deadline: Option<Instant>,
     admitted_parallelism: NonZeroUsize,
+    io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
 }
 
 impl RuntimeTaskContext {
@@ -68,6 +117,7 @@ impl RuntimeTaskContext {
             cancellation,
             deadline,
             admitted_parallelism: NonZeroUsize::MIN,
+            io_wave_controller: None,
         }
     }
 
@@ -91,6 +141,7 @@ impl RuntimeTaskContext {
             cancellation: self.cancellation.child(),
             deadline: self.deadline,
             admitted_parallelism: self.admitted_parallelism,
+            io_wave_controller: self.io_wave_controller.clone(),
         }
     }
 
@@ -105,6 +156,27 @@ impl RuntimeTaskContext {
 
     pub fn admitted_parallelism(&self) -> NonZeroUsize {
         self.admitted_parallelism
+    }
+
+    /// Binds the controller owned by a successful runtime admission.
+    pub fn with_io_wave_controller(mut self, controller: Arc<dyn RuntimeIoWaveController>) -> Self {
+        self.io_wave_controller = Some(controller);
+        self
+    }
+
+    /// Acquires capacity for one storage I/O wave when this is an admitted context.
+    ///
+    /// Raw contexts have no controller and return `Ok(None)`. The returned
+    /// permit must remain live only while physical reads are in flight.
+    pub fn acquire_io_wave(
+        &self,
+        slots: NonZeroUsize,
+    ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError> {
+        self.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+        self.io_wave_controller
+            .as_ref()
+            .map(|controller| controller.acquire(slots, self))
+            .transpose()
     }
 
     pub fn deadline(&self) -> Option<Instant> {
@@ -162,6 +234,39 @@ impl Error for RuntimeCancellationReason {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Debug)]
+    struct RecordingIoController {
+        active_slots: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingIoPermit {
+        active_slots: Arc<AtomicUsize>,
+        slots: usize,
+    }
+
+    impl Drop for RecordingIoPermit {
+        fn drop(&mut self) {
+            self.active_slots.fetch_sub(self.slots, Ordering::AcqRel);
+        }
+    }
+
+    impl RuntimeIoWaveController for RecordingIoController {
+        fn acquire(
+            &self,
+            slots: NonZeroUsize,
+            context: &RuntimeTaskContext,
+        ) -> Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+            context.checkpoint().map_err(RuntimeIoWaveError::Stopped)?;
+            self.active_slots.fetch_add(slots.get(), Ordering::AcqRel);
+            Ok(Box::new(RecordingIoPermit {
+                active_slots: Arc::clone(&self.active_slots),
+                slots: slots.get(),
+            }))
+        }
+    }
 
     #[test]
     fn cancellation_is_shared_across_context_clones() {
@@ -211,5 +316,24 @@ mod tests {
 
         assert_eq!(context.admitted_parallelism().get(), 4);
         assert_eq!(context.child().admitted_parallelism().get(), 4);
+    }
+
+    #[test]
+    fn child_preserves_io_controller_and_permit_releases_slots() {
+        let active_slots = Arc::new(AtomicUsize::new(0));
+        let context = RuntimeTaskContext::default().with_io_wave_controller(Arc::new(
+            RecordingIoController {
+                active_slots: Arc::clone(&active_slots),
+            },
+        ));
+
+        let permit = context
+            .child()
+            .acquire_io_wave(NonZeroUsize::new(2).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(active_slots.load(Ordering::Acquire), 2);
+        drop(permit);
+        assert_eq!(active_slots.load(Ordering::Acquire), 0);
     }
 }
