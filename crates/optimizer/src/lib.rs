@@ -70,8 +70,9 @@ pub use relational_join_rewrite::{
 };
 pub use relational_planning::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
-    RelationalJoinPlanningFallbackClass, RelationalJoinPlanningOutcome,
-    RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
+    RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
+    RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStatus,
+    RelationalJoinPlanningStrategy,
 };
 pub use relational_profile::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,

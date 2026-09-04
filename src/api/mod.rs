@@ -21461,9 +21461,33 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         options: QueryStreamOptions,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_params_options_with_join_planning(
+            sql_text,
+            parameters,
+            options,
+            RelationalJoinPlanningDirective::Auto,
+        )
+    }
+
+    /// Executes one bounded relational query under an explicit join planning
+    /// directive. `SyntaxOrder` is intended for diagnostics and differential
+    /// verification against the default cost-based plan.
+    pub fn query_sql_with_params_options_with_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        options: QueryStreamOptions,
+        join_planning: RelationalJoinPlanningDirective,
+    ) -> Result<QueryOutput> {
         let default_context = skein_core::RuntimeTaskContext::default();
         let task_context = self.task_context.as_ref().unwrap_or(&default_context);
-        self.query_sql_with_params_options_context(sql_text, parameters, options, task_context)
+        self.query_sql_with_params_options_context_and_join_planning(
+            sql_text,
+            parameters,
+            options,
+            task_context,
+            join_planning,
+        )
     }
 
     /// Executes one bounded relational `SELECT` against this pinned snapshot
@@ -21476,13 +21500,32 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         options: QueryStreamOptions,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        self.query_sql_with_params_options_profiled_with_join_planning(
+            sql_text,
+            parameters,
+            options,
+            RelationalJoinPlanningDirective::Auto,
+        )
+    }
+
+    /// Executes and profiles one relational `SELECT` under an explicit join
+    /// planning directive. `SyntaxOrder` is intended for diagnostics and
+    /// differential verification against the default cost-based plan.
+    pub fn query_sql_with_params_options_profiled_with_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        options: QueryStreamOptions,
+        join_planning: RelationalJoinPlanningDirective,
+    ) -> Result<ProfiledRelationalSqlQueryOutput> {
         let default_context = skein_core::RuntimeTaskContext::default();
         let task_context = self.task_context.as_ref().unwrap_or(&default_context);
-        self.query_sql_with_params_options_profiled_context(
+        self.query_sql_with_params_options_profiled_context_and_join_planning(
             sql_text,
             parameters,
             options,
             task_context,
+            join_planning,
         )
     }
 
@@ -21495,6 +21538,23 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         options: QueryStreamOptions,
         task_context: &skein_core::RuntimeTaskContext,
+    ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        self.query_sql_with_params_options_profiled_context_and_join_planning(
+            sql_text,
+            parameters,
+            options,
+            task_context,
+            RelationalJoinPlanningDirective::Auto,
+        )
+    }
+
+    fn query_sql_with_params_options_profiled_context_and_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        options: QueryStreamOptions,
+        task_context: &skein_core::RuntimeTaskContext,
+        join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         self.store.ensure_usable()?;
         query_runtime::query_runtime_checkpoint(Some(task_context))?;
@@ -21521,6 +21581,7 @@ impl DatabaseReadTransaction {
             max_rows,
             max_payload_bytes,
             task_context,
+            join_planning,
         )
     }
 
@@ -21533,6 +21594,23 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         options: QueryStreamOptions,
         task_context: &skein_core::RuntimeTaskContext,
+    ) -> Result<QueryOutput> {
+        self.query_sql_with_params_options_context_and_join_planning(
+            sql_text,
+            parameters,
+            options,
+            task_context,
+            RelationalJoinPlanningDirective::Auto,
+        )
+    }
+
+    fn query_sql_with_params_options_context_and_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        options: QueryStreamOptions,
+        task_context: &skein_core::RuntimeTaskContext,
+        join_planning: RelationalJoinPlanningDirective,
     ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
         query_runtime::query_runtime_checkpoint(Some(task_context))?;
@@ -21619,6 +21697,7 @@ impl DatabaseReadTransaction {
             max_rows,
             max_payload_bytes,
             task_context,
+            join_planning,
         )
         .map(|profiled| profiled.output)
     }
@@ -21630,6 +21709,7 @@ impl DatabaseReadTransaction {
         max_rows: Option<usize>,
         max_payload_bytes: Option<usize>,
         task_context: &skein_core::RuntimeTaskContext,
+        join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         let row_read_mode = match &self.projection_relational {
             Some(projection) => {
@@ -21654,7 +21734,8 @@ impl DatabaseReadTransaction {
                 max_rows,
                 max_payload_bytes,
                 Some(task_context),
-            ),
+            )
+            .with_join_planning(join_planning),
         );
         self.store.poison_on_storage_error(&query_result);
         let output = query_result?;

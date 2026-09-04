@@ -49,9 +49,9 @@ campaign runs nine complementary oracles:
   against the same relational snapshot.
 - The SQL join-rewrite oracle generates three- and four-relation INNER/LEFT trees over duplicate
   and nullable values. It compares an optimizer-eligible ordered query with the same query without
-  ordering, which deliberately selects syntax-order planning, on one pinned snapshot under bag
-  semantics. Planning evidence must prove memo selection for the optimized variant and an
-  `unstable_output_order` eligibility decision for the reference. Shapes include preserved outer
+  ordering, executed through an explicit syntax-order planning directive, on one pinned snapshot
+  under bag semantics. Planning evidence must prove memo selection for the optimized variant and
+  `explicit_syntax_order` selection for the independent reference. Shapes include preserved outer
   rows and null-rejection that permits LEFT-to-INNER conversion.
 
 The TLP relations rely on Cypher and SQL three-valued predicate logic: missing or null operands
