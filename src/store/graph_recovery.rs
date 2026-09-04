@@ -89,9 +89,7 @@ impl GraphStore {
                 ),
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(
             &working_catalog,
             self.commit_epoch + 1,
@@ -209,9 +207,7 @@ impl GraphStore {
         // The mapping is durable before the WAL batch; recovery never observes imported
         // graph rows without the stable identities required to address them.
         self.replace_stable_id_mapping_for_epoch(stable_id_mapping, target_commit_epoch)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(
             &working_catalog,
             target_commit_epoch,
