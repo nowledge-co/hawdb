@@ -5,7 +5,7 @@ mod runtime;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 pub use device::{StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind};
@@ -342,17 +342,24 @@ impl FromStr for QosAdmissionCode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LocalQosPermit {
+    scheduler: Arc<LocalQosSchedulerInner>,
     request: WorkRequest,
     started_at: Instant,
+    released: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct LocalQosScheduler {
+    inner: Arc<LocalQosSchedulerInner>,
+}
+
+#[derive(Debug)]
+struct LocalQosSchedulerInner {
     policy: LocalQosPolicy,
-    state: LocalQosState,
-    telemetry: Option<Arc<dyn QosTelemetrySink>>,
+    state: Mutex<LocalQosState>,
+    telemetry: RwLock<Option<Arc<dyn QosTelemetrySink>>>,
 }
 
 impl PartialEq for LocalQosPermit {
@@ -365,7 +372,8 @@ impl Eq for LocalQosPermit {}
 
 impl PartialEq for LocalQosScheduler {
     fn eq(&self, other: &Self) -> bool {
-        self.policy == other.policy && self.state == other.state
+        Arc::ptr_eq(&self.inner, &other.inner)
+            || (self.policy() == other.policy() && self.state() == other.state())
     }
 }
 
@@ -755,62 +763,105 @@ impl LocalQosPermit {
     pub fn request(&self) -> &WorkRequest {
         &self.request
     }
+
+    pub fn finish(mut self) {
+        self.release(true);
+    }
+
+    pub fn finish_with_outcome(mut self, success: bool) {
+        self.release(success);
+    }
+
+    fn release(&mut self, success: bool) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        self.scheduler
+            .release(&self.request, self.started_at, success);
+    }
+}
+
+impl Drop for LocalQosPermit {
+    fn drop(&mut self) {
+        self.release(false);
+    }
 }
 
 impl LocalQosScheduler {
     pub fn new(policy: LocalQosPolicy) -> Self {
         Self {
-            policy,
-            state: LocalQosState::default(),
-            telemetry: None,
+            inner: Arc::new(LocalQosSchedulerInner {
+                policy,
+                state: Mutex::new(LocalQosState::default()),
+                telemetry: RwLock::new(None),
+            }),
         }
     }
 
-    pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn QosTelemetrySink>>) {
-        self.telemetry = telemetry;
+    pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn QosTelemetrySink>>) {
+        *self
+            .inner
+            .telemetry
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = telemetry;
     }
 
     pub fn policy(&self) -> &LocalQosPolicy {
-        &self.policy
+        &self.inner.policy
     }
 
-    pub fn state(&self) -> &LocalQosState {
-        &self.state
+    pub fn state(&self) -> LocalQosState {
+        self.inner.state()
     }
 
     pub fn admit(&self, request: &WorkRequest) -> QosAdmission {
-        self.policy.admit(&self.state, request)
+        self.inner.policy.admit(&self.inner.state(), request)
     }
 
     pub fn evaluate_background_work(&self, plan: &BackgroundWorkPlan) -> BackgroundWorkDecision {
-        self.policy.evaluate_background_work(&self.state, plan)
+        self.inner
+            .policy
+            .evaluate_background_work(&self.inner.state(), plan)
     }
 
     pub fn rank_background_work(&self, plans: &[BackgroundWorkPlan]) -> Vec<RankedBackgroundWork> {
-        self.policy.rank_background_work(&self.state, plans)
+        self.inner
+            .policy
+            .rank_background_work(&self.inner.state(), plans)
     }
 
     pub fn snapshot(&self) -> LocalQosSnapshot {
-        self.policy.snapshot(&self.state)
+        self.inner.policy.snapshot(&self.inner.state())
     }
 
     pub fn try_start(
-        &mut self,
+        &self,
         request: WorkRequest,
     ) -> std::result::Result<LocalQosPermit, QosAdmission> {
-        match self.policy.admit(&self.state, &request) {
+        let admission = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let admission = self.inner.policy.admit(&state, &request);
+            if matches!(admission, QosAdmission::Admit)
+                && request.priority == WorkPriority::Background
+            {
+                state.running_background_operations = state
+                    .running_background_operations
+                    .saturating_add(request.estimated_operations);
+                let class_index = request.class.as_index();
+                state.running_background_operations_by_class[class_index] = state
+                    .running_background_operations_by_class[class_index]
+                    .saturating_add(request.estimated_operations);
+            }
+            admission
+        };
+        match admission {
             QosAdmission::Admit => {
-                if request.priority == WorkPriority::Background {
-                    self.state.running_background_operations = self
-                        .state
-                        .running_background_operations
-                        .saturating_add(request.estimated_operations);
-                    let class_index = request.class.as_index();
-                    self.state.running_background_operations_by_class[class_index] =
-                        self.state.running_background_operations_by_class[class_index]
-                            .saturating_add(request.estimated_operations);
-                }
-                self.record_background_event(
+                self.inner.record_background_event(
                     &request,
                     QosTelemetryPhase::Admission,
                     QosTelemetryOutcome::Admitted,
@@ -818,8 +869,10 @@ impl LocalQosScheduler {
                     0,
                 );
                 Ok(LocalQosPermit {
+                    scheduler: Arc::clone(&self.inner),
                     request,
                     started_at: Instant::now(),
+                    released: false,
                 })
             }
             admission => {
@@ -828,7 +881,7 @@ impl LocalQosScheduler {
                     QosAdmission::Defer { .. } => QosTelemetryOutcome::Deferred,
                     QosAdmission::Reject { .. } => QosTelemetryOutcome::Rejected,
                 };
-                self.record_background_event(
+                self.inner.record_background_event(
                     &request,
                     QosTelemetryPhase::Admission,
                     outcome,
@@ -839,29 +892,33 @@ impl LocalQosScheduler {
             }
         }
     }
+}
 
-    pub fn finish(&mut self, permit: LocalQosPermit) {
-        self.finish_with_outcome(permit, true);
+impl LocalQosSchedulerInner {
+    fn state(&self) -> LocalQosState {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
-    pub fn finish_with_outcome(&mut self, permit: LocalQosPermit, success: bool) {
-        if permit.request.priority == WorkPriority::Background {
-            self.state.running_background_operations = self
+    fn release(&self, request: &WorkRequest, started_at: Instant, success: bool) {
+        if request.priority == WorkPriority::Background {
+            let mut state = self
                 .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.running_background_operations = state
                 .running_background_operations
-                .saturating_sub(permit.request.estimated_operations);
-            let class_index = permit.request.class.as_index();
-            self.state.running_background_operations_by_class[class_index] =
-                self.state.running_background_operations_by_class[class_index]
-                    .saturating_sub(permit.request.estimated_operations);
+                .saturating_sub(request.estimated_operations);
+            let class_index = request.class.as_index();
+            state.running_background_operations_by_class[class_index] = state
+                .running_background_operations_by_class[class_index]
+                .saturating_sub(request.estimated_operations);
         }
-        let elapsed_micros = permit
-            .started_at
-            .elapsed()
-            .as_micros()
-            .min(u128::from(u64::MAX)) as u64;
+        let elapsed_micros = started_at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         self.record_background_event(
-            &permit.request,
+            request,
             QosTelemetryPhase::Completion,
             if success {
                 QosTelemetryOutcome::Completed
@@ -884,7 +941,12 @@ impl LocalQosScheduler {
         if request.priority != WorkPriority::Background {
             return;
         }
-        if let Some(telemetry) = &self.telemetry {
+        let telemetry = self
+            .telemetry
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(telemetry) = telemetry {
             telemetry.record_qos(QosTelemetryEvent {
                 phase,
                 outcome,
@@ -939,7 +1001,9 @@ mod tests {
         QosTelemetryEvent, QosTelemetryOutcome, QosTelemetryPhase, QosTelemetrySink, WorkClass,
         WorkPriority, WorkRequest,
     };
-    use std::sync::{Arc, Mutex};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
 
     #[derive(Debug, Default)]
     struct RecordingQosTelemetry {
@@ -970,13 +1034,13 @@ mod tests {
     #[test]
     fn background_scheduler_records_admission_and_completion() {
         let telemetry = Arc::new(RecordingQosTelemetry::default());
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
         scheduler.set_telemetry_sink(Some(telemetry.clone()));
 
         let permit = scheduler
             .try_start(WorkRequest::background(WorkClass::Projection, 3))
             .unwrap();
-        scheduler.finish_with_outcome(permit, false);
+        permit.finish_with_outcome(false);
 
         let events = telemetry.events.lock().unwrap();
         assert_eq!(events.len(), 2);
@@ -992,7 +1056,7 @@ mod tests {
     #[test]
     fn background_scheduler_records_bounded_defer_code() {
         let telemetry = Arc::new(RecordingQosTelemetry::default());
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(1),
             ..LocalQosPolicy::default()
         });
@@ -1016,13 +1080,13 @@ mod tests {
     #[test]
     fn foreground_scheduler_does_not_emit_background_metrics() {
         let telemetry = Arc::new(RecordingQosTelemetry::default());
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
         scheduler.set_telemetry_sink(Some(telemetry.clone()));
 
         let permit = scheduler
             .try_start(WorkRequest::foreground(WorkClass::Query, 1))
             .unwrap();
-        scheduler.finish(permit);
+        permit.finish();
 
         assert!(telemetry.events.lock().unwrap().is_empty());
     }
@@ -1391,7 +1455,7 @@ mod tests {
 
     #[test]
     fn scheduler_evaluates_background_work_against_running_state() {
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_total_background_operations: Some(4),
             ..LocalQosPolicy::default()
         });
@@ -1414,7 +1478,7 @@ mod tests {
         ));
         assert!(decision.score > 0);
 
-        scheduler.finish(running);
+        running.finish();
     }
 
     #[test]
@@ -1481,7 +1545,7 @@ mod tests {
 
     #[test]
     fn scheduler_ranks_background_work_against_current_state() {
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_total_background_operations: Some(2),
             ..LocalQosPolicy::default()
         });
@@ -1517,7 +1581,7 @@ mod tests {
             QosAdmission::Defer { .. }
         ));
 
-        scheduler.finish(running);
+        running.finish();
     }
 
     #[test]
@@ -1527,7 +1591,7 @@ mod tests {
             max_total_background_operations: Some(12),
             ..LocalQosPolicy::default()
         };
-        let mut scheduler = LocalQosScheduler::new(policy);
+        let scheduler = LocalQosScheduler::new(policy);
 
         let first = scheduler
             .try_start(WorkRequest::background(WorkClass::Projection, 8))
@@ -1543,20 +1607,128 @@ mod tests {
         ));
         assert_eq!(scheduler.state().running_background_operations, 8);
 
-        scheduler.finish(first);
+        first.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
 
         let second = scheduler
             .try_start(WorkRequest::background(WorkClass::Analytics, 5))
             .unwrap();
         assert_eq!(scheduler.state().running_background_operations, 5);
-        scheduler.finish(second);
+        second.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
 
     #[test]
+    fn scheduler_clones_share_one_background_budget() {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let shared = scheduler.clone();
+        let permit = scheduler
+            .try_start(WorkRequest::background(WorkClass::Projection, 3))
+            .unwrap();
+
+        let admission = shared
+            .try_start(WorkRequest::background(WorkClass::Analytics, 2))
+            .unwrap_err();
+        assert_eq!(
+            admission.code(),
+            Some(QosAdmissionCode::TotalBackgroundLimitExceeded)
+        );
+
+        drop(permit);
+        assert_eq!(shared.state().running_background_operations, 0);
+        shared
+            .try_start(WorkRequest::background(WorkClass::Analytics, 2))
+            .unwrap()
+            .finish();
+    }
+
+    #[test]
+    fn concurrent_scheduler_clones_never_over_admit_shared_budget() {
+        const WORKER_COUNT: usize = 8;
+        const BACKGROUND_LIMIT: usize = 4;
+
+        let scheduler = Arc::new(LocalQosScheduler::new(LocalQosPolicy {
+            max_total_background_operations: Some(BACKGROUND_LIMIT),
+            ..LocalQosPolicy::default()
+        }));
+        let start = Arc::new(Barrier::new(WORKER_COUNT + 1));
+        let settled = Arc::new(Barrier::new(WORKER_COUNT + 1));
+        let release = Arc::new(Barrier::new(WORKER_COUNT + 1));
+
+        let workers = (0..WORKER_COUNT)
+            .map(|_| {
+                let scheduler = Arc::clone(&scheduler);
+                let start = Arc::clone(&start);
+                let settled = Arc::clone(&settled);
+                let release = Arc::clone(&release);
+                thread::spawn(move || {
+                    start.wait();
+                    let permit = scheduler
+                        .try_start(WorkRequest::background(WorkClass::Projection, 1))
+                        .ok();
+                    settled.wait();
+                    let admitted = permit.is_some();
+                    release.wait();
+                    drop(permit);
+                    admitted
+                })
+            })
+            .collect::<Vec<_>>();
+
+        start.wait();
+        settled.wait();
+        assert_eq!(
+            scheduler.state().running_background_operations,
+            BACKGROUND_LIMIT
+        );
+        release.wait();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .filter(|admitted| *admitted)
+                .count(),
+            BACKGROUND_LIMIT
+        );
+        assert_eq!(scheduler.state().running_background_operations, 0);
+    }
+
+    #[test]
+    fn permit_drop_releases_background_budget_after_error_and_panic() {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_total_background_operations: Some(3),
+            ..LocalQosPolicy::default()
+        });
+        let fail_after_admission = || -> std::result::Result<(), &'static str> {
+            let _permit = scheduler
+                .try_start(WorkRequest::background(WorkClass::Projection, 3))
+                .unwrap();
+            Err("operation failed")
+        };
+
+        assert_eq!(fail_after_admission(), Err("operation failed"));
+        assert_eq!(scheduler.state().running_background_operations, 0);
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _permit = scheduler
+                .try_start(WorkRequest::background(WorkClass::Projection, 3))
+                .unwrap();
+            panic!("operation panicked");
+        }));
+        assert!(panic.is_err());
+        assert_eq!(scheduler.state().running_background_operations, 0);
+        scheduler
+            .try_start(WorkRequest::background(WorkClass::Projection, 3))
+            .unwrap()
+            .finish();
+    }
+
+    #[test]
     fn scheduler_does_not_charge_foreground_work() {
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_total_background_operations: Some(1),
             ..LocalQosPolicy::default()
         });
@@ -1566,7 +1738,7 @@ mod tests {
             .unwrap();
         assert_eq!(scheduler.state().running_background_operations, 0);
 
-        scheduler.finish(permit);
+        permit.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
 
@@ -1575,7 +1747,7 @@ mod tests {
         let mut class_limits = [None; super::WORK_CLASS_COUNT];
         class_limits[WorkClass::Projection.as_index()] = Some(4);
         class_limits[WorkClass::Analytics.as_index()] = Some(10);
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(10),
             max_total_background_operations: Some(20),
             max_background_operations_by_class: class_limits,
@@ -1617,7 +1789,7 @@ mod tests {
             2
         );
 
-        scheduler.finish(projection);
+        projection.finish();
         assert_eq!(
             scheduler.state().running_background_operations_by_class
                 [WorkClass::Projection.as_index()],
@@ -1625,7 +1797,7 @@ mod tests {
         );
         assert_eq!(scheduler.state().running_background_operations, 2);
 
-        scheduler.finish(analytics);
+        analytics.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
 
@@ -1649,7 +1821,7 @@ mod tests {
     fn qos_snapshot_reports_foreground_first_bounded_background_state() {
         let mut class_limits = [None; super::WORK_CLASS_COUNT];
         class_limits[WorkClass::Projection.as_index()] = Some(4);
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(8),
             max_total_background_operations: Some(12),
             max_background_operations_by_class: class_limits,
@@ -1676,7 +1848,7 @@ mod tests {
         assert_eq!(projection.remaining_background_operations, Some(1));
         assert!(!projection.over_budget);
 
-        scheduler.finish(permit);
+        permit.finish();
     }
 
     #[test]
@@ -1727,7 +1899,7 @@ mod loom_tests {
         LocalQosPolicy, LocalQosScheduler, QosAdmissionCode, WorkClass, WorkRequest,
         WORK_CLASS_COUNT,
     };
-    use loom::sync::{Arc, Mutex};
+    use loom::sync::Arc;
     use loom::thread;
 
     #[test]
@@ -1735,12 +1907,12 @@ mod loom_tests {
         loom::model(|| {
             let mut class_limits = [None; WORK_CLASS_COUNT];
             class_limits[WorkClass::Projection.as_index()] = Some(4);
-            let scheduler = Arc::new(Mutex::new(LocalQosScheduler::new(LocalQosPolicy {
+            let scheduler = Arc::new(LocalQosScheduler::new(LocalQosPolicy {
                 max_background_operations: Some(4),
                 max_total_background_operations: Some(4),
                 max_background_operations_by_class: class_limits,
                 background_enabled: true,
-            })));
+            }));
 
             let first = spawn_projection_worker(Arc::clone(&scheduler));
             let second = spawn_projection_worker(Arc::clone(&scheduler));
@@ -1748,7 +1920,6 @@ mod loom_tests {
             let first_admitted = first.join().unwrap();
             let second_admitted = second.join().unwrap();
 
-            let scheduler = scheduler.lock().unwrap();
             assert!(first_admitted || second_admitted);
             assert!(scheduler.state().running_background_operations <= 4);
             assert_eq!(scheduler.state().running_background_operations, 0);
@@ -1760,30 +1931,22 @@ mod loom_tests {
         });
     }
 
-    fn spawn_projection_worker(
-        scheduler: Arc<Mutex<LocalQosScheduler>>,
-    ) -> thread::JoinHandle<bool> {
+    fn spawn_projection_worker(scheduler: Arc<LocalQosScheduler>) -> thread::JoinHandle<bool> {
         thread::spawn(move || {
-            let admission = {
-                let mut scheduler = scheduler.lock().unwrap();
-                let admission =
-                    scheduler.try_start(WorkRequest::background(WorkClass::Projection, 3));
-                assert!(scheduler.state().running_background_operations <= 4);
-                assert!(
-                    scheduler.state().running_background_operations_by_class
-                        [WorkClass::Projection.as_index()]
-                        <= 4
-                );
-                admission
-            };
+            let admission = scheduler.try_start(WorkRequest::background(WorkClass::Projection, 3));
+            assert!(scheduler.state().running_background_operations <= 4);
+            assert!(
+                scheduler.state().running_background_operations_by_class
+                    [WorkClass::Projection.as_index()]
+                    <= 4
+            );
 
             thread::yield_now();
 
             match admission {
                 Ok(permit) => {
-                    let mut scheduler = scheduler.lock().unwrap();
                     assert!(scheduler.state().running_background_operations <= 4);
-                    scheduler.finish(permit);
+                    permit.finish();
                     assert!(scheduler.state().running_background_operations <= 4);
                     true
                 }

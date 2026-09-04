@@ -22,8 +22,8 @@ use crate::{
     BackgroundWorkHint, BackgroundWorkPlan, BoundedReadQueryOutput, Database, DatabaseConfig,
     DatabaseReadTransaction, GraphRagGeneratedQuery, GraphRagSchemaContext,
     GraphRagSchemaContextOptions, KnowledgeRetrievalOutput, KnowledgeRetrievalRequest,
-    LocalQosPolicy, LocalQosScheduler, LocalQosState, NowledgeGraphStatement, PlanCacheLookup,
-    QueryOutput, QueryStreamOptions, QueryStreamReport, ReadExecutionProfile, Result,
+    LocalQosPolicy, LocalQosState, NowledgeGraphStatement, PlanCacheLookup, QueryOutput,
+    QueryStreamOptions, QueryStreamReport, ReadExecutionProfile, Result,
     ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
     SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
     SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus, SearchProjectionDelta,
@@ -6571,9 +6571,8 @@ impl NowledgeMemEmbeddedStoreHandle {
             .search_projection_changefeed_readiness(require_restart_recoverable, max_operations)
     }
 
-    pub fn catch_up_search_projection_with_scheduler(
+    pub fn catch_up_search_projection_scheduled(
         &self,
-        scheduler: &mut LocalQosScheduler,
         max_operations_per_batch: usize,
         max_batches: usize,
     ) -> Result<ScheduledSearchProjectionCatchUpReport> {
@@ -6582,11 +6581,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
         let _permit = self.admit_typed_maintenance(estimated_input_bytes, 1)?;
         self.write_store()?
-            .catch_up_search_projection_with_scheduler(
-                scheduler,
-                max_operations_per_batch,
-                max_batches,
-            )
+            .catch_up_search_projection_scheduled(max_operations_per_batch, max_batches)
     }
 
     fn admit_typed_mutation(&self) -> Result<RuntimePermit> {
@@ -7243,9 +7238,8 @@ impl NowledgeMemEmbeddedStore {
             )
     }
 
-    pub fn catch_up_search_projection_with_scheduler(
+    pub fn catch_up_search_projection_scheduled(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_operations_per_batch: usize,
         max_batches: usize,
     ) -> Result<ScheduledSearchProjectionCatchUpReport> {
@@ -7255,9 +7249,8 @@ impl NowledgeMemEmbeddedStore {
             ..
         } = self;
         let search_projection = require_search_projection_mut(search_projection)?;
-        graph.database().catch_up_search_projection_with_scheduler(
+        graph.database().catch_up_search_projection_scheduled(
             search_projection.index_mut(),
-            scheduler,
             max_operations_per_batch,
             max_batches,
         )
@@ -7265,7 +7258,6 @@ impl NowledgeMemEmbeddedStore {
 
     pub fn apply_scheduled_background_search_projection_graph_delta(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
         let Self {
@@ -7278,7 +7270,6 @@ impl NowledgeMemEmbeddedStore {
             .database()
             .apply_scheduled_background_search_projection_graph_delta(
                 search_projection.index_mut(),
-                scheduler,
                 request,
             )
     }
@@ -10532,12 +10523,12 @@ mod tests {
         DatabaseConfig, GraphRagQueryBinding, GraphRagQueryDraft, GraphRagQueryPattern,
         GraphRagQueryPredicate, GraphRagQueryPredicateOperator, GraphRagQueryProjection,
         GraphRagSchemaContextOptions, KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest,
-        LocalQosPolicy, LocalQosScheduler, LocalQosState, NowledgeGraphStatement,
-        ProductionEvidenceBinding, ProductionQualificationIdentity, RecoveryMode,
-        SearchEmbeddingManifest, SearchIndex, SearchMode, SearchProjectionDelta,
-        SearchProjectionFreshness, SearchProjectionKind, SearchProjectionProbeOptions,
-        SearchProjectionRelationalDelta, SearchProjectionRow, SkeinError,
-        SkeinLightningInitialImportCheckpoint, SkeinLightningInitialImportCutoverCatchUpReport,
+        LocalQosPolicy, LocalQosState, NowledgeGraphStatement, ProductionEvidenceBinding,
+        ProductionQualificationIdentity, RecoveryMode, SearchEmbeddingManifest, SearchIndex,
+        SearchMode, SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind,
+        SearchProjectionProbeOptions, SearchProjectionRelationalDelta, SearchProjectionRow,
+        SkeinError, SkeinLightningInitialImportCheckpoint,
+        SkeinLightningInitialImportCutoverCatchUpReport,
         SkeinLightningInitialImportDocumentIdentity, SkeinLightningInitialImportReadinessInputs,
         StorageOpenTimings, StorageRecoveryReport, StorageResidencyMode,
         StorageResourceProfileLimits, VectorRecallValidationOptions, VectorRecallValidationReport,
@@ -15241,7 +15232,13 @@ mod tests {
 
     #[test]
     fn embedded_store_background_delta_uses_scheduler_qos() {
-        let db = Database::new();
+        let db = Database::new_with_config(DatabaseConfig {
+            local_qos_policy: LocalQosPolicy {
+                max_total_background_operations: Some(0),
+                ..LocalQosPolicy::default()
+            },
+            ..DatabaseConfig::default()
+        });
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
@@ -15252,13 +15249,8 @@ mod tests {
             .build_search_projection_graph_delta_request_from_freshness(Some(4))
             .unwrap()
             .expect("expected graph delta request");
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_total_background_operations: Some(0),
-            ..LocalQosPolicy::default()
-        });
-
         let error = store
-            .apply_scheduled_background_search_projection_graph_delta(&mut scheduler, request)
+            .apply_scheduled_background_search_projection_graph_delta(request)
             .unwrap_err();
 
         assert!(error
@@ -15276,22 +15268,22 @@ mod tests {
     fn embedded_store_scheduled_catch_up_reports_qos_deferral_without_applying() {
         let root = unique_nowledge_mem_test_dir("embedded_scheduled_catch_up_deferred");
         let search_path = root.join("search");
+        let database = Database::new_with_config(DatabaseConfig {
+            local_qos_policy: LocalQosPolicy {
+                max_total_background_operations: Some(0),
+                ..LocalQosPolicy::default()
+            },
+            ..DatabaseConfig::default()
+        });
         let mut graph =
-            NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+            NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
             .unwrap();
         let projection =
             NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_total_background_operations: Some(0),
-            ..LocalQosPolicy::default()
-        });
-
-        let report = store
-            .catch_up_search_projection_with_scheduler(&mut scheduler, 4, 1)
-            .unwrap();
+        let report = store.catch_up_search_projection_scheduled(4, 1).unwrap();
 
         assert_eq!(
             report.stop_reason,
@@ -15317,8 +15309,10 @@ mod tests {
     fn embedded_store_handle_scheduled_catch_up_checkpoints_before_returning() {
         let root = unique_nowledge_mem_test_dir("embedded_handle_scheduled_catch_up");
         let search_path = root.join("search");
+        let database = Database::new();
+        let scheduler = database.local_qos_scheduler();
         let mut graph =
-            NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
+            NowledgeMemGraph::from_database(database, NowledgeMemGraphMode::WritableCutover);
         graph
             .query("CREATE (:Memory {id: 'new', title: 'Scheduled facade'})")
             .unwrap();
@@ -15328,11 +15322,7 @@ mod tests {
             graph,
             Some(projection),
         ));
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
-
-        let report = handle
-            .catch_up_search_projection_with_scheduler(&mut scheduler, 4, 1)
-            .unwrap();
+        let report = handle.catch_up_search_projection_scheduled(4, 1).unwrap();
 
         assert_eq!(
             report.stop_reason,
@@ -15374,11 +15364,7 @@ mod tests {
         let projection =
             NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
-
-        let report = store
-            .catch_up_search_projection_with_scheduler(&mut scheduler, 1, 1)
-            .unwrap();
+        let report = store.catch_up_search_projection_scheduled(1, 1).unwrap();
 
         assert_eq!(
             report.stop_reason,

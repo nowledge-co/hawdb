@@ -492,14 +492,25 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         pinned_view.physical_generation(),
         Some(ManifestGeneration(1))
     );
-    db.query("CREATE (:Memory {id: 2, title: 'Second'})")
+    for id in 2..=5 {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, title: 'Newer'})",
+            &BTreeMap::from([("id".to_string(), Value::Int(id))]),
+        )
         .unwrap();
-    db.checkpoint().unwrap();
-    db.query("CREATE (:Memory {id: 3, title: 'Third'})")
-        .unwrap();
-    db.checkpoint().unwrap();
+        db.checkpoint().unwrap();
+    }
 
     assert!(path.join("canonical.1.skein").exists());
+    assert!(!path.join("canonical.2.skein").exists());
+    assert!(!path.join("canonical.3.skein").exists());
+    assert!(path.join("canonical.4.skein").exists());
+    assert!(path.join("canonical.5.skein").exists());
+    assert!(path.join("checkpoint.1.skein").exists());
+    assert!(!path.join("checkpoint.2.skein").exists());
+    assert!(!path.join("checkpoint.3.skein").exists());
+    assert!(path.join("checkpoint.4.skein").exists());
+    assert!(path.join("checkpoint.5.skein").exists());
     let pinned = reader
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap();
@@ -510,9 +521,9 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
     drop(reader);
     db.checkpoint().unwrap();
     assert!(!path.join("canonical.1.skein").exists());
-    assert!(!path.join("canonical.2.skein").exists());
-    assert!(path.join("canonical.3.skein").exists());
-    assert!(path.join("canonical.4.skein").exists());
+    assert!(!path.join("canonical.4.skein").exists());
+    assert!(path.join("canonical.5.skein").exists());
+    assert!(path.join("canonical.6.skein").exists());
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }

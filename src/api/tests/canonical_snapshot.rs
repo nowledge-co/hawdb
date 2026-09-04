@@ -3236,9 +3236,6 @@ fn skein_lightning_background_bootstrap_export_uses_qos_without_gating_direct_ex
 fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget() {
     let path = unique_test_dir("skein_lightning_scheduled_background_export");
     {
-        let mut db = Database::open(&path).unwrap();
-        db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
-            .unwrap();
         let mut class_limits = [None; crate::WORK_CLASS_COUNT];
         class_limits[WorkClass::Import.as_index()] = Some(5);
         let policy = LocalQosPolicy {
@@ -3247,10 +3244,20 @@ fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget(
             max_background_operations_by_class: class_limits,
             ..LocalQosPolicy::default()
         };
-        let mut scheduler = LocalQosScheduler::new(policy);
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: policy,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
+            .unwrap();
+        let scheduler = db.local_qos_scheduler();
 
         let export = db
-            .prepare_scheduled_background_skein_lightning_bootstrap_export(&mut scheduler)
+            .prepare_scheduled_background_skein_lightning_bootstrap_export()
             .unwrap();
 
         assert_eq!(export.manifest.node_count, 2);

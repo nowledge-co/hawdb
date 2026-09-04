@@ -592,6 +592,13 @@ repair MUST use a separate typed API: a read-only generation-bound dry run,
 followed by explicit acknowledgement and state revalidation. A pending repair
 record MUST block ordinary open, and an interrupted repair may be finalized
 only when the manifest, retained WAL, and quarantine identities still match.
+Automatic quarantine for complete-record corruption MUST deduplicate identical
+WAL content and enforce a configured aggregate byte bound. A source WAL larger
+than that bound MUST remain unchanged and MUST NOT be copied. Generation
+reclamation MUST retain the current and previous generations and the exact
+physical generations pinned by active readers, including their indirectly
+referenced immutable row, overflow, and append artifacts; unrelated intermediate
+generations MUST remain reclaimable.
 
 Generation-bound canonical adjacency and persistent property projection files
 are rebuildable derived storage. Corruption in either MUST fail closed during

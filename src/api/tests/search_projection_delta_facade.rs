@@ -85,12 +85,10 @@ fn database_facade_scheduled_search_projection_delta_releases_background_budget(
     search_index
         .upsert_projection_row(search_projection_row("old", "Old projection", "Keep me"))
         .unwrap();
-    let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
-
+    let scheduler = db.local_qos_scheduler();
     let error = db
         .apply_scheduled_background_search_projection_delta(
             &mut search_index,
-            &mut scheduler,
             SearchProjectionDelta {
                 upserts: vec![search_projection_row(
                     "new",
