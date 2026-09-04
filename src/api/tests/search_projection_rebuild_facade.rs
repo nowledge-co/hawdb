@@ -57,12 +57,10 @@ fn database_facade_scheduled_search_projection_rebuild_releases_background_budge
     search_index
         .upsert_projection_row(search_projection_row("old", "Old projection", "Keep me"))
         .unwrap();
-    let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
-
+    let scheduler = db.local_qos_scheduler();
     let error = db
         .rebuild_scheduled_background_search_projection(
             &mut search_index,
-            &mut scheduler,
             SearchRebuildOptions { max_rows: Some(1) },
         )
         .unwrap_err();
@@ -189,12 +187,10 @@ fn database_facade_scheduled_search_projection_metadata_repair_releases_backgrou
             })
             .unwrap();
     }
-    let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
-
+    let scheduler = db.local_qos_scheduler();
     let error = db
         .repair_scheduled_background_search_projection_metadata(
             &mut search_index,
-            &mut scheduler,
             MetadataRepairOptions { max_rows: Some(1) },
             2,
         )

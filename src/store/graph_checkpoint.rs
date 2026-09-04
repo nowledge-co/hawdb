@@ -750,9 +750,10 @@ impl GraphStore {
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
     ) -> Result<()> {
-        self.publish_prepared_checkpoint_with_shadow_admission(
+        self.publish_prepared_checkpoint_with_reclamation(
             prepared,
             oldest_reader_commit_epoch,
+            None,
             None,
         )
     }
@@ -767,6 +768,36 @@ impl GraphStore {
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
+        self.publish_prepared_checkpoint_with_reclamation(
+            prepared,
+            oldest_reader_commit_epoch,
+            None,
+            shadow_admission,
+        )
+    }
+
+    pub(crate) fn publish_prepared_checkpoint_with_reader_generations(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        pinned_reader_generations: &BTreeSet<u64>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
+        self.publish_prepared_checkpoint_with_reclamation(
+            prepared,
+            oldest_reader_commit_epoch,
+            Some(pinned_reader_generations),
+            shadow_admission,
+        )
+    }
+
+    fn publish_prepared_checkpoint_with_reclamation(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
         let generation = prepared.generation;
@@ -861,7 +892,7 @@ impl GraphStore {
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
         if let Some(durable) = self.durable.as_mut() {
-            durable.reclaim_old_generations(generation);
+            durable.reclaim_old_generations(generation, pinned_reader_generations);
         }
         Ok(())
     }
@@ -1039,6 +1070,20 @@ impl GraphStore {
         &self,
         oldest_reader_commit_epoch: Option<u64>,
     ) -> StoragePressureSnapshot {
+        let available_free_space_bytes = self
+            .durable
+            .as_ref()
+            .and_then(|durable| available_storage_space(durable.root_path()));
+        StorageDebtController.evaluate(
+            self.storage_pressure_signals(oldest_reader_commit_epoch, available_free_space_bytes),
+        )
+    }
+
+    pub(super) fn storage_pressure_signals(
+        &self,
+        oldest_reader_commit_epoch: Option<u64>,
+        available_free_space_bytes: Option<u64>,
+    ) -> StoragePressureSignals {
         let cache = self.segment_cache_snapshot().unwrap_or_default();
         let checkpoint_commit_epoch = self
             .durable
@@ -1091,7 +1136,7 @@ impl GraphStore {
                     .unwrap_or(usize::MAX)
                 });
 
-        StorageDebtController.evaluate(StoragePressureSignals {
+        StoragePressureSignals {
             current_commit_epoch: self.commit_epoch,
             checkpoint_commit_epoch,
             wal_bytes,
@@ -1115,15 +1160,12 @@ impl GraphStore {
             oldest_reader_commit_epoch,
             obsolete_generation_bytes,
             estimated_checkpoint_temporary_bytes,
-            available_free_space_bytes: self
-                .durable
-                .as_ref()
-                .and_then(|durable| available_storage_space(durable.root_path())),
+            available_free_space_bytes,
             cache_capacity_bytes: cache.capacity_bytes,
             cache_resident_bytes: cache.resident_bytes,
             cache_pinned_bytes: cache.pinned_bytes,
             integrity_poisoned: self.storage_handle_poisoned(),
-        })
+        }
     }
 
     pub(crate) fn checkpoint_estimated_operations(&self) -> usize {

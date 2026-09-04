@@ -176,9 +176,15 @@ complete fragment chain that fails its checksum, a sequence-invalid fragment,
 or a non-zero block trailer is corruption even at the end of the WAL, so
 recovery fails closed instead of truncating a potentially acknowledged commit.
 Block-aligned resynchronization locates damage but never skips it: valid
-current-generation fragments found past an end-of-log marker fail closed. Doctor is a separate typed operation, not a
-database-open mode. Planning holds the exclusive database lease, validates the
-manifest identity, WAL generation, framing, checksums, LSN continuity, and
+current-generation fragments found past an end-of-log marker fail closed.
+Writable strict opens retain automatic corrupt-WAL evidence by content identity,
+so repeated opens of the same bytes reuse one quarantine copy.
+`DatabaseConfig::max_wal_quarantine_bytes` bounds the aggregate automatic
+quarantine footprint and removes the oldest prior copies before admitting a
+different corrupt WAL. A WAL larger than that bound remains untouched in its
+authoritative location and is not copied. Doctor is a separate typed operation,
+not a database-open mode. Planning holds the exclusive database lease, validates
+the manifest identity, WAL generation, framing, checksums, LSN continuity, and
 configured scan bounds, and reports the exact retained LSN plus discarded byte
 range without modifying files. Applying requires an acknowledgement bound to
 that plan, revalidates the manifest and WAL CRC32C/SHA-256 identities, persists
@@ -200,6 +206,12 @@ framing and LSN continuity, and poisons the open handle on any integrity error.
 `max_wal_replay_entries` counts these top-level WAL records, not the child
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.
+
+Checkpoint reclamation keeps the current and previous generations plus every
+physical generation pinned by an active read transaction. Unpinned intermediate
+generations are reclaimed even while an older reader remains active. Reclamation
+also follows retained row-page, overflow-extent, and append manifests so shared
+physical artifacts outlive every reader that can still reference them.
 
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads
@@ -408,6 +420,16 @@ admission failure is explicit and never appends or applies a partial batch.
 estimated bytes, the configured delta limit, statistics freshness, and cache
 resident, pinned, hit, miss, eviction, admission-rejection, and digest-mismatch
 counters.
+
+Every durable mutation also evaluates the complete projected storage-pressure
+signal set before opening or writing the WAL. The check includes WAL and
+out-of-core delta limits, handle integrity, checkpoint temporary-space reserve,
+generation reclamation and reader-pin debt, and cache pressure. Filesystem free
+space is sampled on the first append and after each 64 MiB of admitted WAL
+writes; cached samples are reduced by the WAL bytes written since the probe, so
+the hot commit path does not perform one filesystem query per mutation. A probe
+failure or non-admitting pressure state rejects the mutation before the WAL can
+grow and reports a stable pressure reason code.
 
 The ignored
 `larger_than_cache_query_reports_process_and_storage_resource_evidence` test is
@@ -821,7 +843,7 @@ failures.
 Internal background callers can route the same pending jobs through
 `Database::run_next_background_derived_artifact_job` for stateless admission or
 `Database::run_next_scheduled_background_derived_artifact_job` for the
-caller-driven `LocalQosScheduler` path. The scheduler only tracks running
+database-owned `LocalQosScheduler` path. Shared scheduler handles track running
 background operation budgets between start and finish, including optional
 per-class budgets for projection, import, analytics, and shadow lanes; it does
 not own worker threads, reorder jobs, or gate foreground explicit rebuild
@@ -889,7 +911,7 @@ Internal parser/crawler loops can use
 `Database::run_next_background_external_content_artifact_job_with` for stateless
 `LocalQosPolicy` admission or
 `Database::run_next_scheduled_background_external_content_artifact_job_with` for
-`LocalQosScheduler` accounting. These paths charge external content work to the
+database-owned `LocalQosScheduler` accounting. These paths charge external content work to the
 `Import` class and keep direct caller-owned runtime APIs available for explicit
 foreground work. Runtimes that choose a concrete pending job from the bounded
 poll result can use `Database::run_background_external_content_artifact_job_with`
@@ -918,7 +940,7 @@ projection intact.
 Incremental search projection deltas can also run through
 `SearchIndex::apply_scheduled_background_projection_delta` or the matching
 `Database::apply_scheduled_background_search_projection_delta` facade, which
-uses `LocalQosScheduler` to account for in-flight internal background
+uses the database-owned `LocalQosScheduler` to account for in-flight internal background
 projection work while keeping the direct delta API available for explicit
 foreground callers.
 The metadata-only repair path follows the same boundary:

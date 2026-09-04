@@ -2,8 +2,8 @@ use super::{optional_u64_value, optional_usize_value, Database, QueryOutput};
 use crate::error::{Result, SkeinError};
 use crate::executor::Row;
 use crate::qos::{
-    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
-    QosAdmission, WorkClass, WorkRequest,
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosState, QosAdmission, WorkClass,
+    WorkRequest,
 };
 use crate::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -530,7 +530,6 @@ impl Database {
 
     pub fn run_next_scheduled_background_derived_artifact_job(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -542,7 +541,7 @@ impl Database {
             return Ok(None);
         };
 
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -559,7 +558,7 @@ impl Database {
         };
 
         let result = self.run_next_derived_artifact_job();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -612,7 +611,6 @@ impl Database {
 
     pub fn run_next_scheduled_background_external_content_artifact_job_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
@@ -625,7 +623,7 @@ impl Database {
             return Ok(None);
         };
 
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(
             self.derived_artifact_jobs[index].background_work_request(estimated_operations),
         ) {
@@ -644,7 +642,7 @@ impl Database {
         };
 
         let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -717,7 +715,6 @@ impl Database {
 
     pub fn run_next_scheduled_background_external_content_artifact_job_for_action_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         action: &str,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
         estimated_operations: usize,
@@ -732,7 +729,7 @@ impl Database {
             return Ok(None);
         };
 
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(
             self.derived_artifact_jobs[index].background_work_request(estimated_operations),
         ) {
@@ -751,7 +748,7 @@ impl Database {
         };
 
         let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -790,7 +787,6 @@ impl Database {
 
     pub fn run_next_scheduled_background_external_content_artifact_job_for_runtime_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         manifest: &ExternalContentArtifactRuntimeManifest,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
@@ -803,7 +799,7 @@ impl Database {
             return Ok(None);
         };
 
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(
             self.derived_artifact_jobs[index]
                 .background_work_request(manifest.estimated_operations),
@@ -823,7 +819,7 @@ impl Database {
         };
 
         let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -914,12 +910,10 @@ impl Database {
 
     pub fn complete_next_scheduled_background_external_content_artifact_job_for_runtime_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         manifest: &ExternalContentArtifactRuntimeManifest,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<ExternalContentArtifactJobCompletion>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.run_next_scheduled_background_external_content_artifact_job_for_runtime_with(
-            scheduler,
             manifest,
             |job| {
                 let completion = runtime(job)?;
@@ -930,12 +924,10 @@ impl Database {
 
     pub fn complete_next_scheduled_background_external_content_artifact_job_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<ExternalContentArtifactJobCompletion>,
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.run_next_scheduled_background_external_content_artifact_job_with(
-            scheduler,
             |job| {
                 let completion = runtime(job)?;
                 Ok(external_content_artifact_completion_output(job, completion))
@@ -966,13 +958,11 @@ impl Database {
 
     pub fn complete_scheduled_background_external_content_artifact_job_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         job_id: u64,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<ExternalContentArtifactJobCompletion>,
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.run_scheduled_background_external_content_artifact_job_with(
-            scheduler,
             job_id,
             |job| {
                 let completion = runtime(job)?;
@@ -1018,7 +1008,6 @@ impl Database {
 
     pub fn run_scheduled_background_external_content_artifact_job_with(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         job_id: u64,
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
         estimated_operations: usize,
@@ -1033,7 +1022,7 @@ impl Database {
             return Ok(None);
         };
 
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(
             self.derived_artifact_jobs[index].background_work_request(estimated_operations),
         ) {
@@ -1052,7 +1041,7 @@ impl Database {
         };
 
         let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 

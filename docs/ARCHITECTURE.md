@@ -189,7 +189,9 @@ blocking-operator budget. Sort, grouped aggregate, and TopN use bounded
 two-way external merge passes with cumulative spill-byte and spill-run limits.
 Spill files are query-scoped and removed on both success and failure.
 Hard limits and background admission remain owned by `DatabaseConfig`,
-`LocalQosPolicy`, and caller-owned schedulers.
+`LocalQosPolicy`, and the database-owned shared scheduler. Host loops still
+choose which maintenance candidate to run, but they cannot replace the
+scheduler or fork its in-flight counters.
 These variables are runtime state only: they do not write WAL, are rejected
 inside graph transactions and read snapshots, and are meant to guide resource
 scheduling rather than change query semantics.
@@ -963,8 +965,8 @@ sets, top hit IDs, and per-child top candidate ranks and scores.
 The stable embedded facade exposes this boundary without owning search state:
 `Database::rebuild_search_projection` derives projection rows from the canonical
 graph into a caller-owned `SearchIndex`, and the background variants expose the
-same rebuild through `LocalQosPolicy` or `LocalQosScheduler` admission for
-caller-owned maintenance loops. `DatabaseReadTransaction::rebuild_search_projection`
+same rebuild through `LocalQosPolicy` or database-owned `LocalQosScheduler`
+admission for host-owned maintenance loops. `DatabaseReadTransaction::rebuild_search_projection`
 and `DatabaseReadTransaction::repair_search_projection_metadata` derive the same
 projection maintenance inputs from a pinned catalog and graph snapshot.
 `Database::retrieve_knowledge`

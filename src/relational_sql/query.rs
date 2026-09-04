@@ -1378,13 +1378,16 @@ impl PreparedRelationalExecutionDescriptor {
         resources: RelationalQueryResourceContext<'runtime>,
     ) -> Result<AdmittedRelationalExecution<'state, 'runtime>> {
         skein_executor::pipeline::runtime_checkpoint(resources.task_context)?;
+        let query_memory_budget = crate::executor::enforced_query_memory_budget(
+            resources.execution_memory,
+            resources.task_context,
+        )?;
         let estimated_bytes = self
             .memory_shape
             .estimated_bytes(resources.execution_memory);
-        if estimated_bytes > resources.execution_memory.query_memory_bytes.get() {
+        if estimated_bytes > query_memory_budget.get() {
             return Err(SkeinError::Execution(format!(
-                "prepared relational query requires {estimated_bytes} estimated bytes, exceeding query_memory_bytes {}",
-                resources.execution_memory.query_memory_bytes
+                "prepared relational query requires {estimated_bytes} estimated bytes, exceeding query_memory_bytes {query_memory_budget}"
             )));
         }
         Ok(AdmittedRelationalExecution {
@@ -1393,7 +1396,7 @@ impl PreparedRelationalExecutionDescriptor {
             row_read_mode: read_modes.row,
             limits: resources.limits,
             execution_memory: resources.execution_memory,
-            memory_ledger: QueryMemoryLedger::new(resources.execution_memory.query_memory_bytes),
+            memory_ledger: QueryMemoryLedger::new(query_memory_budget),
             task_context: resources.task_context,
         })
     }
@@ -8962,6 +8965,81 @@ mod tests {
         );
         assert_eq!(optional_estimated_rows_explain_value(None), Value::Null);
         assert_eq!(optional_usize_explain_value(Some(0)), Value::Int(0));
+    }
+
+    #[test]
+    fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
+        let state = RelationalState::default();
+        let memory = skein_executor::ExecutionMemoryConfig::default();
+        let descriptor = PreparedRelationalExecutionDescriptor {
+            mode: PreparedRelationalExecutionMode::StreamingProjection,
+            memory_shape: RelationalExecutionMemoryShape {
+                pipeline_batch_count: 1,
+                blocking_operator_count: 0,
+            },
+        };
+        let admitted_bytes = 32 * 1024 * 1024;
+        let task_context = skein_core::RuntimeTaskContext::default().with_memory_reservation(
+            skein_core::RuntimeMemoryReservation::new(admitted_bytes, 1024),
+        );
+        let read_modes = RelationalQueryReadModes::new(
+            RelationalIndexReadMode::Materialized,
+            RelationalRowReadMode::CanonicalMemory,
+        );
+
+        let governed = descriptor
+            .admit(
+                &state,
+                read_modes,
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    Some(&task_context),
+                ),
+            )
+            .unwrap();
+        let ungoverned = descriptor
+            .admit(
+                &state,
+                read_modes,
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            governed.memory_ledger.snapshot().budget_bytes,
+            usize::try_from(admitted_bytes).unwrap()
+        );
+        assert_eq!(
+            ungoverned.memory_ledger.snapshot().budget_bytes,
+            memory.query_memory_bytes.get()
+        );
+
+        let undersized_context = skein_core::RuntimeTaskContext::default()
+            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1, 1));
+        let error = descriptor
+            .admit(
+                &state,
+                read_modes,
+                RelationalQueryResourceContext::new(
+                    RelationalJoinEnumerationConfig::default(),
+                    batched_index_join_limits(),
+                    &memory,
+                    Some(&undersized_context),
+                ),
+            )
+            .err()
+            .expect("undersized runtime admission must fail closed");
+        assert!(
+            error.to_string().contains("exceeding query_memory_bytes 1"),
+            "{error}"
+        );
     }
 
     #[test]

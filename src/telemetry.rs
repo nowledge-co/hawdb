@@ -8,9 +8,8 @@ mod tests {
         RuntimeTelemetryEventKind, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
     };
     use crate::{
-        Database, LocalQosPolicy, LocalQosScheduler, MetadataRepairOptions, SearchDocument,
-        SearchIndex, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
-        SearchRebuildOptions,
+        Database, MetadataRepairOptions, SearchDocument, SearchIndex, SearchProjectionDelta,
+        SearchProjectionKind, SearchProjectionRow, SearchRebuildOptions,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -184,13 +183,13 @@ mod tests {
     #[test]
     fn scheduled_search_work_uses_the_host_telemetry_sink_automatically() {
         let sink = Arc::new(RecordingSink::default());
+        let mut database = Database::new();
+        database.set_telemetry_sink(Some(sink.clone()));
         let mut index = SearchIndex::in_memory();
-        index.set_telemetry_sink(Some(sink.clone()));
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
 
-        index
-            .apply_scheduled_background_projection_delta(
-                &mut scheduler,
+        database
+            .apply_scheduled_background_search_projection_delta(
+                &mut index,
                 SearchProjectionDelta {
                     upserts: vec![SearchProjectionRow {
                         kind: SearchProjectionKind::Memory,
@@ -212,6 +211,19 @@ mod tests {
         assert_eq!(events[0].outcome, QosTelemetryOutcome::Admitted);
         assert_eq!(events[1].phase, QosTelemetryPhase::Completion);
         assert_eq!(events[1].outcome, QosTelemetryOutcome::Completed);
+        drop(events);
+
+        database.set_telemetry_sink(None);
+        database
+            .apply_scheduled_background_search_projection_delta(
+                &mut index,
+                SearchProjectionDelta {
+                    deletes: vec!["memory:qos-telemetry".to_string()],
+                    ..SearchProjectionDelta::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(sink.qos_events.lock().unwrap().len(), 2);
     }
 
     #[test]

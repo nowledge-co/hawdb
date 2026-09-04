@@ -435,7 +435,7 @@ incremental catch-up and request a rebuild when its durable search watermark is
 older than the resumable floor.
 
 A host-owned background loop MUST consume the changefeed through bounded library
-calls and a persistent QoS scheduler. Admission applies per indivisible graph
+calls and the persistent database-owned QoS scheduler. Admission applies per indivisible graph
 commit batch. A successful batch includes search delta application and a durable
 search checkpoint before its permit completes. Deferred or rejected admission
 MUST return a typed stop reason without applying the batch; exhausting the

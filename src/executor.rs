@@ -109,6 +109,43 @@ const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
 pub(crate) const SOURCE_SEGMENT_SCAN_IO_DEPTH: usize = 2;
 const SOURCE_SEGMENT_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
 
+pub(crate) fn enforced_query_memory_budget(
+    memory: &ExecutionMemoryConfig,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<NonZeroUsize> {
+    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
+        return Ok(memory.query_memory_bytes);
+    };
+    // Never widen an undersized admission to an operator-configured floor.
+    // The shared root remains the admitted reservation and the operator fails
+    // closed when its first charge cannot fit.
+    runtime_memory_budget("query memory", reservation.memory_bytes())
+}
+
+pub(crate) fn enforced_result_memory_budget(
+    memory: &ExecutionMemoryConfig,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<NonZeroUsize> {
+    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
+        return Ok(memory.query_memory_bytes);
+    };
+    let admitted = runtime_memory_budget("query result", reservation.result_bytes())?;
+    Ok(admitted.min(memory.query_memory_bytes))
+}
+
+fn runtime_memory_budget(owner: &str, bytes: u64) -> Result<NonZeroUsize> {
+    let bytes = usize::try_from(bytes).map_err(|_| {
+        SkeinError::Execution(format!(
+            "runtime-admitted {owner} reservation {bytes} does not fit the executor address space"
+        ))
+    })?;
+    NonZeroUsize::new(bytes).ok_or_else(|| {
+        SkeinError::Execution(format!(
+            "runtime-admitted {owner} reservation must be non-zero"
+        ))
+    })
+}
+
 pub(crate) fn default_morsel_cpu_ceiling(effective_cpu_slots: usize) -> usize {
     let effective_cpu_slots = effective_cpu_slots.max(1);
     effective_cpu_slots

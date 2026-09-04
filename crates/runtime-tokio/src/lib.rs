@@ -523,6 +523,47 @@ mod tests {
     }
 
     #[test]
+    fn admitted_resources_reach_async_and_blocking_operations() {
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let adapter = TokioRuntimeAdapter::borrowed(
+            host.handle().clone(),
+            governor(2),
+            TokioRuntimeConfig::default(),
+        );
+        let request = RuntimeWorkRequest::foreground_query(128, 32).with_cpu_slots(2);
+
+        let async_resources = host
+            .block_on(adapter.execute_async(
+                request.with_blocking(false),
+                RuntimeTaskContext::default(),
+                |context| async move {
+                    Ok::<_, Infallible>((
+                        context.admitted_parallelism(),
+                        context.memory_reservation(),
+                    ))
+                },
+            ))
+            .unwrap();
+        let blocking_resources = host
+            .block_on(
+                adapter.execute_blocking(request, RuntimeTaskContext::default(), |context| {
+                    Ok::<_, Infallible>((
+                        context.admitted_parallelism(),
+                        context.memory_reservation(),
+                    ))
+                }),
+            )
+            .unwrap();
+
+        for (parallelism, reservation) in [async_resources, blocking_resources] {
+            assert_eq!(parallelism.get(), 2);
+            let reservation = reservation.unwrap();
+            assert_eq!(reservation.memory_bytes(), 128);
+            assert_eq!(reservation.result_bytes(), 32);
+        }
+    }
+
+    #[test]
     fn owned_runtime_rejects_nested_creation() {
         let host = Builder::new_current_thread().enable_time().build().unwrap();
         let result = host.block_on(async {

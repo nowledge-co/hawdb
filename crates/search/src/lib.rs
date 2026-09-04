@@ -24,9 +24,7 @@ use skein_storage::{
     SegmentPruner, SegmentReadRange, SegmentSummary,
 };
 use skein_storage::{NodeId, NodeRecord};
-use skein_telemetry::{
-    qos_telemetry_sink, KernelTelemetry, KernelTelemetryOperation, TelemetrySink,
-};
+use skein_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1540,12 +1538,6 @@ impl SearchIndex {
         self.telemetry.is_some()
     }
 
-    fn configure_qos_scheduler_telemetry(&self, scheduler: &mut LocalQosScheduler) {
-        if let Some(telemetry) = &self.telemetry {
-            scheduler.set_telemetry_sink(Some(qos_telemetry_sink(telemetry.clone())));
-        }
-    }
-
     pub fn set_range_read_config(&mut self, config: SearchRangeReadConfig) {
         self.range_read_config = config;
     }
@@ -1693,12 +1685,11 @@ impl SearchIndex {
 
     pub fn apply_scheduled_background_projection_delta(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
+        scheduler: &LocalQosScheduler,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
         let permit = match scheduler.try_start(delta.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -1715,7 +1706,7 @@ impl SearchIndex {
         };
 
         let result = self.apply_projection_delta(delta);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2060,7 +2051,7 @@ impl SearchIndex {
 
     pub fn rebuild_scheduled_background_derived_artifacts<S: SearchProjectionSource + ?Sized>(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
+        scheduler: &LocalQosScheduler,
         catalog: &Catalog,
         store: &S,
         options: SearchRebuildOptions,
@@ -2071,7 +2062,6 @@ impl SearchIndex {
             WorkClass::Projection,
             self.rebuild_estimated_operations(store),
         );
-        self.configure_qos_scheduler_telemetry(scheduler);
         let permit = match scheduler.try_start(request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2088,7 +2078,7 @@ impl SearchIndex {
         };
 
         let result = self.rebuild_derived_artifacts(catalog, store, options);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2215,7 +2205,7 @@ impl SearchIndex {
 
     pub fn repair_scheduled_background_metadata_from_graph<S: SearchProjectionSource + ?Sized>(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
+        scheduler: &LocalQosScheduler,
         catalog: &Catalog,
         store: &S,
         options: MetadataRepairOptions,
@@ -2224,7 +2214,6 @@ impl SearchIndex {
         self.runtime_capabilities
             .require(RuntimeCapability::BackgroundMaintenance)?;
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
-        self.configure_qos_scheduler_telemetry(scheduler);
         let permit = match scheduler.try_start(request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2241,7 +2230,7 @@ impl SearchIndex {
         };
 
         let result = self.repair_metadata_from_graph(catalog, store, options);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -12672,11 +12661,11 @@ mod tests {
         index
             .upsert(doc("old", "Old projection", "Should stay", [1.0, 0.0]))
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
 
         let error = index
             .rebuild_scheduled_background_derived_artifacts(
-                &mut scheduler,
+                &scheduler,
                 &catalog,
                 &store,
                 SearchRebuildOptions { max_rows: Some(1) },
@@ -13009,7 +12998,7 @@ mod tests {
         index
             .upsert(doc("memory:old", "Old projection", "Remove me", [1.0, 0.0]))
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(2),
             max_total_background_operations: Some(2),
             ..LocalQosPolicy::default()
@@ -13017,7 +13006,7 @@ mod tests {
 
         let report = index
             .apply_scheduled_background_projection_delta(
-                &mut scheduler,
+                &scheduler,
                 SearchProjectionDelta {
                     upserts: vec![SearchProjectionRow {
                         kind: SearchProjectionKind::Memory,
@@ -13052,7 +13041,7 @@ mod tests {
                 [1.0, 0.0],
             ))
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(4),
             max_total_background_operations: Some(4),
             ..LocalQosPolicy::default()
@@ -13063,7 +13052,7 @@ mod tests {
 
         let error = index
             .apply_scheduled_background_projection_delta(
-                &mut scheduler,
+                &scheduler,
                 SearchProjectionDelta {
                     upserts: vec![SearchProjectionRow {
                         kind: SearchProjectionKind::Memory,
@@ -13086,7 +13075,7 @@ mod tests {
         assert!(index.document("memory:old").is_some());
         assert!(index.document("memory:new").is_none());
 
-        scheduler.finish(running);
+        running.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
 
@@ -13101,11 +13090,11 @@ mod tests {
                 [1.0, 0.0],
             ))
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
 
         let error = index
             .apply_scheduled_background_projection_delta(
-                &mut scheduler,
+                &scheduler,
                 SearchProjectionDelta {
                     upserts: vec![SearchProjectionRow {
                         kind: SearchProjectionKind::Memory,
@@ -13305,7 +13294,7 @@ mod tests {
                 metadata: BTreeMap::from([("kind".to_string(), "stale".to_string())]),
             })
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(1),
             max_total_background_operations: Some(1),
             ..LocalQosPolicy::default()
@@ -13313,7 +13302,7 @@ mod tests {
 
         let summary = index
             .repair_scheduled_background_metadata_from_graph(
-                &mut scheduler,
+                &scheduler,
                 &catalog,
                 &store,
                 MetadataRepairOptions::default(),
@@ -13362,7 +13351,7 @@ mod tests {
                 metadata: BTreeMap::from([("kind".to_string(), "stale".to_string())]),
             })
             .unwrap();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
             max_background_operations: Some(4),
             max_total_background_operations: Some(4),
             ..LocalQosPolicy::default()
@@ -13373,7 +13362,7 @@ mod tests {
 
         let error = index
             .repair_scheduled_background_metadata_from_graph(
-                &mut scheduler,
+                &scheduler,
                 &catalog,
                 &store,
                 MetadataRepairOptions::default(),
@@ -13393,7 +13382,7 @@ mod tests {
             Some("stale")
         );
 
-        scheduler.finish(running);
+        running.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
 
@@ -13426,11 +13415,11 @@ mod tests {
                 })
                 .unwrap();
         }
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
 
         let error = index
             .repair_scheduled_background_metadata_from_graph(
-                &mut scheduler,
+                &scheduler,
                 &catalog,
                 &store,
                 MetadataRepairOptions { max_rows: Some(1) },

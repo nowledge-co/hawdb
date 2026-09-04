@@ -1887,21 +1887,12 @@ impl GraphStore {
         self.poison_on_storage_error(&row_publication_requirement);
         row_publication_requirement?;
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        let wal_result = if let Some(durable) = &mut self.durable {
-            if preserve_single_create_wal
-                && let [WalOp::CreateNode {
-                    id,
-                    label,
-                    properties,
-                }] = ops.as_slice()
-            {
-                durable.append_create_node(*id, label, properties)
+        let wal_result =
+            if preserve_single_create_wal && let [op @ WalOp::CreateNode { .. }] = ops.as_slice() {
+                self.append_durable_wal_single(op.clone())
             } else {
-                durable.append_batch(ops.clone())
-            }
-        } else {
-            Ok(())
-        };
+                self.append_durable_wal_batch(&ops)
+            };
         self.poison_on_storage_error(&wal_result);
         wal_result?;
         *catalog = working_catalog;
@@ -2002,6 +1993,54 @@ impl GraphStore {
                 .map(|id| BTreeMap::from([("node_id".to_string(), Value::Int(id.0 as i64))])),
         );
         Ok(())
+    }
+
+    pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
+        if self.durable.is_none() {
+            return Ok(());
+        }
+        let pressure_signals = self.wal_admission_signals(std::slice::from_ref(&op))?;
+        self.durable
+            .as_mut()
+            .expect("durable store presence was checked")
+            .append_single(op, pressure_signals)
+    }
+
+    pub(super) fn append_durable_wal_batch(&mut self, ops: &[WalOp]) -> Result<()> {
+        if self.durable.is_none() {
+            return Ok(());
+        }
+        let pressure_signals = self.wal_admission_signals(ops)?;
+        self.durable
+            .as_mut()
+            .expect("durable store presence was checked")
+            .append_batch(ops.to_vec(), pressure_signals)
+    }
+
+    fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {
+        // DurableStore owns the persisted reader watermark and generation files, so it
+        // fills those signals immediately before admission without duplicating a directory scan.
+        let mut signals = self.storage_pressure_signals(None, None);
+        signals.current_commit_epoch = self.commit_epoch.saturating_add(1);
+        signals.estimated_checkpoint_temporary_bytes = self
+            .estimated_logical_record_bytes()
+            .saturating_add(self.relational_state.estimated_checkpoint_bytes())
+            .saturating_mul(CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER)
+            .max(MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES);
+        if self.canonical_base_out_of_core {
+            let mut touched_nodes = BTreeSet::new();
+            let mut touched_relationships = BTreeSet::new();
+            let additional = self.estimated_mutation_delta_bytes(
+                ops,
+                &mut touched_nodes,
+                &mut touched_relationships,
+            )?;
+            signals.delta_bytes = self
+                .estimated_delta_resident_bytes()
+                .saturating_add(additional);
+            signals.max_delta_bytes = self.max_out_of_core_delta_bytes;
+        }
+        Ok(signals)
     }
 
     pub(super) fn ensure_out_of_core_delta_admission(&self, ops: &[WalOp]) -> Result<()> {

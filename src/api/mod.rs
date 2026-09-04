@@ -218,6 +218,7 @@ pub struct Database {
     slow_query_log: SharedState<system_sql::SlowQueryLog>,
     statement_summary: SharedState<system_sql::StatementSummary>,
     config: DatabaseConfig,
+    local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
     reader_pins: Arc<Mutex<ReaderPins>>,
     next_derived_artifact_job_id: u64,
@@ -270,6 +271,7 @@ pub struct DatabaseConfig {
     pub recovery_mode: RecoveryMode,
     pub max_wal_replay_entries: Option<usize>,
     pub max_wal_replay_bytes: Option<u64>,
+    pub max_wal_quarantine_bytes: u64,
     pub max_wal_record_bytes: Option<usize>,
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
@@ -305,6 +307,9 @@ pub struct DatabaseConfig {
     pub slow_query_log_capacity: usize,
     pub slow_query_log_threshold_micros: u128,
     pub statement_summary_capacity: usize,
+    /// Background-work policy used for this database's full runtime lifetime
+    /// by its shared local QoS scheduler.
+    pub local_qos_policy: LocalQosPolicy,
     pub runtime_capabilities: skein_core::RuntimeCapabilities,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy,
@@ -459,6 +464,7 @@ impl Default for DatabaseConfig {
             recovery_mode: RecoveryMode::default(),
             max_wal_replay_entries: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_wal_replay_bytes: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_wal_quarantine_bytes: skein_storage::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_wal_record_bytes: Some(skein_storage::DEFAULT_MAX_WAL_RECORD_BYTES),
             max_wal_batch_operations: Some(skein_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
             max_checkpoint_encoded_bytes: Some(skein_storage::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
@@ -491,6 +497,7 @@ impl Default for DatabaseConfig {
             slow_query_log_capacity: system_sql::DEFAULT_SLOW_QUERY_LOG_CAPACITY,
             slow_query_log_threshold_micros: system_sql::DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS,
             statement_summary_capacity: system_sql::DEFAULT_STATEMENT_SUMMARY_CAPACITY,
+            local_qos_policy: LocalQosPolicy::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
             adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy::default(),
@@ -797,6 +804,7 @@ pub struct DatabaseTransaction<'a> {
     db: &'a mut Database,
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
+    task_context: Option<skein_core::RuntimeTaskContext>,
 }
 
 #[derive(Debug)]
@@ -858,6 +866,7 @@ pub struct DatabaseReadTransaction {
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
+    task_context: Option<skein_core::RuntimeTaskContext>,
     _pin: ReaderPin,
 }
 
@@ -908,6 +917,7 @@ fn configure_relational_fast_paths(store: &mut GraphStore, config: &DatabaseConf
 impl Default for Database {
     fn default() -> Self {
         let config = effective_database_config(DatabaseConfig::default());
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
@@ -927,6 +937,7 @@ impl Default for Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -981,6 +992,7 @@ impl Database {
 
     pub fn new_with_config(config: DatabaseConfig) -> Self {
         let config = effective_database_config(config);
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut store = GraphStore::default();
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
@@ -1001,6 +1013,7 @@ impl Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -1074,11 +1087,13 @@ impl Database {
         config: DatabaseConfig,
     ) -> Result<Self> {
         let config = effective_database_config(config);
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
         let replay_config = WalReplayConfig {
             recovery_mode: config.recovery_mode,
             max_entries: config.max_wal_replay_entries,
             max_bytes: config.max_wal_replay_bytes,
+            max_quarantine_bytes: config.max_wal_quarantine_bytes,
             max_record_bytes: config.max_wal_record_bytes,
             max_batch_operations: config.max_wal_batch_operations,
             max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
@@ -1124,6 +1139,7 @@ impl Database {
                 config.statement_summary_capacity,
             )),
             config,
+            local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
             next_derived_artifact_job_id: 1,
@@ -1140,6 +1156,12 @@ impl Database {
 
     pub fn config(&self) -> &DatabaseConfig {
         &self.config
+    }
+
+    /// Returns a handle to the database-owned runtime QoS scheduler.
+    /// Cloned handles share the same policy, counters, and permit ownership.
+    pub fn local_qos_scheduler(&self) -> LocalQosScheduler {
+        self.local_qos_scheduler.clone()
     }
 
     pub(crate) fn runtime_capabilities(&self) -> skein_core::RuntimeCapabilities {
@@ -1176,6 +1198,11 @@ impl Database {
             }
         }
         self.store.set_telemetry_sink(telemetry.clone());
+        self.local_qos_scheduler.set_telemetry_sink(
+            telemetry
+                .as_ref()
+                .map(|telemetry| qos_telemetry_sink(telemetry.clone())),
+        );
         self.telemetry = telemetry;
     }
 
@@ -1195,10 +1222,8 @@ impl Database {
         )
     }
 
-    fn configure_qos_scheduler_telemetry(&self, scheduler: &mut LocalQosScheduler) {
-        if let Some(telemetry) = &self.telemetry {
-            scheduler.set_telemetry_sink(Some(qos_telemetry_sink(telemetry.clone())));
-        }
+    fn local_qos_scheduler_for_work(&self) -> LocalQosScheduler {
+        self.local_qos_scheduler()
     }
 
     pub fn system_variables(&self) -> &QuerySystemVariables {
@@ -1264,12 +1289,27 @@ impl Database {
     }
 
     pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
+        self.begin_transaction_inner(None)
+    }
+
+    pub fn begin_transaction_with_context(
+        &mut self,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> DatabaseTransaction<'_> {
+        self.begin_transaction_inner(Some(task_context.clone()))
+    }
+
+    fn begin_transaction_inner(
+        &mut self,
+        task_context: Option<skein_core::RuntimeTaskContext>,
+    ) -> DatabaseTransaction<'_> {
         let runtime = DatabaseTransactionRuntime::from_database(self);
         let state = DatabaseTransactionState::from_database(self);
         DatabaseTransaction {
             db: self,
             runtime,
             state,
+            task_context,
         }
     }
 
@@ -1284,7 +1324,14 @@ impl Database {
     }
 
     pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
-        self.begin_read_transaction_inner(None)
+        self.begin_read_transaction_inner(None, None)
+    }
+
+    pub fn begin_read_transaction_with_context(
+        &self,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> DatabaseReadTransaction {
+        self.begin_read_transaction_inner(None, Some(task_context.clone()))
     }
 
     /// Pins both the database read view and one active projection generation.
@@ -1320,17 +1367,16 @@ impl Database {
                 )));
             }
         }
-        Ok(
-            self.begin_read_transaction_inner(Some(ProjectionRelationalReadSnapshot {
-                binding,
-                reader,
-            })),
-        )
+        Ok(self.begin_read_transaction_inner(
+            Some(ProjectionRelationalReadSnapshot { binding, reader }),
+            None,
+        ))
     }
 
     fn begin_read_transaction_inner(
         &self,
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
+        task_context: Option<skein_core::RuntimeTaskContext>,
     ) -> DatabaseReadTransaction {
         let published_read_view = self.store.published_read_view();
         let pin = {
@@ -1357,6 +1403,7 @@ impl Database {
             statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
             config: self.config.clone(),
             projection_relational,
+            task_context,
             _pin: pin,
         }
     }
@@ -1720,15 +1767,18 @@ impl Database {
         let prepared = self.checkpoint_source()?.prepare()?;
         let result = match prepared {
             Some(prepared) => {
-                let oldest_reader_epoch = self
-                    .reader_pins
-                    .lock()
-                    .expect("database reader pins lock should not be poisoned")
-                    .oldest_epoch();
+                let (oldest_reader_epoch, pinned_reader_generations) = {
+                    let pins = self
+                        .reader_pins
+                        .lock()
+                        .expect("database reader pins lock should not be poisoned");
+                    (pins.oldest_epoch(), pins.pinned_physical_generations())
+                };
                 self.store
-                    .publish_prepared_checkpoint_with_shadow_admission(
+                    .publish_prepared_checkpoint_with_reader_generations(
                         prepared,
                         oldest_reader_epoch,
+                        &pinned_reader_generations,
                         shadow_admission,
                     )
             }
@@ -1785,13 +1835,20 @@ impl Database {
         &mut self,
         prepared: PreparedCheckpoint,
     ) -> Result<()> {
-        let oldest_reader_epoch = self
-            .reader_pins
-            .lock()
-            .expect("database reader pins lock should not be poisoned")
-            .oldest_epoch();
+        let (oldest_reader_epoch, pinned_reader_generations) = {
+            let pins = self
+                .reader_pins
+                .lock()
+                .expect("database reader pins lock should not be poisoned");
+            (pins.oldest_epoch(), pins.pinned_physical_generations())
+        };
         self.store
-            .publish_prepared_checkpoint(prepared, oldest_reader_epoch)
+            .publish_prepared_checkpoint_with_reader_generations(
+                prepared,
+                oldest_reader_epoch,
+                &pinned_reader_generations,
+                None,
+            )
     }
 
     pub fn backup_to(&mut self, destination: impl AsRef<Path>) -> Result<StorageBackupReport> {
@@ -2332,14 +2389,13 @@ impl Database {
 
     pub fn prepare_scheduled_background_skein_lightning_bootstrap_export(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
     ) -> Result<SkeinLightningBootstrapExport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self.skein_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
             return self.prepare_skein_lightning_bootstrap_export();
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Import,
             estimated_operations,
@@ -2359,7 +2415,7 @@ impl Database {
         };
 
         let result = self.prepare_skein_lightning_bootstrap_export();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2461,7 +2517,6 @@ impl Database {
 
     pub fn refresh_scheduled_background_optimizer_statistics(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         options: &crate::store::OptimizerStatisticsRefreshOptions,
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
@@ -2469,7 +2524,7 @@ impl Database {
         let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
             return Ok(None);
         };
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2488,7 +2543,7 @@ impl Database {
         let result = self
             .refresh_optimizer_statistics_external(options)
             .map(Some);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2557,16 +2612,12 @@ impl Database {
         }
     }
 
-    pub fn checkpoint_scheduled_background(
-        &mut self,
-        scheduler: &mut LocalQosScheduler,
-        hint: BackgroundWorkHint,
-    ) -> Result<()> {
+    pub fn checkpoint_scheduled_background(&mut self, hint: BackgroundWorkHint) -> Result<()> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
             return Ok(());
         };
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -2582,7 +2633,7 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
         let result = self.checkpoint();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2637,7 +2688,6 @@ impl Database {
 
     pub fn consolidate_bounded_scheduled_background_adjacency_deltas(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_entries: usize,
     ) -> Result<AdjacencyConsolidationReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2647,7 +2697,7 @@ impl Database {
         if estimated_entries == 0 {
             return Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_entries,
@@ -2667,7 +2717,7 @@ impl Database {
         };
 
         let result = Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2757,7 +2807,6 @@ impl Database {
 
     pub fn rebuild_bounded_scheduled_background_property_index_projections(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2770,7 +2819,7 @@ impl Database {
         if estimated_operations == 0 {
             return Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Projection,
             estimated_operations,
@@ -2790,7 +2839,7 @@ impl Database {
         };
 
         let result = Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -2950,11 +2999,10 @@ impl Database {
 
     pub fn run_scheduled_background_schema_maintenance(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
@@ -2974,13 +3022,12 @@ impl Database {
         };
 
         let result = self.run_schema_maintenance();
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
     pub fn run_bounded_scheduled_background_schema_maintenance(
         &mut self,
-        scheduler: &mut LocalQosScheduler,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
@@ -2989,7 +3036,7 @@ impl Database {
         if estimated_operations == 0 {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
             estimated_operations,
@@ -3009,16 +3056,12 @@ impl Database {
         };
 
         let result = self.run_bounded_schema_maintenance(max_estimated_operations);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
-    pub fn run_planned_scheduled_background_schema_maintenance(
-        &mut self,
-        scheduler: &mut LocalQosScheduler,
-    ) -> Result<QueryOutput> {
+    pub fn run_planned_scheduled_background_schema_maintenance(&mut self) -> Result<QueryOutput> {
         self.run_scheduled_background_schema_maintenance(
-            scheduler,
             self.schema_maintenance_estimated_operations(),
         )
     }
@@ -3094,12 +3137,12 @@ impl Database {
     pub fn rebuild_scheduled_background_search_projection(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         options: SearchRebuildOptions,
     ) -> Result<SearchDerivedArtifactReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        let scheduler = self.local_qos_scheduler_for_work();
         search_index.rebuild_scheduled_background_derived_artifacts(
-            scheduler,
+            &scheduler,
             &self.catalog,
             &self.store,
             options,
@@ -3144,13 +3187,13 @@ impl Database {
     pub fn repair_scheduled_background_search_projection_metadata(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         options: MetadataRepairOptions,
         estimated_operations: usize,
     ) -> Result<MetadataRepairSummary> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        let scheduler = self.local_qos_scheduler_for_work();
         search_index.repair_scheduled_background_metadata_from_graph(
-            scheduler,
+            &scheduler,
             &self.catalog,
             &self.store,
             options,
@@ -3694,21 +3737,20 @@ impl Database {
     pub fn apply_scheduled_background_search_projection_delta(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        search_index.apply_scheduled_background_projection_delta(scheduler, delta)
+        let scheduler = self.local_qos_scheduler_for_work();
+        search_index.apply_scheduled_background_projection_delta(&scheduler, delta)
     }
 
     pub fn apply_scheduled_background_search_projection_graph_delta(
         &self,
         search_index: &mut SearchIndex,
-        scheduler: &mut LocalQosScheduler,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        self.configure_qos_scheduler_telemetry(scheduler);
+        let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(request.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
@@ -3725,7 +3767,7 @@ impl Database {
         };
 
         let result = self.apply_search_projection_graph_delta(search_index, request);
-        scheduler.finish_with_outcome(permit, result.is_ok());
+        permit.finish_with_outcome(result.is_ok());
         result
     }
 
@@ -18931,6 +18973,14 @@ impl ReaderPins {
             .map(|view| view.visible_commit_epoch())
             .min()
     }
+
+    fn pinned_physical_generations(&self) -> BTreeSet<u64> {
+        self.active_views
+            .values()
+            .filter_map(|view| view.physical_generation())
+            .map(|generation| generation.0)
+            .collect()
+    }
 }
 
 fn elapsed_micros(started: std::time::Instant) -> u64 {
@@ -19674,6 +19724,7 @@ fn execute_graph_transaction_statement(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<GraphTransactionStatementOutcome> {
     query_work_request_for_statement(system_variables, statement)?;
     let optimizer_search =
@@ -19757,17 +19808,32 @@ fn execute_graph_transaction_statement(
     let query_result = {
         let (catalog, store) = transaction.catalog_and_store_mut();
         let mut external = executor::NoExternalReadOperator;
-        executor::execute_with_output_limits_profile_and_external_and_memory(
-            &optimized.physical_plan,
-            catalog,
-            store,
-            parameters,
-            &mut external,
-            runtime.config.max_read_result_rows,
-            runtime.config.max_read_result_payload_bytes,
-            &runtime.config.execution_memory,
-        )
-        .map(|profiled| QueryOutput {
+        let profiled = match task_context {
+            Some(task_context) => {
+                executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
+                    &optimized.physical_plan,
+                    catalog,
+                    store,
+                    parameters,
+                    &mut external,
+                    runtime.config.max_read_result_rows,
+                    runtime.config.max_read_result_payload_bytes,
+                    task_context,
+                    &runtime.config.execution_memory,
+                )
+            }
+            None => executor::execute_with_output_limits_profile_and_external_and_memory(
+                &optimized.physical_plan,
+                catalog,
+                store,
+                parameters,
+                &mut external,
+                runtime.config.max_read_result_rows,
+                runtime.config.max_read_result_payload_bytes,
+                &runtime.config.execution_memory,
+            ),
+        };
+        profiled.map(|profiled| QueryOutput {
             rows: profiled.rows,
         })
     };
@@ -19784,6 +19850,7 @@ fn execute_database_transaction_query(
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<QueryOutput> {
     let statement = cypher::parse(cypher_text)?;
     let body = statement_body(&statement);
@@ -19809,6 +19876,7 @@ fn execute_database_transaction_query(
         cypher_text,
         &statement,
         parameters,
+        task_context,
     )
     .map(|outcome| outcome.output)
 }
@@ -19843,6 +19911,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
         cypher_text,
         &statement,
         parameters,
+        None,
     )
 }
 
@@ -19853,6 +19922,7 @@ fn execute_database_transaction_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<SqlStatementResult> {
     let prepared = runtime.relational_plan_template_cache.prepare(sql_text)?;
     execute_database_transaction_prepared_sql(
@@ -19863,6 +19933,7 @@ fn execute_database_transaction_sql(
         parameters,
         allow_system_schema_registry_write,
         allow_locking_select,
+        task_context,
     )
 }
 
@@ -19874,6 +19945,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), allow_locking_select)?;
     if !allow_system_schema_registry_write
@@ -20033,7 +20105,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 &runtime.config,
                 runtime.config.max_read_result_rows,
                 runtime.config.max_read_result_payload_bytes,
-                None,
+                task_context,
             ),
         )?;
         return Ok(sql_query_result(QueryOutput { rows: output.rows }));
@@ -20448,7 +20520,13 @@ impl DatabaseTransaction<'_> {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        execute_database_transaction_query(&self.runtime, &mut self.state, cypher_text, parameters)
+        execute_database_transaction_query(
+            &self.runtime,
+            &mut self.state,
+            cypher_text,
+            parameters,
+            self.task_context.as_ref(),
+        )
     }
 
     pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
@@ -20482,6 +20560,7 @@ impl DatabaseTransaction<'_> {
             parameters,
             false,
             false,
+            self.task_context.as_ref(),
         )
     }
 
@@ -20501,6 +20580,7 @@ impl DatabaseTransaction<'_> {
             parameters,
             true,
             false,
+            self.task_context.as_ref(),
         )
         .map(|result| result.output)
     }
@@ -20662,6 +20742,7 @@ impl DatabaseSession<'_> {
                     cypher_text,
                     statement,
                     parameters,
+                    None,
                 )
                 .map(|outcome| outcome.output)
             }
@@ -20902,12 +20983,13 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
     ) -> Result<BoundedReadQueryOutput> {
+        let task_context = self.task_context.clone();
         self.query_with_params_bounded_profile_internal(
             cypher_text,
             parameters,
             max_rows,
             None,
-            None,
+            task_context.as_ref(),
         )
     }
 
@@ -20934,12 +21016,13 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
+        let task_context = self.task_context.clone();
         self.query_with_params_streaming_prepared_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
-            None,
+            task_context.as_ref(),
             &mut consumer,
         )
     }
@@ -20992,13 +21075,14 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
+        let task_context = self.task_context.clone();
         self.query_with_params_streaming_prepared_external_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
             ReadStreamingExecutionContext {
-                task_context: None,
+                task_context: task_context.as_ref(),
                 external,
             },
             &mut consumer,
@@ -21144,12 +21228,13 @@ impl DatabaseReadTransaction {
         max_rows: Option<usize>,
         access_control: QueryAccessControlContext,
     ) -> Result<BoundedReadQueryOutput> {
+        let task_context = self.task_context.clone();
         self.query_with_params_bounded_profile_internal(
             cypher_text,
             parameters,
             max_rows,
             Some(access_control),
-            None,
+            task_context.as_ref(),
         )
     }
 
@@ -21421,11 +21506,13 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<QueryOutput> {
+        let default_context = skein_core::RuntimeTaskContext::default();
+        let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_context_and_join_planning(
             sql_text,
             parameters,
             options,
-            &skein_core::RuntimeTaskContext::default(),
+            task_context,
             join_planning,
         )
     }
@@ -21458,11 +21545,13 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        let default_context = skein_core::RuntimeTaskContext::default();
+        let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_profiled_context_and_join_planning(
             sql_text,
             parameters,
             options,
-            &skein_core::RuntimeTaskContext::default(),
+            task_context,
             join_planning,
         )
     }

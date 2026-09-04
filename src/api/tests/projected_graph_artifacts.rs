@@ -142,7 +142,18 @@ fn read_transaction_projects_snapshot_graph() {
 fn projected_graph_definition_replays_from_wal() {
     let path = unique_test_dir("projected_graph_wal");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(4),
+                    max_total_background_operations: Some(4),
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
             .unwrap();
         db.query("MERGE (:Entity {id: 2, name: 'Mid'})-[:LINKS]->(:Entity {id: 3, name: 'Leaf'})")
@@ -451,14 +462,10 @@ fn scheduled_background_derived_artifact_job_tracks_running_budget() {
             .unwrap();
 
         db.schedule_derived_artifact_rebuild();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(4),
-            max_total_background_operations: Some(4),
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
 
         let report = db
-            .run_next_scheduled_background_derived_artifact_job(&mut scheduler, 4)
+            .run_next_scheduled_background_derived_artifact_job(4)
             .unwrap()
             .unwrap();
 
@@ -472,7 +479,18 @@ fn scheduled_background_derived_artifact_job_tracks_running_budget() {
 fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
     let path = unique_test_dir("scheduled_background_derived_artifact_job_full");
     {
-        let mut db = Database::open(&path).unwrap();
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                local_qos_policy: LocalQosPolicy {
+                    max_background_operations: Some(8),
+                    max_total_background_operations: Some(8),
+                    ..LocalQosPolicy::default()
+                },
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE (:Memory {id: 1, title: 'Root'})").unwrap();
         db.query("CALL project_graph('EntityGraph', ['Memory'], [])")
             .unwrap();
@@ -480,11 +498,7 @@ fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
             .unwrap();
 
         db.schedule_derived_artifact_rebuild();
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy {
-            max_background_operations: Some(8),
-            max_total_background_operations: Some(8),
-            ..LocalQosPolicy::default()
-        });
+        let scheduler = db.local_qos_scheduler();
         let running = scheduler
             .try_start(crate::WorkRequest::background(
                 crate::WorkClass::Analytics,
@@ -493,7 +507,7 @@ fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
             .unwrap();
 
         let error = db
-            .run_next_scheduled_background_derived_artifact_job(&mut scheduler, 4)
+            .run_next_scheduled_background_derived_artifact_job(4)
             .unwrap_err();
 
         assert!(error.to_string().contains("deferred"));
@@ -503,7 +517,7 @@ fn scheduled_background_derived_artifact_job_defers_when_scheduler_is_full() {
             DerivedArtifactJobStatus::Pending
         );
 
-        scheduler.finish(running);
+        running.finish();
         assert_eq!(scheduler.state().running_background_operations, 0);
     }
     std::fs::remove_dir_all(path).unwrap();
@@ -516,10 +530,10 @@ fn scheduled_background_derived_artifact_job_releases_budget_on_execution_error(
         ..DatabaseConfig::default()
     });
     db.schedule_derived_artifact_rebuild();
-    let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+    let scheduler = db.local_qos_scheduler();
 
     let error = db
-        .run_next_scheduled_background_derived_artifact_job(&mut scheduler, 1)
+        .run_next_scheduled_background_derived_artifact_job(1)
         .unwrap_err();
 
     assert!(error.to_string().contains("read-only mode"));

@@ -89,9 +89,7 @@ impl GraphStore {
                 ),
         );
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(
             &working_catalog,
             self.commit_epoch + 1,
@@ -209,9 +207,7 @@ impl GraphStore {
         // The mapping is durable before the WAL batch; recovery never observes imported
         // graph rows without the stable identities required to address them.
         self.replace_stable_id_mapping_for_epoch(stable_id_mapping, target_commit_epoch)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(
             &working_catalog,
             target_commit_epoch,
@@ -990,7 +986,14 @@ impl GraphStore {
                 return Err(SkeinError::Storage(reason));
             }
             WalOpenOutcome::HeaderCorrupt { reason } => {
-                return reject_corrupt_wal_record(&wal_path, wal_generation, read_only, 0, reason);
+                return reject_corrupt_wal_record(
+                    &wal_path,
+                    wal_generation,
+                    read_only,
+                    config.max_quarantine_bytes,
+                    0,
+                    reason,
+                );
             }
         };
         if cursor.generation() != wal_generation || cursor.start_lsn() != wal_replay_start_lsn {
@@ -1017,6 +1020,7 @@ impl GraphStore {
                             &wal_path,
                             wal_generation,
                             read_only,
+                            config.max_quarantine_bytes,
                             offset,
                             reason,
                         );
@@ -1036,7 +1040,12 @@ impl GraphStore {
                     ),
                 };
             if entry.lsn != expected_lsn {
-                quarantine_corrupt_wal(&wal_path, wal_generation, read_only)?;
+                quarantine_corrupt_wal(
+                    &wal_path,
+                    wal_generation,
+                    read_only,
+                    config.max_quarantine_bytes,
+                )?;
                 return Err(SkeinError::Storage(format!(
                     "WAL LSN sequence mismatch at byte offset {record_start}: expected {expected_lsn}, got {}",
                     entry.lsn

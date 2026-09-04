@@ -108,7 +108,47 @@ pub struct RuntimeTaskContext {
     cancellation: RuntimeCancellationToken,
     deadline: Option<Instant>,
     admitted_parallelism: NonZeroUsize,
+    memory_reservation: Option<RuntimeMemoryReservation>,
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
+}
+
+/// Memory already reserved for one task by the runtime governor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeMemoryReservation {
+    memory_bytes: u64,
+    result_bytes: u64,
+}
+
+impl RuntimeMemoryReservation {
+    pub const fn new(memory_bytes: u64, result_bytes: u64) -> Self {
+        Self {
+            memory_bytes,
+            result_bytes,
+        }
+    }
+
+    pub const fn memory_bytes(self) -> u64 {
+        self.memory_bytes
+    }
+
+    pub const fn result_bytes(self) -> u64 {
+        self.result_bytes
+    }
+
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            memory_bytes: if self.memory_bytes < other.memory_bytes {
+                self.memory_bytes
+            } else {
+                other.memory_bytes
+            },
+            result_bytes: if self.result_bytes < other.result_bytes {
+                self.result_bytes
+            } else {
+                other.result_bytes
+            },
+        }
+    }
 }
 
 impl RuntimeTaskContext {
@@ -117,6 +157,7 @@ impl RuntimeTaskContext {
             cancellation,
             deadline,
             admitted_parallelism: NonZeroUsize::MIN,
+            memory_reservation: None,
             io_wave_controller: None,
         }
     }
@@ -141,6 +182,7 @@ impl RuntimeTaskContext {
             cancellation: self.cancellation.child(),
             deadline: self.deadline,
             admitted_parallelism: self.admitted_parallelism,
+            memory_reservation: self.memory_reservation,
             io_wave_controller: self.io_wave_controller.clone(),
         }
     }
@@ -156,6 +198,20 @@ impl RuntimeTaskContext {
 
     pub fn admitted_parallelism(&self) -> NonZeroUsize {
         self.admitted_parallelism
+    }
+
+    /// Carries the memory already reserved by the runtime governor.
+    ///
+    /// Governed executors must use this reservation instead of a static
+    /// per-query configuration limit. An absent reservation denotes an
+    /// ungoverned library call and preserves the configured fallback.
+    pub fn with_memory_reservation(mut self, reservation: RuntimeMemoryReservation) -> Self {
+        self.memory_reservation = Some(reservation);
+        self
+    }
+
+    pub fn memory_reservation(&self) -> Option<RuntimeMemoryReservation> {
+        self.memory_reservation
     }
 
     /// Binds the controller owned by a successful runtime admission.
@@ -316,6 +372,15 @@ mod tests {
 
         assert_eq!(context.admitted_parallelism().get(), 4);
         assert_eq!(context.child().admitted_parallelism().get(), 4);
+    }
+
+    #[test]
+    fn child_preserves_memory_reservation() {
+        let reservation = RuntimeMemoryReservation::new(128, 32);
+        let context = RuntimeTaskContext::default().with_memory_reservation(reservation);
+
+        assert_eq!(context.memory_reservation(), Some(reservation));
+        assert_eq!(context.child().memory_reservation(), Some(reservation));
     }
 
     #[test]

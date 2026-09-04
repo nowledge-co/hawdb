@@ -3999,6 +3999,28 @@ mod tests {
             projected.profile.join_planning.status,
             RelationalJoinPlanningStatus::Selected
         );
+
+        let constrained_context = skein_core::RuntimeTaskContext::default()
+            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1, 1));
+        let constrained_read = database.begin_read_transaction_with_context(&constrained_context);
+        let error = constrained_read
+            .query_sql_with_params_options_with_join_planning(
+                wildcard_sql,
+                &[],
+                crate::QueryStreamOptions::default(),
+                RelationalJoinPlanningDirective::SyntaxOrder,
+            )
+            .expect_err("explicit join planning must retain the bound memory reservation");
+        assert!(error.to_string().contains("exceeding query_memory_bytes 1"));
+        let error = constrained_read
+            .query_sql_with_params_options_profiled_with_join_planning(
+                wildcard_sql,
+                &[],
+                crate::QueryStreamOptions::default(),
+                RelationalJoinPlanningDirective::SyntaxOrder,
+            )
+            .expect_err("profiled join planning must retain the bound memory reservation");
+        assert!(error.to_string().contains("exceeding query_memory_bytes 1"));
     }
 
     #[test]

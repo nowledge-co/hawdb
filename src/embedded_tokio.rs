@@ -398,10 +398,13 @@ impl SkeinTokioEmbedded {
             );
         let snapshot = self.with_embedded(|embedded| embedded.runtime_governor().snapshot());
         let request = admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
+        let executor_memory_bytes = request.memory_bytes;
         let request =
             request.with_memory_bytes(request.memory_bytes.saturating_add(buffered_payload_bytes));
         let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
-        let producer_context = task_context.child();
+        let producer_context = task_context.child().with_memory_reservation(
+            skein_core::RuntimeMemoryReservation::new(executor_memory_bytes, request.result_bytes),
+        );
         let cancellation = producer_context.cancellation().clone();
         let (terminal_sender, receiver) = tokio_bounded_channel(options.channel_capacity);
         let batch_sender = terminal_sender.clone();
@@ -848,6 +851,21 @@ mod tests {
                     .unwrap();
             }
         });
+        let admitted_executor_bytes = embedded.with_embedded_mut(|embedded| {
+            let admission = embedded
+                .database_mut()
+                .runtime_admission_plan(
+                    "MATCH (p:Probe) RETURN p.value AS value ORDER BY value",
+                    &BTreeMap::new(),
+                )
+                .unwrap();
+            admission
+                .runtime_work_request_for_snapshot(
+                    embedded.admitted_result_budget_bytes(),
+                    embedded.runtime_governor().snapshot(),
+                )
+                .memory_bytes
+        });
 
         let (rows, batch_sizes, report) = embedded
             .runtime()
@@ -877,6 +895,13 @@ mod tests {
         assert!(batch_sizes.len() > 1);
         assert_eq!(report.output_rows, 7);
         assert!(report.output_payload_bytes > 0);
+        assert_eq!(
+            report
+                .execution_profile
+                .pipeline_memory_report
+                .query_memory_budget_bytes,
+            usize::try_from(admitted_executor_bytes).unwrap()
+        );
         assert_eq!(embedded.runtime_snapshot().completions, 1);
     }
 

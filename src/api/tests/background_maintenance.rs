@@ -272,14 +272,13 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             generation
         );
 
-        let mut scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+        let scheduler = db.local_qos_scheduler();
         let bounded_options = crate::OptimizerStatisticsRefreshOptions {
             max_input_records: 1,
             ..options.clone()
         };
         let error = db
             .refresh_scheduled_background_optimizer_statistics(
-                &mut scheduler,
                 &bounded_options,
                 BackgroundWorkHint::default(),
             )
@@ -295,7 +294,6 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
 
         let report = db
             .refresh_scheduled_background_optimizer_statistics(
-                &mut scheduler,
                 &options,
                 BackgroundWorkHint::default(),
             )
@@ -333,7 +331,6 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         assert_eq!(stale_plan.hint.recent_delta_operations, 2);
         let report = db
             .refresh_scheduled_background_optimizer_statistics(
-                &mut scheduler,
                 &options,
                 BackgroundWorkHint::default(),
             )
