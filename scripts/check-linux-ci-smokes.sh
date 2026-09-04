@@ -153,7 +153,11 @@ run_optimizer_benchmark_group_smoke() {
   mkdir -p "$root"
   local benchmark
   for benchmark in "${benchmark_smokes[@]:start:length}"; do
-    "$benchmark" > "$root/$(basename "$benchmark").txt"
+    local output="$root/$(basename "$benchmark").txt"
+    if ! "$benchmark" > "$output"; then
+      cat "$output" >&2
+      return 1
+    fi
   done
 }
 

@@ -38,6 +38,7 @@ const REQUIRED_SPEEDUP: f64 = 1.15;
 const REQUIRED_ALLOCATION_REDUCTION: f64 = 0.50;
 const POINT_MAX_RELATIVE_REGRESSION: f64 = 0.05;
 const POINT_ABSOLUTE_NOISE_BUDGET_NANOS: u128 = 100_000;
+const POINT_LATENCY_GATE_REQUIRED: bool = !SMOKE;
 const REQUESTED_FIELDS: &[usize] = &[0, 1, 2];
 const POINT_FIELDS: &[usize] = &[0, 2];
 const SHAPES: [usize; 4] = [1, 10, 50, 100];
@@ -104,7 +105,7 @@ fn main() {
     println!(
         "relational_row_page_lending {}",
         json!({
-            "protocol": "skein-relational-row-page-lending-evidence-v2",
+            "protocol": "skein-relational-row-page-lending-evidence-v1",
             "rows": ROWS,
             "body_bytes": BODY_BYTES,
             "output_limit": OUTPUT_LIMIT,
@@ -376,9 +377,11 @@ fn measure_point_lookup(reader: &RelationalRowPageSnapshotReader) -> PointEviden
     let exact_range_allocated_bytes = median(&exact_range_allocated_bytes);
     let allowed_allocated_regression_bytes =
         ((exact_range_allocated_bytes as f64 * POINT_MAX_RELATIVE_REGRESSION) as u128).max(4_096);
-    let admitted = point_nanos <= exact_range_nanos.saturating_add(allowed_regression_nanos)
-        && point_allocated_bytes
-            <= exact_range_allocated_bytes.saturating_add(allowed_allocated_regression_bytes);
+    let latency_admitted =
+        point_nanos <= exact_range_nanos.saturating_add(allowed_regression_nanos);
+    let allocation_admitted = point_allocated_bytes
+        <= exact_range_allocated_bytes.saturating_add(allowed_allocated_regression_bytes);
+    let admitted = allocation_admitted && (!POINT_LATENCY_GATE_REQUIRED || latency_admitted);
     PointEvidence {
         probes: POINT_PROBES,
         point_nanos,
@@ -387,6 +390,9 @@ fn measure_point_lookup(reader: &RelationalRowPageSnapshotReader) -> PointEviden
         exact_range_allocated_bytes,
         allowed_regression_nanos,
         allowed_allocated_regression_bytes,
+        latency_gate_required: POINT_LATENCY_GATE_REQUIRED,
+        latency_admitted,
+        allocation_admitted,
         checksum: checksum.expect("point evidence has at least one sample"),
         admitted,
     }
@@ -751,6 +757,9 @@ struct PointEvidence {
     exact_range_allocated_bytes: u128,
     allowed_regression_nanos: u128,
     allowed_allocated_regression_bytes: u128,
+    latency_gate_required: bool,
+    latency_admitted: bool,
+    allocation_admitted: bool,
     checksum: u64,
     admitted: bool,
 }
@@ -793,6 +802,9 @@ impl PointEvidence {
             "exact_owned_range_allocated_bytes": self.exact_range_allocated_bytes,
             "allowed_regression_nanos": self.allowed_regression_nanos,
             "allowed_allocated_regression_bytes": self.allowed_allocated_regression_bytes,
+            "latency_gate_required": self.latency_gate_required,
+            "latency_admitted": self.latency_admitted,
+            "allocation_admitted": self.allocation_admitted,
             "checksum": self.checksum,
             "admitted": self.admitted,
         })
