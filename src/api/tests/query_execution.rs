@@ -580,7 +580,14 @@ fn variable_return_items_project_graph_records() {
 
 #[test]
 fn read_transaction_streams_rows_with_row_and_payload_budgets() {
-    let mut db = Database::new();
+    let execution_memory = crate::executor::ExecutionMemoryConfig {
+        batch_rows: std::num::NonZeroUsize::new(1).unwrap(),
+        ..crate::executor::ExecutionMemoryConfig::default()
+    };
+    let mut db = Database::new_with_config(DatabaseConfig {
+        execution_memory,
+        ..DatabaseConfig::default()
+    });
     for (id, title) in [(1, "alpha"), (2, "beta"), (3, "gamma")] {
         db.query(&format!("CREATE (:Memory {{id: {id}, title: '{title}'}})"))
             .unwrap();
@@ -614,7 +621,7 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
     );
 
     let mut tx = db.begin_read_transaction();
-    let mut provisional_rows = 0usize;
+    let mut delivered_rows = 0usize;
     let error = tx
         .query_streaming(
             "MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC",
@@ -623,24 +630,28 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
                 max_payload_bytes: Some(1024),
             },
             |_| {
-                provisional_rows += 1;
+                delivered_rows += 1;
                 Ok(())
             },
         )
         .unwrap_err();
-    assert_eq!(provisional_rows, 1);
+    assert_eq!(delivered_rows, 0);
     assert!(error
         .to_string()
         .contains("exceeding max_read_result_rows 1"));
 
     let mut tx = db.begin_read_transaction();
+    let first_row_payload_bytes = crate::executor::map_payload_bytes(&BTreeMap::from([(
+        "title".to_string(),
+        Value::String("alpha".to_string()),
+    )]));
     let mut delivered_rows = 0usize;
     let error = tx
         .query_streaming(
-            "MATCH (m:Memory) RETURN m.title AS title LIMIT 1",
+            "MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC LIMIT 2",
             QueryStreamOptions {
-                max_rows: Some(1),
-                max_payload_bytes: Some(1),
+                max_rows: Some(2),
+                max_payload_bytes: Some(first_row_payload_bytes),
             },
             |_| {
                 delivered_rows += 1;
@@ -649,7 +660,9 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
         )
         .unwrap_err();
     assert_eq!(delivered_rows, 0);
-    assert!(error.to_string().contains("max_payload_bytes 1"));
+    assert!(error
+        .to_string()
+        .contains(&format!("max_payload_bytes {first_row_payload_bytes}")));
 }
 
 #[test]

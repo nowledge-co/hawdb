@@ -421,9 +421,9 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
 }
 
 /// Executes a read plan and transfers ownership of each output row to a
-/// bounded consumer. Consumer calls are provisional until this function
-/// returns `Ok`: callers that cannot surface a terminal error must buffer or
-/// otherwise roll back their response when a later row exceeds a budget.
+/// consumer. When either output limit is present, rows remain query-owned
+/// until execution validates the complete result against both limits. With
+/// both limits disabled, rows are transferred as they are produced.
 pub fn execute_with_row_consumer_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,

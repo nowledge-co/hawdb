@@ -4908,9 +4908,8 @@ impl NowledgeMemGraph {
     }
 
     /// Collects host-owned rows through the streaming consumer boundary.
-    /// This retains the legacy `NowledgeMemReadOutput` shape while avoiding a
-    /// second executor-owned result vector and enforcing payload bytes before
-    /// each row crosses into the host.
+    /// This retains the legacy `NowledgeMemReadOutput` shape while ensuring
+    /// bounded results are validated before any row crosses into the host.
     pub fn read_query_with_params_streaming_collect(
         &self,
         cypher: &str,

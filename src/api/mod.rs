@@ -20922,9 +20922,10 @@ impl DatabaseReadTransaction {
 
     /// Streams rows from a read plan through a budgeted consumer boundary.
     ///
-    /// Consumer calls are provisional until this method returns `Ok`. A host
-    /// that cannot surface a terminal query error must not publish consumed
-    /// rows before the final report is available.
+    /// When either effective output limit is present, the executor invokes the
+    /// consumer only after the complete result passes both limit checks. With
+    /// both limits disabled, rows cross the consumer boundary as they are
+    /// produced and a later non-budget execution error can still be returned.
     pub fn query_with_params_streaming(
         &mut self,
         cypher_text: &str,
