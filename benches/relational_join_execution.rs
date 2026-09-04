@@ -1,7 +1,7 @@
 use serde_json::json;
 use skein::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
-    QueryStreamOptions, RelationalOperatorKind,
+    QueryStreamOptions, RelationalJoinPlanningDirective, RelationalOperatorKind,
 };
 use std::hint::black_box;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -32,6 +32,7 @@ const HASH_SQL: &str = "SELECT l.id AS left_id, r.id AS right_id \
 struct JoinCase {
     name: &'static str,
     sql: &'static str,
+    join_planning: RelationalJoinPlanningDirective,
     expected_operator: RelationalOperatorKind,
     requires_spill: bool,
 }
@@ -40,18 +41,21 @@ const REGULAR_CASES: [JoinCase; 3] = [
     JoinCase {
         name: "batched_index",
         sql: BATCHED_INDEX_SQL,
+        join_planning: RelationalJoinPlanningDirective::Auto,
         expected_operator: RelationalOperatorKind::BatchedIndexNestedLoopLeftJoin,
         requires_spill: false,
     },
     JoinCase {
         name: "merge",
         sql: MERGE_SQL,
+        join_planning: RelationalJoinPlanningDirective::SyntaxOrder,
         expected_operator: RelationalOperatorKind::MergeJoin,
         requires_spill: false,
     },
     JoinCase {
         name: "hash",
         sql: HASH_SQL,
+        join_planning: RelationalJoinPlanningDirective::SyntaxOrder,
         expected_operator: RelationalOperatorKind::HashJoin,
         requires_spill: false,
     },
@@ -60,6 +64,7 @@ const REGULAR_CASES: [JoinCase; 3] = [
 const GRACE_CASE: JoinCase = JoinCase {
     name: "grace_hash",
     sql: HASH_SQL,
+    join_planning: RelationalJoinPlanningDirective::SyntaxOrder,
     expected_operator: RelationalOperatorKind::HashJoin,
     requires_spill: true,
 };
@@ -228,12 +233,12 @@ fn insert_hash_rows(database: &mut Database, rows: usize) {
 }
 
 fn measure(read: &DatabaseReadTransaction, case: JoinCase) -> serde_json::Value {
-    let cold = execute(read, case.sql);
+    let cold = execute(read, case);
     let cold_join = assert_profile_contract(&cold, case);
     let cold_parse_nanos = cold.profile.stage_timings.parse_nanos;
 
     for _ in 0..WARMUPS {
-        let warmup = execute(read, case.sql);
+        let warmup = execute(read, case);
         assert_profile_contract(&warmup, case);
         assert_eq!(warmup.profile.stage_timings.parse_nanos, 0);
     }
@@ -243,7 +248,7 @@ fn measure(read: &DatabaseReadTransaction, case: JoinCase) -> serde_json::Value 
     let mut execute_samples = Vec::with_capacity(SAMPLES);
     let mut latest = None;
     for _ in 0..SAMPLES {
-        let profiled = execute(read, case.sql);
+        let profiled = execute(read, case);
         assert_profile_contract(&profiled, case);
         assert_eq!(profiled.profile.stage_timings.parse_nanos, 0);
         bind_samples.push(profiled.profile.stage_timings.bind_nanos);
@@ -299,16 +304,22 @@ fn measure(read: &DatabaseReadTransaction, case: JoinCase) -> serde_json::Value 
     })
 }
 
-fn execute(read: &DatabaseReadTransaction, sql: &str) -> ProfiledRelationalSqlQueryOutput {
-    read.query_sql_with_params_options_profiled(
-        sql,
+fn execute(read: &DatabaseReadTransaction, case: JoinCase) -> ProfiledRelationalSqlQueryOutput {
+    read.query_sql_with_params_options_profiled_with_join_planning(
+        case.sql,
         &[],
         QueryStreamOptions {
             max_rows: Some(MAX_OUTPUT_ROWS),
             max_payload_bytes: Some(MAX_OUTPUT_PAYLOAD_BYTES),
         },
+        case.join_planning,
     )
-    .unwrap_or_else(|error| panic!("execute relational join benchmark query: {error}"))
+    .unwrap_or_else(|error| {
+        panic!(
+            "execute {} relational join benchmark query: {error}",
+            case.name
+        )
+    })
 }
 
 fn assert_profile_contract(
