@@ -63,8 +63,9 @@ and algorithms outside active routes are not implied backlog items.
     bytes, hydration bytes, update latency, and checkpoint amplification.
   - Exercise the bounded generation-delta merge and require zero resident
     corpus documents while old-generation reads overlap publication.
-  - Exercise `Preferred` and `Required` TurboQuant out-of-core serving with
-    metadata allowlist pushdown and bounded raw-vector late reranking.
+  - Exercise the default 1-bit RaBitQ out-of-core serving path in both
+    `Preferred` and `Required` modes, with metadata allowlist pushdown and
+    bounded raw-vector late reranking.
   - Run those probes on the exact source generation recorded by the artifact,
     not only on a disposable post-update generation, and record lifecycle RSS
     and page faults before opening the full-residency oracle.
@@ -74,12 +75,13 @@ and algorithms outside active routes are not implied backlog items.
     production constructor and the final cutover report recomputes readiness
     from the bound raw evidence.
 
-- [ ] Qualify the default TurboQuant candidate projection on representative
+- [ ] Qualify the default 1-bit RaBitQ candidate projection on representative
   Mem embeddings.
   - Run `run_production_vector_qualification` on representative embeddings,
-    compare 4-bit candidate recall against canonical raw-vector TopK, and use
-    `skein-qualification/turbovec-oracle` as a differential oracle, not as
-    truth.
+    compare default 1-bit candidate recall against canonical raw-vector TopK,
+    and record `ProductionVectorRaBitQReferenceEvidence` from
+    `crates/qualification/src/production_vector/oracle.rs` as a differential
+    dispatch and serving consistency check, not as recall truth.
   - Cover unfiltered, metadata-filtered, incremental, checkpoint, reopen,
     stale-generation, corruption, cancellation, and mixed-load cases. Include
     ACL-filtered cases only when the release feature set enables `acl`.
@@ -94,7 +96,7 @@ and algorithms outside active routes are not implied backlog items.
   - Keep the full-residency recall oracle offline and require its document,
     analyzer, embedding, and epoch identity to match the released out-of-core
     search generation.
-  - Measure the released out-of-core TurboQuant artifact before opening the
+  - Measure the released out-of-core 1-bit RaBitQ artifact before opening the
     oracle; require serving/oracle final-result parity, payload I/O, raw
     reranking, and cancellation propagation from the serving path. Keep
     candidate recall in the identity-bound offline oracle so serving does not

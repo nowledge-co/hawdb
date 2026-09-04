@@ -1022,9 +1022,13 @@ sort runs and bounded fan-in merges; readers admit one bounded block per query
 term and verify artifact and block checksums.
 
 The fallible persisted search path reads only blocks that can contain analyzed
-query terms. It computes exact document frequency and average document length
-for the authorized metadata candidate set, merges a bounded upsert/delete
-mini-delta, and retains only the text page window or hybrid rank window in a
+query terms. It computes exact candidate-scoped term document frequency but
+uses the immutable manifest's unfiltered document count and average document
+length for BM25 normalization. This v1 approximation keeps filtered and
+mini-delta query I/O independent of corpus size: document-length blocks are not
+decoded during scoring. An empty base projection derives normalization
+statistics from its bounded mini-delta. The scorer merges that upsert/delete
+mini-delta and retains only the text page window or hybrid rank window in a
 streaming TopK. Reports expose posting bytes read, candidate postings visited,
 the exact matching-document count, and whether segmented BM25 was selected.
 Checkpoint replaces the base generation and clears the mini-delta. A stale
@@ -1047,8 +1051,9 @@ count rather than trusting the envelope length.
 complete document snapshot. Metadata and ACL predicates prune descriptors,
 decode only metadata sidecar ranges, and write matching ordered document IDs
 into a temporary, bounded, cross-platform candidate spill. The spill keeps one
-bounded ID block in memory; its fallible membership checks feed exact
-candidate-scoped BM25 corpus statistics. Scalar vector search reads only vector
+bounded ID block in memory; its fallible membership checks scope BM25 term
+statistics and scored candidates while normalization uses unfiltered lexical
+manifest statistics. Scalar vector search reads only vector
 sidecar ranges and retains the page window, hybrid rank window, or an explicitly
 bounded full-score map. Full title, content, embedding, and metadata payloads
 are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_documents`

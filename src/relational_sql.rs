@@ -1,8 +1,9 @@
 use crate::error::{Result, SkeinError};
 use crate::sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlArithmeticOperand,
-    SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate, SqlReferentialAction,
-    SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SelectProjection,
+    SelectStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp, SqlConflictAction,
+    SqlOrderItem, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
+    SqlTableStorage, SqlValue,
 };
 use crate::value::Value;
 pub(crate) use skein_relational::{
@@ -43,6 +44,59 @@ pub(crate) use query::{
 };
 pub(crate) use row_access::RelationalRowReadMode;
 pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RelationalOrderTarget<'a> {
+    InputColumn(&'a crate::sql::SqlColumnRef),
+    ProjectionColumn {
+        column: &'a crate::sql::SqlColumnRef,
+        alias: &'a str,
+    },
+    ProjectionExpression {
+        expression: &'a crate::sql::SqlExpression,
+        alias: &'a str,
+    },
+}
+
+pub(crate) fn resolve_relational_order_target<'a>(
+    select: &'a SelectStatement,
+    item: &'a SqlOrderItem,
+) -> Result<RelationalOrderTarget<'a>> {
+    if item.column.qualifier.is_some() {
+        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+    }
+    let mut aliases = select
+        .projection
+        .iter()
+        .filter_map(|projection| match projection {
+            SelectProjection::Column {
+                name,
+                alias: Some(alias),
+            } if alias == &item.column.name => Some(RelationalOrderTarget::ProjectionColumn {
+                column: name,
+                alias,
+            }),
+            SelectProjection::Expression {
+                expression,
+                alias: Some(alias),
+            } if alias == &item.column.name => {
+                Some(RelationalOrderTarget::ProjectionExpression { expression, alias })
+            }
+            SelectProjection::Wildcard
+            | SelectProjection::Column { .. }
+            | SelectProjection::Expression { .. } => None,
+        });
+    let Some(target) = aliases.next() else {
+        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+    };
+    if aliases.next().is_some() {
+        return Err(SkeinError::Semantic(format!(
+            "ambiguous relational ORDER BY alias {}",
+            item.column.name
+        )));
+    }
+    Ok(target)
+}
 
 pub(crate) fn compile_relational_statement_sql(
     sql: &str,

@@ -19,6 +19,8 @@ readonly -a benchmark_smokes=("$@")
 readonly optimizer_smoke="${benchmark_smokes[0]}"
 readonly optimizer_benchmark_group_size=6
 readonly final_optimizer_benchmark_group_start=$((1 + 2 * optimizer_benchmark_group_size))
+readonly row_page_lending_benchmark_index=$((final_optimizer_benchmark_group_start + 1))
+readonly wal_group_commit_benchmark_index=$((${#benchmark_smokes[@]} - 1))
 
 for executable in \
   "$skein_cli" \
@@ -92,7 +94,7 @@ assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
-assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v7"
+assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v1"
 assert optimizer["seed"] == 7
 assert optimizer["requested_case_count"] == 12
 assert optimizer["failed_case_count"] == 0
@@ -153,6 +155,15 @@ run_optimizer_benchmark_group_smoke() {
   for benchmark in "${benchmark_smokes[@]:start:length}"; do
     "$benchmark" > "$root/$(basename "$benchmark").txt"
   done
+}
+
+run_final_optimizer_benchmark_group_smoke() {
+  run_optimizer_benchmark_group_smoke \
+    "$final_optimizer_benchmark_group_start" \
+    "$((row_page_lending_benchmark_index - final_optimizer_benchmark_group_start))"
+  run_optimizer_benchmark_group_smoke \
+    "$((row_page_lending_benchmark_index + 1))" \
+    "$((wal_group_commit_benchmark_index - row_page_lending_benchmark_index - 1))"
 }
 
 run_fixture_contract_smoke() {
@@ -684,7 +695,9 @@ case "$smoke" in
   optimizer_summary) run_optimizer_summary_smoke ;;
   optimizer_group_1) run_optimizer_benchmark_group_smoke 1 "$optimizer_benchmark_group_size" ;;
   optimizer_group_2) run_optimizer_benchmark_group_smoke "$((1 + optimizer_benchmark_group_size))" "$optimizer_benchmark_group_size" ;;
-  optimizer_group_3) run_optimizer_benchmark_group_smoke "$final_optimizer_benchmark_group_start" "$(( ${#benchmark_smokes[@]} - final_optimizer_benchmark_group_start ))" ;;
+  optimizer_group_3) run_final_optimizer_benchmark_group_smoke ;;
+  relational_row_page_lending) run_optimizer_benchmark_group_smoke "$row_page_lending_benchmark_index" 1 ;;
+  wal_group_commit) run_optimizer_benchmark_group_smoke "$wal_group_commit_benchmark_index" 1 ;;
   fixture_contract) run_fixture_contract_smoke ;;
   storage_recovery) run_storage_recovery_smoke ;;
   background_maintenance) run_background_maintenance_smoke ;;
