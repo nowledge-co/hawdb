@@ -278,6 +278,10 @@ impl WalRecordCursor {
         self.start_lsn
     }
 
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "the fallible WAL event API reports an explicit Eof event"
+    )]
     pub fn next(&mut self) -> Result<WalCursorEvent> {
         match self.reader.next_event()? {
             frame::BinaryWalReadEvent::Record {

@@ -1537,7 +1537,7 @@ fn build_seek_fences(
     while offset < data_bytes {
         file.seek(SeekFrom::Start(offset))?;
         let (member, consumed) = read_record(&mut file, MAX_ENCODED_MEMBER_BYTES)?;
-        if member_index % PROJECTION_SEEK_FENCE_STRIDE == 0 {
+        if member_index.is_multiple_of(PROJECTION_SEEK_FENCE_STRIDE) {
             if fences.len() == MAX_PROJECTION_SEEK_FENCES {
                 return Err(ProjectionGenerationError::Admission(
                     "projection seek fence count exceeds its bounded manifest limit".to_string(),

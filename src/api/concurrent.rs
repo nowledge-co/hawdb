@@ -18,8 +18,8 @@ use super::transaction_locks::{
 use super::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_query,
     execute_database_transaction_prepared_sql, BoundedReadQueryOutput, Database, DatabaseConfig,
-    DatabaseReadTransaction, DatabaseTransactionRuntime, DatabaseTransactionState, QueryOutput,
-    StatementExecutionContext, TransactionCommitResult,
+    DatabaseReadTransaction, DatabaseTransactionRuntime, DatabaseTransactionSqlOptions,
+    DatabaseTransactionState, QueryOutput, StatementExecutionContext, TransactionCommitResult,
 };
 use crate::error::{Result, SkeinError};
 use crate::sql::{
@@ -612,9 +612,11 @@ impl ConcurrentDatabaseTransaction {
             sql_text,
             prepared,
             parameters,
-            false,
-            true,
-            None,
+            DatabaseTransactionSqlOptions {
+                allow_system_schema_registry_write: false,
+                allow_locking_select: true,
+                task_context: None,
+            },
         );
         if result.is_ok() {
             self.successful_statements = self.successful_statements.saturating_add(1);

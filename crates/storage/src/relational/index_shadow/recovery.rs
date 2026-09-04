@@ -1112,16 +1112,7 @@ impl RelationalIndexRecoveryReader {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
-        let encoded_key = encode_relational_key(key)?;
-        self.visit_merged(
-            table,
-            index,
-            limits,
-            &encoded_key,
-            |candidate| candidate == encoded_key,
-            |base, visit| base.visit_exact_postings(table, index, key, limits, visit),
-            visit,
-        )
+        self.visit_merged_exact(table, index, key, limits, visit)
     }
 
     pub fn visit_prefix_postings(
@@ -1523,17 +1514,12 @@ impl RelationalIndexRecoveryReader {
         Ok(report)
     }
 
-    fn visit_merged(
+    fn visit_merged_exact(
         &self,
         table: &str,
         index: &str,
+        key: &RelationalKey,
         limits: RelationalIndexReadLimits,
-        selector_key: &[u8],
-        matches_key: impl Fn(&[u8]) -> bool,
-        read_base: impl FnOnce(
-            &RelationalIndexShadowReader,
-            &mut dyn FnMut(&RelationalKey) -> bool,
-        ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError>,
         mut visit: impl FnMut(&RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
         if self.is_poisoned() {
@@ -1546,7 +1532,10 @@ impl RelationalIndexRecoveryReader {
             rows.insert(key.clone());
             true
         };
-        let base = read_base(&self.base, &mut collect)?;
+        let base = self
+            .base
+            .visit_exact_postings(table, index, key, limits, &mut collect)?;
+        let selector_key = encode_relational_key(key)?;
         let mut report = RelationalIndexRecoveryReadReport {
             base,
             delta_pages_read: 0,
@@ -1562,7 +1551,7 @@ impl RelationalIndexRecoveryReader {
             stopped_early: false,
         };
         for descriptor in &self.manifest.pages {
-            if !descriptor.may_match_exact_key(table, index, selector_key) {
+            if !descriptor.may_match_exact_key(table, index, &selector_key) {
                 report.delta_pages_skipped = report
                     .delta_pages_skipped
                     .checked_add(1)
@@ -1610,7 +1599,7 @@ impl RelationalIndexRecoveryReader {
                     .ok_or_else(|| admission("recovery delta entry counter overflow"))?;
                 if entry.key.table != table
                     || entry.key.index != index
-                    || !matches_key(&entry.key.index_key)
+                    || entry.key.index_key != selector_key
                 {
                     return Ok(());
                 }
@@ -2148,6 +2137,44 @@ fn validate_manifest(
     Ok(())
 }
 
+fn next_delta_generation() -> u64 {
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let sequence = NEXT_DELTA_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let generation = clock.rotate_left(17) ^ sequence ^ ((std::process::id() as u64) << 32);
+    generation.max(1)
+}
+
+fn write_synced(
+    path: &Path,
+    encoded: &[u8],
+    context: &str,
+) -> Result<(), RelationalIndexShadowError> {
+    let mut file = File::create(path)
+        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
+    file.write_all(encoded)
+        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
+    file.sync_all()
+        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))
+}
+
+fn admission(message: impl Into<String>) -> RelationalIndexShadowError {
+    RelationalIndexShadowError::Admission(message.into())
+}
+
+fn corrupt(message: impl Into<String>) -> RelationalIndexShadowError {
+    RelationalIndexShadowError::Corrupt(message.into())
+}
+
+fn should_poison(error: &RelationalIndexShadowError) -> bool {
+    matches!(
+        error,
+        RelationalIndexShadowError::Corrupt(_) | RelationalIndexShadowError::Durability(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2248,42 +2275,4 @@ mod tests {
         assert!(pages[0].selectors.is_empty());
         assert!(pages[0].may_match_exact_key("other", "other_idx", &[0xff]));
     }
-}
-
-fn next_delta_generation() -> u64 {
-    let clock = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let sequence = NEXT_DELTA_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let generation = clock.rotate_left(17) ^ sequence ^ ((std::process::id() as u64) << 32);
-    generation.max(1)
-}
-
-fn write_synced(
-    path: &Path,
-    encoded: &[u8],
-    context: &str,
-) -> Result<(), RelationalIndexShadowError> {
-    let mut file = File::create(path)
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
-    file.write_all(encoded)
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
-    file.sync_all()
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))
-}
-
-fn admission(message: impl Into<String>) -> RelationalIndexShadowError {
-    RelationalIndexShadowError::Admission(message.into())
-}
-
-fn corrupt(message: impl Into<String>) -> RelationalIndexShadowError {
-    RelationalIndexShadowError::Corrupt(message.into())
-}
-
-fn should_poison(error: &RelationalIndexShadowError) -> bool {
-    matches!(
-        error,
-        RelationalIndexShadowError::Corrupt(_) | RelationalIndexShadowError::Durability(_)
-    )
 }
