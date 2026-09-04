@@ -429,6 +429,7 @@ struct RuntimeGovernorState {
 pub struct RuntimePermit {
     governor: Arc<RuntimeGovernorInner>,
     request: RuntimeWorkRequest,
+    executor_thread_limit: NonZeroUsize,
     io_wave_controller: Arc<GovernorIoWaveController>,
     released: bool,
 }
@@ -528,12 +529,14 @@ impl RuntimeGovernor {
                     Err(error)
                 }
                 None => {
+                    let executor_thread_limit = state.limits.effective_cpu_slots;
                     reserve(&mut state, request);
                     state.admissions = state.admissions.saturating_add(1);
                     let governor = Arc::clone(&self.inner);
                     Ok(RuntimePermit {
                         governor: Arc::clone(&governor),
                         request,
+                        executor_thread_limit,
                         io_wave_controller: Arc::new(GovernorIoWaveController {
                             governor,
                             priority: request.priority,
@@ -712,6 +715,7 @@ impl RuntimePermit {
             .with_admitted_parallelism(
                 NonZeroUsize::new(self.request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
             )
+            .with_executor_thread_limit(self.executor_thread_limit)
             .with_memory_reservation(execution_reservation)
             .with_io_wave_controller(self.io_wave_controller.clone())
     }
@@ -1310,16 +1314,19 @@ mod tests {
         let context = permit.bind_task_context(RuntimeTaskContext::default());
 
         assert_eq!(context.admitted_parallelism().get(), 2);
+        assert_eq!(context.executor_thread_limit().unwrap().get(), 2);
         let reservation = context.memory_reservation().unwrap();
         assert_eq!(reservation.memory_bytes(), 128);
         assert_eq!(reservation.result_bytes(), 32);
 
         let parent = RuntimeTaskContext::default()
-            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(64, 64));
+            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(64, 64))
+            .with_executor_thread_limit(NonZeroUsize::MIN);
         let bounded = permit.bind_task_context(parent);
-        let bounded = bounded.memory_reservation().unwrap();
-        assert_eq!(bounded.memory_bytes(), 64);
-        assert_eq!(bounded.result_bytes(), 32);
+        assert_eq!(bounded.executor_thread_limit().unwrap().get(), 1);
+        let bounded_memory = bounded.memory_reservation().unwrap();
+        assert_eq!(bounded_memory.memory_bytes(), 64);
+        assert_eq!(bounded_memory.result_bytes(), 32);
     }
 
     #[test]

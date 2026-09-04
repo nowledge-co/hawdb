@@ -108,6 +108,7 @@ pub struct RuntimeTaskContext {
     cancellation: RuntimeCancellationToken,
     deadline: Option<Instant>,
     admitted_parallelism: NonZeroUsize,
+    executor_thread_limit: Option<NonZeroUsize>,
     memory_reservation: Option<RuntimeMemoryReservation>,
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
 }
@@ -157,6 +158,7 @@ impl RuntimeTaskContext {
             cancellation,
             deadline,
             admitted_parallelism: NonZeroUsize::MIN,
+            executor_thread_limit: None,
             memory_reservation: None,
             io_wave_controller: None,
         }
@@ -182,6 +184,7 @@ impl RuntimeTaskContext {
             cancellation: self.cancellation.child(),
             deadline: self.deadline,
             admitted_parallelism: self.admitted_parallelism,
+            executor_thread_limit: self.executor_thread_limit,
             memory_reservation: self.memory_reservation,
             io_wave_controller: self.io_wave_controller.clone(),
         }
@@ -198,6 +201,22 @@ impl RuntimeTaskContext {
 
     pub fn admitted_parallelism(&self) -> NonZeroUsize {
         self.admitted_parallelism
+    }
+
+    /// Carries the physical executor-thread ceiling derived by the runtime governor.
+    ///
+    /// This is distinct from [`Self::admitted_parallelism`], which is the CPU
+    /// reservation for one task. An absent limit denotes an ungoverned library call.
+    pub fn with_executor_thread_limit(mut self, limit: NonZeroUsize) -> Self {
+        self.executor_thread_limit = Some(
+            self.executor_thread_limit
+                .map_or(limit, |current| current.min(limit)),
+        );
+        self
+    }
+
+    pub fn executor_thread_limit(&self) -> Option<NonZeroUsize> {
+        self.executor_thread_limit
     }
 
     /// Carries the memory already reserved by the runtime governor.
@@ -368,10 +387,14 @@ mod tests {
     #[test]
     fn child_preserves_admitted_parallelism() {
         let context = RuntimeTaskContext::default()
-            .with_admitted_parallelism(NonZeroUsize::new(4).expect("test parallelism is non-zero"));
+            .with_admitted_parallelism(NonZeroUsize::new(4).expect("test parallelism is non-zero"))
+            .with_executor_thread_limit(
+                NonZeroUsize::new(2).expect("test thread limit is non-zero"),
+            );
 
         assert_eq!(context.admitted_parallelism().get(), 4);
         assert_eq!(context.child().admitted_parallelism().get(), 4);
+        assert_eq!(context.child().executor_thread_limit().unwrap().get(), 2);
     }
 
     #[test]

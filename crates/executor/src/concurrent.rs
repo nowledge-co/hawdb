@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 const ORDERED_STREAM_CHECK_INTERVAL: Duration = Duration::from_millis(10);
+const SHARED_EXECUTOR_WORKER_LIMIT: usize = 16;
 
 #[derive(Clone)]
 pub struct SharedExecutorPool {
@@ -42,15 +43,21 @@ impl SharedExecutorPool {
     }
 
     pub fn shared_default() -> Result<Self, SharedExecutorPoolError> {
-        static SHARED: OnceLock<Result<SharedExecutorPool, SharedExecutorPoolError>> =
-            OnceLock::new();
-        SHARED
-            .get_or_init(|| {
-                let worker_count = std::thread::available_parallelism()
-                    .unwrap_or(NonZeroUsize::MIN)
-                    .min(NonZeroUsize::new(16).expect("shared worker limit is non-zero"));
-                Self::new(worker_count)
-            })
+        Self::shared_bounded(default_shared_worker_count())
+    }
+
+    pub fn shared_bounded(worker_limit: NonZeroUsize) -> Result<Self, SharedExecutorPoolError> {
+        static SHARED: OnceLock<
+            Mutex<BTreeMap<usize, Result<SharedExecutorPool, SharedExecutorPoolError>>>,
+        > = OnceLock::new();
+        let worker_count = default_shared_worker_count().min(worker_limit);
+        let mut shared = SHARED
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shared
+            .entry(worker_count.get())
+            .or_insert_with(|| Self::new(worker_count))
             .clone()
     }
 
@@ -74,29 +81,46 @@ impl Display for SharedExecutorPoolError {
 
 impl Error for SharedExecutorPoolError {}
 
+fn default_shared_worker_count() -> NonZeroUsize {
+    std::thread::available_parallelism()
+        .unwrap_or(NonZeroUsize::MIN)
+        .min(
+            NonZeroUsize::new(SHARED_EXECUTOR_WORKER_LIMIT)
+                .expect("shared worker limit is non-zero"),
+        )
+}
+
 #[derive(Debug, Clone)]
 pub struct BoundedExecutor {
     max_parallelism: NonZeroUsize,
-    pool: Option<SharedExecutorPool>,
+    pool: Result<SharedExecutorPool, SharedExecutorPoolError>,
 }
 
 impl BoundedExecutor {
     pub fn new(max_parallelism: NonZeroUsize) -> Self {
         Self {
             max_parallelism,
-            pool: SharedExecutorPool::shared_default().ok(),
+            pool: SharedExecutorPool::shared_bounded(max_parallelism),
         }
     }
 
     pub fn with_pool(max_parallelism: NonZeroUsize, pool: SharedExecutorPool) -> Self {
         Self {
             max_parallelism,
-            pool: Some(pool),
+            pool: Ok(pool),
         }
     }
 
     pub fn max_parallelism(&self) -> usize {
         self.max_parallelism.get()
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        self.pool.is_err()
+    }
+
+    pub fn pool_error(&self) -> Option<&SharedExecutorPoolError> {
+        self.pool.as_ref().err()
     }
 
     pub fn map_ordered<T, R, F>(self, inputs: &[T], operation: F) -> Vec<R>
@@ -108,7 +132,7 @@ impl BoundedExecutor {
         if inputs.is_empty() {
             return Vec::new();
         }
-        let Some(pool) = &self.pool else {
+        let Ok(pool) = &self.pool else {
             return inputs.iter().map(operation).collect();
         };
 
@@ -162,7 +186,7 @@ impl BoundedExecutor {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        let Some(pool) = &self.pool else {
+        let Ok(pool) = &self.pool else {
             let output = inputs
                 .iter()
                 .map(|input| {
@@ -241,7 +265,7 @@ impl BoundedExecutor {
             return Ok(BoundedOrderedStreamReport::default());
         }
 
-        let Some(pool) = &self.pool else {
+        let Ok(pool) = &self.pool else {
             return run_sequential_index_stream(input_count, context, &operation, &mut consume);
         };
         let worker_count = self
@@ -487,7 +511,7 @@ impl Default for BoundedExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::BoundedExecutor;
+    use super::{BoundedExecutor, SharedExecutorPool, SharedExecutorPoolError};
     use skein_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -497,6 +521,28 @@ mod tests {
         let executor = BoundedExecutor::new(NonZeroUsize::new(4).unwrap());
         let output = executor.map_ordered(&[3, 1, 4, 2], |value| value * value);
         assert_eq!(output, vec![9, 1, 16, 4]);
+    }
+
+    #[test]
+    fn shared_pool_respects_the_requested_worker_limit() {
+        let default_workers = SharedExecutorPool::shared_default().unwrap().worker_count();
+        let bounded_workers = SharedExecutorPool::shared_bounded(NonZeroUsize::new(2).unwrap())
+            .unwrap()
+            .worker_count();
+
+        assert_eq!(bounded_workers, default_workers.min(2));
+    }
+
+    #[test]
+    fn bounded_executor_exposes_pool_degradation() {
+        let executor = BoundedExecutor {
+            max_parallelism: NonZeroUsize::new(2).unwrap(),
+            pool: Err(SharedExecutorPoolError("injected failure".to_string())),
+        };
+
+        assert!(executor.is_degraded());
+        assert!(executor.pool_error().is_some());
+        assert_eq!(executor.map_ordered(&[1, 2], |value| value * 2), [2, 4]);
     }
 
     #[test]

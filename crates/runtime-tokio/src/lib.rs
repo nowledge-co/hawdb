@@ -93,16 +93,9 @@ impl TokioRuntimeConfig {
         let snapshot = governor.snapshot();
         let limits = snapshot.limits;
         let async_workers = limits.effective_cpu_slots.get().clamp(1, 2);
-        let max_blocking_threads = snapshot
-            .resources
-            .cpu
-            .host_parallelism
-            .get()
-            .saturating_add(limits.foreground_io_depth.get())
-            .max(4);
         Self {
             async_worker_threads: NonZeroUsize::new(async_workers),
-            max_blocking_threads: NonZeroUsize::new(max_blocking_threads),
+            max_blocking_threads: Some(limits.effective_cpu_slots),
             ..Self::default()
         }
     }
@@ -498,6 +491,35 @@ mod tests {
                 Some(current),
             ),
         )
+    }
+
+    #[test]
+    fn governor_config_bounds_blocking_threads_to_effective_cpu_slots() {
+        let resources = RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(
+                NonZeroUsize::new(32).unwrap(),
+                NonZeroUsize::new(2),
+                None,
+            ),
+            RuntimeMemorySnapshot::from_limits(
+                Some(8 * 1024 * 1024 * 1024),
+                Some(4 * 1024 * 1024 * 1024),
+                None,
+                None,
+                None,
+            ),
+        );
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            resources,
+            IoConcurrencyBudget::new(8, 2),
+        );
+
+        let config = TokioRuntimeConfig::from_governor(&governor);
+
+        assert_eq!(governor.snapshot().limits.effective_cpu_slots.get(), 2);
+        assert_eq!(config.async_worker_threads.unwrap().get(), 2);
+        assert_eq!(config.max_blocking_threads.unwrap().get(), 2);
     }
 
     #[test]
