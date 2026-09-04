@@ -8,7 +8,9 @@ use skein::schema::{Catalog, PropertyType, TableKind};
 use skein::store::{GraphSnapshotNodeImport, GraphStore, NodeId};
 use skein::Value;
 use skein_core::RuntimeTaskContext;
-use skein_executor::{filter_numeric_column, ColumnVector, NumericLiteral, Selection, Validity};
+use skein_executor::{
+    filter_numeric_column, ColumnVector, NumericLiteral, NumericPredicate, Selection, Validity,
+};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
@@ -182,7 +184,7 @@ fn micro_benchmark() -> ComparisonReport {
                 let selection = filter_numeric_column(
                     black_box(&column),
                     &Selection::all(MICRO_ROWS),
-                    ComparisonOp::Gte,
+                    NumericPredicate::Compare(ComparisonOp::Gte),
                     NumericLiteral::Int(threshold),
                 )
                 .expect("columnar filter must succeed");
@@ -244,7 +246,7 @@ fn float_micro_benchmark() -> ComparisonReport {
                 let selection = filter_numeric_column(
                     black_box(&column),
                     &Selection::all(MICRO_ROWS),
-                    ComparisonOp::Gte,
+                    NumericPredicate::Compare(ComparisonOp::Gte),
                     NumericLiteral::Float(threshold),
                 )
                 .expect("columnar float filter must succeed");

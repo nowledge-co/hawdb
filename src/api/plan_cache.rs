@@ -71,6 +71,12 @@ pub(super) enum PlanCacheMode {
     Bypass(PlanCacheBypassReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanTraceMode {
+    Template,
+    Bound,
+}
+
 pub(super) struct PlanCacheContext<'a> {
     pub(super) catalog: &'a Catalog,
     pub(super) store: &'a GraphStore,
@@ -388,6 +394,7 @@ pub(super) fn optimized_query_plan_for(
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
     cache_mode: PlanCacheMode,
+    trace_mode: PlanTraceMode,
     context: PlanCacheContext<'_>,
 ) -> Result<OptimizedQueryPlan> {
     let query_identity = skein_query::QueryIdentity::new("cypher", cypher_text);
@@ -441,7 +448,13 @@ pub(super) fn optimized_query_plan_for(
             )?;
             let mut trace = cached.trace;
             trace.query_digest = Some(query_identity.query_digest().to_string());
-            refresh_materialized_plan_trace(&mut trace, &physical_plan);
+            refresh_plan_trace(
+                &query_optimizer,
+                &mut trace,
+                &physical_plan,
+                trace_mode,
+                &context,
+            );
             trace
                 .decisions
                 .push("plan cache hit: parameterized physical plan template".to_string());
@@ -495,7 +508,6 @@ pub(super) fn optimized_query_plan_for(
         execution_parameters.as_ref(),
         has_parameter_slots,
     )?;
-    refresh_materialized_plan_trace(&mut trace, &physical_plan);
     if let Some(parameterized) = &parameterized {
         trace.decisions.push(format!(
             "parameterized plan template: slots={} exact_variants={}",
@@ -505,6 +517,14 @@ pub(super) fn optimized_query_plan_for(
     }
     let mut cached_trace = trace.clone();
     refresh_materialized_plan_trace(&mut cached_trace, &physical_template);
+    match trace_mode {
+        PlanTraceMode::Template => refresh_materialized_plan_trace(&mut trace, &physical_plan),
+        PlanTraceMode::Bound => query_optimizer.refresh_trace_for_physical_plan(
+            &mut trace,
+            &physical_plan,
+            &catalog_access.catalog,
+        ),
+    }
     record_access_control_plan_decision(&mut trace, context.access_control);
     if cache_mode == PlanCacheMode::Use {
         let mut key = key.take().expect("cache key exists in use mode");
@@ -548,6 +568,29 @@ pub(super) fn optimized_query_plan_for(
 fn refresh_materialized_plan_trace(trace: &mut OptimizerTrace, physical_plan: &PhysicalPlan) {
     trace.selected_plan = physical_plan.explain(0);
     trace.selected_plan_fingerprint = physical_plan.fingerprint();
+}
+
+fn refresh_plan_trace(
+    optimizer: &CascadesOptimizer,
+    trace: &mut OptimizerTrace,
+    physical_plan: &PhysicalPlan,
+    trace_mode: PlanTraceMode,
+    context: &PlanCacheContext<'_>,
+) {
+    match trace_mode {
+        PlanTraceMode::Template => refresh_materialized_plan_trace(trace, physical_plan),
+        PlanTraceMode::Bound => {
+            let catalog = context
+                .planning_cache
+                .borrow_mut()
+                .optimizer_catalog(context.catalog, context.store)
+                .catalog;
+            optimizer.refresh_trace_for_physical_plan(trace, physical_plan, &catalog);
+            trace.decisions.push(
+                "selected physical plan estimates refreshed for bound parameters".to_string(),
+            );
+        }
+    }
 }
 
 fn required_runtime_capability(

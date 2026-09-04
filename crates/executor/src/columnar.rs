@@ -824,13 +824,13 @@ impl ColumnarBatch {
     pub fn filter_numeric(
         &self,
         slot: SlotId,
-        op: ComparisonOp,
+        predicate: NumericPredicate,
         expected: NumericLiteral,
     ) -> Result<Self> {
         let column = self.column(slot).ok_or_else(|| {
             SkeinError::Execution(format!("unknown columnar filter slot {}", slot.0))
         })?;
-        let selection = filter_numeric_column(column, &self.selection, op, expected)?;
+        let selection = filter_numeric_column(column, &self.selection, predicate, expected)?;
         self.clone().with_selection(selection)
     }
 
@@ -908,6 +908,12 @@ pub enum NumericLiteral {
     Float(f64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericPredicate {
+    Eq,
+    Compare(ComparisonOp),
+}
+
 impl NumericLiteral {
     pub fn from_value(value: &Value) -> Option<Self> {
         Self::from_value_ref(value.as_ref())
@@ -925,7 +931,7 @@ impl NumericLiteral {
 pub fn filter_numeric_column(
     column: &ColumnVector,
     input: &Selection,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
     if column.len() != input.len() {
@@ -937,10 +943,10 @@ pub fn filter_numeric_column(
     }
     match column {
         ColumnVector::Int64 { values, validity } => {
-            filter_int64_values(values, validity, input, op, expected)
+            filter_int64_values(values, validity, input, predicate, expected)
         }
         ColumnVector::Float64 { values, validity } => {
-            filter_float64_values(values, validity, input, op, expected)
+            filter_float64_values(values, validity, input, predicate, expected)
         }
         other => Err(SkeinError::Execution(format!(
             "numeric filter requires Int64 or Float64, got {:?}",
@@ -981,31 +987,39 @@ pub fn filter_int64_values(
     values: &[i64],
     validity: &Validity,
     input: &Selection,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    filter_int64_values_view(values, validity.view(), input, op, expected)
+    filter_int64_values_view(values, validity.view(), input, predicate, expected)
 }
 
 pub fn filter_int64_values_view(
     values: &[i64],
     validity: ValidityView<'_>,
     input: &Selection,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    match expected {
-        NumericLiteral::Int(expected) => {
-            filter_ordered_values(values, validity, input, op, expected, |actual| actual)
-        }
-        NumericLiteral::Float(expected) => filter_ordered_values(
-            values,
-            validity,
-            input,
-            op,
-            float_total_order_key(expected),
-            |actual| float_total_order_key(actual as f64),
-        ),
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(expected) => {
+                filter_numeric_values(values, validity, input, |actual| actual == expected)
+            }
+            NumericLiteral::Float(_) => filter_numeric_values(values, validity, input, |_| false),
+        },
+        NumericPredicate::Compare(op) => match expected {
+            NumericLiteral::Int(expected) => {
+                filter_ordered_values(values, validity, input, op, expected, |actual| actual)
+            }
+            NumericLiteral::Float(expected) => filter_ordered_values(
+                values,
+                validity,
+                input,
+                op,
+                float_total_order_key(expected),
+                |actual| float_total_order_key(actual as f64),
+            ),
+        },
     }
 }
 
@@ -1013,76 +1027,112 @@ pub fn filter_float64_values(
     values: &[f64],
     validity: &Validity,
     input: &Selection,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    filter_float64_values_view(values, validity.view(), input, op, expected)
+    filter_float64_values_view(values, validity.view(), input, predicate, expected)
 }
 
 pub fn filter_float64_values_view(
     values: &[f64],
     validity: ValidityView<'_>,
     input: &Selection,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    let expected = match expected {
-        NumericLiteral::Int(expected) => expected as f64,
-        NumericLiteral::Float(expected) => expected,
-    };
-    filter_ordered_values(
-        values,
-        validity,
-        input,
-        op,
-        float_total_order_key(expected),
-        float_total_order_key,
-    )
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(_) => filter_numeric_values(values, validity, input, |_| false),
+            NumericLiteral::Float(expected) => {
+                filter_numeric_values(values, validity, input, |actual| {
+                    actual.total_cmp(&expected).is_eq()
+                })
+            }
+        },
+        NumericPredicate::Compare(op) => {
+            let expected = match expected {
+                NumericLiteral::Int(expected) => expected as f64,
+                NumericLiteral::Float(expected) => expected,
+            };
+            filter_ordered_values(
+                values,
+                validity,
+                input,
+                op,
+                float_total_order_key(expected),
+                float_total_order_key,
+            )
+        }
+    }
 }
 
 pub fn select_int64_values_view(
     values: &[i64],
     validity: ValidityView<'_>,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
     selected_rows: &mut Vec<u32>,
 ) -> Result<()> {
-    match expected {
-        NumericLiteral::Int(expected) => {
-            select_ordered_values(values, validity, selected_rows, op, expected, |actual| {
-                actual
-            })
-        }
-        NumericLiteral::Float(expected) => select_ordered_values(
-            values,
-            validity,
-            selected_rows,
-            op,
-            float_total_order_key(expected),
-            |actual| float_total_order_key(actual as f64),
-        ),
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(expected) => {
+                select_numeric_values(values, validity, selected_rows, |actual| actual == expected)
+            }
+            NumericLiteral::Float(_) => {
+                select_numeric_values(values, validity, selected_rows, |_| false)
+            }
+        },
+        NumericPredicate::Compare(op) => match expected {
+            NumericLiteral::Int(expected) => {
+                select_ordered_values(values, validity, selected_rows, op, expected, |actual| {
+                    actual
+                })
+            }
+            NumericLiteral::Float(expected) => select_ordered_values(
+                values,
+                validity,
+                selected_rows,
+                op,
+                float_total_order_key(expected),
+                |actual| float_total_order_key(actual as f64),
+            ),
+        },
     }
 }
 
 pub fn select_float64_values_view(
     values: &[f64],
     validity: ValidityView<'_>,
-    op: ComparisonOp,
+    predicate: NumericPredicate,
     expected: NumericLiteral,
     selected_rows: &mut Vec<u32>,
 ) -> Result<()> {
-    let expected = match expected {
-        NumericLiteral::Int(expected) => expected as f64,
-        NumericLiteral::Float(expected) => expected,
-    };
-    select_ordered_values(
-        values,
-        validity,
-        selected_rows,
-        op,
-        float_total_order_key(expected),
-        float_total_order_key,
-    )
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(_) => {
+                select_numeric_values(values, validity, selected_rows, |_| false)
+            }
+            NumericLiteral::Float(expected) => {
+                select_numeric_values(values, validity, selected_rows, |actual| {
+                    actual.total_cmp(&expected).is_eq()
+                })
+            }
+        },
+        NumericPredicate::Compare(op) => {
+            let expected = match expected {
+                NumericLiteral::Int(expected) => expected as f64,
+                NumericLiteral::Float(expected) => expected,
+            };
+            select_ordered_values(
+                values,
+                validity,
+                selected_rows,
+                op,
+                float_total_order_key(expected),
+                float_total_order_key,
+            )
+        }
+    }
 }
 
 fn filter_ordered_values<T, K>(
@@ -1207,26 +1257,46 @@ fn filter_numeric_values<T: Copy>(
 }
 
 #[inline]
-pub fn int64_value_matches(actual: i64, op: ComparisonOp, expected: NumericLiteral) -> bool {
-    match expected {
-        NumericLiteral::Int(expected) => compare_ordering(actual.cmp(&expected), op),
-        NumericLiteral::Float(expected) => compare_ordering(
-            float_total_order_key(actual as f64).cmp(&float_total_order_key(expected)),
-            op,
-        ),
+pub fn int64_value_matches(
+    actual: i64,
+    predicate: NumericPredicate,
+    expected: NumericLiteral,
+) -> bool {
+    match predicate {
+        NumericPredicate::Eq => {
+            matches!(expected, NumericLiteral::Int(expected) if actual == expected)
+        }
+        NumericPredicate::Compare(op) => match expected {
+            NumericLiteral::Int(expected) => compare_ordering(actual.cmp(&expected), op),
+            NumericLiteral::Float(expected) => compare_ordering(
+                float_total_order_key(actual as f64).cmp(&float_total_order_key(expected)),
+                op,
+            ),
+        },
     }
 }
 
 #[inline]
-pub fn float64_value_matches(actual: f64, op: ComparisonOp, expected: NumericLiteral) -> bool {
-    let expected = match expected {
-        NumericLiteral::Int(expected) => expected as f64,
-        NumericLiteral::Float(expected) => expected,
-    };
-    compare_ordering(
-        float_total_order_key(actual).cmp(&float_total_order_key(expected)),
-        op,
-    )
+pub fn float64_value_matches(
+    actual: f64,
+    predicate: NumericPredicate,
+    expected: NumericLiteral,
+) -> bool {
+    match predicate {
+        NumericPredicate::Eq => {
+            matches!(expected, NumericLiteral::Float(expected) if actual.total_cmp(&expected).is_eq())
+        }
+        NumericPredicate::Compare(op) => {
+            let expected = match expected {
+                NumericLiteral::Int(expected) => expected as f64,
+                NumericLiteral::Float(expected) => expected,
+            };
+            compare_ordering(
+                float_total_order_key(actual).cmp(&float_total_order_key(expected)),
+                op,
+            )
+        }
+    }
 }
 
 #[inline(always)]
@@ -1344,12 +1414,81 @@ mod tests {
         let selection = filter_numeric_column(
             &column,
             &Selection::all(4),
-            ComparisonOp::Gte,
+            NumericPredicate::Compare(ComparisonOp::Gte),
             NumericLiteral::Float(2.0),
         )
         .unwrap();
 
         assert_eq!(selection.iter().collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn numeric_equality_filter_preserves_type_validity_and_float_ordering_semantics() {
+        let mut validity = ValidityBuilder::with_capacity(5);
+        validity.push(true);
+        validity.push(false);
+        validity.push(true);
+        validity.push(true);
+        validity.push(true);
+        let nan = f64::from_bits(0x7ff8_0000_0000_0042);
+        let column =
+            ColumnVector::float64(vec![5.0, 5.0, nan, -0.0, 0.0], validity.finish()).unwrap();
+
+        let nan_selection = filter_numeric_column(
+            &column,
+            &Selection::all(5),
+            NumericPredicate::Eq,
+            NumericLiteral::Float(nan),
+        )
+        .unwrap();
+        let negative_zero_selection = filter_numeric_column(
+            &column,
+            &Selection::all(5),
+            NumericPredicate::Eq,
+            NumericLiteral::Float(-0.0),
+        )
+        .unwrap();
+        let cross_type_selection = filter_numeric_column(
+            &column,
+            &Selection::all(5),
+            NumericPredicate::Eq,
+            NumericLiteral::Int(5),
+        )
+        .unwrap();
+
+        assert_eq!(nan_selection.iter().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(negative_zero_selection.iter().collect::<Vec<_>>(), vec![3]);
+        assert!(cross_type_selection.is_empty());
+    }
+
+    #[test]
+    fn numeric_equality_selection_reuses_row_index_storage() {
+        let mut selected_rows = Vec::new();
+        select_int64_values_view(
+            &[1, 2, 1, 3],
+            ValidityView::Bitmap {
+                len: 4,
+                words: &[0b1101],
+            },
+            NumericPredicate::Eq,
+            NumericLiteral::Int(1),
+            &mut selected_rows,
+        )
+        .unwrap();
+        assert_eq!(selected_rows, [0, 2]);
+        let rows_ptr = selected_rows.as_ptr();
+
+        select_int64_values_view(
+            &[4, 5, 4, 6],
+            ValidityView::All { len: 4 },
+            NumericPredicate::Eq,
+            NumericLiteral::Int(4),
+            &mut selected_rows,
+        )
+        .unwrap();
+
+        assert_eq!(selected_rows, [0, 2]);
+        assert_eq!(selected_rows.as_ptr(), rows_ptr);
     }
 
     #[test]
@@ -1410,15 +1549,21 @@ mod tests {
         values: &[T],
         validity: &Validity,
         expected_literals: &[NumericLiteral],
-        filter: impl Fn(&[T], &Validity, &Selection, ComparisonOp, NumericLiteral) -> Result<Selection>,
+        filter: impl Fn(
+            &[T],
+            &Validity,
+            &Selection,
+            NumericPredicate,
+            NumericLiteral,
+        ) -> Result<Selection>,
         select: impl for<'a> Fn(
             &[T],
             ValidityView<'a>,
-            ComparisonOp,
+            NumericPredicate,
             NumericLiteral,
             &mut Vec<u32>,
         ) -> Result<()>,
-        point_matches: impl Fn(T, ComparisonOp, NumericLiteral) -> bool,
+        point_matches: impl Fn(T, NumericPredicate, NumericLiteral) -> bool,
         reference_matches: impl Fn(T, ComparisonOp, NumericLiteral) -> bool,
     ) {
         for op in [
@@ -1428,13 +1573,14 @@ mod tests {
             ComparisonOp::Gte,
         ] {
             for &expected in expected_literals {
+                let predicate = NumericPredicate::Compare(op);
                 let reference = values
                     .iter()
                     .copied()
                     .enumerate()
                     .filter_map(|(row, actual)| {
                         assert_eq!(
-                            point_matches(actual, op, expected),
+                            point_matches(actual, predicate, expected),
                             reference_matches(actual, op, expected)
                         );
                         (validity.is_valid(row) && reference_matches(actual, op, expected))
@@ -1445,12 +1591,12 @@ mod tests {
                     values,
                     validity,
                     &Selection::all(values.len()),
-                    op,
+                    predicate,
                     expected,
                 )
                 .unwrap();
                 let mut selected = Vec::new();
-                select(values, validity.view(), op, expected, &mut selected).unwrap();
+                select(values, validity.view(), predicate, expected, &mut selected).unwrap();
 
                 assert_eq!(filtered.iter().collect::<Vec<_>>(), reference);
                 assert_eq!(
@@ -1483,7 +1629,7 @@ mod tests {
         select_int64_values_view(
             &[1, 2, 3, 4],
             ValidityView::All { len: 4 },
-            ComparisonOp::Gte,
+            NumericPredicate::Compare(ComparisonOp::Gte),
             NumericLiteral::Int(3),
             &mut selected_rows,
         )
@@ -1497,7 +1643,7 @@ mod tests {
                 len: 4,
                 words: &[0b1101],
             },
-            ComparisonOp::Lt,
+            NumericPredicate::Compare(ComparisonOp::Lt),
             NumericLiteral::Int(8),
             &mut selected_rows,
         )
@@ -1513,7 +1659,7 @@ mod tests {
         let selection = filter_numeric_column(
             &column,
             &Selection::all(64),
-            ComparisonOp::Gte,
+            NumericPredicate::Compare(ComparisonOp::Gte),
             NumericLiteral::Int(63),
         )
         .unwrap();
@@ -1528,7 +1674,7 @@ mod tests {
         let selection = filter_numeric_column(
             &column,
             &Selection::all(64),
-            ComparisonOp::Gte,
+            NumericPredicate::Compare(ComparisonOp::Gte),
             NumericLiteral::Int(32),
         )
         .unwrap();
@@ -1693,7 +1839,11 @@ mod tests {
         );
         let batch = ColumnarBatch::try_new(schema, vec![values])
             .unwrap()
-            .filter_numeric(SlotId(0), ComparisonOp::Gte, NumericLiteral::Int(4))
+            .filter_numeric(
+                SlotId(0),
+                NumericPredicate::Compare(ComparisonOp::Gte),
+                NumericLiteral::Int(4),
+            )
             .unwrap()
             .limit(1, 2);
 

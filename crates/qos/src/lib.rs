@@ -16,11 +16,14 @@ pub use resource::{
 };
 pub use runtime::{
     RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimePermit, RuntimeTelemetryEvent,
-    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
-    RuntimeWorkRequest,
+    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimePermit,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest,
 };
-pub use skein_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
+pub use skein_core::{
+    RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
+    RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeTaskContext,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkPriority {

@@ -48,6 +48,7 @@ impl skein_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmissi
                 cpu_slots: request.cpu_slots,
                 memory_bytes: request.memory_bytes,
                 io_slots: request.io_slots,
+                io_reservation_scope: skein_qos::RuntimeIoReservationScope::Task,
                 result_bytes: 0,
                 blocking: false,
             })

@@ -1,4 +1,5 @@
 use super::*;
+use crate::optimizer::OptimizerTrace;
 #[cfg(feature = "acl")]
 use crate::{QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 
@@ -988,6 +989,86 @@ fn plan_cache_reuses_parameterized_physical_plan_template() {
     assert_eq!(stats.disabled_misses, 0);
     assert_eq!(stats.bypasses, 0);
     assert_eq!(stats.memory_pressure_events, 0);
+}
+
+#[test]
+fn explain_plan_cache_hit_refreshes_bound_parameter_costing() {
+    fn database_with_scores() -> Database {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            max_plan_cache_entries: Some(8),
+            ..DatabaseConfig::default()
+        });
+        for score in 0..10 {
+            db.query(&format!("CREATE (:Memory {{score: {score}}})"))
+                .unwrap();
+        }
+        db
+    }
+
+    fn selected_cost_decision(trace: &OptimizerTrace) -> &str {
+        trace
+            .decisions
+            .iter()
+            .find(|decision| decision.starts_with("selected physical plan cost: "))
+            .map(String::as_str)
+            .unwrap()
+    }
+
+    fn selected_cost_event_detail(trace: &OptimizerTrace) -> &str {
+        trace
+            .rule_events
+            .iter()
+            .find(|event| event.rule() == "physical plan cost")
+            .map(|event| event.detail())
+            .unwrap()
+    }
+
+    let query = "MATCH (m:Memory) WHERE m.score = $score RETURN m.score AS score";
+    let cached_db = database_with_scores();
+    let seed = cached_db
+        .explain_query_with_params(
+            query,
+            &BTreeMap::from([("score".to_string(), Value::Int(1))]),
+        )
+        .unwrap();
+    let hit = cached_db
+        .explain_query_with_params(
+            query,
+            &BTreeMap::from([("score".to_string(), Value::Int(8))]),
+        )
+        .unwrap();
+
+    let cold = database_with_scores()
+        .explain_query_with_params(
+            query,
+            &BTreeMap::from([("score".to_string(), Value::Int(8))]),
+        )
+        .unwrap();
+
+    assert_eq!(seed.plan_cache_lookup, PlanCacheLookup::Miss);
+    assert_eq!(hit.plan_cache_lookup, PlanCacheLookup::Hit);
+    assert_eq!(cold.plan_cache_lookup, PlanCacheLookup::Miss);
+    assert_eq!(hit.trace.selected_plan, cold.trace.selected_plan);
+    assert_eq!(hit.trace.selected_plan_cost, cold.trace.selected_plan_cost);
+    assert_eq!(
+        hit.trace.selected_plan_cost_breakdown,
+        cold.trace.selected_plan_cost_breakdown
+    );
+    assert_eq!(
+        hit.trace.selected_plan_cardinality_estimates,
+        cold.trace.selected_plan_cardinality_estimates
+    );
+    assert_eq!(
+        selected_cost_decision(&hit.trace),
+        selected_cost_decision(&cold.trace)
+    );
+    assert_eq!(
+        selected_cost_event_detail(&hit.trace),
+        selected_cost_event_detail(&cold.trace)
+    );
+    assert!(hit.trace.decisions.iter().any(|decision| {
+        decision == "selected physical plan estimates refreshed for bound parameters"
+    }));
 }
 
 #[test]

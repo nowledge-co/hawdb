@@ -54,7 +54,7 @@ use explain::{empty_read_execution_profile, explain_analyze_output_row, explain_
 use plan_cache::{
     optimized_query_plan_for, statement_uses_plan_cache, OptimizedQueryPlan,
     OptimizerEnvironmentKey, OptimizerPlanningCache, PlanCache, PlanCacheContext, PlanCacheMode,
-    DEFAULT_PLAN_CACHE_MAX_ENTRIES,
+    PlanTraceMode, DEFAULT_PLAN_CACHE_MAX_ENTRIES,
 };
 use skein_optimizer::{
     normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
@@ -503,11 +503,13 @@ pub struct QueryOutput {
     pub rows: executor::QueryRows,
 }
 
-/// Deterministic outcome for one relational INSERT statement.
+/// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
 /// A staged statement is provisional until its enclosing transaction commits.
 /// Conflict no-ops increment `conflict_rows`, never `affected_rows`, and never
-/// contribute a `RETURNING` row.
+/// contribute a `RETURNING` row. In the v1 contract, `rows` contains values for
+/// supported `INSERT ... RETURNING` statements and remains empty for count-only
+/// UPDATE and DELETE outcomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalMutationResult {
     pub affected_rows: usize,
@@ -1228,7 +1230,12 @@ impl Database {
                 ));
             }
             query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-            let optimized = self.optimized_query_plan(cypher_text, &statement, parameters)?;
+            let optimized = self.optimized_query_plan_with_access_control(
+                cypher_text,
+                &statement,
+                parameters,
+                None,
+            )?;
             if executor::is_mutation_plan(&optimized.physical_plan)? {
                 return Err(SkeinError::Execution(
                     "read-only query runtime must not execute a mutation".to_string(),
@@ -1388,7 +1395,7 @@ impl Database {
         self.store.ensure_usable()?;
         let statement = cypher::parse(cypher_text)?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_explain_query_plan_with_access_control(
             cypher_text,
             &statement,
             parameters,
@@ -1441,7 +1448,7 @@ impl Database {
         self.store.ensure_usable()?;
         let statement = cypher::parse(cypher_text)?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_explain_query_plan_with_access_control(
             cypher_text,
             &statement,
             parameters,
@@ -1486,21 +1493,59 @@ impl Database {
         self.relational_plan_template_cache.stats()
     }
 
-    fn optimized_query_plan(
-        &self,
-        cypher_text: &str,
-        statement: &cypher::Statement,
-        parameters: &BTreeMap<String, Value>,
-    ) -> Result<OptimizedQueryPlan> {
-        self.optimized_query_plan_with_access_control(cypher_text, statement, parameters, None)
-    }
-
     fn optimized_query_plan_with_access_control(
         &self,
         cypher_text: &str,
         statement: &cypher::Statement,
         parameters: &BTreeMap<String, Value>,
         access_control: Option<&QueryAccessControlContext>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_with_access_control_and_trace_mode(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            PlanTraceMode::Template,
+        )
+    }
+
+    fn optimized_explain_query_plan(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_explain_query_plan_with_access_control(
+            cypher_text,
+            statement,
+            parameters,
+            None,
+        )
+    }
+
+    fn optimized_explain_query_plan_with_access_control(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_with_access_control_and_trace_mode(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            PlanTraceMode::Bound,
+        )
+    }
+
+    fn optimized_query_plan_with_access_control_and_trace_mode(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+        trace_mode: PlanTraceMode,
     ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
             query_statement_variables_for_statement(&self.system_variables, statement)?
@@ -1517,6 +1562,7 @@ impl Database {
             statement,
             parameters,
             cache_mode,
+            trace_mode,
             PlanCacheContext {
                 catalog: &self.catalog,
                 store: &self.store,
@@ -19078,6 +19124,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
                 .label_name(*label_id)
                 .map(|label| ((label.to_string(), property.clone()), values.clone()))
         });
+    let sampled_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_property_histograms.iter())
+        .filter_map(|((label_id, property), sampled)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *sampled))
+        });
     let rel_property_distinct_counts = advanced_statistics
         .into_iter()
         .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
@@ -19093,6 +19147,14 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
             catalog
                 .rel_type_name(*rel_type_id)
                 .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
+        });
+    let sampled_rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), sampled)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), *sampled))
         });
     let property_index_statistics = catalog.property_indexes().filter_map(|index| {
         if index.kind == IndexKind::FullText {
@@ -19147,7 +19209,9 @@ fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> Optimiz
         .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
         .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
-        .with_relationship_property_histograms(rel_property_histograms),
+        .with_relationship_property_histograms(rel_property_histograms)
+        .with_sampled_property_histograms(sampled_property_histograms)
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
     )
 }
 
@@ -19619,6 +19683,7 @@ fn execute_graph_transaction_statement(
         statement,
         parameters,
         PlanCacheMode::Bypass(PlanCacheBypassReason::MutationPlanning),
+        PlanTraceMode::Template,
         PlanCacheContext {
             catalog: transaction.catalog(),
             store: transaction.store(),
@@ -20484,9 +20549,9 @@ impl DatabaseSession<'_> {
         }
         let statement = cypher::parse(cypher_text)?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
-        let optimized = self
-            .db
-            .optimized_query_plan(cypher_text, &statement, parameters)?;
+        let optimized =
+            self.db
+                .optimized_explain_query_plan(cypher_text, &statement, parameters)?;
         Ok(ExplainOutput {
             physical_plan: optimized.physical_plan,
             trace: optimized.trace,
@@ -20617,7 +20682,7 @@ impl DatabaseSession<'_> {
             query_work_request_for_statement(&self.system_variables, &explain.statement)?;
         let optimized =
             self.db
-                .optimized_query_plan(cypher_text, &explain.statement, parameters)?;
+                .optimized_explain_query_plan(cypher_text, &explain.statement, parameters)?;
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -21214,7 +21279,7 @@ impl DatabaseReadTransaction {
         query_runtime::query_runtime_checkpoint(task_context)?;
         let work_request =
             query_work_request_for_statement(&QuerySystemVariables::default(), &explain.statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_explain_query_plan_with_access_control(
             cypher_text,
             &explain.statement,
             parameters,
@@ -21552,7 +21617,7 @@ impl DatabaseReadTransaction {
         let statement = cypher::parse(cypher_text)?;
         let work_request =
             query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-        let optimized = self.optimized_query_plan(cypher_text, &statement, parameters)?;
+        let optimized = self.optimized_explain_query_plan(cypher_text, &statement, parameters)?;
         if executor::is_mutation_plan(&optimized.physical_plan)? {
             return Err(SkeinError::Execution(
                 "read transaction query must not be a mutation".to_string(),
@@ -21575,21 +21640,59 @@ impl DatabaseReadTransaction {
         self.relational_plan_template_cache.stats()
     }
 
-    fn optimized_query_plan(
-        &self,
-        cypher_text: &str,
-        statement: &cypher::Statement,
-        parameters: &BTreeMap<String, Value>,
-    ) -> Result<OptimizedQueryPlan> {
-        self.optimized_query_plan_with_access_control(cypher_text, statement, parameters, None)
-    }
-
     fn optimized_query_plan_with_access_control(
         &self,
         cypher_text: &str,
         statement: &cypher::Statement,
         parameters: &BTreeMap<String, Value>,
         access_control: Option<&QueryAccessControlContext>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_with_access_control_and_trace_mode(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            PlanTraceMode::Template,
+        )
+    }
+
+    fn optimized_explain_query_plan(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_explain_query_plan_with_access_control(
+            cypher_text,
+            statement,
+            parameters,
+            None,
+        )
+    }
+
+    fn optimized_explain_query_plan_with_access_control(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+    ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_with_access_control_and_trace_mode(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            PlanTraceMode::Bound,
+        )
+    }
+
+    fn optimized_query_plan_with_access_control_and_trace_mode(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+        trace_mode: PlanTraceMode,
     ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
             query_statement_variables_for_statement(&QuerySystemVariables::default(), statement)?
@@ -21606,6 +21709,7 @@ impl DatabaseReadTransaction {
             statement,
             parameters,
             cache_mode,
+            trace_mode,
             PlanCacheContext {
                 catalog: &self.catalog,
                 store: &self.store,

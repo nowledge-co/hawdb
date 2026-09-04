@@ -41,7 +41,10 @@ fn operator_cardinality_estimates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OptimizerContext;
+    use crate::{
+        CascadesOptimizer, OptimizationSearchReport, OptimizerCatalogIndexes,
+        OptimizerCatalogStatistics, OptimizerContext,
+    };
     use skein_plan::{PhysicalOperatorId, PhysicalPlanKind};
 
     #[test]
@@ -89,5 +92,61 @@ mod tests {
             trace.cardinality_estimates[0].estimated_rows,
             trace.cost.estimated_rows
         );
+    }
+
+    #[test]
+    fn refreshing_a_trace_replaces_parameter_sensitive_costing() {
+        fn range_seek(cutoff: i64) -> PhysicalPlan {
+            PhysicalPlan::IndexNodeRangeSeek {
+                variable: "m".to_string(),
+                label: "Memory".to_string(),
+                property: "score".to_string(),
+                lower: Some((skein_core::Value::Int(cutoff), false)),
+                upper: None,
+            }
+        }
+
+        let histogram = (0..10).map(skein_core::Value::Int).collect::<Vec<_>>();
+        let catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::new([], [], [("Memory".to_string(), "score".to_string())], []),
+            OptimizerCatalogStatistics::new(
+                [("Memory".to_string(), 10)],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [(("Memory".to_string(), "score".to_string()), histogram)],
+            ),
+        );
+        let context = OptimizerContext::default();
+        let initial = selected_plan_trace(&range_seek(1), &catalog, &context);
+        let mut report = OptimizationSearchReport::memo(1);
+        report.record_selected_plan_cost(initial.cost);
+        let mut trace = report.into_trace(initial);
+        let expected = selected_plan_trace(&range_seek(8), &catalog, &context);
+
+        CascadesOptimizer::with_context(context).refresh_trace_for_physical_plan(
+            &mut trace,
+            &range_seek(8),
+            &catalog,
+        );
+
+        assert_eq!(trace.selected_plan_cost, expected.cost);
+        assert_eq!(trace.selected_plan_cost_breakdown, expected.cost_breakdown);
+        assert_eq!(
+            trace.selected_plan_cardinality_estimates,
+            expected.cardinality_estimates
+        );
+        let expected_detail = format!(
+            "estimated_rows={} cost={}",
+            expected.cost.estimated_rows, expected.cost.cost
+        );
+        assert!(trace.decisions.iter().any(|decision| {
+            decision == &format!("selected physical plan cost: {expected_detail}")
+        }));
+        assert!(trace.rule_events.iter().any(|event| {
+            event.rule() == "physical plan cost" && event.detail() == expected_detail
+        }));
     }
 }

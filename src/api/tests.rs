@@ -172,6 +172,7 @@ mod query_observability;
 mod read_transactions;
 mod relational_ordering;
 mod relational_projection_expressions;
+mod relational_update_delete_outcomes;
 mod relationship_patterns;
 mod relationship_property_mutations;
 mod runtime_capabilities;
