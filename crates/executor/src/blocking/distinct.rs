@@ -1,5 +1,43 @@
 use super::*;
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DistinctKey {
+    schema_id: usize,
+    values: Vec<Value>,
+}
+
+#[derive(Debug, Default)]
+struct DistinctSchemaInterner {
+    schemas: Vec<Vec<String>>,
+    memory_bytes: usize,
+}
+
+impl DistinctSchemaInterner {
+    fn find(&self, binding: &Binding) -> Option<usize> {
+        self.schemas
+            .iter()
+            .position(|schema| schema.iter().eq(binding.values.keys()))
+    }
+
+    fn next_schema_memory_bytes(binding: &Binding) -> usize {
+        binding
+            .values
+            .keys()
+            .fold(std::mem::size_of::<Vec<String>>(), |total, name| {
+                total
+                    .saturating_add(std::mem::size_of::<String>())
+                    .saturating_add(name.len())
+            })
+    }
+
+    fn insert(&mut self, binding: &Binding, memory_bytes: usize) -> usize {
+        let schema_id = self.schemas.len();
+        self.schemas.push(binding.values.keys().cloned().collect());
+        self.memory_bytes = self.memory_bytes.saturating_add(memory_bytes);
+        schema_id
+    }
+}
+
 struct DistinctOperator<'a> {
     memory: &'a ExecutionMemoryConfig,
     task_context: Option<&'a RuntimeTaskContext>,
@@ -7,7 +45,8 @@ struct DistinctOperator<'a> {
     blocking_account: QueryMemoryAccount,
     tracker: OperatorMemoryTracker,
     spill_budget: SpillBudgetTracker,
-    distinct: BTreeMap<Vec<(String, Value)>, (u64, Binding)>,
+    schemas: DistinctSchemaInterner,
+    distinct: BTreeMap<DistinctKey, (u64, Binding)>,
     runs: Vec<spill::SpillRun>,
     input_rows: u64,
 }
@@ -47,6 +86,7 @@ impl<'a> DistinctOperator<'a> {
                 context.memory,
                 context.memory_ledger,
             ),
+            schemas: DistinctSchemaInterner::default(),
             distinct: BTreeMap::new(),
             runs: Vec::new(),
             input_rows: 0,
@@ -54,23 +94,46 @@ impl<'a> DistinctOperator<'a> {
     }
 
     fn push(&mut self, binding: Binding) -> Result<()> {
-        let key = distinct_binding_key(&binding);
+        let existing_schema_id = self.schemas.find(&binding);
+        let schema_id = existing_schema_id.unwrap_or(self.schemas.schemas.len());
+        let schema_bytes = if existing_schema_id.is_none() {
+            DistinctSchemaInterner::next_schema_memory_bytes(&binding)
+        } else {
+            0
+        };
+        let key = distinct_binding_key(&binding, schema_id);
         let entry_bytes =
             binding_memory_bytes(&binding).saturating_add(distinct_key_memory_bytes(&key));
-        ensure_operator_item_fits("DistinctExec", entry_bytes, &self.tracker)?;
+        let admitted_bytes = schema_bytes.saturating_add(entry_bytes);
+        ensure_operator_item_fits("DistinctExec", admitted_bytes, &self.tracker)?;
         if !self.distinct.contains_key(&key) {
-            if self.tracker.would_exceed(entry_bytes) {
-                self.runs.push(spill_distinct_run(
-                    &mut self.distinct,
-                    &mut self.spill_budget,
-                    self.task_context,
-                )?);
-                self.tracker.reset();
+            if self.tracker.would_exceed(admitted_bytes) && !self.distinct.is_empty() {
+                self.spill_current_run()?;
+            }
+            if existing_schema_id.is_none() {
+                self.tracker.try_charge(schema_bytes)?;
+                let inserted_schema_id = self.schemas.insert(&binding, schema_bytes);
+                debug_assert_eq!(inserted_schema_id, schema_id);
             }
             self.tracker.try_charge(entry_bytes)?;
             self.distinct.insert(key, (self.input_rows, binding));
         }
         self.input_rows = self.input_rows.saturating_add(1);
+        Ok(())
+    }
+
+    fn spill_current_run(&mut self) -> Result<()> {
+        self.runs.push(spill_distinct_run(
+            &mut self.distinct,
+            &mut self.spill_budget,
+            self.task_context,
+        )?);
+        self.tracker.release(
+            self.tracker
+                .used_bytes
+                .saturating_sub(self.schemas.memory_bytes),
+        );
+        debug_assert_eq!(self.tracker.used_bytes, self.schemas.memory_bytes);
         Ok(())
     }
 
@@ -93,12 +156,7 @@ impl<'a> DistinctOperator<'a> {
             );
         }
         if !self.distinct.is_empty() {
-            self.runs.push(spill_distinct_run(
-                &mut self.distinct,
-                &mut self.spill_budget,
-                self.task_context,
-            )?);
-            self.tracker.reset();
+            self.spill_current_run()?;
         }
         let mut peak_tracked_bytes = self.tracker.peak_bytes;
         self.runs = compact_distinct_runs(
@@ -106,9 +164,14 @@ impl<'a> DistinctOperator<'a> {
             self.memory,
             &mut self.spill_budget,
             &self.blocking_account,
+            &self.schemas,
             self.task_context,
             &mut peak_tracked_bytes,
         )?;
+        let schemas = std::mem::take(&mut self.schemas);
+        let schema_bytes = schemas.memory_bytes;
+        drop(schemas);
+        self.tracker.release(schema_bytes);
         self.record_memory_report(self.input_rows as usize, peak_tracked_bytes);
         emit_distinct_run(
             self.runs
@@ -139,16 +202,15 @@ impl<'a> DistinctOperator<'a> {
     }
 }
 
-fn distinct_binding_key(binding: &Binding) -> Vec<(String, Value)> {
-    binding
-        .values
-        .iter()
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
+fn distinct_binding_key(binding: &Binding, schema_id: usize) -> DistinctKey {
+    DistinctKey {
+        schema_id,
+        values: binding.values.values().cloned().collect(),
+    }
 }
 
 fn spill_distinct_run(
-    distinct: &mut BTreeMap<Vec<(String, Value)>, (u64, Binding)>,
+    distinct: &mut BTreeMap<DistinctKey, (u64, Binding)>,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
@@ -167,6 +229,7 @@ fn compact_distinct_runs(
     memory: &ExecutionMemoryConfig,
     spill_budget: &mut SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
+    schemas: &DistinctSchemaInterner,
     task_context: Option<&RuntimeTaskContext>,
     peak_tracked_bytes: &mut usize,
 ) -> Result<Vec<spill::SpillRun>> {
@@ -182,10 +245,13 @@ fn compact_distinct_runs(
             compacted.push(merge_distinct_run_pair(
                 &left,
                 &right,
-                memory,
                 spill_budget,
-                blocking_account,
-                task_context,
+                DistinctMergeContext {
+                    memory,
+                    blocking_account,
+                    schemas,
+                    task_context,
+                },
                 peak_tracked_bytes,
             )?);
         }
@@ -195,10 +261,29 @@ fn compact_distinct_runs(
 }
 
 struct DistinctRunRow {
-    key: Vec<(String, Value)>,
+    schema_id: usize,
     ordinal: u64,
     binding: Binding,
     memory_bytes: usize,
+}
+
+impl DistinctRunRow {
+    fn cmp_key(&self, other: &Self) -> Ordering {
+        self.schema_id.cmp(&other.schema_id).then_with(|| {
+            self.binding
+                .values
+                .values()
+                .cmp(other.binding.values.values())
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DistinctMergeContext<'a> {
+    memory: &'a ExecutionMemoryConfig,
+    blocking_account: &'a QueryMemoryAccount,
+    schemas: &'a DistinctSchemaInterner,
+    task_context: Option<&'a RuntimeTaskContext>,
 }
 
 fn read_distinct_run_row(
@@ -206,6 +291,7 @@ fn read_distinct_run_row(
     memory_limit: usize,
     spill_budget: &SpillBudgetTracker,
     tracker: &mut OperatorMemoryTracker,
+    schemas: &DistinctSchemaInterner,
 ) -> Result<Option<DistinctRunRow>> {
     reader
         .read_binding_record(memory_limit, spill_budget)?
@@ -215,11 +301,14 @@ fn read_distinct_run_row(
                 memory_limit,
                 tracker,
                 |ordinal, binding| {
-                    let key = distinct_binding_key(&binding);
-                    let memory_bytes = binding_memory_bytes(&binding)
-                        .saturating_add(distinct_key_memory_bytes(&key));
+                    let schema_id = schemas.find(&binding).ok_or_else(|| {
+                        SkeinError::Execution(
+                            "DistinctExec spill record has an unknown schema".to_string(),
+                        )
+                    })?;
+                    let memory_bytes = binding_memory_bytes(&binding);
                     Ok(DistinctRunRow {
-                        key,
+                        schema_id,
                         ordinal,
                         binding,
                         memory_bytes,
@@ -234,17 +323,26 @@ fn read_distinct_run_row(
 fn merge_distinct_run_pair(
     left: &spill::SpillRun,
     right: &spill::SpillRun,
-    memory: &ExecutionMemoryConfig,
     spill_budget: &mut SpillBudgetTracker,
-    blocking_account: &QueryMemoryAccount,
-    task_context: Option<&RuntimeTaskContext>,
+    context: DistinctMergeContext<'_>,
     peak_tracked_bytes: &mut usize,
 ) -> Result<spill::SpillRun> {
+    let DistinctMergeContext {
+        memory,
+        blocking_account,
+        schemas,
+        task_context,
+    } = context;
     runtime_checkpoint(task_context)?;
-    let per_row_memory = memory.blocking_operator_bytes.get() / 2;
+    let merge_memory = memory
+        .blocking_operator_bytes
+        .get()
+        .saturating_sub(schemas.memory_bytes);
+    let per_row_memory = merge_memory / 2;
     if per_row_memory == 0 {
         return Err(SkeinError::Execution(
-            "DistinctExec spill merge requires at least two bytes of blocking memory".to_string(),
+            "DistinctExec spill merge requires at least two bytes of blocking memory after schema interning"
+                .to_string(),
         ));
     }
     let mut left_reader = left.reader()?;
@@ -253,28 +351,34 @@ fn merge_distinct_run_pair(
         memory.blocking_operator_bytes,
         blocking_account.clone(),
     );
-    let mut left_row =
-        read_distinct_run_row(&mut left_reader, per_row_memory, spill_budget, &mut tracker)?;
+    let mut left_row = read_distinct_run_row(
+        &mut left_reader,
+        per_row_memory,
+        spill_budget,
+        &mut tracker,
+        schemas,
+    )?;
     let mut right_row = read_distinct_run_row(
         &mut right_reader,
         per_row_memory,
         spill_budget,
         &mut tracker,
+        schemas,
     )?;
     let (run, mut writer) = spill_budget.create_run("distinct-merge")?;
     loop {
         runtime_checkpoint(task_context)?;
         *peak_tracked_bytes = (*peak_tracked_bytes).max(
-            left_row
-                .as_ref()
-                .map_or(0, |row| row.memory_bytes)
+            schemas
+                .memory_bytes
+                .saturating_add(left_row.as_ref().map_or(0, |row| row.memory_bytes))
                 .saturating_add(right_row.as_ref().map_or(0, |row| row.memory_bytes)),
         );
         let selection = match (&left_row, &right_row) {
             (None, None) => break,
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
-            (Some(left), Some(right)) => left.key.cmp(&right.key),
+            (Some(left), Some(right)) => left.cmp_key(right),
         };
         let (selected, released_bytes) = match selection {
             Ordering::Less => {
@@ -312,6 +416,7 @@ fn merge_distinct_run_pair(
                 per_row_memory,
                 spill_budget,
                 &mut tracker,
+                schemas,
             )?;
         }
         if right_row.is_none() {
@@ -320,6 +425,7 @@ fn merge_distinct_run_pair(
                 per_row_memory,
                 spill_budget,
                 &mut tracker,
+                schemas,
             )?;
         }
     }
@@ -401,14 +507,43 @@ fn emit_accounted_distinct_batch(
     emit(outgoing)
 }
 
-fn distinct_key_memory_bytes(key: &[(String, Value)]) -> usize {
-    std::mem::size_of::<Vec<(String, Value)>>().saturating_add(key.iter().fold(
-        0usize,
-        |total, (name, value)| {
-            total
-                .saturating_add(std::mem::size_of::<(String, Value)>())
-                .saturating_add(name.len())
-                .saturating_add(value_memory_bytes(value))
-        },
-    ))
+fn distinct_key_memory_bytes(key: &DistinctKey) -> usize {
+    std::mem::size_of::<DistinctKey>().saturating_add(
+        key.values.iter().fold(0usize, |total, value| {
+            total.saturating_add(value_memory_bytes(value))
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_interner_reuses_names_and_distinguishes_value_schemas() {
+        let first = Binding::values(BTreeMap::from([
+            ("left".to_string(), Value::Int(1)),
+            ("right".to_string(), Value::Null),
+        ]));
+        let same_schema = Binding::values(BTreeMap::from([
+            ("left".to_string(), Value::Int(2)),
+            ("right".to_string(), Value::Null),
+        ]));
+        let different_schema = Binding::scalar("other", Value::Int(1));
+        let mut interner = DistinctSchemaInterner::default();
+
+        let first_bytes = DistinctSchemaInterner::next_schema_memory_bytes(&first);
+        let first_id = interner.insert(&first, first_bytes);
+        assert_eq!(interner.find(&same_schema), Some(first_id));
+        assert_eq!(interner.memory_bytes, first_bytes);
+
+        let other_bytes = DistinctSchemaInterner::next_schema_memory_bytes(&different_schema);
+        let other_id = interner.insert(&different_schema, other_bytes);
+        assert_ne!(other_id, first_id);
+        assert_eq!(interner.memory_bytes, first_bytes + other_bytes);
+
+        let first_key = distinct_binding_key(&first, first_id);
+        let other_key = distinct_binding_key(&different_schema, other_id);
+        assert_ne!(first_key, other_key);
+    }
 }

@@ -948,7 +948,16 @@ fn execute_binding_batches_inner(
             );
             let mut total = 0usize;
             let mut callback_error = None;
+            let mut nodes_since_checkpoint = 0usize;
             store.visit_nodes_owned(None, &mut |node| {
+                nodes_since_checkpoint += 1;
+                if nodes_since_checkpoint == context.memory.batch_rows.get() {
+                    nodes_since_checkpoint = 0;
+                    if let Err(error) = runtime_checkpoint(context.task_context) {
+                        callback_error = Some(error);
+                        return Ok(ScanControl::Stop);
+                    }
+                }
                 if !node_matches_label_pattern(&node, label_ids.as_deref())
                     || !node_properties_match(&node, properties)
                 {
@@ -1364,6 +1373,67 @@ fn execute_binding_batches_inner(
         | PhysicalPlan::CreateRelationship { .. } => {
             unreachable!("BatchPlanRef rejected this physical operator")
         }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn optional_relationship_count_checks_cancellation_without_matching_nodes() {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::in_memory();
+        store
+            .create_node(&mut catalog, "Other", BTreeMap::new())
+            .unwrap();
+        let plan = PhysicalPlan::OptionalRelationshipCountSumExec {
+            variable: "m".to_string(),
+            label: "Memory".to_string(),
+            properties: BTreeMap::new(),
+            legs: vec![RelationshipCountLeg {
+                rel_type: "HAS_MEMORY".to_string(),
+                direction: RelationshipDirection::Outgoing,
+                distinct: false,
+                filter: None,
+            }],
+            output: "count".to_string(),
+        };
+        let memory = ExecutionMemoryConfig {
+            batch_rows: NonZeroUsize::new(1).unwrap(),
+            ..ExecutionMemoryConfig::default()
+        };
+        let memory_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let parameters = BTreeMap::new();
+        let mut external_operator = NoExternalReadOperator;
+        let external = BatchExternalReadAdapter::new(&mut external_operator);
+        let observer = QueryExecutionObserver::default();
+        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let task_context = RuntimeTaskContext::without_deadline(cancellation.clone());
+        assert!(cancellation.cancel());
+        let context = BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &memory_ledger,
+            task_context: Some(&task_context),
+            observer: &observer,
+        };
+
+        // Bypass the pipeline-entry checkpoint to isolate the operator's scan loop.
+        let error = execute_binding_batches_inner(
+            BatchPlanRef::descendant(&plan),
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |_| Ok(BatchControl::Continue),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("runtime task stopped: cancelled"));
     }
 }
 

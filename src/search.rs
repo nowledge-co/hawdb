@@ -4,8 +4,8 @@ pub use skein_search::*;
 
 use crate::error::Result;
 use crate::schema::Catalog;
-use crate::store::{GraphScanControl, GraphStore, NodeRecord};
-use std::collections::BTreeSet;
+use crate::store::{GraphScanControl, GraphStore, NodeId, NodeRecord};
+use std::collections::{BTreeSet, HashMap};
 
 impl SearchProjectionSource for GraphStore {
     fn source_graph_commit_epoch(&self) -> u64 {
@@ -65,5 +65,47 @@ impl SearchProjectionSource for GraphStore {
             return Err(error);
         }
         Ok(labels.into_iter().collect())
+    }
+
+    fn projection_business_labels_by_node(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<HashMap<NodeId, Vec<String>>> {
+        let Some(has_label_type_id) = catalog.rel_type_id("HAS_LABEL") else {
+            return Ok(HashMap::new());
+        };
+        let Some(label_label_id) = catalog.label_id("Label") else {
+            return Ok(HashMap::new());
+        };
+
+        let mut label_values = HashMap::new();
+        self.visit_nodes_owned(Some(label_label_id), |label| {
+            if let Some(value) = projection_business_label_value(&label) {
+                label_values.insert(label.id, value);
+            }
+            GraphScanControl::Continue
+        })?;
+
+        let mut labels_by_node = HashMap::<NodeId, BTreeSet<String>>::new();
+        self.visit_relationships_owned(Some(has_label_type_id), |relationship| {
+            if let Some(value) = label_values.get(&relationship.source) {
+                labels_by_node
+                    .entry(relationship.target)
+                    .or_default()
+                    .insert(value.clone());
+            }
+            if let Some(value) = label_values.get(&relationship.target) {
+                labels_by_node
+                    .entry(relationship.source)
+                    .or_default()
+                    .insert(value.clone());
+            }
+            GraphScanControl::Continue
+        })?;
+
+        Ok(labels_by_node
+            .into_iter()
+            .map(|(node_id, labels)| (node_id, labels.into_iter().collect()))
+            .collect())
     }
 }

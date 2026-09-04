@@ -1615,13 +1615,10 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
     };
     let morsel_rows = 4 * 16;
     let morsel_count = 513usize.div_ceil(morsel_rows);
-    let memory_workers = memory.query_memory_bytes.get()
-        / (memory.batch_payload_bytes.get() + morsel_rows * std::mem::size_of::<&NodeRecord>());
     let expected_workers = skein_executor::SharedExecutorPool::shared_default()
         .map(|pool| pool.worker_count())
         .unwrap_or(1)
         .min(MAX_MORSEL_PARALLELISM)
-        .min(memory_workers)
         .min(morsel_count / 4)
         .max(1);
     let task_context = RuntimeTaskContext::default().with_admitted_parallelism(
@@ -1738,6 +1735,7 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
         assert!(parallel_report.morsel_peak_buffered_output_bytes > 0);
     }
     assert!(parallel_report.morsel_peak_reorder_entries <= expected_workers);
+    assert!(parallel_report.query_memory_peak_bytes < memory.batch_payload_bytes.get());
 }
 
 #[test]

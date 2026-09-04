@@ -3,7 +3,10 @@ pub use skein_telemetry::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::qos::{QosTelemetryEvent, QosTelemetryOutcome, QosTelemetryPhase};
+    use crate::qos::{
+        QosTelemetryEvent, QosTelemetryOutcome, QosTelemetryPhase, RuntimeTelemetryEvent,
+        RuntimeTelemetryEventKind, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
+    };
     use crate::{
         Database, LocalQosPolicy, LocalQosScheduler, MetadataRepairOptions, SearchDocument,
         SearchIndex, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
@@ -20,6 +23,7 @@ mod tests {
         events: Mutex<Vec<(bool, u64, u64, usize)>>,
         kernel_events: Mutex<Vec<KernelTelemetry>>,
         qos_events: Mutex<Vec<QosTelemetryEvent>>,
+        runtime_events: Mutex<Vec<RuntimeTelemetryEvent>>,
     }
 
     impl TelemetrySink for RecordingSink {
@@ -38,6 +42,10 @@ mod tests {
 
         fn record_qos(&self, event: QosTelemetryEvent) {
             self.qos_events.lock().unwrap().push(event);
+        }
+
+        fn record_runtime(&self, event: RuntimeTelemetryEvent) {
+            self.runtime_events.lock().unwrap().push(event);
         }
     }
 
@@ -140,6 +148,37 @@ mod tests {
                 admission_code: Some(crate::qos::QosAdmissionCode::PerWorkLimitExceeded),
             }]
         );
+    }
+
+    #[test]
+    fn embedded_open_wires_runtime_governor_to_the_host_sink() {
+        let path = unique_test_dir("runtime_governor");
+        let sink = Arc::new(RecordingSink::default());
+        let mut embedded = crate::SkeinEmbedded::open(&path).unwrap();
+        embedded
+            .database_mut()
+            .set_telemetry_sink(Some(sink.clone()));
+
+        let permit = embedded
+            .runtime_governor()
+            .try_admit(RuntimeWorkRequest::new(
+                RuntimeWorkPriority::Foreground,
+                RuntimeWorkKind::Control,
+            ))
+            .unwrap();
+        drop(permit);
+
+        let events = sink.runtime_events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, RuntimeTelemetryEventKind::Admitted);
+        assert_eq!(events[1].kind, RuntimeTelemetryEventKind::Completed);
+        assert!(events.iter().all(|event| {
+            event.priority == Some(RuntimeWorkPriority::Foreground)
+                && event.work_kind == Some(RuntimeWorkKind::Control)
+        }));
+        drop(events);
+        drop(embedded);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

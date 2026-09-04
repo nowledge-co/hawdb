@@ -1,7 +1,7 @@
 use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use skein_qos::{
-    RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorSnapshot, RuntimeWorkKind,
-    RuntimeWorkRequest,
+    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorSnapshot,
+    RuntimeWorkKind, RuntimeWorkRequest,
 };
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -363,27 +363,42 @@ impl TokioRuntimeAdapter {
         request: RuntimeWorkRequest,
         context: &RuntimeTaskContext,
     ) -> Result<skein_qos::RuntimePermit, TokioTaskError<E>> {
-        let mut recorded_wait = false;
+        let mut wait = None;
         loop {
             if let Err(reason) = context.checkpoint() {
+                self.finish_admission_wait(request, wait.take());
                 self.governor.record_cancellation(reason);
                 return Err(TokioTaskError::Stopped(reason));
             }
             self.refresh_resources_if_due();
             match self.governor.try_admit(request) {
-                Ok(permit) => return Ok(permit),
+                Ok(permit) => {
+                    self.finish_admission_wait(request, wait.take());
+                    return Ok(permit);
+                }
                 Err(error) if !error.is_retryable() => {
+                    self.finish_admission_wait(request, wait.take());
                     return Err(TokioTaskError::Admission(error));
                 }
                 Err(error) => {
-                    if !recorded_wait {
-                        self.governor.record_admission_wait(request, error.code);
-                        recorded_wait = true;
-                    }
+                    wait.get_or_insert_with(|| (Instant::now(), error.code));
                 }
             }
             tokio::time::sleep(self.poll_interval(context)).await;
         }
+    }
+
+    fn finish_admission_wait(
+        &self,
+        request: RuntimeWorkRequest,
+        wait: Option<(Instant, RuntimeAdmissionCode)>,
+    ) {
+        let Some((started, code)) = wait else {
+            return;
+        };
+        let elapsed_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.governor
+            .record_admission_wait(request, code, elapsed_micros);
     }
 
     async fn await_join<T, E>(
@@ -433,7 +448,9 @@ mod tests {
     use super::*;
     use skein_qos::{
         IoConcurrencyBudget, RuntimeCancellationToken, RuntimeGovernorConfig,
-        RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkPriority,
+        RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+        RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink,
+        RuntimeWorkPriority,
     };
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -454,6 +471,20 @@ mod tests {
             resources,
             IoConcurrencyBudget::new(4, 1),
         )
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingRuntimeTelemetry {
+        events: Mutex<Vec<RuntimeTelemetryEvent>>,
+    }
+
+    impl RuntimeTelemetrySink for RecordingRuntimeTelemetry {
+        fn record_runtime(&self, event: RuntimeTelemetryEvent) {
+            self.events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(event);
+        }
     }
 
     fn cgroup_resources(limit: u64, current: u64) -> RuntimeResourceSnapshot {
@@ -543,9 +574,12 @@ mod tests {
 
     #[test]
     fn blocking_execution_respects_governor_parallelism() {
+        let governor = governor(2);
+        let telemetry = Arc::new(RecordingRuntimeTelemetry::default());
+        governor.set_telemetry_sink(Some(telemetry.clone()));
         let adapter = Arc::new(
             TokioRuntimeAdapter::owned(
-                governor(2),
+                governor,
                 TokioRuntimeConfig {
                     max_blocking_threads: NonZeroUsize::new(8),
                     ..TokioRuntimeConfig::default()
@@ -584,6 +618,15 @@ mod tests {
         assert!(peak.load(Ordering::SeqCst) <= 2);
         assert_eq!(adapter.governor_snapshot().completions, 6);
         assert!(adapter.governor_snapshot().admission_waits > 0);
+        assert!(adapter.governor_snapshot().retryable_admission_rejections > 0);
+        assert!(telemetry
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|event| {
+                event.kind == RuntimeTelemetryEventKind::AdmissionWait && event.elapsed_micros > 0
+            }));
     }
 
     #[test]

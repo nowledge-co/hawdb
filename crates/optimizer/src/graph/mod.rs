@@ -23,7 +23,7 @@ pub use catalog::{
 pub use lowering::CascadesOptimizer;
 pub use roots::{
     FastPathPhysicalPhase, FastPathPhysicalPlanRoot, LogicalPhase, LogicalPlanRoot,
-    OptimizedLogicalPhase, OptimizedLogicalPlanRoot, PhysicalPhase, PhysicalPlanRoot, PlanPhase,
+    LoweringReadyLogicalPlanRoot, LoweringReadyPhase, PhysicalPhase, PhysicalPlanRoot, PlanPhase,
     PlanPhaseKind,
 };
 

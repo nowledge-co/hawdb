@@ -1,4 +1,6 @@
-use skein_qos::{QosTelemetryEvent, QosTelemetrySink};
+#[cfg(feature = "opentelemetry")]
+use skein_qos::RuntimeTelemetryEventKind;
+use skein_qos::{QosTelemetryEvent, QosTelemetrySink, RuntimeTelemetryEvent, RuntimeTelemetrySink};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -102,6 +104,8 @@ pub trait TelemetrySink: Debug + Send + Sync {
     fn record_kernel(&self, _event: KernelTelemetry) {}
 
     fn record_qos(&self, _event: QosTelemetryEvent) {}
+
+    fn record_runtime(&self, _event: RuntimeTelemetryEvent) {}
 }
 
 #[derive(Debug)]
@@ -117,6 +121,21 @@ impl QosTelemetrySink for HostQosTelemetrySink {
 
 pub fn qos_telemetry_sink(telemetry: Arc<dyn TelemetrySink>) -> Arc<dyn QosTelemetrySink> {
     Arc::new(HostQosTelemetrySink { telemetry })
+}
+
+#[derive(Debug)]
+struct HostRuntimeTelemetrySink {
+    telemetry: Arc<dyn TelemetrySink>,
+}
+
+impl RuntimeTelemetrySink for HostRuntimeTelemetrySink {
+    fn record_runtime(&self, event: RuntimeTelemetryEvent) {
+        self.telemetry.record_runtime(event);
+    }
+}
+
+pub fn runtime_telemetry_sink(telemetry: Arc<dyn TelemetrySink>) -> Arc<dyn RuntimeTelemetrySink> {
+    Arc::new(HostRuntimeTelemetrySink { telemetry })
 }
 
 #[cfg(feature = "opentelemetry")]
@@ -139,6 +158,8 @@ pub struct OpenTelemetryMetrics {
     kernel_operation_items: opentelemetry::metrics::Histogram<u64>,
     kernel_operation_bytes: opentelemetry::metrics::Histogram<u64>,
     kernel_operation_fsync_micros: opentelemetry::metrics::Histogram<u64>,
+    runtime_event_count: opentelemetry::metrics::Counter<u64>,
+    runtime_admission_wait_micros: opentelemetry::metrics::Histogram<u64>,
 }
 
 #[cfg(feature = "opentelemetry")]
@@ -174,6 +195,11 @@ impl OpenTelemetryMetrics {
             kernel_operation_bytes: meter.u64_histogram("skein.kernel.operation.bytes").build(),
             kernel_operation_fsync_micros: meter
                 .u64_histogram("skein.kernel.operation.fsync_duration")
+                .with_unit("us")
+                .build(),
+            runtime_event_count: meter.u64_counter("skein.runtime.event.count").build(),
+            runtime_admission_wait_micros: meter
+                .u64_histogram("skein.runtime.admission.wait.duration")
                 .with_unit("us")
                 .build(),
         }
@@ -265,6 +291,42 @@ impl TelemetrySink for OpenTelemetryMetrics {
             .record(event.elapsed_micros, &attributes);
         self.kernel_operation_items
             .record(event.estimated_operations as u64, &attributes);
+    }
+
+    fn record_runtime(&self, event: RuntimeTelemetryEvent) {
+        use opentelemetry::KeyValue;
+
+        let attributes = [
+            KeyValue::new("db.system", "skein"),
+            KeyValue::new("skein.runtime.event", event.kind.as_str()),
+            KeyValue::new(
+                "skein.work.priority",
+                event
+                    .priority
+                    .map(|priority| priority.as_str())
+                    .unwrap_or(""),
+            ),
+            KeyValue::new(
+                "skein.work.kind",
+                event.work_kind.map(|kind| kind.as_str()).unwrap_or(""),
+            ),
+            KeyValue::new(
+                "skein.runtime.admission_code",
+                event.admission_code.map(|code| code.as_str()).unwrap_or(""),
+            ),
+            KeyValue::new(
+                "skein.runtime.retryable",
+                event
+                    .retryable
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+        ];
+        self.runtime_event_count.add(1, &attributes);
+        if event.kind == RuntimeTelemetryEventKind::AdmissionWait {
+            self.runtime_admission_wait_micros
+                .record(event.elapsed_micros, &attributes);
+        }
     }
 }
 

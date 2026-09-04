@@ -1000,9 +1000,27 @@ pub fn filter_int64_values_view(
     predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    filter_numeric_values(values, validity, input, |actual| {
-        int64_value_matches(actual, predicate, expected)
-    })
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(expected) => {
+                filter_numeric_values(values, validity, input, |actual| actual == expected)
+            }
+            NumericLiteral::Float(_) => filter_numeric_values(values, validity, input, |_| false),
+        },
+        NumericPredicate::Compare(op) => match expected {
+            NumericLiteral::Int(expected) => {
+                filter_ordered_values(values, validity, input, op, expected, |actual| actual)
+            }
+            NumericLiteral::Float(expected) => filter_ordered_values(
+                values,
+                validity,
+                input,
+                op,
+                float_total_order_key(expected),
+                |actual| float_total_order_key(actual as f64),
+            ),
+        },
+    }
 }
 
 pub fn filter_float64_values(
@@ -1022,9 +1040,30 @@ pub fn filter_float64_values_view(
     predicate: NumericPredicate,
     expected: NumericLiteral,
 ) -> Result<Selection> {
-    filter_numeric_values(values, validity, input, |actual| {
-        float64_value_matches(actual, predicate, expected)
-    })
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(_) => filter_numeric_values(values, validity, input, |_| false),
+            NumericLiteral::Float(expected) => {
+                filter_numeric_values(values, validity, input, |actual| {
+                    actual.total_cmp(&expected).is_eq()
+                })
+            }
+        },
+        NumericPredicate::Compare(op) => {
+            let expected = match expected {
+                NumericLiteral::Int(expected) => expected as f64,
+                NumericLiteral::Float(expected) => expected,
+            };
+            filter_ordered_values(
+                values,
+                validity,
+                input,
+                op,
+                float_total_order_key(expected),
+                float_total_order_key,
+            )
+        }
+    }
 }
 
 pub fn select_int64_values_view(
@@ -1034,9 +1073,31 @@ pub fn select_int64_values_view(
     expected: NumericLiteral,
     selected_rows: &mut Vec<u32>,
 ) -> Result<()> {
-    select_numeric_values(values, validity, selected_rows, |actual| {
-        int64_value_matches(actual, predicate, expected)
-    })
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(expected) => {
+                select_numeric_values(values, validity, selected_rows, |actual| actual == expected)
+            }
+            NumericLiteral::Float(_) => {
+                select_numeric_values(values, validity, selected_rows, |_| false)
+            }
+        },
+        NumericPredicate::Compare(op) => match expected {
+            NumericLiteral::Int(expected) => {
+                select_ordered_values(values, validity, selected_rows, op, expected, |actual| {
+                    actual
+                })
+            }
+            NumericLiteral::Float(expected) => select_ordered_values(
+                values,
+                validity,
+                selected_rows,
+                op,
+                float_total_order_key(expected),
+                |actual| float_total_order_key(actual as f64),
+            ),
+        },
+    }
 }
 
 pub fn select_float64_values_view(
@@ -1046,9 +1107,88 @@ pub fn select_float64_values_view(
     expected: NumericLiteral,
     selected_rows: &mut Vec<u32>,
 ) -> Result<()> {
-    select_numeric_values(values, validity, selected_rows, |actual| {
-        float64_value_matches(actual, predicate, expected)
-    })
+    match predicate {
+        NumericPredicate::Eq => match expected {
+            NumericLiteral::Int(_) => {
+                select_numeric_values(values, validity, selected_rows, |_| false)
+            }
+            NumericLiteral::Float(expected) => {
+                select_numeric_values(values, validity, selected_rows, |actual| {
+                    actual.total_cmp(&expected).is_eq()
+                })
+            }
+        },
+        NumericPredicate::Compare(op) => {
+            let expected = match expected {
+                NumericLiteral::Int(expected) => expected as f64,
+                NumericLiteral::Float(expected) => expected,
+            };
+            select_ordered_values(
+                values,
+                validity,
+                selected_rows,
+                op,
+                float_total_order_key(expected),
+                float_total_order_key,
+            )
+        }
+    }
+}
+
+fn filter_ordered_values<T, K>(
+    values: &[T],
+    validity: ValidityView<'_>,
+    input: &Selection,
+    op: ComparisonOp,
+    expected: K,
+    key: impl Fn(T) -> K + Copy,
+) -> Result<Selection>
+where
+    T: Copy,
+    K: Copy + Ord,
+{
+    match op {
+        ComparisonOp::Lt => {
+            filter_numeric_values(values, validity, input, |actual| key(actual) < expected)
+        }
+        ComparisonOp::Lte => {
+            filter_numeric_values(values, validity, input, |actual| key(actual) <= expected)
+        }
+        ComparisonOp::Gt => {
+            filter_numeric_values(values, validity, input, |actual| key(actual) > expected)
+        }
+        ComparisonOp::Gte => {
+            filter_numeric_values(values, validity, input, |actual| key(actual) >= expected)
+        }
+    }
+}
+
+fn select_ordered_values<T, K>(
+    values: &[T],
+    validity: ValidityView<'_>,
+    selected_rows: &mut Vec<u32>,
+    op: ComparisonOp,
+    expected: K,
+    key: impl Fn(T) -> K + Copy,
+) -> Result<()>
+where
+    T: Copy,
+    K: Copy + Ord,
+{
+    match op {
+        ComparisonOp::Lt => select_numeric_values(values, validity, selected_rows, |actual| {
+            key(actual) < expected
+        }),
+        ComparisonOp::Lte => select_numeric_values(values, validity, selected_rows, |actual| {
+            key(actual) <= expected
+        }),
+        ComparisonOp::Gt => select_numeric_values(values, validity, selected_rows, |actual| {
+            key(actual) > expected
+        }),
+        ComparisonOp::Gte => select_numeric_values(values, validity, selected_rows, |actual| {
+            key(actual) >= expected
+        }),
+    }
 }
 
 fn select_numeric_values<T: Copy>(
@@ -1128,9 +1268,10 @@ pub fn int64_value_matches(
         }
         NumericPredicate::Compare(op) => match expected {
             NumericLiteral::Int(expected) => compare_ordering(actual.cmp(&expected), op),
-            NumericLiteral::Float(expected) => {
-                compare_ordering((actual as f64).total_cmp(&expected), op)
-            }
+            NumericLiteral::Float(expected) => compare_ordering(
+                float_total_order_key(actual as f64).cmp(&float_total_order_key(expected)),
+                op,
+            ),
         },
     }
 }
@@ -1150,9 +1291,18 @@ pub fn float64_value_matches(
                 NumericLiteral::Int(expected) => expected as f64,
                 NumericLiteral::Float(expected) => expected,
             };
-            compare_ordering(actual.total_cmp(&expected), op)
+            compare_ordering(
+                float_total_order_key(actual).cmp(&float_total_order_key(expected)),
+                op,
+            )
         }
     }
+}
+
+#[inline(always)]
+fn float_total_order_key(value: f64) -> i64 {
+    let bits = value.to_bits() as i64;
+    bits ^ (((bits >> 63) as u64 >> 1) as i64)
 }
 
 fn compare_ordering(ordering: std::cmp::Ordering, op: ComparisonOp) -> bool {
@@ -1339,6 +1489,138 @@ mod tests {
 
         assert_eq!(selected_rows, [0, 2]);
         assert_eq!(selected_rows.as_ptr(), rows_ptr);
+    }
+
+    #[test]
+    fn specialized_numeric_kernels_match_total_order_reference() {
+        let int_values = [i64::MIN, -1, 0, 1, i64::MAX];
+        let float_values = [
+            f64::from_bits(0xfff8_0000_0000_0001),
+            f64::NEG_INFINITY,
+            -0.0,
+            0.0,
+            1.0,
+            f64::INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+        ];
+        let int_validity = Validity::Bitmap {
+            len: int_values.len(),
+            words: Arc::from([0b1_1101]),
+        };
+        let float_validity = Validity::Bitmap {
+            len: float_values.len(),
+            words: Arc::from([0b110_1111]),
+        };
+        let int_expected = [
+            NumericLiteral::Int(0),
+            NumericLiteral::Float(-0.0),
+            NumericLiteral::Float(f64::INFINITY),
+            NumericLiteral::Float(f64::from_bits(0x7ff8_0000_0000_0001)),
+        ];
+        let float_expected = [
+            NumericLiteral::Int(0),
+            NumericLiteral::Float(-0.0),
+            NumericLiteral::Float(0.0),
+            NumericLiteral::Float(f64::from_bits(0xfff8_0000_0000_0001)),
+            NumericLiteral::Float(f64::from_bits(0x7ff8_0000_0000_0001)),
+        ];
+
+        assert_specialized_numeric_kernel(
+            &int_values,
+            &int_validity,
+            &int_expected,
+            filter_int64_values,
+            select_int64_values_view,
+            int64_value_matches,
+            reference_int64_matches,
+        );
+        assert_specialized_numeric_kernel(
+            &float_values,
+            &float_validity,
+            &float_expected,
+            filter_float64_values,
+            select_float64_values_view,
+            float64_value_matches,
+            reference_float64_matches,
+        );
+    }
+
+    fn assert_specialized_numeric_kernel<T: Copy>(
+        values: &[T],
+        validity: &Validity,
+        expected_literals: &[NumericLiteral],
+        filter: impl Fn(
+            &[T],
+            &Validity,
+            &Selection,
+            NumericPredicate,
+            NumericLiteral,
+        ) -> Result<Selection>,
+        select: impl for<'a> Fn(
+            &[T],
+            ValidityView<'a>,
+            NumericPredicate,
+            NumericLiteral,
+            &mut Vec<u32>,
+        ) -> Result<()>,
+        point_matches: impl Fn(T, NumericPredicate, NumericLiteral) -> bool,
+        reference_matches: impl Fn(T, ComparisonOp, NumericLiteral) -> bool,
+    ) {
+        for op in [
+            ComparisonOp::Lt,
+            ComparisonOp::Lte,
+            ComparisonOp::Gt,
+            ComparisonOp::Gte,
+        ] {
+            for &expected in expected_literals {
+                let predicate = NumericPredicate::Compare(op);
+                let reference = values
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(|(row, actual)| {
+                        assert_eq!(
+                            point_matches(actual, predicate, expected),
+                            reference_matches(actual, op, expected)
+                        );
+                        (validity.is_valid(row) && reference_matches(actual, op, expected))
+                            .then_some(row)
+                    })
+                    .collect::<Vec<_>>();
+                let filtered = filter(
+                    values,
+                    validity,
+                    &Selection::all(values.len()),
+                    predicate,
+                    expected,
+                )
+                .unwrap();
+                let mut selected = Vec::new();
+                select(values, validity.view(), predicate, expected, &mut selected).unwrap();
+
+                assert_eq!(filtered.iter().collect::<Vec<_>>(), reference);
+                assert_eq!(
+                    selected,
+                    reference.iter().map(|row| *row as u32).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    fn reference_int64_matches(actual: i64, op: ComparisonOp, expected: NumericLiteral) -> bool {
+        let ordering = match expected {
+            NumericLiteral::Int(expected) => actual.cmp(&expected),
+            NumericLiteral::Float(expected) => (actual as f64).total_cmp(&expected),
+        };
+        compare_ordering(ordering, op)
+    }
+
+    fn reference_float64_matches(actual: f64, op: ComparisonOp, expected: NumericLiteral) -> bool {
+        let expected = match expected {
+            NumericLiteral::Int(expected) => expected as f64,
+            NumericLiteral::Float(expected) => expected,
+        };
+        compare_ordering(actual.total_cmp(&expected), op)
     }
 
     #[test]

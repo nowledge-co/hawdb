@@ -15,7 +15,7 @@ fn indexed_memory_lookup_matches_planner_golden() {
     let statement = parse(QUERY).expect("golden Cypher must parse");
     let logical = plan(&statement).expect("golden Cypher must plan");
     let logical_root = LogicalPlanRoot::new(logical);
-    let optimized_root = logical_root.clone().into_optimized();
+    let lowering_ready_root = logical_root.clone().into_lowering_ready();
     let catalog = OptimizerCatalog::new(
         OptimizerCatalogIndexes::new([("Memory".to_string(), "id".to_string())], [], [], []),
         OptimizerCatalogStatistics::new(
@@ -29,12 +29,12 @@ fn indexed_memory_lookup_matches_planner_golden() {
         ),
     );
     let physical_root = CascadesOptimizer::new(OptimizerConfig { max_groups: 16 })
-        .optimize_optimized_root_with_catalog(&optimized_root, &catalog);
+        .optimize_lowering_ready_root_with_catalog(&lowering_ready_root, &catalog);
 
     let actual = render_planner_golden(
         QUERY,
         logical_root.plan(),
-        optimized_root.plan(),
+        lowering_ready_root.plan(),
         physical_root.plan(),
         physical_root.trace(),
     );
@@ -83,7 +83,7 @@ fn filtered_vector_pipeline_matches_planner_golden() {
 fn render_planner_golden(
     query: &str,
     logical: &skein_plan::LogicalPlan,
-    optimized_logical: &skein_plan::LogicalPlan,
+    lowering_input: &skein_plan::LogicalPlan,
     physical: &skein_plan::PhysicalPlan,
     trace: &skein_optimizer::OptimizerTrace,
 ) -> String {
@@ -110,7 +110,7 @@ fn render_planner_golden(
     format!(
         "[cypher]\n{query}\n\n\
          [logical]\n{logical:#?}\n\n\
-         [optimized-logical]\n{optimized_logical:#?}\n\n\
+         [lowering-input]\n{lowering_input:#?}\n\n\
          [physical]\n{}\n\n\
          [stage-trace]\n{stages}\n\n\
          [cost]\nestimated_rows={} total={} cpu={} random_io={} sequential_io={} output_rows={}\n\n\
