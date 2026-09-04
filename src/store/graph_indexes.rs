@@ -7,11 +7,9 @@ impl GraphStore {
         if let Some(id) = catalog.label_id(label) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateNodeLabel {
-                label: label.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateNodeLabel {
+            label: label.to_string(),
+        }])?;
         let id = catalog.get_or_create_label(label);
         self.finish_non_relational_commit();
         Ok(id)
@@ -25,11 +23,9 @@ impl GraphStore {
         if let Some(id) = catalog.rel_type_id(rel_type) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateRelationshipType {
-                rel_type: rel_type.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateRelationshipType {
+            rel_type: rel_type.to_string(),
+        }])?;
         let id = catalog.get_or_create_rel_type(rel_type);
         self.finish_non_relational_commit();
         Ok(id)
@@ -39,11 +35,9 @@ impl GraphStore {
         if let Some(id) = catalog.table_id(TableKind::Node, name) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateNodeTable {
-                name: name.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateNodeTable {
+            name: name.to_string(),
+        }])?;
         catalog.get_or_create_label(name);
         let id = catalog.get_or_create_table(TableKind::Node, name);
         self.finish_non_relational_commit();
@@ -58,11 +52,9 @@ impl GraphStore {
         if let Some(id) = catalog.table_id(TableKind::Relationship, name) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateRelationshipTable {
-                name: name.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateRelationshipTable {
+            name: name.to_string(),
+        }])?;
         catalog.get_or_create_rel_type(name);
         let id = catalog.get_or_create_table(TableKind::Relationship, name);
         self.finish_non_relational_commit();
@@ -83,15 +75,13 @@ impl GraphStore {
             return Ok(id);
         }
         validate_property_descriptor(catalog, self, table_id, property, value_type, nullable)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateProperty {
-                table_kind,
-                table: table.to_string(),
-                property: property.to_string(),
-                value_type,
-                nullable,
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateProperty {
+            table_kind,
+            table: table.to_string(),
+            property: property.to_string(),
+            value_type,
+            nullable,
+        }])?;
         let id = catalog.get_or_create_property(table_id, property, value_type, nullable);
         self.finish_non_relational_commit();
         Ok(id)
@@ -117,13 +107,11 @@ impl GraphStore {
         if descriptor.state == state {
             return Ok((id, false));
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::AlterTableState {
-                table_kind,
-                table: table.to_string(),
-                state,
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::AlterTableState {
+            table_kind,
+            table: table.to_string(),
+            state,
+        }])?;
         catalog.set_table_state(id, state);
         self.finish_non_relational_commit();
         Ok((id, true))
@@ -165,14 +153,12 @@ impl GraphStore {
                 descriptor.nullable,
             )?;
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::AlterPropertyState {
-                table_kind,
-                table: table.to_string(),
-                property: property.to_string(),
-                state,
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::AlterPropertyState {
+            table_kind,
+            table: table.to_string(),
+            property: property.to_string(),
+            state,
+        }])?;
         catalog.set_property_state(id, state);
         self.finish_non_relational_commit();
         Ok((id, true))
@@ -414,9 +400,7 @@ impl GraphStore {
         if ops.is_empty() {
             return Ok(actions);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_schema_maintenance_op(catalog, op);
@@ -578,12 +562,10 @@ impl GraphStore {
         if let Some(id) = catalog.property_index_id(label_id, property) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateIndex {
-                label: label.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateIndex {
+            label: label.to_string(),
+            property: property.to_string(),
+        }])?;
         let id = catalog.get_or_create_property_index(label_id, property);
         self.backfill_property_index(catalog, label_id, property);
         self.finish_non_relational_commit();
@@ -605,12 +587,10 @@ impl GraphStore {
         if let Some(id) = catalog.composite_property_index_id(label_id, properties) {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateCompositeIndex {
-                label: label.to_string(),
-                properties: properties.to_vec(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateCompositeIndex {
+            label: label.to_string(),
+            properties: properties.to_vec(),
+        }])?;
         let id = catalog.get_or_create_composite_property_index(label_id, properties);
         self.rebuild_composite_property_index_for_descriptor(id, label_id, properties);
         self.finish_non_relational_commit();
@@ -628,12 +608,10 @@ impl GraphStore {
         {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateRangeIndex {
-                label: label.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateRangeIndex {
+            label: label.to_string(),
+            property: property.to_string(),
+        }])?;
         let id =
             catalog.get_or_create_property_index_with_kind(label_id, property, IndexKind::Range);
         self.backfill_property_index(catalog, label_id, property);
@@ -653,12 +631,10 @@ impl GraphStore {
         {
             return Ok(id);
         }
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateFullTextIndex {
-                label: label.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateFullTextIndex {
+            label: label.to_string(),
+            property: property.to_string(),
+        }])?;
         let id =
             catalog.get_or_create_property_index_with_kind(label_id, property, IndexKind::FullText);
         self.rebuild_full_text_property_index_for_descriptor(label_id, property);
@@ -798,12 +774,10 @@ impl GraphStore {
             return Ok(id);
         }
         self.validate_unique_constraint(catalog, label_id, property)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateUniqueConstraint {
-                label: label.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateUniqueConstraint {
+            label: label.to_string(),
+            property: property.to_string(),
+        }])?;
         let id = catalog.get_or_create_unique_constraint(label_id, property);
         self.finish_non_relational_commit();
         Ok(id)
@@ -820,12 +794,10 @@ impl GraphStore {
             return Ok(id);
         }
         self.validate_node_property_exists_constraint(catalog, label_id, property)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateNodePropertyExistsConstraint {
-                label: label.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateNodePropertyExistsConstraint {
+            label: label.to_string(),
+            property: property.to_string(),
+        }])?;
         let id = catalog.get_or_create_node_property_exists_constraint(label_id, property);
         self.finish_non_relational_commit();
         Ok(id)
@@ -843,12 +815,10 @@ impl GraphStore {
             return Ok(id);
         }
         self.validate_relationship_property_exists_constraint(catalog, rel_type_id, property)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateRelationshipPropertyExistsConstraint {
-                rel_type: rel_type.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateRelationshipPropertyExistsConstraint {
+            rel_type: rel_type.to_string(),
+            property: property.to_string(),
+        }])?;
         let id =
             catalog.get_or_create_relationship_property_exists_constraint(rel_type_id, property);
         self.finish_non_relational_commit();
@@ -866,12 +836,10 @@ impl GraphStore {
             return Ok(id);
         }
         self.validate_relationship_unique_constraint(catalog, rel_type_id, property)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(vec![WalOp::CreateRelationshipUniqueConstraint {
-                rel_type: rel_type.to_string(),
-                property: property.to_string(),
-            }])?;
-        }
+        self.append_durable_wal_batch(&[WalOp::CreateRelationshipUniqueConstraint {
+            rel_type: rel_type.to_string(),
+            property: property.to_string(),
+        }])?;
         let id = catalog.get_or_create_relationship_unique_constraint(rel_type_id, property);
         self.finish_non_relational_commit();
         Ok(id)

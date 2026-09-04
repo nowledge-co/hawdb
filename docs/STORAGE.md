@@ -421,6 +421,16 @@ estimated bytes, the configured delta limit, statistics freshness, and cache
 resident, pinned, hit, miss, eviction, admission-rejection, and digest-mismatch
 counters.
 
+Every durable mutation also evaluates the complete projected storage-pressure
+signal set before opening or writing the WAL. The check includes WAL and
+out-of-core delta limits, handle integrity, checkpoint temporary-space reserve,
+generation reclamation and reader-pin debt, and cache pressure. Filesystem free
+space is sampled on the first append and after each 64 MiB of admitted WAL
+writes; cached samples are reduced by the WAL bytes written since the probe, so
+the hot commit path does not perform one filesystem query per mutation. A probe
+failure or non-admitting pressure state rejects the mutation before the WAL can
+grow and reports a stable pressure reason code.
+
 The ignored
 `larger_than_cache_query_reports_process_and_storage_resource_evidence` test is
 the reproducible synthetic gate for canonical bytes larger than cache capacity.

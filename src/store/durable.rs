@@ -24,41 +24,42 @@ use super::{
     validate_search_projection_checkpoint_changes, validate_storage_version, verify_integrity,
     wal_generation_file, wal_group_sync_failpoint, BackupManifest, CheckpointPublishStage,
     ProjectedGraphArtifact, WalCursorEvent, WalEntry, WalOp, WalOpenOutcome, WalRecordCursor,
-    BACKUP_MANIFEST_FILE, CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1, MANIFEST_FILE,
-    MANIFEST_HEADER_V1, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
-    PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, STORAGE_VERSION,
-    WAL_BINARY_FILE_HEADER_BYTES,
+    BACKUP_MANIFEST_FILE, CANONICAL_MANIFEST_MAX_BYTES, CHECKPOINT_HEADER_V1,
+    CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER, MANIFEST_FILE, MANIFEST_HEADER_V1,
+    MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES, PROJECTED_GRAPHS_FILE,
+    PROPERTY_PROJECTION_MANIFEST_MAX_BYTES, PROPERTY_SPILL_MANIFEST_MAX_BYTES,
+    STABLE_ID_MAPPING_FILE, STORAGE_VERSION, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use crate::error::{Result, SkeinError};
 use crate::schema::{Catalog, GraphStatistics};
-use crate::value::Value;
 use skein_integrity::{integrity_digest, Sha256Digest};
 use skein_storage::{
-    append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
-    durable_replace_file, encode_relational_checkpoint_to_writer, AppendGenerationArtifacts,
-    AppendGenerationManifest, AppendGenerationReader, AppendPublicationConfig,
-    AppendSegmentArtifactMetadata, CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyConfig,
+    append_generation_manifest_file, append_segment_file, available_storage_space,
+    decode_relational_checkpoint_file, durable_replace_file,
+    encode_relational_checkpoint_to_writer, AppendGenerationArtifacts, AppendGenerationManifest,
+    AppendGenerationReader, AppendPublicationConfig, AppendSegmentArtifactMetadata,
+    CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyConfig,
     CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader, CanonicalAdjacencyWriter,
     CanonicalSegmentConfig, CanonicalSegmentError, CanonicalSegmentManifest,
     CanonicalSegmentReader, CanonicalSegmentWriter, DatabaseDirectoryLease, DurabilityPolicy,
     DurableCompression, FileSegmentRangeReader, GraphDescriptorKind,
     GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
     GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, ManifestGeneration, NodeId, NodeRecord,
+    GraphDescriptorTreeRootReader, ManifestGeneration, NodeRecord,
     PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
     PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
     PersistentPropertyProjectionReader, PersistentPropertyProjectionRecord,
     PersistentPropertyProjectionWriter, PersistentPropertySpillDescriptorTree,
     ProjectedGraphDefinition, PropertySpillConfig, PropertySpillManifest, PropertySpillReader,
-    PropertySpillWriteOptions, RelId, RelRecord, RelationalDecodeLimits,
-    RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts,
-    RelationalOverflowArtifactMetadata, RelationalOverflowGenerationArtifacts,
-    RelationalRowPageArtifactMetadata, RelationalRowPageGenerationArtifacts, RelationalState,
-    ScanSegmentManifest, SearchProjectionGraphChange, SegmentCache, StableIdentityKey,
-    StableIdentityMappingConfig, StableIdentityMappingError, StableIdentityMappingReader,
-    StableIdentityMappingWriter, StableIdentityMaterializeLimits, StorageBackupReport,
-    StorageDebtController, StoragePressureSignals, StorageScrubReport, StorageTelemetrySink,
-    StoreId, StoreStableIdMapping, WalAppendTelemetry, WalReplayConfig, WalSyncGroupFlush,
+    PropertySpillWriteOptions, RelRecord, RelationalDecodeLimits, RelationalIndexArtifactMetadata,
+    RelationalIndexGenerationArtifacts, RelationalOverflowArtifactMetadata,
+    RelationalOverflowGenerationArtifacts, RelationalRowPageArtifactMetadata,
+    RelationalRowPageGenerationArtifacts, RelationalState, ScanSegmentManifest,
+    SearchProjectionGraphChange, SegmentCache, StableIdentityKey, StableIdentityMappingConfig,
+    StableIdentityMappingError, StableIdentityMappingReader, StableIdentityMappingWriter,
+    StableIdentityMaterializeLimits, StorageBackupReport, StorageDebtController,
+    StoragePressureSignals, StorageScrubReport, StorageTelemetrySink, StoreId,
+    StoreStableIdMapping, WalAppendTelemetry, WalReplayConfig, WalSyncGroupFlush,
     WalSyncGroupProgress, WalSyncGroupState,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,6 +68,8 @@ use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const WAL_FREE_SPACE_PROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 
 fn stable_identity_error(error: StableIdentityMappingError) -> SkeinError {
     SkeinError::Storage(error.to_string())
@@ -134,6 +137,17 @@ pub(super) struct DurableStore {
     pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
     generation_reclamation_debt: GenerationReclamationDebt,
+    wal_free_space_probe: WalFreeSpaceProbeState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WalFreeSpaceProbeState {
+    last_available_bytes: Option<u64>,
+    wal_bytes_since_probe: u64,
+    #[cfg(test)]
+    available_bytes_override: Option<u64>,
+    #[cfg(test)]
+    probe_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -582,6 +596,7 @@ impl DurableStore {
             telemetry: None,
             wal_sync_group: None,
             generation_reclamation_debt: GenerationReclamationDebt::default(),
+            wal_free_space_probe: WalFreeSpaceProbeState::default(),
         })
     }
 
@@ -1746,43 +1761,19 @@ impl DurableStore {
         }
     }
 
-    pub(super) fn append_create_node(
+    pub(super) fn append_single(
         &mut self,
-        id: NodeId,
-        label: &str,
-        properties: &BTreeMap<String, Value>,
+        op: WalOp,
+        pressure_signals: StoragePressureSignals,
     ) -> Result<()> {
-        self.append_entry(
-            WalOp::CreateNode {
-                id,
-                label: label.to_string(),
-                properties: properties.clone(),
-            },
-            1,
-        )
+        self.append_entry(op, 1, pressure_signals)
     }
 
-    pub(super) fn append_create_relationship(
+    pub(super) fn append_batch(
         &mut self,
-        id: RelId,
-        source: NodeId,
-        target: NodeId,
-        rel_type: &str,
-        properties: &BTreeMap<String, Value>,
+        ops: Vec<WalOp>,
+        pressure_signals: StoragePressureSignals,
     ) -> Result<()> {
-        self.append_entry(
-            WalOp::CreateRelationship {
-                id,
-                source,
-                target,
-                rel_type: rel_type.to_string(),
-                properties: properties.clone(),
-            },
-            1,
-        )
-    }
-
-    pub(super) fn append_batch(&mut self, ops: Vec<WalOp>) -> Result<()> {
         let operation_count = ops.len();
         if self
             .max_batch_operations
@@ -1793,25 +1784,15 @@ impl DurableStore {
                 self.max_batch_operations.unwrap_or_default()
             )));
         }
-        self.append_entry(WalOp::Batch(ops), operation_count)
+        self.append_entry(WalOp::Batch(ops), operation_count, pressure_signals)
     }
 
-    pub(super) fn append_project_graph(
+    fn append_entry(
         &mut self,
-        name: &str,
-        definition: &ProjectedGraphDefinition,
+        op: WalOp,
+        operation_count: usize,
+        pressure_signals: StoragePressureSignals,
     ) -> Result<()> {
-        self.append_entry(
-            WalOp::ProjectGraph {
-                name: name.to_string(),
-                node_labels: definition.node_labels.clone(),
-                rel_types: definition.rel_types.clone(),
-            },
-            1,
-        )
-    }
-
-    fn append_entry(&mut self, op: WalOp, operation_count: usize) -> Result<()> {
         let entry = WalEntry {
             lsn: self.next_lsn,
             op,
@@ -1836,7 +1817,11 @@ impl DurableStore {
         if self.wal_bytes == 0 {
             byte_count = byte_count.saturating_add(header_bytes.len() as u64);
         }
-        self.ensure_wal_admission(self.wal_bytes.saturating_add(byte_count))?;
+        self.ensure_wal_admission(
+            self.wal_bytes.saturating_add(byte_count),
+            byte_count,
+            pressure_signals,
+        )?;
         process_crash_failpoint("before_wal_append");
         let sync_deferred = self.wal_sync_group.is_some();
         let result = match self.take_wal_append() {
@@ -1880,6 +1865,10 @@ impl DurableStore {
             self.next_lsn += 1;
             self.wal_commit_epoch = self.wal_commit_epoch.saturating_add(1);
             self.wal_bytes = self.wal_bytes.saturating_add(byte_count);
+            self.wal_free_space_probe.wal_bytes_since_probe = self
+                .wal_free_space_probe
+                .wal_bytes_since_probe
+                .saturating_add(byte_count);
             if let Some(group) = &mut self.wal_sync_group {
                 group.record_entry(byte_count);
             }
@@ -1889,12 +1878,30 @@ impl DurableStore {
         result.map(|_| ())
     }
 
-    fn ensure_wal_admission(&self, projected_wal_bytes: u64) -> Result<()> {
-        let pressure = StorageDebtController.evaluate(StoragePressureSignals {
-            wal_bytes: projected_wal_bytes,
-            max_wal_bytes: self.max_wal_bytes,
-            ..StoragePressureSignals::default()
-        });
+    fn ensure_wal_admission(
+        &mut self,
+        projected_wal_bytes: u64,
+        pending_wal_bytes: u64,
+        mut signals: StoragePressureSignals,
+    ) -> Result<()> {
+        let available_free_space_bytes = self
+            .available_space_for_wal_admission()?
+            .saturating_sub(pending_wal_bytes);
+        let reclamation = self.generation_reclamation_debt();
+        signals.wal_bytes = projected_wal_bytes;
+        signals.max_wal_bytes = self.max_wal_bytes;
+        signals.generation_reclamation_retry_required = reclamation.retry_required;
+        signals.generation_reclamation_pending_files = reclamation.pending_file_count;
+        signals.generation_reclamation_pending_bytes = reclamation.pending_bytes;
+        signals.oldest_reader_commit_epoch = self.oldest_reader_commit_epoch;
+        signals.obsolete_generation_bytes =
+            self.obsolete_generation_bytes(self.oldest_reader_commit_epoch);
+        signals.estimated_checkpoint_temporary_bytes = signals
+            .estimated_checkpoint_temporary_bytes
+            .saturating_add(pending_wal_bytes.saturating_mul(CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER))
+            .max(MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES);
+        signals.available_free_space_bytes = Some(available_free_space_bytes);
+        let pressure = StorageDebtController.evaluate(signals);
         if pressure.state.admits_mutation() {
             return Ok(());
         }
@@ -1904,11 +1911,71 @@ impl DurableStore {
             .map(|reason| reason.as_str())
             .collect::<Vec<_>>()
             .join(",");
+        let recovery = if pressure
+            .reason_codes
+            .contains(&skein_storage::StoragePressureReasonCode::IntegrityPoisoned)
+        {
+            "close and reopen the database before retrying"
+        } else if pressure
+            .reason_codes
+            .contains(&skein_storage::StoragePressureReasonCode::FreeSpaceReserve)
+        {
+            "free storage space before retrying"
+        } else {
+            "checkpoint the database before retrying"
+        };
         Err(SkeinError::Storage(format!(
-            "WAL append rejected by storage pressure: state={}, projected_wal_bytes={projected_wal_bytes}, max_wal_bytes={}, reasons={reasons}; checkpoint the database before retrying",
+            "WAL append rejected by storage pressure: state={}, projected_wal_bytes={projected_wal_bytes}, max_wal_bytes={}, available_free_space_bytes={}, estimated_checkpoint_temporary_bytes={}, reasons={reasons}; {recovery}",
             pressure.state.as_str(),
-            self.max_wal_bytes.unwrap_or_default()
+            self.max_wal_bytes.unwrap_or_default(),
+            pressure.available_free_space_bytes.unwrap_or_default(),
+            pressure.estimated_checkpoint_temporary_bytes,
         )))
+    }
+
+    fn available_space_for_wal_admission(&mut self) -> Result<u64> {
+        let probe_required = self.wal_free_space_probe.last_available_bytes.is_none()
+            || self.wal_free_space_probe.wal_bytes_since_probe
+                >= WAL_FREE_SPACE_PROBE_INTERVAL_BYTES;
+        if probe_required {
+            #[cfg(test)]
+            let available = self
+                .wal_free_space_probe
+                .available_bytes_override
+                .or_else(|| available_storage_space(&self.root_path));
+            #[cfg(not(test))]
+            let available = available_storage_space(&self.root_path);
+            let available = available.ok_or_else(|| {
+                SkeinError::Storage(
+                    "WAL append rejected because filesystem free space could not be inspected"
+                        .to_string(),
+                )
+            })?;
+            self.wal_free_space_probe.last_available_bytes = Some(available);
+            self.wal_free_space_probe.wal_bytes_since_probe = 0;
+            #[cfg(test)]
+            {
+                self.wal_free_space_probe.probe_count =
+                    self.wal_free_space_probe.probe_count.saturating_add(1);
+            }
+        }
+        Ok(self
+            .wal_free_space_probe
+            .last_available_bytes
+            .unwrap_or_default()
+            .saturating_sub(self.wal_free_space_probe.wal_bytes_since_probe))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_wal_available_space_override(&mut self, available_bytes: u64) {
+        self.wal_free_space_probe.available_bytes_override = Some(available_bytes);
+        self.wal_free_space_probe.last_available_bytes = None;
+        self.wal_free_space_probe.wal_bytes_since_probe = 0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn wal_free_space_probe_count(&self) -> u64 {
+        self.wal_free_space_probe.probe_count
     }
 
     fn take_wal_append(&mut self) -> Result<(Arc<File>, bool)> {
@@ -2921,6 +2988,8 @@ impl DurableStore {
         self.wal_replay_start_lsn = manifest.wal_replay_start_lsn;
         self.wal_bytes = fs::metadata(&self.wal_path)?.len();
         self.wal_commit_epoch = manifest.checkpoint_commit_epoch;
+        self.wal_free_space_probe.last_available_bytes = None;
+        self.wal_free_space_probe.wal_bytes_since_probe = 0;
         self.source_scan_commit_epoch = manifest.source_scan_commit_epoch;
         self.source_scan_descriptor_checksum = manifest.source_scan_descriptor_checksum;
         let mut graph_manifest_budget =

@@ -33,9 +33,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_create_node(id, label, &properties)?;
-        }
+        self.append_durable_wal_single(ops[0].clone())?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         self.apply_create_node(catalog, id, label_id, properties);
         self.finish_non_relational_commit();
@@ -60,9 +58,7 @@ impl GraphStore {
                 assignments.extend_from_slice(post_merge_assignments);
                 let ops = self.node_set_property_ops(&[id], &assignments)?;
                 self.validate_constraints_for_ops(catalog, &ops)?;
-                if let Some(durable) = &mut self.durable {
-                    durable.append_batch(ops.clone())?;
-                }
+                self.append_durable_wal_batch(&ops)?;
                 self.record_search_projection_graph_changes_for_ops(
                     catalog,
                     self.commit_epoch + 1,
@@ -87,9 +83,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_create_node(id, label, &properties)?;
-        }
+        self.append_durable_wal_single(ops[0].clone())?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         self.apply_create_node(catalog, id, label_id, properties);
         self.finish_non_relational_commit();
@@ -126,9 +120,7 @@ impl GraphStore {
             properties: properties.clone(),
         }];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_create_relationship(id, source, target, rel_type, &properties)?;
-        }
+        self.append_durable_wal_single(ops[0].clone())?;
         self.apply_create_relationship(id, source, target, rel_type_id, properties);
         self.finish_non_relational_commit();
         Ok(id)
@@ -182,9 +174,7 @@ impl GraphStore {
             }
         }
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -255,9 +245,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            if let Some(durable) = &mut self.durable {
-                durable.append_batch(ops.clone())?;
-            }
+            self.append_durable_wal_batch(&ops)?;
             self.record_search_projection_graph_changes_for_ops(
                 catalog,
                 self.commit_epoch + 1,
@@ -376,9 +364,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            if let Some(durable) = &mut self.durable {
-                durable.append_batch(ops.clone())?;
-            }
+            self.append_durable_wal_batch(&ops)?;
             self.record_search_projection_graph_changes_for_ops(
                 catalog,
                 self.commit_epoch + 1,
@@ -486,9 +472,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            if let Some(durable) = &mut self.durable {
-                durable.append_batch(ops.clone())?;
-            }
+            self.append_durable_wal_batch(&ops)?;
             self.record_search_projection_graph_changes_for_ops(
                 catalog,
                 self.commit_epoch + 1,
@@ -597,9 +581,7 @@ impl GraphStore {
         }
         if !ops.is_empty() {
             self.validate_constraints_for_ops(catalog, &ops)?;
-            if let Some(durable) = &mut self.durable {
-                durable.append_batch(ops.clone())?;
-            }
+            self.append_durable_wal_batch(&ops)?;
             self.record_search_projection_graph_changes_for_ops(
                 catalog,
                 self.commit_epoch + 1,
@@ -642,9 +624,7 @@ impl GraphStore {
             })
             .collect::<Vec<_>>();
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -699,9 +679,7 @@ impl GraphStore {
             })
             .collect::<Result<Vec<_>>>()?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             if let WalOp::SetNodeProperty {
@@ -738,9 +716,7 @@ impl GraphStore {
         }
         let ops = self.node_set_property_ops(&ids, assignments)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -779,9 +755,7 @@ impl GraphStore {
         ensure_additional_mutation_limits(0, 0, operation_count, ids.len(), limits)?;
         let ops = self.node_set_property_ops(ids, assignments)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -833,9 +807,7 @@ impl GraphStore {
         }
         let ops = self.delete_node_ops(&ids, detach)?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -866,9 +838,7 @@ impl GraphStore {
         ensure_additional_mutation_limits(0, 0, 0, ids.len(), limits)?;
         let ops = self.delete_node_ops_bounded(ids, detach, limits.max_operations.get())?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -939,9 +909,7 @@ impl GraphStore {
             .map(|id| WalOp::DeleteRelationship { id })
             .collect::<Vec<_>>();
         self.ensure_out_of_core_delta_admission(&ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -961,9 +929,7 @@ impl GraphStore {
         }
         let ops = self.delete_node_ops(&ids, request.detach)?;
         self.ensure_out_of_core_delta_admission(&ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -1218,9 +1184,7 @@ impl GraphStore {
                 })
                 .collect::<Vec<_>>();
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
@@ -1260,9 +1224,7 @@ impl GraphStore {
             },
         ];
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops)?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.apply_create_node(catalog, source, source_label_id, request.source_properties);
         self.apply_create_node(catalog, target, target_label_id, request.target_properties);
         self.apply_create_relationship(
@@ -1310,9 +1272,7 @@ impl GraphStore {
         let relationship = RelId(self.next_rel_id);
         let ops = self.merge_connected_node_ops(&request, source, target, relationship)?;
         self.validate_constraints_for_ops(catalog, &ops)?;
-        if let Some(durable) = &mut self.durable {
-            durable.append_batch(ops.clone())?;
-        }
+        self.append_durable_wal_batch(&ops)?;
         self.record_search_projection_graph_changes_for_ops(catalog, self.commit_epoch + 1, &ops);
         for op in ops {
             self.apply_wal_op(catalog, op)?;
