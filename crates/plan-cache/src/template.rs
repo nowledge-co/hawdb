@@ -9,22 +9,13 @@ use std::collections::BTreeMap;
 const PARAMETER_SLOT_NAME_KEY: &str = "\0skein_parameter_slot";
 const PARAMETER_SLOT_PATH_KEY: &str = "\0skein_parameter_path";
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ParameterCacheValue {
     Slot(ParameterValueShape),
     Exact(Value),
 }
 
-impl ParameterCacheValue {
-    fn matches(&self, value: &Value) -> bool {
-        match self {
-            Self::Slot(shape) => *shape == parameter_value_shape(value),
-            Self::Exact(expected) => expected == value,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ParameterValueShape {
     Null,
     Bool,
@@ -44,20 +35,9 @@ pub struct ParameterizedLogicalPlan {
     slot_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlanParameterCacheKey {
     values: BTreeMap<String, ParameterCacheValue>,
-}
-
-impl PlanParameterCacheKey {
-    pub fn matches(&self, parameters: &BTreeMap<String, Value>) -> bool {
-        self.values.len() == parameters.len()
-            && self.values.iter().all(|(name, cached)| {
-                parameters
-                    .get(name)
-                    .is_some_and(|value| cached.matches(value))
-            })
-    }
 }
 
 impl ParameterizedLogicalPlan {

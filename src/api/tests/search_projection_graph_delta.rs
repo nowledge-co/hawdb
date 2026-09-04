@@ -428,6 +428,35 @@ fn search_projection_changefeed_byte_budget_advances_resume_floor() {
 }
 
 #[test]
+fn search_projection_rebuild_preserves_business_label_semantics() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'm1', title: 'Labelled'})")
+        .unwrap();
+    db.query("CREATE (:Label {id: 'alpha', canonical_name: 'alpha'})")
+        .unwrap();
+    db.query("CREATE (:Label {id: 'beta', canonical_name: 'beta'})")
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'm1'}), (l:Label {id: 'beta'}) CREATE (m)-[:HAS_LABEL]->(l)")
+        .unwrap();
+    db.query("MATCH (l:Label {id: 'alpha'}), (m:Memory {id: 'm1'}) CREATE (l)-[:HAS_LABEL]->(m)")
+        .unwrap();
+    db.query("MATCH (m:Memory {id: 'm1'}), (l:Label {id: 'beta'}) CREATE (m)-[:HAS_LABEL]->(l)")
+        .unwrap();
+
+    let mut search_index = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
+        .unwrap();
+
+    assert_eq!(
+        search_index
+            .document("memory:m1")
+            .and_then(|document| document.metadata.get("labels"))
+            .map(String::as_str),
+        Some(r#"["alpha","beta"]"#)
+    );
+}
+
+#[test]
 fn search_projection_changefeed_tracks_has_label_relationship_metadata() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'm1', title: 'Labelled', content: 'label delta retrieval'})")

@@ -337,13 +337,16 @@ impl<'a> NumericFragment<'a> {
         let columnar_schema = use_lending
             .then(|| numeric_columnar_schema(self, lending_scan.needs_node_ids))
             .transpose()?;
-        let typed_batch_fits = columnar_schema.as_ref().is_some_and(|schema| {
-            estimated_numeric_columnar_morsel_bytes(
+        let typed_morsel_memory = columnar_schema.as_ref().map(|schema| {
+            numeric_morsel_memory(
                 morsel_rows.get(),
                 target_rows.get(),
                 lending_scan.needs_node_ids,
                 schema,
-            ) <= context.memory.batch_payload_bytes.get()
+            )
+        });
+        let typed_batch_fits = typed_morsel_memory.is_some_and(|memory| {
+            memory.output_reservation_bytes.get() <= context.memory.batch_payload_bytes.get()
         });
         let pool = (!context.store.is_out_of_core())
             .then(SharedExecutorPool::shared_default)
@@ -370,14 +373,20 @@ impl<'a> NumericFragment<'a> {
         let input_reference_bytes = morsel_rows
             .get()
             .saturating_mul(std::mem::size_of::<&NodeRecord>());
-        let bytes_per_worker = NonZeroUsize::new(
-            context
-                .memory
-                .batch_payload_bytes
-                .get()
-                .saturating_add(input_reference_bytes),
-        )
-        .expect("batch payload budget is non-zero");
+        let bytes_per_worker = if parallel_eligible {
+            typed_morsel_memory
+                .expect("parallel typed scan has a memory estimate")
+                .worker_live_bytes
+        } else {
+            NonZeroUsize::new(
+                context
+                    .memory
+                    .batch_payload_bytes
+                    .get()
+                    .saturating_add(input_reference_bytes),
+            )
+            .expect("batch payload budget is non-zero")
+        };
         let admission = MorselAdmission::try_new(MorselAdmissionRequest {
             pipeline_id: PipelineId(0),
             input_rows: candidate_count,
@@ -421,6 +430,7 @@ impl<'a> NumericFragment<'a> {
                 morsel_rows,
                 lending_scan,
                 columnar_schema.expect("parallel typed scan has a columnar schema"),
+                typed_morsel_memory.expect("parallel typed scan has a memory estimate"),
                 admission.max_workers(),
                 pool.expect("parallel morsel execution requires a shared pool"),
                 context,
@@ -519,6 +529,12 @@ impl PreparedColumnarMorsel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NumericMorselMemory {
+    output_reservation_bytes: NonZeroUsize,
+    worker_live_bytes: NonZeroUsize,
+}
+
 #[derive(Clone, Copy)]
 struct NumericMorselPreparation<'plan, 'task> {
     fragment: NumericFragment<'plan>,
@@ -536,6 +552,7 @@ fn stream_parallel_borrowed_numeric_nodes(
     morsel_rows: NonZeroUsize,
     lending_scan: LendingNumericScan,
     columnar_schema: Arc<BindingSchema>,
+    morsel_memory: NumericMorselMemory,
     max_workers: usize,
     pool: SharedExecutorPool,
     context: BatchReadContext<'_>,
@@ -544,16 +561,9 @@ fn stream_parallel_borrowed_numeric_nodes(
 ) -> Result<(usize, bool)> {
     let requested_parallelism =
         NonZeroUsize::new(max_workers).expect("parallel execution has at least one worker");
-    let bytes_per_worker = NonZeroUsize::new(
-        context.memory.batch_payload_bytes.get().saturating_add(
-            morsel_rows
-                .get()
-                .saturating_mul(std::mem::size_of::<&NodeRecord>()),
-        ),
-    )
-    .expect("batch payload budget is non-zero");
+    let bytes_per_worker = morsel_memory.worker_live_bytes;
     let scheduler = SharedPoolMorselScheduler::new(pool);
-    let output_reservation_bytes = context.memory.batch_payload_bytes;
+    let output_reservation_bytes = morsel_memory.output_reservation_bytes;
     let output_account_budget =
         NonZeroUsize::new(output_reservation_bytes.get().saturating_mul(max_workers))
             .expect("parallel morsel output budget is non-zero");
@@ -1290,6 +1300,32 @@ fn estimated_numeric_columnar_morsel_bytes(
     total
 }
 
+fn numeric_morsel_memory(
+    rows: usize,
+    batch_rows: usize,
+    needs_node_ids: bool,
+    schema: &BindingSchema,
+) -> NumericMorselMemory {
+    let output_reservation_bytes = NonZeroUsize::new(estimated_numeric_columnar_morsel_bytes(
+        rows,
+        batch_rows,
+        needs_node_ids,
+        schema,
+    ))
+    .expect("non-empty typed morsel has a non-zero output reservation");
+    let input_reference_bytes = rows.saturating_mul(std::mem::size_of::<&NodeRecord>());
+    let worker_live_bytes = NonZeroUsize::new(
+        output_reservation_bytes
+            .get()
+            .saturating_add(input_reference_bytes),
+    )
+    .expect("typed morsel live memory is non-zero");
+    NumericMorselMemory {
+        output_reservation_bytes,
+        worker_live_bytes,
+    }
+}
+
 fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> SkeinError {
     SkeinError::Execution(format!(
         "columnar scan found value {value:?} that violates {:?} schema for {}.{}",
@@ -1300,16 +1336,19 @@ fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> SkeinE
 #[cfg(test)]
 mod tests {
     use super::{
-        default_morsel_worker_count, numeric_columnar_schema, prepare_lending_numeric_morsel,
-        LendingNumericScan, NumericFragment,
+        default_morsel_worker_count, numeric_columnar_schema, numeric_morsel_memory,
+        prepare_lending_numeric_morsel, LendingNumericScan, NumericFragment,
+        DEFAULT_BATCHES_PER_MORSEL, DEFAULT_MIN_MORSELS_PER_WORKER,
     };
     use crate::planner::ComparisonOp;
     use crate::planner::{Projection, ProjectionExpression};
     use crate::schema::PropertyType;
     use crate::store::{NodeId, NodeRecord};
     use crate::Value;
-    use skein_executor::NumericLiteral;
+    use skein_executor::morsel::{MorselAdmission, MorselAdmissionRequest, PipelineId};
+    use skein_executor::{ExecutionMemoryConfig, NumericLiteral};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::num::NonZeroUsize;
 
     #[test]
     fn default_worker_count_requires_enough_work_per_worker() {
@@ -1322,6 +1361,57 @@ mod tests {
         assert_eq!(default_morsel_worker_count(64, 16), 16);
         assert_eq!(default_morsel_worker_count(128, 16), 16);
         assert_eq!(default_morsel_worker_count(64, 2), 2);
+    }
+
+    #[test]
+    fn typed_morsel_memory_admits_default_parallelism_without_phantom_batch_payloads() {
+        let memory = ExecutionMemoryConfig::default();
+        let fragment = NumericFragment {
+            label: "Item",
+            property: "score",
+            property_type: PropertyType::Int,
+            op: ComparisonOp::Gte,
+            expected: NumericLiteral::Int(0),
+            fused_operators: None,
+        };
+        let schema = numeric_columnar_schema(fragment, true).unwrap();
+        let morsel_rows = memory
+            .batch_rows
+            .get()
+            .saturating_mul(DEFAULT_BATCHES_PER_MORSEL);
+        let morsel_memory =
+            numeric_morsel_memory(morsel_rows, memory.batch_rows.get(), true, &schema);
+
+        assert!(
+            morsel_memory
+                .output_reservation_bytes
+                .get()
+                .saturating_mul(100)
+                < memory.batch_payload_bytes.get()
+        );
+        assert_eq!(
+            morsel_memory.worker_live_bytes.get(),
+            morsel_memory
+                .output_reservation_bytes
+                .get()
+                .saturating_add(morsel_rows * std::mem::size_of::<&NodeRecord>())
+        );
+
+        let morsel_count =
+            super::MAX_MORSEL_PARALLELISM.saturating_mul(DEFAULT_MIN_MORSELS_PER_WORKER);
+        let requested_parallelism =
+            default_morsel_worker_count(morsel_count, super::MAX_MORSEL_PARALLELISM);
+        let admission = MorselAdmission::try_new(MorselAdmissionRequest {
+            pipeline_id: PipelineId(0),
+            input_rows: morsel_rows.saturating_mul(morsel_count),
+            target_rows: NonZeroUsize::new(morsel_rows).unwrap(),
+            requested_parallelism: NonZeroUsize::new(requested_parallelism).unwrap(),
+            bytes_per_worker: morsel_memory.worker_live_bytes,
+            memory_budget_bytes: memory.query_memory_bytes,
+        })
+        .unwrap();
+
+        assert_eq!(admission.max_workers(), super::MAX_MORSEL_PARALLELISM);
     }
 
     #[test]

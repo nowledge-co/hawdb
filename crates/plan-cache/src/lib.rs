@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::hash::Hash;
 
 mod template;
 
@@ -30,7 +31,7 @@ struct LfuCacheEntry<V> {
 #[derive(Debug, Clone)]
 pub struct LfuCache<K, V> {
     max_entries: Option<usize>,
-    entries: BTreeMap<K, LfuCacheEntry<V>>,
+    entries: HashMap<K, LfuCacheEntry<V>>,
     access_tick: u64,
     hits: u64,
     misses: u64,
@@ -43,13 +44,13 @@ pub struct LfuCache<K, V> {
 
 impl<K, V> LfuCache<K, V>
 where
-    K: Ord + Clone,
+    K: Eq + Hash + Ord + Clone,
     V: Clone,
 {
     pub fn new(max_entries: Option<usize>) -> Self {
         Self {
             max_entries,
-            entries: BTreeMap::new(),
+            entries: HashMap::new(),
             access_tick: 0,
             hits: 0,
             misses: 0,
@@ -72,27 +73,6 @@ where
             self.misses += 1;
             return None;
         };
-        self.hits += 1;
-        entry.frequency = entry.frequency.saturating_add(1);
-        entry.last_access_tick = self.access_tick;
-        Some(entry.value.clone())
-    }
-
-    pub fn get_matching(&mut self, mut predicate: impl FnMut(&K) -> bool) -> Option<V> {
-        if self.max_entries == Some(0) {
-            self.misses += 1;
-            self.disabled_misses += 1;
-            return None;
-        }
-        self.access_tick = self.access_tick.saturating_add(1);
-        let Some(key) = self.entries.keys().find(|key| predicate(key)).cloned() else {
-            self.misses += 1;
-            return None;
-        };
-        let entry = self
-            .entries
-            .get_mut(&key)
-            .expect("matching cache key must remain present");
         self.hits += 1;
         entry.frequency = entry.frequency.saturating_add(1);
         entry.last_access_tick = self.access_tick;
@@ -223,15 +203,26 @@ mod tests {
     }
 
     #[test]
-    fn matching_lookup_updates_lfu_accounting_once() {
+    fn hash_lookup_updates_lfu_accounting_once() {
         let mut cache = LfuCache::new(Some(2));
         cache.insert("query-a", 1);
         cache.insert("query-b", 2);
 
-        assert_eq!(cache.get_matching(|key| key.ends_with('b')), Some(2));
-        assert_eq!(cache.get_matching(|key| key.ends_with('c')), None);
+        assert_eq!(cache.get(&"query-b"), Some(2));
+        assert_eq!(cache.get(&"query-c"), None);
         assert_eq!(cache.stats().hits, 1);
         assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn duplicate_hash_keys_update_one_entry() {
+        let mut cache = LfuCache::new(Some(2));
+        cache.insert("query", 1);
+        cache.insert("query", 2);
+
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.get(&"query"), Some(2));
+        assert_eq!(cache.stats().entries, 1);
     }
 
     #[test]

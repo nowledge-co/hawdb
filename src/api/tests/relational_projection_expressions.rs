@@ -50,6 +50,21 @@ fn relational_projection_coalesce_reads_columns_parameters_and_literals() {
         Value::String("Source Two".to_string())
     );
 
+    let ordered = database
+        .query_sql(
+            "SELECT id, COALESCE(title_override, source_title) AS title \
+             FROM feeds ORDER BY title DESC",
+        )
+        .expect("order by coalesce projection alias");
+    assert_eq!(
+        ordered
+            .rows
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        [Value::Int(2), Value::Int(1)]
+    );
+
     let parameterized = database
         .query_sql_with_params(
             "SELECT id, COALESCE(title_override, $1, 'Fallback') AS title \

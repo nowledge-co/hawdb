@@ -991,6 +991,88 @@ fn plan_cache_reuses_parameterized_physical_plan_template() {
 }
 
 #[test]
+fn plan_cache_reuses_keyword_case_and_whitespace_variants() {
+    let db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    let first_query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title";
+    let second_query = "  match (m:Memory)\nwhere m.id=$id\nreturn m.title as title; ";
+    let parameters = BTreeMap::from([("id".to_string(), Value::Int(1))]);
+
+    let first = db
+        .explain_query_with_params(first_query, &parameters)
+        .unwrap();
+    let second = db
+        .explain_query_with_params(second_query, &parameters)
+        .unwrap();
+
+    assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
+    assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Hit);
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 1);
+    assert_eq!(stats.hits, 1);
+    assert_eq!(stats.misses, 1);
+}
+
+#[test]
+fn plan_cache_keeps_inline_literal_values_distinct() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Memory {id: 1, title: 'First'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 2, title: 'Second'})")
+        .unwrap();
+
+    let first = db
+        .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+        .unwrap();
+    let second = db
+        .query("MATCH (m:Memory) WHERE m.id = 2 RETURN m.title AS title")
+        .unwrap();
+
+    assert_eq!(
+        first.rows[0].get("title"),
+        Some(&Value::String("First".to_string()))
+    );
+    assert_eq!(
+        second.rows[0].get("title"),
+        Some(&Value::String("Second".to_string()))
+    );
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.misses, 2);
+}
+
+#[test]
+fn plan_cache_converges_after_statistics_environment_refresh() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(8),
+        ..DatabaseConfig::default()
+    });
+    db.query("CREATE (:Memory {id: 1, title: 'First'})")
+        .unwrap();
+    db.explain_query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 2, title: 'Second'})")
+        .unwrap();
+    let query = "MATCH (m:Memory) RETURN count(m) AS count";
+
+    let refreshed = db.explain_query(query).unwrap();
+    let converged = db.explain_query(query).unwrap();
+
+    assert_eq!(refreshed.plan_cache_lookup, PlanCacheLookup::Miss);
+    assert!(refreshed.trace.decisions.iter().any(|decision| {
+        decision.starts_with("optimizer statistics cache refresh:")
+            && decision.contains("publication_changed=true")
+    }));
+    assert_eq!(converged.plan_cache_lookup, PlanCacheLookup::Hit);
+}
+
+#[test]
 fn plan_cache_rebinds_equality_parameters_without_reoptimizing() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_plan_cache_entries: Some(8),
