@@ -990,7 +990,14 @@ impl GraphStore {
                 return Err(SkeinError::Storage(reason));
             }
             WalOpenOutcome::HeaderCorrupt { reason } => {
-                return reject_corrupt_wal_record(&wal_path, wal_generation, read_only, 0, reason);
+                return reject_corrupt_wal_record(
+                    &wal_path,
+                    wal_generation,
+                    read_only,
+                    config.max_quarantine_bytes,
+                    0,
+                    reason,
+                );
             }
         };
         if cursor.generation() != wal_generation || cursor.start_lsn() != wal_replay_start_lsn {
@@ -1017,6 +1024,7 @@ impl GraphStore {
                             &wal_path,
                             wal_generation,
                             read_only,
+                            config.max_quarantine_bytes,
                             offset,
                             reason,
                         );
@@ -1036,7 +1044,12 @@ impl GraphStore {
                     ),
                 };
             if entry.lsn != expected_lsn {
-                quarantine_corrupt_wal(&wal_path, wal_generation, read_only)?;
+                quarantine_corrupt_wal(
+                    &wal_path,
+                    wal_generation,
+                    read_only,
+                    config.max_quarantine_bytes,
+                )?;
                 return Err(SkeinError::Storage(format!(
                     "WAL LSN sequence mismatch at byte offset {record_start}: expected {expected_lsn}, got {}",
                     entry.lsn

@@ -20,6 +20,7 @@ pub enum DurableCompression {
 
 pub const DEFAULT_MAX_WAL_REPLAY_ENTRIES: usize = 1_000_000;
 pub const DEFAULT_MAX_WAL_REPLAY_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_WAL_QUARANTINE_BYTES: u64 = DEFAULT_MAX_WAL_REPLAY_BYTES;
 pub const DEFAULT_MAX_WAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_WAL_BATCH_OPERATIONS: usize = 100_000;
 pub const DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
@@ -83,6 +84,10 @@ pub struct WalReplayConfig {
     pub recovery_mode: RecoveryMode,
     pub max_entries: Option<usize>,
     pub max_bytes: Option<u64>,
+    /// Maximum aggregate bytes retained under the automatic corrupt-WAL
+    /// quarantine directory. A corrupt WAL larger than this bound remains in
+    /// place and is not copied.
+    pub max_quarantine_bytes: u64,
     pub max_record_bytes: Option<usize>,
     pub max_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
@@ -106,6 +111,7 @@ impl Default for WalReplayConfig {
             recovery_mode: RecoveryMode::default(),
             max_entries: Some(DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_bytes: Some(DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_quarantine_bytes: DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_record_bytes: Some(DEFAULT_MAX_WAL_RECORD_BYTES),
             max_batch_operations: Some(DEFAULT_MAX_WAL_BATCH_OPERATIONS),
             max_checkpoint_encoded_bytes: Some(DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
@@ -150,6 +156,10 @@ mod tests {
         let replay = WalReplayConfig::default();
         assert_eq!(replay.max_entries, Some(DEFAULT_MAX_WAL_REPLAY_ENTRIES));
         assert_eq!(replay.max_bytes, Some(DEFAULT_MAX_WAL_REPLAY_BYTES));
+        assert_eq!(
+            replay.max_quarantine_bytes,
+            DEFAULT_MAX_WAL_QUARANTINE_BYTES
+        );
         assert_eq!(replay.max_record_bytes, Some(DEFAULT_MAX_WAL_RECORD_BYTES));
         assert_eq!(
             replay.max_batch_operations,

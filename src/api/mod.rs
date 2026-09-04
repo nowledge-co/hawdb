@@ -270,6 +270,7 @@ pub struct DatabaseConfig {
     pub recovery_mode: RecoveryMode,
     pub max_wal_replay_entries: Option<usize>,
     pub max_wal_replay_bytes: Option<u64>,
+    pub max_wal_quarantine_bytes: u64,
     pub max_wal_record_bytes: Option<usize>,
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
@@ -459,6 +460,7 @@ impl Default for DatabaseConfig {
             recovery_mode: RecoveryMode::default(),
             max_wal_replay_entries: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_wal_replay_bytes: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_wal_quarantine_bytes: skein_storage::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_wal_record_bytes: Some(skein_storage::DEFAULT_MAX_WAL_RECORD_BYTES),
             max_wal_batch_operations: Some(skein_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
             max_checkpoint_encoded_bytes: Some(skein_storage::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
@@ -1077,6 +1079,7 @@ impl Database {
             recovery_mode: config.recovery_mode,
             max_entries: config.max_wal_replay_entries,
             max_bytes: config.max_wal_replay_bytes,
+            max_quarantine_bytes: config.max_wal_quarantine_bytes,
             max_record_bytes: config.max_wal_record_bytes,
             max_batch_operations: config.max_wal_batch_operations,
             max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
@@ -1718,15 +1721,18 @@ impl Database {
         let prepared = self.checkpoint_source()?.prepare()?;
         let result = match prepared {
             Some(prepared) => {
-                let oldest_reader_epoch = self
-                    .reader_pins
-                    .lock()
-                    .expect("database reader pins lock should not be poisoned")
-                    .oldest_epoch();
+                let (oldest_reader_epoch, pinned_reader_generations) = {
+                    let pins = self
+                        .reader_pins
+                        .lock()
+                        .expect("database reader pins lock should not be poisoned");
+                    (pins.oldest_epoch(), pins.pinned_physical_generations())
+                };
                 self.store
-                    .publish_prepared_checkpoint_with_shadow_admission(
+                    .publish_prepared_checkpoint_with_reader_generations(
                         prepared,
                         oldest_reader_epoch,
+                        &pinned_reader_generations,
                         shadow_admission,
                     )
             }
@@ -1783,13 +1789,20 @@ impl Database {
         &mut self,
         prepared: PreparedCheckpoint,
     ) -> Result<()> {
-        let oldest_reader_epoch = self
-            .reader_pins
-            .lock()
-            .expect("database reader pins lock should not be poisoned")
-            .oldest_epoch();
+        let (oldest_reader_epoch, pinned_reader_generations) = {
+            let pins = self
+                .reader_pins
+                .lock()
+                .expect("database reader pins lock should not be poisoned");
+            (pins.oldest_epoch(), pins.pinned_physical_generations())
+        };
         self.store
-            .publish_prepared_checkpoint(prepared, oldest_reader_epoch)
+            .publish_prepared_checkpoint_with_reader_generations(
+                prepared,
+                oldest_reader_epoch,
+                &pinned_reader_generations,
+                None,
+            )
     }
 
     pub fn backup_to(&mut self, destination: impl AsRef<Path>) -> Result<StorageBackupReport> {
@@ -18928,6 +18941,14 @@ impl ReaderPins {
             .values()
             .map(|view| view.visible_commit_epoch())
             .min()
+    }
+
+    fn pinned_physical_generations(&self) -> BTreeSet<u64> {
+        self.active_views
+            .values()
+            .filter_map(|view| view.physical_generation())
+            .map(|generation| generation.0)
+            .collect()
     }
 }
 

@@ -7,13 +7,25 @@ use crate::{NodeId, RelId};
 use skein_core::Value;
 use skein_core::{PropertyType, SchemaObjectState, TableKind};
 use skein_core::{Result, SkeinError};
-use skein_integrity::Sha256Digest;
+use skein_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub fn quarantine_corrupt_wal(path: &Path, generation: u64, read_only: bool) -> Result<()> {
+struct WalQuarantineEntry {
+    path: PathBuf,
+    encoded_len: u64,
+    modified: std::time::SystemTime,
+}
+
+pub fn quarantine_corrupt_wal(
+    path: &Path,
+    generation: u64,
+    read_only: bool,
+    max_quarantine_bytes: u64,
+) -> Result<()> {
     if read_only {
         return Ok(());
     }
@@ -22,32 +34,155 @@ pub fn quarantine_corrupt_wal(path: &Path, generation: u64, read_only: bool) -> 
         .ok_or_else(|| SkeinError::Storage("WAL path has no database directory".to_string()))?;
     let quarantine_dir = root.join("quarantine");
     fs::create_dir_all(&quarantine_dir)?;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    crate::sync_parent_directory(&quarantine_dir)?;
+
+    let (wal_len, wal_sha256) = wal_file_identity(path)?;
     let quarantine_path = quarantine_dir.join(format!(
-        "wal.{generation}.corrupt.{}.{}",
-        std::process::id(),
-        nonce
+        "wal.{generation}.corrupt.{wal_len}.{wal_sha256}.skein"
     ));
-    fs::copy(path, &quarantine_path)?;
-    File::options()
-        .write(true)
-        .open(&quarantine_path)?
-        .sync_all()?;
+    if quarantine_path.exists() && wal_file_identity(&quarantine_path)? != (wal_len, wal_sha256) {
+        fs::remove_file(&quarantine_path)?;
+    }
+
+    let existing_copy = quarantine_path.exists();
+    let incoming_bytes = if existing_copy { 0 } else { wal_len };
+    let mut entries = wal_quarantine_entries(&quarantine_dir)?;
+    entries.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let mut retained_bytes = entries
+        .iter()
+        .fold(0u64, |total, entry| total.saturating_add(entry.encoded_len));
+    for entry in entries {
+        if retained_bytes.saturating_add(incoming_bytes) <= max_quarantine_bytes {
+            break;
+        }
+        if existing_copy && entry.path == quarantine_path && wal_len <= max_quarantine_bytes {
+            continue;
+        }
+        fs::remove_file(&entry.path)?;
+        retained_bytes = retained_bytes.saturating_sub(entry.encoded_len);
+    }
+
+    if wal_len > max_quarantine_bytes {
+        crate::sync_parent_directory(&quarantine_path)?;
+        return Ok(());
+    }
+    if existing_copy {
+        crate::sync_parent_directory(&quarantine_path)?;
+        return Ok(());
+    }
+
+    copy_wal_exclusive(path, &quarantine_path, (wal_len, wal_sha256))?;
     crate::sync_parent_directory(&quarantine_path)?;
     Ok(())
+}
+
+fn wal_file_identity(path: &Path) -> Result<(u64, Sha256Digest)> {
+    let mut file = File::open(path)?;
+    let mut integrity = IntegrityHasher::new();
+    let mut encoded_len = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        integrity.update(&buffer[..read]);
+        encoded_len = encoded_len
+            .checked_add(read as u64)
+            .ok_or_else(|| SkeinError::Storage("WAL quarantine byte count overflow".to_string()))?;
+    }
+    Ok((encoded_len, integrity.finish().sha256))
+}
+
+fn wal_quarantine_entries(directory: &Path) -> Result<Vec<WalQuarantineEntry>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !file_type.is_file() || !name.starts_with("wal.") || !name.contains(".corrupt.") {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        entries.push(WalQuarantineEntry {
+            path: entry.path(),
+            encoded_len: metadata.len(),
+            modified: metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        });
+    }
+    Ok(entries)
+}
+
+fn copy_wal_exclusive(
+    source: &Path,
+    destination: &Path,
+    expected_identity: (u64, Sha256Digest),
+) -> Result<()> {
+    let mut source = File::open(source)?;
+    let mut destination_file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if wal_file_identity(destination)? == expected_identity {
+                return Ok(());
+            }
+            return Err(SkeinError::Storage(
+                "concurrent WAL quarantine copy has the wrong identity".to_string(),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let copy_result = (|| {
+        let mut integrity = IntegrityHasher::new();
+        let mut encoded_len = 0u64;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            destination_file.write_all(&buffer[..read])?;
+            integrity.update(&buffer[..read]);
+            encoded_len = encoded_len.checked_add(read as u64).ok_or_else(|| {
+                SkeinError::Storage("WAL quarantine byte count overflow".to_string())
+            })?;
+        }
+        destination_file.sync_all()?;
+        if (encoded_len, integrity.finish().sha256) != expected_identity {
+            return Err(SkeinError::Storage(
+                "WAL changed while its corrupt content was being quarantined".to_string(),
+            ));
+        }
+        Ok(())
+    })();
+    if copy_result.is_err() {
+        drop(destination_file);
+        let _ = fs::remove_file(destination);
+    }
+    copy_result
 }
 
 pub fn reject_corrupt_wal_record<T>(
     path: &Path,
     generation: u64,
     read_only: bool,
+    max_quarantine_bytes: u64,
     record_start: u64,
     reason: impl std::fmt::Display,
 ) -> Result<T> {
-    quarantine_corrupt_wal(path, generation, read_only)?;
+    quarantine_corrupt_wal(path, generation, read_only, max_quarantine_bytes)?;
     Err(SkeinError::Storage(format!(
         "WAL corruption at byte offset {record_start}: {reason}"
     )))

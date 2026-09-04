@@ -417,6 +417,74 @@ mod tests {
     }
 
     #[test]
+    fn pinned_generation_retains_only_its_referenced_append_segments() {
+        let path = test_dir("pinned-generation-reclamation");
+        let partition = RelationalKey(vec![RelationalValue::Text("alpha".to_string())]);
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).expect("open append store");
+        store.append_publication_config.compact_after_segments = 2;
+        store
+            .append_transaction(AppendTransaction {
+                writes: vec![
+                    AppendWrite::CreateTable { schema: schema() },
+                    AppendWrite::Append {
+                        table: "events".to_string(),
+                        rows: vec![row(1)],
+                    },
+                ],
+            })
+            .expect("append pinned row");
+        store
+            .checkpoint(&catalog)
+            .expect("checkpoint generation one");
+        let pinned = store.snapshot();
+        let pinned_generations = BTreeSet::from([1]);
+
+        for sequence in 2..=4 {
+            store
+                .append_transaction(AppendTransaction {
+                    writes: vec![AppendWrite::Append {
+                        table: "events".to_string(),
+                        rows: vec![row(sequence)],
+                    }],
+                })
+                .expect("append newer row");
+            let prepared = store
+                .prepare_checkpoint(&catalog)
+                .expect("prepare checkpoint")
+                .expect("durable checkpoint is available");
+            store
+                .publish_prepared_checkpoint_with_reader_generations(
+                    prepared,
+                    Some(pinned.commit_epoch()),
+                    &pinned_generations,
+                    None,
+                )
+                .expect("publish checkpoint with pinned generation");
+        }
+
+        assert!(path.join("append-1.segment.skein").exists());
+        assert!(!path.join("append-2.segment.skein").exists());
+        assert!(path.join("append-3.segment.skein").exists());
+        assert!(path.join("append-4.segment.skein").exists());
+        let pinned_rows = pinned
+            .read_append_partition("events", &partition, None, 10)
+            .expect("read pinned append generation");
+        assert_eq!(pinned_rows.rows.len(), 1);
+        assert_eq!(
+            pinned_rows.rows[0].order_key,
+            RelationalKey(vec![RelationalValue::BigInt(1)])
+        );
+
+        drop(pinned);
+        store
+            .checkpoint(&catalog)
+            .expect("checkpoint after pin drop");
+        assert!(!path.join("append-1.segment.skein").exists());
+        fs::remove_dir_all(path).expect("remove append store");
+    }
+
+    #[test]
     fn checkpoint_failpoints_recover_append_from_one_canonical_generation() {
         for (stage, checkpoint_published) in [
             (CheckpointPublishStage::CheckpointPersisted, false),

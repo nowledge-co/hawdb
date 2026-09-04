@@ -36,8 +36,8 @@ use skein_integrity::{integrity_digest, Sha256Digest};
 use skein_storage::{
     append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
     durable_replace_file, encode_relational_checkpoint_to_writer, AppendGenerationArtifacts,
-    AppendGenerationReader, AppendPublicationConfig, AppendSegmentArtifactMetadata,
-    CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyConfig,
+    AppendGenerationManifest, AppendGenerationReader, AppendPublicationConfig,
+    AppendSegmentArtifactMetadata, CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyConfig,
     CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader, CanonicalAdjacencyWriter,
     CanonicalSegmentConfig, CanonicalSegmentError, CanonicalSegmentManifest,
     CanonicalSegmentReader, CanonicalSegmentWriter, DatabaseDirectoryLease, DurabilityPolicy,
@@ -2967,32 +2967,46 @@ impl DurableStore {
         Ok(())
     }
 
-    pub(super) fn reclaim_old_generations(&mut self, current_generation: u64) {
-        self.generation_reclamation_debt = self.try_reclaim_old_generations(current_generation);
+    pub(super) fn reclaim_old_generations(
+        &mut self,
+        current_generation: u64,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
+    ) {
+        self.generation_reclamation_debt =
+            self.try_reclaim_old_generations(current_generation, pinned_reader_generations);
     }
 
-    fn try_reclaim_old_generations(&self, current_generation: u64) -> GenerationReclamationDebt {
+    fn try_reclaim_old_generations(
+        &self,
+        current_generation: u64,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
+    ) -> GenerationReclamationDebt {
         let mut debt = GenerationReclamationDebt::default();
-        if self.oldest_reader_commit_epoch.is_some() {
+        if self.oldest_reader_commit_epoch.is_some() && pinned_reader_generations.is_none() {
             return debt;
         }
-        let retain_from = current_generation.saturating_sub(1);
+
+        let mut retained_generations = pinned_reader_generations.cloned().unwrap_or_default();
+        retained_generations.insert(current_generation);
+        if current_generation > 1 {
+            retained_generations.insert(current_generation - 1);
+        }
         let (retained_row_page_generations, retained_overflow_extent_generations) =
-            match self.retained_relational_physical_generations(current_generation) {
+            match self.retained_relational_physical_generations(&retained_generations) {
                 Ok(generations) => generations,
                 Err(_) => {
                     debt.retry_required = true;
                     return debt;
                 }
             };
-        let retained_append_segment_generations = match self.retained_append_physical_generations()
-        {
-            Ok(generations) => generations,
-            Err(_) => {
-                debt.retry_required = true;
-                return debt;
-            }
-        };
+        let retained_append_segment_generations =
+            match self.retained_append_physical_generations(&retained_generations) {
+                Ok(generations) => generations,
+                Err(_) => {
+                    debt.retry_required = true;
+                    return debt;
+                }
+            };
         let entries = match fs::read_dir(&self.root_path) {
             Ok(entries) => entries,
             Err(_) => {
@@ -3013,7 +3027,9 @@ impl DurableStore {
                 continue;
             };
             let generation = storage_generation_for_file(name);
-            if generation.is_some_and(|generation| generation < retain_from) {
+            if generation.is_some_and(|generation| {
+                generation < current_generation && !retained_generations.contains(&generation)
+            }) {
                 if parse_relational_row_page_artifact_generation_file(name)
                     .is_some_and(|generation| retained_row_page_generations.contains(&generation))
                     || parse_relational_overflow_extent_generation_file(name).is_some_and(
@@ -3041,13 +3057,12 @@ impl DurableStore {
 
     fn retained_relational_physical_generations(
         &self,
-        current_generation: u64,
+        retained_generations: &BTreeSet<u64>,
     ) -> Result<(BTreeSet<u64>, BTreeSet<u64>)> {
         let mut row_page_generations = BTreeSet::new();
         let mut overflow_extent_generations = BTreeSet::new();
-        let first_retained_generation = current_generation.saturating_sub(1).max(1);
 
-        for generation in first_retained_generation..=current_generation {
+        for &generation in retained_generations {
             let overflow_manifest =
                 self.root_path
                     .join(skein_storage::relational_overflow_manifest_generation_file(
@@ -3099,21 +3114,27 @@ impl DurableStore {
         Ok((row_page_generations, overflow_extent_generations))
     }
 
-    fn retained_append_physical_generations(&self) -> Result<BTreeSet<u64>> {
-        let Some(binding) = self.append_generation_artifacts else {
-            return Ok(BTreeSet::new());
-        };
-        let reader = AppendGenerationReader::open_bound(
-            &self.root_path,
-            binding,
-            AppendPublicationConfig::default(),
-        )
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        Ok(reader
-            .segment_bindings()
-            .iter()
-            .map(|segment| segment.generation)
-            .collect())
+    fn retained_append_physical_generations(
+        &self,
+        retained_generations: &BTreeSet<u64>,
+    ) -> Result<BTreeSet<u64>> {
+        let mut segment_generations = BTreeSet::new();
+        for &generation in retained_generations {
+            let path = self
+                .root_path
+                .join(append_generation_manifest_file(generation));
+            if !path.exists() {
+                continue;
+            }
+            let manifest = AppendGenerationManifest::read_generation(
+                &self.root_path,
+                generation,
+                AppendPublicationConfig::default(),
+            )
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            segment_generations.extend(manifest.segments.iter().map(|segment| segment.generation));
+        }
+        Ok(segment_generations)
     }
 }
 

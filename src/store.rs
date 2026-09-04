@@ -11307,10 +11307,12 @@ mod tests {
         wal[first_payload_offset] ^= 0xff;
         std::fs::write(&wal_path, &wal).unwrap();
 
-        let mut catalog = Catalog::default();
-        let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error.to_string().contains("WAL corruption at byte offset"));
-        assert!(error.to_string().contains("checksum mismatch"));
+        for _ in 0..3 {
+            let mut catalog = Catalog::default();
+            let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+            assert!(error.to_string().contains("WAL corruption at byte offset"));
+            assert!(error.to_string().contains("checksum mismatch"));
+        }
         assert_eq!(
             std::fs::read_dir(path.join("quarantine")).unwrap().count(),
             1
@@ -11344,6 +11346,76 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(path.join("quarantine")).unwrap().count(),
             1
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn corrupt_wal_quarantine_respects_the_configured_byte_bound() {
+        let path = unique_test_dir("wal_quarantine_byte_bound");
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+        }
+        let wal_path = active_wal_path(&path);
+        let valid_wal = std::fs::read(&wal_path).unwrap();
+        let wal_len = valid_wal.len() as u64;
+        let max_quarantine_bytes = wal_len.saturating_mul(2);
+        let payload_offset = super::WAL_BINARY_FILE_HEADER_BYTES
+            + super::wal_codec::frame::WAL_FRAGMENT_HEADER_BYTES;
+
+        for variant in 0..3 {
+            let mut corrupt_wal = valid_wal.clone();
+            corrupt_wal[payload_offset + variant] ^= 0xff;
+            std::fs::write(&wal_path, corrupt_wal).unwrap();
+            let mut catalog = Catalog::default();
+            let error = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    max_quarantine_bytes,
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("checksum mismatch"));
+
+            let entries = std::fs::read_dir(path.join("quarantine"))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            let retained_bytes = entries.iter().fold(0u64, |total, entry| {
+                total.saturating_add(entry.metadata().unwrap().len())
+            });
+            assert!(retained_bytes <= max_quarantine_bytes);
+            assert!(entries.len() <= 2);
+        }
+
+        assert_eq!(
+            std::fs::read_dir(path.join("quarantine")).unwrap().count(),
+            2
+        );
+        let corrupt_wal = std::fs::read(&wal_path).unwrap();
+        let mut catalog = Catalog::default();
+        let error = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                max_quarantine_bytes: 0,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("checksum mismatch"));
+        assert_eq!(std::fs::read(&wal_path).unwrap(), corrupt_wal);
+        assert_eq!(
+            std::fs::read_dir(path.join("quarantine")).unwrap().count(),
+            0
         );
         std::fs::remove_dir_all(path).unwrap();
     }

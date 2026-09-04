@@ -176,9 +176,15 @@ complete fragment chain that fails its checksum, a sequence-invalid fragment,
 or a non-zero block trailer is corruption even at the end of the WAL, so
 recovery fails closed instead of truncating a potentially acknowledged commit.
 Block-aligned resynchronization locates damage but never skips it: valid
-current-generation fragments found past an end-of-log marker fail closed. Doctor is a separate typed operation, not a
-database-open mode. Planning holds the exclusive database lease, validates the
-manifest identity, WAL generation, framing, checksums, LSN continuity, and
+current-generation fragments found past an end-of-log marker fail closed.
+Writable strict opens retain automatic corrupt-WAL evidence by content identity,
+so repeated opens of the same bytes reuse one quarantine copy.
+`DatabaseConfig::max_wal_quarantine_bytes` bounds the aggregate automatic
+quarantine footprint and removes the oldest prior copies before admitting a
+different corrupt WAL. A WAL larger than that bound remains untouched in its
+authoritative location and is not copied. Doctor is a separate typed operation,
+not a database-open mode. Planning holds the exclusive database lease, validates
+the manifest identity, WAL generation, framing, checksums, LSN continuity, and
 configured scan bounds, and reports the exact retained LSN plus discarded byte
 range without modifying files. Applying requires an acknowledgement bound to
 that plan, revalidates the manifest and WAL CRC32C/SHA-256 identities, persists
@@ -200,6 +206,12 @@ framing and LSN continuity, and poisons the open handle on any integrity error.
 `max_wal_replay_entries` counts these top-level WAL records, not the child
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.
+
+Checkpoint reclamation keeps the current and previous generations plus every
+physical generation pinned by an active read transaction. Unpinned intermediate
+generations are reclaimed even while an older reader remains active. Reclamation
+also follows retained row-page, overflow-extent, and append manifests so shared
+physical artifacts outlive every reader that can still reference them.
 
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads

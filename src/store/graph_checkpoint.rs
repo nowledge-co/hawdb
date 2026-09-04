@@ -750,9 +750,10 @@ impl GraphStore {
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
     ) -> Result<()> {
-        self.publish_prepared_checkpoint_with_shadow_admission(
+        self.publish_prepared_checkpoint_with_reclamation(
             prepared,
             oldest_reader_commit_epoch,
+            None,
             None,
         )
     }
@@ -767,6 +768,36 @@ impl GraphStore {
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
+        self.publish_prepared_checkpoint_with_reclamation(
+            prepared,
+            oldest_reader_commit_epoch,
+            None,
+            shadow_admission,
+        )
+    }
+
+    pub(crate) fn publish_prepared_checkpoint_with_reader_generations(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        pinned_reader_generations: &BTreeSet<u64>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
+        self.publish_prepared_checkpoint_with_reclamation(
+            prepared,
+            oldest_reader_commit_epoch,
+            Some(pinned_reader_generations),
+            shadow_admission,
+        )
+    }
+
+    fn publish_prepared_checkpoint_with_reclamation(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
         shadow_admission: Option<ColumnarShadowAdmission>,
     ) -> Result<()> {
         let generation = prepared.generation;
@@ -861,7 +892,7 @@ impl GraphStore {
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
         if let Some(durable) = self.durable.as_mut() {
-            durable.reclaim_old_generations(generation);
+            durable.reclaim_old_generations(generation, pinned_reader_generations);
         }
         Ok(())
     }

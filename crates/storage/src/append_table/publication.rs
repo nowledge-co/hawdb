@@ -93,6 +93,35 @@ pub struct AppendGenerationManifest {
     pub segments: Vec<AppendSegmentBinding>,
 }
 
+impl AppendGenerationManifest {
+    /// Reads one self-authenticating historical generation manifest without
+    /// requiring the current durable-manifest binding. This is used by
+    /// generation reclamation to retain immutable segments referenced by a
+    /// pinned historical reader.
+    pub fn read_generation(
+        directory: &Path,
+        generation: u64,
+        config: AppendPublicationConfig,
+    ) -> Result<Self, AppendTableError> {
+        validate_config(config)?;
+        let path = directory.join(append_generation_manifest_file(generation));
+        let encoded = read_bounded(
+            &path,
+            config.max_manifest_bytes,
+            "append generation manifest",
+        )?;
+        let manifest = decode_manifest(&encoded, config)?;
+        if manifest.generation != generation {
+            return Err(AppendTableError::Corruption(format!(
+                "append generation manifest {} identifies generation {}",
+                path.display(),
+                manifest.generation
+            )));
+        }
+        Ok(manifest)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppendGenerationArtifacts {
     pub generation: u64,
