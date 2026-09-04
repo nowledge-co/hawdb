@@ -106,7 +106,7 @@ struct QueryOutputAccumulator<'a> {
 impl<'a> QueryOutputAccumulator<'a> {
     fn new(
         limits: OutputLimits,
-        memory: &ExecutionMemoryConfig,
+        result_memory_budget: NonZeroUsize,
         memory_ledger: &QueryMemoryLedger,
         memory_mode: ConsumerMemoryMode,
         consumer: &'a mut dyn FnMut(Row) -> Result<()>,
@@ -114,7 +114,7 @@ impl<'a> QueryOutputAccumulator<'a> {
         let result_account = memory_ledger.account(
             QueryMemoryClass::ResultMaterialization,
             "query result",
-            memory.query_memory_bytes,
+            result_memory_budget,
         );
         let retained_result_lease = result_account.reserve(0)?;
         Ok(Self {
@@ -138,6 +138,15 @@ impl<'a> QueryOutputAccumulator<'a> {
         }
 
         let row = binding.values;
+        let row_payload_bytes = map_payload_bytes(&row);
+        let next_payload_bytes = self.metrics.payload_bytes.saturating_add(row_payload_bytes);
+        if let Some(max_payload_bytes) = self.max_payload_bytes
+            && next_payload_bytes > max_payload_bytes
+        {
+            return Err(SkeinError::Execution(format!(
+                "read query payload would exceed max_payload_bytes {max_payload_bytes} (max_read_result_payload_bytes {max_payload_bytes}; next total {next_payload_bytes})"
+            )));
+        }
         let row_memory_bytes = map_memory_bytes(&row);
         let transient_result_lease = match self.memory_mode {
             ConsumerMemoryMode::Retained => {
@@ -148,15 +157,6 @@ impl<'a> QueryOutputAccumulator<'a> {
                 Some(self.result_account.reserve(row_memory_bytes)?)
             }
         };
-        let row_payload_bytes = map_payload_bytes(&row);
-        let next_payload_bytes = self.metrics.payload_bytes.saturating_add(row_payload_bytes);
-        if let Some(max_payload_bytes) = self.max_payload_bytes
-            && next_payload_bytes > max_payload_bytes
-        {
-            return Err(SkeinError::Execution(format!(
-                "read query payload would exceed max_payload_bytes {max_payload_bytes} (max_read_result_payload_bytes {max_payload_bytes}; next total {next_payload_bytes})"
-            )));
-        }
 
         (self.consumer)(row)?;
         drop(transient_result_lease);
@@ -271,10 +271,14 @@ pub(super) fn execute_profiled_consumer(
     } = resources;
     store.ensure_usable()?;
 
-    let memory_ledger = QueryMemoryLedger::new(request.memory.query_memory_bytes);
+    let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(
+        request.memory,
+        request.task_context,
+    )?);
+    let result_memory_budget = enforced_result_memory_budget(request.memory, request.task_context)?;
     let mut output = QueryOutputAccumulator::new(
         request.output_limits,
-        request.memory,
+        result_memory_budget,
         &memory_ledger,
         output_memory,
         consumer,
@@ -359,6 +363,10 @@ pub(super) fn execute_profiled_consumer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skein_qos::{
+        IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+    };
 
     fn binding(value: &str) -> Binding {
         Binding::values(BTreeMap::from([(
@@ -381,7 +389,7 @@ mod tests {
         };
         let mut output = QueryOutputAccumulator::new(
             request.output_limits,
-            request.memory,
+            request.memory.query_memory_bytes,
             &ledger,
             ConsumerMemoryMode::ReleasedAfterCall,
             &mut consumer,
@@ -407,7 +415,7 @@ mod tests {
         let mut consumer = |_| Ok(());
         let mut output = QueryOutputAccumulator::new(
             request.output_limits,
-            request.memory,
+            request.memory.query_memory_bytes,
             &ledger,
             ConsumerMemoryMode::Retained,
             &mut consumer,
@@ -436,7 +444,7 @@ mod tests {
         };
         let mut output = QueryOutputAccumulator::new(
             request.output_limits,
-            request.memory,
+            request.memory.query_memory_bytes,
             &ledger,
             ConsumerMemoryMode::ReleasedAfterCall,
             &mut consumer,
@@ -468,7 +476,7 @@ mod tests {
         };
         let mut output = QueryOutputAccumulator::new(
             request.output_limits,
-            request.memory,
+            request.memory.query_memory_bytes,
             &ledger,
             ConsumerMemoryMode::ReleasedAfterCall,
             &mut consumer,
@@ -484,5 +492,55 @@ mod tests {
         assert_eq!(ledger.snapshot().used_bytes, 0);
         drop(output);
         assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn concurrent_ledger_capacity_is_bounded_by_governor_reservations() {
+        let resources = RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(
+                Some(8 * 1024 * 1024 * 1024),
+                Some(4 * 1024 * 1024 * 1024),
+                None,
+                None,
+                None,
+            ),
+        );
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::desktop_bound(),
+            resources,
+            IoConcurrencyBudget::new(2, 1),
+        );
+        let first = governor
+            .try_admit(RuntimeWorkRequest::foreground_query(64, 8))
+            .unwrap();
+        let second = governor
+            .try_admit(RuntimeWorkRequest::foreground_query(96, 16))
+            .unwrap();
+        let first_context = first.bind_task_context(RuntimeTaskContext::default());
+        let second_context = second.bind_task_context(RuntimeTaskContext::default());
+        let memory = ExecutionMemoryConfig::default();
+        let ledgers = [&first_context, &second_context].map(|context| {
+            QueryMemoryLedger::new(enforced_query_memory_budget(&memory, Some(context)).unwrap())
+        });
+
+        let aggregate_ledger_capacity = ledgers
+            .iter()
+            .map(|ledger| u64::try_from(ledger.snapshot().budget_bytes).unwrap())
+            .sum::<u64>();
+        assert_eq!(aggregate_ledger_capacity, 160);
+        assert!(aggregate_ledger_capacity <= governor.snapshot().admitted_memory_bytes);
+        assert_eq!(
+            enforced_result_memory_budget(&memory, Some(&first_context))
+                .unwrap()
+                .get(),
+            8
+        );
+        assert_eq!(
+            enforced_result_memory_budget(&memory, Some(&second_context))
+                .unwrap()
+                .get(),
+            16
+        );
     }
 }

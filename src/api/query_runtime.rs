@@ -240,16 +240,22 @@ impl Database {
             parallel_execution_eligible,
             max_parallelism,
         ) = match body {
-            cypher::Statement::Explain(_) => (false, CONTROL_STATEMENT_MEMORY_BYTES, 0, false, 1),
+            cypher::Statement::Explain(explain) if !explain.analyze => {
+                (false, CONTROL_STATEMENT_MEMORY_BYTES, 0, false, 1)
+            }
             cypher::Statement::SetSystemVariable(_)
             | cypher::Statement::Checkpoint
             | cypher::Statement::BeginTransaction
             | cypher::Statement::Commit
             | cypher::Statement::Rollback => (true, CONTROL_STATEMENT_MEMORY_BYTES, 0, false, 1),
             _ => {
+                let admission_statement = match body {
+                    cypher::Statement::Explain(explain) => &explain.statement,
+                    _ => &statement,
+                };
                 let optimized = self.optimized_query_plan_for_runtime_admission(
                     &cypher_text,
-                    &statement,
+                    admission_statement,
                     parameters,
                     plan_cache,
                     planning_cache,
@@ -853,6 +859,37 @@ mod tests {
         let (_, reusable_after_data_change) =
             reusable_after_data_change.into_execution(&db.catalog, &db.store);
         assert!(reusable_after_data_change.optimized.is_some());
+    }
+
+    #[test]
+    fn explain_analyze_reserves_the_inner_plan_memory() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'explain-admission'})")
+            .unwrap();
+        let query = "MATCH (m:Memory) RETURN m.id AS id";
+        let parameters = BTreeMap::new();
+
+        let query_admission = db
+            .prepare_runtime_query(query.to_string(), &parameters)
+            .unwrap()
+            .admission;
+        let analyze_admission = db
+            .prepare_runtime_query(format!("EXPLAIN ANALYZE {query}"), &parameters)
+            .unwrap()
+            .admission;
+        let explain_admission = db
+            .prepare_runtime_query(format!("EXPLAIN {query}"), &parameters)
+            .unwrap()
+            .admission;
+
+        assert_eq!(
+            analyze_admission.estimated_memory_bytes,
+            query_admission.estimated_memory_bytes
+        );
+        assert_eq!(
+            explain_admission.estimated_memory_bytes,
+            CONTROL_STATEMENT_MEMORY_BYTES
+        );
     }
 
     #[test]

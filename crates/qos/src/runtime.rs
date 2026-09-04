@@ -2,7 +2,7 @@ use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
 use skein_core::{
     RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
-    RuntimeTaskContext,
+    RuntimeMemoryReservation, RuntimeTaskContext,
 };
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -699,17 +699,25 @@ impl RuntimePermit {
         self.request
     }
 
-    pub fn release(mut self) {
-        self.release_inner();
+    /// Carries the admitted CPU, memory, and I/O ceilings into the execution tree.
+    pub fn bind_task_context(&self, context: RuntimeTaskContext) -> RuntimeTaskContext {
+        let permit_reservation =
+            RuntimeMemoryReservation::new(self.request.memory_bytes, self.request.result_bytes);
+        let execution_reservation = context
+            .memory_reservation()
+            .map_or(permit_reservation, |parent_reservation| {
+                permit_reservation.intersect(parent_reservation)
+            });
+        context
+            .with_admitted_parallelism(
+                NonZeroUsize::new(self.request.cpu_slots).unwrap_or(NonZeroUsize::MIN),
+            )
+            .with_memory_reservation(execution_reservation)
+            .with_io_wave_controller(self.io_wave_controller.clone())
     }
 
-    /// Carries the admitted CPU and I/O ceilings into the execution tree.
-    pub fn bind_task_context(&self, context: RuntimeTaskContext) -> RuntimeTaskContext {
-        let admitted_parallelism =
-            NonZeroUsize::new(self.request.cpu_slots).unwrap_or(NonZeroUsize::MIN);
-        context
-            .with_admitted_parallelism(admitted_parallelism)
-            .with_io_wave_controller(self.io_wave_controller.clone())
+    pub fn release(mut self) {
+        self.release_inner();
     }
 
     fn release_inner(&mut self) {
@@ -1291,6 +1299,27 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, RuntimeAdmissionCode::BackgroundTaskSaturated);
         drop(io);
+    }
+
+    #[test]
+    fn permit_binds_its_exact_resources_to_the_task_context() {
+        let governor = governor(2, 4 * 1024 * 1024 * 1024);
+        let request = RuntimeWorkRequest::foreground_query(128, 32).with_cpu_slots(2);
+        let permit = governor.try_admit(request).unwrap();
+
+        let context = permit.bind_task_context(RuntimeTaskContext::default());
+
+        assert_eq!(context.admitted_parallelism().get(), 2);
+        let reservation = context.memory_reservation().unwrap();
+        assert_eq!(reservation.memory_bytes(), 128);
+        assert_eq!(reservation.result_bytes(), 32);
+
+        let parent = RuntimeTaskContext::default()
+            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(64, 64));
+        let bounded = permit.bind_task_context(parent);
+        let bounded = bounded.memory_reservation().unwrap();
+        assert_eq!(bounded.memory_bytes(), 64);
+        assert_eq!(bounded.result_bytes(), 32);
     }
 
     #[test]

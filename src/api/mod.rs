@@ -804,6 +804,7 @@ pub struct DatabaseTransaction<'a> {
     db: &'a mut Database,
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
+    task_context: Option<skein_core::RuntimeTaskContext>,
 }
 
 #[derive(Debug)]
@@ -865,6 +866,7 @@ pub struct DatabaseReadTransaction {
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
+    task_context: Option<skein_core::RuntimeTaskContext>,
     _pin: ReaderPin,
 }
 
@@ -1287,12 +1289,27 @@ impl Database {
     }
 
     pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
+        self.begin_transaction_inner(None)
+    }
+
+    pub fn begin_transaction_with_context(
+        &mut self,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> DatabaseTransaction<'_> {
+        self.begin_transaction_inner(Some(task_context.clone()))
+    }
+
+    fn begin_transaction_inner(
+        &mut self,
+        task_context: Option<skein_core::RuntimeTaskContext>,
+    ) -> DatabaseTransaction<'_> {
         let runtime = DatabaseTransactionRuntime::from_database(self);
         let state = DatabaseTransactionState::from_database(self);
         DatabaseTransaction {
             db: self,
             runtime,
             state,
+            task_context,
         }
     }
 
@@ -1307,7 +1324,14 @@ impl Database {
     }
 
     pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
-        self.begin_read_transaction_inner(None)
+        self.begin_read_transaction_inner(None, None)
+    }
+
+    pub fn begin_read_transaction_with_context(
+        &self,
+        task_context: &skein_core::RuntimeTaskContext,
+    ) -> DatabaseReadTransaction {
+        self.begin_read_transaction_inner(None, Some(task_context.clone()))
     }
 
     /// Pins both the database read view and one active projection generation.
@@ -1343,17 +1367,16 @@ impl Database {
                 )));
             }
         }
-        Ok(
-            self.begin_read_transaction_inner(Some(ProjectionRelationalReadSnapshot {
-                binding,
-                reader,
-            })),
-        )
+        Ok(self.begin_read_transaction_inner(
+            Some(ProjectionRelationalReadSnapshot { binding, reader }),
+            None,
+        ))
     }
 
     fn begin_read_transaction_inner(
         &self,
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
+        task_context: Option<skein_core::RuntimeTaskContext>,
     ) -> DatabaseReadTransaction {
         let published_read_view = self.store.published_read_view();
         let pin = {
@@ -1380,6 +1403,7 @@ impl Database {
             statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
             config: self.config.clone(),
             projection_relational,
+            task_context,
             _pin: pin,
         }
     }
@@ -19700,6 +19724,7 @@ fn execute_graph_transaction_statement(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<GraphTransactionStatementOutcome> {
     query_work_request_for_statement(system_variables, statement)?;
     let optimizer_search =
@@ -19783,17 +19808,32 @@ fn execute_graph_transaction_statement(
     let query_result = {
         let (catalog, store) = transaction.catalog_and_store_mut();
         let mut external = executor::NoExternalReadOperator;
-        executor::execute_with_output_limits_profile_and_external_and_memory(
-            &optimized.physical_plan,
-            catalog,
-            store,
-            parameters,
-            &mut external,
-            runtime.config.max_read_result_rows,
-            runtime.config.max_read_result_payload_bytes,
-            &runtime.config.execution_memory,
-        )
-        .map(|profiled| QueryOutput {
+        let profiled = match task_context {
+            Some(task_context) => {
+                executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
+                    &optimized.physical_plan,
+                    catalog,
+                    store,
+                    parameters,
+                    &mut external,
+                    runtime.config.max_read_result_rows,
+                    runtime.config.max_read_result_payload_bytes,
+                    task_context,
+                    &runtime.config.execution_memory,
+                )
+            }
+            None => executor::execute_with_output_limits_profile_and_external_and_memory(
+                &optimized.physical_plan,
+                catalog,
+                store,
+                parameters,
+                &mut external,
+                runtime.config.max_read_result_rows,
+                runtime.config.max_read_result_payload_bytes,
+                &runtime.config.execution_memory,
+            ),
+        };
+        profiled.map(|profiled| QueryOutput {
             rows: profiled.rows,
         })
     };
@@ -19810,6 +19850,7 @@ fn execute_database_transaction_query(
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<QueryOutput> {
     let statement = cypher::parse(cypher_text)?;
     let body = statement_body(&statement);
@@ -19835,6 +19876,7 @@ fn execute_database_transaction_query(
         cypher_text,
         &statement,
         parameters,
+        task_context,
     )
     .map(|outcome| outcome.output)
 }
@@ -19869,6 +19911,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
         cypher_text,
         &statement,
         parameters,
+        None,
     )
 }
 
@@ -19879,6 +19922,7 @@ fn execute_database_transaction_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<SqlStatementResult> {
     let prepared = runtime.relational_plan_template_cache.prepare(sql_text)?;
     execute_database_transaction_prepared_sql(
@@ -19889,6 +19933,7 @@ fn execute_database_transaction_sql(
         parameters,
         allow_system_schema_registry_write,
         allow_locking_select,
+        task_context,
     )
 }
 
@@ -19900,6 +19945,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
+    task_context: Option<&skein_core::RuntimeTaskContext>,
 ) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), allow_locking_select)?;
     if !allow_system_schema_registry_write
@@ -20059,7 +20105,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 &runtime.config,
                 runtime.config.max_read_result_rows,
                 runtime.config.max_read_result_payload_bytes,
-                None,
+                task_context,
             ),
         )?;
         return Ok(sql_query_result(QueryOutput { rows: output.rows }));
@@ -20474,7 +20520,13 @@ impl DatabaseTransaction<'_> {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        execute_database_transaction_query(&self.runtime, &mut self.state, cypher_text, parameters)
+        execute_database_transaction_query(
+            &self.runtime,
+            &mut self.state,
+            cypher_text,
+            parameters,
+            self.task_context.as_ref(),
+        )
     }
 
     pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
@@ -20508,6 +20560,7 @@ impl DatabaseTransaction<'_> {
             parameters,
             false,
             false,
+            self.task_context.as_ref(),
         )
     }
 
@@ -20527,6 +20580,7 @@ impl DatabaseTransaction<'_> {
             parameters,
             true,
             false,
+            self.task_context.as_ref(),
         )
         .map(|result| result.output)
     }
@@ -20688,6 +20742,7 @@ impl DatabaseSession<'_> {
                     cypher_text,
                     statement,
                     parameters,
+                    None,
                 )
                 .map(|outcome| outcome.output)
             }
@@ -20928,12 +20983,13 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
     ) -> Result<BoundedReadQueryOutput> {
+        let task_context = self.task_context.clone();
         self.query_with_params_bounded_profile_internal(
             cypher_text,
             parameters,
             max_rows,
             None,
-            None,
+            task_context.as_ref(),
         )
     }
 
@@ -20959,12 +21015,13 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
+        let task_context = self.task_context.clone();
         self.query_with_params_streaming_prepared_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
-            None,
+            task_context.as_ref(),
             &mut consumer,
         )
     }
@@ -21017,13 +21074,14 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
+        let task_context = self.task_context.clone();
         self.query_with_params_streaming_prepared_external_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
             ReadStreamingExecutionContext {
-                task_context: None,
+                task_context: task_context.as_ref(),
                 external,
             },
             &mut consumer,
@@ -21169,12 +21227,13 @@ impl DatabaseReadTransaction {
         max_rows: Option<usize>,
         access_control: QueryAccessControlContext,
     ) -> Result<BoundedReadQueryOutput> {
+        let task_context = self.task_context.clone();
         self.query_with_params_bounded_profile_internal(
             cypher_text,
             parameters,
             max_rows,
             Some(access_control),
-            None,
+            task_context.as_ref(),
         )
     }
 
@@ -21446,11 +21505,13 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<QueryOutput> {
+        let default_context = skein_core::RuntimeTaskContext::default();
+        let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_context_and_join_planning(
             sql_text,
             parameters,
             options,
-            &skein_core::RuntimeTaskContext::default(),
+            task_context,
             join_planning,
         )
     }
@@ -21483,11 +21544,13 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        let default_context = skein_core::RuntimeTaskContext::default();
+        let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_profiled_context_and_join_planning(
             sql_text,
             parameters,
             options,
-            &skein_core::RuntimeTaskContext::default(),
+            task_context,
             join_planning,
         )
     }

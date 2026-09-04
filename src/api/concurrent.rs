@@ -443,6 +443,7 @@ impl ConcurrentDatabaseTransaction {
             parameters,
             false,
             true,
+            None,
         );
         if result.is_ok() {
             self.successful_statements = self.successful_statements.saturating_add(1);

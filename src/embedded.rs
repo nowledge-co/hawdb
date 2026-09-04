@@ -380,6 +380,7 @@ impl SkeinEmbedded {
             }
         };
         let execution_task_context = permit.bind_task_context(task_context.clone());
+        let _permit = permit;
         let result = if is_mutation || !streaming_eligible {
             self.database.query_with_params_context(
                 cypher_text,
