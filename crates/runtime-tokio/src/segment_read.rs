@@ -11,7 +11,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::task::{JoinError, JoinHandle};
 
 #[derive(Debug)]
@@ -95,6 +95,9 @@ impl TokioSegmentReadExecutor {
     }
 
     /// Reads every scheduled range until the consumer requests a clean stop.
+    ///
+    /// Dropping this future stops submission and payload delivery, but already
+    /// submitted blocking reads retain their I/O capacity until they finish.
     pub async fn execute_control<R, F, E>(
         self,
         reader: Arc<R>,
@@ -138,8 +141,11 @@ impl TokioSegmentReadExecutor {
             for ranges in wave.ranges.chunks(parallelism.get()) {
                 let slots =
                     NonZeroUsize::new(ranges.len()).expect("a segment read chunk is never empty");
-                let _io_permit = self.acquire_io_wave(context, slots).await?;
-                payloads.extend(self.read_chunk(Arc::clone(&reader), ranges).await?);
+                let io_permit = self.acquire_io_wave(context, slots).await?;
+                payloads.extend(
+                    self.read_chunk(Arc::clone(&reader), ranges, io_permit)
+                        .await?,
+                );
             }
 
             checkpoint(context)?;
@@ -198,15 +204,23 @@ impl TokioSegmentReadExecutor {
         &self,
         reader: Arc<R>,
         ranges: &[skein_storage::SegmentReadRange],
+        io_permit: Option<Box<dyn RuntimeIoWavePermit>>,
     ) -> Result<Vec<SegmentReadPayload>, TokioSegmentReadExecutionError<E>>
     where
         R: SegmentRangeReader + Send + Sync + 'static,
     {
+        // Blocking tasks can outlive the awaiting future or host runtime. Each
+        // task must retain capacity until its physical read finishes. The permit
+        // is Send, not Sync; the mutex provides shared ownership without locking
+        // or serializing the reads.
+        let io_permit = Arc::new(Mutex::new(io_permit));
         let mut tasks = Vec::with_capacity(ranges.len());
         for (index, range) in ranges.iter().cloned().enumerate() {
             let artifact_id = range.artifact_id;
             let reader = Arc::clone(&reader);
+            let io_permit = Arc::clone(&io_permit);
             let task = self.runtime.handle.spawn_blocking(move || {
+                let _io_permit = io_permit;
                 catch_unwind(AssertUnwindSafe(|| reader.read_range(&range)))
                     .map(|result| {
                         result.map(|bytes| SegmentReadPayload {
@@ -286,8 +300,11 @@ mod tests {
     };
     use skein_storage::{SegmentReadRange, SegmentReadScheduler};
     use std::convert::Infallible;
+    use std::future::{poll_fn, Future};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::sync::mpsc;
+    use std::task::Poll;
+    use std::time::{Duration, Instant};
 
     struct TrackingReader {
         active: AtomicUsize,
@@ -301,6 +318,88 @@ mod tests {
     }
 
     struct PanickingReader;
+
+    struct GatedReader {
+        started: mpsc::Sender<u64>,
+        completed: mpsc::Sender<u64>,
+        releases: Vec<Mutex<mpsc::Receiver<()>>>,
+        reads: AtomicUsize,
+    }
+
+    struct ReadGates {
+        started: mpsc::Receiver<u64>,
+        completed: mpsc::Receiver<u64>,
+        releases: Vec<Option<mpsc::Sender<()>>>,
+    }
+
+    impl GatedReader {
+        fn new() -> (Arc<Self>, ReadGates) {
+            let (started_tx, started_rx) = mpsc::channel();
+            let (completed_tx, completed_rx) = mpsc::channel();
+            let (releases_tx, releases_rx) = (0..2)
+                .map(|_| {
+                    let (tx, rx) = mpsc::channel();
+                    (Some(tx), Mutex::new(rx))
+                })
+                .unzip();
+            (
+                Arc::new(Self {
+                    started: started_tx,
+                    completed: completed_tx,
+                    releases: releases_rx,
+                    reads: AtomicUsize::new(0),
+                }),
+                ReadGates {
+                    started: started_rx,
+                    completed: completed_rx,
+                    releases: releases_tx,
+                },
+            )
+        }
+    }
+
+    impl SegmentRangeReader for GatedReader {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+            self.reads.fetch_add(1, Ordering::AcqRel);
+            let _ = self.started.send(range.artifact_id);
+            if let Some(release) = self.releases.get(range.artifact_id as usize) {
+                // Disconnecting the sender also releases readers during a test panic.
+                let _ = release.lock().unwrap().recv();
+            }
+            let _ = self.completed.send(range.artifact_id);
+            Ok(Arc::from(vec![0; range.length.get() as usize]))
+        }
+    }
+
+    impl ReadGates {
+        fn wait_until_started(&self) {
+            let mut started = (0..2)
+                .map(|_| self.started.recv_timeout(Duration::from_secs(5)).unwrap())
+                .collect::<Vec<_>>();
+            started.sort_unstable();
+            assert_eq!(started, vec![0, 1]);
+        }
+
+        fn assert_permit_retained_until_last_read(mut self, governor: &RuntimeGovernor) {
+            assert_eq!(governor.snapshot().active_foreground_io_slots, 2);
+            drop(self.releases[0].take());
+            assert_eq!(
+                self.completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+                0
+            );
+            assert_eq!(governor.snapshot().active_foreground_io_slots, 2);
+            drop(self.releases[1].take());
+            assert_eq!(
+                self.completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+                1
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while governor.snapshot().active_foreground_io_slots != 0 {
+                assert!(Instant::now() < deadline, "the I/O-wave permit leaked");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
 
     impl SegmentRangeReader for TrackingReader {
         fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
@@ -339,7 +438,7 @@ mod tests {
         }
     }
 
-    fn runtime() -> TokioRuntimeAdapter {
+    fn governor() -> RuntimeGovernor {
         let resources = RuntimeResourceSnapshot::from_parts(
             RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
             RuntimeMemorySnapshot::from_limits(
@@ -350,11 +449,15 @@ mod tests {
                 None,
             ),
         );
-        let governor = RuntimeGovernor::new(
+        RuntimeGovernor::new(
             RuntimeGovernorConfig::shared_host(),
             resources,
             IoConcurrencyBudget::new(2, 1),
-        );
+        )
+    }
+
+    fn runtime() -> TokioRuntimeAdapter {
+        let governor = governor();
         let config = super::super::TokioRuntimeConfig::from_governor(&governor);
         TokioRuntimeAdapter::owned(governor, config).unwrap()
     }
@@ -544,5 +647,98 @@ mod tests {
                 artifact_id: 7,
             })
         ));
+    }
+
+    #[test]
+    fn dropping_execute_future_retains_in_flight_io_capacity() {
+        let runtime = runtime();
+        let permit = runtime
+            .governor()
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0)
+                    .with_cpu_slots(2)
+                    .with_io_wave_slots(2),
+            )
+            .unwrap();
+        let context = permit.bind_task_context(RuntimeTaskContext::default());
+        let executor = TokioSegmentReadExecutor::new(runtime.clone(), NonZeroU64::new(2).unwrap());
+        let (reader, gates) = GatedReader::new();
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
+            .schedule((0..3).map(|id| SegmentReadRange::new(id, id, 0, NonZeroU64::MIN)));
+        let mut execute = Box::pin(executor.execute(
+            Arc::clone(&reader),
+            &schedule,
+            &context,
+            |_| -> Result<(), Infallible> { panic!("dropped reads must not deliver payloads") },
+        ));
+        runtime
+            .block_on(poll_fn(|cx| {
+                assert!(execute.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            }))
+            .unwrap();
+        gates.wait_until_started();
+
+        drop(execute);
+
+        assert!(matches!(
+            context.try_acquire_io_wave(NonZeroUsize::MIN).unwrap(),
+            RuntimeIoWaveTryAcquire::Pending
+        ));
+        gates.assert_permit_retained_until_last_read(runtime.governor());
+        assert_eq!(reader.reads.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn borrowed_runtime_shutdown_retains_in_flight_io_capacity() {
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(2)
+            .enable_time()
+            .build()
+            .unwrap();
+        let governor = governor();
+        let runtime = TokioRuntimeAdapter::borrowed(
+            host.handle().clone(),
+            governor.clone(),
+            super::super::TokioRuntimeConfig::from_governor(&governor),
+        );
+        let permit = governor
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0)
+                    .with_cpu_slots(2)
+                    .with_io_wave_slots(2),
+            )
+            .unwrap();
+        let context = permit.bind_task_context(RuntimeTaskContext::default());
+        let executor = TokioSegmentReadExecutor::new(runtime, NonZeroU64::new(2).unwrap());
+        let (reader, gates) = GatedReader::new();
+        let tracked_reader = Arc::clone(&reader);
+        let task = host.spawn(async move {
+            let schedule =
+                SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
+                    .schedule((0..3).map(|id| SegmentReadRange::new(id, id, 0, NonZeroU64::MIN)));
+            executor
+                .execute(
+                    tracked_reader,
+                    &schedule,
+                    &context,
+                    |_| -> Result<(), Infallible> {
+                        panic!("shutdown reads must not deliver payloads")
+                    },
+                )
+                .await
+        });
+        gates.wait_until_started();
+
+        host.shutdown_background();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !task.is_finished() {
+            assert!(Instant::now() < deadline, "the host task was not cancelled");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        gates.assert_permit_retained_until_last_read(&governor);
+        assert_eq!(reader.reads.load(Ordering::Acquire), 2);
     }
 }

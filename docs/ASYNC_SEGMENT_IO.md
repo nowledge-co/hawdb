@@ -58,16 +58,24 @@ The runtime task context now supports a non-blocking I/O-wave acquisition:
 3. A physical chunk contains at most the task's admitted parallelism and global
    executor-thread ceiling.
 4. The I/O-wave permit remains live until every submitted blocking read in that
-   chunk has joined, including error paths.
+   chunk has joined, including error paths. Each blocking task also shares
+   ownership of that permit so dropping the awaiting future or shutting down a
+   borrowed runtime cannot release capacity while reads remain in flight.
 
 This preserves the existing distinction between task-scoped and wave-scoped
 I/O reservations without blocking a Tokio worker on a condition variable.
 
 An ordinary file read cannot be interrupted safely after the blocking syscall
 starts. Cancellation is therefore cooperative: it is observed before
-submission, between chunks, before payload delivery, and after the wave. All
-already-submitted reads are joined before their permit is released. This is
-consistent with Tokio's documented `spawn_blocking` cancellation behavior.
+submission, between chunks, before payload delivery, and after the wave. While
+the execution future is awaited, all already-submitted reads are joined before
+their permit is released. This is consistent with Tokio's documented
+`spawn_blocking` cancellation behavior.
+
+Dropping the execution future stops further submission and payload delivery,
+but does not interrupt submitted file operations. Those tasks keep the chunk's
+permit until the last read finishes, even when there is no caller left to join
+them. No cleanup task or extra runtime is required to release the capacity.
 
 ## Cross-Platform Contract
 
