@@ -14,6 +14,7 @@ struct PartialGroup {
 impl PartialGroup {
     fn memory_bytes(&self, key: &[Value]) -> usize {
         partial_group_memory_bytes(key, &self.states)
+            .saturating_add(hash_entry_overhead::<Vec<Value>, Self>())
     }
 }
 
@@ -126,7 +127,8 @@ pub(super) fn stream_partial_aggregate_batches(
     );
     let mut spill_budget =
         SpillBudgetTracker::with_ledger("AggregateExec", memory, context.memory_ledger);
-    let mut groups = BTreeMap::<Vec<Value>, PartialGroup>::new();
+    let mut groups = HashMap::<HashedKey<Vec<Value>>, PartialGroup>::new();
+    let key_hasher = RandomState::new();
     let mut runs = Vec::<spill::SpillRun>::new();
     let mut ordinal = 0u64;
     let partial_item_limit = memory
@@ -138,20 +140,26 @@ pub(super) fn stream_partial_aggregate_batches(
     source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
         runtime_checkpoint(context.task_context)?;
         for binding in batch {
-            let key = group_keys
-                .iter()
-                .map(|item| group_key_value(item, context.catalog, &binding))
-                .collect::<Vec<_>>();
+            let key = HashedKey::new(
+                group_keys
+                    .iter()
+                    .map(|item| group_key_value(item, context.catalog, &binding))
+                    .collect::<Vec<_>>(),
+                &key_hasher,
+            );
             let incoming = partial_states_for_binding(items, context.catalog, &binding);
 
             if let Some(group) = groups.get(&key) {
-                let previous_bytes = group.memory_bytes(&key);
+                let previous_bytes = group.memory_bytes(&key.key);
                 let next_bytes =
-                    partial_group_memory_bytes_after_merge(&key, &group.states, &incoming)?;
+                    partial_group_memory_bytes_after_merge(&key.key, &group.states, &incoming)?;
                 if next_bytes > partial_item_limit {
                     return Err(partial_item_limit_error(next_bytes, partial_item_limit));
                 }
-                let delta = MemoryDelta::between(previous_bytes, next_bytes);
+                let delta = MemoryDelta::between(
+                    previous_bytes,
+                    next_bytes.saturating_add(hash_entry_overhead::<Vec<Value>, PartialGroup>()),
+                );
                 if tracker.would_exceed(delta.added_bytes) {
                     runs.push(spill_partial_group_run(
                         &mut groups,
@@ -178,11 +186,14 @@ pub(super) fn stream_partial_aggregate_batches(
                     tracker.release(delta.released_bytes);
                 }
             } else {
-                let bytes = partial_group_memory_bytes(&key, &incoming);
+                let bytes = partial_group_memory_bytes(&key.key, &incoming);
                 if bytes > partial_item_limit {
                     return Err(partial_item_limit_error(bytes, partial_item_limit));
                 }
-                if tracker.would_exceed(bytes) && !groups.is_empty() {
+                if tracker.would_exceed(
+                    bytes.saturating_add(hash_entry_overhead::<Vec<Value>, PartialGroup>()),
+                ) && !groups.is_empty()
+                {
                     runs.push(spill_partial_group_run(
                         &mut groups,
                         &mut spill_budget,
@@ -248,17 +259,18 @@ fn partial_item_limit_error(bytes: usize, limit: usize) -> SkeinError {
 }
 
 fn insert_partial_group(
-    groups: &mut BTreeMap<Vec<Value>, PartialGroup>,
-    key: Vec<Value>,
+    groups: &mut HashMap<HashedKey<Vec<Value>>, PartialGroup>,
+    key: HashedKey<Vec<Value>>,
     ordinal: u64,
     states: Vec<AggregateState>,
     tracker: &mut OperatorMemoryTracker,
     partial_item_limit: usize,
 ) -> Result<()> {
-    let bytes = partial_group_memory_bytes(&key, &states);
+    let bytes = partial_group_memory_bytes(&key.key, &states);
     if bytes > partial_item_limit {
         return Err(partial_item_limit_error(bytes, partial_item_limit));
     }
+    let bytes = bytes.saturating_add(hash_entry_overhead::<Vec<Value>, PartialGroup>());
     if tracker.would_exceed(bytes) {
         return Err(SkeinError::Execution(format!(
             "AggregateExec partial state exceeds blocking_operator_bytes {}",
@@ -287,7 +299,7 @@ fn finish_partial_group(
 }
 
 fn emit_partial_groups(
-    groups: BTreeMap<Vec<Value>, PartialGroup>,
+    groups: HashMap<HashedKey<Vec<Value>>, PartialGroup>,
     mut group_tracker: OperatorMemoryTracker,
     context: AggregateExecutionContext<'_>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -299,10 +311,13 @@ fn emit_partial_groups(
         context.memory_ledger,
     );
     let mut emitted = 0usize;
+    let mut groups = groups.into_iter().collect::<Vec<_>>();
+    groups.sort_unstable_by(|(left, _), (right, _)| left.key.cmp(&right.key));
     for (key, group) in groups {
         runtime_checkpoint(context.task_context)?;
-        let group_bytes = group.memory_bytes(&key);
-        let binding = finish_partial_group(key, group.states, context.group_keys, context.items);
+        let group_bytes = group.memory_bytes(&key.key);
+        let binding =
+            finish_partial_group(key.key, group.states, context.group_keys, context.items);
         if output.transfer_from(&mut group_tracker, group_bytes, binding, emit)?
             == BatchControl::Stop
         {
@@ -436,15 +451,17 @@ fn decode_partial_binding(
 }
 
 fn spill_partial_group_run(
-    groups: &mut BTreeMap<Vec<Value>, PartialGroup>,
+    groups: &mut HashMap<HashedKey<Vec<Value>>, PartialGroup>,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
     let (run, mut writer) = spill_budget.create_run("aggregate-partial")?;
-    for (key, group) in std::mem::take(groups) {
+    let mut sorted = std::mem::take(groups).into_iter().collect::<Vec<_>>();
+    sorted.sort_unstable_by(|(left, _), (right, _)| left.key.cmp(&right.key));
+    for (key, group) in sorted {
         runtime_checkpoint(task_context)?;
-        let binding = encode_partial_binding(key, group.states)?;
+        let binding = encode_partial_binding(key.key, group.states)?;
         writer.write(group.ordinal, &binding, spill_budget)?;
     }
     writer.finish()?;

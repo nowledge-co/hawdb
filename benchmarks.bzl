@@ -6,6 +6,7 @@ SKEIN_BENCHMARKS = [
     "relational_join_execution",
     "relational_join_planning",
     "aggregate_partial_spill",
+    "aggregate_hash",
     "canonical_point_lookup",
     "executor_vectorization",
     "index_restart_cost",

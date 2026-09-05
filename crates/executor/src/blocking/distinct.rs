@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct DistinctKey {
     schema_id: usize,
     values: Vec<Value>,
@@ -46,7 +46,8 @@ struct DistinctOperator<'a> {
     tracker: OperatorMemoryTracker,
     spill_budget: SpillBudgetTracker,
     schemas: DistinctSchemaInterner,
-    distinct: BTreeMap<DistinctKey, (u64, Binding)>,
+    distinct: HashMap<HashedKey<DistinctKey>, (u64, Binding)>,
+    key_hasher: RandomState,
     runs: Vec<spill::SpillRun>,
     input_rows: u64,
 }
@@ -87,13 +88,15 @@ impl<'a> DistinctOperator<'a> {
                 context.memory_ledger,
             ),
             schemas: DistinctSchemaInterner::default(),
-            distinct: BTreeMap::new(),
+            distinct: HashMap::new(),
+            key_hasher: RandomState::new(),
             runs: Vec::new(),
             input_rows: 0,
         }
     }
 
     fn push(&mut self, binding: Binding) -> Result<()> {
+        runtime_checkpoint(self.task_context)?;
         let existing_schema_id = self.schemas.find(&binding);
         let schema_id = existing_schema_id.unwrap_or(self.schemas.schemas.len());
         let schema_bytes = if existing_schema_id.is_none() {
@@ -101,9 +104,10 @@ impl<'a> DistinctOperator<'a> {
         } else {
             0
         };
-        let key = distinct_binding_key(&binding, schema_id);
-        let entry_bytes =
-            binding_memory_bytes(&binding).saturating_add(distinct_key_memory_bytes(&key));
+        let key = HashedKey::new(distinct_binding_key(&binding, schema_id), &self.key_hasher);
+        let entry_bytes = binding_memory_bytes(&binding)
+            .saturating_add(distinct_key_memory_bytes(&key.key))
+            .saturating_add(hash_entry_overhead::<DistinctKey, (u64, Binding)>());
         let admitted_bytes = schema_bytes.saturating_add(entry_bytes);
         ensure_operator_item_fits("DistinctExec", admitted_bytes, &self.tracker)?;
         if !self.distinct.contains_key(&key) {
@@ -142,6 +146,7 @@ impl<'a> DistinctOperator<'a> {
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
+        runtime_checkpoint(self.task_context)?;
         if self.runs.is_empty() {
             self.record_memory_report(0, self.tracker.peak_bytes);
             let mut selected = self.distinct.into_values().collect::<Vec<_>>();
@@ -210,13 +215,15 @@ fn distinct_binding_key(binding: &Binding, schema_id: usize) -> DistinctKey {
 }
 
 fn spill_distinct_run(
-    distinct: &mut BTreeMap<DistinctKey, (u64, Binding)>,
+    distinct: &mut HashMap<HashedKey<DistinctKey>, (u64, Binding)>,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
     let (run, mut writer) = spill_budget.create_run("distinct")?;
-    for (_, (ordinal, binding)) in std::mem::take(distinct) {
+    let mut sorted = std::mem::take(distinct).into_iter().collect::<Vec<_>>();
+    sorted.sort_unstable_by(|(left, _), (right, _)| left.key.cmp(&right.key));
+    for (_, (ordinal, binding)) in sorted {
         runtime_checkpoint(task_context)?;
         writer.write(ordinal, &binding, spill_budget)?;
     }
