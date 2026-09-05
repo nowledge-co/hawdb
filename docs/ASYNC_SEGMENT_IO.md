@@ -54,7 +54,11 @@ lane could deadlock on its own nested work.
 The runtime task context now supports a non-blocking I/O-wave acquisition:
 
 1. `try_acquire_io_wave` returns `Pending` when the admitted capacity is busy.
-2. The Tokio executor yields for the adapter's admission polling interval.
+2. The Tokio executor yields for an I/O-specific retry interval of at most
+   5 ms, shortened by the remaining deadline. Cancellation (including a parent
+   token) wakes this wait immediately. I/O-wave controllers currently expose no
+   readiness notification; this bounded retry is separate from the event-driven
+   task admission queue and does not restore its removed polling configuration.
 3. A physical chunk contains at most the task's admitted parallelism and global
    executor-thread ceiling.
 4. The I/O-wave permit remains live until every submitted blocking read in that

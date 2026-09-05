@@ -9,10 +9,17 @@ use skein_storage::{
 };
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::future::{poll_fn, Future};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
+use std::time::Duration;
 use tokio::task::{JoinError, JoinHandle};
+
+// I/O-wave controllers expose try_acquire, not a readiness notification. Keep
+// their bounded retry separate from the event-driven task admission queue.
+const IO_WAVE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Debug)]
 pub enum TokioSegmentReadExecutionError<E> {
@@ -194,7 +201,9 @@ impl TokioSegmentReadExecutor {
             {
                 RuntimeIoWaveTryAcquire::Acquired(permit) => return Ok(permit),
                 RuntimeIoWaveTryAcquire::Pending => {
-                    tokio::time::sleep(self.runtime.poll_interval(context)).await;
+                    wait_for_io_retry(context, IO_WAVE_RETRY_INTERVAL)
+                        .await
+                        .map_err(TokioSegmentReadExecutionError::Stopped)?;
                 }
             }
         }
@@ -239,6 +248,27 @@ impl TokioSegmentReadExecutor {
 
         collect_read_tasks(tasks).await
     }
+}
+
+async fn wait_for_io_retry(
+    context: &RuntimeTaskContext,
+    retry_interval: Duration,
+) -> Result<(), RuntimeCancellationReason> {
+    let delay = context
+        .remaining()
+        .map_or(retry_interval, |remaining| remaining.min(retry_interval));
+    let mut retry = Box::pin(tokio::time::sleep(delay));
+    let mut cancellation = Box::pin(context.cancellation().cancelled());
+    poll_fn(|task| {
+        if cancellation.as_mut().poll(task).is_ready() {
+            return Poll::Ready(Err(RuntimeCancellationReason::Cancelled));
+        }
+        if retry.as_mut().poll(task).is_ready() {
+            return Poll::Ready(context.checkpoint());
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 async fn collect_read_tasks<E>(
@@ -460,6 +490,149 @@ mod tests {
         let governor = governor();
         let config = super::super::TokioRuntimeConfig::from_governor(&governor);
         TokioRuntimeAdapter::owned(governor, config).unwrap()
+    }
+
+    #[test]
+    fn io_retry_is_woken_immediately_by_parent_cancellation() {
+        struct CountWake(AtomicUsize);
+
+        impl std::task::Wake for CountWake {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        let runtime = runtime();
+        let token = skein_core::RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(token.child());
+        runtime
+            .block_on(async {
+                // A long timer makes the notification assertion independent of
+                // the production retry interval or wall-clock scheduling noise.
+                let mut retry = Box::pin(wait_for_io_retry(&context, Duration::from_secs(3600)));
+                let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+                let waker = std::task::Waker::from(Arc::clone(&wake));
+                let mut task = std::task::Context::from_waker(&waker);
+                assert!(retry.as_mut().poll(&mut task).is_pending());
+                assert_eq!(wake.0.load(Ordering::Acquire), 0);
+                token.cancel();
+                assert!(wake.0.load(Ordering::Acquire) > 0);
+                assert_eq!(
+                    retry.as_mut().poll(&mut task),
+                    Poll::Ready(Err(RuntimeCancellationReason::Cancelled))
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn io_retry_is_shortened_to_the_task_deadline() {
+        let runtime = runtime();
+        let result = runtime
+            .block_on(async {
+                let context = RuntimeTaskContext::with_timeout(Duration::from_millis(10));
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    wait_for_io_retry(&context, Duration::from_secs(3600)),
+                )
+                .await
+            })
+            .unwrap()
+            .expect("the task deadline must win over the I/O retry timer");
+        assert_eq!(result, Err(RuntimeCancellationReason::DeadlineExceeded));
+    }
+
+    #[test]
+    fn saturated_io_retry_resumes_after_capacity_is_released() {
+        let runtime = runtime();
+        let permit = runtime
+            .governor()
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0).with_io_wave_slots(2),
+            )
+            .unwrap();
+        let context = permit.bind_task_context(RuntimeTaskContext::default());
+        let held = context
+            .acquire_io_wave(NonZeroUsize::new(2).unwrap())
+            .unwrap();
+        let executor = TokioSegmentReadExecutor::new(runtime.clone(), NonZeroU64::MIN);
+        runtime
+            .block_on(async {
+                let mut pending =
+                    Box::pin(executor.acquire_io_wave::<Infallible>(&context, NonZeroUsize::MIN));
+                poll_fn(|task| {
+                    assert!(pending.as_mut().poll(task).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                drop(held);
+                let acquired = tokio::time::timeout(Duration::from_secs(1), pending)
+                    .await
+                    .expect("released I/O capacity must become available")
+                    .unwrap();
+                assert!(acquired.is_some());
+                drop(acquired);
+                assert!(matches!(
+                    context
+                        .try_acquire_io_wave(NonZeroUsize::new(2).unwrap())
+                        .unwrap(),
+                    RuntimeIoWaveTryAcquire::Acquired(Some(_))
+                ));
+            })
+            .unwrap();
+        drop(permit);
+        assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 0);
+    }
+
+    #[test]
+    fn cancellation_while_io_is_saturated_does_not_submit_reads() {
+        let runtime = runtime();
+        let token = skein_core::RuntimeCancellationToken::new();
+        let permit = runtime
+            .governor()
+            .try_admit(
+                RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0).with_io_wave_slots(2),
+            )
+            .unwrap();
+        let context = permit.bind_task_context(RuntimeTaskContext::without_deadline(token.child()));
+        let held = context
+            .acquire_io_wave(NonZeroUsize::new(2).unwrap())
+            .unwrap();
+        let reader = Arc::new(TrackingReader {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+        });
+        let executor = TokioSegmentReadExecutor::new(runtime.clone(), NonZeroU64::MIN);
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::MIN, NonZeroU64::MIN)
+            .schedule([SegmentReadRange::new(1, 1, 0, NonZeroU64::MIN)]);
+        runtime
+            .block_on(async {
+                let mut pending = Box::pin(executor.execute(
+                    Arc::clone(&reader),
+                    &schedule,
+                    &context,
+                    |_| -> Result<(), Infallible> { panic!("cancelled reads must not deliver") },
+                ));
+                poll_fn(|task| {
+                    assert!(pending.as_mut().poll(task).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                token.cancel();
+                assert!(matches!(
+                    pending.await,
+                    Err(TokioSegmentReadExecutionError::Stopped(
+                        RuntimeCancellationReason::Cancelled
+                    ))
+                ));
+            })
+            .unwrap();
+        assert_eq!(reader.reads.load(Ordering::Acquire), 0);
+        assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 2);
+        drop(held);
+        drop(permit);
+        assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 0);
     }
 
     #[test]

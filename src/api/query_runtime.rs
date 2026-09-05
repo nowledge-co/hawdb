@@ -52,6 +52,27 @@ impl PreparedRuntimeQuery {
         &self.admission
     }
 
+    pub(super) fn statement_kind(&self) -> &'static str {
+        super::statement_kind(&self.statement)
+    }
+
+    pub(super) fn parse_nanos(&self) -> u64 {
+        self.parse_metrics.elapsed_nanos
+    }
+
+    pub(super) fn uses_read_snapshot(&self) -> bool {
+        if self.admission.is_mutation {
+            return false;
+        }
+        // A plain EXPLAIN may contain a mutation plan without executing it. Snapshot
+        // execution rejects that plan as a write, so keep this metadata-only path on
+        // the existing exclusive executor until it has a dedicated read API.
+        !matches!(
+            super::statement_body(&self.statement),
+            cypher::Statement::Explain(explain) if !explain.analyze
+        )
+    }
+
     pub(super) fn into_execution(
         self,
         catalog: &Catalog,
@@ -380,6 +401,27 @@ impl Database {
     ) -> Result<QueryOutput> {
         self.query_with_params_trace_internal(cypher_text, parameters, false, None, None)
             .map(|(output, _)| output)
+    }
+
+    pub(super) fn query_prepared_with_params(
+        &mut self,
+        prepared: PreparedRuntimeQuery,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<QueryOutput> {
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let mut external = executor::NoExternalReadOperator;
+        self.query_with_params_trace_and_external_prepared(
+            &cypher_text,
+            prepared,
+            parameters,
+            &mut external,
+            QueryExecutionOptions {
+                capture_trace: false,
+                access_control: None,
+                task_context: None,
+            },
+        )
+        .map(|(output, _)| output)
     }
 
     pub fn query_with_context(

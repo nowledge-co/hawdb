@@ -15,10 +15,10 @@ pub use resource::{
     RuntimeResourceSnapshot,
 };
 pub use runtime::{
-    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimePermit,
-    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
-    RuntimeWorkPriority, RuntimeWorkRequest,
+    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeAdmissionWaiter, RuntimeGovernor,
+    RuntimeGovernorConfig, RuntimeGovernorLimits, RuntimeGovernorSnapshot,
+    RuntimeIoReservationScope, RuntimePermit, RuntimeTelemetryEvent, RuntimeTelemetryEventKind,
+    RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
 };
 pub use skein_core::{
     RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,

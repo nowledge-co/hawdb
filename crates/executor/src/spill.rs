@@ -427,6 +427,13 @@ fn estimate_value_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<usi
         }
         6 => estimate_value_map_payload(input, depth + 1).map(|(bytes, _)| bytes),
         7 => skip_binary(input),
+        8 => {
+            let mut bytes = [0_u8; 16];
+            input.read_exact(&mut bytes).map_err(|error| {
+                SkeinError::Execution(format!("truncated UUID in spill record: {error}"))
+            })?;
+            Ok(bytes.len())
+        }
         tag => Err(SkeinError::Execution(format!(
             "invalid value tag in spill record: {tag}"
         ))),
@@ -929,14 +936,20 @@ mod tests {
 
     #[test]
     fn spill_round_trip_preserves_bindings() {
+        let uuid = Value::Uuid(skein_core::Uuid::from_bytes([0xa5; 16]));
         let binding = Binding {
             values: BTreeMap::from([
+                ("uuid".to_string(), uuid.clone()),
                 ("binary".to_string(), Value::Binary(vec![0, 1, 0xfe, 0xff])),
                 (
                     "nested".to_string(),
                     Value::Map(BTreeMap::from([(
                         "items".to_string(),
-                        Value::List(vec![Value::Int(1), Value::String("two".to_string())]),
+                        Value::List(vec![
+                            Value::Int(1),
+                            uuid.clone(),
+                            Value::String("two".to_string()),
+                        ]),
                     )])),
                 ),
             ]),
@@ -945,7 +958,10 @@ mod tests {
                 NodeRecord {
                     id: NodeId(7),
                     labels: BTreeSet::from([LabelId(3)]),
-                    properties: BTreeMap::from([("score".to_string(), Value::Float(1.5))]),
+                    properties: BTreeMap::from([
+                        ("score".to_string(), Value::Float(1.5)),
+                        ("uuid".to_string(), uuid.clone()),
+                    ]),
                 },
             )]),
             relationships: BTreeMap::from([(
@@ -955,7 +971,10 @@ mod tests {
                     source: NodeId(7),
                     target: NodeId(8),
                     rel_type: RelTypeId(4),
-                    properties: BTreeMap::from([("active".to_string(), Value::Bool(true))]),
+                    properties: BTreeMap::from([
+                        ("active".to_string(), Value::Bool(true)),
+                        ("uuid".to_string(), uuid),
+                    ]),
                 },
             )]),
         };
@@ -977,6 +996,10 @@ mod tests {
             .read_binding_record(memory.blocking_operator_bytes.get(), &spill_budget)
             .unwrap()
             .expect("spill record");
+        assert_eq!(
+            record.decoded_binding_bytes(),
+            binding_memory_bytes(&binding)
+        );
         let decoded = record
             .try_map(
                 "CodecTest merge",
@@ -993,6 +1016,27 @@ mod tests {
         drop(run);
         assert_eq!(memory.spill_pool_snapshot().unwrap().active_bytes, 0);
         std::fs::remove_dir(&memory.spill_directory).unwrap();
+    }
+
+    #[test]
+    fn uuid_spill_preflight_checks_every_truncation_and_preserves_alignment() {
+        for fill in [0, 8, 0x80, 0xff] {
+            let value = Value::Uuid(skein_core::Uuid::from_bytes([fill; 16]));
+            let mut encoded = Vec::new();
+            write_value(&mut encoded, &value, 0).unwrap();
+            assert_eq!(encoded.len(), 17);
+            for end in 1..encoded.len() {
+                let error =
+                    estimate_value_payload(&mut Cursor::new(&encoded[..end]), 0).unwrap_err();
+                assert!(error.to_string().contains("truncated UUID"), "{error}");
+            }
+            write_value(&mut encoded, &Value::Int(42), 0).unwrap();
+            let mut cursor = Cursor::new(encoded.as_slice());
+            assert_eq!(estimate_value_payload(&mut cursor, 0).unwrap(), 16);
+            assert_eq!(cursor.position(), 17);
+            assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
+            assert_eq!(cursor.position() as usize, encoded.len());
+        }
     }
 
     #[test]

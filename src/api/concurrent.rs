@@ -17,9 +17,9 @@ use super::transaction_locks::{
 };
 use super::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_query,
-    execute_database_transaction_prepared_sql, Database, DatabaseConfig, DatabaseReadTransaction,
-    DatabaseTransactionRuntime, DatabaseTransactionSqlOptions, DatabaseTransactionState,
-    QueryOutput, TransactionCommitResult,
+    execute_database_transaction_prepared_sql, BoundedReadQueryOutput, Database, DatabaseConfig,
+    DatabaseReadTransaction, DatabaseTransactionRuntime, DatabaseTransactionSqlOptions,
+    DatabaseTransactionState, QueryOutput, StatementExecutionContext, TransactionCommitResult,
 };
 use crate::error::{Result, SkeinError};
 use crate::sql::{
@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::path::Path;
 #[cfg(test)]
-use std::sync::Barrier;
+use std::sync::{mpsc::Sender, Barrier, Condvar};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,15 @@ struct ConcurrentDatabaseInner {
     locks: LockManager,
     transaction_ids: TransactionIdAllocator,
     checkpoint_serial: Mutex<()>,
+    #[cfg(test)]
+    autocommit_read_gate: Mutex<Option<AutocommitReadGate>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct AutocommitReadGate {
+    snapshot_acquired: Sender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
 }
 
 #[derive(Debug)]
@@ -119,6 +128,8 @@ impl ConcurrentDatabase {
                 locks: LockManager::default(),
                 transaction_ids: TransactionIdAllocator::default(),
                 checkpoint_serial: Mutex::new(()),
+                #[cfg(test)]
+                autocommit_read_gate: Mutex::new(None),
             }),
         }
     }
@@ -166,6 +177,34 @@ impl ConcurrentDatabase {
         self.inner
             .commits
             .set_group_commit_post_enqueue_barrier(barrier)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_autocommit_read_gate(
+        &self,
+        snapshot_acquired: Sender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<()> {
+        let mut gate = self
+            .inner
+            .autocommit_read_gate
+            .lock()
+            .map_err(|_| autocommit_read_gate_poisoned_error())?;
+        *gate = Some(AutocommitReadGate {
+            snapshot_acquired,
+            release,
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_autocommit_read_gate(&self) -> Result<()> {
+        self.inner
+            .autocommit_read_gate
+            .lock()
+            .map_err(|_| autocommit_read_gate_poisoned_error())?
+            .take();
+        Ok(())
     }
 
     /// Returns storage debt and cache accounting from the same serialized
@@ -236,9 +275,43 @@ impl ConcurrentDatabase {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        self.with_autocommit_exclusive(|database| {
-            database.query_with_params(cypher_text, parameters)
-        })
+        let database = self.inner.commits.lock()?;
+        let started = Instant::now();
+        let prepared = match database.prepare_runtime_query(cypher_text.to_string(), parameters) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                // Failed preparation cannot prove that the statement is read-only. Re-run it
+                // through the original exclusive path so planning failures retain their
+                // statement-observability behavior and uncertain statements fail closed.
+                drop(database);
+                return self.with_autocommit_exclusive(|database| {
+                    database.query_with_params(cypher_text, parameters)
+                });
+            }
+        };
+        if !prepared.uses_read_snapshot() {
+            drop(database);
+            return self.with_autocommit_exclusive(move |database| {
+                database.query_prepared_with_params(prepared, parameters)
+            });
+        }
+        let statement_kind = prepared.statement_kind();
+        let parse_nanos = prepared.parse_nanos();
+        let mut snapshot = database.begin_read_transaction();
+        drop(database);
+
+        #[cfg(test)]
+        self.wait_after_autocommit_read_snapshot()?;
+        let result = snapshot.query_prepared_with_params_bounded_profile(prepared, parameters);
+        drop(snapshot);
+        self.record_cypher_autocommit_read(
+            cypher_text,
+            statement_kind,
+            started,
+            parse_nanos,
+            &result,
+        )?;
+        result.map(|profiled| profiled.output)
     }
 
     pub fn query_sql(&self, sql_text: &str) -> Result<QueryOutput> {
@@ -250,9 +323,25 @@ impl ConcurrentDatabase {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
-        self.with_autocommit_exclusive(|database| {
-            database.query_sql_with_params(sql_text, parameters)
-        })
+        let database = self.inner.commits.lock()?;
+        let started = Instant::now();
+        let prepared = database.relational_plan_template_cache.prepare(sql_text)?;
+        if !sql_statement_uses_snapshot(prepared.statement()) {
+            drop(database);
+            return self.with_autocommit_exclusive(move |database| {
+                database.query_sql_with_prepared_params(sql_text, parameters, prepared)
+            });
+        }
+        let statement_kind = super::observability::sql_statement_kind(prepared.statement());
+        let snapshot = database.begin_read_transaction();
+        drop(database);
+
+        #[cfg(test)]
+        self.wait_after_autocommit_read_snapshot()?;
+        let result = snapshot.query_sql_with_prepared_params(sql_text, parameters, prepared);
+        drop(snapshot);
+        self.record_sql_autocommit_read(sql_text, statement_kind, started, &result)?;
+        result
     }
 
     /// Commits one strict append transaction through the same serialized WAL
@@ -312,6 +401,87 @@ impl ConcurrentDatabase {
             .and_then(|mut database| execute(&mut database));
         self.inner.locks.release(transaction_id);
         result
+    }
+
+    fn record_cypher_autocommit_read(
+        &self,
+        cypher_text: &str,
+        statement_kind: &'static str,
+        started: Instant,
+        parse_nanos: u64,
+        result: &Result<BoundedReadQueryOutput>,
+    ) -> Result<()> {
+        let elapsed = started.elapsed();
+        let database = self.inner.commits.lock()?;
+        let observed_started = Instant::now().checked_sub(elapsed).unwrap_or(started);
+        let statement_result = match result {
+            Ok(profiled) => Ok(&profiled.output),
+            Err(error) => Err(error),
+        };
+        database.record_statement_execution(
+            "cypher",
+            cypher_text,
+            statement_kind,
+            observed_started,
+            statement_result,
+            StatementExecutionContext {
+                execution_profile: result
+                    .as_ref()
+                    .ok()
+                    .map(|profiled| &profiled.execution_profile),
+                access_control: None,
+                parse_nanos,
+            },
+        );
+        Ok(())
+    }
+
+    fn record_sql_autocommit_read(
+        &self,
+        sql_text: &str,
+        statement_kind: &'static str,
+        started: Instant,
+        result: &Result<QueryOutput>,
+    ) -> Result<()> {
+        let elapsed = started.elapsed();
+        let database = self.inner.commits.lock()?;
+        let observed_started = Instant::now().checked_sub(elapsed).unwrap_or(started);
+        database.record_statement_execution(
+            "sql",
+            sql_text,
+            statement_kind,
+            observed_started,
+            result.as_ref(),
+            StatementExecutionContext::default(),
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn wait_after_autocommit_read_snapshot(&self) -> Result<()> {
+        let gate = self
+            .inner
+            .autocommit_read_gate
+            .lock()
+            .map_err(|_| autocommit_read_gate_poisoned_error())?
+            .clone();
+        if let Some(gate) = gate {
+            gate.snapshot_acquired.send(()).map_err(|_| {
+                SkeinError::Execution(
+                    "concurrent autocommit read gate receiver was dropped".to_string(),
+                )
+            })?;
+            let (released, available) = &*gate.release;
+            let mut released = released
+                .lock()
+                .map_err(|_| autocommit_read_gate_poisoned_error())?;
+            while !*released {
+                released = available
+                    .wait(released)
+                    .map_err(|_| autocommit_read_gate_poisoned_error())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -676,6 +846,19 @@ fn reject_optimistic_locking_select(
         ));
     }
     Ok(())
+}
+
+fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
+    match statement {
+        SqlStatement::Select(select) => select.lock_strength.is_none(),
+        SqlStatement::Explain(explain) => sql_statement_uses_snapshot(&explain.statement),
+        SqlStatement::Insert(_)
+        | SqlStatement::Update(_)
+        | SqlStatement::Delete(_)
+        | SqlStatement::CreateTable(_)
+        | SqlStatement::CreateIndex(_)
+        | SqlStatement::AlterTableAddColumn(_) => false,
+    }
 }
 
 fn graph_lock_requests(footprint: &crate::store::GraphMutationLockFootprint) -> Vec<LockRequest> {
@@ -1427,6 +1610,11 @@ fn upper_is_before_lower(upper: &Bound<RelationalKey>, lower: &Bound<RelationalK
 
 fn checkpoint_coordinator_poisoned_error() -> SkeinError {
     SkeinError::Execution("concurrent checkpoint coordinator is poisoned".to_string())
+}
+
+#[cfg(test)]
+fn autocommit_read_gate_poisoned_error() -> SkeinError {
+    SkeinError::Execution("concurrent autocommit read gate is poisoned".to_string())
 }
 
 #[cfg(test)]
