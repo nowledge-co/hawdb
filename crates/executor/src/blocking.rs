@@ -348,7 +348,7 @@ mod hash_key;
 mod hash_oracle;
 mod sort;
 
-use hash_key::{hash_entry_overhead, hash_set_capacity_bytes, HashedKey};
+use hash_key::{hash_entry_overhead, hash_set_capacity_bytes, HashGroups, HashedKey};
 
 pub use aggregate::*;
 pub use distinct::*;

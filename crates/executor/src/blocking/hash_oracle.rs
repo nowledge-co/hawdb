@@ -283,6 +283,69 @@ fn aggregate_oracle(rows: &[Binding], buffered: bool) -> Vec<Binding> {
 }
 
 #[test]
+fn partial_spill_workload_keeps_the_existing_run_budget() {
+    const ROWS: usize = 4096;
+    const GROUPS: usize = 256;
+    for distinct in [false, true] {
+        let mut fixture = Fixture::new(16 * 1024);
+        fixture.memory.max_spill_runs = NonZeroUsize::new(128).unwrap();
+        fixture.memory.max_total_spill_runs = NonZeroUsize::new(256).unwrap();
+        fixture.memory.max_spill_bytes = NonZeroU64::new(64 * 1024 * 1024).unwrap();
+        fixture.memory.max_total_spill_bytes = NonZeroU64::new(128 * 1024 * 1024).unwrap();
+        let mut source = Source {
+            rows: (0..ROWS)
+                .map(|index| Binding {
+                    nodes: BTreeMap::from([(
+                        "n".into(),
+                        NodeRecord {
+                            id: NodeId(index as u64),
+                            labels: BTreeSet::new(),
+                            properties: BTreeMap::from([
+                                ("group".into(), Value::Int((index % GROUPS) as i64)),
+                                ("value".into(), Value::Int(index as i64)),
+                            ]),
+                        },
+                    )]),
+                    values: BTreeMap::new(),
+                    relationships: BTreeMap::new(),
+                })
+                .collect(),
+            batch_rows: 1024,
+            cancel_after_input: None,
+        };
+        let mut output = Vec::new();
+        stream_aggregate_batches(
+            &input(),
+            &group_keys()[..1],
+            &[Aggregation {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::Property {
+                    variable: "n".into(),
+                    property: "value".into(),
+                },
+                distinct,
+                name: "count".into(),
+            }],
+            &mut source,
+            fixture.context(),
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap_or_else(|error| panic!("distinct={distinct}: {error}"));
+        assert_eq!(output.len(), GROUPS);
+        for (group, row) in output.iter().enumerate() {
+            assert_eq!(row.values["group"], Value::Int(group as i64));
+            assert_eq!(row.values["count"], Value::Int((ROWS / GROUPS) as i64));
+        }
+        fixture.assert_report(true);
+        assert!(fixture.reports.0.borrow()[0].spill_run_count <= 128);
+    }
+}
+
+#[test]
 fn seeded_hash_aggregation_matches_ordered_oracle_with_and_without_spill() {
     for seed in 0..16 {
         let rows = rows(seed);
