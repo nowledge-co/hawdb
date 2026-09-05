@@ -909,13 +909,7 @@ fn explain_optimizer_budget_value(optimized: &OptimizedQueryPlan) -> Value {
         ),
         (
             "budget_exceeded".to_string(),
-            Value::Bool(
-                optimized
-                    .trace
-                    .warnings
-                    .iter()
-                    .any(|warning| warning.contains("optimizer memo budget exceeded")),
-            ),
+            Value::Bool(optimized.trace.groups > optimized.effective_max_optimizer_groups),
         ),
     ]))
 }

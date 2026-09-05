@@ -205,11 +205,11 @@ fn database_config_caps_optimizer_groups_for_explain() {
         )
         .unwrap();
 
-    assert!(explain
-        .trace
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("optimizer memo budget exceeded")));
+    assert!(explain.trace.warnings.is_empty());
+    assert!(explain.trace.groups > 2);
+    assert!(explain.trace.decisions.iter().any(|decision| {
+        decision.contains("max_groups=2") && decision.contains("same physical alternatives")
+    }));
     assert!(explain.trace.selected_plan.contains("TopNExec"));
 }
 

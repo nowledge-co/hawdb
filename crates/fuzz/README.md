@@ -8,9 +8,10 @@ predicate and query AST nodes that are validated against the generated schema be
 campaign runs nine complementary oracles:
 
 - The plan-differential oracle applies mutations once, pins one read snapshot, and executes the
-  same parameterized Cypher query through memo search and deterministic direct fallback. Direct
-  fallback is an independent planning path, not a source of truth; agreement cannot detect a bug
-  shared by both paths.
+  same parameterized Cypher query through memo child resolution and deterministic direct child
+  resolution. Both modes now share the physical lowerer; this checks child wiring and directive
+  handling, not independent lowering implementations. Agreement cannot detect a shared lowering
+  bug, so the TLP, predicate-rewrite, and metamorphic oracles remain necessary.
 - The Graph TLP oracle evaluates `Q`, `Q WHERE p`, `Q WHERE NOT p`, and a constrained
   `Q WHERE nullable_operand IS NULL` partition on one pinned snapshot. The generated predicate is
   a single comparison against a non-null parameter, so the null-operand partition is exactly the

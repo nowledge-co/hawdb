@@ -575,7 +575,8 @@ Skein should use a Cascades model similar to Chryso:
 
 - `Memo`: stores equivalent plan alternatives. The generic group storage lives
   in `skein-optimizer`; `skein_optimizer::graph` stores Cypher-specific
-  `GroupExpr` payloads in that crate-owned memo.
+  `GroupExpr` payloads in that crate-owned memo. The graph memo currently holds
+  one expression per group; it is not an alternative-plan search engine.
 - `Group`: represents a logical equivalence class.
 - `GroupExpr`: stores an operator plus child group references. Graph-specific
   lowering owns this private payload while public logical operators live in
@@ -595,13 +596,17 @@ Skein should use a Cascades model similar to Chryso:
 - `PlanNode`: a graph-payload-independent trait for walking selected plans and
   building operator/class summaries without parsing explain text.
 - `OptimizationSearchReport`: records generic search mode, group count, budget
-  warnings, and rule/decision events before the root facade materializes the
+  decisions, and rule/decision events before the root facade materializes the
   legacy `OptimizerTrace` surface.
 - `OptimizerTrace`: deterministic diagnostics for rules, groups, candidates,
   costs, warnings, search limits, and selected physical plan operator/class
   histograms. If a logical plan exceeds `OptimizerConfig::max_groups`, Skein
-  does not build an oversized memo; it records a budget warning and selects a
-  deterministic direct physical fallback.
+  does not build an oversized memo; it records an informational budget decision
+  and resolves logical children directly. Both graph modes call one physical
+  lowerer, including the same access-path and bounded-sort alternatives. The
+  legacy `direct_fallback` diagnostic name does not imply degraded plan quality.
+  Explicit `memo` requests still fail if the group allocation exceeds the limit;
+  EXPLAIN reports `budget_exceeded` numerically, independently of warnings.
 
 Unlike Chryso, Skein needs graph-specific properties:
 

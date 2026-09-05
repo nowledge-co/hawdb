@@ -4,6 +4,32 @@ use crate::optimizer::OptimizerTrace;
 use crate::{QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 
 #[test]
+fn explain_reports_memo_allocation_limits_without_plan_degradation_warnings() {
+    for (max_groups, exceeded) in [(0, true), (128, false)] {
+        let mut db = Database::new_with_config(DatabaseConfig {
+            max_optimizer_groups: Some(max_groups),
+            ..DatabaseConfig::default()
+        });
+        let output = db
+            .query("EXPLAIN MATCH (m:Memory) RETURN m.id AS id ORDER BY id LIMIT 3")
+            .unwrap();
+        let row = &output.rows[0];
+        let Some(Value::Map(budget)) = row.get("optimizer_budget") else {
+            panic!("expected optimizer budget map");
+        };
+        assert_eq!(budget.get("budget_exceeded"), Some(&Value::Bool(exceeded)));
+        assert_eq!(
+            budget.get("max_groups"),
+            Some(&Value::Int(max_groups as i64))
+        );
+        let explain = db
+            .explain_query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id LIMIT 3")
+            .unwrap();
+        assert!(explain.trace.warnings.is_empty());
+    }
+}
+
+#[test]
 fn explains_query_with_optimizer_trace() {
     let mut db = Database::new();
     db.query("CREATE INDEX ON :Memory(id)").unwrap();

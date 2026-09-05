@@ -9,6 +9,9 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Memo,
+    /// Direct child resolution without allocating graph memo groups. The graph
+    /// lowerer considers the same physical alternatives in both modes; this
+    /// legacy name does not imply reduced plan quality.
     DirectFallback,
 }
 
@@ -87,8 +90,8 @@ impl OptimizationSearchReport {
             rule_events: Vec::new(),
             stage_events: Vec::new(),
         };
-        report.warnings.push(format!(
-            "optimizer memo budget exceeded: required_groups={required_groups} max_groups={max_groups}; used deterministic direct physical fallback"
+        report.push_decision(format!(
+            "selected direct child resolution: required_groups={required_groups} max_groups={max_groups}; same physical alternatives as memo lowering"
         ));
         report
     }
@@ -348,15 +351,16 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn direct_fallback_report_records_budget_warning() {
+    fn direct_fallback_report_records_budget_decision_without_degradation() {
         let report = OptimizationSearchReport::direct_fallback(9, 4);
 
         assert_eq!(report.groups(), 9);
         assert_eq!(report.mode(), SearchMode::DirectFallback);
-        assert_eq!(report.warnings().len(), 1);
-        assert!(report.warnings()[0].contains("required_groups=9 max_groups=4"));
-        assert!(report.decisions().is_empty());
-        assert!(report.rule_events().is_empty());
+        assert!(report.warnings().is_empty());
+        assert_eq!(report.decisions().len(), 1);
+        assert!(report.decisions()[0].contains("required_groups=9 max_groups=4"));
+        assert!(report.decisions()[0].contains("same physical alternatives"));
+        assert_eq!(report.rule_events().len(), 1);
         assert!(report.stage_events().is_empty());
     }
 

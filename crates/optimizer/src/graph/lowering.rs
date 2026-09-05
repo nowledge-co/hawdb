@@ -32,6 +32,9 @@ mod procedure;
 mod simple;
 mod traversal;
 
+#[cfg(test)]
+mod tests;
+
 type GraphMemo = Memo<GroupExpr>;
 
 const GRAPH_EXPANSION_FANOUT_PER_SEED_HOP: usize = 32;
@@ -157,8 +160,9 @@ impl CascadesOptimizer {
         {
             let mut decisions = Vec::new();
             let mut stage_events = Vec::new();
-            let plan = logical_to_physical_direct(
+            let plan = lower_logical(
                 logical,
+                LoweringChildren::Direct,
                 catalog,
                 &self.context,
                 &mut decisions,
@@ -434,296 +438,17 @@ impl GroupExpr {
         decisions: &mut Vec<String>,
         stage_events: &mut Vec<StageTrace>,
     ) -> PhysicalPlan {
-        if let Some(plan) = select_exact_count_fast_path(&self.logical, decisions, stage_events) {
-            return plan;
-        }
-        if let Some(plan) = simple::lower_simple_logical(&self.logical, optimizer_context) {
-            return plan;
-        }
-        match &self.logical {
-            LogicalPlan::NodeCartesianProduct { .. } => {
-                let left = best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                );
-                let right = best_physical(
-                    memo,
-                    self.children[1],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                );
-                let (left, right) =
-                    order_single_row_cartesian_product_children(catalog, decisions, left, right);
-                push_cartesian_product_cost_decision(catalog, decisions, &left, &right);
-                PhysicalPlan::NodeCartesianProductExec {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                }
-            }
-            LogicalPlan::NodeColumnLookup {
-                variable,
-                label,
-                property,
-                column,
-                optional,
-                ..
-            } => PhysicalPlan::NodeColumnLookupExec {
-                variable: variable.clone(),
-                label: label.clone(),
-                property: property.clone(),
-                column: column.clone(),
-                optional: *optional,
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
+        lower_logical(
+            &self.logical,
+            LoweringChildren::Memo {
+                memo,
+                children: &self.children,
             },
-            LogicalPlan::Expand {
-                source_variable,
-                source_label,
-                rel_variable,
-                rel_type,
-                rel_properties,
-                direction,
-                target_variable,
-                target_label,
-                min_hops,
-                max_hops,
-                optional,
-                ..
-            } => {
-                push_expand_estimate_decision(
-                    catalog,
-                    decisions,
-                    ExpandEstimateRequest {
-                        source_label,
-                        rel_type,
-                        rel_properties,
-                        target_label,
-                        min_hops: *min_hops,
-                        max_hops: *max_hops,
-                    },
-                );
-                let input = best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                );
-                let graph_budget =
-                    vector_seed_top_k(&input).map(|top_k| graph_expansion_budget(top_k, *max_hops));
-                if let Some(graph_budget) = graph_budget {
-                    decisions.push(format!(
-                        "bound vector-seeded graph expansion to {} candidates and {} payload bytes",
-                        graph_budget.candidate_limit, graph_budget.payload_byte_limit
-                    ));
-                }
-                PhysicalPlan::AdjacencyExpandExec {
-                    source_variable: source_variable.clone(),
-                    source_label: source_label.clone(),
-                    rel_variable: rel_variable.clone(),
-                    rel_type: rel_type.clone(),
-                    rel_properties: rel_properties.clone(),
-                    direction: *direction,
-                    target_variable: target_variable.clone(),
-                    target_label: target_label.clone(),
-                    min_hops: *min_hops,
-                    max_hops: *max_hops,
-                    optional: *optional,
-                    graph_budget,
-                    input: Box::new(input),
-                }
-            }
-            LogicalPlan::OptionalDegree {
-                source_variable,
-                rel_type,
-                rel_properties,
-                direction,
-                target_label,
-                target_properties,
-                alias,
-                ..
-            } => PhysicalPlan::OptionalDegreeExec {
-                source_variable: source_variable.clone(),
-                rel_type: rel_type.clone(),
-                rel_properties: rel_properties.clone(),
-                direction: *direction,
-                target_label: target_label.clone(),
-                target_properties: target_properties.clone(),
-                alias: alias.clone(),
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            LogicalPlan::OptionalRelationshipCountSum {
-                variable,
-                label,
-                properties,
-                legs,
-                output,
-            } => {
-                push_optional_relationship_count_sum_cost_decision(
-                    catalog, decisions, label, properties, legs,
-                );
-                PhysicalPlan::OptionalRelationshipCountSumExec {
-                    variable: variable.clone(),
-                    label: label.clone(),
-                    properties: properties.clone(),
-                    legs: legs.clone(),
-                    output: output.clone(),
-                }
-            }
-            LogicalPlan::Filter { predicate, input } => {
-                if let Some(plan) =
-                    index_seek_from_filter(predicate, input, catalog, decisions, stage_events)
-                {
-                    plan
-                } else if let Some(plan) = access::source_segment_scan_from_filter(predicate, input)
-                {
-                    decisions.push(
-                        "choose SourceSegmentScan for storage-prunable Source filter".to_string(),
-                    );
-                    PhysicalPlan::FilterExec {
-                        predicate: predicate.clone(),
-                        input: Box::new(plan),
-                    }
-                } else if let Predicate::BoundRelationshipExists {
-                    source_variable,
-                    rel_type,
-                    direction,
-                    target_variable,
-                } = predicate
-                {
-                    decisions.push(
-                        "lower bound relationship existence predicate to AdjacencyExistsExec"
-                            .to_string(),
-                    );
-                    PhysicalPlan::AdjacencyExistsExec {
-                        source_variable: source_variable.clone(),
-                        rel_type: rel_type.clone(),
-                        direction: *direction,
-                        target_variable: target_variable.clone(),
-                        input: Box::new(best_physical(
-                            memo,
-                            self.children[0],
-                            catalog,
-                            optimizer_context,
-                            decisions,
-                            stage_events,
-                        )),
-                    }
-                } else {
-                    let mut input = best_physical(
-                        memo,
-                        self.children[0],
-                        catalog,
-                        optimizer_context,
-                        decisions,
-                        stage_events,
-                    );
-                    push_vector_seed_metadata_filter(&mut input, predicate, decisions);
-                    PhysicalPlan::FilterExec {
-                        predicate: predicate.clone(),
-                        input: Box::new(input),
-                    }
-                }
-            }
-            LogicalPlan::Project { items, .. } => PhysicalPlan::ProjectExec {
-                items: items.clone(),
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            LogicalPlan::Aggregate {
-                group_keys, items, ..
-            } => PhysicalPlan::AggregateExec {
-                group_keys: group_keys.clone(),
-                items: items.clone(),
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            LogicalPlan::Distinct { .. } => PhysicalPlan::DistinctExec {
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            LogicalPlan::Sort { items, .. } => PhysicalPlan::SortExec {
-                items: items.clone(),
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            LogicalPlan::Limit { limit: Some(0), .. } => PhysicalPlan::EmptyExec,
-            LogicalPlan::Limit {
-                offset,
-                limit: Some(limit),
-                input,
-            } if matches!(input.as_ref(), LogicalPlan::Sort { .. }) => {
-                let LogicalPlan::Sort { items, .. } = input.as_ref() else {
-                    unreachable!("guard requires a sort input");
-                };
-                let input = best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                );
-                select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
-            }
-            LogicalPlan::Limit { offset, limit, .. } => PhysicalPlan::LimitExec {
-                offset: *offset,
-                limit: *limit,
-                input: Box::new(best_physical(
-                    memo,
-                    self.children[0],
-                    catalog,
-                    optimizer_context,
-                    decisions,
-                    stage_events,
-                )),
-            },
-            _ => unreachable!("leaf logical plans are lowered before memo child planning"),
-        }
+            catalog,
+            optimizer_context,
+            decisions,
+            stage_events,
+        )
     }
 }
 
@@ -885,6 +610,17 @@ fn graph_expansion_budget(top_k: usize, max_hops: usize) -> GraphExpansionBudget
 fn logical_group_count(logical: &LogicalPlan) -> usize {
     match logical {
         LogicalPlan::Limit { limit: Some(0), .. } => 1,
+        LogicalPlan::Limit {
+            limit: Some(_),
+            input,
+            ..
+        } if matches!(input.as_ref(), LogicalPlan::Sort { .. }) => {
+            let LogicalPlan::Sort { input, .. } = input.as_ref() else {
+                unreachable!("guard requires a sort input");
+            };
+            // Bounded-sort selection owns the Sort; it is not a child group.
+            1 + logical_group_count(input)
+        }
         LogicalPlan::Expand { input, .. }
         | LogicalPlan::NodeColumnLookup { input, .. }
         | LogicalPlan::OptionalDegree { input, .. }
@@ -939,8 +675,50 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
     }
 }
 
-fn logical_to_physical_direct(
+// The graph memo currently contains one expression per group. Only child
+// lookup differs; physical alternatives and their costing share one lowerer.
+enum LoweringChildren<'a> {
+    Memo {
+        memo: &'a GraphMemo,
+        children: &'a [GroupId],
+    },
+    Direct,
+}
+
+impl LoweringChildren<'_> {
+    fn lower(
+        &self,
+        logical: &LogicalPlan,
+        index: usize,
+        catalog: &OptimizerCatalog,
+        optimizer_context: &OptimizerContext,
+        decisions: &mut Vec<String>,
+        stage_events: &mut Vec<StageTrace>,
+    ) -> PhysicalPlan {
+        match self {
+            Self::Memo { memo, children } => best_physical(
+                memo,
+                children[index],
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            ),
+            Self::Direct => lower_logical(
+                logical,
+                Self::Direct,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            ),
+        }
+    }
+}
+
+fn lower_logical(
     logical: &LogicalPlan,
+    children: LoweringChildren<'_>,
     catalog: &OptimizerCatalog,
     optimizer_context: &OptimizerContext,
     decisions: &mut Vec<String>,
@@ -954,15 +732,10 @@ fn logical_to_physical_direct(
     }
     match logical {
         LogicalPlan::NodeCartesianProduct { left, right } => {
-            let left = logical_to_physical_direct(
-                left,
-                catalog,
-                optimizer_context,
-                decisions,
-                stage_events,
-            );
-            let right = logical_to_physical_direct(
+            let left = children.lower(left, 0, catalog, optimizer_context, decisions, stage_events);
+            let right = children.lower(
                 right,
+                1,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -989,8 +762,9 @@ fn logical_to_physical_direct(
             property: property.clone(),
             column: column.clone(),
             optional: *optional,
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1023,8 +797,9 @@ fn logical_to_physical_direct(
                     max_hops: *max_hops,
                 },
             );
-            let input = logical_to_physical_direct(
+            let input = children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1071,8 +846,9 @@ fn logical_to_physical_direct(
             target_label: target_label.clone(),
             target_properties: target_properties.clone(),
             alias: alias.clone(),
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1126,8 +902,9 @@ fn logical_to_physical_direct(
                     rel_type: rel_type.clone(),
                     direction: *direction,
                     target_variable: target_variable.clone(),
-                    input: Box::new(logical_to_physical_direct(
+                    input: Box::new(children.lower(
                         input,
+                        0,
                         catalog,
                         optimizer_context,
                         decisions,
@@ -1135,8 +912,9 @@ fn logical_to_physical_direct(
                     )),
                 }
             } else {
-                let mut input = logical_to_physical_direct(
+                let mut input = children.lower(
                     input,
+                    0,
                     catalog,
                     optimizer_context,
                     decisions,
@@ -1151,8 +929,9 @@ fn logical_to_physical_direct(
         }
         LogicalPlan::Project { items, input } => PhysicalPlan::ProjectExec {
             items: items.clone(),
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1166,8 +945,9 @@ fn logical_to_physical_direct(
         } => PhysicalPlan::AggregateExec {
             group_keys: group_keys.clone(),
             items: items.clone(),
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1175,8 +955,9 @@ fn logical_to_physical_direct(
             )),
         },
         LogicalPlan::Distinct { input } => PhysicalPlan::DistinctExec {
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1185,8 +966,9 @@ fn logical_to_physical_direct(
         },
         LogicalPlan::Sort { items, input } => PhysicalPlan::SortExec {
             items: items.clone(),
-            input: Box::new(logical_to_physical_direct(
+            input: Box::new(children.lower(
                 input,
+                0,
                 catalog,
                 optimizer_context,
                 decisions,
@@ -1203,8 +985,9 @@ fn logical_to_physical_direct(
             } else if let (Some(limit), LogicalPlan::Sort { items, input }) =
                 (limit, input.as_ref())
             {
-                let input = logical_to_physical_direct(
+                let input = children.lower(
                     input,
+                    0,
                     catalog,
                     optimizer_context,
                     decisions,
@@ -1215,8 +998,9 @@ fn logical_to_physical_direct(
                 PhysicalPlan::LimitExec {
                     offset: *offset,
                     limit: *limit,
-                    input: Box::new(logical_to_physical_direct(
+                    input: Box::new(children.lower(
                         input,
+                        0,
                         catalog,
                         optimizer_context,
                         decisions,
@@ -1225,7 +1009,7 @@ fn logical_to_physical_direct(
                 }
             }
         }
-        _ => unreachable!("leaf logical plans are lowered before direct child planning"),
+        _ => unreachable!("leaf logical plans are lowered before child planning"),
     }
 }
 

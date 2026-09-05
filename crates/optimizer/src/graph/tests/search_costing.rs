@@ -11,7 +11,7 @@ use skein_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
 
 #[test]
-fn optimizer_budget_uses_direct_fallback_with_trace_warning() {
+fn optimizer_budget_changes_lowering_without_degrading_the_plan() {
     let logical = LogicalPlan::Limit {
         offset: 0,
         limit: Some(10),
@@ -50,12 +50,14 @@ fn optimizer_budget_uses_direct_fallback_with_trace_warning() {
     );
 
     let budgeted = CascadesOptimizer::new(OptimizerConfig { max_groups: 2 });
-    let (_, budgeted_trace) = budgeted.optimize_with_catalog(&logical, &catalog);
+    let (budgeted_plan, budgeted_trace) = budgeted.optimize_with_catalog(&logical, &catalog);
     assert_eq!(budgeted_trace.groups, 4);
-    assert!(budgeted_trace
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("optimizer memo budget exceeded")));
+    assert_eq!(budgeted_trace.search_mode, SearchMode::DirectFallback);
+    assert!(budgeted_trace.warnings.is_empty());
+    assert!(budgeted_trace.decisions.iter().any(|decision| {
+        decision.contains("required_groups=4 max_groups=2")
+            && decision.contains("same physical alternatives")
+    }));
     assert!(budgeted_trace
         .selected_plan
         .contains("NodeProjectionScanExec"));
@@ -66,8 +68,13 @@ fn optimizer_budget_uses_direct_fallback_with_trace_warning() {
         .any(|decision| decision.contains("choose IndexNodeSeek")));
 
     let full = CascadesOptimizer::new(OptimizerConfig { max_groups: 16 });
-    let (_, full_trace) = full.optimize_with_catalog(&logical, &catalog);
+    let (full_plan, full_trace) = full.optimize_with_catalog(&logical, &catalog);
     assert!(full_trace.warnings.is_empty());
+    assert_eq!(budgeted_plan, full_plan);
+    assert_eq!(
+        budgeted_trace.selected_plan_cost,
+        full_trace.selected_plan_cost
+    );
     assert_eq!(
         budgeted_trace.selected_plan_fingerprint,
         full_trace.selected_plan_fingerprint
