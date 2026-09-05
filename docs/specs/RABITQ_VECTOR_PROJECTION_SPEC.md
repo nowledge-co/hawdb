@@ -63,6 +63,32 @@ candidate scoring. An allowlist is converted to a compact row bitmap. A
 ineligible rows in a partially selected block MUST never enter the TopK heap.
 Post-filter-only over-fetch is not an authorization boundary.
 
+## Document Ordinal Boundary
+
+Resident and out-of-core search use the same dense vector ordinals: traverse
+documents in ascending UTF-8 document-ID order, omit documents without an
+embedding, and number the remaining vectors from zero. No document-ID hashing
+or collision rejection participates in this mapping. Candidate ties follow
+ordinal order, which is also document-ID order within that generation.
+
+An ordinal belongs to one projection generation, not to a stable document
+identity. String IDs and canonical embeddings remain persisted together in the
+search snapshot; their sorted vector-bearing subset defines the ordinal-to-ID
+table. Resident reopen reconstructs that table from the snapshot and validates
+the artifact's dimension, vector count, generation, embedding/source identity,
+and ordered `(ordinal, embedding)` source digest before using it. Out-of-core
+metadata persists the corresponding string ID and vector ordinal directly.
+No second resident mapping sidecar or v1 format change is required.
+
+Changing the ordered vector stream invalidates the derived artifact. Changing
+only nonvector documents, or renaming an ID while preserving that stream, can
+reuse it: candidates resolve through the current snapshot's IDs. A stale or
+earlier sparse-ID artifact is not applicable to the new mapping and can be
+rebuilt from canonical embeddings; a source mismatch is not corruption.
+The raw projection crate still accepts arbitrary strictly increasing numeric
+IDs and carries no string-ID table. Its IDs MUST NOT be treated as stable host
+document identities or compared across generations without the search mapping.
+
 ## Resource And Concurrency Contract
 
 Projection construction MUST be streaming and segment-bounded. At most one
@@ -72,8 +98,8 @@ budget, the builder MUST reduce the admitted row count or fail with a stable
 resource-budget error; it MUST NOT collect all transformed vectors.
 Input numeric IDs MUST be strictly increasing. This permits constant-memory
 duplicate detection during build and artifact validation instead of retaining
-an unbounded uniqueness set. The embedded facade sorts its stable hashed IDs
-and fails closed on hash collision before calling the projection crate.
+an unbounded uniqueness set. The embedded facade supplies the dense ordinals
+defined above, in increasing order, to the projection crate.
 
 Candidate scans MUST use a fixed-memory TopK, a bounded segment buffer, a
 bounded filter bitmap, and a transformed-query buffer. Unfiltered scans MUST
@@ -108,9 +134,10 @@ explicit cleanup cycle, and block production qualification while pending.
 
 Open MUST validate footer magic, format version, all size arithmetic,
 checksums, unique IDs, segment offsets, source digest, document identity,
-dimension, embedding identity, and source epoch. A corrupt or stale derived
-artifact MAY be quarantined and rebuilt from canonical raw embeddings. It MUST
-NOT make canonical storage unreadable and MUST NOT be repaired in place.
+dimension, embedding identity, and source epoch. A corrupt derived artifact MAY
+be quarantined and rebuilt from canonical raw embeddings. A valid but stale or
+inapplicable artifact MUST be skipped without classifying it as corrupt. Neither
+case may make canonical storage unreadable or repair an artifact in place.
 
 ## Observability And Production Admission
 
