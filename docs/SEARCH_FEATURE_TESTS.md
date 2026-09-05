@@ -78,3 +78,15 @@ bazel test //crates/search:all \
 
 Keep the fuzz targets local-only. Adding search feature tests does not authorize
 adding fuzz to default or dedicated CI jobs.
+
+## CI Ownership
+
+The existing Weekly Platform CI runs all eight Cargo configurations in its
+four-platform job: Linux x86_64 and arm64, macOS arm64, and Windows x86_64. Each
+configuration is a separate Cargo invocation, and any failure stops the step.
+The workflow retains its schedule-only trigger and adds no fuzz invocation.
+
+Prow's current explicit target lists do not include the search feature matrix.
+A green presubmit result is not evidence that these configurations executed
+remotely. Before merge, retain the local matrix evidence separately; the weekly
+workflow validates the merged default-branch revision.

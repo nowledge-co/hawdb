@@ -76,6 +76,19 @@ jobs:
           cargo check -p skein
           cargo check -p skein --no-default-features
 
+      - name: Test search capability feature combinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p skein-search
+          cargo test -p skein-search --no-default-features
+          cargo test -p skein-search --no-default-features --features full-text-search
+          cargo test -p skein-search --no-default-features --features vector-search
+          cargo test -p skein-search --no-default-features --features background-maintenance
+          cargo test -p skein-search --no-default-features --features full-text-search,vector-search
+          cargo test -p skein-search --no-default-features --features full-text-search,background-maintenance
+          cargo test -p skein-search --no-default-features --features vector-search,background-maintenance
+
       - name: Test RaBitQ projection
         run: cargo test -p skein-vector-projection
 
