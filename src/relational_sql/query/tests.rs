@@ -6,6 +6,8 @@ use crate::Value;
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod connected_enumeration;
+
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {
     let limits = RelationalQueryLimits {
