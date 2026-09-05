@@ -1,9 +1,12 @@
 use super::super::OUT_OF_CORE_MANIFEST_FILE;
 use super::*;
+#[cfg(feature = "vector-search")]
+use crate::{CompressedVectorSearchMode, SearchMode, SearchQueryOptions};
 use crate::{
-    CompressedVectorSearchMode, SearchMode, SearchProjectionDelta, SearchProjectionKind,
-    SearchProjectionRow, SearchQueryOptions, SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
+    SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
 };
+#[cfg(feature = "vector-search")]
 use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,8 +33,14 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
     let report = writer.finish().unwrap();
     assert_eq!(report.document_count, 300);
     assert_eq!(report.vector_document_count, 300);
-    assert!(report.rabitq_artifact_bytes > 0);
-    assert!(report.rabitq_source_digest.is_some());
+    assert_eq!(
+        report.rabitq_artifact_bytes > 0,
+        cfg!(feature = "vector-search")
+    );
+    assert_eq!(
+        report.rabitq_source_digest.is_some(),
+        cfg!(feature = "vector-search")
+    );
     assert_eq!(report.resident_document_count, 0);
     assert!(report.active_manifest_published_last);
     assert!(!report.cleanup_retry_required);
@@ -58,111 +67,125 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
             .bit_width,
         1
     );
-    let output = reader
-        .search_with_options(
-            "graph storage",
-            Some(&[1.0, 0.5]),
-            SearchMode::Hybrid,
-            SearchQueryOptions {
-                limit: 5,
-                offset: 0,
-                rank_window: Some(16),
-                fusion_weights: Default::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-        )
-        .unwrap();
-    assert_eq!(output.result.hits.len(), 5);
-    assert!(output.metrics.hydrated_documents <= 5);
-    let compressed = reader
-        .search_with_options_compressed_vector_projection_mode(
-            "",
-            Some(&[1.0, 0.5]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 5,
-                offset: 0,
-                rank_window: Some(16),
-                fusion_weights: Default::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Required,
-        )
-        .unwrap();
+    let ids = (0..300)
+        .map(|number| document(number).id)
+        .collect::<Vec<_>>();
     assert_eq!(
-        compressed.result.retrievers[0].backend,
-        "skein_rabitq_out_of_core_candidate_projection"
+        reader.hydrate_documents(&ids).unwrap().documents,
+        (0..300).map(document).collect::<Vec<_>>()
     );
-    assert!(compressed.metrics.rabitq_payload_bytes_read > 0);
-    assert!(compressed.result.retrievers[0].reranked_candidate_count <= 16);
-    assert_eq!(
-        compressed.result.retrievers[0].final_score_source,
-        "raw_vector"
-    );
-    let filtered = reader
-        .search_with_options_compressed_vector_projection_mode(
-            "",
-            Some(&[1.0, 0.5]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 5,
-                offset: 0,
-                rank_window: Some(16),
-                fusion_weights: Default::default(),
-                metadata_filters: BTreeMap::from([("group".to_string(), "even".to_string())]),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Required,
-        )
-        .unwrap();
-    assert_eq!(filtered.result.filtered_document_count, 150);
-    assert!(filtered.result.hits.iter().all(|hit| {
-        hit.id
-            .strip_prefix("memory:")
-            .and_then(|value| value.parse::<usize>().ok())
-            .is_some_and(|number| number % 2 == 0)
-    }));
-    let cancellation = RuntimeCancellationToken::new();
-    cancellation.cancel();
-    let task_context = RuntimeTaskContext::without_deadline(cancellation);
-    let preferred_error = reader
-        .search_with_options_compressed_vector_projection_context(
-            "",
-            Some(&[1.0, 0.5]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 5,
-                offset: 0,
-                rank_window: Some(16),
-                fusion_weights: Default::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Preferred,
-            &task_context,
-        )
-        .unwrap_err();
-    assert!(preferred_error.to_string().contains("cancelled"));
-    let scalar_error = reader
-        .search_with_options_compressed_vector_projection_context(
-            "",
-            Some(&[1.0, 0.5]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 5,
-                offset: 0,
-                rank_window: Some(16),
-                fusion_weights: Default::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Disabled,
-            &task_context,
-        )
-        .unwrap_err();
-    assert!(scalar_error.to_string().contains("cancelled"));
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    {
+        let output = reader
+            .search_with_options(
+                "graph storage",
+                Some(&[1.0, 0.5]),
+                SearchMode::Hybrid,
+                SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: Some(16),
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(output.result.hits.len(), 5);
+        assert!(output.metrics.hydrated_documents <= 5);
+    }
+    #[cfg(feature = "vector-search")]
+    {
+        let compressed = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: Some(16),
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
+        assert_eq!(
+            compressed.result.retrievers[0].backend,
+            "skein_rabitq_out_of_core_candidate_projection"
+        );
+        assert!(compressed.metrics.rabitq_payload_bytes_read > 0);
+        assert!(compressed.result.retrievers[0].reranked_candidate_count <= 16);
+        assert_eq!(
+            compressed.result.retrievers[0].final_score_source,
+            "raw_vector"
+        );
+        let filtered = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: Some(16),
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::from([("group".to_string(), "even".to_string())]),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
+        assert_eq!(filtered.result.filtered_document_count, 150);
+        assert!(filtered.result.hits.iter().all(|hit| {
+            hit.id
+                .strip_prefix("memory:")
+                .and_then(|value| value.parse::<usize>().ok())
+                .is_some_and(|number| number % 2 == 0)
+        }));
+        let cancellation = RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let task_context = RuntimeTaskContext::without_deadline(cancellation);
+        let preferred_error = reader
+            .search_with_options_compressed_vector_projection_context(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: Some(16),
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Preferred,
+                &task_context,
+            )
+            .unwrap_err();
+        assert!(preferred_error.to_string().contains("cancelled"));
+        let scalar_error = reader
+            .search_with_options_compressed_vector_projection_context(
+                "",
+                Some(&[1.0, 0.5]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: Some(16),
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Disabled,
+                &task_context,
+            )
+            .unwrap_err();
+        assert!(scalar_error.to_string().contains("cancelled"));
+    }
+    drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -336,6 +359,7 @@ fn bounded_delta_rejects_stale_base_generation_without_lost_update() {
 }
 
 #[test]
+#[cfg(feature = "vector-search")]
 fn rabitq_open_rejects_corruption_and_insufficient_serving_memory() {
     let root = test_dir("rabitq_open_admission");
     let mut writer = SearchOutOfCoreGenerationWriter::create(

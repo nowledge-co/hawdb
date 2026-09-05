@@ -7551,8 +7551,11 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod feature_contract;
+    #[cfg(feature = "full-text-search")]
     use skein_storage::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
     use std::cell::Cell;
+    #[cfg(feature = "full-text-search")]
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[derive(Default)]
@@ -7589,6 +7592,7 @@ mod tests {
             self.nodes.get(id.0 as usize)
         }
 
+        #[cfg(feature = "full-text-search")]
         fn commit_epoch(&self) -> u64 {
             self.commit_epoch
         }
@@ -7657,6 +7661,7 @@ mod tests {
         assert!((observed - expected).abs() < 1e-6);
     }
 
+    #[cfg(feature = "vector-search")]
     fn force_quantized_policy() -> AdaptiveVectorBackendPolicy {
         AdaptiveVectorBackendPolicy {
             flat_scan_max_documents: 0,
@@ -7699,6 +7704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn hybrid_search_combines_vector_and_text() {
         let mut index = SearchIndex::in_memory();
         index
@@ -7720,6 +7726,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn hybrid_search_uses_rrf_child_ranks() {
         let mut index = SearchIndex::in_memory();
         index
@@ -7758,6 +7765,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn search_report_exposes_child_retriever_summary() {
         let mut index = SearchIndex::in_memory();
         index
@@ -7836,6 +7844,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn hybrid_search_rank_window_limits_rrf_candidates() {
         let mut index = SearchIndex::in_memory();
         index
@@ -7894,6 +7903,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn rank_window_uses_prefiltered_candidate_set() {
         let mut index = SearchIndex::in_memory();
         index
@@ -7964,6 +7974,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn hybrid_search_applies_child_fusion_weights() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8032,6 +8043,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_with_options_applies_metadata_filters_before_ranking() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8142,6 +8154,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_metadata_filters_match_casefolded_values() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8184,6 +8197,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_with_options_applies_metadata_in_filters_before_ranking() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8277,6 +8291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_with_options_applies_metadata_not_in_filters_before_ranking() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8344,6 +8359,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_with_options_applies_metadata_exists_and_missing_filters_before_ranking() {
         let mut index = SearchIndex::in_memory();
         for (id, source_id) in [
@@ -8440,6 +8456,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_with_options_applies_numeric_range_filters_before_ranking() {
         let mut index = SearchIndex::in_memory();
         for (id, created_at) in [
@@ -8537,6 +8554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn malformed_numeric_range_filter_fails_closed() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8585,6 +8603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn malformed_metadata_list_filter_fails_closed() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8667,6 +8686,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_policy_epoch_when_supplied() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8714,6 +8734,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_kind_metadata_filter_accepts_canonical_labels() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8755,6 +8776,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_kind_metadata_filter_accepts_source_chunk_variants() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8786,6 +8808,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_metadata_filters_normalize_default_space() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8845,6 +8868,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_metadata_filter_empty_scope() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8886,6 +8910,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn vector_dimension_mismatch_degrades_to_text() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8929,6 +8954,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn search_report_exposes_global_fallback_reasons_without_hits() {
         let mut index = SearchIndex::in_memory();
         index
@@ -8998,6 +9024,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn search_report_exposes_missing_query_embedding_reason() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9034,6 +9061,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn text_search_uses_bm25_term_frequency_and_length_normalization() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9063,6 +9091,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn text_search_weights_title_terms_twice() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9092,6 +9121,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_keeps_nowledge_style_identifiers_case_insensitive() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9126,6 +9156,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_matches_camel_snake_kebab_and_path_identifiers() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9150,6 +9181,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_matches_cjk_subterms_with_ngrams() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9174,6 +9206,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_emits_dictionary_backed_chinese_search_terms() {
         let mut index = SearchIndex::in_memory();
         let term = "\u{5206}\u{5e03}\u{5f0f}\u{7cfb}\u{7edf}";
@@ -9197,6 +9230,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_splits_acronym_titlecase_boundaries() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9231,6 +9265,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_normalizes_common_english_suffixes() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9257,6 +9292,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_knowledge_retrieval_aliases() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9284,6 +9320,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_nowledge_memory_lifecycle_aliases() {
         let mut index = SearchIndex::in_memory()
             .with_analyzer_lexicon(SearchAnalyzerLexicon::nowledge_memory());
@@ -9313,6 +9350,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_keeps_nowledge_application_aliases_out_of_default_lexicon() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9331,6 +9369,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_nowledge_schema_relationship_aliases() {
         let mut index = SearchIndex::in_memory()
             .with_analyzer_lexicon(SearchAnalyzerLexicon::nowledge_memory());
@@ -9362,6 +9401,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_nowledge_memory_relation_product_aliases() {
         let mut index = SearchIndex::in_memory()
             .with_analyzer_lexicon(SearchAnalyzerLexicon::nowledge_memory());
@@ -9393,6 +9433,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_normalizes_application_alias_rules() {
         let mut index = SearchIndex::in_memory().with_analyzer_lexicon(
             SearchAnalyzerLexicon::default()
@@ -9431,6 +9472,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_applies_application_stopword_rules() {
         let mut index = SearchIndex::in_memory().with_analyzer_lexicon(
             SearchAnalyzerLexicon::default().with_stopwords(["memory lifecycle", "thread"]),
@@ -9472,6 +9514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_database_system_aliases() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9509,6 +9552,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_graph_stream_and_projection_aliases() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9540,6 +9584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_migration_projection_aliases() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9572,6 +9617,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_expands_retriever_algorithm_aliases() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9608,6 +9654,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn text_search_indexes_selected_projection_metadata_identifiers() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9646,6 +9693,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn tokenizer_filters_stopwords_from_text_scoring_and_matched_terms() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9684,6 +9732,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_hits_expose_projection_provenance_and_matched_terms() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9723,6 +9772,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn search_hits_expose_projection_freshness() {
         let path = unique_test_dir("search_projection_freshness");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -9783,6 +9833,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_limit_truncation() {
         let mut index = SearchIndex::in_memory();
         for id in ["a", "b", "c"] {
@@ -9813,6 +9864,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_empty_projection_reason() {
         let index = SearchIndex::in_memory();
 
@@ -9831,6 +9883,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_metadata_filter_empty_reason() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9869,6 +9922,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_no_matching_rows_empty_reason() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9895,6 +9949,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_empty_text_query_reason() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9941,6 +9996,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn search_report_exposes_limit_zero_empty_reason() {
         let mut index = SearchIndex::in_memory();
         index
@@ -9969,6 +10025,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn projection_snapshot_round_trips() {
         let path = unique_test_dir("search_snapshot");
         {
@@ -9993,6 +10050,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn graph_rebuild_records_source_commit_epoch() {
         let path = unique_test_dir("search_source_graph_epoch");
         let mut catalog = Catalog::default();
@@ -10199,6 +10257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn compressed_vector_projection_disabled_uses_scalar_even_when_artifact_exists() {
         let path = unique_test_dir("search_rabitq_disabled_uses_scalar");
         {
@@ -10242,6 +10301,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn compressed_vector_projection_required_uses_rabitq_projection() {
         let mut index = SearchIndex::in_memory();
         index
@@ -10286,6 +10346,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn adaptive_vector_backend_uses_filtered_candidate_count_and_recall_probe() {
         let mut index = SearchIndex::in_memory();
         for id in 0..8 {
@@ -10351,6 +10412,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn sampled_vector_recall_validates_filtered_persisted_projection() {
         let path = unique_test_dir("sampled_vector_recall");
         {
@@ -10465,6 +10527,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn sampled_vector_recall_validates_rabitq_candidate_projection() {
         let mut index = SearchIndex::in_memory();
         index
@@ -10619,6 +10682,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn projection_checkpoint_publishes_segment_descriptor() {
         let path = unique_test_dir("search_segment_descriptor_publish");
         {
@@ -10704,6 +10768,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_prunes_numeric_range_filters() {
         let path = unique_test_dir("search_segment_descriptor_numeric_range");
         {
@@ -10840,6 +10905,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_ranges_execute_bounded_physical_reads() {
         let path = unique_test_dir("search_segment_physical_ranges");
         {
@@ -10980,6 +11046,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_ranges_prune_label_in_filters_before_payload_reads() {
         let path = unique_test_dir("search_segment_label_physical_ranges");
         {
@@ -11069,6 +11136,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn fallible_search_rejects_pruned_reads_without_physical_ranges() {
         let path = unique_test_dir("search_segment_physical_ranges_missing");
         {
@@ -11126,6 +11194,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_prunes_timestamp_range_filters() {
         let path = unique_test_dir("search_segment_descriptor_timestamp_range");
         {
@@ -11244,6 +11313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_preserves_default_space_filter() {
         let path = unique_test_dir("search_segment_descriptor_default_space");
         {
@@ -11307,6 +11377,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_tracks_missing_nowledge_scan_filter_fields() {
         let path = unique_test_dir("search_segment_descriptor_missing_nowledge_fields");
         {
@@ -11504,6 +11575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_prunes_document_id_filters() {
         let path = unique_test_dir("search_segment_descriptor_document_id");
         {
@@ -11604,6 +11676,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_descriptor_prunes_enum_not_in_filters() {
         let path = unique_test_dir("search_segment_descriptor_enum_not_in");
         {
@@ -11697,6 +11770,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn corrupt_segment_descriptor_rebuilds_without_blocking_snapshot_load() {
         let path = unique_test_dir("search_segment_descriptor_rebuild");
         {
@@ -11750,6 +11824,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn embedding_manifest_round_trips_through_snapshot() {
         let path = unique_test_dir("embedding_manifest_snapshot");
         {
@@ -11831,6 +11906,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn nowledge_search_projection_probe_reports_ready_shape() {
         let path = unique_test_dir("nowledge_search_projection_probe_ready");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -11988,11 +12064,18 @@ mod tests {
             probe["compressed_vector_projection"]["engine"],
             "skein_rabitq_scan"
         );
-        assert_eq!(probe["compressed_vector_projection"]["compiled"], true);
+        assert_eq!(
+            probe["compressed_vector_projection"]["compiled"],
+            cfg!(feature = "vector-search")
+        );
         assert_eq!(probe["compressed_vector_projection"]["ready"], false);
         assert_eq!(
             probe["compressed_vector_projection"]["blocker_codes"],
-            serde_json::json!(["rabitq_projection_unavailable"])
+            serde_json::json!([if cfg!(feature = "vector-search") {
+                "rabitq_projection_unavailable"
+            } else {
+                "vector_search_feature_disabled"
+            }])
         );
     }
 
@@ -12174,6 +12257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn projection_rows_encode_nowledge_shapes() {
         let mut index = SearchIndex::in_memory();
         index
@@ -12208,6 +12292,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn graph_rebuild_falls_back_for_empty_node_ids() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -12248,6 +12333,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn graph_rebuild_source_id_fallback_skips_empty_values() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -12350,6 +12436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn full_rebuild_projects_graph_nodes() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -12616,6 +12703,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn background_search_projection_rebuild_uses_qos_admission() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -12656,6 +12744,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_search_projection_rebuild_releases_budget_on_rebuild_error() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -12693,6 +12782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn projection_delta_incrementally_updates_search_rows() {
         let mut index = SearchIndex::in_memory();
         index
@@ -12931,6 +13021,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn background_projection_delta_uses_qos_admission() {
         let mut index = SearchIndex::in_memory();
         index
@@ -12974,6 +13065,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn background_projection_delta_applies_when_qos_admits() {
         let mut index = SearchIndex::in_memory();
         index
@@ -13007,6 +13099,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_projection_delta_tracks_running_budget() {
         let mut index = SearchIndex::in_memory();
         index
@@ -13045,6 +13138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_projection_delta_defers_when_scheduler_is_full() {
         let mut index = SearchIndex::in_memory();
         index
@@ -13094,6 +13188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_projection_delta_releases_budget_on_delta_error() {
         let mut index = SearchIndex::in_memory();
         index
@@ -13189,6 +13284,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn metadata_repair_corrects_segmented_lexical_statistics_from_original_documents() {
         let path = unique_test_dir("metadata_repair_lexical_statistics");
         let mut catalog = Catalog::default();
@@ -13280,6 +13376,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn background_metadata_repair_uses_qos_admission() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -13336,6 +13433,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_metadata_repair_tracks_running_budget() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -13394,6 +13492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_metadata_repair_defers_when_scheduler_is_full() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -13457,6 +13556,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "background-maintenance")]
     fn scheduled_background_metadata_repair_releases_budget_on_repair_error() {
         let mut catalog = Catalog::default();
         let mut store = TestProjectionSource::in_memory();
@@ -13652,6 +13752,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn segmented_lexical_projection_matches_reference_across_delta_and_reopen() {
         use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -13807,6 +13908,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn segmented_lexical_projection_reopens_with_chinese_search_terms() {
         let path = unique_test_dir("segmented_lexical_projection_chinese");
         let term = "\u{5206}\u{5e03}\u{5f0f}\u{7cfb}\u{7edf}";
@@ -13855,6 +13957,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn segmented_lexical_topk_preserves_total_hits_and_page() {
         let path = unique_test_dir("segmented_lexical_topk");
         let mut reference = SearchIndex::in_memory();
@@ -13917,6 +14020,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn segmented_lexical_hybrid_rank_window_matches_reference() {
         let path = unique_test_dir("segmented_lexical_hybrid");
         let mut reference = SearchIndex::in_memory();
@@ -13980,7 +14084,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    #[cfg(feature = "acl")]
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
     #[test]
     fn segmented_lexical_acl_excludes_unauthorized_documents() {
         let path = unique_test_dir("segmented_lexical_acl");

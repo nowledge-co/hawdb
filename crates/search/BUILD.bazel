@@ -44,3 +44,32 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+# Keep optional-capability contracts executable without enabling every feature.
+[
+    rust_test(
+        name = "skein_search_%s_tests" % profile,
+        crate_name = "skein_search",
+        crate_root = "src/lib.rs",
+        crate_features = features,
+        srcs = glob(["src/**/*.rs"]),
+        edition = "2024",
+        aliases = aliases(
+            normal = True,
+            normal_dev = True,
+            proc_macro = True,
+            proc_macro_dev = True,
+        ),
+        deps = _SEARCH_DEPS + all_crate_deps(normal_dev = True),
+        proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    )
+    for profile, features in {
+        "minimal": [],
+        "text_only": ["full-text-search"],
+        "vector_only": ["vector-search"],
+        "background_only": ["background-maintenance"],
+        "text_vector": ["full-text-search", "vector-search"],
+        "text_background": ["full-text-search", "background-maintenance"],
+        "vector_background": ["vector-search", "background-maintenance"],
+    }.items()
+]

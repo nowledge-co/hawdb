@@ -3130,11 +3130,15 @@ mod tests {
         assert_eq!(hydrated.metrics.hydrated_documents, 2);
 
         let query_embedding = [1.0, 0.5];
-        for (mode, rank_window) in [
+        let modes: &[(SearchMode, Option<usize>)] = &[
+            #[cfg(feature = "full-text-search")]
             (SearchMode::Text, None),
+            #[cfg(feature = "vector-search")]
             (SearchMode::Vector, None),
+            #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
             (SearchMode::Hybrid, Some(6)),
-        ] {
+        ];
+        for &(mode, rank_window) in modes {
             let options = options(5, rank_window);
             let expected = resident
                 .try_search_with_options(
@@ -3154,6 +3158,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn out_of_core_text_search_uses_chinese_word_segmentation() {
         let path = test_dir("chinese-tokenization");
         let term = "\u{5206}\u{5e03}\u{5f0f}\u{7cfb}\u{7edf}";
@@ -3183,6 +3188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn out_of_core_candidate_spill_applies_metadata_before_ranking() {
         let path = test_dir("metadata");
         let spill = path.join("spill");
@@ -3216,6 +3222,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn out_of_core_filter_and_vector_scoring_do_not_hydrate_full_documents() {
         let path = test_dir("sidecar-read-paths");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3250,6 +3257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn out_of_core_vector_execution_options_enforce_memory_and_cancellation() {
         let path = test_dir("vector-execution-options");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3288,7 +3296,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    #[cfg(feature = "acl")]
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
     #[test]
     fn out_of_core_acl_excludes_hidden_documents_from_bm25_candidates() {
         let path = test_dir("acl");
@@ -3332,6 +3340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn out_of_core_hydration_and_candidate_budgets_fail_closed() {
         let path = test_dir("budgets");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3396,19 +3405,29 @@ mod tests {
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(b"X").unwrap();
         file.sync_all().unwrap();
-        let unhydrated = reader
-            .search_with_options("graph", None, SearchMode::Text, options(0, None))
-            .unwrap();
-        assert_eq!(unhydrated.result.total_hits, 1);
-        assert_eq!(unhydrated.metrics.hydration_segment_bytes_read, 0);
+        #[cfg(feature = "full-text-search")]
+        {
+            let unhydrated = reader
+                .search_with_options("graph", None, SearchMode::Text, options(0, None))
+                .unwrap();
+            assert_eq!(unhydrated.result.total_hits, 1);
+            assert_eq!(unhydrated.metrics.hydration_segment_bytes_read, 0);
+            let error = reader
+                .search_with_options("graph", None, SearchMode::Text, options(1, None))
+                .unwrap_err();
+            assert!(error.to_string().contains("payload checksum mismatch"));
+        }
         let error = reader
-            .search_with_options("graph", None, SearchMode::Text, options(1, None))
+            .hydrate_documents(&[document(0, "team").id])
             .unwrap_err();
         assert!(error.to_string().contains("payload checksum mismatch"));
+        drop(file);
+        drop(reader);
         fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn out_of_core_sidecar_corruption_fails_closed_in_the_consuming_stage() {
         let metadata_path = test_dir("metadata-corruption");
         let mut metadata_index = SearchIndex::open(&metadata_path).unwrap();
@@ -3454,14 +3473,38 @@ mod tests {
         index.upsert(document(1, "team")).unwrap();
         index.checkpoint().unwrap();
         let new_reader = SearchOutOfCoreReader::open(&path).unwrap();
-        let old = old_reader
-            .search_with_options("graph", None, SearchMode::Text, options(10, None))
-            .unwrap();
-        let new = new_reader
-            .search_with_options("graph", None, SearchMode::Text, options(10, None))
-            .unwrap();
-        assert_eq!(old.result.total_hits, 1);
-        assert_eq!(new.result.total_hits, 2);
+        assert_eq!(old_reader.document_count(), 1);
+        assert_eq!(new_reader.document_count(), 2);
+        assert_eq!(
+            old_reader
+                .hydrate_documents(&[document(0, "team").id])
+                .unwrap()
+                .documents,
+            vec![document(0, "team")]
+        );
+        assert!(old_reader
+            .hydrate_documents(&[document(1, "team").id])
+            .is_err());
+        assert_eq!(
+            new_reader
+                .hydrate_documents(&[document(1, "team").id])
+                .unwrap()
+                .documents,
+            vec![document(1, "team")]
+        );
+        #[cfg(feature = "full-text-search")]
+        {
+            let old = old_reader
+                .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                .unwrap();
+            let new = new_reader
+                .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                .unwrap();
+            assert_eq!(old.result.total_hits, 1);
+            assert_eq!(new.result.total_hits, 2);
+        }
+        drop(old_reader);
+        drop(new_reader);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -3478,15 +3521,39 @@ mod tests {
         index.upsert(document(2, "team")).unwrap();
         index.checkpoint().unwrap();
 
-        let oldest = oldest_reader
-            .search_with_options("graph", None, SearchMode::Text, options(10, None))
-            .unwrap();
-        let newest = SearchOutOfCoreReader::open(&path)
-            .unwrap()
-            .search_with_options("graph", None, SearchMode::Text, options(10, None))
-            .unwrap();
-        assert_eq!(oldest.result.total_hits, 1);
-        assert_eq!(newest.result.total_hits, 3);
+        assert_eq!(oldest_reader.document_count(), 1);
+        assert_eq!(
+            oldest_reader
+                .hydrate_documents(&[document(0, "team").id])
+                .unwrap()
+                .documents,
+            vec![document(0, "team")]
+        );
+        assert!(oldest_reader
+            .hydrate_documents(&[document(2, "team").id])
+            .is_err());
+        let newest_reader = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(newest_reader.document_count(), 3);
+        assert_eq!(
+            newest_reader
+                .hydrate_documents(&[document(2, "team").id])
+                .unwrap()
+                .documents,
+            vec![document(2, "team")]
+        );
+        drop(newest_reader);
+        #[cfg(feature = "full-text-search")]
+        {
+            let oldest = oldest_reader
+                .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                .unwrap();
+            let newest = SearchOutOfCoreReader::open(&path)
+                .unwrap()
+                .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                .unwrap();
+            assert_eq!(oldest.result.total_hits, 1);
+            assert_eq!(newest.result.total_hits, 3);
+        }
         drop(oldest_reader);
         let cleanup = index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         assert!(!cleanup.retry_required);
@@ -3494,6 +3561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn out_of_core_large_payload_only_retains_one_segment_and_final_page() {
         let path = test_dir("large-payload");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3516,6 +3584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
     fn nowledge_out_of_core_facade_uses_the_bounded_reader() {
         let path = test_dir("nowledge-facade");
         let mut index = SearchIndex::open(&path).unwrap();
@@ -3558,6 +3627,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn corrupt_first_byte(path: &Path) {
         let mut file = OpenOptions::new()
             .read(true)
