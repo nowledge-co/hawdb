@@ -27,8 +27,11 @@ use skein_plan::{
     ShortestPathProjectionExpression,
 };
 use skein_storage::{AdjacencyDirection, NodeId, NodeRecord, PropertyFilter, RelRecord};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+
+mod shortest_path;
+use shortest_path::{search_shortest_paths, ShortestPathSearchResult};
 
 pub struct ShortestPathExecInput<'a> {
     pub source_label: &'a str,
@@ -122,13 +125,19 @@ pub fn execute_shortest_path(
         task_context,
         observer,
     )?;
-    let mut output = Vec::with_capacity(paths.len());
     let mut output_tracker =
         OperatorMemoryTracker::with_account(memory.blocking_operator_bytes, blocking_account);
+    output_tracker.try_charge(paths.len().saturating_mul(std::mem::size_of::<Binding>()))?;
+    let mut output = Vec::with_capacity(paths.len());
+    let mut peak_bytes = search_tracker.peak_bytes.max(
+        search_tracker
+            .used_bytes
+            .saturating_add(output_tracker.used_bytes),
+    );
     for path in paths {
         runtime_checkpoint(task_context)?;
         let binding = shortest_path_binding(store, &path, input.returns)?;
-        let bytes = binding_memory_bytes(&binding);
+        let bytes = binding_memory_bytes(&binding).saturating_sub(std::mem::size_of::<Binding>());
         ensure_operator_item_fits("ShortestPathExec result", bytes, &output_tracker)?;
         if output_tracker.would_exceed(bytes) {
             return Err(SkeinError::Execution(format!(
@@ -137,13 +146,24 @@ pub fn execute_shortest_path(
             )));
         }
         output_tracker.try_charge(bytes)?;
-        search_tracker.release(path_memory_bytes(&path));
+        peak_bytes = peak_bytes.max(
+            search_tracker
+                .used_bytes
+                .saturating_add(output_tracker.used_bytes),
+        );
+        let path_bytes = path
+            .capacity()
+            .saturating_mul(std::mem::size_of::<NodeId>());
+        drop(path);
+        search_tracker.release(path_bytes);
         output.push(binding);
     }
+    // The outer path vector stays allocated until its owning iterator is dropped.
+    search_tracker.reset();
     observer.record_blocking_memory_report(in_memory_report(
         "ShortestPathExec",
         &output_tracker,
-        search_tracker.peak_bytes.max(output_tracker.peak_bytes),
+        peak_bytes,
         visited_paths,
         memory,
     ));
@@ -227,119 +247,6 @@ pub fn all_shortest_paths(
         result.tracker.peak_bytes,
         result.visited_paths,
     ))
-}
-
-struct ShortestPathSearchResult {
-    paths: Vec<Vec<NodeId>>,
-    tracker: OperatorMemoryTracker,
-    visited_paths: usize,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn search_shortest_paths(
-    store: &dyn GraphExecutionRead,
-    search: ShortestPathSearch<'_>,
-    memory_budget: NonZeroUsize,
-    result_limit: usize,
-    memory_account: QueryMemoryAccount,
-    task_context: Option<&RuntimeTaskContext>,
-    observer: &dyn ExecutionObserver,
-) -> Result<ShortestPathSearchResult> {
-    let initial_path = vec![search.source];
-    let mut tracker = OperatorMemoryTracker::with_account(memory_budget, memory_account.clone());
-    tracker.try_charge(path_memory_bytes(&initial_path))?;
-    let mut queue = VecDeque::from([initial_path]);
-    let mut results = Vec::new();
-    let mut found_depth = None;
-    let mut visited_paths = 0usize;
-    while let Some(path) = queue.pop_front() {
-        runtime_checkpoint(task_context)?;
-        visited_paths = visited_paths.saturating_add(1);
-        let path_bytes = path_memory_bytes(&path);
-        let depth = path.len() - 1;
-        if found_depth.is_some_and(|found| depth >= found) || depth == search.max_hops {
-            tracker.release(path_bytes);
-            continue;
-        }
-        let current = *path.last().expect("path is never empty");
-        let adjacency_memory = AdjacencyReadMemory {
-            budget_bytes: memory_budget.get(),
-            account: Some(&memory_account),
-        };
-        visit_one_hop_relationships_with_budget(
-            store,
-            OneHopRelationshipSpec {
-                source: current,
-                rel_type_id: search.rel_type_id,
-                target_label_ids: None,
-                rel_properties: &BTreeMap::new(),
-                relationship_scan_filter: None,
-                direction: search.direction,
-            },
-            adjacency_memory,
-            observer,
-            &mut |_, next| {
-                runtime_checkpoint(task_context)?;
-                if search
-                    .path_node_visibility_filter
-                    .map(|filter| !node_matches_property_filter(&next, filter))
-                    .unwrap_or(false)
-                {
-                    return Ok(ScanControl::Continue);
-                }
-                if path.contains(&next.id) {
-                    return Ok(ScanControl::Continue);
-                }
-                let next_depth = depth + 1;
-                let mut next_path = path.clone();
-                next_path.push(next.id);
-                let next_path_bytes = path_memory_bytes(&next_path);
-                ensure_operator_item_fits("ShortestPathExec", next_path_bytes, &tracker)?;
-                if tracker.would_exceed(next_path_bytes) {
-                    return Err(SkeinError::Execution(format!(
-                        "ShortestPathExec frontier exceeds blocking_operator_bytes {}",
-                        tracker.budget_bytes
-                    )));
-                }
-                tracker.try_charge(next_path_bytes)?;
-                if next.id == search.target && next_depth >= search.min_hops {
-                    found_depth = Some(next_depth);
-                    results.push(next_path);
-                    if results.len() >= result_limit {
-                        return Ok(ScanControl::Stop);
-                    }
-                } else if found_depth.is_none() && next_depth < search.max_hops {
-                    queue.push_back(next_path);
-                } else {
-                    tracker.release(next_path_bytes);
-                }
-                Ok(ScanControl::Continue)
-            },
-        )?;
-        tracker.release(path_bytes);
-        if results.len() >= result_limit {
-            break;
-        }
-    }
-    for path in queue {
-        tracker.release(path_memory_bytes(&path));
-    }
-    debug_assert_eq!(
-        tracker.used_bytes,
-        results.iter().fold(0usize, |bytes, path| {
-            bytes.saturating_add(path_memory_bytes(path))
-        })
-    );
-    Ok(ShortestPathSearchResult {
-        paths: results,
-        tracker,
-        visited_paths,
-    })
-}
-
-fn path_memory_bytes(path: &[NodeId]) -> usize {
-    std::mem::size_of::<Vec<NodeId>>()
-        .saturating_add(path.len().saturating_mul(std::mem::size_of::<NodeId>()))
 }
 
 fn shortest_path_binding(

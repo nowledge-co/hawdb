@@ -1,6 +1,9 @@
 //! Executor admission, streaming, spill, and graph operator regressions.
 
 use super::*;
+
+#[path = "tests/shortest_path.rs"]
+mod shortest_path;
 use crate::planner::{
     AggregateFunction, AggregateTarget, ProjectionExpression, ShortestPathProjection,
     ShortestPathProjectionExpression, SortDirection, SortKey,
