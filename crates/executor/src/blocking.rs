@@ -21,7 +21,7 @@ use skein_plan::{
     SortItem,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{hash_map::RandomState, BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 pub trait BindingBatchSource {
@@ -343,7 +343,12 @@ fn merge_cartesian_bindings(left: &Binding, right: &Binding) -> Binding {
 
 mod aggregate;
 mod distinct;
+mod hash_key;
+#[cfg(test)]
+mod hash_oracle;
 mod sort;
+
+use hash_key::{hash_entry_overhead, hash_set_capacity_bytes, HashGroups, HashedKey};
 
 pub use aggregate::*;
 pub use distinct::*;

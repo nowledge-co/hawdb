@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum AggregateDistinctValue {
     Identity(u8, u64),
     Value(Value),
@@ -17,7 +17,7 @@ enum AggregateInput {
 enum AggregateState {
     Count {
         count: usize,
-        distinct: Option<BTreeSet<AggregateDistinctValue>>,
+        distinct: Option<HashSet<AggregateDistinctValue>>,
     },
     Min(Option<Value>),
     Max(Option<Value>),
@@ -27,7 +27,7 @@ enum AggregateState {
     },
     Collect {
         values: Vec<Value>,
-        distinct: Option<BTreeSet<Value>>,
+        distinct: Option<HashSet<Value>>,
     },
 }
 
@@ -67,14 +67,14 @@ impl AggregateState {
         match item.function {
             AggregateFunction::Count => Self::Count {
                 count: 0,
-                distinct: item.distinct.then(BTreeSet::new),
+                distinct: item.distinct.then(HashSet::new),
             },
             AggregateFunction::Min => Self::Min(None),
             AggregateFunction::Max => Self::Max(None),
             AggregateFunction::Avg => Self::Avg { sum: 0.0, count: 0 },
             AggregateFunction::Collect => Self::Collect {
                 values: Vec::new(),
-                distinct: item.distinct.then(BTreeSet::new),
+                distinct: item.distinct.then(HashSet::new),
             },
         }
     }
@@ -107,12 +107,19 @@ impl AggregateState {
                     return MemoryDelta::default();
                 };
                 let value_bytes = aggregate_distinct_value_memory_bytes(&value)
-                    .saturating_add(std::mem::size_of::<usize>() * 4);
+                    .saturating_sub(std::mem::size_of::<AggregateDistinctValue>());
                 if let Some(distinct) = distinct {
+                    let previous =
+                        hash_set_capacity_bytes::<AggregateDistinctValue>(distinct.capacity());
                     if distinct.insert(value) {
                         *count = count.saturating_add(1);
                         return MemoryDelta {
-                            added_bytes: value_bytes,
+                            added_bytes: value_bytes.saturating_add(
+                                hash_set_capacity_bytes::<AggregateDistinctValue>(
+                                    distinct.capacity(),
+                                )
+                                .saturating_sub(previous),
+                            ),
                             released_bytes: 0,
                         };
                     }
@@ -163,19 +170,24 @@ impl AggregateState {
                 let AggregateInput::Value(value) = input else {
                     return MemoryDelta::default();
                 };
-                let value_bytes =
-                    value_memory_bytes(&value).saturating_add(std::mem::size_of::<usize>() * 4);
+                let value_bytes = value_memory_bytes(&value);
                 if let Some(distinct) = distinct {
+                    let previous = hash_set_capacity_bytes::<Value>(distinct.capacity());
                     if distinct.insert(value) {
                         return MemoryDelta {
-                            added_bytes: value_bytes,
+                            // The inline value charge also reserves the sorted
+                            // COLLECT(DISTINCT) output vector before finish.
+                            added_bytes: value_bytes.saturating_add(
+                                hash_set_capacity_bytes::<Value>(distinct.capacity())
+                                    .saturating_sub(previous),
+                            ),
                             released_bytes: 0,
                         };
                     }
                 } else {
                     values.push(value);
                     return MemoryDelta {
-                        added_bytes: value_bytes,
+                        added_bytes: value_bytes.saturating_add(std::mem::size_of::<usize>() * 4),
                         released_bytes: 0,
                     };
                 }
@@ -197,7 +209,11 @@ impl AggregateState {
             Self::Collect {
                 distinct: Some(values),
                 ..
-            } => Value::List(values.into_iter().collect()),
+            } => {
+                let mut values = values.into_iter().collect::<Vec<_>>();
+                values.sort_unstable();
+                Value::List(values)
+            }
         }
     }
 
@@ -409,6 +425,59 @@ struct GroupRunRow {
     inputs: Vec<AggregateInput>,
 }
 
+struct BufferedGroupRow {
+    ordinal: u64,
+    inputs: Vec<AggregateInput>,
+}
+
+impl BufferedGroupRow {
+    fn payload_bytes(&self) -> usize {
+        self.inputs.iter().fold(0usize, |total, input| {
+            total.saturating_add(aggregate_input_memory_bytes(input))
+        })
+    }
+}
+
+type BufferedGroups = HashGroups<Vec<Value>, Vec<BufferedGroupRow>>;
+
+fn buffered_key_bytes(key: &[Value]) -> usize {
+    key.iter().fold(0usize, |total, value| {
+        total.saturating_add(value_memory_bytes(value))
+    })
+}
+
+fn buffered_row_insertion_bytes(rows: &Vec<BufferedGroupRow>, payload_bytes: usize) -> usize {
+    if rows.len() == rows.capacity() {
+        payload_bytes.saturating_add(
+            rows.capacity()
+                .saturating_mul(2)
+                .max(1)
+                .saturating_mul(std::mem::size_of::<BufferedGroupRow>()),
+        )
+    } else {
+        payload_bytes
+    }
+}
+
+fn push_buffered_row(
+    rows: &mut Vec<BufferedGroupRow>,
+    row: BufferedGroupRow,
+    tracker: &mut OperatorMemoryTracker,
+) -> Result<()> {
+    tracker.try_charge(buffered_row_insertion_bytes(rows, row.payload_bytes()))?;
+    if rows.len() == rows.capacity() {
+        let old_bytes = rows
+            .capacity()
+            .saturating_mul(std::mem::size_of::<BufferedGroupRow>());
+        let mut next = Vec::with_capacity(rows.capacity().saturating_mul(2).max(1));
+        next.append(rows);
+        *rows = next;
+        tracker.release(old_bytes);
+    }
+    rows.push(row);
+    Ok(())
+}
+
 impl GroupRunRow {
     fn cmp_key(&self, other: &Self) -> Ordering {
         self.key
@@ -561,7 +630,8 @@ pub fn stream_aggregate_batches(
         primary_account.clone(),
     );
     let mut spill_budget = SpillBudgetTracker::with_ledger("AggregateExec", memory, memory_ledger);
-    let mut rows = Vec::<GroupRunRow>::new();
+    let mut groups = BufferedGroups::default();
+    let key_hasher = RandomState::new();
     let mut runs = Vec::<spill::SpillRun>::new();
     let mut ordinal = 0u64;
     source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
@@ -575,19 +645,34 @@ pub fn stream_aggregate_batches(
                 .iter()
                 .map(|item| aggregate_input(item, catalog, &binding))
                 .collect::<Vec<_>>();
-            let row = GroupRunRow {
-                key,
-                ordinal,
-                inputs,
-            };
-            let bytes = row.memory_bytes();
+            let row = BufferedGroupRow { ordinal, inputs };
+            let key_bytes = buffered_key_bytes(&key);
+            let bytes = std::mem::size_of::<GroupRunRow>()
+                .saturating_add(key_bytes)
+                .saturating_add(row.payload_bytes());
             ensure_operator_item_fits("AggregateExec", bytes, &tracker)?;
-            if tracker.would_exceed(bytes) {
-                runs.push(spill_group_run(&mut rows, &mut spill_budget, task_context)?);
+            let key = HashedKey::new(key, &key_hasher);
+            let new_group_payload = key_bytes
+                .saturating_add(std::mem::size_of::<BufferedGroupRow>())
+                .saturating_add(row.payload_bytes());
+            let insertion_bytes = if let Some(rows) = groups.get(&key) {
+                buffered_row_insertion_bytes(rows, row.payload_bytes())
+            } else {
+                groups.insertion_bytes(new_group_payload)
+            };
+            if tracker.would_exceed(insertion_bytes) && !groups.is_empty() {
+                runs.push(spill_group_run(
+                    &mut groups,
+                    &mut spill_budget,
+                    task_context,
+                )?);
                 tracker.reset();
             }
-            tracker.try_charge(bytes)?;
-            rows.push(row);
+            if let Some(rows) = groups.get_mut(&key) {
+                push_buffered_row(rows, row, &mut tracker)?;
+            } else {
+                groups.insert(key, vec![row], new_group_payload, &mut tracker)?;
+            }
             ordinal = ordinal.saturating_add(1);
         }
         Ok(BatchControl::Continue)
@@ -601,7 +686,6 @@ pub fn stream_aggregate_batches(
             ordinal as usize,
             memory,
         ));
-        rows.sort_by(GroupRunRow::cmp_key);
         let aggregate_context = AggregateExecutionContext {
             group_keys,
             items,
@@ -613,10 +697,14 @@ pub fn stream_aggregate_batches(
             execution_limit,
             task_context,
         };
-        return aggregate_sorted_group_rows(rows, tracker, aggregate_context, emit);
+        return aggregate_buffered_groups(groups, tracker, aggregate_context, emit);
     }
-    if !rows.is_empty() {
-        runs.push(spill_group_run(&mut rows, &mut spill_budget, task_context)?);
+    if !groups.is_empty() {
+        runs.push(spill_group_run(
+            &mut groups,
+            &mut spill_budget,
+            task_context,
+        )?);
         tracker.reset();
     }
     runs = compact_group_runs(
@@ -650,17 +738,25 @@ pub fn stream_aggregate_batches(
 }
 
 fn spill_group_run(
-    rows: &mut Vec<GroupRunRow>,
+    groups: &mut BufferedGroups,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
-    rows.sort_by(GroupRunRow::cmp_key);
     let (run, mut writer) = spill_budget.create_run("aggregate")?;
-    for row in rows.drain(..) {
-        runtime_checkpoint(task_context)?;
-        let binding = encode_compact_group_binding(row.key, row.inputs);
-        writer.write(row.ordinal, &binding, spill_budget)?;
+    let (groups, _) = std::mem::take(groups).into_sorted();
+    for (mut key, rows) in groups {
+        let mut rows = rows.into_iter();
+        while let Some(row) = rows.next() {
+            runtime_checkpoint(task_context)?;
+            let row_key = if rows.len() == 0 {
+                std::mem::take(&mut key)
+            } else {
+                key.clone()
+            };
+            let binding = encode_compact_group_binding(row_key, row.inputs);
+            writer.write(row.ordinal, &binding, spill_budget)?;
+        }
     }
     runtime_checkpoint(task_context)?;
     writer.finish()?;
@@ -754,8 +850,8 @@ fn merge_group_run_pair(
     Ok(run)
 }
 
-fn aggregate_sorted_group_rows(
-    rows: Vec<GroupRunRow>,
+fn aggregate_buffered_groups(
+    groups: BufferedGroups,
     mut input_tracker: OperatorMemoryTracker,
     context: AggregateExecutionContext<'_>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -786,51 +882,39 @@ fn aggregate_sorted_group_rows(
         output_memory_budget,
         memory_ledger,
     );
-    let mut accumulator: Option<GroupAccumulator<'_>> = None;
+    let (groups, released_bytes) = groups.into_sorted();
+    input_tracker.release(released_bytes);
     let mut emitted = 0usize;
-    for row in rows {
+    for (key, rows) in groups {
         runtime_checkpoint(task_context)?;
-        let row_bytes = row.memory_bytes();
-        if accumulator
-            .as_ref()
-            .is_some_and(|accumulator| accumulator.key != row.key)
-        {
-            let binding = accumulator.take().expect("group exists").finish();
-            let source_bytes = tracker.used_bytes;
-            if output.transfer_from(&mut tracker, source_bytes, binding, emit)?
-                == BatchControl::Stop
-            {
-                return Ok(BatchControl::Stop);
-            }
-            emitted = emitted.saturating_add(1);
-            if flush_aggregate_batch(&mut output, emitted, execution_limit, emit)?
-                == BatchControl::Stop
-            {
-                return Ok(BatchControl::Stop);
-            }
+        let key_bytes = buffered_key_bytes(&key);
+        let row_array_bytes = rows
+            .capacity()
+            .saturating_mul(std::mem::size_of::<BufferedGroupRow>());
+        let mut accumulator = GroupAccumulator::new(key, group_keys, items);
+        let base_bytes = accumulator.base_memory_bytes();
+        ensure_operator_item_fits("AggregateExec group state", base_bytes, &tracker)?;
+        input_tracker.transfer_to(key_bytes, &mut tracker, base_bytes)?;
+        // Hash grouping retains input order within each group for COLLECT.
+        for row in rows {
+            runtime_checkpoint(task_context)?;
+            let payload_bytes = row.payload_bytes();
+            update_group_accumulator_inputs(&mut accumulator, row.inputs, &mut tracker)?;
+            input_tracker.release(payload_bytes);
         }
-        if accumulator.is_none() {
-            let next = GroupAccumulator::new(row.key.clone(), group_keys, items);
-            let base_bytes = next.base_memory_bytes();
-            ensure_operator_item_fits("AggregateExec group state", base_bytes, &tracker)?;
-            tracker.try_charge(base_bytes)?;
-            accumulator = Some(next);
-        }
-        update_group_accumulator_inputs(
-            accumulator.as_mut().expect("group exists"),
-            row.inputs,
-            &mut tracker,
-        )?;
-        input_tracker.release(row_bytes);
-    }
-    runtime_checkpoint(task_context)?;
-    if let Some(accumulator) = accumulator {
+        input_tracker.release(row_array_bytes);
         let binding = accumulator.finish();
         let source_bytes = tracker.used_bytes;
         if output.transfer_from(&mut tracker, source_bytes, binding, emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
+        emitted = emitted.saturating_add(1);
+        if flush_aggregate_batch(&mut output, emitted, execution_limit, emit)? == BatchControl::Stop
+        {
+            return Ok(BatchControl::Stop);
+        }
     }
+    runtime_checkpoint(task_context)?;
     if !output.is_empty() && output.emit(emit)? == BatchControl::Stop {
         return Ok(BatchControl::Stop);
     }
