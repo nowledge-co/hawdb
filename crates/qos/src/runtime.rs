@@ -4,11 +4,15 @@ use skein_core::{
     RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
     RuntimeMemoryReservation, RuntimeTaskContext,
 };
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::future::poll_fn;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::Duration;
+use std::task::{Poll, Waker};
+use std::time::{Duration, Instant};
 
 const PER_MILLION: u64 = 1_000_000;
 const SHARED_HOST_MEMORY_FRACTION_PER_MILLION: u32 = 250_000;
@@ -18,6 +22,7 @@ const MOBILE_FALLBACK_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const SHARED_HOST_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeWorkPriority {
@@ -273,6 +278,7 @@ pub struct RuntimeGovernorLimits {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeAdmissionCode {
+    QueuedAhead,
     ForegroundTaskSaturated,
     BackgroundTaskSaturated,
     BlockingTaskSaturated,
@@ -286,6 +292,7 @@ pub enum RuntimeAdmissionCode {
 impl RuntimeAdmissionCode {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::QueuedAhead => "queued_ahead",
             Self::ForegroundTaskSaturated => "foreground_task_saturated",
             Self::BackgroundTaskSaturated => "background_task_saturated",
             Self::BlockingTaskSaturated => "blocking_task_saturated",
@@ -376,6 +383,7 @@ pub struct RuntimeGovernorSnapshot {
     pub active_foreground_io_slots: usize,
     pub active_background_io_slots: usize,
     pub admitted_memory_bytes: u64,
+    pub queued_admission_waiters: usize,
     pub admissions: u64,
     pub admission_waits: u64,
     pub admission_rejections: u64,
@@ -403,7 +411,7 @@ struct RuntimeGovernorInner {
     telemetry: RwLock<Option<Arc<dyn RuntimeTelemetrySink>>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct RuntimeGovernorState {
     resources: RuntimeResourceSnapshot,
     resources_pinned: bool,
@@ -415,6 +423,8 @@ struct RuntimeGovernorState {
     active_foreground_io_slots: usize,
     active_background_io_slots: usize,
     admitted_memory_bytes: u64,
+    next_admission_waiter_id: u64,
+    admission_waiters: VecDeque<RuntimeAdmissionQueueEntry>,
     admissions: u64,
     admission_waits: u64,
     admission_rejections: u64,
@@ -423,6 +433,101 @@ struct RuntimeGovernorState {
     cancellations: u64,
     deadline_exceeded: u64,
     pressure_adjustments: u64,
+}
+
+#[derive(Debug)]
+struct RuntimeAdmissionQueueEntry {
+    id: u64,
+    priority: RuntimeWorkPriority,
+    enqueued_at: Instant,
+    signal: Arc<RuntimeAdmissionSignal>,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeAdmissionSignal {
+    generation: AtomicU64,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl RuntimeAdmissionSignal {
+    fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            waker.wake();
+        }
+    }
+
+    fn poll_after(&self, observed: u64, context: &mut std::task::Context<'_>) -> Poll<()> {
+        if self.generation.load(Ordering::Acquire) != observed {
+            return Poll::Ready(());
+        }
+        let mut waker = self
+            .waker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.generation.load(Ordering::Acquire) != observed {
+            return Poll::Ready(());
+        }
+        if waker
+            .as_ref()
+            .is_none_or(|registered| !registered.will_wake(context.waker()))
+        {
+            *waker = Some(context.waker().clone());
+        }
+        Poll::Pending
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeAdmissionWaiter {
+    governor: Arc<RuntimeGovernorInner>,
+    id: u64,
+    priority: RuntimeWorkPriority,
+    enqueued_at: Instant,
+    signal: Arc<RuntimeAdmissionSignal>,
+    observed_generation: u64,
+}
+
+impl RuntimeAdmissionWaiter {
+    pub fn priority(&self) -> RuntimeWorkPriority {
+        self.priority
+    }
+
+    /// Returns the one-shot deadline at which background aging may change
+    /// this waiter's admission order.
+    pub fn next_priority_change_at(&self) -> Option<Instant> {
+        if self.priority != RuntimeWorkPriority::Background {
+            return None;
+        }
+        let deadline = self.enqueued_at.checked_add(BACKGROUND_ADMISSION_AGING)?;
+        (deadline > Instant::now()).then_some(deadline)
+    }
+
+    /// Waits until admission order or resource availability may have changed.
+    pub async fn notified(&mut self) {
+        let observed = self.observed_generation;
+        poll_fn(|context| self.signal.poll_after(observed, context)).await;
+        self.observed_generation = self.signal.generation.load(Ordering::Acquire);
+    }
+}
+
+impl Drop for RuntimeAdmissionWaiter {
+    fn drop(&mut self) {
+        let next = {
+            let mut state = mutex_lock(&self.governor.state);
+            remove_admission_waiter(&mut state, self.id)
+                .then(|| selected_admission_signal(&state, Instant::now()))
+                .flatten()
+        };
+        if let Some(next) = next {
+            next.notify();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -484,6 +589,8 @@ impl RuntimeGovernor {
                     active_foreground_io_slots: 0,
                     active_background_io_slots: 0,
                     admitted_memory_bytes: 0,
+                    next_admission_waiter_id: 1,
+                    admission_waiters: VecDeque::new(),
                     admissions: 0,
                     admission_waits: 0,
                     admission_rejections: 0,
@@ -516,9 +623,70 @@ impl RuntimeGovernor {
         &self,
         request: RuntimeWorkRequest,
     ) -> Result<RuntimePermit, RuntimeAdmissionError> {
-        let result = {
+        self.try_admit_inner(None, request)
+    }
+
+    /// Joins the priority-aware admission queue before attempting admission.
+    pub fn admission_waiter(&self, priority: RuntimeWorkPriority) -> RuntimeAdmissionWaiter {
+        let signal = Arc::new(RuntimeAdmissionSignal::default());
+        let enqueued_at = Instant::now();
+        let id = {
             let mut state = mutex_lock(&self.inner.state);
-            match admission_error(&state, request) {
+            let id = state.next_admission_waiter_id;
+            state.next_admission_waiter_id = state.next_admission_waiter_id.wrapping_add(1).max(1);
+            state
+                .admission_waiters
+                .push_back(RuntimeAdmissionQueueEntry {
+                    id,
+                    priority,
+                    enqueued_at,
+                    signal: Arc::clone(&signal),
+                });
+            id
+        };
+        RuntimeAdmissionWaiter {
+            governor: Arc::clone(&self.inner),
+            id,
+            priority,
+            enqueued_at,
+            signal,
+            observed_generation: 0,
+        }
+    }
+
+    /// Attempts admission for the currently selected queued waiter.
+    ///
+    /// Re-negotiated requests must preserve the priority used to create the waiter.
+    pub fn try_admit_waiter(
+        &self,
+        waiter: &RuntimeAdmissionWaiter,
+        request: RuntimeWorkRequest,
+    ) -> Result<RuntimePermit, RuntimeAdmissionError> {
+        if !Arc::ptr_eq(&self.inner, &waiter.governor) {
+            return Err(admission_error_value(
+                RuntimeAdmissionCode::QueuedAhead,
+                1,
+                0,
+                false,
+            ));
+        }
+        self.try_admit_inner(Some(waiter), request)
+    }
+
+    fn try_admit_inner(
+        &self,
+        waiter: Option<&RuntimeAdmissionWaiter>,
+        request: RuntimeWorkRequest,
+    ) -> Result<RuntimePermit, RuntimeAdmissionError> {
+        let (result, next) = {
+            let mut state = mutex_lock(&self.inner.state);
+            let queue_error = admission_queue_error(&state, waiter, request, Instant::now());
+            let resource_error = admission_error(&state, request);
+            let error = resource_error
+                .filter(|error| !error.is_retryable())
+                .or(queue_error)
+                .or(resource_error);
+            match error {
                 Some(error) => {
                     if error.is_retryable() {
                         state.retryable_admission_rejections =
@@ -526,32 +694,52 @@ impl RuntimeGovernor {
                     } else {
                         state.admission_rejections = state.admission_rejections.saturating_add(1);
                     }
-                    Err(error)
+                    if !error.is_retryable()
+                        && let Some(waiter) = waiter
+                    {
+                        remove_admission_waiter(&mut state, waiter.id);
+                    }
+                    let next = (!error.is_retryable())
+                        .then(|| selected_admission_signal(&state, Instant::now()))
+                        .flatten();
+                    (Err(error), next)
                 }
                 None => {
+                    if let Some(waiter) = waiter {
+                        remove_admission_waiter(&mut state, waiter.id);
+                    }
                     let executor_thread_limit = state.limits.effective_cpu_slots;
                     reserve(&mut state, request);
                     state.admissions = state.admissions.saturating_add(1);
                     let governor = Arc::clone(&self.inner);
-                    Ok(RuntimePermit {
-                        governor: Arc::clone(&governor),
-                        request,
-                        executor_thread_limit,
-                        io_wave_controller: Arc::new(GovernorIoWaveController {
-                            governor,
-                            priority: request.priority,
-                            reserved_slots: request.io_slots,
-                            reservation_scope: request.io_reservation_scope,
-                            task_reservation: Arc::new(TaskIoReservation {
-                                active_slots: Mutex::new(0),
-                                available: Condvar::new(),
+                    (
+                        Ok(RuntimePermit {
+                            governor: Arc::clone(&governor),
+                            request,
+                            executor_thread_limit,
+                            io_wave_controller: Arc::new(GovernorIoWaveController {
+                                governor,
+                                priority: request.priority,
+                                reserved_slots: request.io_slots,
+                                reservation_scope: request.io_reservation_scope,
+                                task_reservation: Arc::new(TaskIoReservation {
+                                    active_slots: Mutex::new(0),
+                                    available: Condvar::new(),
+                                }),
                             }),
+                            released: false,
                         }),
-                        released: false,
-                    })
+                        waiter
+                            .is_some()
+                            .then(|| selected_admission_signal(&state, Instant::now()))
+                            .flatten(),
+                    )
                 }
             }
         };
+        if let Some(next) = next {
+            next.notify();
+        }
         match &result {
             Ok(_) => self.inner.record(RuntimeTelemetryEvent {
                 kind: RuntimeTelemetryEventKind::Admitted,
@@ -667,12 +855,13 @@ impl RuntimeGovernor {
                 retryable: None,
                 elapsed_micros: 0,
             });
+            self.inner.notify_next_admission_waiter();
         }
         changed
     }
 
     pub fn snapshot(&self) -> RuntimeGovernorSnapshot {
-        let state = *mutex_lock(&self.inner.state);
+        let state = mutex_lock(&self.inner.state);
         RuntimeGovernorSnapshot {
             resources: state.resources,
             limits: state.limits,
@@ -683,6 +872,7 @@ impl RuntimeGovernor {
             active_foreground_io_slots: state.active_foreground_io_slots,
             active_background_io_slots: state.active_background_io_slots,
             admitted_memory_bytes: state.admitted_memory_bytes,
+            queued_admission_waiters: state.admission_waiters.len(),
             admissions: state.admissions,
             admission_waits: state.admission_waits,
             admission_rejections: state.admission_rejections,
@@ -733,6 +923,7 @@ impl RuntimePermit {
             release(&mut state, self.request);
             state.completions = state.completions.saturating_add(1);
         }
+        self.governor.notify_next_admission_waiter();
         if self.request.io_reservation_scope == RuntimeIoReservationScope::Task
             && self.request.io_slots > 0
         {
@@ -845,6 +1036,16 @@ impl RuntimeGovernorInner {
             telemetry.record_runtime(event);
         }
     }
+
+    fn notify_next_admission_waiter(&self) {
+        let signal = {
+            let state = mutex_lock(&self.state);
+            selected_admission_signal(&state, Instant::now())
+        };
+        if let Some(signal) = signal {
+            signal.notify();
+        }
+    }
 }
 
 fn derive_limits(
@@ -939,6 +1140,95 @@ fn derived_memory_budget(
 fn scale_memory(bytes: u64, fraction_per_million: u64) -> u64 {
     (u128::from(bytes) * u128::from(fraction_per_million) / u128::from(PER_MILLION))
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn admission_queue_error(
+    state: &RuntimeGovernorState,
+    waiter: Option<&RuntimeAdmissionWaiter>,
+    request: RuntimeWorkRequest,
+    now: Instant,
+) -> Option<RuntimeAdmissionError> {
+    let Some((selected_index, aged_background)) =
+        selected_admission_waiter(&state.admission_waiters, now)
+    else {
+        return waiter
+            .map(|_| admission_error_value(RuntimeAdmissionCode::QueuedAhead, 1, 0, false));
+    };
+    let selected = &state.admission_waiters[selected_index];
+    match waiter {
+        Some(waiter) => {
+            let Some(entry) = state
+                .admission_waiters
+                .iter()
+                .find(|entry| entry.id == waiter.id)
+            else {
+                return Some(admission_error_value(
+                    RuntimeAdmissionCode::QueuedAhead,
+                    1,
+                    0,
+                    false,
+                ));
+            };
+            if entry.priority != request.priority || waiter.priority != request.priority {
+                return Some(admission_error_value(
+                    RuntimeAdmissionCode::QueuedAhead,
+                    1,
+                    0,
+                    false,
+                ));
+            }
+            (selected.id != waiter.id)
+                .then(|| admission_error_value(RuntimeAdmissionCode::QueuedAhead, 1, 0, true))
+        }
+        None => {
+            let foreground_may_preempt_unaged_background = request.priority
+                == RuntimeWorkPriority::Foreground
+                && selected.priority == RuntimeWorkPriority::Background
+                && !aged_background;
+            (!foreground_may_preempt_unaged_background)
+                .then(|| admission_error_value(RuntimeAdmissionCode::QueuedAhead, 1, 0, true))
+        }
+    }
+}
+
+fn selected_admission_waiter(
+    waiters: &VecDeque<RuntimeAdmissionQueueEntry>,
+    now: Instant,
+) -> Option<(usize, bool)> {
+    if let Some((index, _)) = waiters.iter().enumerate().find(|(_, waiter)| {
+        waiter.priority == RuntimeWorkPriority::Background
+            && now.saturating_duration_since(waiter.enqueued_at) >= BACKGROUND_ADMISSION_AGING
+    }) {
+        return Some((index, true));
+    }
+    if let Some((index, _)) = waiters
+        .iter()
+        .enumerate()
+        .find(|(_, waiter)| waiter.priority == RuntimeWorkPriority::Foreground)
+    {
+        return Some((index, false));
+    }
+    waiters.front().map(|_| (0, false))
+}
+
+fn selected_admission_signal(
+    state: &RuntimeGovernorState,
+    now: Instant,
+) -> Option<Arc<RuntimeAdmissionSignal>> {
+    selected_admission_waiter(&state.admission_waiters, now)
+        .map(|(index, _)| Arc::clone(&state.admission_waiters[index].signal))
+}
+
+fn remove_admission_waiter(state: &mut RuntimeGovernorState, waiter_id: u64) -> bool {
+    let Some(index) = state
+        .admission_waiters
+        .iter()
+        .position(|waiter| waiter.id == waiter_id)
+    else {
+        return false;
+    };
+    state.admission_waiters.remove(index);
+    true
 }
 
 fn admission_error(
@@ -1215,6 +1505,124 @@ mod tests {
             resources(cpu, available_memory),
             IoConcurrencyBudget::new(4, 1),
         )
+    }
+
+    #[test]
+    fn queued_large_request_prevents_new_small_requests_from_bypassing_it() {
+        let governor = governor(2, 6 * 1024 * 1024 * 1024);
+        let held = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                0,
+            ))
+            .unwrap();
+        let large_request =
+            RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 0).with_cpu_slots(2);
+        let small_request = RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 0);
+        let large = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+        assert_eq!(
+            governor
+                .try_admit_waiter(&large, large_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::CpuSaturated
+        );
+        let small = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+        assert_eq!(
+            governor
+                .try_admit_waiter(&small, small_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
+        assert_eq!(
+            governor.try_admit(small_request).unwrap_err().code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
+        let capacity = governor.snapshot().limits.memory_capacity_bytes;
+        let terminal = governor
+            .try_admit(RuntimeWorkRequest::foreground_query(capacity + 1, 0))
+            .unwrap_err();
+        assert_eq!(terminal.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!terminal.is_retryable());
+        assert_eq!(governor.snapshot().queued_admission_waiters, 2);
+
+        drop(held);
+        let large_permit = governor.try_admit_waiter(&large, large_request).unwrap();
+        assert_eq!(large_permit.request().cpu_slots, 2);
+        assert_eq!(
+            governor
+                .try_admit_waiter(&small, small_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::CpuSaturated
+        );
+        drop(large_permit);
+        let small_permit = governor.try_admit_waiter(&small, small_request).unwrap();
+        drop(small_permit);
+        assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+    }
+
+    #[test]
+    fn aged_background_waiter_precedes_newer_foreground_waiters() {
+        let governor = governor(1, 6 * 1024 * 1024 * 1024);
+        let held = governor
+            .try_admit(RuntimeWorkRequest::foreground_query(0, 0).with_blocking(false))
+            .unwrap();
+        let background_request =
+            RuntimeWorkRequest::query(RuntimeWorkPriority::Background, 0, 0).with_blocking(false);
+        let foreground_request = RuntimeWorkRequest::foreground_query(0, 0).with_blocking(false);
+        let background = governor.admission_waiter(RuntimeWorkPriority::Background);
+        let foreground = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+
+        assert_eq!(
+            governor
+                .try_admit_waiter(&background, background_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
+        assert_eq!(
+            governor
+                .try_admit_waiter(&foreground, foreground_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::ForegroundTaskSaturated
+        );
+
+        {
+            let mut state = mutex_lock(&governor.inner.state);
+            let background = state
+                .admission_waiters
+                .iter_mut()
+                .find(|waiter| waiter.priority == RuntimeWorkPriority::Background)
+                .unwrap();
+            background.enqueued_at = Instant::now() - BACKGROUND_ADMISSION_AGING;
+        }
+        assert_eq!(
+            governor
+                .try_admit_waiter(&foreground, foreground_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
+        assert_eq!(
+            governor
+                .try_admit_waiter(&background, background_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::CpuSaturated
+        );
+
+        drop(held);
+        let background_permit = governor
+            .try_admit_waiter(&background, background_request)
+            .unwrap();
+        drop(background_permit);
+        let foreground_permit = governor
+            .try_admit_waiter(&foreground, foreground_request)
+            .unwrap();
+        drop(foreground_permit);
     }
 
     #[test]

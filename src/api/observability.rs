@@ -14,7 +14,7 @@ use crate::value::Value;
 use std::io::Write;
 use std::path::Path;
 
-fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
+pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     match statement {
         SqlStatement::Select(_) => "select",
         SqlStatement::Insert(_) => "insert",
@@ -166,6 +166,43 @@ impl Database {
             options.max_payload_bytes,
         );
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        self.query_sql_with_prepared_params_inner(
+            sql_text,
+            parameters,
+            prepared,
+            max_rows,
+            max_payload_bytes,
+            started,
+        )
+    }
+
+    pub(super) fn query_sql_with_prepared_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<QueryOutput> {
+        self.store.ensure_usable()?;
+        let started = std::time::Instant::now();
+        self.query_sql_with_prepared_params_inner(
+            sql_text,
+            parameters,
+            prepared,
+            self.config.max_read_result_rows,
+            self.config.max_read_result_payload_bytes,
+            started,
+        )
+    }
+
+    fn query_sql_with_prepared_params_inner(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+        started: std::time::Instant,
+    ) -> Result<QueryOutput> {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {
             super::reject_locking_select_without_manager(prepared.statement(), false)?;

@@ -20900,6 +20900,13 @@ fn profiled_relational_sql_output(
     }
 }
 
+struct DatabaseReadSqlOptions<'a> {
+    max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
+    task_context: &'a skein_core::RuntimeTaskContext,
+    join_planning: RelationalJoinPlanningDirective,
+}
+
 impl DatabaseReadTransaction {
     pub fn commit_epoch(&self) -> u64 {
         self.published_read_view.visible_commit_epoch()
@@ -20956,6 +20963,23 @@ impl DatabaseReadTransaction {
                 Some(task_context),
             )?
             .output)
+    }
+
+    pub(super) fn query_prepared_with_params_bounded_profile(
+        &mut self,
+        prepared: PreparedRuntimeQuery,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<BoundedReadQueryOutput> {
+        let task_context = self.task_context.clone();
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        self.query_with_params_bounded_profile_prepared_internal(
+            &cypher_text,
+            prepared,
+            parameters,
+            self.config.max_read_result_rows,
+            None,
+            task_context.as_ref(),
+        )
     }
 
     pub fn query_with_params_access_control(
@@ -21647,6 +21671,55 @@ impl DatabaseReadTransaction {
             options.max_payload_bytes,
         );
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        self.query_sql_with_prepared_params_context_and_join_planning(
+            sql_text,
+            parameters,
+            prepared,
+            DatabaseReadSqlOptions {
+                max_rows,
+                max_payload_bytes,
+                task_context,
+                join_planning,
+            },
+        )
+    }
+
+    pub(super) fn query_sql_with_prepared_params(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<QueryOutput> {
+        self.store.ensure_usable()?;
+        let default_context = skein_core::RuntimeTaskContext::default();
+        let task_context = self.task_context.as_ref().unwrap_or(&default_context);
+        query_runtime::query_runtime_checkpoint(Some(task_context))?;
+        self.query_sql_with_prepared_params_context_and_join_planning(
+            sql_text,
+            parameters,
+            prepared,
+            DatabaseReadSqlOptions {
+                max_rows: self.config.max_read_result_rows,
+                max_payload_bytes: self.config.max_read_result_payload_bytes,
+                task_context,
+                join_planning: RelationalJoinPlanningDirective::Auto,
+            },
+        )
+    }
+
+    fn query_sql_with_prepared_params_context_and_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        options: DatabaseReadSqlOptions<'_>,
+    ) -> Result<QueryOutput> {
+        let DatabaseReadSqlOptions {
+            max_rows,
+            max_payload_bytes,
+            task_context,
+            join_planning,
+        } = options;
         reject_locking_select_without_manager(prepared.statement(), false)?;
         if matches!(
             prepared.statement(),

@@ -5,9 +5,10 @@ use skein_qos::{
 };
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::future::Future;
+use std::future::{poll_fn, Future};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc;
@@ -83,7 +84,6 @@ impl TokioRuntimeOwnership {
 pub struct TokioRuntimeConfig {
     pub async_worker_threads: Option<NonZeroUsize>,
     pub max_blocking_threads: Option<NonZeroUsize>,
-    pub admission_poll_interval: Duration,
     pub resource_refresh_interval: Duration,
     pub blocking_thread_keep_alive: Duration,
 }
@@ -106,7 +106,6 @@ impl Default for TokioRuntimeConfig {
         Self {
             async_worker_threads: NonZeroUsize::new(1),
             max_blocking_threads: NonZeroUsize::new(4),
-            admission_poll_interval: Duration::from_millis(5),
             resource_refresh_interval: Duration::from_secs(1),
             blocking_thread_keep_alive: Duration::from_secs(10),
         }
@@ -307,9 +306,34 @@ impl TokioRuntimeAdapter {
         E: Send + 'static,
         F: FnOnce(&RuntimeTaskContext) -> Result<T, E> + Send + 'static,
     {
-        let request = request.with_blocking(true);
-        let observe_post_operation_cancellation = request.kind != RuntimeWorkKind::Mutation;
-        let permit = self.acquire(request, &context).await?;
+        self.execute_blocking_with_request_factory(move |_| request, context, operation)
+            .await
+    }
+
+    /// Executes blocking work with a request recomputed after every admission wake.
+    ///
+    /// The factory must preserve request priority across calls. It may reduce or
+    /// increase resource reservations using the fresh governor snapshot.
+    pub async fn execute_blocking_with_request_factory<T, E, F, R>(
+        &self,
+        mut request_for_snapshot: R,
+        context: RuntimeTaskContext,
+        operation: F,
+    ) -> Result<T, TokioTaskError<E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(&RuntimeTaskContext) -> Result<T, E> + Send + 'static,
+        R: FnMut(RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
+    {
+        let permit = self
+            .acquire_with(
+                move |snapshot| request_for_snapshot(snapshot).with_blocking(true),
+                &context,
+            )
+            .await?;
+        let observe_post_operation_cancellation =
+            permit.request().kind != RuntimeWorkKind::Mutation;
         let task_context = permit.bind_task_context(context);
         let join = self.handle.spawn_blocking(move || {
             let _permit = permit;
@@ -356,15 +380,28 @@ impl TokioRuntimeAdapter {
         request: RuntimeWorkRequest,
         context: &RuntimeTaskContext,
     ) -> Result<skein_qos::RuntimePermit, TokioTaskError<E>> {
+        self.acquire_with(move |_| request, context).await
+    }
+
+    async fn acquire_with<E, R>(
+        &self,
+        mut request_for_snapshot: R,
+        context: &RuntimeTaskContext,
+    ) -> Result<skein_qos::RuntimePermit, TokioTaskError<E>>
+    where
+        R: FnMut(RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
+    {
         let mut wait = None;
+        self.refresh_resources_if_due();
+        let mut request = request_for_snapshot(self.governor.snapshot());
+        let mut waiter = self.governor.admission_waiter(request.priority);
         loop {
             if let Err(reason) = context.checkpoint() {
                 self.finish_admission_wait(request, wait.take());
                 self.governor.record_cancellation(reason);
                 return Err(TokioTaskError::Stopped(reason));
             }
-            self.refresh_resources_if_due();
-            match self.governor.try_admit(request) {
+            match self.governor.try_admit_waiter(&waiter, request) {
                 Ok(permit) => {
                     self.finish_admission_wait(request, wait.take());
                     return Ok(permit);
@@ -377,7 +414,82 @@ impl TokioRuntimeAdapter {
                     wait.get_or_insert_with(|| (Instant::now(), error.code));
                 }
             }
-            tokio::time::sleep(self.poll_interval(context)).await;
+            if let Err(reason) = self.wait_for_admission_event(&mut waiter, context).await {
+                self.finish_admission_wait(request, wait.take());
+                self.governor.record_cancellation(reason);
+                return Err(TokioTaskError::Stopped(reason));
+            }
+            self.refresh_resources_if_due();
+            request = request_for_snapshot(self.governor.snapshot());
+        }
+    }
+
+    async fn wait_for_admission_event(
+        &self,
+        waiter: &mut skein_qos::RuntimeAdmissionWaiter,
+        context: &RuntimeTaskContext,
+    ) -> Result<(), RuntimeCancellationReason> {
+        loop {
+            let priority_change_at = waiter.next_priority_change_at();
+            let mut admission = Box::pin(waiter.notified());
+            let mut cancellation = Box::pin(context.cancellation().cancelled());
+            let mut deadline = context.deadline().map(|deadline| {
+                Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    deadline,
+                )))
+            });
+            let mut priority_change = priority_change_at.map(|deadline| {
+                Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    deadline,
+                )))
+            });
+            let mut refresh = (!self.governor.snapshot().resources_pinned).then(|| {
+                let last_refresh = *self
+                    .last_resource_refresh
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let interval = self
+                    .config
+                    .resource_refresh_interval
+                    .max(Duration::from_millis(1));
+                let refresh_at = last_refresh
+                    .checked_add(interval)
+                    .unwrap_or_else(Instant::now);
+                Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    refresh_at,
+                )))
+            });
+            let admission_notified = poll_fn(|task| {
+                if cancellation.as_mut().poll(task).is_ready() {
+                    return Poll::Ready(Err(RuntimeCancellationReason::Cancelled));
+                }
+                if deadline
+                    .as_mut()
+                    .is_some_and(|deadline| deadline.as_mut().poll(task).is_ready())
+                {
+                    return Poll::Ready(Err(RuntimeCancellationReason::DeadlineExceeded));
+                }
+                if admission.as_mut().poll(task).is_ready() {
+                    return Poll::Ready(Ok(true));
+                }
+                if priority_change
+                    .as_mut()
+                    .is_some_and(|change| change.as_mut().poll(task).is_ready())
+                {
+                    return Poll::Ready(Ok(true));
+                }
+                if refresh
+                    .as_mut()
+                    .is_some_and(|refresh| refresh.as_mut().poll(task).is_ready())
+                {
+                    return Poll::Ready(Ok(false));
+                }
+                Poll::Pending
+            })
+            .await?;
+            if admission_notified || self.refresh_resources_if_due() {
+                return Ok(());
+            }
         }
     }
 
@@ -409,14 +521,7 @@ impl TokioRuntimeAdapter {
         result
     }
 
-    fn poll_interval(&self, context: &RuntimeTaskContext) -> Duration {
-        context
-            .remaining()
-            .map(|remaining| remaining.min(self.config.admission_poll_interval))
-            .unwrap_or(self.config.admission_poll_interval)
-    }
-
-    fn refresh_resources_if_due(&self) {
+    fn refresh_resources_if_due(&self) -> bool {
         let now = Instant::now();
         let should_refresh = {
             let mut last_refresh = self
@@ -431,7 +536,9 @@ impl TokioRuntimeAdapter {
             }
         };
         if should_refresh {
-            self.governor.refresh_from_host();
+            self.governor.refresh_from_host()
+        } else {
+            false
         }
     }
 }
@@ -448,8 +555,8 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn governor(cpu: usize) -> RuntimeGovernor {
-        let resources = RuntimeResourceSnapshot::from_parts(
+    fn runtime_resources(cpu: usize) -> RuntimeResourceSnapshot {
+        RuntimeResourceSnapshot::from_parts(
             RuntimeResourceBudget::from_limits(NonZeroUsize::new(cpu).unwrap(), None, None),
             RuntimeMemorySnapshot::from_limits(
                 Some(8 * 1024 * 1024 * 1024),
@@ -458,10 +565,13 @@ mod tests {
                 None,
                 None,
             ),
-        );
+        )
+    }
+
+    fn governor(cpu: usize) -> RuntimeGovernor {
         RuntimeGovernor::new(
             RuntimeGovernorConfig::shared_host(),
-            resources,
+            runtime_resources(cpu),
             IoConcurrencyBudget::new(4, 1),
         )
     }
@@ -583,6 +693,111 @@ mod tests {
             assert_eq!(reservation.memory_bytes(), 128);
             assert_eq!(reservation.result_bytes(), 32);
         }
+    }
+
+    #[test]
+    fn request_factory_renegotiates_parallelism_after_resource_change() {
+        let governor = governor(4);
+        governor.pin_resources();
+        let held = governor
+            .try_admit(
+                RuntimeWorkRequest::foreground_query(0, 0)
+                    .with_cpu_slots(4)
+                    .with_blocking(true),
+            )
+            .unwrap();
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let adapter = TokioRuntimeAdapter::borrowed(
+            host.handle().clone(),
+            governor.clone(),
+            TokioRuntimeConfig {
+                resource_refresh_interval: Duration::from_secs(3600),
+                ..TokioRuntimeConfig::default()
+            },
+        );
+        let observed_slots = Arc::new(Mutex::new(Vec::new()));
+        let request_slots = Arc::clone(&observed_slots);
+
+        host.block_on(async {
+            let execution = adapter.execute_blocking_with_request_factory(
+                move |snapshot| {
+                    let slots = snapshot.limits.effective_cpu_slots.get();
+                    request_slots
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(slots);
+                    RuntimeWorkRequest::foreground_query(0, 0).with_cpu_slots(slots)
+                },
+                RuntimeTaskContext::default(),
+                |context| Ok::<_, Infallible>(context.admitted_parallelism().get()),
+            );
+            tokio::pin!(execution);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut execution)
+                    .await
+                    .is_err()
+            );
+
+            assert!(governor.update_resources(runtime_resources(2)));
+            tokio::task::yield_now().await;
+            drop(held);
+
+            let parallelism = tokio::time::timeout(Duration::from_secs(1), &mut execution)
+                .await
+                .expect("released capacity must wake queued admission")
+                .expect("renegotiated request must be admitted");
+            assert_eq!(parallelism, 2);
+        });
+        let observed_slots = observed_slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(observed_slots.first(), Some(&4));
+        assert!(observed_slots.iter().skip(1).any(|slots| *slots == 2));
+    }
+
+    #[test]
+    fn background_waiter_ages_without_an_external_resource_event() {
+        let governor = governor(2);
+        governor.pin_resources();
+        let held = governor
+            .try_admit(
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 0)
+                    .with_cpu_slots(1),
+            )
+            .unwrap();
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let adapter = TokioRuntimeAdapter::borrowed(
+            host.handle().clone(),
+            governor,
+            TokioRuntimeConfig::default(),
+        );
+
+        host.block_on(async {
+            let foreground = adapter.execute_blocking(
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 0)
+                    .with_cpu_slots(2),
+                RuntimeTaskContext::default(),
+                |_| Ok::<_, Infallible>(()),
+            );
+            let background = adapter.execute_blocking(
+                RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Background, 0),
+                RuntimeTaskContext::default(),
+                |_| Ok::<_, Infallible>(()),
+            );
+            tokio::pin!(foreground);
+            tokio::pin!(background);
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut foreground)
+                    .await
+                    .is_err()
+            );
+            tokio::time::timeout(Duration::from_secs(1), &mut background)
+                .await
+                .expect("background aging must trigger a one-shot admission retry")
+                .expect("the aged background request must use the available slot");
+        });
+        drop(held);
     }
 
     #[test]
@@ -755,6 +970,53 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_wakes_a_task_waiting_for_admission() {
+        let governor = governor(1);
+        let held = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                0,
+            ))
+            .unwrap();
+        let host = Builder::new_multi_thread().enable_time().build().unwrap();
+        let adapter = TokioRuntimeAdapter::borrowed(
+            host.handle().clone(),
+            governor,
+            TokioRuntimeConfig {
+                resource_refresh_interval: Duration::from_secs(3600),
+                ..TokioRuntimeConfig::default()
+            },
+        );
+        let token = RuntimeCancellationToken::new();
+        let context = RuntimeTaskContext::without_deadline(token.clone());
+        host.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            token.cancel();
+        });
+
+        let result = host
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    adapter.execute_blocking(
+                        RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 0),
+                        context,
+                        |_| Ok::<_, Infallible>(()),
+                    ),
+                )
+                .await
+            })
+            .expect("cancellation must wake admission without waiting for resource refresh");
+        assert!(matches!(
+            result,
+            Err(TokioTaskError::Stopped(
+                RuntimeCancellationReason::Cancelled
+            ))
+        ));
+        drop(held);
+    }
+
+    #[test]
     fn mutation_reports_the_committed_result_after_starting() {
         let adapter =
             TokioRuntimeAdapter::owned(governor(1), TokioRuntimeConfig::default()).unwrap();
@@ -795,7 +1057,6 @@ mod tests {
         );
         let host = Builder::new_multi_thread().enable_time().build().unwrap();
         let config = TokioRuntimeConfig {
-            admission_poll_interval: Duration::from_millis(5),
             resource_refresh_interval: Duration::from_secs(3600),
             ..TokioRuntimeConfig::default()
         };
@@ -836,7 +1097,6 @@ mod tests {
         );
         let host = Builder::new_multi_thread().enable_time().build().unwrap();
         let config = TokioRuntimeConfig {
-            admission_poll_interval: Duration::from_millis(5),
             resource_refresh_interval: Duration::from_secs(3600),
             ..TokioRuntimeConfig::default()
         };

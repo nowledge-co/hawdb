@@ -1,9 +1,13 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::{self, Display, Formatter};
+use std::future::Future;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -15,6 +19,8 @@ pub struct RuntimeCancellationToken {
 struct RuntimeCancellationState {
     cancelled: AtomicBool,
     parent: Option<RuntimeCancellationToken>,
+    next_waiter_id: AtomicU64,
+    waiters: Mutex<BTreeMap<u64, Waker>>,
 }
 
 impl Default for RuntimeCancellationToken {
@@ -23,6 +29,8 @@ impl Default for RuntimeCancellationToken {
             state: Arc::new(RuntimeCancellationState {
                 cancelled: AtomicBool::new(false),
                 parent: None,
+                next_waiter_id: AtomicU64::new(1),
+                waiters: Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -34,7 +42,21 @@ impl RuntimeCancellationToken {
     }
 
     pub fn cancel(&self) -> bool {
-        !self.state.cancelled.swap(true, Ordering::AcqRel)
+        if self.state.cancelled.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let waiters = {
+            let mut waiters = self
+                .state
+                .waiters
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *waiters)
+        };
+        for (_, waiter) in waiters {
+            waiter.wake();
+        }
+        true
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -51,7 +73,89 @@ impl RuntimeCancellationToken {
             state: Arc::new(RuntimeCancellationState {
                 cancelled: AtomicBool::new(false),
                 parent: Some(self.clone()),
+                next_waiter_id: AtomicU64::new(1),
+                waiters: Mutex::new(BTreeMap::new()),
             }),
+        }
+    }
+
+    /// Resolves when this token or any parent token is cancelled.
+    pub fn cancelled(&self) -> RuntimeCancellationFuture<'_> {
+        RuntimeCancellationFuture {
+            token: self,
+            registrations: Vec::new(),
+        }
+    }
+}
+
+struct RuntimeCancellationRegistration {
+    state: Weak<RuntimeCancellationState>,
+    waiter_id: u64,
+}
+
+/// A runtime-neutral future returned by [`RuntimeCancellationToken::cancelled`].
+pub struct RuntimeCancellationFuture<'a> {
+    token: &'a RuntimeCancellationToken,
+    registrations: Vec<RuntimeCancellationRegistration>,
+}
+
+impl Future for RuntimeCancellationFuture<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+
+        if self.registrations.is_empty() {
+            let mut token = Some(self.token);
+            while let Some(current) = token {
+                let waiter_id = current.state.next_waiter_id.fetch_add(1, Ordering::Relaxed);
+                current
+                    .state
+                    .waiters
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(waiter_id, context.waker().clone());
+                self.registrations.push(RuntimeCancellationRegistration {
+                    state: Arc::downgrade(&current.state),
+                    waiter_id,
+                });
+                token = current.state.parent.as_ref();
+            }
+        } else {
+            for registration in &self.registrations {
+                if let Some(state) = registration.state.upgrade()
+                    && let Some(waiter) = state
+                        .waiters
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get_mut(&registration.waiter_id)
+                    && !waiter.will_wake(context.waker())
+                {
+                    *waiter = context.waker().clone();
+                }
+            }
+        }
+
+        if self.token.is_cancelled() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for RuntimeCancellationFuture<'_> {
+    fn drop(&mut self) {
+        for registration in &self.registrations {
+            if let Some(state) = registration.state.upgrade() {
+                state
+                    .waiters
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&registration.waiter_id);
+            }
         }
     }
 }
@@ -310,6 +414,8 @@ impl Error for RuntimeCancellationReason {}
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Wake;
 
     #[derive(Debug)]
     struct RecordingIoController {
@@ -382,6 +488,45 @@ mod tests {
         assert!(parent_token.cancel());
         assert!(parent.checkpoint().is_err());
         assert!(sibling.checkpoint().is_err());
+    }
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn cancellation_future_is_woken_by_parent_cancellation() {
+        let parent = RuntimeCancellationToken::new();
+        let child = parent.child();
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut cancelled = Box::pin(child.cancelled());
+
+        assert!(cancelled.as_mut().poll(&mut context).is_pending());
+        assert!(parent.cancel());
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+        assert!(cancelled.as_mut().poll(&mut context).is_ready());
+    }
+
+    #[test]
+    fn dropped_cancellation_future_unregisters_from_its_parent_chain() {
+        let parent = RuntimeCancellationToken::new();
+        let child = parent.child();
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut cancelled = Box::pin(child.cancelled());
+
+        assert!(cancelled.as_mut().poll(&mut context).is_pending());
+        drop(cancelled);
+        assert!(parent.cancel());
+        assert_eq!(counter.0.load(Ordering::Acquire), 0);
     }
 
     #[test]

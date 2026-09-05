@@ -257,14 +257,16 @@ impl SkeinTokioEmbedded {
         })?;
         let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
         let snapshot = self.with_embedded(|embedded| embedded.runtime_governor().snapshot());
-        let request = prepared
-            .admission()
-            .runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
+        let admission = prepared.admission().clone();
+        let request = admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
         let streaming_eligible = prepared.admission().streaming_eligible;
-        self.execute_query_with_request(
+        self.execute_query_with_request_factory(
             prepared,
             parameters,
             request,
+            move |snapshot| {
+                admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot)
+            },
             streaming_eligible,
             task_context,
         )
@@ -284,7 +286,7 @@ impl SkeinTokioEmbedded {
                 .database_mut()
                 .prepare_runtime_query(cypher_text, &parameters)
         })?;
-        let admission = prepared.admission();
+        let admission = prepared.admission().clone();
         let request = if admission.is_mutation {
             request
                 .with_kind(RuntimeWorkKind::Mutation)
@@ -376,7 +378,7 @@ impl SkeinTokioEmbedded {
                 .database_mut()
                 .prepare_runtime_query(cypher_text, &parameters)
         })?;
-        let admission = prepared.admission();
+        let admission = prepared.admission().clone();
         if admission.is_mutation {
             return Err(SkeinTokioEmbeddedError::StreamingMutation);
         }
@@ -404,66 +406,76 @@ impl SkeinTokioEmbedded {
         let request =
             request.with_memory_bytes(request.memory_bytes.saturating_add(buffered_payload_bytes));
         let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
-        let producer_context = task_context.child().with_memory_reservation(
-            skein_core::RuntimeMemoryReservation::new(executor_memory_bytes, request.result_bytes),
-        );
+        let producer_context = task_context.child();
         let cancellation = producer_context.cancellation().clone();
         let (terminal_sender, receiver) = tokio_bounded_channel(options.channel_capacity);
         let batch_sender = terminal_sender.clone();
         let embedded = Arc::clone(&self.embedded);
         let runtime = self.runtime.clone();
         let handle = runtime.handle().clone();
+        let selected_executor_memory =
+            Arc::new(std::sync::atomic::AtomicU64::new(executor_memory_bytes));
+        let request_memory = Arc::clone(&selected_executor_memory);
+        let request_for_snapshot = move |snapshot| {
+            let request =
+                admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
+            request_memory.store(request.memory_bytes, std::sync::atomic::Ordering::Release);
+            request.with_memory_bytes(request.memory_bytes.saturating_add(buffered_payload_bytes))
+        };
+        let execute_stream = move |task_context: &RuntimeTaskContext| {
+            let task_context = task_context.clone().with_memory_reservation(
+                skein_core::RuntimeMemoryReservation::new(
+                    selected_executor_memory.load(std::sync::atomic::Ordering::Acquire),
+                    request.result_bytes,
+                ),
+            );
+            let mut read_transaction = lock_embedded(&embedded).database().begin_read_transaction();
+            let mut batch = Vec::with_capacity(batch_rows);
+            let mut batch_bytes = 0usize;
+            let report = read_transaction.query_prepared_with_params_streaming_context(
+                prepared,
+                &parameters,
+                QueryStreamOptions {
+                    max_rows,
+                    max_payload_bytes: Some(max_payload_bytes),
+                },
+                crate::executor::StreamDelivery::Incremental,
+                &task_context,
+                |row| {
+                    let row_bytes = crate::executor::map_memory_bytes(&row);
+                    if row_bytes > batch_payload_bytes {
+                        return Err(SkeinError::Execution(format!(
+                            "asynchronous result row uses {row_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
+                        )));
+                    }
+                    if !batch.is_empty()
+                        && (batch.len() == batch_rows
+                            || batch_bytes.saturating_add(row_bytes) > batch_payload_bytes)
+                    {
+                        send_async_query_batch(&batch_sender, &mut batch, &task_context)?;
+                        batch_bytes = 0;
+                    }
+                    batch_bytes = batch_bytes.saturating_add(row_bytes);
+                    batch.push(row);
+                    Ok(())
+                },
+            )?;
+            if !batch.is_empty() {
+                send_async_query_batch(&batch_sender, &mut batch, &task_context)?;
+            }
+            Ok(report)
+        };
         handle.spawn(async move {
             let result = runtime
-                .execute_blocking(request, producer_context, move |task_context| {
-                    let mut read_transaction =
-                        lock_embedded(&embedded).database().begin_read_transaction();
-                    let mut batch = Vec::with_capacity(batch_rows);
-                    let mut batch_bytes = 0usize;
-                    let report = read_transaction.query_prepared_with_params_streaming_context(
-                        prepared,
-                        &parameters,
-                        QueryStreamOptions {
-                            max_rows,
-                            max_payload_bytes: Some(max_payload_bytes),
-                        },
-                        crate::executor::StreamDelivery::Incremental,
-                        task_context,
-                        |row| {
-                            let row_bytes = crate::executor::map_memory_bytes(&row);
-                            if row_bytes > batch_payload_bytes {
-                                return Err(SkeinError::Execution(format!(
-                                    "asynchronous result row uses {row_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
-                                )));
-                            }
-                            if !batch.is_empty()
-                                && (batch.len() == batch_rows
-                                    || batch_bytes.saturating_add(row_bytes)
-                                        > batch_payload_bytes)
-                            {
-                                send_async_query_batch(
-                                    &batch_sender,
-                                    &mut batch,
-                                    task_context,
-                                )?;
-                                batch_bytes = 0;
-                            }
-                            batch_bytes = batch_bytes.saturating_add(row_bytes);
-                            batch.push(row);
-                            Ok(())
-                        },
-                    )?;
-                    if !batch.is_empty() {
-                        send_async_query_batch(&batch_sender, &mut batch, task_context)?;
-                    }
-                    Ok(report)
-                })
+                .execute_blocking_with_request_factory(
+                    request_for_snapshot,
+                    producer_context,
+                    execute_stream,
+                )
                 .await;
             let event = match result {
                 Ok(report) => TokioQueryStreamEvent::Finished(Box::new(report)),
-                Err(error) => {
-                    TokioQueryStreamEvent::Error(SkeinTokioEmbeddedError::Task(error))
-                }
+                Err(error) => TokioQueryStreamEvent::Error(SkeinTokioEmbeddedError::Task(error)),
             };
             let _ = terminal_sender.send(event).await;
         });
@@ -483,14 +495,41 @@ impl SkeinTokioEmbedded {
         streaming_eligible: bool,
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
+        self.execute_query_with_request_factory(
+            prepared,
+            parameters,
+            request,
+            move |_| request,
+            streaming_eligible,
+            task_context,
+        )
+        .await
+    }
+
+    async fn execute_query_with_request_factory<R>(
+        &self,
+        prepared: crate::api::PreparedRuntimeQuery,
+        parameters: BTreeMap<String, Value>,
+        request: RuntimeWorkRequest,
+        request_for_snapshot: R,
+        streaming_eligible: bool,
+        task_context: RuntimeTaskContext,
+    ) -> Result<QueryOutput, SkeinTokioEmbeddedError>
+    where
+        R: FnMut(skein_qos::RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
+    {
         let embedded = Arc::clone(&self.embedded);
         if request.kind == RuntimeWorkKind::Mutation {
             self.runtime
-                .execute_blocking(request, task_context, move |task_context| {
-                    lock_embedded(&embedded)
-                        .database_mut()
-                        .query_prepared_with_params_context(prepared, &parameters, task_context)
-                })
+                .execute_blocking_with_request_factory(
+                    request_for_snapshot,
+                    task_context,
+                    move |task_context| {
+                        lock_embedded(&embedded)
+                            .database_mut()
+                            .query_prepared_with_params_context(prepared, &parameters, task_context)
+                    },
+                )
                 .await
                 .map_err(SkeinTokioEmbeddedError::Task)
         } else {
@@ -498,33 +537,37 @@ impl SkeinTokioEmbedded {
                 self.with_embedded(|embedded| embedded.database().config().max_read_result_rows);
             let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
             self.runtime
-                .execute_blocking(request, task_context, move |task_context| {
-                    let mut read_transaction =
-                        lock_embedded(&embedded).database().begin_read_transaction();
-                    if !streaming_eligible {
-                        return read_transaction.query_prepared_with_params_context(
+                .execute_blocking_with_request_factory(
+                    request_for_snapshot,
+                    task_context,
+                    move |task_context| {
+                        let mut read_transaction =
+                            lock_embedded(&embedded).database().begin_read_transaction();
+                        if !streaming_eligible {
+                            return read_transaction.query_prepared_with_params_context(
+                                prepared,
+                                &parameters,
+                                task_context,
+                            );
+                        }
+                        let mut rows = Vec::new();
+                        read_transaction.query_prepared_with_params_streaming_context(
                             prepared,
                             &parameters,
+                            QueryStreamOptions {
+                                max_rows,
+                                max_payload_bytes: Some(max_payload_bytes),
+                            },
+                            crate::executor::StreamDelivery::Incremental,
                             task_context,
-                        );
-                    }
-                    let mut rows = Vec::new();
-                    read_transaction.query_prepared_with_params_streaming_context(
-                        prepared,
-                        &parameters,
-                        QueryStreamOptions {
-                            max_rows,
-                            max_payload_bytes: Some(max_payload_bytes),
-                        },
-                        crate::executor::StreamDelivery::Incremental,
-                        task_context,
-                        |row| {
-                            rows.push(row);
-                            Ok(())
-                        },
-                    )?;
-                    Ok(QueryOutput { rows: rows.into() })
-                })
+                            |row| {
+                                rows.push(row);
+                                Ok(())
+                            },
+                        )?;
+                        Ok(QueryOutput { rows: rows.into() })
+                    },
+                )
                 .await
                 .map_err(SkeinTokioEmbeddedError::Task)
         }
