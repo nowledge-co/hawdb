@@ -9,6 +9,324 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn fused_generation_reads_source_spool_once() {
+    let root = test_dir("fused_generation_read_once");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &root,
+        SearchOutOfCoreGenerationBuildOptions {
+            lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
+            ..SearchOutOfCoreGenerationBuildOptions::default()
+        },
+    )
+    .unwrap();
+    for number in 0..300 {
+        writer.push(document(number)).unwrap();
+    }
+    spool::read_evidence::take();
+    let result = writer.finish();
+    let reads = spool::read_evidence::take();
+    fs::remove_dir_all(root).unwrap();
+    let report = result.unwrap();
+    assert_eq!(reads, (1, report.spool_bytes));
+}
+
+fn three_pass_artifacts(
+    input: &SearchOutOfCoreGenerationWriter,
+    source: &SpoolSource,
+    generation: u64,
+) -> Result<GenerationArtifacts> {
+    // Retain the original scheduling as an oracle. The sinks receive separate
+    // decoded records, and each artifact completes before the next scan starts.
+    let segment = SegmentArtifactBuilder::new(
+        &input.stage.path,
+        generation,
+        &input.metadata_fields,
+        &input.options,
+    )?
+    .build(source)?;
+    let config = LexicalProjectionConfig {
+        build_memory_bytes: input.options.lexical_build_memory_bytes,
+        max_spill_bytes: input.options.lexical_max_spill_bytes,
+        max_spill_runs: input.options.lexical_max_spill_runs,
+        max_merge_fan_in: input.options.lexical_max_merge_fan_in,
+        max_document_source_bytes: input.options.lexical_max_document_source_bytes,
+        ..LexicalProjectionConfig::default()
+    };
+    let lexical = LexicalProjectionWriter::new(config).write_scanned(
+        &input.stage.path,
+        generation,
+        input.options.source_graph_commit_epoch,
+        lexical_analyzer_digest(&input.options.analyzer_lexicon),
+        input.documents_digest.finish(),
+        |consume| source.scan(&mut |document| consume(&document)),
+        &input.options.analyzer_lexicon,
+    )?;
+    drop(lexical);
+    let lexical_artifact_name = lexical_artifact_file(generation);
+    let (lexical_artifact_bytes, _) =
+        file_len_checksum(&input.stage.path.join(&lexical_artifact_name))?;
+    let (lexical_manifest_bytes, _) =
+        file_len_checksum(&input.stage.path.join(LEXICAL_MANIFEST_FILE))?;
+    let rabitq = build_rabitq_artifact(
+        source,
+        &input.stage.path,
+        generation,
+        input.vector_document_count,
+        input.embedding_dimension,
+        input.options.embedding_manifest.as_ref(),
+        &input.options,
+    )?;
+    Ok(GenerationArtifacts {
+        segment,
+        lexical_artifact_name,
+        lexical_artifact_bytes,
+        lexical_manifest_bytes,
+        rabitq,
+    })
+}
+
+fn published_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fs::read_dir(root)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            assert!(entry.file_type().unwrap().is_file());
+            (
+                entry.file_name().into_string().unwrap(),
+                fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn fused_generation_is_byte_identical_to_three_pass_builds() {
+    let mut random = 219_u64;
+    for case in 0..18 {
+        let count = [0, 1, 9, 128, 129, 300][case % 6];
+        let fused_root = test_dir("fused_generation_equivalence");
+        let reference_root = test_dir("three_pass_generation_equivalence");
+        let options = SearchOutOfCoreGenerationBuildOptions {
+            source_graph_commit_epoch: Some(17),
+            embedding_manifest: Some(SearchEmbeddingManifest {
+                model: "test-model".to_string(),
+                version: Some("v1".to_string()),
+                dimension: 2,
+            }),
+            max_record_bytes: NonZeroU64::new(4096).unwrap(),
+            max_segment_uncompressed_bytes: NonZeroU64::new(32 * 1024).unwrap(),
+            max_segment_compressed_bytes: NonZeroU64::new(32 * 1024).unwrap(),
+            lexical_build_memory_bytes: NonZeroU64::new(4096).unwrap(),
+            lexical_max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+            rabitq_segment_rows: NonZeroUsize::new(3).unwrap(),
+            #[cfg(feature = "vector-search")]
+            rabitq_bit_width: if case % 2 == 0 {
+                skein_vector_projection::RaBitQBitWidth::One
+            } else {
+                skein_vector_projection::RaBitQBitWidth::default()
+            },
+            ..SearchOutOfCoreGenerationBuildOptions::default()
+        };
+        let mut fused =
+            SearchOutOfCoreGenerationWriter::create(&fused_root, options.clone()).unwrap();
+        let mut reference =
+            SearchOutOfCoreGenerationWriter::create(&reference_root, options).unwrap();
+        let mut documents = Vec::new();
+        for number in 0..count {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let mut document = document(number);
+            document.title = format!("{} \u{1f4da} term{}", document.title, random % 11);
+            document.content = format!("{} token{}", document.content, random % 31);
+            if case < 6 || (case < 12 && number % 2 != 0) {
+                document.embedding = None;
+            }
+            fused.push(document.clone()).unwrap();
+            reference.push(document.clone()).unwrap();
+            documents.push(document);
+        }
+        spool::read_evidence::take();
+        let fused_report = fused.finish().unwrap();
+        assert_eq!(spool::read_evidence::take(), (1, fused_report.spool_bytes));
+        let reference_report = reference
+            .finish_with_artifacts(three_pass_artifacts)
+            .unwrap();
+        let reference_scans = 2 + usize::from(
+            cfg!(feature = "vector-search") && reference_report.vector_document_count > 0,
+        );
+        assert_eq!(
+            spool::read_evidence::take(),
+            (
+                reference_scans,
+                reference_scans as u64 * reference_report.spool_bytes
+            )
+        );
+        assert_eq!(fused_report, reference_report, "case {case}");
+        assert_eq!(
+            published_files(&fused_root),
+            published_files(&reference_root),
+            "case {case}"
+        );
+        // Opening verifies the published manifest/artifact digests; hydration
+        // additionally validates every segment's document payload checksums.
+        let reader = super::super::SearchOutOfCoreReader::open(&fused_root).unwrap();
+        assert_eq!(reader.document_count(), count);
+        if !documents.is_empty() {
+            let hydrated = reader
+                .hydrate_documents(
+                    &documents
+                        .iter()
+                        .map(|document| document.id.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            assert_eq!(hydrated.documents, documents);
+        }
+        drop(reader);
+        fs::remove_dir_all(fused_root).unwrap();
+        fs::remove_dir_all(reference_root).unwrap();
+    }
+}
+
+#[test]
+fn fused_generation_spool_errors_never_publish_partial_sinks() {
+    for fault in ["checksum", "truncated", "trailing", "header"] {
+        let root = test_dir("fused_generation_spool_failure");
+        let mut initial = SearchOutOfCoreGenerationWriter::create(
+            &root,
+            SearchOutOfCoreGenerationBuildOptions::default(),
+        )
+        .unwrap();
+        initial.push(document(0)).unwrap();
+        let initial = initial.finish().unwrap();
+        let before = published_files(&root);
+        let mut replacement = SearchOutOfCoreGenerationWriter::create(
+            &root,
+            SearchOutOfCoreGenerationBuildOptions {
+                lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
+                ..SearchOutOfCoreGenerationBuildOptions::default()
+            },
+        )
+        .unwrap();
+        for number in 0..300 {
+            replacement.push(document(number)).unwrap();
+        }
+        let error = replacement
+            .finish_with_artifacts(|input, source, generation| {
+                // Mutate after the initial length check so corruption exercises
+                // scan validation with the other sinks already partially filled.
+                let mut bytes = fs::read(&source.path)?;
+                match fault {
+                    "checksum" => *bytes.last_mut().unwrap() ^= 1,
+                    "truncated" => {
+                        bytes.pop();
+                    }
+                    "trailing" => bytes.push(1),
+                    "header" => bytes[0] ^= 1,
+                    _ => unreachable!(),
+                }
+                fs::write(&source.path, bytes)?;
+                input.build_artifacts(source, generation)
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(fault), "{error}");
+        assert_eq!(stage_directories(&root), 0);
+        assert_eq!(published_files(&root), before);
+        let reader = super::super::SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(reader.generation(), initial.generation);
+        assert_eq!(
+            reader
+                .hydrate_documents(&[document(0).id])
+                .unwrap()
+                .documents,
+            vec![document(0)]
+        );
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn fused_generation_sink_failures_preserve_active_artifacts() {
+    for fault in [
+        "lexical",
+        "spill",
+        "segment",
+        "descriptor",
+        "publication",
+        "vector_memory",
+        "vector_count",
+    ] {
+        if !cfg!(feature = "vector-search") && fault.starts_with("vector") {
+            continue;
+        }
+        let root = test_dir("fused_generation_sink_failure");
+        let mut initial = SearchOutOfCoreGenerationWriter::create(
+            &root,
+            SearchOutOfCoreGenerationBuildOptions::default(),
+        )
+        .unwrap();
+        initial.push(document(0)).unwrap();
+        initial.finish().unwrap();
+        let before = published_files(&root);
+        let mut options = SearchOutOfCoreGenerationBuildOptions {
+            lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
+            ..SearchOutOfCoreGenerationBuildOptions::default()
+        };
+        let expected = match fault {
+            "lexical" => {
+                options.lexical_build_memory_bytes = NonZeroU64::MIN;
+                "lexical"
+            }
+            "spill" => {
+                options.lexical_max_spill_bytes = NonZeroU64::MIN;
+                "spill bytes"
+            }
+            "segment" => {
+                options.max_segment_compressed_bytes = NonZeroU64::MIN;
+                "compressed bytes"
+            }
+            "descriptor" => {
+                options.max_descriptor_working_bytes = NonZeroU64::MIN;
+                "descriptor working set"
+            }
+            "publication" => {
+                options.max_generation_bytes = NonZeroU64::MIN;
+                "published bytes"
+            }
+            "vector_memory" => {
+                options.rabitq_build_memory_bytes = NonZeroUsize::MIN;
+                "resource budget"
+            }
+            "vector_count" => "expected vector document count",
+            _ => unreachable!(),
+        };
+        let mut replacement = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
+        for number in 0..16 {
+            replacement.push(document(number)).unwrap();
+        }
+        if fault == "vector_count" {
+            replacement.vector_document_count += 1;
+        }
+        let error = replacement.finish().unwrap_err();
+        assert!(error.to_string().contains(expected), "{fault}: {error}");
+        assert_eq!(stage_directories(&root), 0);
+        assert_eq!(published_files(&root), before);
+        let reader = super::super::SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(
+            reader
+                .hydrate_documents(&[document(0).id])
+                .unwrap()
+                .documents,
+            vec![document(0)]
+        );
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn streaming_generation_publishes_reopenable_zero_residency_projection() {
     let root = test_dir("streaming_generation");
     let options = SearchOutOfCoreGenerationBuildOptions {

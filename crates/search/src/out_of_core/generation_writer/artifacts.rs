@@ -2,6 +2,7 @@ use super::super::{
     append_sidecar_payload, SearchOutOfCoreLayoutBody, SearchOutOfCoreSegmentLayout,
     OUT_OF_CORE_LAYOUT_FORMAT,
 };
+#[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
 use crate::error::{Result, SkeinError};
@@ -83,13 +84,18 @@ impl<'a> SegmentArtifactBuilder<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn build(mut self, source: &SpoolSource) -> Result<SegmentArtifactOutput> {
         source.scan(&mut |document| self.push(document))?;
+        self.finish(source.document_count)
+    }
+
+    pub(super) fn finish(mut self, document_count: usize) -> Result<SegmentArtifactOutput> {
         self.flush_segment()?;
         self.document_file.sync_all()?;
         self.metadata_file.sync_all()?;
         self.vector_file.sync_all()?;
-        self.descriptor.document_count = source.document_count;
+        self.descriptor.document_count = document_count;
         write_search_segment_descriptor(&self.stage, &self.descriptor)?;
         let descriptor_bytes = fs::metadata(self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE))?.len();
         if descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
@@ -102,7 +108,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             layout: SearchOutOfCoreLayoutBody {
                 format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
                 generation: self.generation,
-                document_count: source.document_count,
+                document_count,
                 segments: self.layouts,
             },
             descriptor_working_bytes: self.descriptor_working_bytes,
@@ -115,7 +121,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         })
     }
 
-    fn push(&mut self, document: SearchDocument) -> Result<()> {
+    pub(super) fn push(&mut self, document: SearchDocument) -> Result<()> {
         let encoded_bytes = encode_search_document_line(&document).len() as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()

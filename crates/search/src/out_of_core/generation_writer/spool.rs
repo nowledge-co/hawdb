@@ -20,7 +20,10 @@ impl SpoolSource {
         &self,
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
     ) -> Result<()> {
-        let mut reader = BufReader::new(File::open(&self.path)?);
+        let file = File::open(&self.path)?;
+        #[cfg(test)]
+        let file = read_evidence::track(file);
+        let mut reader = BufReader::new(file);
         let mut header = [0u8; SPOOL_HEADER.len()];
         reader.read_exact(&mut header)?;
         if &header != SPOOL_HEADER {
@@ -121,5 +124,40 @@ impl StageDirectory {
 impl Drop for StageDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+pub(super) mod read_evidence {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static READS: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
+    }
+
+    pub(super) struct TrackedFile(File);
+
+    pub(super) fn track(file: File) -> TrackedFile {
+        READS.with(|reads| {
+            let (opens, bytes) = reads.get();
+            reads.set((opens + 1, bytes));
+        });
+        TrackedFile(file)
+    }
+
+    pub(in super::super) fn take() -> (usize, u64) {
+        READS.with(|reads| reads.replace((0, 0)))
+    }
+
+    impl Read for TrackedFile {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.0.read(output)?;
+            READS.with(|reads| {
+                let (opens, bytes) = reads.get();
+                reads.set((opens, bytes + count as u64));
+            });
+            Ok(count)
+        }
     }
 }

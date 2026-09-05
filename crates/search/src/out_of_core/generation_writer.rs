@@ -14,6 +14,7 @@ use crate::{
 };
 use artifacts::SegmentArtifactBuilder;
 use publication::{file_len_checksum, publish_generation, PublishGenerationInput};
+use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 use skein_integrity::Crc32cHasher;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 mod artifacts;
 mod delta;
 mod publication;
+mod rabitq;
 mod spool;
 #[cfg(test)]
 mod tests;
@@ -253,7 +255,14 @@ impl SearchOutOfCoreGenerationWriter {
         SearchOutOfCoreGenerationUpdate::prepare(reader, delta, options)
     }
 
-    pub fn finish(mut self) -> Result<SearchOutOfCoreGenerationBuildReport> {
+    pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        self.finish_with_artifacts(Self::build_artifacts)
+    }
+
+    fn finish_with_artifacts(
+        mut self,
+        build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
+    ) -> Result<SearchOutOfCoreGenerationBuildReport> {
         if self.poisoned {
             return Err(SkeinError::Storage(
                 "cannot finish a poisoned search generation writer".to_string(),
@@ -289,49 +298,14 @@ impl SearchOutOfCoreGenerationWriter {
             max_record_bytes: self.options.max_record_bytes.get(),
         };
         let generation = next_generation(&self.root)?;
-        let segment_output = SegmentArtifactBuilder::new(
-            &self.stage.path,
-            generation,
-            &self.metadata_fields,
-            &self.options,
-        )?
-        .build(&source)?;
-
         let lexical_generation = generation;
-        let lexical_config = LexicalProjectionConfig {
-            build_memory_bytes: self.options.lexical_build_memory_bytes,
-            max_spill_bytes: self.options.lexical_max_spill_bytes,
-            max_spill_runs: self.options.lexical_max_spill_runs,
-            max_merge_fan_in: self.options.lexical_max_merge_fan_in,
-            max_document_source_bytes: self.options.lexical_max_document_source_bytes,
-            ..LexicalProjectionConfig::default()
-        };
-        let lexical_reader = LexicalProjectionWriter::new(lexical_config).write_scanned(
-            &self.stage.path,
-            lexical_generation,
-            self.options.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.options.analyzer_lexicon),
-            self.documents_digest.finish(),
-            |consumer| source.scan(&mut |document| consumer(&document)),
-            &self.options.analyzer_lexicon,
-        )?;
-        drop(lexical_reader);
-
-        let lexical_artifact_name = lexical_artifact_file(lexical_generation);
-        let lexical_artifact_path = self.stage.path.join(&lexical_artifact_name);
-        let lexical_manifest_path = self.stage.path.join(LEXICAL_MANIFEST_FILE);
-        let (lexical_artifact_bytes, _) = file_len_checksum(&lexical_artifact_path)?;
-        let (lexical_manifest_bytes, _) = file_len_checksum(&lexical_manifest_path)?;
-
-        let rabitq = build_rabitq_artifact(
-            &source,
-            &self.stage.path,
-            generation,
-            self.vector_document_count,
-            self.embedding_dimension,
-            self.options.embedding_manifest.as_ref(),
-            &self.options,
-        )?;
+        let GenerationArtifacts {
+            segment: segment_output,
+            lexical_artifact_name,
+            lexical_artifact_bytes,
+            lexical_manifest_bytes,
+            rabitq,
+        } = build(&self, &source, generation)?;
 
         let published = publish_generation(PublishGenerationInput {
             root: &self.root,
@@ -399,6 +373,62 @@ impl SearchOutOfCoreGenerationWriter {
             cleanup_deleted_files: cleanup.deleted_files,
             cleanup_pending_files: cleanup.pending_after,
             cleanup_retry_required: cleanup.retry_required,
+        })
+    }
+
+    fn build_artifacts(
+        &self,
+        source: &SpoolSource,
+        generation: u64,
+    ) -> Result<GenerationArtifacts> {
+        let mut segments = SegmentArtifactBuilder::new(
+            &self.stage.path,
+            generation,
+            &self.metadata_fields,
+            &self.options,
+        )?;
+        let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
+        let mut completed = None;
+        let lexical_config = LexicalProjectionConfig {
+            build_memory_bytes: self.options.lexical_build_memory_bytes,
+            max_spill_bytes: self.options.lexical_max_spill_bytes,
+            max_spill_runs: self.options.lexical_max_spill_runs,
+            max_merge_fan_in: self.options.lexical_max_merge_fan_in,
+            max_document_source_bytes: self.options.lexical_max_document_source_bytes,
+            ..LexicalProjectionConfig::default()
+        };
+        let lexical = LexicalProjectionWriter::new(lexical_config).write_scanned(
+            &self.stage.path,
+            generation,
+            self.options.source_graph_commit_epoch,
+            lexical_analyzer_digest(&self.options.analyzer_lexicon),
+            self.documents_digest.finish(),
+            |consume| {
+                source.scan(&mut |document| {
+                    consume(&document)?;
+                    vectors.push(&document)?;
+                    segments.push(document)
+                })?;
+                // Drop both writers' buffers before lexical external merge.
+                // All artifacts remain private to the stage until publication.
+                completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
+                Ok(())
+            },
+            &self.options.analyzer_lexicon,
+        )?;
+        drop(lexical);
+        let (segment, rabitq) = completed.expect("lexical build completed its input scan");
+        let lexical_artifact_name = lexical_artifact_file(generation);
+        let (lexical_artifact_bytes, _) =
+            file_len_checksum(&self.stage.path.join(&lexical_artifact_name))?;
+        let (lexical_manifest_bytes, _) =
+            file_len_checksum(&self.stage.path.join(LEXICAL_MANIFEST_FILE))?;
+        Ok(GenerationArtifacts {
+            segment,
+            lexical_artifact_name,
+            lexical_artifact_bytes,
+            lexical_manifest_bytes,
+            rabitq,
         })
     }
 
@@ -507,6 +537,14 @@ impl SearchOutOfCoreGenerationWriter {
     }
 }
 
+struct GenerationArtifacts {
+    segment: artifacts::SegmentArtifactOutput,
+    lexical_artifact_name: String,
+    lexical_artifact_bytes: u64,
+    lexical_manifest_bytes: u64,
+    rabitq: Option<RaBitQGenerationArtifact>,
+}
+
 #[derive(Debug)]
 pub(super) struct RaBitQGenerationArtifact {
     pub(super) file_name: String,
@@ -518,7 +556,7 @@ pub(super) struct RaBitQGenerationArtifact {
     pub(super) peak_build_working_bytes: usize,
 }
 
-#[cfg(feature = "vector-search")]
+#[cfg(all(test, feature = "vector-search"))]
 fn build_rabitq_artifact(
     source: &SpoolSource,
     stage: &Path,
@@ -583,7 +621,7 @@ fn build_rabitq_artifact(
     }))
 }
 
-#[cfg(not(feature = "vector-search"))]
+#[cfg(all(test, not(feature = "vector-search")))]
 fn build_rabitq_artifact(
     _source: &SpoolSource,
     _stage: &Path,
@@ -596,7 +634,7 @@ fn build_rabitq_artifact(
     Ok(None)
 }
 
-#[cfg(feature = "vector-search")]
+#[cfg(all(test, feature = "vector-search"))]
 fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
     SkeinError::Storage(format!("search RaBitQ projection: {error}"))
 }
