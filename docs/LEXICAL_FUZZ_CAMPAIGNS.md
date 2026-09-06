@@ -8,7 +8,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes five lexical targets and one record-codec
+The required local suite includes seven lexical targets and one record-codec
 target, all manual:
 
 ```bash
@@ -29,7 +29,8 @@ cargo test -p skein-search --no-default-features --lib \
 
 Each campaign is an ignored Rust test and has a separate manual Bazel target
 named `//crates/search:skein_search_lexical_<campaign>_fuzz_tests`. Campaign names
-are `analyzer`, `artifact`, `posting`, `dictionary`, `doclist`, and `state_machine`. Bazel supplies the
+are `analyzer`, `artifact`, `merge`, `posting`, `dictionary`, `doclist`, and
+`state_machine`. Bazel supplies the
 exact Rust test name and `--ignored`; each target must report one executed test,
 not a successful zero-test filter. Ordinary Cargo and search unit-test targets
 compile these tests but do not execute them. Do not add these campaigns to
@@ -68,6 +69,13 @@ complete fused-sink budget or allocator/RSS coverage.
 
 ## Coverage and independent checks
 
+- `merge`: seed `0x206ae12`, 6,000 groups with up to eight runs compare the real
+  k-way cursor against an independent ordered-tuple union. Duplicates, empty
+  runs, Unicode/NUL terms and full-width ordinals/TFs are included. Every group
+  has exact and one-short shared-root retries; 188 consumer cancellations must
+  prevent another record decode. Another 12,000 mutated run byte strings must
+  agree with a separate direct decoder/order oracle. All outcomes return
+  tracked memory to zero and retain exactly three operation accounts.
 - `artifact`: seed `0x206a47`, 12,000 document groups compare the actual document-map
   encoder with independent direct v1 bytes. Unicode/NUL IDs, full-width u32 lengths,
   block flush/reuse and cancellation are included. Each group is retried with its

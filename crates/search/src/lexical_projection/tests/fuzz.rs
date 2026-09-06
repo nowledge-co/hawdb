@@ -5,6 +5,7 @@ use super::*;
 mod analysis;
 mod artifact;
 mod bytes;
+mod merge;
 mod state_machine;
 
 struct Random(u64);

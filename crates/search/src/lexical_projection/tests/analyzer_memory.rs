@@ -179,7 +179,7 @@ fn posting_chunk_retains_transferred_terms_after_analyzer_drop_and_until_spill()
     assert!(chunk.retained_bytes() > 0);
     assert_eq!(memory.ledger.snapshot().used_bytes, chunk.retained_bytes());
     let before = chunk.retained_bytes();
-    let mut runs = SpillRuns::new(&root, 1, Default::default());
+    let mut runs = SpillRuns::new(&root, 1, Default::default(), memory.clone());
     chunk.spill(&mut runs).unwrap();
     assert!(chunk.is_empty());
     assert!(chunk.retained_bytes() < before);

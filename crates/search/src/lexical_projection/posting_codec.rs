@@ -93,7 +93,10 @@ pub(super) fn encode(postings: &[Posting]) -> Result<Vec<u8>> {
     } else {
         0
     };
-    let mut bytes = vec![0u8; HEADER_LEN];
+    // A fixed pre-admitted capacity avoids hidden old/new growth overlap in
+    // the generation writer. Every wire mode fits this bound.
+    let mut bytes = Vec::with_capacity(MAX_BLOCK_BYTES);
+    bytes.resize(HEADER_LEN, 0);
     bytes[..4].copy_from_slice(b"LXP1");
     bytes[4..6].copy_from_slice(&(postings.len() as u16).to_le_bytes());
     // 65535 means no finite bound, including an exact frequency of 65535.

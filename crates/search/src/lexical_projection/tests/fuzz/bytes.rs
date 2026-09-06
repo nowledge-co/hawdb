@@ -329,6 +329,7 @@ fn doclist_bytes_campaign() {
         &root.join("skip.tmp"),
         dictionary_store::SpillBudget::new(0, 1024 * 1024),
         MAX_BLOCK_BYTES as u64,
+        BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
     )
     .unwrap();
     for count in [1, 127, 128, 129, 256, 257, 513] {

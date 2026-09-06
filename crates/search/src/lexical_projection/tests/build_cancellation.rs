@@ -93,6 +93,7 @@ fn cancellation_during_skip_copy_stops_before_more_spill_reads() {
         &path,
         dictionary_store::SpillBudget::new(0, u64::MAX),
         posting_codec::MAX_BLOCK_BYTES as u64,
+        BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
     )
     .unwrap()
     .with_context(task.clone());

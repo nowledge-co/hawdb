@@ -1,4 +1,5 @@
 use super::{dictionary::Metadata, posting_codec, Digest, RemoveOnDrop};
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -34,6 +35,7 @@ pub(super) struct Writer {
     spill: super::dictionary_store::SpillBudget,
     max_frame_bytes: u64,
     task_context: skein_core::RuntimeTaskContext,
+    memory: BuildMemory,
 }
 
 impl Writer {
@@ -41,6 +43,7 @@ impl Writer {
         path: &Path,
         spill: super::dictionary_store::SpillBudget,
         max_frame_bytes: u64,
+        memory: BuildMemory,
     ) -> Result<Self> {
         let skip = OpenOptions::new()
             .create_new(true)
@@ -58,6 +61,7 @@ impl Writer {
             spill,
             max_frame_bytes,
             task_context: skein_core::RuntimeTaskContext::default(),
+            memory,
         })
     }
 
@@ -82,6 +86,7 @@ impl Writer {
         if self.frames > 0 && !self.df.is_multiple_of(posting_codec::BLOCK_LEN as u64) {
             return Err(invalid("a short frame must terminate its doclist"));
         }
+        let _encoded_memory = self.memory.spool.reserve(posting_codec::MAX_BLOCK_BYTES)?;
         let encoded = posting_codec::encode(postings).map_err(invalid)?;
         if encoded.len() as u64 > self.max_frame_bytes {
             return Err(invalid("frame exceeds the configured read budget"));
@@ -134,7 +139,9 @@ impl Writer {
         if self.frames > 1 {
             skip_offset = *offset - self.start;
             let mut digest = Digest::new();
-            let header = [SKIP_HEADER.as_slice(), &self.frames.to_le_bytes()].concat();
+            let mut header = [0; 12];
+            header[..4].copy_from_slice(SKIP_HEADER);
+            header[4..].copy_from_slice(&self.frames.to_le_bytes());
             digest.update(&header);
             write_bytes(writer, offset, &header)?;
             self.skip.seek(SeekFrom::Start(0))?;
@@ -343,6 +350,7 @@ mod tests {
             &path,
             super::super::dictionary_store::SpillBudget::new(0, 4096),
             4096,
+            BuildMemory::new(&Default::default()).unwrap(),
         )
         .unwrap();
         let postings = (0..257)
@@ -400,7 +408,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("skip.tmp");
         let budget = super::super::dictionary_store::SpillBudget::new(0, 31);
-        let mut writer = Writer::new(&path, budget.clone(), 4096).unwrap();
+        let mut writer = Writer::new(
+            &path,
+            budget.clone(),
+            4096,
+            BuildMemory::new(&Default::default()).unwrap(),
+        )
+        .unwrap();
         let mut bytes = Vec::new();
         let mut offset = 0;
         let postings = (0..129)
@@ -416,7 +430,13 @@ mod tests {
         assert_eq!(bytes, before);
         drop(writer);
         assert!(!path.exists());
-        let mut writer = Writer::new(&path, budget, 4096).unwrap();
+        let mut writer = Writer::new(
+            &path,
+            budget,
+            4096,
+            BuildMemory::new(&Default::default()).unwrap(),
+        )
+        .unwrap();
         writer
             .push_frame(&mut bytes, &mut offset, &postings[..1])
             .unwrap();
@@ -431,6 +451,7 @@ mod tests {
             &path,
             super::super::dictionary_store::SpillBudget::new(0, 4096),
             128,
+            BuildMemory::new(&Default::default()).unwrap(),
         )
         .unwrap();
         let wide = (0..128)

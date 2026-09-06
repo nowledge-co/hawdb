@@ -232,7 +232,11 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
     for length in 0..=bytes.len() {
         fs::write(&path, &bytes[..length]).unwrap();
         let observed = (|| {
-            let mut reader = RunReader::open(&path, LexicalProjectionConfig::default())?;
+            let mut reader = RunReader::open(
+                &path,
+                LexicalProjectionConfig::default(),
+                BuildMemory::new(&RuntimeTaskContext::default())?,
+            )?;
             let mut count = 0;
             while reader.next()?.is_some() {
                 count += 1;
@@ -248,10 +252,14 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
     let mut oversized = RUN_HEADER.to_vec();
     oversized.extend_from_slice(&u32::MAX.to_le_bytes());
     fs::write(&path, oversized).unwrap();
-    let error = RunReader::open(&path, LexicalProjectionConfig::default())
-        .unwrap()
-        .next()
-        .unwrap_err();
+    let error = RunReader::open(
+        &path,
+        LexicalProjectionConfig::default(),
+        BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
+    )
+    .unwrap()
+    .next()
+    .unwrap_err();
     assert!(error.to_string().contains("admitted length"), "{error}");
 }
 
@@ -337,7 +345,12 @@ fn compaction_charges_output_runs_and_cleans_up_when_budget_is_exhausted() {
         max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
         ..LexicalProjectionConfig::default()
     };
-    let mut runs = SpillRuns::new(&fixture.root, 2, config);
+    let mut runs = SpillRuns::new(
+        &fixture.root,
+        2,
+        config,
+        BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
+    );
     for ordinal in [0, 1, 2] {
         runs.spill(&mut vec![Posting {
             term: "graph".to_string(),

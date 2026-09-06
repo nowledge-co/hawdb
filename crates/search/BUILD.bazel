@@ -68,6 +68,7 @@ rust_test(
     for campaign, test_filter in [
         ("analyzer", "analysis::frequency_parity_campaign"),
         ("artifact", "artifact::document_mapping_admission_campaign"),
+        ("merge", "merge::merge_admission_campaign"),
         ("posting", "bytes::posting_bytes_campaign"),
         ("dictionary", "bytes::dictionary_bytes_campaign"),
         ("doclist", "bytes::doclist_bytes_campaign"),

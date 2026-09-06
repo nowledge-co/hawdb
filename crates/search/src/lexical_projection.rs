@@ -12,7 +12,7 @@ use skein_storage::{durable_replace_file, SegmentCache, StoreId};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,10 +29,14 @@ mod doclist;
 mod documents;
 mod fst_validation;
 mod manifest_io;
+mod merge;
 mod posting_chunk;
 mod posting_codec;
 mod read_context;
 use documents::DocumentLookup;
+use merge::MergedPostings;
+#[cfg(test)]
+use merge::RunReader;
 use read_context::ReadContext;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
@@ -1235,7 +1239,7 @@ impl LexicalProjectionWriter {
         let mut artifact =
             ArtifactBuilder::new(&tmp_path, generation, self.config, memory.clone())?;
         artifact.task_context = self.task_context.clone();
-        let mut runs = SpillRuns::new(root, generation, self.config);
+        let mut runs = SpillRuns::new(root, generation, self.config, memory.clone());
         runs.task_context = self.task_context.clone();
         let mut chunk = posting_chunk::PostingChunk::new(memory.clone())?;
         let mut document_count = 0u64;
@@ -1522,6 +1526,7 @@ impl ArtifactBuilder {
             &self.path.with_extension("skip.tmp"),
             budget.clone(),
             config.max_block_bytes.get(),
+            self.memory.clone(),
         )?
         .with_context(self.task_context.clone());
         let mut dictionary = dictionary_store::Writer::new(
@@ -1531,51 +1536,49 @@ impl ArtifactBuilder {
             self.directory.clone(),
         )?
         .with_context(self.task_context.clone());
-        let mut readers = paths
-            .iter()
-            .map(|path| RunReader::open(path, config))
-            .collect::<Result<Vec<_>>>()?;
-        let mut heap = BinaryHeap::new();
-        for (index, reader) in readers.iter_mut().enumerate() {
-            if let Some(posting) = reader.next()? {
-                heap.push(Reverse((posting, index)));
-            }
-        }
-        let mut previous: Option<Posting> = None;
+        let mut postings = MergedPostings::new(
+            paths,
+            config,
+            self.memory.clone(),
+            self.task_context.clone(),
+        )?;
         let mut term: Option<String> = None;
+        let frame_memory = self
+            .memory
+            .retained
+            .reserve(crate::build_memory::checked_mul(
+                posting_codec::BLOCK_LEN,
+                std::mem::size_of::<posting_codec::Posting>(),
+            )?)?;
         let mut frame = Vec::with_capacity(posting_codec::BLOCK_LEN);
-        while let Some(Reverse((posting, index))) = heap.pop() {
+        while let Some(posting) = postings.next()? {
             checkpoint(&self.task_context)?;
-            if previous.as_ref() != Some(&posting) {
-                if term.as_ref().is_some_and(|term| term != &posting.term) {
-                    if !frame.is_empty() {
-                        doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
-                        frame.clear();
-                    }
-                    let metadata = doclist.finish(&mut self.writer, &mut self.offset)?;
-                    self.add_skip_bytes(metadata)?;
-                    dictionary.push(term.take().unwrap(), metadata)?;
-                }
-                if term.is_none() {
-                    term = Some(posting.term.clone());
-                }
-                frame.push(posting_codec::Posting {
-                    ordinal: posting.ordinal,
-                    tf: posting.term_frequency,
-                });
-                if frame.len() == posting_codec::BLOCK_LEN {
+            if term.as_ref().is_some_and(|term| term != &posting.term) {
+                if !frame.is_empty() {
                     doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
                     frame.clear();
                 }
-                self.posting_count = self.posting_count.checked_add(1).ok_or_else(|| {
-                    SkeinError::Storage("lexical posting count overflow".to_string())
-                })?;
-                previous = Some(posting);
+                let metadata = doclist.finish(&mut self.writer, &mut self.offset)?;
+                self.add_skip_bytes(metadata)?;
+                dictionary.push(term.take().unwrap(), metadata)?;
             }
-            if let Some(next) = readers[index].next()? {
-                heap.push(Reverse((next, index)));
+            if term.is_none() {
+                term = Some(posting.term.clone());
             }
+            frame.push(posting_codec::Posting {
+                ordinal: posting.ordinal,
+                tf: posting.term_frequency,
+            });
+            if frame.len() == posting_codec::BLOCK_LEN {
+                doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
+                frame.clear();
+            }
+            self.posting_count = self
+                .posting_count
+                .checked_add(1)
+                .ok_or_else(|| SkeinError::Storage("lexical posting count overflow".to_string()))?;
         }
+        drop(postings);
         if let Some(term) = term {
             if !frame.is_empty() {
                 doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
@@ -1585,6 +1588,9 @@ impl ArtifactBuilder {
             dictionary.push(term, metadata)?;
         }
         self.posting_bytes = self.offset - self.posting_offset;
+        drop(frame);
+        drop(frame_memory);
+        drop(doclist);
         self.dictionaries = dictionary.finish(&mut self.writer, &mut self.offset)?;
         Ok(())
     }
@@ -1674,10 +1680,16 @@ struct SpillRuns {
     bytes: u64,
     sequence: usize,
     task_context: RuntimeTaskContext,
+    memory: BuildMemory,
 }
 
 impl SpillRuns {
-    fn new(root: &Path, generation: u64, config: LexicalProjectionConfig) -> Self {
+    fn new(
+        root: &Path,
+        generation: u64,
+        config: LexicalProjectionConfig,
+        memory: BuildMemory,
+    ) -> Self {
         Self {
             root: root.to_path_buf(),
             generation,
@@ -1686,6 +1698,7 @@ impl SpillRuns {
             bytes: 0,
             sequence: 0,
             task_context: RuntimeTaskContext::default(),
+            memory,
         }
     }
 
@@ -1694,9 +1707,16 @@ impl SpillRuns {
         postings.sort_unstable();
         postings.dedup();
         checkpoint(&self.task_context)?;
+        let _writer_memory = self
+            .memory
+            .spool
+            .reserve(crate::build_memory::SPOOL_BUFFER_BYTES)?;
         let path = self.next_path()?;
         let mut guard = RemoveOnDrop::new(path.clone());
-        let mut writer = BufWriter::new(File::create(&path)?);
+        let mut writer = BufWriter::with_capacity(
+            crate::build_memory::SPOOL_BUFFER_BYTES,
+            File::create(&path)?,
+        );
         writer.write_all(RUN_HEADER)?;
         let mut bytes = RUN_HEADER.len() as u64;
         for posting in postings.iter() {
@@ -1715,6 +1735,13 @@ impl SpillRuns {
     }
 
     fn compact(&mut self) -> Result<()> {
+        self.compact_with_remove(|path| fs::remove_file(path))
+    }
+
+    fn compact_with_remove(
+        &mut self,
+        mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+    ) -> Result<()> {
         checkpoint(&self.task_context)?;
         let fan_in = self.config.max_merge_fan_in.get();
         if fan_in < 2 {
@@ -1724,35 +1751,21 @@ impl SpillRuns {
         }
         while self.paths.len() > fan_in {
             checkpoint(&self.task_context)?;
-            let old = std::mem::take(&mut self.paths);
-            let mut merged = Vec::new();
-            for group in old.chunks(fan_in) {
-                let path = match self.next_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        remove_paths(old.iter().chain(merged.iter()));
-                        return Err(error);
-                    }
-                };
-                let bytes = match merge_runs(group, &path, self.config, &self.task_context) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        let _ = fs::remove_file(&path);
-                        remove_paths(old.iter().chain(merged.iter()));
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = self.admit_spill(bytes) {
-                    let _ = fs::remove_file(&path);
-                    remove_paths(old.iter().chain(merged.iter()));
-                    return Err(error);
-                }
-                merged.push(path);
+            let old = RunPaths(std::mem::take(&mut self.paths));
+            let mut merged = RunPaths(Vec::new());
+            for group in old.0.chunks(fan_in) {
+                let path = self.next_path()?;
+                let mut guard = RemoveOnDrop::new(path.clone());
+                let bytes =
+                    merge_runs(group, &path, self.config, &self.task_context, &self.memory)?;
+                self.admit_spill(bytes)?;
+                merged.0.push(path);
+                guard.disarm();
                 for source in group {
-                    fs::remove_file(source)?;
+                    remove(source)?;
                 }
             }
-            self.paths = merged;
+            self.paths = std::mem::take(&mut merged.0);
         }
         Ok(())
     }
@@ -1786,57 +1799,25 @@ impl SpillRuns {
     }
 }
 
-fn remove_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>) {
+// Keep every owned run under cleanup even after moving paths out of SpillRuns.
+// A failed source deletion must also clean completed outputs.
+struct RunPaths(Vec<PathBuf>);
+
+fn remove_paths(paths: &[PathBuf]) {
     for path in paths {
         let _ = fs::remove_file(path);
     }
 }
 
+impl Drop for RunPaths {
+    fn drop(&mut self) {
+        remove_paths(&self.0);
+    }
+}
+
 impl Drop for SpillRuns {
     fn drop(&mut self) {
-        for path in &self.paths {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-struct RunReader {
-    reader: BufReader<File>,
-    config: LexicalProjectionConfig,
-}
-
-impl RunReader {
-    fn open(path: &Path, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut reader = BufReader::new(File::open(path)?);
-        let mut header = [0u8; 8];
-        reader.read_exact(&mut header)?;
-        if &header != RUN_HEADER {
-            return Err(SkeinError::Storage(
-                "lexical spill run header mismatch".to_string(),
-            ));
-        }
-        Ok(Self { reader, config })
-    }
-
-    fn next(&mut self) -> Result<Option<Posting>> {
-        let Some(term) = read_optional_string(&mut self.reader, self.config.max_term_bytes.get())?
-        else {
-            return Ok(None);
-        };
-        let mut ordinal = [0u8; 8];
-        self.reader.read_exact(&mut ordinal)?;
-        let ordinal = u64::from_le_bytes(ordinal);
-        let term_frequency = read_u32(&mut self.reader)?;
-        if term.is_empty() || term_frequency == 0 {
-            return Err(SkeinError::Storage(
-                "invalid lexical spill posting".to_string(),
-            ));
-        }
-        Ok(Some(Posting {
-            term,
-            ordinal,
-            term_frequency,
-        }))
+        remove_paths(&self.paths);
     }
 }
 
@@ -1845,32 +1826,23 @@ fn merge_runs(
     destination: &Path,
     config: LexicalProjectionConfig,
     task_context: &RuntimeTaskContext,
+    memory: &BuildMemory,
 ) -> Result<u64> {
     checkpoint(task_context)?;
-    let mut readers = paths
-        .iter()
-        .map(|path| RunReader::open(path, config))
-        .collect::<Result<Vec<_>>>()?;
-    let mut heap = BinaryHeap::new();
-    for (index, reader) in readers.iter_mut().enumerate() {
-        if let Some(posting) = reader.next()? {
-            heap.push(Reverse((posting, index)));
-        }
-    }
-    let mut writer = BufWriter::new(File::create(destination)?);
+    let _writer_memory = memory
+        .spool
+        .reserve(crate::build_memory::SPOOL_BUFFER_BYTES)?;
+    let mut postings = MergedPostings::new(paths, config, memory.clone(), task_context.clone())?;
+    let mut writer = BufWriter::with_capacity(
+        crate::build_memory::SPOOL_BUFFER_BYTES,
+        File::create(destination)?,
+    );
     writer.write_all(RUN_HEADER)?;
     let mut bytes = RUN_HEADER.len() as u64;
-    let mut previous = None;
-    while let Some(Reverse((posting, index))) = heap.pop() {
+    while let Some(posting) = postings.next()? {
         checkpoint(task_context)?;
-        if previous.as_ref() != Some(&posting) {
-            encode_posting(&mut writer, &posting)?;
-            bytes = bytes.saturating_add(posting.encoded_len());
-            previous = Some(posting);
-        }
-        if let Some(next) = readers[index].next()? {
-            heap.push(Reverse((next, index)));
-        }
+        encode_posting(&mut writer, posting)?;
+        bytes = bytes.saturating_add(posting.encoded_len());
     }
     writer.flush()?;
     Ok(bytes)
@@ -1992,28 +1964,6 @@ fn write_string(writer: &mut impl Write, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_optional_string(reader: &mut impl Read, max: u64) -> Result<Option<String>> {
-    let mut length = [0u8; 4];
-    match reader.read(&mut length)? {
-        0 => return Ok(None),
-        4 => {}
-        count => {
-            reader.read_exact(&mut length[count..])?;
-        }
-    }
-    let length = u32::from_le_bytes(length) as usize;
-    if length as u64 > max {
-        return Err(SkeinError::Storage(
-            "lexical spill string exceeds its admitted length".to_string(),
-        ));
-    }
-    let mut bytes = vec![0u8; length];
-    reader.read_exact(&mut bytes)?;
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|error| SkeinError::Storage(error.to_string()))
-}
-
 fn read_u32(reader: &mut impl Read) -> Result<u32> {
     let mut bytes = [0u8; 4];
     reader.read_exact(&mut bytes)?;
@@ -2073,6 +2023,7 @@ mod tests {
     mod compact_dictionary;
     mod compact_postings;
     mod fuzz;
+    mod merge_admission;
     mod robustness;
     mod token_memory;
     mod token_reference;
