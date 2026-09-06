@@ -303,14 +303,20 @@ pub struct SearchProjectionProbeOptions {
 impl SearchProjectionRow {
     pub fn into_document(self) -> SearchDocument {
         let kind = self.kind.as_str();
+        // Exact capacity makes delta conversion growth preflightable. Build the
+        // ID before moving the external ID into metadata, avoiding a payload copy.
+        let mut id = String::with_capacity(kind.len() + 1 + self.external_id.len());
+        id.push_str(kind);
+        id.push(':');
+        id.push_str(&self.external_id);
         let mut metadata = self.metadata;
         metadata.insert("kind".to_string(), kind.to_string());
-        metadata.insert("external_id".to_string(), self.external_id.clone());
+        metadata.insert("external_id".to_string(), self.external_id);
         if let Some(source_id) = self.source_id {
             metadata.insert("source_id".to_string(), source_id);
         }
         SearchDocument {
-            id: format!("{kind}:{}", self.external_id),
+            id,
             title: self.title,
             content: self.body,
             embedding: self.embedding,

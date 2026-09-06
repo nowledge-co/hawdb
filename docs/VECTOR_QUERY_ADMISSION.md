@@ -108,7 +108,9 @@ Private borrowed ranks, bounded fusion and the hydration candidate page now
 retain shared-root charges (`RANKING_QUERY_ADMISSION.md`); public reports/hits do not.
 Internal hydration raw/text/document ownership now shares the operation root
 (`HYDRATION_QUERY_ADMISSION.md`), including delta source reads on the writer root.
-This does not own escaped public documents/hits or delta input containers.
+This does not own escaped public documents/hits. Generation delta input containers
+now retain separate build-root charges (`DELTA_INPUT_ADMISSION.md`), not all
+resident/persistent delta state.
 The resident vector path is not newly instrumented by this change. Jieba
 workspace maintenance, exact-head native qualification and representative-corpus
 posting-size reduction remain independent full #206 gates. No dependency,

@@ -21,7 +21,8 @@ new memory account per document.
   during the callback; consumed payload charges shrink only after it returns.
 
 The query still has two operation accounts and the writer has three. Sharing
-source ownership does not admit the delta's separate upsert/delete containers.
+source ownership is separate from the delta's upsert/delete containers, which
+now retain their own same-root admission (`DELTA_INPUT_ADMISSION.md`).
 
 ## Allocation and lifetime boundaries
 
@@ -106,7 +107,7 @@ existing plain-vector API boundary. It is not retained public-output coverage.
 Public hits, report copies, matched-span/tokenizer scratch and parsed filter/ACL
 inputs still need ownership. Shared-root projection backend admission and retained
 projection hits remain behind the pending public-contract decision. Combined
-component limits, delta inputs, published-reader host/mapping ownership, Jieba
+component limits, resident delta maps, published-reader host/mapping ownership, Jieba
 workspace, representative-corpus reduction and exact-head native qualification
 remain separate #206 gates. No public signature, v1 artifact, dependency, backend,
 Bazel runtime/timeout setting or release-policy change is made here.

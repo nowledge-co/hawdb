@@ -197,6 +197,18 @@ public direct hydration path must preserve the same result and order. The target
 is manual, is part of the explicit local fuzz suite, and adds no fuzz CI job.
 See `HYDRATION_QUERY_ADMISSION.md` for scope and negative controls.
 
+## Generation delta input admission
+
+The delta campaign is `//crates/search:skein_search_delta_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features delta_admission_campaign -- --ignored --nocapture`.
+Seed `0x206de17a` covers 128 input conversion/consumption cases with exact/one-short
+root limits and 32 published generation updates. Independent document/map oracles
+check kind-prefixed IDs, metadata replacement, ascending consumption, upserts,
+deletes and complete reopen results; normal tests independently check the
+capacity arithmetic. Original spare-capacity inputs are used for exact attempts.
+The target is manual and included in the explicit local fuzz suite, not CI.
+See `DELTA_INPUT_ADMISSION.md` for the internal ownership boundary.
+
 ## Coverage and independent checks
 
 - `dictionary_memory`: seed `0x206fc7`, 2,000 key groups compare actual dictionary

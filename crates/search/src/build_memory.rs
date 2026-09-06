@@ -2,7 +2,7 @@
 
 use crate::document_codec::Fields;
 use crate::error::{Result, SkeinError};
-use crate::SearchDocument;
+use crate::{SearchDocument, SearchProjectionRow};
 use skein_core::RuntimeTaskContext;
 use skein_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use std::mem::size_of;
@@ -12,14 +12,14 @@ use std::ops::Deref;
 // Conservative per-entry container allowances, not allocator/RSS measurements.
 // Include String slots, B-tree node occupancy and transient node split slack.
 pub(crate) const SET_ENTRY_BYTES: usize = 1024;
-const MAP_ENTRY_BYTES: usize = 2048;
+pub(crate) const MAP_ENTRY_BYTES: usize = 2048;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuildMemory {
     #[cfg(test)]
     pub(crate) ledger: QueryMemoryLedger,
-    input: QueryMemoryAccount,
+    pub(crate) input: QueryMemoryAccount,
     pub(crate) spool: QueryMemoryAccount,
     pub(crate) retained: QueryMemoryAccount,
 }
@@ -126,18 +126,45 @@ fn overflow() -> SkeinError {
 }
 
 pub(crate) fn document_bytes(document: &SearchDocument) -> Result<usize> {
-    let mut bytes = size_of::<SearchDocument>();
+    checked_add(
+        size_of::<SearchDocument>(),
+        field_bytes(
+            [&document.id, &document.title, &document.content],
+            document.embedding.as_ref().map_or(0, Vec::capacity),
+            &document.metadata,
+        )?,
+    )
+}
+
+pub(crate) fn projection_row_bytes(row: &SearchProjectionRow) -> Result<usize> {
+    checked_add(
+        checked_add(
+            size_of::<SearchProjectionRow>(),
+            row.source_id.as_ref().map_or(0, String::capacity),
+        )?,
+        field_bytes(
+            [&row.external_id, &row.title, &row.body],
+            row.embedding.as_ref().map_or(0, Vec::capacity),
+            &row.metadata,
+        )?,
+    )
+}
+
+fn field_bytes(
+    strings: [&String; 3],
+    embedding_capacity: usize,
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> Result<usize> {
+    let mut bytes = 0;
     // Removing the final map entry may retain an allocated empty leaf root.
-    if document.metadata.is_empty() {
+    if metadata.is_empty() {
         bytes = checked_add(bytes, MAP_ENTRY_BYTES)?;
     }
-    for field in [&document.id, &document.title, &document.content] {
+    for field in strings {
         bytes = checked_add(bytes, field.capacity())?;
     }
-    if let Some(values) = &document.embedding {
-        bytes = checked_add(bytes, checked_mul(values.capacity(), size_of::<f32>())?)?;
-    }
-    for (key, value) in &document.metadata {
+    bytes = checked_add(bytes, checked_mul(embedding_capacity, size_of::<f32>())?)?;
+    for (key, value) in metadata {
         bytes = checked_add(bytes, MAP_ENTRY_BYTES)?;
         bytes = checked_add(bytes, key.capacity())?;
         bytes = checked_add(bytes, value.capacity())?;

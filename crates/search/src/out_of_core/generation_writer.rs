@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 mod artifacts;
 mod delta;
+mod delta_memory;
 mod publication;
 mod rabitq;
 #[cfg(feature = "vector-search")]
@@ -235,6 +236,18 @@ impl SearchOutOfCoreGenerationWriter {
         checkpoint(&task_context)?;
         validate_options(&options)?;
         let memory = BuildMemory::new(&task_context)?;
+        Self::create_with_memory(root, options, task_context, memory)
+    }
+
+    // Delta admission creates the same root before converting input rows.
+    fn create_with_memory(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task_context: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
+        validate_options(&options)?;
         let metadata_bytes = required_descriptor_field_names().try_fold(0, |bytes, field| {
             checked_add(bytes, checked_add(SET_ENTRY_BYTES, field.len())?)
         })?;
