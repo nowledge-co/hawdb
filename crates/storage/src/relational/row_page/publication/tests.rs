@@ -418,6 +418,191 @@ fn incremental_publication_reuses_clean_pages_and_keeps_pinned_roots() {
 }
 
 #[test]
+fn candidate_compaction_rewrites_only_sparse_physical_generations() {
+    let directory = unique_test_dir("candidate-compaction");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                (1..=4)
+                    .map(|id| page(id, 1, 10, id as i64, id as i64))
+                    .collect(),
+            )],
+        )
+        .unwrap();
+    let pinned = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let mut changed = table_delta(
+        "documents",
+        (1..=3)
+            .map(|id| page(id, 2, 11, id as i64, id as i64))
+            .collect(),
+    );
+    changed.next_page_id = NonZeroU64::new(5).unwrap();
+    publisher
+        .publish(&directory, 2, 11, Some(1), vec![changed])
+        .unwrap();
+    let base = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let task = skein_core::RuntimeTaskContext::default();
+    let report = publisher
+        .persist_generation_compacting(
+            RelationalRowPageGenerationRequest {
+                directory: &directory,
+                generation: 3,
+                source_commit_epoch: 11,
+                base: Some(&base),
+                expected_previous_generation: Some(2),
+                overflow_root: None,
+            },
+            Vec::new(),
+            RelationalRowPageRewriteConfig::default(),
+            &task,
+        )
+        .unwrap();
+    assert_eq!(report.dirty_pages_written, 0);
+    assert_eq!(report.relocated_pages_written, 1);
+    assert_eq!(report.reused_pages, 3);
+    assert_eq!(report.events, CANDIDATE_PUBLICATION_TRACE);
+    assert_eq!(
+        RelationalRowPageRootReader::open_latest(&directory, config)
+            .unwrap()
+            .unwrap()
+            .manifest()
+            .generation,
+        2
+    );
+    let candidate = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    let descriptors = collect_descriptors(&candidate, "documents");
+    assert_eq!(physical_generations(&descriptors), vec![2, 2, 2, 3]);
+    assert_eq!(
+        candidate
+            .manifest()
+            .physical_generations
+            .iter()
+            .map(|entry| entry.allocated_pages)
+            .sum::<u64>(),
+        4
+    );
+    for (old, new) in collect_descriptors(&base, "documents")
+        .iter()
+        .zip(&descriptors)
+    {
+        let old_page = base.read_page(old).unwrap();
+        let new_page = candidate.read_page(new).unwrap();
+        assert_eq!(old_page.rows, new_page.rows);
+        assert_eq!(old_page.page_id, new_page.page_id);
+        assert_eq!(old_page.source_commit_epoch, new_page.source_commit_epoch);
+    }
+    for descriptor in collect_descriptors(&pinned, "documents") {
+        assert_eq!(pinned.read_page(&descriptor).unwrap().generation, 1);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
+    let directory = unique_test_dir("compaction-failure");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    let base = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let request = RelationalRowPageGenerationRequest {
+        directory: &directory,
+        generation: 2,
+        source_commit_epoch: 10,
+        base: Some(&base),
+        expected_previous_generation: Some(1),
+        overflow_root: None,
+    };
+    let rewrite = RelationalRowPageRewriteConfig {
+        max_live_ratio_percent: 100,
+        ..RelationalRowPageRewriteConfig::default()
+    };
+    let task = skein_core::RuntimeTaskContext::default();
+    for limit in [
+        RelationalRowPageRewriteConfig {
+            max_live_ratio_percent: 0,
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_live_ratio_percent: 101,
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_scan_pages: NonZeroU64::new(1).unwrap(),
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_rewrite_bytes: NonZeroU64::new(config.page_limits.max_page_bytes.get() as u64)
+                .unwrap(),
+            ..rewrite
+        },
+    ] {
+        assert!(matches!(
+            publisher.persist_generation_compacting(request, Vec::new(), limit, &task),
+            Err(RelationalRowPagePublicationError::Admission(_))
+        ));
+        assert!(!directory
+            .join(relational_row_page_manifest_generation_file(2))
+            .exists());
+        assert!(!directory
+            .join(relational_row_page_artifact_file(2))
+            .exists());
+    }
+    task.cancellation().cancel();
+    assert!(
+        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &task),
+        Err(RelationalRowPagePublicationError::Admission(message)) if message.contains("stopped"))
+    );
+    let mut artifact = OpenOptions::new()
+        .write(true)
+        .open(directory.join(relational_row_page_artifact_file(1)))
+        .unwrap();
+    artifact.seek(SeekFrom::Start(200)).unwrap();
+    artifact.write_all(b"corrupt").unwrap();
+    artifact.sync_all().unwrap();
+    drop(artifact);
+    assert!(
+        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &skein_core::RuntimeTaskContext::default()),
+        Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("checksum"))
+    );
+    assert!(!directory
+        .join(relational_row_page_manifest_generation_file(2))
+        .exists());
+    assert_eq!(
+        RelationalRowPageRootReader::open_latest(&directory, config)
+            .unwrap()
+            .unwrap()
+            .manifest()
+            .generation,
+        1
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn occupancy_validation_rejects_authenticated_invalid_counts() {
     let directory = unique_test_dir("invalid-occupancy");
     let config = RelationalRowPagePublicationConfig::default();

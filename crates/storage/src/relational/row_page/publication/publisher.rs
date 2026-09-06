@@ -1,3 +1,4 @@
+use super::compaction::RowPageRewriteControls;
 use super::{
     durability, manifest, relational_row_page_artifact_file,
     relational_row_page_manifest_generation_file, relational_row_page_root_descriptor_file,
@@ -90,6 +91,32 @@ impl RelationalRowPagePublisher {
                 overflow_root: request.overflow_root,
                 select_latest: false,
                 stop_after: None,
+                rewrite: None,
+            },
+            deltas,
+        )
+    }
+
+    /// Rewrites selected physical generations into a candidate without changing
+    /// the canonical checkpoint or independent latest selector.
+    pub fn persist_generation_compacting(
+        &self,
+        request: RelationalRowPageGenerationRequest<'_>,
+        deltas: Vec<RelationalRowPageTableDelta>,
+        config: super::RelationalRowPageRewriteConfig,
+        task: &skein_core::RuntimeTaskContext,
+    ) -> Result<RelationalRowPagePublicationReport, RelationalRowPagePublicationError> {
+        self.persist_generation_inner(
+            GenerationPublication {
+                directory: request.directory,
+                generation: request.generation,
+                source_commit_epoch: request.source_commit_epoch,
+                base: request.base,
+                expected_previous_generation: request.expected_previous_generation,
+                overflow_root: request.overflow_root,
+                select_latest: false,
+                stop_after: None,
+                rewrite: Some(RowPageRewriteControls { config, task }),
             },
             deltas,
         )
@@ -115,6 +142,7 @@ impl RelationalRowPagePublisher {
                 overflow_root: controls.overflow_root,
                 select_latest: true,
                 stop_after: controls.stop_after,
+                rewrite: None,
             },
             deltas,
         )
@@ -134,7 +162,11 @@ impl RelationalRowPagePublisher {
             overflow_root,
             select_latest,
             stop_after,
+            rewrite,
         } = publication;
+        if let Some(rewrite) = rewrite {
+            rewrite.validate(base)?;
+        }
         validate_publication_identity(generation, source_commit_epoch, deltas.is_empty())?;
         let overflow_binding = overflow_root.map(|reader| reader.manifest().binding());
         if overflow_binding.is_some_and(|binding| {
@@ -204,6 +236,7 @@ impl RelationalRowPagePublisher {
             deltas: &mut deltas,
             select_latest,
             stop_after,
+            rewrite,
         });
         let _ = paths.remove_temps();
         result
@@ -218,24 +251,47 @@ impl RelationalRowPagePublisher {
             RelationalRowPagePublicationPhase::CandidateStarted,
         )?;
 
-        let (page_artifact, dirty_page_count) =
-            root::write_dirty_page_artifact(&build.paths.page_tmp, build.deltas, self.config)?;
+        let mut pages =
+            root::PageArtifactWriter::new(&build.paths.page_tmp, self.config.page_limits)?;
+        let mut dirty_page_count = 0u64;
+        for delta in build.deltas.values_mut() {
+            for page in &mut delta.dirty_pages {
+                if let Some(rewrite) = build.rewrite {
+                    rewrite.checkpoint()?;
+                }
+                pages.write(page)?;
+                dirty_page_count += 1;
+            }
+        }
         let root = root::write_root_artifacts(
-            &build.paths.descriptor_tmp,
-            &build.paths.key_tmp,
-            build.base,
-            build.deltas,
-            build.generation,
-            build.source_commit_epoch,
-            self.config,
+            root::RootBuildRequest {
+                descriptor_path: &build.paths.descriptor_tmp,
+                key_path: &build.paths.key_tmp,
+                base: build.base,
+                deltas: build.deltas,
+                generation: build.generation,
+                source_commit_epoch: build.source_commit_epoch,
+                config: self.config,
+            },
+            &mut pages,
+            build.rewrite,
         )?;
+        let (page_artifact, written_pages) = pages.finish()?;
+        if written_pages != dirty_page_count + root.relocated_page_count {
+            return Err(RelationalRowPagePublicationError::Corrupt(
+                "row-page rewrite lost its allocation accounting".to_string(),
+            ));
+        }
+        if let Some(rewrite) = build.rewrite {
+            rewrite.checkpoint()?;
+        }
         let manifest = RelationalRowPageRootManifest {
             generation: build.generation,
             source_commit_epoch: build.source_commit_epoch,
             previous_generation: build.expected_previous_generation,
             page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
             dirty_page_count,
-            relocated_page_count: 0,
+            relocated_page_count: root.relocated_page_count,
             root_page_count: root.root_page_count,
             page_artifact,
             root_descriptor_artifact: root.descriptor_artifact,
@@ -298,6 +354,7 @@ impl RelationalRowPagePublisher {
             generation: build.generation,
             source_commit_epoch: build.source_commit_epoch,
             dirty_pages_written: dirty_page_count,
+            relocated_pages_written: root.relocated_page_count,
             root_pages: manifest.root_page_count,
             reused_pages: root.reused_page_count,
             page_artifact_bytes: manifest.page_artifact.encoded_len,
@@ -364,6 +421,7 @@ struct GenerationPublication<'a> {
     overflow_root: Option<&'a RelationalOverflowRootReader>,
     select_latest: bool,
     stop_after: Option<RelationalRowPagePublicationPhase>,
+    rewrite: Option<RowPageRewriteControls<'a>>,
 }
 
 pub(super) struct PublicationControls<'a> {
@@ -381,6 +439,7 @@ struct PublicationBuild<'a> {
     deltas: &'a mut BTreeMap<String, PreparedTableDelta>,
     select_latest: bool,
     stop_after: Option<RelationalRowPagePublicationPhase>,
+    rewrite: Option<RowPageRewriteControls<'a>>,
 }
 
 #[derive(Debug)]

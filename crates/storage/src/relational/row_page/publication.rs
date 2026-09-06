@@ -8,11 +8,13 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 
+mod compaction;
 mod manifest;
 mod publisher;
 mod reader;
 mod root;
 
+pub use compaction::RelationalRowPageRewriteConfig;
 pub(crate) use publisher::acquire_publication_lock;
 pub use publisher::RelationalRowPagePublisher;
 pub use reader::RelationalRowPageRootReader;
@@ -211,6 +213,7 @@ pub struct RelationalRowPagePublicationReport {
     pub generation: u64,
     pub source_commit_epoch: u64,
     pub dirty_pages_written: u64,
+    pub relocated_pages_written: u64,
     pub root_pages: u64,
     pub reused_pages: u64,
     pub page_artifact_bytes: u64,
