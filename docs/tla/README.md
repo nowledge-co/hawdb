@@ -428,15 +428,44 @@ closure,
 exact row/overflow generation agreement, candidate isolation before outer
 checkpoint publication, source-epoch preservation for relocated clean pages,
 and crash recovery. Maintenance may begin without a new logical commit and
-select any subset of clean pages for relocation. This deliberately
-overapproximates occupancy-based generation selection: an empty subset models
-ordinary base reuse. Numeric occupancy, encoded file lengths, cancellation,
-and memory limits are checked by implementation tests, not this model.
+select any subset of physical source generations for relocation. Every clean
+page from a selected generation is relocated: `RowPageRewriteControls::selects`
+depends only on that generation's immutable occupancy, and
+`RootWriter::write_base_descriptor` applies it to every surviving descriptor.
+An exceeded rewrite budget fails preparation instead of publishing a partially
+relocated generation. `RelocationSelectsWholeGenerations` checks this contract.
+The choice still overapproximates occupancy-based selection: an empty subset
+models ordinary base reuse, and every eligible whole-generation choice remains
+possible. Independent choices for two clean pages in the same generation are
+not implementation behaviors and are not modeled. Numeric occupancy, encoded
+file lengths, cancellation, and memory limits are checked by implementation
+tests, not this model.
 Released candidates reset their root to a canonical absent value. Every action
 that consumes the candidate root requires a non-idle phase, and BeginCheckpoint
 overwrites it before reuse. This models PreparedCheckpoint destruction and
 removes unobservable stale object contents from the state space; it does not
 restrict readers, epochs, generations, relocation choices, or liveness.
+
+The model also normalizes retired payloads instead of retaining the contents of
+deleted objects indefinitely. `Reclaim` keeps every required root and physical
+page unchanged. Only root contents outside the published set and epochs outside
+the durable sets become zero; `-1` remains the distinct never-written marker.
+Thus the immutable-identity guards still reject reuse of a previously written
+page, including one that was reclaimed. Reclamation requires an idle candidate,
+so no in-flight relocation can lose its source epoch or base-root contents.
+The model checks `RetiredPayloadIsReleased` and
+`RetiredRootMetadataIsReleased` alongside the existing closure invariants.
+
+Checkpoint publication also releases per-epoch dirty-page bookkeeping at or
+below the selected manifest epoch. Every subsequent `DirtyAfter` call starts
+at that epoch or later: the manifest never moves backward, and a candidate
+captured before a competing publication cannot pass its base-generation fence.
+In-flight candidates retain their own captured dirty set. This abstracts dead
+bookkeeping, not a new physical WAL truncation transition or a weakened recovery
+suffix. `CheckpointedWalMetadataIsReleased` checks the normalization. No reader,
+commit, checkpoint, relocation, crash, or rejection transition is removed, and
+all prior invariants and the stale-candidate liveness property remain enabled.
+
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and

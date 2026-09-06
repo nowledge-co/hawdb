@@ -496,6 +496,12 @@ fn physical_scrub_rejects_authenticated_occupancy_drift_and_old_file_growth() {
 
 #[test]
 fn candidate_compaction_rewrites_only_sparse_physical_generations() {
+    for rewritten in [2, 3] {
+        assert_candidate_compaction_rewrites_sparse_generation(rewritten);
+    }
+}
+
+fn assert_candidate_compaction_rewrites_sparse_generation(rewritten: u64) {
     let directory = unique_test_dir("candidate-compaction");
     let config = RelationalRowPagePublicationConfig::default();
     let publisher = RelationalRowPagePublisher::new(config);
@@ -518,7 +524,7 @@ fn candidate_compaction_rewrites_only_sparse_physical_generations() {
         .unwrap();
     let mut changed = table_delta(
         "documents",
-        (1..=3)
+        (1..=rewritten)
             .map(|id| page(id, 2, 11, id as i64, id as i64))
             .collect(),
     );
@@ -546,8 +552,8 @@ fn candidate_compaction_rewrites_only_sparse_physical_generations() {
         )
         .unwrap();
     assert_eq!(report.dirty_pages_written, 0);
-    assert_eq!(report.relocated_pages_written, 1);
-    assert_eq!(report.reused_pages, 3);
+    assert_eq!(report.relocated_pages_written, 4 - rewritten);
+    assert_eq!(report.reused_pages, rewritten);
     assert_eq!(report.events, CANDIDATE_PUBLICATION_TRACE);
     assert_eq!(
         RelationalRowPageRootReader::open_latest(&directory, config)
@@ -560,7 +566,12 @@ fn candidate_compaction_rewrites_only_sparse_physical_generations() {
     let candidate = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
     candidate.scrub_physical_pages().unwrap();
     let descriptors = collect_descriptors(&candidate, "documents");
-    assert_eq!(physical_generations(&descriptors), vec![2, 2, 2, 3]);
+    assert_eq!(
+        physical_generations(&descriptors),
+        (1..=4)
+            .map(|id| if id <= rewritten { 2 } else { 3 })
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         candidate
             .manifest()

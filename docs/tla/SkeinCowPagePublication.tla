@@ -112,6 +112,10 @@ DirtyAfter(lowerEpoch, upperEpoch) ==
             epoch \in (lowerEpoch + 1)..upperEpoch
     }
 
+WalDirtySuffix(afterEpoch) ==
+    [epoch \in CommitEpochs |->
+        IF epoch <= afterEpoch THEN {} ELSE walDirtyByEpoch[epoch]]
+
 PinnedReaders ==
     {reader \in Readers : readerGeneration[reader] # -1}
 
@@ -286,10 +290,12 @@ BeginCheckpoint ==
     /\ candidateEpoch' = visibleEpoch
     /\ candidateBaseGeneration' = activeGeneration
     /\ candidateDirtyPages' = dirtyPages
-    /\ \E relocated \in SUBSET (Pages \ dirtyPages):
+    /\ \E relocatedGenerations \in SUBSET {
+            rootByGeneration[activeGeneration][page] : page \in Pages \ dirtyPages}:
         candidateRoot' =
             [page \in Pages |->
-                IF page \in dirtyPages \cup relocated
+                IF page \in dirtyPages
+                    \/ rootByGeneration[activeGeneration][page] \in relocatedGenerations
                 THEN nextGeneration
                 ELSE rootByGeneration[activeGeneration][page]]
     /\ nextGeneration' = nextGeneration + 1
@@ -477,6 +483,7 @@ PublishCheckpoint ==
     /\ activeGeneration' = candidateGeneration
     /\ canonicalOverflowGeneration' = candidateGeneration
     /\ manifestEpoch' = candidateEpoch
+    /\ walDirtyByEpoch' = WalDirtySuffix(candidateEpoch)
     /\ publishedRoots' = publishedRoots \cup {candidateGeneration}
     /\ rootByGeneration' =
         [rootByGeneration EXCEPT ![candidateGeneration] = candidateRoot]
@@ -491,7 +498,6 @@ PublishCheckpoint ==
     /\ candidateRoot' = [page \in Pages |-> 0]
     /\ UNCHANGED <<
         walDurableEpoch,
-        walDirtyByEpoch,
         visibleEpoch,
         pendingPhase,
         pendingEpoch,
@@ -536,10 +542,10 @@ PublishCompetingCheckpoint ==
           /\ activeGeneration' = generation
           /\ nextGeneration' = generation + 1
     /\ manifestEpoch' = visibleEpoch
+    /\ walDirtyByEpoch' = WalDirtySuffix(visibleEpoch)
     /\ dirtyPages' = {}
     /\ UNCHANGED <<
         walDurableEpoch,
-        walDirtyByEpoch,
         visibleEpoch,
         pendingPhase,
         pendingEpoch,
@@ -660,11 +666,32 @@ Reclaim ==
     /\ \/ publishedRoots # RequiredRootGenerations
        \/ durablePages # RequiredPageRefs
     /\ publishedRoots' = RequiredRootGenerations
+    /\ rootByGeneration' =
+        [generation \in Generations |->
+            IF generation \in RequiredRootGenerations
+            THEN rootByGeneration[generation]
+            ELSE [page \in Pages |-> 0]]
     /\ durablePages' = durablePages \cap RequiredPageRefs
     /\ durableOverflowRoots' =
         durableOverflowRoots \cap RequiredRootGenerations
     /\ durableSchemaCatalogs' =
         durableSchemaCatalogs \cap RequiredRootGenerations
+    (* Keep -1 distinct from a retired identity that was already written. *)
+    /\ generationEpoch' =
+        [generation \in Generations |->
+            IF generation \in publishedRoots' \/ generationEpoch[generation] = -1
+            THEN generationEpoch[generation]
+            ELSE 0]
+    /\ pageEpoch' =
+        [ref \in PageRefs |->
+            IF ref \in durablePages' \/ pageEpoch[ref] = -1
+            THEN pageEpoch[ref]
+            ELSE 0]
+    /\ overflowEpoch' =
+        [generation \in Generations |->
+            IF generation \in durableOverflowRoots' \/ overflowEpoch[generation] = -1
+            THEN overflowEpoch[generation]
+            ELSE 0]
     /\ UNCHANGED <<
         walDurableEpoch,
         walDirtyByEpoch,
@@ -677,11 +704,7 @@ Reclaim ==
         previousGeneration,
         manifestEpoch,
         nextGeneration,
-        rootByGeneration,
-        generationEpoch,
-        overflowEpoch,
         canonicalOverflowGeneration,
-        pageEpoch,
         candidatePhase,
         candidateGeneration,
         candidateEpoch,
@@ -830,6 +853,21 @@ CandidateUsesFreshImmutableIdentity ==
 DurableCandidateIsNotCanonicalUntilCheckpointPublication ==
     candidatePhase = "idle" \/ candidateGeneration # canonicalOverflowGeneration
 
+RetiredPayloadIsReleased ==
+    /\ \A ref \in PageRefs \ durablePages: pageEpoch[ref] \in {-1, 0}
+    /\ \A generation \in Generations \ publishedRoots:
+        generationEpoch[generation] \in {-1, 0}
+    /\ \A generation \in Generations \ durableOverflowRoots:
+        overflowEpoch[generation] \in {-1, 0}
+
+RetiredRootMetadataIsReleased ==
+    \A generation \in Generations \ publishedRoots:
+        rootByGeneration[generation] = [page \in Pages |-> 0]
+
+CheckpointedWalMetadataIsReleased ==
+    \A epoch \in CommitEpochs:
+        epoch <= manifestEpoch => walDirtyByEpoch[epoch] = {}
+
 (* Rust releases PreparedCheckpoint on publication, rejection, and unwind. *)
 (* No transition reads an idle candidateRoot before overwriting it; use one *)
 (* canonical absent value instead of exploring unreachable object contents. *)
@@ -843,6 +881,14 @@ CandidateRootCopiesDirtyAndSelectedPages ==
             THEN candidateRoot[page] = candidateGeneration
             ELSE candidateRoot[page] \in {
                 candidateGeneration, rootByGeneration[candidateBaseGeneration][page]}
+
+RelocationSelectsWholeGenerations ==
+    candidatePhase # "idle" =>
+        \A left, right \in Pages \ candidateDirtyPages:
+            rootByGeneration[candidateBaseGeneration][left] =
+                rootByGeneration[candidateBaseGeneration][right] =>
+                (candidateRoot[left] = candidateGeneration) =
+                    (candidateRoot[right] = candidateGeneration)
 
 RelocationPreservesSourceEpoch ==
     candidatePhase \in {"pagesDurable", "rootDurable", "manifestDurable"} =>
