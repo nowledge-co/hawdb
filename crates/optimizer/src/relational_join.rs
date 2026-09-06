@@ -1,4 +1,4 @@
-//! Memo-backed enumeration for relational inner joins.
+//! Connected-prefix enumeration for relational left-deep inner joins.
 
 use crate::{
     relational_join_cost::{
@@ -346,24 +346,40 @@ impl RelationalJoinMemo {
         }
     }
 
-    fn insert_group(
+    fn add(
         &mut self,
         bindings: BindingSet,
         expression: RelationalJoinExpression,
-    ) -> GroupId {
-        let group = self.memo.insert_group(expression);
-        self.groups.insert(bindings.clone(), group);
-        self.group_bindings.insert(group, bindings);
-        self.expression_count = self.expression_count.saturating_add(1);
-        group
-    }
-
-    fn add_expression(&mut self, group: GroupId, expression: RelationalJoinExpression) {
-        self.memo
-            .group_mut(group)
-            .expect("join memo group should exist")
-            .push(expression);
-        self.expression_count = self.expression_count.saturating_add(1);
+        config: RelationalJoinEnumerationConfig,
+    ) -> Result<Option<GroupId>, RelationalJoinEnumerationError> {
+        let required_expressions = self.expression_count.saturating_add(1);
+        if required_expressions > config.max_expressions {
+            return Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
+                required_expressions,
+                max_expressions: config.max_expressions,
+            });
+        }
+        let inserted = if let Some(group) = self.groups.get(&bindings).copied() {
+            self.memo
+                .group_mut(group)
+                .expect("join memo group should exist")
+                .push(expression);
+            None
+        } else {
+            let required_groups = self.memo.group_count().saturating_add(1);
+            if required_groups > config.max_groups {
+                return Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
+                    required_groups,
+                    max_groups: config.max_groups,
+                });
+            }
+            let group = self.memo.insert_group(expression);
+            self.groups.insert(bindings.clone(), group);
+            self.group_bindings.insert(group, bindings);
+            Some(group)
+        };
+        self.expression_count = required_expressions;
+        Ok(inserted)
     }
 }
 
@@ -372,7 +388,7 @@ pub fn enumerate_relational_inner_joins(
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<RelationalInnerJoinEnumeration, RelationalJoinEnumerationError> {
-    validate_graph(graph, config)?;
+    validate_graph(graph)?;
     let memo = build_join_memo(graph, config)?;
     let all_bindings: BindingSet = graph
         .relations
@@ -393,10 +409,7 @@ pub fn enumerate_relational_inner_joins(
     })
 }
 
-fn validate_graph(
-    graph: &RelationalJoinGraph,
-    config: RelationalJoinEnumerationConfig,
-) -> Result<(), RelationalJoinEnumerationError> {
+fn validate_graph(graph: &RelationalJoinGraph) -> Result<(), RelationalJoinEnumerationError> {
     if graph.relations.is_empty() {
         return Err(RelationalJoinEnumerationError::EmptyGraph);
     }
@@ -415,17 +428,6 @@ fn validate_graph(
             .expect("binding count mismatch requires a duplicate");
         return Err(RelationalJoinEnumerationError::DuplicateBinding(duplicate));
     }
-    let required_groups = 1usize
-        .checked_shl(graph.relations.len() as u32)
-        .unwrap_or(usize::MAX)
-        .saturating_sub(1);
-    if required_groups > config.max_groups {
-        return Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
-            required_groups,
-            max_groups: config.max_groups,
-        });
-    }
-
     for relation in &graph.relations {
         if !relation
             .access_paths
@@ -515,93 +517,59 @@ fn build_join_memo(
         .map(|relation| relation.binding)
         .collect::<Vec<_>>();
     bindings.sort_unstable();
+    let mut frontier = Vec::new();
     for binding in &bindings {
-        let required_expressions = memo.expression_count.saturating_add(1);
-        if required_expressions > config.max_expressions {
-            return Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
-                required_expressions,
-                max_expressions: config.max_expressions,
-            });
-        }
-        memo.insert_group(
+        if let Some(group) = memo.add(
             (*binding).into(),
             RelationalJoinExpression::Relation(*binding),
-        );
+            config,
+        )? {
+            frontier.push(group);
+        }
     }
 
-    for size in 2..=bindings.len() {
-        for subset in binding_subsets(&bindings, size) {
-            let mut expressions = Vec::new();
-            for right in subset.iter() {
-                let left_bindings = subset.without(right);
-                let Some(left) = memo.groups.get(&left_bindings).copied() else {
-                    continue;
-                };
-                let activated_predicates = graph
-                    .predicates
+    // A left-deep join has a connected prefix and a singleton complement.
+    // Generate only complements that activate a predicate, rather than all
+    // binding subsets. For a hyperedge, every other binding must already be
+    // available; merely intersecting the prefix would admit a Cartesian step.
+    while !frontier.is_empty() {
+        let mut next_frontier = Vec::new();
+        for left in frontier {
+            let left_bindings = memo.group_bindings[&left].clone();
+            let mut complements: BTreeMap<BindingId, Vec<RelationalJoinPredicateId>> =
+                BTreeMap::new();
+            for predicate in &graph.predicates {
+                let mut missing = predicate
+                    .bindings
                     .iter()
-                    .filter(|predicate| {
-                        predicate.bindings.contains(right)
-                            && predicate.bindings.is_subset(&subset)
-                            && !predicate.bindings.is_subset(&left_bindings)
-                    })
-                    .map(|predicate| predicate.id)
-                    .collect::<Vec<_>>();
-                if activated_predicates.is_empty() {
-                    continue;
+                    .filter(|binding| !left_bindings.contains(*binding));
+                if let Some(right) = missing.next()
+                    && missing.next().is_none()
+                {
+                    complements.entry(right).or_default().push(predicate.id);
                 }
-                expressions.push(RelationalJoinExpression::InnerJoin {
-                    left,
-                    right,
-                    activated_predicates,
-                });
             }
-            if expressions.is_empty() {
-                continue;
-            }
-            let required_expressions = memo.expression_count.saturating_add(expressions.len());
-            if required_expressions > config.max_expressions {
-                return Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
-                    required_expressions,
-                    max_expressions: config.max_expressions,
-                });
-            }
-            let mut expressions = expressions.into_iter();
-            let first = expressions
-                .next()
-                .expect("non-empty join expression candidates have a first item");
-            let group = memo.insert_group(subset, first);
-            for expression in expressions {
-                memo.add_expression(group, expression);
+            for (right, activated_predicates) in complements {
+                let mut subset = left_bindings.clone();
+                subset.insert(right);
+                if let Some(group) = memo.add(
+                    subset,
+                    RelationalJoinExpression::InnerJoin {
+                        left,
+                        right,
+                        activated_predicates,
+                    },
+                    config,
+                )? {
+                    // A group is expanded once; its alternative expressions
+                    // share exactly the same available bindings.
+                    next_frontier.push(group);
+                }
             }
         }
+        frontier = next_frontier;
     }
     Ok(memo)
-}
-
-fn binding_subsets(bindings: &[BindingId], size: usize) -> Vec<BindingSet> {
-    fn visit(
-        bindings: &[BindingId],
-        size: usize,
-        start: usize,
-        selected: &mut Vec<BindingId>,
-        output: &mut Vec<BindingSet>,
-    ) {
-        if selected.len() == size {
-            output.push(selected.iter().copied().collect());
-            return;
-        }
-        let remaining = size - selected.len();
-        for index in start..=bindings.len() - remaining {
-            selected.push(bindings[index]);
-            visit(bindings, size, index + 1, selected, output);
-            selected.pop();
-        }
-    }
-
-    let mut output = Vec::new();
-    visit(bindings, size, 0, &mut Vec::new(), &mut output);
-    output
 }
 
 fn best_plan(
@@ -777,6 +745,9 @@ fn access_path_properties(descriptor: &RelationalAccessPathDescriptor) -> Physic
         ..PhysicalProperties::default()
     }
 }
+
+#[cfg(test)]
+mod connected_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1035,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn group_budget_fails_before_partial_memo_construction() {
+    fn group_budget_rejects_the_next_actual_connected_group() {
         let graph = RelationalJoinGraph {
             relations: vec![
                 relation_with_probes(A, 10, Vec::new()),
@@ -1050,13 +1021,13 @@ mod tests {
                 &graph,
                 &RequiredProperties::default(),
                 RelationalJoinEnumerationConfig {
-                    max_groups: 6,
+                    max_groups: 5,
                     max_expressions: 100,
                 },
             ),
             Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
-                required_groups: 7,
-                max_groups: 6,
+                required_groups: 6,
+                max_groups: 5,
             })
         );
     }

@@ -12,8 +12,6 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 
 const DEFAULT_RABITQ_SEARCH_MEMORY_BYTES: usize = 64 * 1024 * 1024;
-const NUMERIC_ID_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const NUMERIC_ID_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaBitQCandidateProjectionBuildOptions {
@@ -74,8 +72,8 @@ pub struct RaBitQCandidateOutput {
 #[derive(Debug)]
 pub struct RaBitQCandidateProjection {
     storage: RaBitQCandidateProjectionStorage,
-    numeric_to_document_id: BTreeMap<u64, String>,
-    document_to_numeric_id: BTreeMap<String, u64>,
+    ordinal_to_document_id: Vec<String>,
+    document_to_ordinal: BTreeMap<String, u64>,
     build_report: ProjectionBuildReport,
 }
 
@@ -105,8 +103,8 @@ impl RaBitQCandidateProjectionLoadError {
 
 struct RaBitQDocumentIdMap {
     dimension: usize,
-    numeric_to_document_id: BTreeMap<u64, String>,
-    document_to_numeric_id: BTreeMap<String, u64>,
+    ordinal_to_document_id: Vec<String>,
+    document_to_ordinal: BTreeMap<String, u64>,
 }
 
 impl RaBitQCandidateProjection {
@@ -117,29 +115,29 @@ impl RaBitQCandidateProjection {
     ) -> Result<Option<Self>> {
         let Some(RaBitQDocumentIdMap {
             dimension,
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
         }) = validate_and_map_documents(documents)?
         else {
             return Ok(None);
         };
         let config = build_config(dimension, identity, options);
         let mut builder = ProjectionBuilder::new(config).map_err(projection_error)?;
-        for (numeric_id, document_id) in &numeric_to_document_id {
+        for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
             let embedding = documents[document_id]
                 .embedding
                 .as_deref()
                 .expect("mapped RaBitQ document has an embedding");
             builder
-                .push(*numeric_id, embedding)
+                .push(ordinal as u64, embedding)
                 .map_err(projection_error)?;
         }
         let projection = builder.finish().map_err(projection_error)?;
         let build_report = projection.build_report().clone();
         Ok(Some(Self {
             storage: RaBitQCandidateProjectionStorage::InMemory(projection),
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
             build_report,
         }))
     }
@@ -152,8 +150,8 @@ impl RaBitQCandidateProjection {
     ) -> Result<Option<Self>> {
         let Some(RaBitQDocumentIdMap {
             dimension,
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
         }) = validate_and_map_documents(documents)?
         else {
             return Ok(None);
@@ -161,21 +159,21 @@ impl RaBitQCandidateProjection {
         let config = build_config(dimension, identity, options);
         let mut writer =
             ProjectionWriter::create(artifact_path, config).map_err(projection_error)?;
-        for (numeric_id, document_id) in &numeric_to_document_id {
+        for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
             let embedding = documents[document_id]
                 .embedding
                 .as_deref()
                 .expect("mapped RaBitQ document has an embedding");
             writer
-                .push(*numeric_id, embedding)
+                .push(ordinal as u64, embedding)
                 .map_err(projection_error)?;
         }
         let projection = writer.finish().map_err(projection_error)?;
         let build_report = projection.build_report();
         Ok(Some(Self {
             storage: RaBitQCandidateProjectionStorage::File(projection),
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
             build_report,
         }))
     }
@@ -197,8 +195,8 @@ impl RaBitQCandidateProjection {
         let projection = FileProjection::open(artifact_path).map_err(classify_load_error)?;
         let Some(RaBitQDocumentIdMap {
             dimension,
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
         }) = validate_and_map_documents(documents)
             .map_err(RaBitQCandidateProjectionLoadError::NotApplicable)?
         else {
@@ -225,11 +223,21 @@ impl RaBitQCandidateProjection {
                 )),
             ));
         }
+        if manifest.document_count != ordinal_to_document_id.len() {
+            return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
+                SkeinError::Storage(
+                    "Skein RaBitQ projection vector count does not match search documents"
+                        .to_string(),
+                ),
+            ));
+        }
+        // The canonical search snapshot persists IDs and embeddings. Rebuild
+        // its rank-to-ID mapping, then bind it to the artifact's ordered vectors.
         let expected_digest =
-            skein_vector_projection::source_digest(numeric_to_document_id.iter().map(
-                |(numeric_id, document_id)| {
+            skein_vector_projection::source_digest(ordinal_to_document_id.iter().enumerate().map(
+                |(ordinal, document_id)| {
                     (
-                        *numeric_id,
+                        ordinal as u64,
                         documents[document_id]
                             .embedding
                             .as_deref()
@@ -248,8 +256,8 @@ impl RaBitQCandidateProjection {
         let build_report = projection.build_report();
         Ok(Self {
             storage: RaBitQCandidateProjectionStorage::File(projection),
-            numeric_to_document_id,
-            document_to_numeric_id,
+            ordinal_to_document_id,
+            document_to_ordinal,
             build_report,
         })
     }
@@ -275,16 +283,16 @@ impl RaBitQCandidateProjection {
         allowlist: Option<&[&str]>,
         options: RaBitQCandidateScanOptions<'_>,
     ) -> Result<RaBitQCandidateOutput> {
-        let allowed_numeric_ids = allowlist.map(|allowed| {
+        let allowed_ordinals = allowlist.map(|allowed| {
             let mut ids = allowed
                 .iter()
-                .filter_map(|id| self.document_to_numeric_id.get(*id).copied())
+                .filter_map(|id| self.document_to_ordinal.get(*id).copied())
                 .collect::<Vec<_>>();
             ids.sort_unstable();
             ids.dedup();
             ids
         });
-        self.search_with_numeric_allowlist(query_embedding, limit, allowed_numeric_ids, options)
+        self.search_with_ordinal_allowlist(query_embedding, limit, allowed_ordinals, options)
     }
 
     pub(super) fn search_candidates_for_documents_with_options(
@@ -294,26 +302,26 @@ impl RaBitQCandidateProjection {
         allowlist: Option<&[&SearchDocument]>,
         options: RaBitQCandidateScanOptions<'_>,
     ) -> Result<RaBitQCandidateOutput> {
-        let allowed_numeric_ids = allowlist.map(|allowed| {
+        let allowed_ordinals = allowlist.map(|allowed| {
             let mut ids = allowed
                 .iter()
-                .filter_map(|document| self.document_to_numeric_id.get(&document.id).copied())
+                .filter_map(|document| self.document_to_ordinal.get(&document.id).copied())
                 .collect::<Vec<_>>();
             ids.sort_unstable();
             ids.dedup();
             ids
         });
-        self.search_with_numeric_allowlist(query_embedding, limit, allowed_numeric_ids, options)
+        self.search_with_ordinal_allowlist(query_embedding, limit, allowed_ordinals, options)
     }
 
-    fn search_with_numeric_allowlist(
+    fn search_with_ordinal_allowlist(
         &self,
         query_embedding: &[f32],
         limit: usize,
-        allowed_numeric_ids: Option<Vec<u64>>,
+        allowed_ordinals: Option<Vec<u64>>,
         options: RaBitQCandidateScanOptions<'_>,
     ) -> Result<RaBitQCandidateOutput> {
-        let allowlist_bytes = allowed_numeric_ids.as_ref().map_or(0, |ids| {
+        let allowlist_bytes = allowed_ordinals.as_ref().map_or(0, |ids| {
             ids.len().saturating_mul(std::mem::size_of::<u64>())
         });
         let scan_working_bytes = options
@@ -329,7 +337,7 @@ impl RaBitQCandidateProjection {
             .with_max_parallelism(options.max_parallelism)
             .with_max_working_bytes(scan_working_bytes)
             .with_kernel(options.kernel);
-        if let Some(allowed) = &allowed_numeric_ids {
+        if let Some(allowed) = &allowed_ordinals {
             scan_options = scan_options.with_allowed_ids(allowed);
         }
         if let Some(context) = options.task_context {
@@ -352,13 +360,13 @@ impl RaBitQCandidateProjection {
             .hits
             .into_iter()
             .map(|hit| {
-                let id = self
-                    .numeric_to_document_id
-                    .get(&hit.id)
+                let id = usize::try_from(hit.id)
+                    .ok()
+                    .and_then(|ordinal| self.ordinal_to_document_id.get(ordinal))
                     .cloned()
                     .ok_or_else(|| {
                         SkeinError::Storage(format!(
-                            "Skein RaBitQ projection returned unknown numeric id {}",
+                            "Skein RaBitQ projection returned unknown vector ordinal {}",
                             hit.id
                         ))
                     })?;
@@ -390,7 +398,7 @@ impl RaBitQCandidateProjection {
     }
 
     pub fn contains_document_id(&self, document_id: &str) -> bool {
-        self.document_to_numeric_id.contains_key(document_id)
+        self.document_to_ordinal.contains_key(document_id)
     }
 }
 
@@ -398,9 +406,17 @@ fn validate_and_map_documents(
     documents: &BTreeMap<String, SearchDocument>,
 ) -> Result<Option<RaBitQDocumentIdMap>> {
     let mut dimension = None;
-    let mut numeric_to_document_id = BTreeMap::new();
-    let mut document_to_numeric_id = BTreeMap::new();
-    for document in documents.values() {
+    let mut ordinal_to_document_id = Vec::new();
+    let mut document_to_ordinal = BTreeMap::new();
+    // Match the out-of-core generation writer: ascending document IDs, with
+    // vectorless documents omitted. Ordinals belong only to this generation.
+    for (document_id, document) in documents {
+        if document_id != &document.id {
+            return Err(SkeinError::Storage(format!(
+                "Skein RaBitQ projection document key {document_id:?} does not match id {:?}",
+                document.id
+            )));
+        }
         let Some(embedding) = document.embedding.as_deref() else {
             continue;
         };
@@ -420,19 +436,16 @@ fn validate_and_map_documents(
             Some(_) => {}
             None => dimension = Some(embedding.len()),
         }
-        let numeric_id = stable_numeric_id(&document.id);
-        if let Some(existing) = numeric_to_document_id.insert(numeric_id, document.id.clone()) {
-            return Err(SkeinError::Storage(format!(
-                "Skein RaBitQ projection id collision between {existing} and {}",
-                document.id
-            )));
-        }
-        document_to_numeric_id.insert(document.id.clone(), numeric_id);
+        let ordinal = u64::try_from(ordinal_to_document_id.len()).map_err(|_| {
+            SkeinError::Storage("Skein RaBitQ projection vector ordinal overflow".to_string())
+        })?;
+        ordinal_to_document_id.push(document.id.clone());
+        document_to_ordinal.insert(document.id.clone(), ordinal);
     }
     Ok(dimension.map(|dimension| RaBitQDocumentIdMap {
         dimension,
-        numeric_to_document_id,
-        document_to_numeric_id,
+        ordinal_to_document_id,
+        document_to_ordinal,
     }))
 }
 
@@ -446,15 +459,6 @@ fn build_config(
         .with_segment_rows(options.segment_rows)
         .with_max_working_bytes(options.max_working_bytes)
         .with_transform_seed(options.transform_seed)
-}
-
-fn stable_numeric_id(document_id: &str) -> u64 {
-    let mut hash = NUMERIC_ID_OFFSET;
-    for byte in document_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(NUMERIC_ID_PRIME);
-    }
-    hash
 }
 
 fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadError {
@@ -477,6 +481,9 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
 fn projection_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
     SkeinError::Storage(format!("Skein RaBitQ projection: {error}"))
 }
+
+#[cfg(test)]
+mod ordinal_tests;
 
 #[cfg(test)]
 mod tests {
@@ -517,6 +524,8 @@ mod tests {
             .search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1, None)
             .unwrap();
         assert_eq!(output.candidates[0].id, "memory:a");
+        drop(loaded);
+        drop(written);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -607,7 +616,7 @@ mod tests {
         .collect()
     }
 
-    fn unique_test_dir(name: &str) -> PathBuf {
+    pub(super) fn unique_test_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
