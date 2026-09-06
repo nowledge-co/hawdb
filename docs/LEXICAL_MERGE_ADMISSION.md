@@ -71,10 +71,9 @@ owner must also fail the injected source-deletion regression.
 ## Remaining issue 206 boundaries
 
 This is requested-capacity accounting, not complete allocator/RSS accounting.
-The separate grouping-term clone retained by `ArtifactBuilder` and transferred
-to dictionary staging is not yet admitted. That handoff must be implemented
-together with staging slots/keys and FST build/validation lifetimes; a temporary
-per-call lease would release capacity while the dictionary still owns the key.
+The separate grouping-term clone retained by `ArtifactBuilder`, dictionary
+staging and FST build/validation now share the operation root with owned leases
+as described in `LEXICAL_DICTIONARY_ADMISSION.md`.
 Small path/control allocations, ledger metadata, dependency workspace, segment
 codecs/RaBitQ, published-reader reopen and outer query/delta retained state still
 need their appropriate complete ownership boundaries. Stack scratch and allocator

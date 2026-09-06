@@ -1,3 +1,4 @@
+use super::dictionary_memory::{self, Term};
 use super::{checksum, dictionary, LexicalProjectionConfig, RemoveOnDrop};
 use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::error::{Result, SkeinError};
@@ -211,13 +212,16 @@ pub(super) fn limits(config: LexicalProjectionConfig) -> Result<dictionary::Limi
 pub(super) struct Writer {
     file: File,
     _guard: RemoveOnDrop,
-    entries: Vec<(String, dictionary::Metadata)>,
+    entries: Vec<(Term, dictionary::Metadata)>,
     descriptors: Vec<Descriptor>,
     directory: DirectoryBudget,
     bytes: u64,
     limits: dictionary::Limits,
     spill: SpillBudget,
     task_context: skein_core::RuntimeTaskContext,
+    memory: BuildMemory,
+    slots: skein_executor::QueryMemoryLease,
+    failed: bool,
 }
 
 impl Writer {
@@ -226,8 +230,10 @@ impl Writer {
         config: LexicalProjectionConfig,
         spill: SpillBudget,
         directory: DirectoryBudget,
+        memory: BuildMemory,
     ) -> Result<Self> {
         let limits = limits(config)?;
+        let slots = memory.retained.reserve(0)?;
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -243,6 +249,9 @@ impl Writer {
             limits,
             spill,
             task_context: skein_core::RuntimeTaskContext::default(),
+            memory,
+            slots,
+            failed: false,
         })
     }
 
@@ -251,7 +260,18 @@ impl Writer {
         self
     }
 
-    pub(super) fn push(&mut self, term: String, metadata: dictionary::Metadata) -> Result<()> {
+    pub(super) fn push(&mut self, term: Term, metadata: dictionary::Metadata) -> Result<()> {
+        if self.failed {
+            return Err(SkeinError::Storage(
+                "lexical dictionary writer already failed".to_string(),
+            ));
+        }
+        let result = self.push_inner(term, metadata);
+        self.failed = result.is_err();
+        result
+    }
+
+    fn push_inner(&mut self, term: Term, metadata: dictionary::Metadata) -> Result<()> {
         crate::build_control::checkpoint(&self.task_context)?;
         if self
             .entries
@@ -269,6 +289,20 @@ impl Writer {
             .map_err(|error| SkeinError::Storage(error.to_string()))?;
         if self.entries.len() == self.limits.max_terms as usize {
             self.flush_with_held(entry.0.capacity())?;
+        }
+        if self.entries.len() == self.entries.capacity() {
+            let capacity =
+                checked_mul(self.entries.capacity().max(2), 2)?.min(self.limits.max_terms as usize);
+            let next_slots = self.memory.retained.reserve(checked_mul(
+                capacity,
+                std::mem::size_of::<(Term, dictionary::Metadata)>(),
+            )?)?;
+            self.entries
+                .try_reserve_exact(capacity - self.entries.len())
+                .map_err(|error| {
+                    SkeinError::Execution(format!("dictionary staging allocation failed: {error}"))
+                })?;
+            self.slots = next_slots;
         }
         self.entries.push(entry);
         if self
@@ -297,7 +331,7 @@ impl Writer {
         let staging = self
             .entries
             .capacity()
-            .checked_mul(std::mem::size_of::<(String, dictionary::Metadata)>())
+            .checked_mul(std::mem::size_of::<(Term, dictionary::Metadata)>())
             .and_then(|bytes| bytes.checked_add(held_key_bytes))
             .ok_or_else(invalid)?;
         let staging = self.entries.iter().try_fold(staging, |bytes, (key, _)| {
@@ -329,26 +363,15 @@ impl Writer {
 
     fn write_partition(
         &mut self,
-        entries: &[(String, dictionary::Metadata)],
+        entries: &[(Term, dictionary::Metadata)],
         limits: dictionary::Limits,
     ) -> Result<()> {
         crate::build_control::checkpoint(&self.task_context)?;
-        let mut check = || {
-            self.task_context
-                .checkpoint()
-                .map_err(|reason| reason.as_str())
-        };
-        let encoded = dictionary::build(entries, limits, &mut check).and_then(|bytes| {
-            // Do not publish a block that cannot be opened under this generation's
-            // configured validation scratch limit. Validation runs after fst drops
-            // its builder registry, not concurrently with that allocation.
-            dictionary::Dictionary::open(&bytes, limits, &mut check)?;
-            Ok(bytes)
-        });
+        let encoded = dictionary_memory::encode(entries, limits, &self.memory, &self.task_context)?;
         // Cancellation is not poor compression and must never trigger partition retries.
         crate::build_control::checkpoint(&self.task_context)?;
-        let bytes = match encoded {
-            Ok(bytes) => bytes,
+        let encoded = match encoded {
+            Ok(encoded) => encoded,
             Err(_) if entries.len() > 1 => {
                 // A bounded partition may compress poorly; split deterministically
                 // instead of retaining or retrying a database-sized vocabulary.
@@ -362,6 +385,7 @@ impl Writer {
                 )))
             }
         };
+        let bytes = &encoded.bytes;
         let first = &entries[0];
         let last = entries.last().unwrap();
         let end = last
@@ -377,14 +401,14 @@ impl Writer {
             .ok_or_else(|| SkeinError::Storage("dictionary posting count overflows".to_string()))?;
         self.directory.admit(
             &mut self.descriptors,
-            checked_add(first.0.len(), last.0.len())?,
+            checked_add(first.0.as_str().len(), last.0.as_str().len())?,
         )?;
         let descriptor = Descriptor {
-            min_term: first.0.clone(),
-            max_term: last.0.clone(),
+            min_term: first.0.as_str().to_owned(),
+            max_term: last.0.as_str().to_owned(),
             offset: self.bytes,
             length: bytes.len() as u64,
-            checksum: checksum(&bytes),
+            checksum: checksum(bytes),
             term_count: entries.len() as u64,
             posting_offset: first.1.posting_offset,
             posting_bytes: end.checked_sub(first.1.posting_offset).ok_or_else(|| {
@@ -393,7 +417,7 @@ impl Writer {
             posting_count,
         };
         self.spill.charge(bytes.len() as u64)?;
-        self.file.write_all(&bytes)?;
+        self.file.write_all(bytes)?;
         self.bytes += bytes.len() as u64;
         self.descriptors.push(descriptor);
         Ok(())
@@ -404,7 +428,14 @@ impl Writer {
         writer: &mut impl Write,
         offset: &mut u64,
     ) -> Result<Vec<Descriptor>> {
+        if self.failed {
+            return Err(SkeinError::Storage(
+                "lexical dictionary writer already failed".to_string(),
+            ));
+        }
         self.flush()?;
+        self.entries = Vec::new();
+        self.slots.reset();
         self.file.seek(SeekFrom::Start(0))?;
         let mut remaining = self.bytes;
         let mut buffer = [0u8; 8192];

@@ -121,17 +121,19 @@ fn cancellation_during_dictionary_copy_does_not_return_a_completed_directory() {
     fs::create_dir(&root).unwrap();
     let path = root.join("dictionary.tmp");
     let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
     let mut writer = dictionary_store::Writer::new(
         &path,
         Default::default(),
         dictionary_store::SpillBudget::new(0, u64::MAX),
         dictionary_store::DirectoryBudget::new(u64::MAX),
+        memory.clone(),
     )
     .unwrap()
     .with_context(task.clone());
     writer
         .push(
-            "graph".to_string(),
+            dictionary_memory::Term::new("graph", &memory).unwrap(),
             dictionary::Metadata {
                 df: 1,
                 posting_offset: 24,

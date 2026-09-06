@@ -112,8 +112,9 @@ dependency-owned result vector still needs admission alongside DAG/HMM state
 before claiming complete analyzer admission. Artifact document buffers/directories,
 manifest output and checksum scratch now share the build root as described in
 `LEXICAL_ARTIFACT_ADMISSION.md`; run readers, heap/current postings, frame and
-doclist encoding follow `LEXICAL_MERGE_ADMISSION.md`. Grouping-term/dictionary
-staging, FST, codecs, RaBitQ and outer query/delta ownership still need
+doclist encoding follow `LEXICAL_MERGE_ADMISSION.md`; grouping-term/dictionary
+staging and FST follow `LEXICAL_DICTIONARY_ADMISSION.md`.
+Codecs, RaBitQ and outer query/delta ownership still need
 the same whole-operation treatment. Existing component estimates, new ledger
 peaks and token-parity tests do not establish allocator/RSS bounds or #206's
 native-platform and representative-corpus acceptance gates. No analyzer digest,

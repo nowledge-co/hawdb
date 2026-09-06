@@ -58,12 +58,16 @@ impl Metadata {
 
 /// Conservative requested capacity for pinned fst 0.4.7 on 32/64-bit targets.
 /// This is admission accounting, not a measurement of allocator overhead/RSS.
-pub(super) fn builder_reservation(entries: &[(String, Metadata)], limits: Limits) -> Result<usize> {
+pub(super) fn builder_reservation<K: AsRef<str>>(
+    entries: &[(K, Metadata)],
+    limits: Limits,
+) -> Result<usize> {
     if entries.is_empty() || entries.len() > limits.max_terms as usize {
         return Err("dictionary term budget exceeded");
     }
     let mut key_bytes = 0usize;
     for (key, metadata) in entries {
+        let key = key.as_ref();
         if key.is_empty() || key.len() > limits.max_key_bytes as usize {
             return Err("dictionary key budget exceeded");
         }
@@ -74,18 +78,20 @@ pub(super) fn builder_reservation(entries: &[(String, Metadata)], limits: Limits
     }
     // fst allocates 10,000 two-cell registry buckets. Each cell has one owned
     // node and an address (at most 64 bytes on the supported pointer widths).
-    // The variable allowance covers transition-vector growth, unfinished trie
-    // nodes and previous-key copies. Caller-owned staging is admitted separately.
+    // The variable allowance covers old/new unfinished-stack and transition
+    // growth, registry clones and previous-key copies. Include the fixed initial
+    // 64-node stack separately. Caller-owned staging is admitted separately.
     // Total trie transitions cannot exceed the sum of inserted key lengths.
     let variable = key_bytes
-        .checked_mul(256)
+        .checked_mul(512)
         .ok_or("builder reservation overflow")?;
     let output = limits
         .max_bytes
         .checked_mul(2)
         .ok_or("builder reservation overflow")?;
     let reservation = (20000usize * 64)
-        .checked_add(variable)
+        .checked_add(8192)
+        .and_then(|bytes| bytes.checked_add(variable))
         .and_then(|bytes| bytes.checked_add(output))
         .ok_or("builder reservation overflow")?;
     if reservation > limits.max_builder_bytes {
@@ -115,8 +121,8 @@ impl<F: FnMut() -> Result<()>> Write for BoundedWriter<'_, F> {
     }
 }
 
-pub(super) fn build(
-    entries: &[(String, Metadata)],
+pub(super) fn build<K: AsRef<str>>(
+    entries: &[(K, Metadata)],
     limits: Limits,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
@@ -161,7 +167,7 @@ pub(super) fn build(
     let mut builder = fst::MapBuilder::new(writer).map_err(|_| "dictionary builder failed")?;
     for (index, (key, _)) in entries.iter().enumerate() {
         builder
-            .insert(key, (index * RECORD) as u64)
+            .insert(key.as_ref(), (index * RECORD) as u64)
             .map_err(|_| "dictionary build failed")?;
     }
     let mut writer = builder
@@ -180,6 +186,36 @@ pub(super) struct Dictionary<'a> {
     metadata: &'a [u8],
 }
 
+pub(super) fn validation_reservation(bytes: &[u8], limits: Limits) -> Result<usize> {
+    let extent = bytes.get(12..16).ok_or("invalid dictionary envelope")?;
+    let fst_bytes = u32::from_le_bytes(extent.try_into().unwrap()) as usize;
+    if fst_bytes > bytes.len() || bytes.len() > limits.max_bytes {
+        return Err("invalid dictionary extent");
+    }
+    let nodes = fst_validation::scratch_bytes(fst_bytes, limits.max_bytes)?;
+    // Pinned fst 0.4.7 streams retain a byte key and a stack of Node/usize/Output
+    // frames (AlwaysMatch has unit state). 128 bytes per frame covers 32/64-bit
+    // layouts; 3x bounds old/new geometric-growth overlap and initial capacities.
+    // Validated edges always go backwards, so a key cannot traverse more
+    // states than there are bytes in the FST, even with a loose configured cap.
+    let key = (limits.max_key_bytes as usize).min(fst_bytes);
+    let frames = key
+        .checked_add(1)
+        .ok_or("dictionary stream depth overflow")?;
+    let stream = frames
+        .max(4)
+        .checked_mul(128)
+        .and_then(|size| size.checked_add(key.max(16)))
+        .and_then(|size| size.checked_mul(3))
+        .ok_or("dictionary stream reservation overflow")?;
+    // The checked-node vectors drop before the subsequent ordered-key stream.
+    let reservation = nodes.max(stream);
+    if reservation > limits.max_validation_bytes {
+        return Err("dictionary validation budget exceeded");
+    }
+    Ok(reservation)
+}
+
 impl<'a> Dictionary<'a> {
     pub(super) fn open(
         bytes: &'a [u8],
@@ -187,6 +223,7 @@ impl<'a> Dictionary<'a> {
         checkpoint: &mut impl FnMut() -> Result<()>,
     ) -> Result<Self> {
         checkpoint()?;
+        validation_reservation(bytes, limits)?;
         if bytes.len() < HEADER + RECORD + 36 + CHECKSUM
             || bytes.len() > limits.max_bytes
             || &bytes[..4] != b"LXD1"

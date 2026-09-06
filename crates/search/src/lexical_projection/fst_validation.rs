@@ -140,6 +140,18 @@ impl Layout {
     }
 }
 
+pub(super) fn scratch_bytes(bytes: usize, max_nodes: usize) -> Result<usize> {
+    bytes
+        .checked_mul(size_of::<Summary>())
+        .and_then(|size| {
+            bytes
+                .min(max_nodes)
+                .checked_mul(size_of::<u32>())
+                .and_then(|addresses| size.checked_add(addresses))
+        })
+        .ok_or("FST scratch bound overflows")
+}
+
 pub(super) fn open_checked<'a>(
     bytes: &'a [u8],
     limits: Limits,
@@ -171,14 +183,7 @@ pub(super) fn open_checked<'a>(
         return Ok(map);
     }
     let node_limit = limits.max_nodes.min(bytes.len());
-    let addresses_bytes = node_limit
-        .checked_mul(size_of::<u32>())
-        .ok_or("FST scratch bound overflows")?;
-    let scratch = bytes
-        .len()
-        .checked_mul(size_of::<Summary>())
-        .and_then(|size| size.checked_add(addresses_bytes))
-        .ok_or("FST scratch bound overflows")?;
+    let scratch = scratch_bytes(bytes.len(), node_limit)?;
     if scratch > limits.max_scratch_bytes {
         return Err("FST scratch budget exceeded");
     }

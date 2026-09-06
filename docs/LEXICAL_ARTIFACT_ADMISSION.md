@@ -61,10 +61,10 @@ lease release. They are restored before the final positive verification.
 
 This is not complete build/query memory admission or an allocator/RSS bound.
 External run readers, merge heaps/frames and doclist encoding buffers now share
-the operation root as described in `LEXICAL_MERGE_ADMISSION.md`. The separate
-grouping-term/dictionary-staging handoff, FST construction/validation, segment
-codecs and RaBitQ still need their complete
-simultaneous working sets connected to the operation root. Small control/path
+the operation root as described in `LEXICAL_MERGE_ADMISSION.md`. Grouping-term
+and dictionary staging/FST lifetimes follow `LEXICAL_DICTIONARY_ADMISSION.md`.
+Segment codecs and RaBitQ still need their complete simultaneous working sets
+connected to the operation root. Small control/path
 allocations and ledger bookkeeping are not allocator-instrumented by these
 requested-capacity counters. Reopening the published reader and outer query/delta
 state also need their own correct persistent ownership/admission boundary.

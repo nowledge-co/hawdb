@@ -88,6 +88,7 @@ test_suite(
         "//crates/search:skein_search_lexical_artifact_fuzz_tests",
         "//crates/search:skein_search_lexical_merge_fuzz_tests",
         "//crates/search:skein_search_lexical_dictionary_fuzz_tests",
+        "//crates/search:skein_search_lexical_dictionary_memory_fuzz_tests",
         "//crates/search:skein_search_lexical_doclist_fuzz_tests",
         "//crates/search:skein_search_lexical_posting_fuzz_tests",
         "//crates/search:skein_search_lexical_state_machine_fuzz_tests",

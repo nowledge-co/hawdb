@@ -5,6 +5,7 @@ use super::*;
 mod analysis;
 mod artifact;
 mod bytes;
+mod dictionary_memory;
 mod merge;
 mod state_machine;
 

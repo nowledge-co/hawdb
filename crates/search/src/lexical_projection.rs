@@ -24,6 +24,7 @@ pub(super) const DEFAULT_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 mod analyzer;
 mod artifact_memory;
 mod dictionary;
+mod dictionary_memory;
 mod dictionary_store;
 mod doclist;
 mod documents;
@@ -1534,6 +1535,7 @@ impl ArtifactBuilder {
             config,
             budget,
             self.directory.clone(),
+            self.memory.clone(),
         )?
         .with_context(self.task_context.clone());
         let mut postings = MergedPostings::new(
@@ -1542,7 +1544,7 @@ impl ArtifactBuilder {
             self.memory.clone(),
             self.task_context.clone(),
         )?;
-        let mut term: Option<String> = None;
+        let mut term: Option<dictionary_memory::Term> = None;
         let frame_memory = self
             .memory
             .retained
@@ -1553,7 +1555,10 @@ impl ArtifactBuilder {
         let mut frame = Vec::with_capacity(posting_codec::BLOCK_LEN);
         while let Some(posting) = postings.next()? {
             checkpoint(&self.task_context)?;
-            if term.as_ref().is_some_and(|term| term != &posting.term) {
+            if term
+                .as_ref()
+                .is_some_and(|term| term.as_str() != posting.term)
+            {
                 if !frame.is_empty() {
                     doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
                     frame.clear();
@@ -1563,7 +1568,7 @@ impl ArtifactBuilder {
                 dictionary.push(term.take().unwrap(), metadata)?;
             }
             if term.is_none() {
-                term = Some(posting.term.clone());
+                term = Some(dictionary_memory::Term::new(&posting.term, &self.memory)?);
             }
             frame.push(posting_codec::Posting {
                 ordinal: posting.ordinal,
@@ -2022,6 +2027,7 @@ mod tests {
     mod build_cancellation;
     mod compact_dictionary;
     mod compact_postings;
+    mod dictionary_admission;
     mod fuzz;
     mod merge_admission;
     mod robustness;

@@ -147,25 +147,42 @@ fn actual_segment_keeps_decoded_input_admission_until_flush_or_drop() {
 
 #[test]
 fn a_complete_fused_build_releases_all_tracked_input_charges() {
-    let root = test_dir("input_memory_fused_finish");
-    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
-        &root,
-        Default::default(),
-        context(1024 * 1024),
-    )
-    .unwrap();
-    let ledger = writer.memory.ledger.clone();
-    for number in 0..8 {
-        writer.push(document(number)).unwrap();
+    fn build(limit: usize, succeeds: bool) -> usize {
+        let root = test_dir("input_memory_fused_finish");
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &root,
+            Default::default(),
+            context(limit as u64),
+        )
+        .unwrap();
+        let ledger = writer.memory.ledger.clone();
+        for number in 0..8 {
+            writer.push(document(number)).unwrap();
+        }
+        let result = writer.finish();
+        assert_eq!(result.is_ok(), succeeds, "limit {limit}: {result:?}");
+        if let Ok(report) = result {
+            assert!(report.active_manifest_published_last);
+        } else {
+            assert!(result.unwrap_err().to_string().contains("memory"));
+        }
+        let snapshot = ledger.snapshot();
+        assert_eq!(snapshot.used_bytes, 0);
+        assert!(snapshot.peak_bytes > SPOOL_BUFFER_BYTES);
+        assert!(snapshot.peak_bytes <= limit);
+        assert_eq!(snapshot.account_count, 3);
+        assert_eq!(root.join(OUT_OF_CORE_MANIFEST_FILE).exists(), succeeds);
+        assert_eq!(stage_directories(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+        snapshot.peak_bytes
     }
-    let report = writer.finish().unwrap();
-    let snapshot = ledger.snapshot();
-    assert_eq!(snapshot.used_bytes, 0);
-    assert!(snapshot.peak_bytes > SPOOL_BUFFER_BYTES);
-    assert!(snapshot.peak_bytes <= 1024 * 1024);
-    assert_eq!(snapshot.account_count, 3);
-    assert!(report.active_manifest_published_last);
-    fs::remove_dir_all(root).unwrap();
+    // FST registry admission now overlaps the rest of the actual fused build.
+    // The preceding 1 MiB success fixture omitted that working set entirely.
+    let peak = build(8 * 1024 * 1024, true);
+    assert!(peak > 1024 * 1024);
+    assert_eq!(build(peak, true), peak);
+    build(peak - 1, false);
+    build(1024 * 1024, false);
 }
 
 #[test]

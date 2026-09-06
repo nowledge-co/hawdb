@@ -71,6 +71,7 @@ rust_test(
         ("merge", "merge::merge_admission_campaign"),
         ("posting", "bytes::posting_bytes_campaign"),
         ("dictionary", "bytes::dictionary_bytes_campaign"),
+        ("dictionary_memory", "dictionary_memory::dictionary_admission_campaign"),
         ("doclist", "bytes::doclist_bytes_campaign"),
         ("state_machine", "state_machine::projection_state_machine_campaign"),
     ]

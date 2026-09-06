@@ -167,11 +167,13 @@ fn dictionary_staging_capacity_and_shared_directory_are_admitted() {
     fs::create_dir_all(&root).unwrap();
     let path = root.join("dictionary.tmp");
     let config = LexicalProjectionConfig::default();
+    let memory = BuildMemory::new(&RuntimeTaskContext::default()).unwrap();
     let mut writer = dictionary_store::Writer::new(
         &path,
         config,
         SpillBudget::new(0, u64::MAX),
         DirectoryBudget::new(u64::MAX),
+        memory.clone(),
     )
     .unwrap();
     let mut key = String::with_capacity(config.dictionary_build_memory_bytes.get() as usize);
@@ -184,7 +186,10 @@ fn dictionary_staging_capacity_and_shared_directory_are_admitted() {
     };
     // Logical key length fits; the owned allocation does not.
     assert!(writer
-        .push(key, metadata)
+        .push(
+            dictionary_memory::Term::from_owned(key, &memory).unwrap(),
+            metadata
+        )
         .unwrap_err()
         .to_string()
         .contains("staging budget"));
@@ -213,11 +218,13 @@ fn bounded_dictionary_partitions_preserve_all_ordered_term_locations() {
         ..LexicalProjectionConfig::default()
     };
     let path = root.join("dictionary.tmp");
+    let memory = BuildMemory::new(&RuntimeTaskContext::default()).unwrap();
     let mut writer = dictionary_store::Writer::new(
         &path,
         config,
         dictionary_store::SpillBudget::new(0, u64::MAX),
         dictionary_store::DirectoryBudget::new(128 * 1024),
+        memory.clone(),
     )
     .unwrap();
     let expected = (0..128)
@@ -234,7 +241,12 @@ fn bounded_dictionary_partitions_preserve_all_ordered_term_locations() {
         })
         .collect::<BTreeMap<_, _>>();
     for (term, metadata) in &expected {
-        writer.push(term.clone(), *metadata).unwrap();
+        writer
+            .push(
+                dictionary_memory::Term::new(term, &memory).unwrap(),
+                *metadata,
+            )
+            .unwrap();
     }
     let mut bytes = Vec::new();
     let mut offset = 4096;
