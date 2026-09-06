@@ -86,8 +86,10 @@ The dedicated fuzz target is manual; no default or dedicated CI fuzz is added.
 ## Remaining #206 boundaries
 
 This is not complete query/output ownership. Public retriever report payloads
-and cloned candidate reports, parsed filter/ACL inputs, hydrated documents and
-public hits still need their own retained contracts. A temporary ranking or
+and cloned candidate reports, parsed filter/ACL inputs, escaped hydrated documents
+and public hits still need retained contracts. Internal hydration raw/text/document
+owners now share the operation root (`HYDRATION_QUERY_ADMISSION.md`), independently
+of matched-span/tokenizer scratch and escaped output. A temporary ranking or
 page lease does not cover those objects after they escape. Cross-crate backend
 admission and retained projection hits remain behind the pending public API
 decision. Combined component limits, persistent delta, reader/mapping host

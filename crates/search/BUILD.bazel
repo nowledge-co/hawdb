@@ -116,6 +116,25 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Cover hydration records and source/selected ownership outside ordinary CI.
+rust_test(
+    name = "skein_search_hydration_admission_fuzz_tests",
+    size = "large",
+    tags = ["manual"],
+    args = [
+        "out_of_core::hydration_memory::tests::fuzz::hydration_admission_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 # Cover borrowed ranks and bounded fusion under a shared query root locally.
 rust_test(
     name = "skein_search_ranking_admission_fuzz_tests",

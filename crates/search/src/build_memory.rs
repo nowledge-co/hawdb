@@ -146,13 +146,27 @@ pub(crate) fn document_bytes(document: &SearchDocument) -> Result<usize> {
 }
 
 fn decoded_document_bytes(line: &str, max_metadata_fields: usize) -> Result<usize> {
+    decoded_document_bytes_with_context(line, max_metadata_fields, None)
+}
+
+pub(crate) fn decoded_document_bytes_with_context(
+    line: &str,
+    max_metadata_fields: usize,
+    task: Option<&RuntimeTaskContext>,
+) -> Result<usize> {
+    let checkpoint = || task.map_or(Ok(()), crate::build_control::checkpoint);
+    checkpoint()?;
     let fields = Fields::parse(line)?;
     let mut bytes = size_of::<SearchDocument>();
     for field in [fields.id, fields.title, fields.content] {
         bytes = checked_add(bytes, field.len() / 2)?;
     }
     if !fields.embedding.is_empty() {
-        let count = fields.embedding.split(',').count();
+        let mut count = 0;
+        for _ in fields.embedding.split(',') {
+            checkpoint()?;
+            count = checked_add(count, 1)?;
+        }
         bytes = checked_add(bytes, checked_mul(count, size_of::<f32>())?)?;
     }
     if fields.metadata.is_empty() {
@@ -160,6 +174,7 @@ fn decoded_document_bytes(line: &str, max_metadata_fields: usize) -> Result<usiz
         bytes = checked_add(bytes, MAP_ENTRY_BYTES)?;
     } else {
         for (index, pair) in fields.metadata.split(';').enumerate() {
+            checkpoint()?;
             if index >= max_metadata_fields {
                 return Err(SkeinError::Storage(
                     "search spool metadata field count exceeds admission".to_string(),
@@ -173,6 +188,7 @@ fn decoded_document_bytes(line: &str, max_metadata_fields: usize) -> Result<usiz
             bytes = checked_add(bytes, value.len() / 2)?;
         }
     }
+    checkpoint()?;
     Ok(bytes)
 }
 

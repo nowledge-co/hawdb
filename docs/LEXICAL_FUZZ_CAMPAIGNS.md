@@ -185,6 +185,18 @@ independently check RRF scores/ranks, tie ordering, exact counts and pages;
 legacy helpers check retriever reports. All owners release their capacity.
 See `RANKING_QUERY_ADMISSION.md` for the internal/public ownership boundary.
 
+## Hydration admission
+
+The hydration campaign is `//crates/search:skein_search_hydration_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features hydration_admission_campaign -- --ignored --nocapture`.
+Seed `0x206d0c51` generates 128 document-record and 48 published-reader cases,
+including Unicode/NUL, metadata, optional embeddings, multi-segment selection and
+shuffled caller order. Original documents are the result oracle; exact/one-short
+root retries with competing owners check admission and complete release. The
+public direct hydration path must preserve the same result and order. The target
+is manual, is part of the explicit local fuzz suite, and adds no fuzz CI job.
+See `HYDRATION_QUERY_ADMISSION.md` for scope and negative controls.
+
 ## Coverage and independent checks
 
 - `dictionary_memory`: seed `0x206fc7`, 2,000 key groups compare actual dictionary

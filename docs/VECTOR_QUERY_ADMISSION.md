@@ -102,10 +102,13 @@ The combined vector component limit also needs to cover every live phase,
 not only its existing score-entry and projection allowances.
 
 Pruning scratch now shares the root (`PRUNING_QUERY_ADMISSION.md`), while
-parsed-input/report containers, hydration, public output,
+parsed-input/report containers, matched-span scratch, public output,
 persistent delta and published-reader host ownership remain full-query work.
 Private borrowed ranks, bounded fusion and the hydration candidate page now
 retain shared-root charges (`RANKING_QUERY_ADMISSION.md`); public reports/hits do not.
+Internal hydration raw/text/document ownership now shares the operation root
+(`HYDRATION_QUERY_ADMISSION.md`), including delta source reads on the writer root.
+This does not own escaped public documents/hits or delta input containers.
 The resident vector path is not newly instrumented by this change. Jieba
 workspace maintenance, exact-head native qualification and representative-corpus
 posting-size reduction remain independent full #206 gates. No dependency,

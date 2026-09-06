@@ -4,26 +4,25 @@ use super::lexical_projection::{
 };
 use super::{
     checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
-    decode_search_segment_descriptor_text, decode_search_segment_documents_bounded, decode_string,
-    encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
-    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
-    matched_query_terms, read_search_segment_descriptor, retriever_candidate_set_report,
-    search_empty_reason_codes, search_empty_reasons, search_metadata_predicate_pushdown, tokenize,
-    validate_search_segment_documents, CompressedVectorSearchMode, SearchAccessControlContext,
-    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
-    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode,
-    SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorSearchExecutionOptions,
-    FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
-    SEARCH_SEGMENT_PAYLOAD_FILE,
+    decode_search_segment_descriptor_text, decode_string, encode_embedding, encode_metadata,
+    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
+    matched_query_spans_bounded, matched_query_terms, read_search_segment_descriptor,
+    retriever_candidate_set_report, search_empty_reason_codes, search_empty_reasons,
+    search_metadata_predicate_pushdown, tokenize, CompressedVectorSearchMode,
+    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
+    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
+    SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
+    SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
+    SearchTruncationReasonCode, VectorSearchExecutionOptions, FULL_REINDEX_MARKER,
+    METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::error::{Result, SkeinError};
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use serde::{Deserialize, Serialize};
 use skein_storage::durable_replace_file;
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -34,6 +33,7 @@ use std::sync::{Arc, Mutex};
 mod candidate_codec;
 mod candidate_memory;
 mod generation_writer;
+mod hydration_memory;
 mod pruning_memory;
 mod publish_lease;
 mod query_io;
@@ -944,24 +944,16 @@ impl SearchOutOfCoreReader {
         &self,
         document_ids: &[String],
     ) -> Result<SearchOutOfCoreHydrationOutput> {
-        let requested = document_ids.iter().cloned().collect::<BTreeSet<_>>();
-        if requested.len() != document_ids.len() {
-            return Err(SkeinError::Storage(
-                "search hydration document ids must be unique".to_string(),
-            ));
-        }
+        let memory = self.lexical_projection.query_memory(None)?;
         let mut metrics = SearchOutOfCoreMetrics::default();
-        let mut hydrated = self.load_documents(&requested, &mut metrics)?;
-        let documents = document_ids
-            .iter()
-            .map(|id| {
-                hydrated.remove(id).ok_or_else(|| {
-                    SkeinError::Storage(format!(
-                        "search document {id} was not found during bounded hydration"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let documents = hydration_memory::load(
+            self,
+            document_ids.iter().map(String::as_str),
+            &memory.working,
+            &crate::RuntimeTaskContext::default(),
+            &mut metrics,
+        )?
+        .into_unowned_output();
         metrics.hydrated_documents = documents.len();
         Ok(SearchOutOfCoreHydrationOutput { documents, metrics })
     }
@@ -969,15 +961,14 @@ impl SearchOutOfCoreReader {
     fn visit_documents_in_order(
         &self,
         task_context: &crate::RuntimeTaskContext,
+        memory: &skein_executor::QueryMemoryAccount,
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
     ) -> Result<SearchOutOfCoreMetrics> {
         let mut metrics = SearchOutOfCoreMetrics::default();
         for segment in &self.descriptor.segments {
             crate::build_control::checkpoint(task_context)?;
-            for document in self.read_hydration_segment(segment, &mut metrics)? {
-                crate::build_control::checkpoint(task_context)?;
-                consumer(document)?;
-            }
+            self.read_hydration_segment(segment, &mut metrics, memory, task_context)?
+                .visit(task_context, consumer)?;
         }
         crate::build_control::checkpoint(task_context)?;
         Ok(metrics)
@@ -1352,7 +1343,13 @@ impl SearchOutOfCoreReader {
             fallback_reasons: &fallback_reasons,
             projection_freshness: &projection_freshness,
         };
-        let hits = self.hydrate_hits(&page.candidates, hydration, &mut metrics)?;
+        let hits = self.hydrate_hits(
+            &page.candidates,
+            hydration,
+            &mut metrics,
+            &query_memory,
+            &ranking_task,
+        )?;
 
         let truncation_reasons = if truncated && options.offset > 0 {
             vec![format!(
@@ -1420,6 +1417,8 @@ impl SearchOutOfCoreReader {
         candidates: &[SearchScoredCandidate],
         context: HitHydrationContext<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
+        memory: &crate::query_memory::QueryMemory,
+        task: &crate::RuntimeTaskContext,
     ) -> Result<Vec<SearchHit>> {
         if candidates.len() > self.config.max_hydrated_documents.get() {
             return Err(SkeinError::Storage(format!(
@@ -1428,21 +1427,18 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
-        let ids = candidates
-            .iter()
-            .map(|candidate| candidate.id.clone())
-            .collect::<BTreeSet<_>>();
-        let mut hydrated = self.load_documents(&ids, metrics)?;
+        let hydrated = hydration_memory::load(
+            self,
+            candidates.iter().map(|candidate| candidate.id.as_str()),
+            &memory.working,
+            task,
+            metrics,
+        )?;
         let mut hits = Vec::with_capacity(candidates.len());
         let mut matched_span_count = 0usize;
         let mut matched_span_bytes = 0u64;
-        for candidate in candidates {
-            let document = hydrated.remove(&candidate.id).ok_or_else(|| {
-                SkeinError::Storage(format!(
-                    "search candidate {} was not found during late hydration",
-                    candidate.id
-                ))
-            })?;
+        for (candidate, document) in candidates.iter().zip(hydrated.iter()) {
+            query_io::checkpoint(task)?;
             let vector_score = if context.mode != SearchMode::Text {
                 context
                     .query_embedding
@@ -1458,7 +1454,7 @@ impl SearchOutOfCoreReader {
             };
             let matched_spans = matched_query_spans_bounded(
                 context.query_terms,
-                &document,
+                document,
                 &self.analyzer_lexicon,
                 self.config
                     .max_matched_spans
@@ -1491,7 +1487,7 @@ impl SearchOutOfCoreReader {
                 source_id: document.metadata.get("source_id").cloned(),
                 matched_terms: matched_query_terms(
                     context.query_terms,
-                    &document,
+                    document,
                     &self.analyzer_lexicon,
                 ),
                 matched_spans,
@@ -1502,72 +1498,6 @@ impl SearchOutOfCoreReader {
         }
         metrics.hydrated_documents = hits.len();
         Ok(hits)
-    }
-
-    fn load_documents(
-        &self,
-        document_ids: &BTreeSet<String>,
-        metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<BTreeMap<String, SearchDocument>> {
-        if document_ids.len() > self.config.max_hydrated_documents.get() {
-            return Err(SkeinError::Storage(format!(
-                "search hydration requires {} documents, exceeding {}",
-                document_ids.len(),
-                self.config.max_hydrated_documents
-            )));
-        }
-        let mut segment_documents = BTreeMap::<u64, BTreeSet<String>>::new();
-        for id in document_ids {
-            let segment = self.segment_for_document(id).ok_or_else(|| {
-                SkeinError::Storage(format!(
-                    "search document {id} is outside the published document ranges"
-                ))
-            })?;
-            segment_documents
-                .entry(segment.segment_id)
-                .or_default()
-                .insert(id.clone());
-        }
-        let mut hydrated = BTreeMap::<String, SearchDocument>::new();
-        let mut hydrated_bytes = 0u64;
-        for (segment_id, ids) in segment_documents {
-            let segment = self
-                .descriptor
-                .segments
-                .get(segment_id as usize)
-                .filter(|segment| segment.segment_id == segment_id)
-                .ok_or_else(|| {
-                    SkeinError::Storage(format!(
-                        "search hydration references unknown segment {segment_id}"
-                    ))
-                })?;
-            for document in self.read_hydration_segment(segment, metrics)? {
-                if !ids.contains(&document.id) {
-                    continue;
-                }
-                hydrated_bytes = hydrated_bytes
-                    .checked_add(search_document_bytes(&document))
-                    .ok_or_else(|| {
-                        SkeinError::Storage("search hydration byte count overflow".to_string())
-                    })?;
-                if hydrated_bytes > self.config.max_hydrated_bytes.get() {
-                    return Err(SkeinError::Storage(format!(
-                        "search hydration requires {hydrated_bytes} bytes, exceeding {}",
-                        self.config.max_hydrated_bytes
-                    )));
-                }
-                hydrated.insert(document.id.clone(), document);
-            }
-        }
-        if hydrated.len() != document_ids.len() {
-            return Err(SkeinError::Storage(format!(
-                "search hydration found {} of {} requested documents",
-                hydrated.len(),
-                document_ids.len()
-            )));
-        }
-        metrics.hydrated_bytes = hydrated_bytes;
-        Ok(hydrated)
     }
 
     fn segment_for_document(&self, id: &str) -> Option<&SearchSegmentDescriptorEntry> {
@@ -1607,36 +1537,36 @@ impl SearchOutOfCoreReader {
         &self,
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<SearchDocument>> {
+        memory: &skein_executor::QueryMemoryAccount,
+        task: &crate::RuntimeTaskContext,
+    ) -> Result<hydration_memory::Segment> {
         let range = segment.payload_range.ok_or_else(|| {
             SkeinError::Storage(format!(
                 "search segment {} has no payload range",
                 segment.segment_id
             ))
         })?;
-        let payload = read_out_of_core_payload_range(
-            &self.payload,
-            SearchOutOfCoreRange {
-                offset: range.offset,
-                length: range.length,
-                checksum: range.checksum,
-                entry_count: segment.document_count,
-            },
-            segment.segment_id,
-            "hydration",
-            metrics,
-        )?;
+        let payload = query_io::read(&self.payload, range.offset, range.length, memory, task)?;
+        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
+        if checksum_bytes(&payload) != range.checksum {
+            return Err(SkeinError::Storage(
+                "search hydration payload checksum mismatch".to_owned(),
+            ));
+        }
         metrics.hydration_segment_bytes_read = metrics
             .hydration_segment_bytes_read
             .saturating_add(range.length);
-        let documents = decode_search_segment_documents_bounded(
+        let text = query_io::decode(
             &payload,
             self.config.max_uncompressed_segment_bytes.get(),
+            memory,
+            task,
         )?;
-        validate_search_segment_documents(segment, &documents)?;
+        let documents = hydration_memory::Segment::decode(&text, segment, memory, task)?;
         metrics.peak_segment_document_bytes = metrics
             .peak_segment_document_bytes
-            .max(documents.iter().map(search_document_bytes).sum());
+            .max(documents.logical_bytes()?);
         Ok(documents)
     }
 
@@ -2548,32 +2478,6 @@ fn validate_out_of_core_range(
     Ok(())
 }
 
-fn read_out_of_core_payload_range(
-    file: &File,
-    range: SearchOutOfCoreRange,
-    segment_id: u64,
-    kind: &str,
-    metrics: &mut SearchOutOfCoreMetrics,
-) -> Result<Vec<u8>> {
-    let length = usize::try_from(range.length).map_err(|_| {
-        SkeinError::Storage(format!(
-            "search segment {segment_id} {kind} payload length exceeds the platform address space"
-        ))
-    })?;
-    let mut payload = vec![0u8; length];
-    read_exact_at(file, range.offset, &mut payload)?;
-    metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
-    metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
-    let actual_checksum = checksum_bytes(&payload);
-    if actual_checksum != range.checksum {
-        return Err(SkeinError::Storage(format!(
-            "search segment {segment_id} {kind} payload checksum mismatch: expected {}, got {actual_checksum}",
-            range.checksum
-        )));
-    }
-    Ok(payload)
-}
-
 fn decode_metadata_segment(
     text: &str,
     segment: &SearchSegmentDescriptorEntry,
@@ -2873,6 +2777,7 @@ pub(super) fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     mod candidate_admission;
     mod vector_admission;
     use crate::{

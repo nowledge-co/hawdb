@@ -85,8 +85,9 @@ impl SearchOutOfCoreGenerationUpdate {
         )?;
         writer.expected_active_generation = Some(reader.generation());
         let mut deleted_documents = 0usize;
+        let source_memory = writer.memory.retained.clone();
         let source_read_metrics =
-            reader.visit_documents_in_order(&task_context, &mut |document| {
+            reader.visit_documents_in_order(&task_context, &source_memory, &mut |document| {
                 while upserts
                     .front()
                     .is_some_and(|upsert| upsert.id < document.id)
