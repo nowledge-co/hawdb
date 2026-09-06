@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
 mod build_control;
+mod build_io;
 mod build_memory;
 mod cjk_tokenizer;
 mod document_codec;

@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod cancellation;
 mod input_memory;
 mod record_admission;
+mod segment_admission;
 
 #[test]
 fn fused_generation_reads_source_spool_once() {

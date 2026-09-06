@@ -4,6 +4,8 @@ use super::super::{
 };
 use super::{RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
 use crate::build_control::checkpoint;
+use crate::build_io;
+use crate::build_memory::{checked_add, BuildMemory};
 use crate::error::{Result, SkeinError};
 use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
 use crate::{
@@ -18,6 +20,7 @@ use std::path::Path;
 
 pub(super) struct PublishGenerationInput<'a> {
     pub(super) task_context: &'a RuntimeTaskContext,
+    pub(super) memory: &'a BuildMemory,
     pub(super) root: &'a Path,
     pub(super) stage: &'a Path,
     pub(super) generation: u64,
@@ -80,7 +83,41 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
     let (lexical_manifest_len, lexical_manifest_checksum) =
         file_len_checksum_with_context(&lexical_manifest_source, input.task_context)?;
     let lexical_artifact_len = fs::metadata(&lexical_artifact_source)?.len();
-    let layout_bytes = input.layout.encode()?;
+    let layout_bytes = build_io::json_envelope(
+        input.layout,
+        input.max_generation_bytes,
+        input.memory,
+        input.task_context,
+    )
+    .map_err(publication_encoding_error)?;
+    let names = [
+        &descriptor_file,
+        &payload_file,
+        &metadata_payload_file,
+        &vector_payload_file,
+        &layout_file,
+        &lexical_manifest_file,
+    ];
+    let mut manifest_string_bytes = names
+        .iter()
+        .try_fold(OUT_OF_CORE_FORMAT.len(), |bytes, name| {
+            checked_add(bytes, name.len())
+        })?;
+    for text in [
+        input.rabitq.map(|artifact| artifact.file_name.as_str()),
+        input
+            .embedding_manifest
+            .map(|manifest| manifest.model.as_str()),
+        input
+            .embedding_manifest
+            .and_then(|manifest| manifest.version.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        manifest_string_bytes = checked_add(manifest_string_bytes, text.len())?;
+    }
+    let _manifest_strings = input.memory.retained.reserve(manifest_string_bytes)?;
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
@@ -95,7 +132,7 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         vector_payload_len,
         layout_file: layout_file.clone(),
         layout_len: layout_bytes.len() as u64,
-        layout_checksum: checksum_bytes(&layout_bytes),
+        layout_checksum: checksum_bytes(layout_bytes.as_ref()),
         lexical_manifest_file: lexical_manifest_file.clone(),
         lexical_manifest_len,
         lexical_manifest_checksum,
@@ -123,7 +160,14 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
             .map(|manifest| manifest.dimension)
             .or(input.embedding_dimension),
     };
-    let manifest_bytes = manifest.encode()?;
+    manifest.validate_names()?;
+    let manifest_bytes = build_io::json_envelope(
+        &manifest,
+        input.max_generation_bytes,
+        input.memory,
+        input.task_context,
+    )
+    .map_err(publication_encoding_error)?;
     let generation_bytes = [
         descriptor_len,
         payload_len,
@@ -169,7 +213,7 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         &lexical_manifest_source,
         &input.root.join(&lexical_manifest_file),
     )?;
-    write_generation_artifact(&input.root.join(&layout_file), &layout_bytes)?;
+    write_generation_artifact(&input.root.join(&layout_file), layout_bytes.as_ref())?;
 
     verify_published_artifact(
         &input.root.join(&descriptor_file),
@@ -216,11 +260,24 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         "lexical artifact",
     )?;
 
-    write_generation_artifact(&input.root.join(OUT_OF_CORE_MANIFEST_FILE), &manifest_bytes)?;
+    write_generation_artifact(
+        &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+        manifest_bytes.as_ref(),
+    )?;
     Ok(PublishedGeneration {
         manifest_bytes: manifest_bytes.len() as u64,
         generation_bytes,
     })
+}
+
+fn publication_encoding_error(error: SkeinError) -> SkeinError {
+    match error {
+        SkeinError::Storage(message) => SkeinError::Storage(format!(
+            "search generation published bytes encoding failed: {message}"
+        )),
+        // Preserve root-admission and cancellation errors as terminal failures.
+        other => other,
+    }
 }
 
 fn verify_published_artifact(

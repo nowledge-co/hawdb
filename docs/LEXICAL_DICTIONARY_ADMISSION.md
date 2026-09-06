@@ -83,8 +83,10 @@ reallocation. Restore every control before final positive verification.
 
 ## Remaining issue 206 boundaries
 
+Segment descriptors, codec buffers, layouts and publication now share this root
+as described in `SEGMENT_BUILD_ADMISSION.md`.
 This does not establish complete build/query memory admission. Small path/control
-allocations, dependency workspace, segment codecs/RaBitQ, published-reader reopen
+allocations, dependency workspace, RaBitQ, published-reader reopen
 and persistent outer query/delta owners still need their respective boundaries.
 Stack scratch and allocator overhead are not included in these ledger counters.
 Jieba's private persistent HMM workspace remains a separate pending dependency

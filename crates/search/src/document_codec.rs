@@ -6,13 +6,26 @@ use crate::SearchDocument;
 use skein_core::RuntimeTaskContext;
 use std::fmt::{self, Write};
 
-pub(crate) fn write_line(output: &mut impl Write, document: &SearchDocument) -> fmt::Result {
+pub(crate) fn write_line(
+    output: &mut (impl Write + ?Sized),
+    document: &SearchDocument,
+) -> fmt::Result {
     output.write_str("doc\t")?;
     for field in [&document.id, &document.title, &document.content] {
         write_hex(output, field)?;
         output.write_char('\t')?;
     }
-    if let Some(values) = &document.embedding {
+    write_embedding(output, document.embedding.as_deref())?;
+    output.write_char('\t')?;
+    write_metadata(output, &document.metadata)?;
+    output.write_char('\n')
+}
+
+pub(crate) fn write_embedding(
+    output: &mut (impl Write + ?Sized),
+    values: Option<&[f32]>,
+) -> fmt::Result {
+    if let Some(values) = values {
         for (index, value) in values.iter().enumerate() {
             if index != 0 {
                 output.write_char(',')?;
@@ -20,8 +33,14 @@ pub(crate) fn write_line(output: &mut impl Write, document: &SearchDocument) -> 
             write!(output, "{value}")?;
         }
     }
-    output.write_char('\t')?;
-    for (index, (key, value)) in document.metadata.iter().enumerate() {
+    Ok(())
+}
+
+pub(crate) fn write_metadata(
+    output: &mut (impl Write + ?Sized),
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> fmt::Result {
+    for (index, (key, value)) in metadata.iter().enumerate() {
         if index != 0 {
             output.write_char(';')?;
         }
@@ -29,10 +48,10 @@ pub(crate) fn write_line(output: &mut impl Write, document: &SearchDocument) -> 
         output.write_char('=')?;
         write_hex(output, value)?;
     }
-    output.write_char('\n')
+    Ok(())
 }
 
-fn write_hex(output: &mut impl Write, input: &str) -> fmt::Result {
+pub(crate) fn write_hex(output: &mut (impl Write + ?Sized), input: &str) -> fmt::Result {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buffer = [0; 1024];
     for chunk in input.as_bytes().chunks(buffer.len() / 2) {

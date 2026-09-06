@@ -8,8 +8,8 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes eight lexical targets and one record-codec
-target, all manual:
+The required local suite includes eight lexical targets, one record-codec target
+and one segment-admission target, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -66,6 +66,24 @@ budget. The latter must reject before the decoder allocation boundary. Owned
 leases must match string/vector capacities plus the metadata-container allowance
 and release to zero after drop. This extends input-memory coverage, not the
 complete fused-sink budget or allocator/RSS coverage.
+
+The segment campaign is
+`//crates/search:skein_search_segment_admission_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --lib segment_admission_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x2065e67` generates 1,000 document groups, 1,000 descriptors and 3,000
+document/metadata/vector payloads. Independent preceding encoders check exact
+bytes and decompression, including Unicode/NUL, arbitrary f32 values, missing
+vectors, JSON/CSV metadata and full-width ordinals. Each descriptor and payload
+has exact/one-short shared-root retries (4,000 each); every outcome releases all
+tracked memory and retains three accounts. Thirty-two cancelled compressions
+must not enter zstd. Normal tests separately prove retained layout lifetime,
+before-allocation denial, publication rollback and compression block boundaries.
+See `SEGMENT_BUILD_ADMISSION.md` for dependency envelopes and remaining gates.
 
 ## Coverage and independent checks
 

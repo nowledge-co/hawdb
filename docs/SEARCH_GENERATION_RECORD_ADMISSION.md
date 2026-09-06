@@ -80,10 +80,13 @@ shared ledger is empty after cleanup. Temporary missing-reservation and early
 release mutations must be rejected by the corresponding preflight/lifetime tests.
 
 Test-only counters mark entry into output allocation and decoding; they are not
-allocator or RSS measurements. The shared ledger currently covers input ownership,
-not all build allocations. Segment descriptors/layouts, encoding/compression,
-identifier/Jieba scratch, lexical external merge, RaBitQ construction/finalization and caller-owned delta
-conversion still need admission under the same root. The outer query's concurrent
+allocator or RSS measurements. The shared ledger includes the subsequent
+Skein-owned analyzer, lexical artifact, external merge and dictionary owners;
+their respective `LEXICAL_*_ADMISSION.md` documents define the boundaries.
+Segment descriptors/layouts, encoding/compression and publication are covered in
+`SEGMENT_BUILD_ADMISSION.md`. Jieba workspace, RaBitQ construction/finalization
+and caller-owned delta conversion still need admission under the same root.
+The outer query's concurrent
 candidate/vector/score/hydration state is separate remaining work. Input accounting
 does not replace #206's aggregate cross-phase build/query reservation or
 representative-corpus acceptance gates.

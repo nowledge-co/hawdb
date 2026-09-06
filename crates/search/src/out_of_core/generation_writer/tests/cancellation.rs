@@ -182,8 +182,9 @@ fn real_fused_scan_cancellation_removes_all_partially_built_sinks() {
     let root = test_dir("cancelled_real_scan");
     initial_generation(&root);
     let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
-    let task = RuntimeTaskContext::default()
-        .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1024 * 1024, 0));
+    let task = RuntimeTaskContext::default().with_memory_reservation(
+        skein_core::RuntimeMemoryReservation::new(16 * 1024 * 1024, 0),
+    );
     let options = SearchOutOfCoreGenerationBuildOptions {
         lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
         ..Default::default()

@@ -127,7 +127,7 @@ fn actual_segment_keeps_decoded_input_admission_until_flush_or_drop() {
     fs::create_dir(&root).unwrap();
     let options = SearchOutOfCoreGenerationBuildOptions::default();
     let fields = required_descriptor_fields();
-    let memory = BuildMemory::new(&context(1024 * 1024)).unwrap();
+    let memory = BuildMemory::new(&context(16 * 1024 * 1024)).unwrap();
     let ledger = memory.ledger.clone();
     let mut segments =
         SegmentArtifactBuilder::new_with_memory(&root, 1, &fields, &options, memory.clone())
@@ -176,9 +176,9 @@ fn a_complete_fused_build_releases_all_tracked_input_charges() {
         fs::remove_dir_all(root).unwrap();
         snapshot.peak_bytes
     }
-    // FST registry admission now overlaps the rest of the actual fused build.
-    // The preceding 1 MiB success fixture omitted that working set entirely.
-    let peak = build(8 * 1024 * 1024, true);
+    // FST and compression admission overlap the actual fused build's owners.
+    // Discover the shared-root peak, then enforce its exact and one-short bounds.
+    let peak = build(16 * 1024 * 1024, true);
     assert!(peak > 1024 * 1024);
     assert_eq!(build(peak, true), peak);
     build(peak - 1, false);

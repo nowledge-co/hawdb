@@ -38,6 +38,8 @@ mod artifacts;
 mod delta;
 mod publication;
 mod rabitq;
+mod segment_io;
+mod segment_memory;
 mod spool;
 #[cfg(test)]
 mod tests;
@@ -380,6 +382,7 @@ impl SearchOutOfCoreGenerationWriter {
 
         let published = publish_generation(PublishGenerationInput {
             task_context: &self.task_context,
+            memory: &self.memory,
             root: &self.root,
             stage: &self.stage.path,
             generation,
