@@ -99,9 +99,13 @@ is manual and ignored in ordinary runs; no default/dedicated CI fuzz is added.
 
 This admits pruning's transient workspace, not its parsed-input or report
 ownership. Filter/ACL parsing, the field-report accumulator, report copies in
-retriever/public results, ranking/fusion and hydration still need complete
+retriever/public results and hydration still need complete
 owners. Public output and projection backend admission/retained-hit contracts
 still require the pending API decision. Reader/mapping host ownership, persistent
 delta, component limits, Jieba, representative-corpus reduction and native
 qualification remain separate full-issue gates. v1 bytes, dependencies, I/O
 backends and Bazel runtime/timeout settings are unchanged.
+
+Private ranking/fusion scratch and the hydration candidate page now retain
+their own shared-root charges (`RANKING_QUERY_ADMISSION.md`), independently of
+the still-unowned public report and hydrated-output lifetimes.

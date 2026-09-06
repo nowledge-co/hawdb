@@ -116,6 +116,25 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Cover borrowed ranks and bounded fusion under a shared query root locally.
+rust_test(
+    name = "skein_search_ranking_admission_fuzz_tests",
+    size = "large",
+    tags = ["manual"],
+    args = [
+        "out_of_core::ranking_memory::tests::fuzz::ranking_admission_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 # Cover pruning workspace and legacy decision/report parity outside ordinary CI.
 rust_test(
     name = "skein_search_pruning_admission_fuzz_tests",

@@ -7,15 +7,13 @@ use super::{
     decode_search_segment_descriptor_text, decode_search_segment_documents_bounded, decode_string,
     encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
     lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
-    matched_query_terms, ranked_scores, read_search_segment_descriptor,
-    retriever_candidate_set_report, rrf_child_score, search_empty_reason_codes,
-    search_empty_reasons, search_metadata_predicate_pushdown, tokenize, top_ranked_candidates,
-    top_ranked_ids, validate_search_segment_documents, weighted_rrf_score, window_ranks,
-    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
-    SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
-    SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
-    SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions, SearchResultSet,
-    SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
+    matched_query_terms, read_search_segment_descriptor, retriever_candidate_set_report,
+    search_empty_reason_codes, search_empty_reasons, search_metadata_predicate_pushdown, tokenize,
+    validate_search_segment_documents, CompressedVectorSearchMode, SearchAccessControlContext,
+    SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest,
+    SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode,
+    SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
+    SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
     SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorSearchExecutionOptions,
     FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
@@ -39,6 +37,7 @@ mod generation_writer;
 mod pruning_memory;
 mod publish_lease;
 mod query_io;
+mod ranking_memory;
 mod vector_io;
 mod vector_serving;
 pub use generation_writer::{
@@ -1178,10 +1177,11 @@ impl SearchOutOfCoreReader {
         vector_fallback_reasons.extend(vector_scan.fallback_reasons.iter().cloned());
         let vector_scores = &vector_scan.scores;
 
-        let vector_ranks = ranked_scores(vector_scores);
-        let text_ranks = ranked_scores(&text_scores);
-        let vector_window_ranks = window_ranks(&vector_ranks, options.rank_window);
-        let text_window_ranks = window_ranks(&text_ranks, options.rank_window);
+        let ranking_task = task_context.cloned().unwrap_or_default();
+        let vector_ranks =
+            ranking_memory::RankedScores::new(vector_scores, &query_memory.working, &ranking_task)?;
+        let text_ranks =
+            ranking_memory::RankedScores::new(&text_scores, &query_memory.working, &ranking_task)?;
         let mut fallback_reason_codes = vector_fallback_reason_codes.clone();
         fallback_reason_codes.extend(text_fallback_reason_codes.iter().copied());
         let mut fallback_reasons = vector_fallback_reasons.clone();
@@ -1249,7 +1249,7 @@ impl SearchOutOfCoreReader {
                 index_coverage_complete: true,
                 candidate_count: vector_scan.matching_count,
                 candidate_set: retriever_candidate_set_report(
-                    vector_window_ranks.len(),
+                    vector_ranks.window_len(options.rank_window),
                     self.manifest.source_graph_commit_epoch,
                     policy_epoch,
                     true,
@@ -1257,12 +1257,8 @@ impl SearchOutOfCoreReader {
                 fallback_reason_codes: vector_fallback_reason_codes.clone(),
                 fallback_reasons: vector_fallback_reasons.clone(),
                 candidate_top_ids: Vec::new(),
-                top_hit_ids: top_ranked_ids(&vector_window_ranks, options.limit),
-                top_candidates: top_ranked_candidates(
-                    &vector_window_ranks,
-                    vector_scores,
-                    options.limit,
-                ),
+                top_hit_ids: vector_ranks.top_ids(options.rank_window, options.limit),
+                top_candidates: vector_ranks.top_candidates(options.rank_window, options.limit),
             },
             SearchRetrieverReport {
                 name: "text".to_string(),
@@ -1317,7 +1313,7 @@ impl SearchOutOfCoreReader {
                 index_coverage_complete: true,
                 candidate_count: text_matching_count,
                 candidate_set: retriever_candidate_set_report(
-                    text_window_ranks.len(),
+                    text_ranks.window_len(options.rank_window),
                     self.manifest.source_graph_commit_epoch,
                     policy_epoch,
                     true,
@@ -1325,73 +1321,28 @@ impl SearchOutOfCoreReader {
                 fallback_reason_codes: text_fallback_reason_codes,
                 fallback_reasons: text_fallback_reasons,
                 candidate_top_ids: Vec::new(),
-                top_hit_ids: top_ranked_ids(&text_window_ranks, options.limit),
-                top_candidates: top_ranked_candidates(
-                    &text_window_ranks,
-                    &text_scores,
-                    options.limit,
-                ),
+                top_hit_ids: text_ranks.top_ids(options.rank_window, options.limit),
+                top_candidates: text_ranks.top_candidates(options.rank_window, options.limit),
             },
         ];
 
-        let mut scored_candidates = vector_scores
-            .keys()
-            .chain(text_scores.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter_map(|id| {
-                let vector_score = vector_scores.get(&id).copied().unwrap_or(0.0);
-                let text_score = text_scores.get(&id).copied().unwrap_or(0.0);
-                let vector_rank = match mode {
-                    SearchMode::Hybrid => vector_window_ranks.get(&id).copied(),
-                    SearchMode::Vector | SearchMode::Text => vector_ranks.get(&id).copied(),
-                };
-                let text_rank = match mode {
-                    SearchMode::Hybrid => text_window_ranks.get(&id).copied(),
-                    SearchMode::Vector | SearchMode::Text => text_ranks.get(&id).copied(),
-                };
-                let vector_rrf_score = rrf_child_score(vector_rank);
-                let text_rrf_score = rrf_child_score(text_rank);
-                let rrf_score =
-                    weighted_rrf_score(vector_rrf_score, text_rrf_score, options.fusion_weights);
-                let score = match mode {
-                    SearchMode::Hybrid => rrf_score,
-                    SearchMode::Vector => vector_score,
-                    SearchMode::Text => text_score,
-                };
-                (score > 0.0).then_some(SearchScoredCandidate {
-                    id,
-                    score,
-                    vector_score,
-                    text_score,
-                    rrf_score,
-                    vector_rrf_score,
-                    text_rrf_score,
-                    vector_rank,
-                    text_rank,
-                })
-            })
-            .collect::<Vec<_>>();
-        scored_candidates.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(CmpOrdering::Equal)
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        let page = ranking_memory::RankedPage::build(
+            &vector_ranks,
+            &text_ranks,
+            mode,
+            &options,
+            &query_memory,
+            &ranking_task,
+        )?;
+        drop(vector_ranks);
+        drop(text_ranks);
         let total_hits = match mode {
             SearchMode::Text => text_matching_count,
             SearchMode::Vector => vector_scan.matching_count,
-            SearchMode::Hybrid => scored_candidates.len(),
+            SearchMode::Hybrid => page.matching_count,
         };
         let page_end = options.offset.saturating_add(options.limit);
         let truncated = total_hits > page_end;
-        let page_candidates = scored_candidates
-            .into_iter()
-            .skip(options.offset)
-            .take(options.limit)
-            .collect::<Vec<_>>();
         let projection_freshness = self.projection_freshness();
         let hydration = HitHydrationContext {
             query_terms: &query_terms,
@@ -1401,7 +1352,7 @@ impl SearchOutOfCoreReader {
             fallback_reasons: &fallback_reasons,
             projection_freshness: &projection_freshness,
         };
-        let hits = self.hydrate_hits(&page_candidates, hydration, &mut metrics)?;
+        let hits = self.hydrate_hits(&page.candidates, hydration, &mut metrics)?;
 
         let truncation_reasons = if truncated && options.offset > 0 {
             vec![format!(

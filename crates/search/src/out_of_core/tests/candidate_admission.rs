@@ -191,6 +191,49 @@ fn exact_candidate_build_and_one_short_failure_preserve_publication() {
 }
 
 #[test]
+#[cfg(feature = "vector-search")]
+fn ranking_admission_is_used_by_the_real_query_before_hydration() {
+    let (root, reader) = fixture("candidate-ranking-admission");
+    ranking_memory::tests::take();
+    let output = reader
+        .search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(2, None))
+        .unwrap();
+    assert_eq!(
+        ranking_memory::tests::take(),
+        ranking_memory::tests::Evidence {
+            ranks: 2,
+            heaps: 1,
+            pages: 1,
+        }
+    );
+    assert_eq!(output.result.hits.len(), 2);
+    assert_eq!(output.metrics.hydrated_documents, 2);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(not(feature = "vector-search"))]
+fn ranking_admission_is_not_entered_without_vector_capability() {
+    let (root, reader) = fixture("candidate-ranking-capability");
+    ranking_memory::tests::take();
+    let result =
+        reader.search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(2, None));
+    assert!(matches!(
+        result,
+        Err(SkeinError::CapabilityUnavailable {
+            capability: RuntimeCapability::VectorSearch,
+        })
+    ));
+    assert_eq!(
+        ranking_memory::tests::take(),
+        ranking_memory::tests::Evidence::default()
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pruning_budget_rejection_precedes_payload_io_and_cleans_query_spill() {
     let (root, reader) = fixture("candidate-pruning-budget");
     let published = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();

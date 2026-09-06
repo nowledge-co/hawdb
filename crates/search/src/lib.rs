@@ -394,8 +394,8 @@ pub struct SearchResultSet {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SearchScoredCandidate {
-    id: String,
+struct SearchScoredCandidate<Id = String> {
+    id: Id,
     score: f64,
     vector_score: f64,
     text_score: f64,

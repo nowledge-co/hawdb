@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ/candidate/vector/projection-search/pruning admission targets, all manual:
+and segment/RaBitQ/candidate/vector/projection-search/pruning/ranking admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -176,6 +176,14 @@ release and the two-account bound. This is legacy parity and transient workspace
 admission, not public report ownership or an independent predicate-semantics
 oracle. See `PRUNING_QUERY_ADMISSION.md` for scope and negative controls.
 See `VECTOR_QUERY_ADMISSION.md` for the remaining boundaries.
+
+The ranking campaign is `//crates/search:skein_search_ranking_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features ranking_admission_campaign -- --ignored --nocapture`.
+Seed `0x206f0510` generates 384 pairs of score maps and 1,152 mode cases, each
+with exact/one-short shared-root retries. Pairwise ranking and full-union sorting
+independently check RRF scores/ranks, tie ordering, exact counts and pages;
+legacy helpers check retriever reports. All owners release their capacity.
+See `RANKING_QUERY_ADMISSION.md` for the internal/public ownership boundary.
 
 ## Coverage and independent checks
 
