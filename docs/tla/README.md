@@ -466,6 +466,17 @@ suffix. `CheckpointedWalMetadataIsReleased` checks the normalization. No reader,
 commit, checkpoint, relocation, crash, or rejection transition is removed, and
 all prior invariants and the stale-candidate liveness property remain enabled.
 
+Physical page references use the dense address `generation * MaxPage + page`.
+`RefGeneration` and `RefPage` invert it; a model assumption checks the bijection
+over the entire configured domain. This changes the representation of the
+page-epoch function to an interval-indexed table, avoiding repeated record-key
+construction and lookup in TLC. It does not quotient or remove states, change
+physical identity, or weaken transitions or properties. The complete configured
+record-key and dense-key checks each generated 138,204,089 states and found
+23,127,068 distinct states at depth 37, including successful liveness checking.
+The fresh-epoch, stale-publication, lost-WAL-suffix and partial-generation mutants
+still violate their respective invariants with the dense representation.
+
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and

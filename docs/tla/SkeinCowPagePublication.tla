@@ -34,11 +34,22 @@ CandidatePhases == {
     "rootDurable",
     "manifestDurable"
 }
-PageRefs == [generation : Generations, page : Pages]
+(* This dense address is a bijection with the immutable (generation,page) *)
+(* identity. It changes only representation, never the transition graph. *)
+PageRefs == 1..((MaxGeneration + 1) * MaxPage)
 RootType == [Pages -> Generations]
 
 PageRef(generation, page) ==
-    [generation |-> generation, page |-> page]
+    generation * MaxPage + page
+
+RefGeneration(ref) == (ref - 1) \div MaxPage
+RefPage(ref) == ((ref - 1) % MaxPage) + 1
+
+ASSUME /\ PageRefs = {PageRef(generation, page) :
+                         generation \in Generations, page \in Pages}
+       /\ \A generation \in Generations, page \in Pages:
+           /\ RefGeneration(PageRef(generation, page)) = generation
+           /\ RefPage(PageRef(generation, page)) = page
 
 RootRefs(root) ==
     {PageRef(root[page], page) : page \in Pages}
@@ -162,9 +173,9 @@ Init ==
         [generation \in Generations |->
             IF generation = 0 THEN 0 ELSE -1]
     /\ canonicalOverflowGeneration = 0
-    /\ durablePages = {ref \in PageRefs : ref.generation = 0}
+    /\ durablePages = {ref \in PageRefs : RefGeneration(ref) = 0}
     /\ pageEpoch =
-        [ref \in PageRefs |-> IF ref.generation = 0 THEN 0 ELSE -1]
+        [ref \in PageRefs |-> IF RefGeneration(ref) = 0 THEN 0 ELSE -1]
     /\ candidatePhase = "idle"
     /\ candidateGeneration = 0
     /\ candidateEpoch = 0
@@ -334,10 +345,10 @@ PersistCandidatePages ==
           /\ pageEpoch' =
               [ref \in PageRefs |->
                   IF ref \in refs
-                  THEN IF ref.page \in candidateDirtyPages
+                  THEN IF RefPage(ref) \in candidateDirtyPages
                        THEN candidateEpoch
                        ELSE pageEpoch[PageRef(
-                           rootByGeneration[candidateBaseGeneration][ref.page], ref.page)]
+                           rootByGeneration[candidateBaseGeneration][RefPage(ref)], RefPage(ref))]
                   ELSE pageEpoch[ref]]
     /\ candidatePhase' = "pagesDurable"
     /\ UNCHANGED <<
