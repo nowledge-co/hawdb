@@ -51,9 +51,12 @@ it does not establish complete query memory or RSS coverage. Candidate metadata,
 spill/cache buffers and vector allowlists now share that root as described in
 `CANDIDATE_QUERY_ADMISSION.md`. Raw vector sidecars and retained vector scores
 also share that root (`VECTOR_QUERY_ADMISSION.md`). RaBitQ candidate generation,
-parsed predicates/report containers, matched-span scratch and public
+report containers, matched-span scratch and public
 result payloads still need complete ownership under the outer query root.
 Persistent delta maps and tokenizer/dependency workspaces remain separate owners.
+Requested filters, optional ACL copies, parsed predicates and parser scratch now
+share the query root (`FILTER_QUERY_ADMISSION.md`); borrowed caller ACL inputs and
+public report copies remain outside that private input owner.
 Out-of-core pruning scratch now shares the query root (`PRUNING_QUERY_ADMISSION.md`);
 that does not admit the report objects it helps populate.
 Borrowed ranks, bounded fusion scratch and the owned hydration candidate page

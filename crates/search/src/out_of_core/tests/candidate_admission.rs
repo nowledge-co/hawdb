@@ -575,8 +575,11 @@ fn public_query_rejection_cleans_candidates_under_its_task_budget() {
     options
         .metadata_filters
         .insert("space_id".to_owned(), "team".to_owned());
+    // Admit the filter/pruning input, then deny metadata decoding after creating
+    // the candidate file. A smaller root now rejects before this cleanup path.
     let task = RuntimeTaskContext::default()
-        .with_memory_reservation(RuntimeMemoryReservation::new(1024, 1024));
+        .with_memory_reservation(RuntimeMemoryReservation::new(16 * 1024, 16 * 1024));
+    query_io::evidence::take();
     assert!(reader
         .search_with_options_compressed_vector_projection_context(
             "graph",
@@ -587,6 +590,7 @@ fn public_query_rejection_cleans_candidates_under_its_task_budget() {
             &task
         )
         .is_err());
+    assert_eq!(query_io::evidence::take(), (1, 0));
     assert!(fs::read_dir(root.join("spill")).unwrap().next().is_none());
     let output = reader
         .search_with_options("graph", None, SearchMode::Text, options)

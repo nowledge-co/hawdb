@@ -7,15 +7,15 @@ use super::{
     decode_search_segment_descriptor_text, decode_string, encode_embedding, encode_metadata,
     encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
     matched_query_spans_bounded, matched_query_terms, read_search_segment_descriptor,
-    retriever_candidate_set_report, search_empty_reason_codes, search_empty_reasons,
-    search_metadata_predicate_pushdown, tokenize, CompressedVectorSearchMode,
-    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
-    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
-    SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
-    SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
-    SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
-    SearchTruncationReasonCode, VectorSearchExecutionOptions, FULL_REINDEX_MARKER,
-    METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
+    retriever_candidate_set_report, search_empty_reason_codes, search_empty_reasons, tokenize,
+    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
+    SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
+    SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
+    SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions, SearchResultSet,
+    SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
+    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorSearchExecutionOptions,
+    FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::error::{Result, SkeinError};
 use crate::{RuntimeCapabilities, RuntimeCapability};
@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 
 mod candidate_codec;
 mod candidate_memory;
+mod filter_memory;
 mod generation_writer;
 mod hydration_memory;
 mod pruning_memory;
@@ -979,7 +980,7 @@ impl SearchOutOfCoreReader {
         query_text: &str,
         query_embedding: Option<&[f32]>,
         mode: SearchMode,
-        options: SearchQueryOptions,
+        mut options: SearchQueryOptions,
         execution: SearchOutOfCoreExecutionContext<'_>,
     ) -> Result<SearchOutOfCoreOutput> {
         let SearchOutOfCoreExecutionContext {
@@ -1024,29 +1025,22 @@ impl SearchOutOfCoreReader {
             )));
         }
 
-        let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(SkeinError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
-            None => options.metadata_filters.clone(),
-        };
+        let query_memory = self.lexical_projection.query_memory(task_context)?;
+        let filter_task = task_context.cloned().unwrap_or_default();
+        let (filter_input, mut predicate_report) = filter_memory::Input::new(
+            std::mem::take(&mut options.metadata_filters),
+            access_control,
+            options.policy_epoch,
+            &query_memory.working,
+            &filter_task,
+        )?;
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
-        let mut predicate_pushdown = search_metadata_predicate_pushdown(&metadata_filters);
         let mut metrics = SearchOutOfCoreMetrics::default();
-        let query_memory = self.lexical_projection.query_memory(task_context)?;
         let candidate_set = self.build_candidate_set(
-            &predicate_pushdown.predicates,
-            &mut predicate_pushdown.report,
+            &filter_input.predicates,
+            &mut predicate_report,
             &mut metrics,
             &query_memory,
             task_context,
@@ -1063,9 +1057,10 @@ impl SearchOutOfCoreReader {
                 .manifest
                 .document_count
                 .saturating_sub(filtered_document_count),
-            metadata_filters: options.metadata_filters.clone(),
-            metadata_predicate_pushdown: predicate_pushdown.report,
+            metadata_filters: filter_input.requested().clone(),
+            metadata_predicate_pushdown: predicate_report,
         };
+        drop(filter_input);
 
         let query_terms = tokenize(query_text, &self.analyzer_lexicon);
         let text_available = !query_terms.is_empty();
@@ -2777,6 +2772,7 @@ pub(super) fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search_metadata_predicate_pushdown;
     use std::collections::BTreeMap;
     mod candidate_admission;
     mod vector_admission;

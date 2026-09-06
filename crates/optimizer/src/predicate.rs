@@ -105,35 +105,28 @@ impl SearchScalarValue {
 impl SearchPredicate {
     pub fn eq(field: impl Into<String>, value: impl Into<String>) -> Self {
         let field = field.into();
+        let value = search_scalar_value_for_field(&field, value.into());
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::Eq(search_scalar_value_for_field(&field, value.into())),
+            field: SearchFieldRef::new(field),
+            op: SearchPredicateOp::Eq(value),
         }
     }
 
     pub fn in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
         let field = field.into();
+        let values = search_scalar_value_set(&field, values);
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::In(
-                values
-                    .into_iter()
-                    .map(|value| search_scalar_value_for_field(&field, value))
-                    .collect(),
-            ),
+            field: SearchFieldRef::new(field),
+            op: SearchPredicateOp::In(values),
         }
     }
 
     pub fn not_in_list(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
         let field = field.into();
+        let values = search_scalar_value_set(&field, values);
         Self {
-            field: SearchFieldRef::new(field.clone()),
-            op: SearchPredicateOp::NotIn(
-                values
-                    .into_iter()
-                    .map(|value| search_scalar_value_for_field(&field, value))
-                    .collect(),
-            ),
+            field: SearchFieldRef::new(field),
+            op: SearchPredicateOp::NotIn(values),
         }
     }
 
@@ -201,6 +194,19 @@ impl SearchPredicate {
     }
 }
 
+fn search_scalar_value_set(
+    field: &str,
+    values: impl IntoIterator<Item = String>,
+) -> BTreeSet<SearchScalarValue> {
+    // Incremental insertion avoids collect's intermediate sort vector while
+    // preserving the set's normalized ordering and deduplication semantics.
+    let mut result = BTreeSet::new();
+    for value in values {
+        result.insert(search_scalar_value_for_field(field, value));
+    }
+    result
+}
+
 fn search_scalar_value_for_field(field: &str, value: String) -> SearchScalarValue {
     if search_field_is_enum_like(field) {
         SearchScalarValue::enumeration(normalize_search_enum_value(&value))
@@ -242,7 +248,7 @@ impl SearchPredicateSet {
     pub fn from_metadata_filters(
         filters: &BTreeMap<String, String>,
     ) -> Result<Self, SearchPredicateParseError> {
-        let mut predicates = Vec::new();
+        let mut predicates = Vec::with_capacity(filters.len());
         for (key, value) in filters {
             if let Some(predicate) = mem_search_filter_alias_predicate(key, value)? {
                 predicates.push(predicate);
@@ -460,12 +466,12 @@ fn reject_boolean_alias_range_filter(
 fn normalize_search_filter_values(
     filter_key: &str,
     field: &str,
-    values: Vec<String>,
+    mut values: Vec<String>,
 ) -> Result<Vec<String>, SearchPredicateParseError> {
-    values
-        .into_iter()
-        .map(|value| normalize_search_filter_value(filter_key, field, value))
-        .collect()
+    for value in &mut values {
+        *value = normalize_search_filter_value(filter_key, field, std::mem::take(value))?;
+    }
+    Ok(values)
 }
 
 fn normalize_search_filter_value(
@@ -521,9 +527,61 @@ fn parse_bool_filter_value(
 #[cfg(test)]
 mod tests {
     use super::{
-        push_search_predicates, SearchPredicateOp, SearchPredicateSet, SearchScanPredicateSupport,
+        normalize_search_filter_values, push_search_predicates, SearchPredicate, SearchPredicateOp,
+        SearchPredicateSet, SearchScanPredicateSupport,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn predicate_constructors_move_owned_fields_and_normalize_sets() {
+        for operation in 0..3 {
+            let mut field = String::with_capacity(1024);
+            field.push_str("kind");
+            let pointer = field.as_ptr();
+            let predicate = match operation {
+                0 => SearchPredicate::eq(field, " Memory "),
+                1 => SearchPredicate::in_list(field, [" Memory ".into(), "memory".into()]),
+                _ => SearchPredicate::not_in_list(field, [" Memory ".into(), "memory".into()]),
+            };
+            assert_eq!(predicate.field.name.as_ptr(), pointer);
+            assert_eq!(predicate.field.name.capacity(), 1024);
+            match predicate.op() {
+                SearchPredicateOp::Eq(value) => assert_eq!(value.as_str(), "memory"),
+                SearchPredicateOp::In(values) | SearchPredicateOp::NotIn(values) => {
+                    assert_eq!(values.len(), 1);
+                    assert_eq!(values.first().unwrap().as_str(), "memory");
+                }
+                other => panic!("unexpected predicate: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_predicate_slots_are_bounded_by_filter_count() {
+        let filters = BTreeMap::from([
+            ("kind".into(), "memory".into()),
+            ("space__exists".into(), "true".into()),
+            ("space__not_in".into(), "[]".into()),
+        ]);
+        let parsed = SearchPredicateSet::from_metadata_filters(&filters).unwrap();
+        assert_eq!(parsed.predicates.len(), 2);
+        assert_eq!(parsed.predicates.capacity(), filters.len());
+    }
+
+    #[test]
+    fn boolean_list_normalization_reuses_owned_vector_slots() {
+        let mut values = Vec::with_capacity(17);
+        values.extend(["0".into(), " TRUE ".into(), "1".into()]);
+        let pointer = values.as_ptr();
+        let normalized =
+            normalize_search_filter_values("history__in", "is_latest", values).unwrap();
+        assert_eq!(normalized, ["true", "false", "false"]);
+        assert_eq!(normalized.as_ptr(), pointer);
+        assert_eq!(normalized.capacity(), 17);
+        assert!(
+            normalize_search_filter_values("latest__in", "is_latest", vec!["bad".into()]).is_err()
+        );
+    }
 
     #[test]
     fn metadata_filters_lower_to_typed_search_predicates() {

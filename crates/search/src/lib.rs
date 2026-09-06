@@ -10,10 +10,10 @@ pub use skein_evidence::{
 };
 use skein_integrity::checksum_u64;
 use skein_optimizer::{
-    normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
-    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
-    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport, VectorCompressionPreference,
+    normalize_search_enum_value, search_field_is_enum_like, select_adaptive_vector_backend,
+    AdaptiveVectorBackend, AdaptiveVectorBackendDecision, AdaptiveVectorBackendInput,
+    AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp, SearchPredicateSet,
+    SearchScalarValue, VectorCompressionPreference,
 };
 use skein_plan::{VectorBackendSelectionReason, VectorCandidateSource};
 use skein_qos::{
@@ -696,14 +696,7 @@ impl SearchAccessControlContext {
         } else {
             filters.insert(
                 format!("{}__in", self.visibility_metadata_field),
-                serde_json::to_string(
-                    &self
-                        .allowed_visibility_values
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                )
-                .map_err(|error| {
+                serde_json::to_string(&self.allowed_visibility_values).map_err(|error| {
                     SkeinError::Storage(format!(
                         "failed to encode access control visibility predicate: {error}"
                     ))
@@ -5036,16 +5029,14 @@ pub fn search_metadata_predicate_pushdown(
         Err(error) => (SearchPredicateSet::unsatisfiable(), Some(error.to_string())),
     };
     let input_predicate_count = filters.len();
-    let pushdown = push_search_predicates(&predicates, SearchScanPredicateSupport::default());
-    debug_assert!(
-        pushdown.residual().is_empty(),
-        "default search scan support should push every metadata predicate"
-    );
+    // The embedded search scan supports every SearchPredicateOp. Retain the
+    // parsed set directly instead of cloning it through discarded rule events
+    // and then cloning the pushed set again. Keep parity with default pushdown.
     let report = SearchPredicatePushdownReport {
         input_predicate_count,
-        pushed_predicate_count: pushdown.pushed().predicates().len(),
-        residual_predicate_count: pushdown.residual().predicates().len(),
-        unsatisfiable: pushdown.pushed().is_unsatisfiable(),
+        pushed_predicate_count: predicates.predicates().len(),
+        residual_predicate_count: 0,
+        unsatisfiable: predicates.is_unsatisfiable(),
         parse_error,
         segment_count: 0,
         pruned_segment_count: 0,
@@ -5058,10 +5049,7 @@ pub fn search_metadata_predicate_pushdown(
         physical_bytes_read: 0,
         field_summaries: Vec::new(),
     };
-    SearchMetadataPredicatePushdown {
-        predicates: pushdown.pushed().clone(),
-        report,
-    }
+    SearchMetadataPredicatePushdown { predicates, report }
 }
 
 fn search_document_matches_predicates(

@@ -9,7 +9,8 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ/candidate/vector/projection-search/pruning/ranking admission targets, all manual:
+and segment/RaBitQ/candidate/vector/projection-search/pruning/ranking/hydration/delta/filter
+admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -208,6 +209,19 @@ deletes and complete reopen results; normal tests independently check the
 capacity arithmetic. Original spare-capacity inputs are used for exact attempts.
 The target is manual and included in the explicit local fuzz suite, not CI.
 See `DELTA_INPUT_ADMISSION.md` for the internal ownership boundary.
+
+## Filter and ACL input admission
+
+The filter campaign is `//crates/search:skein_search_filter_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features filter_admission_campaign -- --ignored --nocapture`.
+Seed `0x206f117e` covers 256 cases across 16 filter shapes, single/multiple ACL
+scopes, malformed/escaped JSON, spare source capacities and competing owners.
+Each input has exact/one-short admission retries. Published-reader candidate
+sets use independent document-match rules; separate legacy pushdown comparison
+shares the parser and is not an independent parser oracle. The minimal-feature
+campaign uses the same private candidate path and seed. This manual target is
+part of the explicit local suite, not a default or dedicated CI job.
+See `FILTER_QUERY_ADMISSION.md` for dependency envelopes and ownership boundaries.
 
 ## Coverage and independent checks
 

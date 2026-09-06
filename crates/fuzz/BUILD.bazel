@@ -102,6 +102,7 @@ test_suite(
         "//crates/search:skein_search_ranking_admission_fuzz_tests",
         "//crates/search:skein_search_hydration_admission_fuzz_tests",
         "//crates/search:skein_search_delta_admission_fuzz_tests",
+        "//crates/search:skein_search_filter_admission_fuzz_tests",
         "//crates/vector-projection:skein_vector_projection_search_memory_fuzz_tests",
     ],
 )
