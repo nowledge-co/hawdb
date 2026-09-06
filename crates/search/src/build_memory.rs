@@ -1,4 +1,4 @@
-//! Operation-owned generation input accounting shared across spool and sinks.
+//! Operation-owned generation working-set accounting shared across build stages.
 
 use crate::document_codec::Fields;
 use crate::error::{Result, SkeinError};
@@ -44,7 +44,7 @@ impl BuildMemory {
         let spool = ledger.account(QueryMemoryClass::SpillStaging, "search build spool", limit);
         let retained = ledger.account(
             QueryMemoryClass::BlockingState,
-            "search build retained input",
+            "search build retained state",
             limit,
         );
         Ok(Self {

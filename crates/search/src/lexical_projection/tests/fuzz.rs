@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod analysis;
 mod bytes;
 mod state_machine;
 

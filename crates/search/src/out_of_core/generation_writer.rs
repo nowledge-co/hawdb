@@ -219,9 +219,10 @@ impl SearchOutOfCoreGenerationWriter {
     /// cancellation. Individual filesystem and bounded codec calls are not
     /// interruptible. The caller retains ownership of its governor admission.
     /// An optional task memory reservation is shared by owned input, spool
-    /// buffers, decoded documents and documents retained by segment construction.
-    /// Component caps still apply. Analyzer, codec, descriptor and vector working
-    /// sets are not yet charged to this ledger; this is not total build admission.
+    /// buffers, decoded/segment documents, lexical frequency sets and posting
+    /// chunks. Component caps still apply. Identifier/Jieba scratch, codecs,
+    /// descriptors and vector working sets are not yet charged to this ledger;
+    /// this is not total build admission.
     pub fn create_with_context(
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
@@ -476,6 +477,7 @@ impl SearchOutOfCoreGenerationWriter {
         };
         let lexical = LexicalProjectionWriter::new(lexical_config)
             .with_context(self.task_context.clone())
+            .with_memory(self.memory.clone())
             .write_scanned(
                 &self.stage.path,
                 generation,

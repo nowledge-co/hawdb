@@ -169,6 +169,32 @@ fn a_complete_fused_build_releases_all_tracked_input_charges() {
 }
 
 #[test]
+fn fused_lexical_frequencies_share_capacity_with_the_input_owner() {
+    let root = test_dir("input_memory_lexical_shared");
+    let task = context(1024 * 1024);
+    let mut writer =
+        SearchOutOfCoreGenerationWriter::create_with_context(&root, Default::default(), task)
+            .unwrap();
+    let mut input = document(0);
+    input.content = (0..60)
+        .map(|index| format!("unique{index}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    writer.push(input).unwrap();
+    let ledger = writer.memory.ledger.clone();
+    let occupied = 1024 * 1024 - ledger.snapshot().used_bytes - 100_000;
+    let sibling = writer.memory.retained.reserve(occupied).unwrap();
+    let error = writer.finish().unwrap_err();
+    assert!(error.to_string().contains("query memory ledger"), "{error}");
+    assert_eq!(ledger.snapshot().used_bytes, occupied);
+    assert_eq!(stage_directories(&root), 0);
+    assert!(!root.join(OUT_OF_CORE_MANIFEST_FILE).exists());
+    drop(sibling);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn shared_memory_exhaustion_during_the_fused_scan_preserves_the_old_generation() {
     let root = test_dir("input_memory_fused_failure");
     let mut first = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();

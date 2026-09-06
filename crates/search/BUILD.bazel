@@ -66,6 +66,7 @@ rust_test(
         proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     )
     for campaign, test_filter in [
+        ("analyzer", "analysis::frequency_parity_campaign"),
         ("posting", "bytes::posting_bytes_campaign"),
         ("dictionary", "bytes::dictionary_bytes_campaign"),
         ("doclist", "bytes::doclist_bytes_campaign"),

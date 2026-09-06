@@ -29,7 +29,8 @@ it reaches this decoder rather than stopping at the integrity gate.
 
 `create_with_context` uses the optional task memory reservation as the root of
 one operation-local `QueryMemoryLedger`. Its three accounts are shared across
-the writer, spool reader and segment document owner. Accounts are not created
+the writer, spool reader, segment document owner and retained lexical analysis
+state (see `LEXICAL_ANALYZER_ADMISSION.md`). Accounts are not created
 per document: the ledger retains account metadata until the build ends.
 
 The input chain reserves capacity for:
@@ -81,7 +82,7 @@ release mutations must be rejected by the corresponding preflight/lifetime tests
 Test-only counters mark entry into output allocation and decoding; they are not
 allocator or RSS measurements. The shared ledger currently covers input ownership,
 not all build allocations. Segment descriptors/layouts, encoding/compression,
-lexical analysis/merge, RaBitQ construction/finalization and caller-owned delta
+identifier/Jieba scratch, lexical external merge, RaBitQ construction/finalization and caller-owned delta
 conversion still need admission under the same root. The outer query's concurrent
 candidate/vector/score/hydration state is separate remaining work. Input accounting
 does not replace #206's aggregate cross-phase build/query reservation or

@@ -1,6 +1,9 @@
 use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
-use super::{document_tokens, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
+#[cfg(test)]
+use super::document_tokens;
+use super::{SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
 use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_core::RuntimeTaskContext;
@@ -18,12 +21,14 @@ use std::sync::Arc;
 static CACHE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 pub(super) const DEFAULT_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
+mod analyzer;
 mod dictionary;
 mod dictionary_store;
 mod doclist;
 mod documents;
 mod fst_validation;
 mod manifest_io;
+mod posting_chunk;
 mod posting_codec;
 mod read_context;
 use documents::DocumentLookup;
@@ -480,63 +485,7 @@ fn analyze_delta_document(
     analyzer: &SearchAnalyzerLexicon,
     config: LexicalProjectionConfig,
 ) -> Result<DeltaDocument> {
-    let source_bytes = document
-        .title
-        .len()
-        .saturating_add(document.content.len())
-        .saturating_add(
-            document
-                .metadata
-                .iter()
-                .fold(0usize, |bytes, (key, value)| {
-                    bytes.saturating_add(key.len()).saturating_add(value.len())
-                }),
-        );
-    if source_bytes as u64 > config.max_document_source_bytes.get() {
-        return Err(SkeinError::Storage(format!(
-            "lexical document {} uses {source_bytes} source bytes, exceeding {}",
-            document.id, config.max_document_source_bytes
-        )));
-    }
-    let tokens = document_tokens(document, analyzer);
-    if tokens.len() > config.max_document_tokens.get() {
-        return Err(SkeinError::Storage(format!(
-            "lexical document {} produced {} tokens, exceeding {}",
-            document.id,
-            tokens.len(),
-            config.max_document_tokens
-        )));
-    }
-    let document_len = u32::try_from(tokens.len())
-        .map_err(|_| SkeinError::Storage("lexical document length exceeds u32".to_string()))?;
-    let mut frequencies = BTreeMap::<String, u32>::new();
-    let mut resident_bytes = document.id.len() as u64 + 64;
-    for term in tokens {
-        if term.len() as u64 > config.max_term_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "lexical term uses {} bytes, exceeding {}",
-                term.len(),
-                config.max_term_bytes
-            )));
-        }
-        if !frequencies.contains_key(&term) {
-            resident_bytes = resident_bytes.saturating_add(term.len() as u64 + 32);
-            if resident_bytes > config.build_memory_bytes.get() {
-                return Err(SkeinError::Storage(format!(
-                    "lexical document {} requires more than {} analyzer bytes",
-                    document.id, config.build_memory_bytes
-                )));
-            }
-        }
-        let frequency = frequencies.entry(term).or_default();
-        *frequency = frequency.saturating_add(1);
-    }
-    Ok(DeltaDocument {
-        document_len,
-        frequencies,
-        resident_bytes,
-        base: None,
-    })
+    Ok(analyzer::analyze(document, analyzer, config, None, None)?.document)
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1204,6 +1153,7 @@ pub(super) struct LexicalProjectionWriter {
     config: LexicalProjectionConfig,
     cache: Option<Arc<SegmentCache>>,
     task_context: RuntimeTaskContext,
+    memory: Option<BuildMemory>,
 }
 
 impl LexicalProjectionWriter {
@@ -1212,11 +1162,17 @@ impl LexicalProjectionWriter {
             config,
             cache: None,
             task_context: RuntimeTaskContext::default(),
+            memory: None,
         }
     }
 
     pub(super) fn with_context(mut self, task_context: RuntimeTaskContext) -> Self {
         self.task_context = task_context;
+        self
+    }
+
+    pub(super) fn with_memory(mut self, memory: BuildMemory) -> Self {
+        self.memory = Some(memory);
         self
     }
 
@@ -1267,6 +1223,10 @@ impl LexicalProjectionWriter {
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
         checkpoint(&self.task_context)?;
+        let memory = self
+            .memory
+            .clone()
+            .map_or_else(|| BuildMemory::new(&self.task_context), Ok)?;
         let artifact_name = artifact_file(generation);
         let artifact_path = root.join(&artifact_name);
         let tmp_path = artifact_path.with_extension("skein.tmp");
@@ -1275,11 +1235,11 @@ impl LexicalProjectionWriter {
         artifact.task_context = self.task_context.clone();
         let mut runs = SpillRuns::new(root, generation, self.config);
         runs.task_context = self.task_context.clone();
-        let mut chunk = Vec::new();
-        let mut chunk_bytes = 0u64;
+        let mut chunk = posting_chunk::PostingChunk::new(memory.clone())?;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut uncompressed_posting_payload_bytes = 0u64;
+        let mut previous_id_memory = analyzer::Charge::new(Some(&memory))?;
         let mut previous_document_id: Option<String> = None;
         let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
             checkpoint(&self.task_context)?;
@@ -1299,14 +1259,25 @@ impl LexicalProjectionWriter {
                     "lexical documents must have strictly increasing IDs".to_string(),
                 ));
             }
-            let analyzed = analyze_delta_document(document, analyzer, self.config)?;
+            // Keep the owner intact across early returns. Destructuring data
+            // and its lease into locals would reverse their error-path drops.
+            let analyzed = analyzer::analyze(
+                document,
+                analyzer,
+                self.config,
+                Some(&self.task_context),
+                Some(&memory),
+            )?;
             checkpoint(&self.task_context)?;
             document_count = next_document_count;
+            let mut next_id_memory = analyzer::Charge::new(Some(&memory))?;
+            next_id_memory.grow(document.id.len())?;
             previous_document_id = Some(document.id.clone());
+            previous_id_memory = next_id_memory;
             total_document_len =
-                total_document_len.saturating_add(u64::from(analyzed.document_len));
-            artifact.push_document(document.id.clone(), analyzed.document_len)?;
-            for (term, term_frequency) in analyzed.frequencies {
+                total_document_len.saturating_add(u64::from(analyzed.document.document_len));
+            artifact.push_document(document.id.clone(), analyzed.document.document_len)?;
+            for (term, term_frequency) in analyzed.document.frequencies {
                 checkpoint(&self.task_context)?;
                 uncompressed_posting_payload_bytes = uncompressed_posting_payload_bytes
                     .checked_add(16)
@@ -1329,13 +1300,11 @@ impl LexicalProjectionWriter {
                     ));
                 }
                 if !chunk.is_empty()
-                    && chunk_bytes.saturating_add(bytes) > self.config.build_memory_bytes.get()
+                    && chunk.bytes.saturating_add(bytes) > self.config.build_memory_bytes.get()
                 {
-                    runs.spill(&mut chunk)?;
-                    chunk_bytes = 0;
+                    chunk.spill(&mut runs)?;
                 }
-                chunk_bytes = chunk_bytes.saturating_add(bytes);
-                chunk.push(posting);
+                chunk.push(posting)?;
             }
             Ok(())
         };
@@ -1343,8 +1312,11 @@ impl LexicalProjectionWriter {
         checkpoint(&self.task_context)?;
         artifact.finish_documents()?;
         if !chunk.is_empty() {
-            runs.spill(&mut chunk)?;
+            chunk.spill(&mut runs)?;
         }
+        drop(chunk);
+        drop(previous_document_id);
+        drop(previous_id_memory);
         runs.compact()?;
         artifact.merge_postings(&runs.paths, self.config, runs.bytes)?;
         let artifact = artifact.finish()?;
@@ -2081,6 +2053,7 @@ mod tests {
     use super::*;
 
     mod admission;
+    mod analyzer_memory;
     mod artifact_accounting;
     mod build_cancellation;
     mod compact_dictionary;

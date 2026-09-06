@@ -8,7 +8,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes four lexical targets and one record-codec
+The required local suite includes five lexical targets and one record-codec
 target, all manual:
 
 ```bash
@@ -29,7 +29,7 @@ cargo test -p skein-search --no-default-features --lib \
 
 Each campaign is an ignored Rust test and has a separate manual Bazel target
 named `//crates/search:skein_search_lexical_<campaign>_fuzz_tests`. Campaign names
-are `posting`, `dictionary`, `doclist`, and `state_machine`. Bazel supplies the
+are `analyzer`, `posting`, `dictionary`, `doclist`, and `state_machine`. Bazel supplies the
 exact Rust test name and `--ignored`; each target must report one executed test,
 not a successful zero-test filter. Ordinary Cargo and search unit-test targets
 compile these tests but do not execute them. Do not add these campaigns to
@@ -68,6 +68,15 @@ complete fused-sink budget or allocator/RSS coverage.
 
 ## Coverage and independent checks
 
+- `analyzer`: seed `0x206a11`, 12,000 document/lexicon combinations compare
+  incremental production frequencies and weighted length with the preceding
+  complete token-list path. Four lexicons include overlapping alias rules and
+  stopwords; title/content/metadata mix identifiers, punctuation, CJK, NUL and
+  Unicode case boundaries. Exact token limits succeed, one-short limits reject,
+  and cancelled child contexts do not cancel their parent. Every result/error
+  releases retained charges and the operation keeps exactly three accounts.
+  This shares low-level token generation, not field traversal/aggregation; it
+  does not prove admission for temporary identifier or Jieba/TLS allocations.
 - `posting`: seed 206, 100,000 valid-encode plus mutated-decode pairs. All three
   modes (128-entry SIMD, varint tails, wide-delta fallback), full-width ordinals
   and term frequencies, truncation, extension, arbitrary bytes and structured
