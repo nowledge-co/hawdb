@@ -2992,7 +2992,7 @@ fn temporary_artifact_path(target: &Path) -> PathBuf {
     ))
 }
 
-fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
+pub(super) fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;

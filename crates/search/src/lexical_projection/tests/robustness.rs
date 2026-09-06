@@ -187,14 +187,13 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
     let path = fixture.root.join("run.tmp");
     let mut bytes = RUN_HEADER.to_vec();
     let mut boundaries = vec![bytes.len()];
-    for id in ["a", "b"] {
+    for ordinal in [0, 1] {
         encode_posting(
             &mut bytes,
             &Posting {
                 term: "graph".to_string(),
-                document_id: id.to_string(),
+                ordinal,
                 term_frequency: 1,
-                document_len: 2,
             },
         )
         .unwrap();
@@ -309,12 +308,11 @@ fn compaction_charges_output_runs_and_cleans_up_when_budget_is_exhausted() {
         ..LexicalProjectionConfig::default()
     };
     let mut runs = SpillRuns::new(&fixture.root, 2, config);
-    for id in ["a", "b", "c"] {
+    for ordinal in [0, 1, 2] {
         runs.spill(&mut vec![Posting {
             term: "graph".to_string(),
-            document_id: id.to_string(),
+            ordinal,
             term_frequency: 1,
-            document_len: 1,
         }])
         .unwrap();
     }
