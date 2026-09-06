@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
 use skein_core::{

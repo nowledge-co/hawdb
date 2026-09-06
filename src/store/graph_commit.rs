@@ -2081,9 +2081,9 @@ impl GraphStore {
             max_delta_bytes: Some(limit),
             ..StoragePressureSignals::default()
         });
-        if apply_live_backpressure && pressure.state == StoragePressureState::DelayMutation {
+        if apply_live_backpressure && pressure.state == StoragePressureState::DeferMutation {
             return Err(SkeinError::Storage(format!(
-                "out-of-core mutation delayed by storage pressure at {projected} estimated bytes under the {limit} byte limit; checkpoint the database before retrying"
+                "out-of-core mutation deferred by storage pressure at {projected} estimated bytes under the {limit} byte limit; checkpoint the database before retrying"
             )));
         }
         Ok(())

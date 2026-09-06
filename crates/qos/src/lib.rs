@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod device;
 mod process_memory;
 mod resource;
@@ -31,14 +33,48 @@ pub enum WorkPriority {
     Background,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkClass {
-    Query,
-    Mutation,
-    Projection,
-    Import,
-    Analytics,
-    Shadow,
+// Keep every class-indexed array exhaustive by generating it with the enum.
+macro_rules! define_work_classes {
+    ($($class:ident => $name:literal),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum WorkClass {
+            $($class),+
+        }
+
+        impl WorkClass {
+            pub const ALL: [Self; [$($name),+].len()] = [$(Self::$class),+];
+
+            pub const fn as_index(self) -> usize {
+                self as usize
+            }
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$class => $name),+
+                }
+            }
+        }
+
+        impl FromStr for WorkClass {
+            type Err = &'static str;
+
+            fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+                match value {
+                    $($name => Ok(Self::$class)),+,
+                    _ => Err("unknown work class"),
+                }
+            }
+        }
+    };
+}
+
+define_work_classes! {
+    Query => "query",
+    Mutation => "mutation",
+    Projection => "projection",
+    Import => "import",
+    Analytics => "analytics",
+    Shadow => "shadow",
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,36 +148,15 @@ impl FromStr for WorkPriority {
     }
 }
 
-impl WorkClass {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            WorkClass::Query => "query",
-            WorkClass::Mutation => "mutation",
-            WorkClass::Projection => "projection",
-            WorkClass::Import => "import",
-            WorkClass::Analytics => "analytics",
-            WorkClass::Shadow => "shadow",
-        }
+pub const WORK_CLASS_COUNT: usize = WorkClass::ALL.len();
+
+const _: () = {
+    let mut index = 0;
+    while index < WORK_CLASS_COUNT {
+        assert!(WorkClass::ALL[index].as_index() == index);
+        index += 1;
     }
-}
-
-impl FromStr for WorkClass {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "query" => Ok(WorkClass::Query),
-            "mutation" => Ok(WorkClass::Mutation),
-            "projection" => Ok(WorkClass::Projection),
-            "import" => Ok(WorkClass::Import),
-            "analytics" => Ok(WorkClass::Analytics),
-            "shadow" => Ok(WorkClass::Shadow),
-            _ => Err("unknown work class"),
-        }
-    }
-}
-
-pub const WORK_CLASS_COUNT: usize = 6;
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkRequest {
@@ -390,19 +405,6 @@ impl Default for LocalQosPolicy {
     }
 }
 
-impl WorkClass {
-    pub fn as_index(self) -> usize {
-        match self {
-            WorkClass::Query => 0,
-            WorkClass::Mutation => 1,
-            WorkClass::Projection => 2,
-            WorkClass::Import => 3,
-            WorkClass::Analytics => 4,
-            WorkClass::Shadow => 5,
-        }
-    }
-}
-
 impl WorkRequest {
     pub fn foreground(class: WorkClass, estimated_operations: usize) -> Self {
         Self {
@@ -422,8 +424,10 @@ impl WorkRequest {
 }
 
 impl BackgroundWorkHint {
-    pub fn expected_value_score(&self) -> u64 {
-        self.score_with_reasons(0).0
+    /// Score this hint for the same estimate used by background admission.
+    /// A tenant budget below the estimate produces zero, even for active topics.
+    pub fn expected_value_score(&self, estimated_operations: usize) -> u64 {
+        self.score_with_reasons(estimated_operations).0
     }
 
     fn score_with_reasons(
@@ -534,10 +538,7 @@ impl BackgroundWorkPlan {
 
 impl LocalQosPolicy {
     pub fn snapshot(&self, state: &LocalQosState) -> LocalQosSnapshot {
-        let foreground_admission = self.admit(
-            state,
-            &WorkRequest::foreground(WorkClass::Query, usize::MAX),
-        );
+        let foreground_admission = self.foreground_admission();
         let foreground_admitted = matches!(foreground_admission, QosAdmission::Admit);
         let background_bounded = self.max_background_operations.is_some()
             || self.max_total_background_operations.is_some()
@@ -583,9 +584,15 @@ impl LocalQosPolicy {
         }
     }
 
+    /// Foreground work bypasses this local background budget policy.
+    /// Runtime resource admission is enforced separately by the governor.
+    pub fn foreground_admission(&self) -> QosAdmission {
+        QosAdmission::Admit
+    }
+
     pub fn admit(&self, state: &LocalQosState, request: &WorkRequest) -> QosAdmission {
         match request.priority {
-            WorkPriority::Foreground => QosAdmission::Admit,
+            WorkPriority::Foreground => self.foreground_admission(),
             WorkPriority::Background => self.admit_background(state, request),
         }
     }
@@ -963,14 +970,7 @@ fn local_qos_class_snapshots(
     policy: &LocalQosPolicy,
     state: &LocalQosState,
 ) -> [LocalQosClassSnapshot; WORK_CLASS_COUNT] {
-    [
-        local_qos_class_snapshot(policy, state, WorkClass::Query),
-        local_qos_class_snapshot(policy, state, WorkClass::Mutation),
-        local_qos_class_snapshot(policy, state, WorkClass::Projection),
-        local_qos_class_snapshot(policy, state, WorkClass::Import),
-        local_qos_class_snapshot(policy, state, WorkClass::Analytics),
-        local_qos_class_snapshot(policy, state, WorkClass::Shadow),
-    ]
+    WorkClass::ALL.map(|class| local_qos_class_snapshot(policy, state, class))
 }
 
 fn local_qos_class_snapshot(
@@ -1089,6 +1089,97 @@ mod tests {
         permit.finish();
 
         assert!(telemetry.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn work_class_snapshots_follow_the_exhaustive_index_order() {
+        let state = LocalQosState {
+            running_background_operations: (1..=super::WORK_CLASS_COUNT).sum(),
+            running_background_operations_by_class: std::array::from_fn(|index| index + 1),
+        };
+        let policy = LocalQosPolicy {
+            max_background_operations_by_class: std::array::from_fn(|index| Some(index + 3)),
+            ..LocalQosPolicy::default()
+        };
+        let snapshot = policy.snapshot(&state);
+        for (index, class) in WorkClass::ALL.into_iter().enumerate() {
+            assert_eq!(class.as_index(), index);
+            assert_eq!(class.as_str().parse::<WorkClass>(), Ok(class));
+            let entry = snapshot.class_snapshots[index];
+            assert_eq!(entry.class, class);
+            assert_eq!(entry.running_background_operations, index + 1);
+            assert_eq!(entry.max_background_operations, Some(index + 3));
+            assert_eq!(entry.remaining_background_operations, Some(2));
+            assert!(!entry.over_budget);
+        }
+    }
+
+    #[test]
+    fn foreground_probe_and_admission_agree_under_background_pressure() {
+        let state = LocalQosState {
+            running_background_operations: usize::MAX,
+            running_background_operations_by_class: [usize::MAX; super::WORK_CLASS_COUNT],
+        };
+        for background_enabled in [false, true] {
+            let policy = LocalQosPolicy {
+                background_enabled,
+                max_background_operations: Some(0),
+                max_total_background_operations: Some(0),
+                max_background_operations_by_class: [Some(0); super::WORK_CLASS_COUNT],
+            };
+            assert_eq!(policy.foreground_admission(), QosAdmission::Admit);
+            assert!(policy.snapshot(&state).foreground_admitted);
+            for class in WorkClass::ALL {
+                for estimate in [0, 1, usize::MAX] {
+                    assert_eq!(
+                        policy.admit(&state, &WorkRequest::foreground(class, estimate)),
+                        policy.foreground_admission()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expected_score_matches_admission_scoring_at_tenant_budget_boundaries() {
+        for remaining in [None, Some(0), Some(1), Some(8), Some(usize::MAX)] {
+            for estimate in [0, 1, 7, 8, 9, usize::MAX] {
+                for background_enabled in [false, true] {
+                    for active_topic in [false, true] {
+                        let hint = BackgroundWorkHint {
+                            active_topic,
+                            query_probability_per_million: u32::MAX,
+                            recent_delta_operations: usize::MAX,
+                            source_graph_commit_lag: u64::MAX,
+                            staleness_millis: u64::MAX,
+                            staleness_ttl_millis: Some(1),
+                            freshness_slo_millis: Some(0),
+                            tenant_budget_remaining_operations: remaining,
+                        };
+                        let policy = LocalQosPolicy {
+                            background_enabled,
+                            ..LocalQosPolicy::default()
+                        };
+                        let plan = BackgroundWorkPlan::background(
+                            WorkClass::Projection,
+                            estimate,
+                            hint.clone(),
+                        );
+                        let decision =
+                            policy.evaluate_background_work(&LocalQosState::default(), &plan);
+                        assert_eq!(hint.expected_value_score(estimate), decision.score);
+                        let tenant_exhausted = remaining.is_some_and(|budget| budget < estimate);
+                        assert_eq!(decision.score == 0, tenant_exhausted);
+                        assert_eq!(
+                            decision
+                                .reason_codes
+                                .contains(&BackgroundWorkReasonCode::TenantBudgetBelowEstimate),
+                            tenant_exhausted
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1327,7 +1418,7 @@ mod tests {
             ..BackgroundWorkHint::default()
         };
 
-        assert!(high.expected_value_score() > low.expected_value_score());
+        assert!(high.expected_value_score(1) > low.expected_value_score(1));
         let decision = LocalQosPolicy::default().evaluate_background_work(
             &LocalQosState::default(),
             &BackgroundWorkPlan::background(WorkClass::Projection, 1, high),

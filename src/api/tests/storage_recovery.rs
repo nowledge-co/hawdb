@@ -1299,6 +1299,106 @@ fn out_of_core_delta_budget_rejects_before_wal_append() {
 }
 
 #[test]
+fn out_of_core_deferred_mutation_is_not_queued_and_can_retry_after_checkpoint() {
+    let path = unique_test_dir("out_of_core_deferred_mutation");
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        // One live record uses 36 bytes; admitting another estimates 64 more.
+        max_out_of_core_delta_bytes: Some(110),
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    db.query("CREATE (:Memory)").unwrap();
+    db.checkpoint().unwrap();
+    db.query("CREATE (:Memory)").unwrap();
+    assert_eq!(
+        db.storage_residency_report().estimated_delta_resident_bytes,
+        36
+    );
+    let before_wal = read_test_wal(&path).unwrap();
+    let before_epoch = db.commit_epoch();
+
+    let error = db.query("CREATE (:Memory)").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("out-of-core mutation deferred by storage pressure"),
+        "{error}"
+    );
+    assert!(error
+        .to_string()
+        .contains("checkpoint the database before retrying"));
+    assert_eq!(read_test_wal(&path).unwrap(), before_wal);
+    assert_eq!(db.commit_epoch(), before_epoch);
+    assert_eq!(
+        db.storage_residency_report().estimated_delta_resident_bytes,
+        36
+    );
+
+    db.checkpoint().unwrap();
+    assert_eq!(db.query("MATCH (m:Memory) RETURN m").unwrap().rows.len(), 2);
+    db.query("CREATE (:Memory)").unwrap();
+    drop(db);
+    let mut reopened = Database::open_with_config(&path, config).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (m:Memory) RETURN m")
+            .unwrap()
+            .rows
+            .len(),
+        3
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn out_of_core_replay_does_not_defer_already_committed_mutations() {
+    let path = unique_test_dir("out_of_core_replay_defer_threshold");
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        max_out_of_core_delta_bytes: None,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    db.query("CREATE (:Memory)").unwrap();
+    db.checkpoint().unwrap();
+    for _ in 0..10 {
+        db.query("CREATE (:Memory)").unwrap();
+    }
+    assert_eq!(
+        db.storage_residency_report().estimated_delta_resident_bytes,
+        360
+    );
+    drop(db);
+
+    let mut reopened = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            // The final replay admission estimates 388 bytes, below the hard
+            // limit but above its 90% live-admission threshold.
+            max_out_of_core_delta_bytes: Some(400),
+            ..config
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.storage_pressure_snapshot().state,
+        crate::StoragePressureState::DeferMutation
+    );
+    assert_eq!(
+        reopened
+            .query("MATCH (m:Memory) RETURN m")
+            .unwrap()
+            .rows
+            .len(),
+        11
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn out_of_core_delta_budget_also_bounds_wal_replay() {
     let path = unique_test_dir("out_of_core_replay_delta_budget");
     {

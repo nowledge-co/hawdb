@@ -6,10 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-libc = "0.2"
 skein-core = { path = "../core" }
 skein-cgroup = { path = "../cgroup" }
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

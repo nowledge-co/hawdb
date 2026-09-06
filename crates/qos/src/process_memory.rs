@@ -68,6 +68,7 @@ fn counter_delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code, reason = "process-local getrusage FFI")]
 fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: getrusage initializes the provided rusage value on success.
@@ -93,6 +94,7 @@ fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code, reason = "process-local Windows memory counters FFI")]
 fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
     use windows_sys::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
@@ -127,6 +129,7 @@ fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "process-local Mach memory counters FFI")]
 fn current_resident_bytes() -> io::Result<u64> {
     let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info>::uninit();
     let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
@@ -153,6 +156,7 @@ fn current_resident_bytes() -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code, reason = "sysconf page-size FFI")]
 fn current_resident_bytes() -> io::Result<u64> {
     let statm = std::fs::read_to_string("/proc/self/statm")?;
     let resident_pages = statm
@@ -170,6 +174,7 @@ fn current_resident_bytes() -> io::Result<u64> {
 }
 
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+#[allow(unsafe_code, reason = "process-local getrusage FFI")]
 fn current_resident_bytes() -> io::Result<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: getrusage initializes the provided rusage value on success.

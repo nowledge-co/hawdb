@@ -152,6 +152,7 @@ fn classify_apple_file_system(file_system: &str) -> StorageMediaKind {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+#[allow(unsafe_code, reason = "Apple filesystem type detection FFI")]
 fn apple_file_system_type(path: &Path) -> Option<String> {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
@@ -159,9 +160,11 @@ fn apple_file_system_type(path: &Path) -> Option<String> {
 
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut statistics = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: path is NUL-terminated and statfs writes into the sized output buffer.
     if unsafe { libc::statfs(path.as_ptr(), statistics.as_mut_ptr()) } != 0 {
         return None;
     }
+    // SAFETY: the successful statfs call initialized statistics.
     let statistics = unsafe { statistics.assume_init() };
     let bytes = statistics
         .f_fstypename

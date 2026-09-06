@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use crate::{StorageDeviceProfile, StorageMediaKind};
 #[cfg(any(target_os = "linux", test))]
 use skein_cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};

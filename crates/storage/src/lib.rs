@@ -162,7 +162,7 @@ pub use ownership::{
 pub use pressure::{
     available_storage_space, StorageDebtController, StoragePressureReasonCode,
     StoragePressureSignals, StoragePressureSnapshot, StoragePressureState,
-    STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+    STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
 };
 pub use projection::{
     projection_document_id_for_label_and_properties, projection_document_id_for_node,

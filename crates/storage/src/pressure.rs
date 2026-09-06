@@ -1,13 +1,15 @@
 use std::path::Path;
 
 pub const STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION: u32 = 700_000;
-pub const STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION: u32 = 900_000;
+pub const STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION: u32 = 900_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoragePressureState {
     Healthy,
     SpeedUpMaintenance,
-    DelayMutation,
+    /// Reject this attempt before mutation; the caller may retry after maintenance.
+    /// This state does not queue work or sleep in the writer path.
+    DeferMutation,
     StopMutation,
     RecoveryOnly,
 }
@@ -17,7 +19,7 @@ impl StoragePressureState {
         match self {
             Self::Healthy => "healthy",
             Self::SpeedUpMaintenance => "speed_up_maintenance",
-            Self::DelayMutation => "delay_mutation",
+            Self::DeferMutation => "defer_mutation",
             Self::StopMutation => "stop_mutation",
             Self::RecoveryOnly => "recovery_only",
         }
@@ -34,8 +36,8 @@ pub enum StoragePressureReasonCode {
     WalHardLimit,
     DeltaHardLimit,
     FreeSpaceReserve,
-    WalDelayThreshold,
-    DeltaDelayThreshold,
+    WalDeferThreshold,
+    DeltaDeferThreshold,
     WalSoftThreshold,
     DeltaSoftThreshold,
     AdjacencyDebt,
@@ -52,8 +54,8 @@ impl StoragePressureReasonCode {
             Self::WalHardLimit => "wal_hard_limit",
             Self::DeltaHardLimit => "delta_hard_limit",
             Self::FreeSpaceReserve => "free_space_reserve",
-            Self::WalDelayThreshold => "wal_delay_threshold",
-            Self::DeltaDelayThreshold => "delta_delay_threshold",
+            Self::WalDeferThreshold => "wal_defer_threshold",
+            Self::DeltaDeferThreshold => "delta_defer_threshold",
             Self::WalSoftThreshold => "wal_soft_threshold",
             Self::DeltaSoftThreshold => "delta_soft_threshold",
             Self::AdjacencyDebt => "adjacency_debt",
@@ -136,8 +138,8 @@ impl StoragePressureSnapshot {
                 reason,
                 StoragePressureReasonCode::WalHardLimit
                     | StoragePressureReasonCode::DeltaHardLimit
-                    | StoragePressureReasonCode::WalDelayThreshold
-                    | StoragePressureReasonCode::DeltaDelayThreshold
+                    | StoragePressureReasonCode::WalDeferThreshold
+                    | StoragePressureReasonCode::DeltaDeferThreshold
                     | StoragePressureReasonCode::WalSoftThreshold
                     | StoragePressureReasonCode::DeltaSoftThreshold
                     | StoragePressureReasonCode::GenerationReclamationDebt
@@ -171,14 +173,14 @@ impl StorageDebtController {
         classify_limit(
             wal_ratio,
             StoragePressureReasonCode::WalHardLimit,
-            StoragePressureReasonCode::WalDelayThreshold,
+            StoragePressureReasonCode::WalDeferThreshold,
             StoragePressureReasonCode::WalSoftThreshold,
             &mut reasons,
         );
         classify_limit(
             delta_ratio,
             StoragePressureReasonCode::DeltaHardLimit,
-            StoragePressureReasonCode::DeltaDelayThreshold,
+            StoragePressureReasonCode::DeltaDeferThreshold,
             StoragePressureReasonCode::DeltaSoftThreshold,
             &mut reasons,
         );
@@ -201,7 +203,7 @@ impl StorageDebtController {
         if oldest_reader_lag > 0 && signals.obsolete_generation_bytes > 0 {
             reasons.push(StoragePressureReasonCode::ReaderPinnedObsoleteGenerations);
         }
-        if cache_pinned_ratio.is_some_and(|ratio| ratio >= STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION)
+        if cache_pinned_ratio.is_some_and(|ratio| ratio >= STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION)
         {
             reasons.push(StoragePressureReasonCode::CachePinnedPressure);
         }
@@ -220,11 +222,11 @@ impl StorageDebtController {
         } else if reasons.iter().any(|reason| {
             matches!(
                 reason,
-                StoragePressureReasonCode::WalDelayThreshold
-                    | StoragePressureReasonCode::DeltaDelayThreshold
+                StoragePressureReasonCode::WalDeferThreshold
+                    | StoragePressureReasonCode::DeltaDeferThreshold
             )
         }) {
-            StoragePressureState::DelayMutation
+            StoragePressureState::DeferMutation
         } else if reasons.is_empty() {
             StoragePressureState::Healthy
         } else {
@@ -278,13 +280,13 @@ pub fn available_storage_space(path: impl AsRef<Path>) -> Option<u64> {
 fn classify_limit(
     ratio: Option<u32>,
     hard: StoragePressureReasonCode,
-    delay: StoragePressureReasonCode,
+    defer: StoragePressureReasonCode,
     soft: StoragePressureReasonCode,
     reasons: &mut Vec<StoragePressureReasonCode>,
 ) {
     match ratio {
         Some(ratio) if ratio >= 1_000_000 => reasons.push(hard),
-        Some(ratio) if ratio >= STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION => reasons.push(delay),
+        Some(ratio) if ratio >= STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION => reasons.push(defer),
         Some(ratio) if ratio >= STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION => reasons.push(soft),
         _ => {}
     }
@@ -305,13 +307,15 @@ mod tests {
         assert_eq!(soft.state, StoragePressureState::SpeedUpMaintenance);
         assert!(soft.recommends_checkpoint());
 
-        let delay = controller.evaluate(StoragePressureSignals {
+        let defer = controller.evaluate(StoragePressureSignals {
             wal_bytes: 90,
             max_wal_bytes: Some(100),
             ..StoragePressureSignals::default()
         });
-        assert_eq!(delay.state, StoragePressureState::DelayMutation);
-        assert!(!delay.admits_mutation());
+        assert_eq!(defer.state, StoragePressureState::DeferMutation);
+        assert_eq!(defer.state.as_str(), "defer_mutation");
+        assert!(!defer.admits_mutation());
+        assert!(defer.recommends_checkpoint());
 
         let stop = controller.evaluate(StoragePressureSignals {
             wal_bytes: 100,

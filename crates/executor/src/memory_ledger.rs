@@ -95,6 +95,8 @@ impl QueryMemoryLedger {
         owner: impl Into<Arc<str>>,
         budget_bytes: NonZeroUsize,
     ) -> QueryMemoryAccount {
+        // Caller code must run before locking: conversion can panic or re-enter the ledger.
+        let owner = owner.into();
         let mut state = lock_recover(&self.inner.state);
         let account_id = state.next_account_id;
         state.next_account_id = state.next_account_id.saturating_add(1);
@@ -102,7 +104,7 @@ impl QueryMemoryLedger {
             account_id,
             QueryMemoryAccountState {
                 class,
-                owner: owner.into(),
+                owner,
                 budget_bytes: budget_bytes.get(),
                 used_bytes: 0,
                 peak_bytes: 0,
@@ -137,10 +139,7 @@ impl QueryMemoryLedger {
         if bytes == 0 {
             return Ok(());
         }
-        let mut state =
-            self.inner.state.lock().map_err(|_| {
-                SkeinError::Execution("query memory ledger is poisoned".to_string())
-            })?;
+        let mut state = lock_recover(&self.inner.state);
         let (class, owner, account_budget, account_next) = {
             let account = state.accounts.get(&account_id).ok_or_else(|| {
                 SkeinError::Execution("query memory account is no longer registered".to_string())
@@ -179,6 +178,8 @@ impl QueryMemoryLedger {
             )));
         }
 
+        // Complete allocation before changing any of the hierarchical counters.
+        state.classes.entry(class).or_default();
         let account = state
             .accounts
             .get_mut(&account_id)
@@ -187,7 +188,10 @@ impl QueryMemoryLedger {
         account.peak_bytes = account.peak_bytes.max(account_next);
         state.used_bytes = root_next;
         state.peak_bytes = state.peak_bytes.max(root_next);
-        let class_state = state.classes.entry(class).or_default();
+        let class_state = state
+            .classes
+            .get_mut(&class)
+            .expect("prepared query memory class remains registered");
         class_state.used_bytes = class_state.used_bytes.saturating_add(bytes);
         class_state.peak_bytes = class_state.peak_bytes.max(class_state.used_bytes);
         Ok(())
@@ -222,10 +226,7 @@ impl QueryMemoryLedger {
                 "query memory transfer requires distinct accounts".to_string(),
             ));
         }
-        let mut state =
-            self.inner.state.lock().map_err(|_| {
-                SkeinError::Execution("query memory ledger is poisoned".to_string())
-            })?;
+        let mut state = lock_recover(&self.inner.state);
         let (source_class, source_used) = state
             .accounts
             .get(&source_account_id)
@@ -287,6 +288,7 @@ impl QueryMemoryLedger {
             )));
         }
 
+        state.classes.entry(target_class).or_default();
         let source = state
             .accounts
             .get_mut(&source_account_id)
@@ -303,7 +305,10 @@ impl QueryMemoryLedger {
         if let Some(class_state) = state.classes.get_mut(&source_class) {
             class_state.used_bytes = class_state.used_bytes.saturating_sub(source_bytes);
         }
-        let class_state = state.classes.entry(target_class).or_default();
+        let class_state = state
+            .classes
+            .get_mut(&target_class)
+            .expect("prepared target query memory class remains registered");
         class_state.used_bytes = class_state.used_bytes.saturating_add(target_bytes);
         class_state.peak_bytes = class_state.peak_bytes.max(class_state.used_bytes);
         Ok(())
@@ -396,10 +401,17 @@ impl Drop for QueryMemoryLease {
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // State never escapes the ledger. Checks and allocation precede counter updates,
+    // and no caller code runs under this lock. Recovering poisoning preserves that
+    // valid state; it is not a repair mechanism for arbitrary accounting corruption.
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+#[cfg(test)]
+#[path = "memory_ledger_hardening_tests.rs"]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {

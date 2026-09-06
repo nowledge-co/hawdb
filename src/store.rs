@@ -14,6 +14,13 @@ use skein_storage::projection_document_id_for_node as search_projection_document
 #[derive(Debug)]
 struct RuntimeGovernorBackgroundAdmission(skein_qos::RuntimeGovernor);
 
+#[derive(Debug)]
+struct RuntimeGovernorBackgroundPermit {
+    _permit: skein_qos::RuntimePermit,
+}
+
+impl skein_storage::BackgroundWorkPermit for RuntimeGovernorBackgroundPermit {}
+
 struct RootStorageTelemetry(Arc<dyn TelemetrySink>);
 
 impl std::fmt::Debug for RootStorageTelemetry {
@@ -52,7 +59,10 @@ impl skein_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmissi
                 result_bytes: 0,
                 blocking: false,
             })
-            .map(|permit| Box::new(permit) as Box<dyn skein_storage::BackgroundWorkPermit>)
+            .map(|permit| {
+                Box::new(RuntimeGovernorBackgroundPermit { _permit: permit })
+                    as Box<dyn skein_storage::BackgroundWorkPermit>
+            })
             .map_err(|error| error.to_string())
     }
 }
@@ -200,7 +210,7 @@ pub use skein_storage::{
     StoragePressureSignals, StoragePressureSnapshot, StoragePressureState,
     StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode, StorageRestoreReport,
     StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
-    STORAGE_PRESSURE_DELAY_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+    STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
 };
 use skein_storage::{
     CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,
@@ -6306,6 +6316,57 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn background_storage_permit_retains_governor_resources_until_drop_and_unwind() {
+        use skein_qos::{
+            IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+            RuntimeResourceBudget, RuntimeResourceSnapshot,
+        };
+        use skein_storage::{BackgroundWorkAdmission, BackgroundWorkRequest};
+
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                memory_budget_bytes: Some(1024),
+                result_budget_bytes: 0,
+                ..RuntimeGovernorConfig::default()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(Some(8192), Some(8192), None, None, None),
+            ),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let admission = super::RuntimeGovernorBackgroundAdmission(governor.clone());
+        let request = BackgroundWorkRequest {
+            cpu_slots: 1,
+            memory_bytes: 512,
+            io_slots: 1,
+        };
+        for unwind in [false, true] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let permit = admission.try_admit(request).unwrap();
+                let snapshot = governor.snapshot();
+                assert_eq!(snapshot.active_background_tasks, 1);
+                assert_eq!(snapshot.active_cpu_slots, 1);
+                assert_eq!(snapshot.active_background_io_slots, 1);
+                assert_eq!(snapshot.admitted_memory_bytes, 512);
+                assert!(admission.try_admit(request).is_err());
+                if unwind {
+                    panic!("injected background work panic");
+                }
+                drop(permit);
+            }));
+            assert_eq!(result.is_err(), unwind);
+            let snapshot = governor.snapshot();
+            assert_eq!(snapshot.active_background_tasks, 0);
+            assert_eq!(snapshot.active_cpu_slots, 0);
+            assert_eq!(snapshot.active_background_io_slots, 0);
+            assert_eq!(snapshot.admitted_memory_bytes, 0);
+        }
+        drop(admission.try_admit(request).unwrap());
+        assert_eq!(governor.snapshot().completions, 3);
+    }
 
     fn property_projection_block_corrupt_offset(path: &std::path::Path, kind_tag: u8) -> u64 {
         let encoded = fs::read(path).unwrap();
