@@ -1,5 +1,7 @@
 use super::next_generation;
 use crate::build_control::checkpoint;
+#[cfg(test)]
+use crate::encode_search_document_line;
 use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
@@ -9,9 +11,9 @@ use crate::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionWriter, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
-    checksum_bytes, encode_search_document_line, SearchAnalyzerLexicon, SearchDocument,
-    SearchEmbeddingManifest, NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS,
-    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, SEARCH_DOCUMENT_ID_FIELD,
+    checksum_bytes, SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest,
+    NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
 #[cfg(test)]
@@ -519,15 +521,51 @@ impl SearchOutOfCoreGenerationWriter {
             self.embedding_dimension,
             self.options.embedding_manifest.as_ref(),
         )?;
-        let record = encode_search_document_line(&document);
-        checkpoint(&self.task_context)?;
-        let record_bytes = record.len() as u64;
-        if record_bytes > self.options.max_record_bytes.get() {
+        let new_fields = document
+            .metadata
+            .keys()
+            .filter(|field| !self.metadata_fields.contains(*field));
+        let (added_fields, added_field_bytes) =
+            new_fields.fold((0usize, 0u64), |(count, bytes), field| {
+                (
+                    count.saturating_add(1),
+                    bytes.saturating_add(field.len() as u64),
+                )
+            });
+        let next_field_count = self.metadata_fields.len().saturating_add(added_fields);
+        let next_field_bytes = self.metadata_field_bytes.saturating_add(added_field_bytes);
+        if next_field_count > self.options.max_metadata_fields.get()
+            || next_field_bytes > self.options.max_metadata_field_bytes.get()
+        {
             return Err(SkeinError::Storage(format!(
-                "search generation document {} requires {record_bytes} encoded bytes, exceeding {}",
-                document.id, self.options.max_record_bytes
+                "search generation metadata fields require {next_field_count} fields and {next_field_bytes} bytes, exceeding {} fields or {} bytes",
+                self.options.max_metadata_fields, self.options.max_metadata_field_bytes
             )));
         }
+        let record_limit = self
+            .options
+            .max_record_bytes
+            .get()
+            .min(
+                self.options
+                    .max_logical_document_bytes
+                    .get()
+                    .saturating_sub(self.logical_document_bytes),
+            )
+            .min(
+                self.options
+                    .max_spool_bytes
+                    .get()
+                    .saturating_sub(self.spool_bytes)
+                    .saturating_sub(SPOOL_FRAME_HEADER_BYTES),
+            );
+        let record = crate::document_codec::encode_bounded(
+            &document,
+            record_limit,
+            Some(&self.task_context),
+        )?;
+        checkpoint(&self.task_context)?;
+        let record_bytes = record.len() as u64;
         let logical_document_bytes = self
             .logical_document_bytes
             .checked_add(record_bytes)
@@ -553,27 +591,6 @@ impl SearchOutOfCoreGenerationWriter {
                 self.options.max_spool_bytes
             )));
         }
-        let new_fields = document
-            .metadata
-            .keys()
-            .filter(|field| !self.metadata_fields.contains(*field))
-            .cloned()
-            .collect::<Vec<_>>();
-        let next_field_count = self.metadata_fields.len().saturating_add(new_fields.len());
-        let added_field_bytes = new_fields
-            .iter()
-            .map(|field| field.len() as u64)
-            .sum::<u64>();
-        let next_field_bytes = self.metadata_field_bytes.saturating_add(added_field_bytes);
-        if next_field_count > self.options.max_metadata_fields.get()
-            || next_field_bytes > self.options.max_metadata_field_bytes.get()
-        {
-            return Err(SkeinError::Storage(format!(
-                "search generation metadata fields require {next_field_count} fields and {next_field_bytes} bytes, exceeding {} fields or {} bytes",
-                self.options.max_metadata_fields, self.options.max_metadata_field_bytes
-            )));
-        }
-
         let spool = self.spool.as_mut().ok_or_else(|| {
             SkeinError::Storage("search generation spool is already closed".to_string())
         })?;
@@ -583,7 +600,6 @@ impl SearchOutOfCoreGenerationWriter {
         checkpoint(&self.task_context)?;
 
         self.documents_digest.update(record.as_bytes());
-        self.last_document_id = Some(document.id);
         self.document_count = self.document_count.saturating_add(1);
         if document.embedding.is_some() {
             self.vector_document_count = self.vector_document_count.saturating_add(1);
@@ -592,7 +608,12 @@ impl SearchOutOfCoreGenerationWriter {
         self.spool_bytes = spool_bytes;
         self.peak_record_bytes = self.peak_record_bytes.max(record_bytes);
         self.embedding_dimension = next_dimension;
-        self.metadata_fields.extend(new_fields);
+        for field in document.metadata.keys() {
+            if !self.metadata_fields.contains(field) {
+                self.metadata_fields.insert(field.clone());
+            }
+        }
+        self.last_document_id = Some(document.id);
         self.metadata_field_bytes = next_field_bytes;
         Ok(())
     }

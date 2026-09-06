@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cancellation;
+mod record_admission;
 
 #[test]
 fn fused_generation_reads_source_spool_once() {

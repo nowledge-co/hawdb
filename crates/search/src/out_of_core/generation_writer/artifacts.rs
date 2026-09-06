@@ -150,7 +150,11 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let next_document_ordinal = ordinal.checked_add(1).ok_or_else(|| {
             SkeinError::Storage("search segment document ordinal overflow".to_string())
         })?;
-        let encoded_bytes = encode_search_document_line(&document).len() as u64;
+        let encoded_bytes = crate::document_codec::encoded_len(
+            &document,
+            self.options.max_record_bytes.get(),
+            Some(&self.task_context),
+        )? as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
             && (self.documents.len() == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS

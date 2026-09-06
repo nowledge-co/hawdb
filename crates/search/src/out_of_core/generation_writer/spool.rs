@@ -88,6 +88,9 @@ impl SpoolSource {
                 ))
             })?;
             let document = decode_search_document_line(line)?;
+            // The sinks need the decoded document, not its encoded spool copy.
+            // Release it before lexical analysis and segment/vector buffering.
+            drop(record);
             checkpoint(task_context)?;
             if previous_id
                 .as_ref()

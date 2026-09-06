@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 mod analyzer_lexicon;
 mod build_control;
 mod cjk_tokenizer;
+mod document_codec;
 mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
@@ -6889,32 +6890,41 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
 }
 
 fn encode_search_document_line(document: &SearchDocument) -> String {
-    format!(
-        "doc\t{}\t{}\t{}\t{}\t{}\n",
-        encode_string(&document.id),
-        encode_string(&document.title),
-        encode_string(&document.content),
-        encode_embedding(document.embedding.as_deref()),
-        encode_metadata(&document.metadata),
-    )
+    let mut line = String::new();
+    document_codec::write_line(&mut line, document).expect("writing into a String cannot fail");
+    line
 }
 
 fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
     let line = line.strip_suffix('\n').unwrap_or(line);
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        ["doc", raw_id, raw_title, raw_content, raw_embedding, raw_metadata] => {
-            Ok(SearchDocument {
-                id: decode_string(raw_id)?,
-                title: decode_string(raw_title)?,
-                content: decode_string(raw_content)?,
-                embedding: decode_embedding(raw_embedding)?,
-                metadata: decode_metadata(raw_metadata)?,
-            })
-        }
-        _ => Err(SkeinError::Storage(format!(
-            "invalid search document line: {line}"
-        ))),
+    let mut fields = line.split('\t');
+    match (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) {
+        (
+            Some("doc"),
+            Some(raw_id),
+            Some(raw_title),
+            Some(raw_content),
+            Some(raw_embedding),
+            Some(raw_metadata),
+            None,
+        ) => Ok(SearchDocument {
+            id: decode_string(raw_id)?,
+            title: decode_string(raw_title)?,
+            content: decode_string(raw_content)?,
+            embedding: decode_embedding(raw_embedding)?,
+            metadata: decode_metadata(raw_metadata)?,
+        }),
+        _ => Err(SkeinError::Storage(
+            "invalid search document line".to_string(),
+        )),
     }
 }
 
@@ -7394,6 +7404,11 @@ fn decode_string(input: &str) -> Result<String> {
             "invalid hex string length: {}",
             input.len()
         )));
+    }
+    // Validate before indexing two-byte slices: corrupt UTF-8 text can have an
+    // even byte length while a pair boundary splits a multibyte character.
+    if !input.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SkeinError::Storage("invalid hex string".to_string()));
     }
     let mut bytes = Vec::with_capacity(input.len() / 2);
     for offset in (0..input.len()).step_by(2) {

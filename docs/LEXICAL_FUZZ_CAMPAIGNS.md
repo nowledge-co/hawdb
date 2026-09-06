@@ -8,7 +8,8 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes four manual search targets:
+The required local suite includes four lexical targets and one record-codec
+target, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -39,6 +40,24 @@ the complete inputs and action sequences. Logs report accepted/rejected byte
 cases, all posting encoding modes, and state-machine transition counts. A
 failed filesystem campaign leaves its uniquely named temporary fixture intact;
 a successful campaign removes only its own fixture, after dropping readers.
+
+The generation-input campaign is
+`//crates/search:skein_search_record_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --lib document_codec::tests::bounded_record_bytes_campaign \
+  -- --exact --ignored --nocapture
+```
+
+It uses seed `0x206c0dec` and 25,000 cases. Each valid document compares exact
+preflight length and single-buffer encoding with the preceding independent wire
+construction, including arbitrary f32 bit patterns, UTF-8/NUL and metadata.
+One-byte-under-limit encoding must reject before the output-allocation boundary.
+Mutated records exercise byte flips, deletion, non-ASCII hex, truncation and
+extra fields. Accepted records must re-encode/decode canonically; they need not
+match the original document. No panic-catching success path is used. Ordinary
+generation tests separately repair the spool checksum around corrupt hex and
+prove rejection before sink consumption, unchanged publication and cleanup.
 
 ## Coverage and independent checks
 
