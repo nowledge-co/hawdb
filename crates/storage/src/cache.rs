@@ -31,6 +31,7 @@ pub enum RepresentationKind {
     CanonicalAdjacencyDescriptorPage,
     PropertyProjectionDescriptorPage,
     PropertySpillDescriptorPage,
+    LexicalProjectionBlock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

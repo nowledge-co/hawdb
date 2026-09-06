@@ -105,6 +105,9 @@ fn three_pass_artifacts(
     .build(source)?;
     let config = LexicalProjectionConfig {
         build_memory_bytes: input.options.lexical_build_memory_bytes,
+        dictionary_build_memory_bytes: input.options.lexical_dictionary_build_memory_bytes,
+        dictionary_validation_bytes: input.options.lexical_dictionary_validation_bytes,
+        max_directory_bytes: input.options.lexical_max_directory_bytes,
         max_spill_bytes: input.options.lexical_max_spill_bytes,
         max_spill_runs: input.options.lexical_max_spill_runs,
         max_merge_fan_in: input.options.lexical_max_merge_fan_in,
@@ -310,6 +313,8 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
 fn fused_generation_sink_failures_preserve_active_artifacts() {
     for fault in [
         "lexical",
+        "dictionary",
+        "lexical_directory",
         "spill",
         "segment",
         "descriptor",
@@ -337,6 +342,14 @@ fn fused_generation_sink_failures_preserve_active_artifacts() {
             "lexical" => {
                 options.lexical_build_memory_bytes = NonZeroU64::MIN;
                 "lexical"
+            }
+            "dictionary" => {
+                options.lexical_dictionary_build_memory_bytes = NonZeroU64::MIN;
+                "dictionary"
+            }
+            "lexical_directory" => {
+                options.lexical_max_directory_bytes = NonZeroU64::MIN;
+                "directory budget"
             }
             "spill" => {
                 options.lexical_max_spill_bytes = NonZeroU64::MIN;

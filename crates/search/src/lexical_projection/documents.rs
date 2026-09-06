@@ -2,11 +2,12 @@ use super::{
     decode_block_header, BlockDescriptor, BlockKind, LexicalProjectionReader, SliceCursor,
 };
 use crate::error::{Result, SkeinError};
+use std::sync::Arc;
 
 /// One bounded mapping block serves the monotonically increasing posting merge.
 pub(super) struct DocumentLookup<'a> {
     projection: &'a LexicalProjectionReader,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     block: Option<&'a BlockDescriptor>,
     cursor: usize,
     next_ordinal: u64,
@@ -17,7 +18,7 @@ impl<'a> DocumentLookup<'a> {
     pub(super) fn new(projection: &'a LexicalProjectionReader) -> Self {
         Self {
             projection,
-            bytes: Vec::new(),
+            bytes: Arc::from([]),
             block: None,
             cursor: 0,
             next_ordinal: 0,
@@ -49,10 +50,17 @@ impl<'a> DocumentLookup<'a> {
                 ));
             }
             // Release the old allocation before admitting another mapping block.
-            self.bytes = Vec::new();
-            self.bytes = self.projection.read_block(block)?;
+            self.bytes = Arc::from([]);
+            let (bytes, read) = self.projection.read_cached_range(
+                block.offset,
+                usize::try_from(block.length).map_err(|_| {
+                    SkeinError::Storage("document mapping exceeds the address space".to_string())
+                })?,
+                block.checksum,
+            )?;
+            self.bytes = bytes;
             validate_document_block(&self.bytes, self.projection.manifest.generation, block)?;
-            self.bytes_read = self.bytes_read.saturating_add(self.bytes.len() as u64);
+            self.bytes_read = self.bytes_read.saturating_add(read);
             self.block = Some(block);
             self.cursor = 29;
             self.next_ordinal = block.ordinal_start;

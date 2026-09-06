@@ -648,6 +648,8 @@ mod tests {
             candidate_scan_payload_bytes_read: 0,
             candidate_scan_admitted_working_bytes: 0,
             posting_bytes_read: 0,
+            lexical_dictionary_bytes_read: 0,
+            lexical_document_bytes_read: 0,
             candidate_postings_visited: 0,
             segmented_lexical_projection_used: false,
             index_covered_document_count: 1,

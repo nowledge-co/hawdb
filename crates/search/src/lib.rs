@@ -24,6 +24,9 @@ use skein_storage::{
     SegmentPruner, SegmentReadRange, SegmentSummary,
 };
 use skein_storage::{NodeId, NodeRecord};
+pub use skein_storage::{
+    SegmentCache as SearchSegmentCache, SegmentCacheSnapshot as SearchSegmentCacheSnapshot,
+};
 use skein_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -551,6 +554,8 @@ pub struct SearchRetrieverReport {
     pub candidate_scan_payload_bytes_read: u64,
     pub candidate_scan_admitted_working_bytes: usize,
     pub posting_bytes_read: u64,
+    pub lexical_dictionary_bytes_read: u64,
+    pub lexical_document_bytes_read: u64,
     pub candidate_postings_visited: u64,
     pub segmented_lexical_projection_used: bool,
     pub index_covered_document_count: usize,
@@ -1325,6 +1330,7 @@ pub struct SearchIndex {
     lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
     lexical_delta: Mutex<LexicalMiniDelta>,
     lexical_config: LexicalProjectionConfig,
+    segment_cache: Arc<SearchSegmentCache>,
     #[cfg(feature = "vector-search")]
     rabitq_projection: Mutex<Option<Arc<RaBitQCandidateProjection>>>,
     #[cfg(feature = "vector-search")]
@@ -1346,9 +1352,23 @@ impl SearchIndex {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_segment_cache(
+            path,
+            Arc::new(SearchSegmentCache::new(
+                lexical_projection::DEFAULT_CACHE_BYTES,
+            )),
+        )
+    }
+
+    /// Shares one host-owned cache across projection generations and readers.
+    pub fn open_with_segment_cache(
+        path: impl AsRef<Path>,
+        segment_cache: Arc<SearchSegmentCache>,
+    ) -> Result<Self> {
         fs::create_dir_all(path.as_ref())?;
         let mut index = Self {
             path: Some(path.as_ref().to_path_buf()),
+            segment_cache,
             ..Self::default()
         };
         index.load_snapshot()?;
@@ -1386,12 +1406,14 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let projection = LexicalProjectionReader::load(
+        let projection = LexicalProjectionReader::load_named_with_cache(
             path,
+            lexical_projection::MANIFEST_FILE,
             self.source_graph_commit_epoch,
             lexical_analyzer_digest(&self.analyzer_lexicon),
             lexical_documents_digest(&self.documents),
             self.lexical_config,
+            Arc::clone(&self.segment_cache),
         )?;
         *self
             .lexical_projection
@@ -2356,15 +2378,17 @@ impl SearchIndex {
 
     fn write_lexical_projection(&self, path: &Path) -> Result<()> {
         let generation = out_of_core::next_generation(path)?;
-        let projection = LexicalProjectionWriter::new(self.lexical_config).write(
-            path,
-            generation,
-            self.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.analyzer_lexicon),
-            lexical_documents_digest(&self.documents),
-            self.documents.values(),
-            &self.analyzer_lexicon,
-        )?;
+        let projection = LexicalProjectionWriter::new(self.lexical_config)
+            .with_cache(Arc::clone(&self.segment_cache))
+            .write(
+                path,
+                generation,
+                self.source_graph_commit_epoch,
+                lexical_analyzer_digest(&self.analyzer_lexicon),
+                lexical_documents_digest(&self.documents),
+                self.documents.values(),
+                &self.analyzer_lexicon,
+            )?;
         *self
             .lexical_projection
             .lock()
@@ -3215,15 +3239,19 @@ impl SearchIndex {
             lexical_matching_document_count,
             lexical_postings_visited,
             lexical_bytes_read,
+            lexical_dictionary_bytes_read,
+            lexical_document_bytes_read,
         ) = if let Some(report) = lexical_report {
             (
                 report.scores,
                 report.matching_document_count,
                 report.postings_visited,
-                report.bytes_read,
+                report.posting_bytes_read,
+                report.dictionary_bytes_read,
+                report.document_bytes_read,
             )
         } else {
-            (BTreeMap::new(), 0, 0, 0)
+            (BTreeMap::new(), 0, 0, 0, 0, 0)
         };
         if lexical_projection.is_none() {
             for document in &filtered_documents {
@@ -3364,6 +3392,8 @@ impl SearchIndex {
                     .map(|metrics| metrics.admitted_working_bytes)
                     .unwrap_or(0),
                 posting_bytes_read: 0,
+                lexical_dictionary_bytes_read: 0,
+                lexical_document_bytes_read: 0,
                 candidate_postings_visited: 0,
                 segmented_lexical_projection_used: false,
                 index_covered_document_count: vector_index_covered_document_count,
@@ -3446,6 +3476,8 @@ impl SearchIndex {
                 candidate_scan_payload_bytes_read: 0,
                 candidate_scan_admitted_working_bytes: 0,
                 posting_bytes_read: lexical_bytes_read,
+                lexical_dictionary_bytes_read,
+                lexical_document_bytes_read,
                 candidate_postings_visited: lexical_postings_visited,
                 segmented_lexical_projection_used,
                 index_covered_document_count: 0,
@@ -3870,6 +3902,9 @@ impl Default for SearchIndex {
             lexical_projection: Mutex::new(None),
             lexical_delta: Mutex::new(LexicalMiniDelta::default()),
             lexical_config: LexicalProjectionConfig::default(),
+            segment_cache: Arc::new(SearchSegmentCache::new(
+                lexical_projection::DEFAULT_CACHE_BYTES,
+            )),
             #[cfg(feature = "vector-search")]
             rabitq_projection: Mutex::new(None),
             #[cfg(feature = "vector-search")]

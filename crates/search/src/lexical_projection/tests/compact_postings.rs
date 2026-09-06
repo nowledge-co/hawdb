@@ -87,22 +87,19 @@ fn persisted_postings_use_full_simd_frames_and_a_varint_tail() {
         .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
         .unwrap();
     let mut frames = Vec::new();
-    for block in reader
-        .manifest
-        .blocks
-        .iter()
-        .filter(|block| block.kind == BlockKind::Postings)
-    {
-        let bytes = reader.read_block(block).unwrap();
-        let mut cursor = SliceCursor::new(&bytes);
-        decode_block_header(&mut cursor, 1, block, BlockKind::Postings).unwrap();
-        while !cursor.is_empty() {
-            assert_eq!(cursor.str(4096).unwrap(), "graph");
-            let length = cursor.u32().unwrap() as usize;
-            let bytes = cursor.bytes(length).unwrap();
-            let decoded = posting_codec::decode(bytes).unwrap();
-            frames.push((decoded.len(), bytes[8]));
-        }
+    let metadata = reader.term_metadata("graph", &mut 0).unwrap().unwrap();
+    assert!(metadata.skip_offset > 0);
+    let bytes = reader
+        .read_range(metadata.posting_offset, metadata.skip_offset as usize)
+        .unwrap();
+    let mut cursor = SliceCursor::new(&bytes);
+    while !cursor.is_empty() {
+        let length = cursor.u32().unwrap() as usize;
+        let expected_checksum = cursor.u64().unwrap();
+        let bytes = cursor.bytes(length).unwrap();
+        assert_eq!(checksum(bytes), expected_checksum);
+        let decoded = posting_codec::decode(bytes).unwrap();
+        frames.push((decoded.len(), bytes[8]));
     }
     assert_eq!(frames, vec![(128, 0), (128, 0), (1, 1)]);
     // This synthetic wire-size check is not the representative-corpus benchmark.
@@ -111,7 +108,7 @@ fn persisted_postings_use_full_simd_frames_and_a_varint_tail() {
         .map(|doc| 4 + "graph".len() as u64 + 4 + doc.id.len() as u64 + 8)
         .sum();
     assert!(term_posting_bytes(&reader, "graph") * 10 < old_record_bytes);
-    let mut stream = TermPostingStream::new(&reader, "graph");
+    let mut stream = TermPostingStream::new(&reader, "graph", metadata).unwrap();
     let mut ordinals = Vec::new();
     while let Some(posting) = stream.next().unwrap() {
         assert!(stream.current.len() < 128);
@@ -143,8 +140,9 @@ fn persisted_postings_use_full_simd_frames_and_a_varint_tail() {
     assert_eq!(
         reopened
             .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
-            .unwrap(),
-        report
+            .unwrap()
+            .scores,
+        report.scores
     );
     fs::remove_dir_all(root).unwrap();
 }

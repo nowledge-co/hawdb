@@ -100,7 +100,7 @@ fn manifest_tampering_is_rejected_even_with_recomputed_envelope_checksum() {
             0 => body.artifact_file = "../search_lexical.1.skein".to_string(),
             1 => body.blocks[0].offset += 1,
             2 => body.document_count += 1,
-            3 => body.term_statistics[0].document_frequency += 1,
+            3 => body.dictionaries[0].posting_count += 1,
             4 => body.blocks[0].length = 0,
             _ => body.format = "unrecognized".to_string(),
         }
@@ -128,19 +128,30 @@ fn posting_bit_flips_fail_at_query_time_and_reopen() {
     let fixture = Fixture::new("posting-bit-flips");
     let artifact = fixture.root.join(artifact_file(1));
     let original = fs::read(&artifact).unwrap();
-    let block = fixture
+    let metadata = fixture
         .reader
-        .manifest
-        .blocks
-        .iter()
-        .find(|block| block.kind == BlockKind::Postings)
+        .term_metadata("graph", &mut 0)
+        .unwrap()
         .unwrap();
+    let header = fixture
+        .reader
+        .read_range(metadata.posting_offset, 12)
+        .unwrap();
+    let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
     for bit in 0..64 {
         let mut mutated = original.clone();
-        let position = block.offset as usize + bit % block.length as usize;
+        let position = metadata.posting_offset as usize + 12 + bit % length;
         mutated[position] ^= 1 << (bit % 8);
         fs::write(&artifact, mutated).unwrap();
-        let error = fixture.reader.read_block(block).unwrap_err();
+        let error = fixture
+            .reader
+            .score(
+                &BTreeSet::from(["graph".to_string()]),
+                &LexicalMiniDelta::default(),
+                None,
+                |_| Ok(true),
+            )
+            .unwrap_err();
         assert!(error.to_string().contains("checksum mismatch"), "{error}");
         let error = fixture
             .reopen(LexicalProjectionConfig::default())
@@ -160,15 +171,34 @@ fn posting_bit_flips_fail_at_query_time_and_reopen() {
 #[test]
 fn posting_codec_rejects_every_truncated_prefix_and_trailing_bytes() {
     let fixture = Fixture::new("posting-truncation");
-    let block = fixture
+    let metadata = fixture
         .reader
-        .manifest
-        .blocks
-        .iter()
-        .find(|block| block.kind == BlockKind::Postings)
+        .term_metadata("graph", &mut 0)
+        .unwrap()
         .unwrap();
-    let bytes = fixture.reader.read_block(block).unwrap();
-    let decode = |bytes: &[u8]| decode_posting_block(bytes, 1, block, 4096, |_| Ok(()));
+    let bytes = fixture
+        .reader
+        .read_range(metadata.posting_offset, metadata.posting_bytes as usize)
+        .unwrap();
+    let decode = |bytes: &[u8]| -> Result<()> {
+        let mut cursor = doclist::Cursor::new(dictionary::Metadata {
+            posting_offset: 0,
+            ..metadata
+        })?;
+        while cursor
+            .next_frame(&mut |offset, length, _digest| {
+                bytes
+                    .get(offset as usize..offset as usize + length)
+                    .map(Arc::<[u8]>::from)
+                    .ok_or_else(|| SkeinError::Storage("truncated test doclist".to_string()))
+            })?
+            .is_some()
+        {}
+        if bytes.len() != metadata.posting_bytes as usize {
+            return Err(SkeinError::Storage("trailing test doclist".to_string()));
+        }
+        Ok(())
+    };
     for length in 0..bytes.len() {
         assert!(
             decode(&bytes[..length]).is_err(),

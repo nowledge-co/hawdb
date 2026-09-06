@@ -498,6 +498,23 @@ impl SearchOutOfCoreReader {
         config: SearchOutOfCoreConfig,
         analyzer_lexicon: SearchAnalyzerLexicon,
     ) -> Result<Self> {
+        Self::open_with_config_analyzer_and_cache(
+            path,
+            config,
+            analyzer_lexicon,
+            Arc::new(crate::SearchSegmentCache::new(
+                super::lexical_projection::DEFAULT_CACHE_BYTES,
+            )),
+        )
+    }
+
+    /// Uses a host-owned cache without adding a second independent cache budget.
+    pub fn open_with_config_analyzer_and_cache(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        cache: Arc<crate::SearchSegmentCache>,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
@@ -601,13 +618,14 @@ impl SearchOutOfCoreReader {
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
-        let lexical_projection = LexicalProjectionReader::load_named(
+        let lexical_projection = LexicalProjectionReader::load_named_with_cache(
             &root,
             &manifest.lexical_manifest_file,
             manifest.source_graph_commit_epoch,
             lexical_analyzer_digest(&analyzer_lexicon),
             manifest.documents_digest,
             lexical_config,
+            cache,
         )?
         .ok_or_else(|| {
             SkeinError::Storage(
@@ -1098,17 +1116,25 @@ impl SearchOutOfCoreReader {
         } else {
             None
         };
-        let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
-            lexical_report
-                .map(|report| {
-                    (
-                        report.scores,
-                        report.matching_document_count,
-                        report.postings_visited,
-                        report.bytes_read,
-                    )
-                })
-                .unwrap_or_default();
+        let (
+            text_scores,
+            text_matching_count,
+            lexical_postings_visited,
+            lexical_bytes_read,
+            lexical_dictionary_bytes_read,
+            lexical_document_bytes_read,
+        ) = lexical_report
+            .map(|report| {
+                (
+                    report.scores,
+                    report.matching_document_count,
+                    report.postings_visited,
+                    report.posting_bytes_read,
+                    report.dictionary_bytes_read,
+                    report.document_bytes_read,
+                )
+            })
+            .unwrap_or_default();
 
         let retained_vector_limit = match mode {
             SearchMode::Vector => Some(page_score_limit),
@@ -1193,6 +1219,8 @@ impl SearchOutOfCoreReader {
                 candidate_scan_admitted_working_bytes: vector_scan
                     .candidate_scan_admitted_working_bytes,
                 posting_bytes_read: 0,
+                lexical_dictionary_bytes_read: 0,
+                lexical_document_bytes_read: 0,
                 candidate_postings_visited: 0,
                 segmented_lexical_projection_used: false,
                 index_covered_document_count: vector_scan.vector_document_count,
@@ -1259,6 +1287,8 @@ impl SearchOutOfCoreReader {
                 candidate_scan_payload_bytes_read: 0,
                 candidate_scan_admitted_working_bytes: 0,
                 posting_bytes_read: lexical_bytes_read,
+                lexical_dictionary_bytes_read,
+                lexical_document_bytes_read,
                 candidate_postings_visited: lexical_postings_visited,
                 segmented_lexical_projection_used: true,
                 index_covered_document_count: 0,
