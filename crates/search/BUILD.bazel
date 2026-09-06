@@ -45,6 +45,34 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Exercise private production codecs without exposing a fuzz-only library API.
+# Ignored Rust tests and manual labels keep campaigns out of ordinary CI tests.
+[
+    rust_test(
+        name = "skein_search_lexical_%s_fuzz_tests" % campaign,
+        size = "large",
+        tags = ["manual"],
+        args = [
+            "lexical_projection::tests::fuzz::%s" % test_filter,
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ],
+        crate = ":skein_search",
+        crate_features = _SEARCH_DEFAULT_FEATURES,
+        edition = "2024",
+        aliases = aliases(normal_dev = True, proc_macro_dev = True),
+        deps = all_crate_deps(normal_dev = True),
+        proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    )
+    for campaign, test_filter in [
+        ("posting", "bytes::posting_bytes_campaign"),
+        ("dictionary", "bytes::dictionary_bytes_campaign"),
+        ("doclist", "bytes::doclist_bytes_campaign"),
+        ("state_machine", "state_machine::projection_state_machine_campaign"),
+    ]
+]
+
 # Keep optional-capability contracts executable without enabling every feature.
 [
     rust_test(

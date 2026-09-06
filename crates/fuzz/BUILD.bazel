@@ -84,6 +84,10 @@ test_suite(
         ":skein_append_fuzz_cli_tests",
         ":skein_parser_fuzz_cli_tests",
         ":skein_storage_fuzz_tests",
+        "//crates/search:skein_search_lexical_dictionary_fuzz_tests",
+        "//crates/search:skein_search_lexical_doclist_fuzz_tests",
+        "//crates/search:skein_search_lexical_posting_fuzz_tests",
+        "//crates/search:skein_search_lexical_state_machine_fuzz_tests",
     ],
 )
 

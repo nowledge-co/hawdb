@@ -2038,6 +2038,7 @@ mod tests {
     mod artifact_accounting;
     mod compact_dictionary;
     mod compact_postings;
+    mod fuzz;
     mod robustness;
 
     pub(super) fn projection_root(name: &str) -> PathBuf {
