@@ -7,22 +7,22 @@ use crate::SearchDocument;
 use skein_core::RuntimeTaskContext;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const SPOOL_HEADER: &[u8; 8] = b"SKNSPOL1";
 pub(super) const SPOOL_FRAME_HEADER_BYTES: u64 = 16;
 static GENERATION_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub(super) struct SpoolSource {
-    pub(super) path: PathBuf,
+pub(super) struct SpoolSource<'a> {
+    pub(super) path: &'a Path,
     pub(super) document_count: usize,
     pub(super) max_record_bytes: u64,
     pub(super) max_metadata_fields: usize,
     pub(super) memory: BuildMemory,
 }
 
-impl SpoolSource {
+impl SpoolSource<'_> {
     #[cfg(test)]
     pub(super) fn scan(
         &self,
@@ -50,7 +50,7 @@ impl SpoolSource {
     ) -> Result<()> {
         checkpoint(task_context)?;
         let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
-        let file = File::open(&self.path)?;
+        let file = File::open(self.path)?;
         #[cfg(test)]
         let file = read_evidence::track(file);
         let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, file);
@@ -147,20 +147,37 @@ impl SpoolSource {
 }
 
 pub(super) struct StageDirectory {
-    pub(super) path: PathBuf,
+    pub(super) path: super::context_memory::OwnedPath,
 }
 
 impl StageDirectory {
-    pub(super) fn create(root: &Path) -> Result<Self> {
+    pub(super) fn create(
+        root: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
         for _ in 0..64 {
+            checkpoint(task)?;
+            let _name_memory = memory.retained.reserve(3 * 128)?;
             let sequence = GENERATION_WRITER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = root.join(format!(
+            let name = format!(
                 ".search-generation.{}.{}.stage",
                 std::process::id(),
                 sequence
-            ));
+            );
+            if name.capacity() > 128 {
+                return Err(SkeinError::Execution(
+                    "search stage name exceeds preflight capacity".into(),
+                ));
+            }
+            let path =
+                super::context_memory::OwnedPath::join(root, Path::new(&name), memory, task)?;
             match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    let stage = Self { path };
+                    checkpoint(task)?;
+                    return Ok(stage);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }

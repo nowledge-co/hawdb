@@ -27,7 +27,7 @@ impl SearchOutOfCoreGenerationUpdate {
     pub(super) fn prepare_with_context(
         reader: &SearchOutOfCoreReader,
         delta: SearchProjectionDelta,
-        mut options: SearchOutOfCoreGenerationBuildOptions,
+        options: SearchOutOfCoreGenerationBuildOptions,
         task_context: RuntimeTaskContext,
     ) -> Result<Self> {
         checkpoint(&task_context)?;
@@ -51,13 +51,19 @@ impl SearchOutOfCoreGenerationUpdate {
             source_graph_commit_epoch.or(source_graph_commit_epoch_before);
         let upserted_documents = delta.upserts.len();
         let memory = BuildMemory::new(&task_context)?;
+        let mut options = super::context_memory::Options::new(options, &memory, &task_context)?;
         let mut input = super::delta_memory::Input::new(
             delta,
             &memory,
             options.max_delta_working_bytes.get(),
             &task_context,
         )?;
-        bind_identity(reader, &mut options, source_graph_commit_epoch_after)?;
+        options.bind_identity(
+            reader,
+            source_graph_commit_epoch_after,
+            &memory,
+            &task_context,
+        )?;
         let before_document_count = reader.document_count();
         let mut writer = SearchOutOfCoreGenerationWriter::create_with_memory(
             &reader.root,
@@ -127,6 +133,11 @@ impl SearchOutOfCoreGenerationUpdate {
         &self.source_read_metrics
     }
 
+    #[cfg(test)]
+    pub(super) fn writer_for_test(&self) -> &SearchOutOfCoreGenerationWriter {
+        &self.writer
+    }
+
     pub fn finish(
         self,
     ) -> Result<(
@@ -137,45 +148,6 @@ impl SearchOutOfCoreGenerationUpdate {
         let build_report = self.writer.finish()?;
         Ok((self.delta_report, build_report, self.source_read_metrics))
     }
-}
-
-fn bind_identity(
-    reader: &SearchOutOfCoreReader,
-    options: &mut SearchOutOfCoreGenerationBuildOptions,
-    source_graph_commit_epoch: Option<u64>,
-) -> Result<()> {
-    if options.source_graph_commit_epoch.is_some()
-        && options.source_graph_commit_epoch != source_graph_commit_epoch
-    {
-        return Err(SkeinError::Storage(
-            "search generation update source graph epoch does not match the delta".to_string(),
-        ));
-    }
-    if options.import_source_graph_commit_epoch.is_some()
-        && options.import_source_graph_commit_epoch != reader.import_source_graph_commit_epoch()
-    {
-        return Err(SkeinError::Storage(
-            "search generation update import provenance does not match the active generation"
-                .to_string(),
-        ));
-    }
-    if options.embedding_manifest.is_some()
-        && options.embedding_manifest != reader.embedding_manifest()
-    {
-        return Err(SkeinError::Storage(
-            "search generation update embedding identity does not match the active generation"
-                .to_string(),
-        ));
-    }
-    if options.analyzer_lexicon != *reader.analyzer_lexicon() {
-        return Err(SkeinError::Storage(
-            "search generation update analyzer does not match the active generation".to_string(),
-        ));
-    }
-    options.source_graph_commit_epoch = source_graph_commit_epoch;
-    options.import_source_graph_commit_epoch = reader.import_source_graph_commit_epoch();
-    options.embedding_manifest = reader.embedding_manifest();
-    Ok(())
 }
 
 pub(super) fn validate_delta_ids(upserts: &[SearchDocument], deletes: &[String]) -> Result<()> {

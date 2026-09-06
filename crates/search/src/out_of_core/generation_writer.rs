@@ -32,9 +32,12 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "vector-search"))]
+use std::path::PathBuf;
 
 mod artifacts;
+mod context_memory;
 mod delta;
 mod delta_memory;
 mod publication;
@@ -167,11 +170,12 @@ pub struct SearchOutOfCoreGenerationBuildReport {
 /// remains bounded by `max_descriptor_working_bytes` because the serving reader
 /// must retain that range index.
 pub struct SearchOutOfCoreGenerationWriter {
-    root: PathBuf,
-    stage: StageDirectory,
-    spool_path: PathBuf,
+    root: context_memory::OwnedPath,
+    spool_path: context_memory::OwnedPath,
+    // Close the spool before stage cleanup, including on Windows.
     spool: Option<BufWriter<File>>,
-    options: SearchOutOfCoreGenerationBuildOptions,
+    stage: StageDirectory,
+    options: context_memory::Options,
     last_document_id: Option<String>,
     document_count: usize,
     vector_document_count: usize,
@@ -236,13 +240,14 @@ impl SearchOutOfCoreGenerationWriter {
         checkpoint(&task_context)?;
         validate_options(&options)?;
         let memory = BuildMemory::new(&task_context)?;
+        let options = context_memory::Options::new(options, &memory, &task_context)?;
         Self::create_with_memory(root, options, task_context, memory)
     }
 
     // Delta admission creates the same root before converting input rows.
     fn create_with_memory(
         root: impl AsRef<Path>,
-        options: SearchOutOfCoreGenerationBuildOptions,
+        options: context_memory::Options,
         task_context: RuntimeTaskContext,
         memory: BuildMemory,
     ) -> Result<Self> {
@@ -253,10 +258,15 @@ impl SearchOutOfCoreGenerationWriter {
         })?;
         let metadata_memory = memory.retained.reserve(metadata_bytes)?;
         let spool_memory = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
-        let root = root.as_ref().to_path_buf();
+        let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
         fs::create_dir_all(&root)?;
-        let stage = StageDirectory::create(&root)?;
-        let spool_path = stage.path.join("documents.spool.skein");
+        let stage = StageDirectory::create(&root, &memory, &task_context)?;
+        let spool_path = context_memory::OwnedPath::join(
+            &stage.path,
+            Path::new("documents.spool.skein"),
+            &memory,
+            &task_context,
+        )?;
         let mut spool = BufWriter::with_capacity(
             SPOOL_BUFFER_BYTES,
             OpenOptions::new()
@@ -281,9 +291,9 @@ impl SearchOutOfCoreGenerationWriter {
             .map(|manifest| manifest.dimension);
         Ok(Self {
             root,
-            stage,
             spool_path,
             spool: Some(spool),
+            stage,
             options,
             last_document_id: None,
             document_count: 0,
@@ -342,7 +352,7 @@ impl SearchOutOfCoreGenerationWriter {
 
     fn finish_with_artifacts(
         mut self,
-        build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
+        build: impl FnOnce(&Self, &SpoolSource<'_>, u64) -> Result<GenerationArtifacts>,
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
         checkpoint(&self.task_context)?;
         if self.poisoned {
@@ -378,7 +388,7 @@ impl SearchOutOfCoreGenerationWriter {
         }
 
         let source = SpoolSource {
-            path: self.spool_path.clone(),
+            path: &self.spool_path,
             document_count: self.document_count,
             max_record_bytes: self.options.max_record_bytes.get(),
             max_metadata_fields: self.options.max_metadata_fields.get(),
@@ -469,7 +479,7 @@ impl SearchOutOfCoreGenerationWriter {
 
     fn build_artifacts(
         &self,
-        source: &SpoolSource,
+        source: &SpoolSource<'_>,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
         let mut segments = SegmentArtifactBuilder::new_with_memory(
@@ -701,7 +711,7 @@ pub(super) struct RaBitQGenerationArtifact {
 
 #[cfg(all(test, feature = "vector-search"))]
 fn build_rabitq_artifact(
-    source: &SpoolSource,
+    source: &SpoolSource<'_>,
     stage: &Path,
     generation: u64,
     vector_document_count: usize,
@@ -767,7 +777,7 @@ fn build_rabitq_artifact(
 
 #[cfg(all(test, not(feature = "vector-search")))]
 fn build_rabitq_artifact(
-    _source: &SpoolSource,
+    _source: &SpoolSource<'_>,
     _stage: &Path,
     _generation: u64,
     _vector_document_count: usize,

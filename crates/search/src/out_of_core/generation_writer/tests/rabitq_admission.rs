@@ -105,9 +105,34 @@ fn trial(
     limit: usize,
     succeeds: bool,
 ) -> usize {
-    let root = test_dir("rabitq_admission_trial");
+    trial_at(
+        test_dir("rabitq_admission_trial"),
+        documents,
+        options,
+        limit,
+        succeeds,
+    )
+}
+
+fn trial_at(
+    root: PathBuf,
+    documents: &[SearchDocument],
+    options: &SearchOutOfCoreGenerationBuildOptions,
+    limit: usize,
+    succeeds: bool,
+) -> usize {
     let input = input(&root, limit, options.clone(), documents);
     let ledger = input.memory.ledger.clone();
+    // Startup paths vary with the stage sequence and sandbox root. Keep those
+    // real owners charged, then pad their overlap to a fixed competing owner so
+    // an exact RaBitQ-phase retry cannot inherit another trial's path length.
+    let startup_bytes = 256 * 1024;
+    assert!(ledger.snapshot().peak_bytes < startup_bytes);
+    let startup_padding = input
+        .memory
+        .retained
+        .reserve(startup_bytes - ledger.snapshot().used_bytes)
+        .unwrap();
     let result = (|| -> Result<Option<RaBitQGenerationArtifact>> {
         let mut builder = RaBitQArtifactBuilder::new(&input, 1)?;
         for document in documents {
@@ -129,6 +154,7 @@ fn trial(
                 .count()
         );
     }
+    drop(startup_padding);
     drop(input);
     if let Ok(Some(artifact)) = &result {
         assert_eq!(ledger.snapshot().used_bytes, artifact.file_name.capacity());
@@ -161,6 +187,36 @@ fn rabitq_bytes_and_filename_lifetime_match_reference_at_exact_and_short_budgets
             trial(&documents, &options, peak - 1, false);
         }
     }
+}
+
+#[test]
+fn rabitq_exact_budgets_keep_different_startup_paths_charged() {
+    let documents = vectors(3, 9);
+    let options = options(1, RaBitQBitWidth::One);
+    let peak = trial_at(
+        test_dir("rabitq_short_path"),
+        &documents,
+        &options,
+        16 * 1024 * 1024,
+        true,
+    );
+    assert_eq!(
+        trial_at(
+            test_dir("rabitq_longer_path_for_independent_startup_capacity"),
+            &documents,
+            &options,
+            peak,
+            true,
+        ),
+        peak
+    );
+    trial_at(
+        test_dir("rabitq_third_path_length"),
+        &documents,
+        &options,
+        peak - 1,
+        false,
+    );
 }
 
 #[test]

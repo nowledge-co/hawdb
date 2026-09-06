@@ -57,7 +57,7 @@ fn decoded_record_is_admitted_alongside_its_raw_record_and_reader_buffer() {
             let memory = BuildMemory::new(&context(available as u64)).unwrap();
             ledger = Some(memory.ledger.clone());
             let source = SpoolSource {
-                path: source.path.clone(),
+                path: source.path,
                 document_count: source.document_count,
                 max_record_bytes: source.max_record_bytes,
                 max_metadata_fields: source.max_metadata_fields,

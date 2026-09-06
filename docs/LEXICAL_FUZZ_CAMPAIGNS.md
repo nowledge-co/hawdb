@@ -210,6 +210,19 @@ capacity arithmetic. Original spare-capacity inputs are used for exact attempts.
 The target is manual and included in the explicit local fuzz suite, not CI.
 See `DELTA_INPUT_ADMISSION.md` for the internal ownership boundary.
 
+## Generation build context admission
+
+The context campaign is `//crates/search:skein_search_context_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features context_admission_campaign -- --ignored --nocapture`.
+Seed `0x206c017e` covers 128 spare-capacity option inputs, 128 native path joins
+and 16 published generation updates with supplied or inherited embedding identity.
+Options and paths retry exact/one-short observed peaks with a competing owner;
+normal tests independently check capacity formulas. Regeneration preserves the
+same capacities across retries. Reopen checks identity, epochs and document count,
+and the writer ledger must release all tracked memory. The target is manual,
+part of the explicit local fuzz suite, and adds no fuzz CI job. See
+`BUILD_CONTEXT_ADMISSION.md` for native-path and ownership boundaries.
+
 ## Filter and ACL input admission
 
 The filter campaign is `//crates/search:skein_search_filter_admission_fuzz_tests`

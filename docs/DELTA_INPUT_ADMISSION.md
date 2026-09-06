@@ -103,7 +103,8 @@ fail assertions, then be restored before complete positive verification.
 ## Remaining #206 boundaries
 
 This covers generation-update inputs, not every resident/persistent lexical delta
-map. Build options/identity copies and returned reports are also not newly owned.
+map. Build options and inherited identity now retain the same writer root
+(`BUILD_CONTEXT_ADMISSION.md`); returned reports are not newly owned.
 Shared-root projection backend admission and retained public output still need
 the pending public-contract decision. Filter/ACL input admission now shares the
 query root (`FILTER_QUERY_ADMISSION.md`). Public reports,

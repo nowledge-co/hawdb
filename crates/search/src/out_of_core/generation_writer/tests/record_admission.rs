@@ -23,7 +23,7 @@ fn every_spool_byte_limit_is_checked_before_encoding_or_writing() {
             }
         }
         let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
-        let stage = writer.stage.path.clone();
+        let stage = writer.stage.path.to_path_buf();
         allocation_evidence::take();
         let mut input = input.clone();
         if boundary == 3 {
@@ -99,7 +99,7 @@ fn exact_record_boundary_publishes_and_rechecksummed_non_ascii_spool_is_rejected
             spool.extend_from_slice(&(corrupt.len() as u64).to_le_bytes());
             spool.extend_from_slice(&checksum_bytes(corrupt).to_le_bytes());
             spool.extend_from_slice(corrupt);
-            fs::write(&source.path, spool)?;
+            fs::write(source.path, spool)?;
             source.scan(&mut |_, _| panic!("corrupt record reached a sink"))?;
             panic!("corrupt spool accepted");
         })

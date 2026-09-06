@@ -98,7 +98,7 @@ fn segment_builder_rejects_ordinal_gaps_and_duplicates_before_mutating() {
 
 fn three_pass_artifacts(
     input: &SearchOutOfCoreGenerationWriter,
-    source: &SpoolSource,
+    source: &SpoolSource<'_>,
     generation: u64,
 ) -> Result<GenerationArtifacts> {
     // Retain the original scheduling as an oracle. The sinks receive separate
@@ -287,7 +287,7 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
             .finish_with_artifacts(|input, source, generation| {
                 // Mutate after the initial length check so corruption exercises
                 // scan validation with the other sinks already partially filled.
-                let mut bytes = fs::read(&source.path)?;
+                let mut bytes = fs::read(source.path)?;
                 match fault {
                     "checksum" => *bytes.last_mut().unwrap() ^= 1,
                     "truncated" => {
@@ -297,7 +297,7 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
                     "header" => bytes[0] ^= 1,
                     _ => unreachable!(),
                 }
-                fs::write(&source.path, bytes)?;
+                fs::write(source.path, bytes)?;
                 input.build_artifacts(source, generation)
             })
             .unwrap_err();

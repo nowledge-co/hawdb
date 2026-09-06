@@ -134,7 +134,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn build(mut self, source: &SpoolSource) -> Result<SegmentArtifactOutput> {
+    pub(super) fn build(mut self, source: &SpoolSource<'_>) -> Result<SegmentArtifactOutput> {
         source.scan(&mut |ordinal, document| self.push(ordinal, document))?;
         self.finish(source.document_count)
     }
