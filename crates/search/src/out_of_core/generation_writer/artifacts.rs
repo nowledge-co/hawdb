@@ -6,6 +6,7 @@ use super::super::{
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
 use crate::build_control::checkpoint;
+use crate::build_memory::{checked_mul, AdmittedDocument, BuildMemory};
 use crate::error::{Result, SkeinError};
 use crate::{
     checksum_bytes, encode_embedding, encode_metadata, encode_search_document_line,
@@ -15,6 +16,7 @@ use crate::{
     SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
 use std::collections::BTreeSet;
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
@@ -29,7 +31,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     document_file: File,
     metadata_file: File,
     vector_file: File,
-    documents: Vec<SearchDocument>,
+    documents: Vec<AdmittedDocument>,
     segment_encoded_bytes: u64,
     descriptor: SearchSegmentDescriptor,
     layouts: Vec<SearchOutOfCoreSegmentLayout>,
@@ -42,6 +44,8 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     peak_segment_document_count: usize,
     peak_segment_encoded_bytes: u64,
     task_context: RuntimeTaskContext,
+    memory: BuildMemory,
+    _document_slots: QueryMemoryLease,
 }
 
 pub(super) struct SegmentArtifactOutput {
@@ -56,12 +60,33 @@ pub(super) struct SegmentArtifactOutput {
 }
 
 impl<'a> SegmentArtifactBuilder<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         stage: &Path,
         generation: u64,
         fields: &'a BTreeSet<String>,
         options: &'a SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
+        Self::new_with_memory(
+            stage,
+            generation,
+            fields,
+            options,
+            BuildMemory::new(&RuntimeTaskContext::default())?,
+        )
+    }
+
+    pub(super) fn new_with_memory(
+        stage: &Path,
+        generation: u64,
+        fields: &'a BTreeSet<String>,
+        options: &'a SearchOutOfCoreGenerationBuildOptions,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        let document_slots = memory.retained.reserve(checked_mul(
+            SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
+            std::mem::size_of::<AdmittedDocument>(),
+        )?)?;
         Ok(Self {
             stage: stage.to_path_buf(),
             generation,
@@ -87,6 +112,8 @@ impl<'a> SegmentArtifactBuilder<'a> {
             peak_segment_document_count: 0,
             peak_segment_encoded_bytes: 0,
             task_context: RuntimeTaskContext::default(),
+            memory,
+            _document_slots: document_slots,
         })
     }
 
@@ -139,7 +166,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, ordinal: u64, document: SearchDocument) -> Result<()> {
+        let document = self.memory.admit_document(document)?;
+        self.push_admitted(ordinal, document)
+    }
+
+    pub(super) fn push_admitted(&mut self, ordinal: u64, document: AdmittedDocument) -> Result<()> {
         checkpoint(&self.task_context)?;
         if ordinal != self.next_document_ordinal {
             return Err(SkeinError::Storage(format!(
@@ -180,9 +213,19 @@ impl<'a> SegmentArtifactBuilder<'a> {
             return Ok(());
         }
         let segment_id = self.descriptor.segments.len() as u64;
-        let references = self.documents.iter().collect::<Vec<_>>();
+        let references_memory = self.memory.retained.reserve(checked_mul(
+            self.documents.len(),
+            std::mem::size_of::<&SearchDocument>(),
+        )?)?;
+        let references = self
+            .documents
+            .iter()
+            .map(|document| &document.document)
+            .collect::<Vec<_>>();
         let mut descriptor =
             SearchSegmentDescriptorEntry::from_documents(segment_id, &references, self.fields);
+        drop(references);
+        drop(references_memory);
 
         let mut document_body =
             String::with_capacity(usize::try_from(self.segment_encoded_bytes).unwrap_or_default());

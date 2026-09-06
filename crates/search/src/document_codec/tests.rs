@@ -168,6 +168,29 @@ fn bounded_record_bytes_campaign() {
             );
             let again = decode_search_document_line(&canonical).unwrap();
             assert_eq!(legacy_line(&again), canonical);
+            let required = crate::build_memory::document_bytes(&again).unwrap();
+            let task = RuntimeTaskContext::default().with_memory_reservation(
+                skein_core::RuntimeMemoryReservation::new(required as u64, 0),
+            );
+            let memory = crate::build_memory::BuildMemory::new(&task).unwrap();
+            let owned = memory
+                .decode_document(&canonical, again.metadata.len())
+                .unwrap();
+            assert_eq!(owned.retained_bytes(), required);
+            assert_eq!(legacy_line(&owned), canonical);
+            drop(owned);
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+            let task = task.with_memory_reservation(skein_core::RuntimeMemoryReservation::new(
+                required as u64 - 1,
+                0,
+            ));
+            let memory = crate::build_memory::BuildMemory::new(&task).unwrap();
+            crate::build_memory::decode_evidence::take();
+            assert!(memory
+                .decode_document(&canonical, again.metadata.len())
+                .is_err());
+            assert_eq!(crate::build_memory::decode_evidence::take(), 0);
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         } else {
             rejected += 1;
         }

@@ -1,5 +1,8 @@
 use super::next_generation;
 use crate::build_control::checkpoint;
+use crate::build_memory::{
+    checked_add, checked_mul, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
+};
 #[cfg(test)]
 use crate::encode_search_document_line;
 use crate::error::{Result, SkeinError};
@@ -22,6 +25,7 @@ use publication::{publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
@@ -176,6 +180,11 @@ pub struct SearchOutOfCoreGenerationWriter {
     expected_active_generation: Option<u64>,
     poisoned: bool,
     task_context: RuntimeTaskContext,
+    memory: BuildMemory,
+    // Keep charges after the payload fields so data drops before its leases.
+    spool_memory: Option<QueryMemoryLease>,
+    metadata_memory: QueryMemoryLease,
+    last_id_memory: Option<QueryMemoryLease>,
 }
 
 impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
@@ -209,8 +218,10 @@ impl SearchOutOfCoreGenerationWriter {
     /// once that commit section starts, it completes without observing late
     /// cancellation. Individual filesystem and bounded codec calls are not
     /// interruptible. The caller retains ownership of its governor admission.
-    /// Component memory caps still come from the build options; this entry point
-    /// does not yet enforce an aggregate cross-phase memory reservation.
+    /// An optional task memory reservation is shared by owned input, spool
+    /// buffers, decoded documents and documents retained by segment construction.
+    /// Component caps still apply. Analyzer, codec, descriptor and vector working
+    /// sets are not yet charged to this ledger; this is not total build admission.
     pub fn create_with_context(
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
@@ -218,11 +229,18 @@ impl SearchOutOfCoreGenerationWriter {
     ) -> Result<Self> {
         checkpoint(&task_context)?;
         validate_options(&options)?;
+        let memory = BuildMemory::new(&task_context)?;
+        let metadata_bytes = required_descriptor_field_names().try_fold(0, |bytes, field| {
+            checked_add(bytes, checked_add(SET_ENTRY_BYTES, field.len())?)
+        })?;
+        let metadata_memory = memory.retained.reserve(metadata_bytes)?;
+        let spool_memory = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         let stage = StageDirectory::create(&root)?;
         let spool_path = stage.path.join("documents.spool.skein");
-        let mut spool = BufWriter::new(
+        let mut spool = BufWriter::with_capacity(
+            SPOOL_BUFFER_BYTES,
             OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -262,6 +280,10 @@ impl SearchOutOfCoreGenerationWriter {
             expected_active_generation: None,
             poisoned: false,
             task_context,
+            memory,
+            spool_memory: Some(spool_memory),
+            metadata_memory,
+            last_id_memory: None,
         })
     }
 
@@ -316,6 +338,7 @@ impl SearchOutOfCoreGenerationWriter {
         spool.flush()?;
         spool.get_ref().sync_all()?;
         drop(spool);
+        self.spool_memory.take();
         checkpoint(&self.task_context)?;
         let actual_spool_bytes = fs::metadata(&self.spool_path)?.len();
         if actual_spool_bytes != self.spool_bytes {
@@ -340,6 +363,8 @@ impl SearchOutOfCoreGenerationWriter {
             path: self.spool_path.clone(),
             document_count: self.document_count,
             max_record_bytes: self.options.max_record_bytes.get(),
+            max_metadata_fields: self.options.max_metadata_fields.get(),
+            memory: self.memory.clone(),
         };
         let generation = next_generation(&self.root)?;
         let lexical_generation = generation;
@@ -428,11 +453,12 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
-        let mut segments = SegmentArtifactBuilder::new(
+        let mut segments = SegmentArtifactBuilder::new_with_memory(
             &self.stage.path,
             generation,
             &self.metadata_fields,
             &self.options,
+            self.memory.clone(),
         )?
         .with_context(self.task_context.clone());
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
@@ -457,10 +483,10 @@ impl SearchOutOfCoreGenerationWriter {
                 lexical_analyzer_digest(&self.options.analyzer_lexicon),
                 self.documents_digest.finish(),
                 |consume| {
-                    source.scan_with_context(&self.task_context, &mut |ordinal, document| {
+                    source.scan_admitted(&self.task_context, &mut |ordinal, document| {
                         consume(ordinal, &document)?;
                         vectors.push(&document)?;
-                        segments.push(ordinal, document)
+                        segments.push_admitted(ordinal, document)
                     })?;
                     // Drop both writers' buffers before lexical external merge.
                     // All artifacts remain private to the stage until publication.
@@ -494,6 +520,7 @@ impl SearchOutOfCoreGenerationWriter {
 
     fn push_inner(&mut self, document: SearchDocument) -> Result<()> {
         checkpoint(&self.task_context)?;
+        let document = self.memory.admit_document(document)?;
         if document.id.is_empty() {
             return Err(SkeinError::Storage(
                 "search generation document id must not be empty".to_string(),
@@ -559,9 +586,12 @@ impl SearchOutOfCoreGenerationWriter {
                     .saturating_sub(self.spool_bytes)
                     .saturating_sub(SPOOL_FRAME_HEADER_BYTES),
             );
-        let record = crate::document_codec::encode_bounded(
+        let record_len =
+            crate::document_codec::encoded_len(&document, record_limit, Some(&self.task_context))?;
+        let _record_memory = self.memory.spool.reserve(record_len)?;
+        let record = crate::document_codec::encode_admitted(
             &document,
-            record_limit,
+            record_len,
             Some(&self.task_context),
         )?;
         checkpoint(&self.task_context)?;
@@ -591,6 +621,13 @@ impl SearchOutOfCoreGenerationWriter {
                 self.options.max_spool_bytes
             )));
         }
+        let last_id_memory = self.memory.retained.reserve(document.id.capacity())?;
+        self.metadata_memory.grow(checked_add(
+            checked_mul(added_fields, SET_ENTRY_BYTES)?,
+            usize::try_from(added_field_bytes).map_err(|_| {
+                SkeinError::Execution("metadata field capacity exceeds usize".to_string())
+            })?,
+        )?)?;
         let spool = self.spool.as_mut().ok_or_else(|| {
             SkeinError::Storage("search generation spool is already closed".to_string())
         })?;
@@ -613,7 +650,8 @@ impl SearchOutOfCoreGenerationWriter {
                 self.metadata_fields.insert(field.clone());
             }
         }
-        self.last_document_id = Some(document.id);
+        self.last_document_id = Some(document.document.id);
+        self.last_id_memory = Some(last_id_memory);
         self.metadata_field_bytes = next_field_bytes;
         Ok(())
     }
@@ -781,6 +819,12 @@ fn validate_embedding(
 }
 
 fn required_descriptor_fields() -> BTreeSet<String> {
+    required_descriptor_field_names()
+        .map(str::to_string)
+        .collect()
+}
+
+fn required_descriptor_field_names() -> impl Iterator<Item = &'static str> {
     std::iter::once(SEARCH_DOCUMENT_ID_FIELD)
         .chain(
             NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS
@@ -788,6 +832,4 @@ fn required_descriptor_fields() -> BTreeSet<String> {
                 .copied(),
         )
         .chain(NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS.iter().copied())
-        .map(str::to_string)
-        .collect()
 }

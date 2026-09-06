@@ -76,6 +76,7 @@ pub(crate) fn encoded_len(
         .map_err(|_| SkeinError::Storage("search document record exceeds usize".to_string()))
 }
 
+#[cfg(test)]
 pub(crate) fn encode_bounded(
     document: &SearchDocument,
     limit: u64,
@@ -83,6 +84,15 @@ pub(crate) fn encode_bounded(
 ) -> Result<String> {
     check(task)?;
     let length = encoded_len(document, limit, task)?;
+    encode_admitted(document, length, task)
+}
+
+pub(crate) fn encode_admitted(
+    document: &SearchDocument,
+    length: usize,
+    task: Option<&RuntimeTaskContext>,
+) -> Result<String> {
+    check(task)?;
     #[cfg(test)]
     allocation_evidence::record();
     let mut output = Output {
@@ -109,6 +119,48 @@ pub(crate) fn encode_bounded(
 
 fn check(task: Option<&RuntimeTaskContext>) -> Result<()> {
     task.map_or(Ok(()), checkpoint)
+}
+
+pub(crate) struct Fields<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) content: &'a str,
+    pub(crate) embedding: &'a str,
+    pub(crate) metadata: &'a str,
+}
+
+impl<'a> Fields<'a> {
+    pub(crate) fn parse(line: &'a str) -> Result<Self> {
+        let mut fields = line.strip_suffix('\n').unwrap_or(line).split('\t');
+        match (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) {
+            (
+                Some("doc"),
+                Some(id),
+                Some(title),
+                Some(content),
+                Some(embedding),
+                Some(metadata),
+                None,
+            ) => Ok(Self {
+                id,
+                title,
+                content,
+                embedding,
+                metadata,
+            }),
+            _ => Err(SkeinError::Storage(
+                "invalid search document line".to_string(),
+            )),
+        }
+    }
 }
 
 struct Size {

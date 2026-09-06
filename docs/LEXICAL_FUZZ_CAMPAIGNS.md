@@ -59,6 +59,13 @@ match the original document. No panic-catching success path is used. Ordinary
 generation tests separately repair the spool checksum around corrupt hex and
 prove rejection before sink consumption, unchanged publication and cleanup.
 
+Each accepted canonical record also goes through the production shared-input
+decoder with exact retained-capacity admission, followed by a one-byte-short
+budget. The latter must reject before the decoder allocation boundary. Owned
+leases must match string/vector capacities plus the metadata-container allowance
+and release to zero after drop. This extends input-memory coverage, not the
+complete fused-sink budget or allocator/RSS coverage.
+
 ## Coverage and independent checks
 
 - `posting`: seed 206, 100,000 valid-encode plus mutated-decode pairs. All three

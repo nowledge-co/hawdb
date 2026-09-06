@@ -182,7 +182,8 @@ fn real_fused_scan_cancellation_removes_all_partially_built_sinks() {
     let root = test_dir("cancelled_real_scan");
     initial_generation(&root);
     let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
-    let task = RuntimeTaskContext::default();
+    let task = RuntimeTaskContext::default()
+        .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1024 * 1024, 0));
     let options = SearchOutOfCoreGenerationBuildOptions {
         lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
         ..Default::default()
@@ -193,9 +194,12 @@ fn real_fused_scan_cancellation_removes_all_partially_built_sinks() {
         writer.push(document(index)).unwrap();
     }
     let spool_bytes = writer.spool_bytes;
+    let ledger = writer.memory.ledger.clone();
     spool::read_evidence::take();
     let _cancel = spool::read_evidence::cancel_after_bytes(16 * 1024, task.cancellation().clone());
     assert_cancelled(writer.finish().unwrap_err());
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    assert!(ledger.snapshot().peak_bytes > SPOOL_BUFFER_BYTES);
     let (opens, bytes) = spool::read_evidence::take();
     assert_eq!(opens, 1);
     assert!(

@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cancellation;
+mod input_memory;
 mod record_admission;
 
 #[test]

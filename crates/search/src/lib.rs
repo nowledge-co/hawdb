@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
 mod build_control;
+mod build_memory;
 mod cjk_tokenizer;
 mod document_codec;
 mod generation_cleanup;
@@ -6855,14 +6856,17 @@ fn decode_embedding(input: &str) -> Result<Option<Vec<f32>>> {
     if input.is_empty() {
         return Ok(None);
     }
-    input
-        .split(',')
-        .map(|raw| {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(input.split(',').count())
+        .map_err(|error| SkeinError::Storage(format!("embedding allocation failed: {error}")))?;
+    for raw in input.split(',') {
+        values.push(
             raw.parse::<f32>()
-                .map_err(|_| SkeinError::Storage(format!("invalid embedding value: {raw}")))
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(Some)
+                .map_err(|_| SkeinError::Storage("invalid embedding value".to_string()))?,
+        );
+    }
+    Ok(Some(values))
 }
 
 fn encode_metadata(metadata: &BTreeMap<String, String>) -> String {
@@ -6896,36 +6900,14 @@ fn encode_search_document_line(document: &SearchDocument) -> String {
 }
 
 fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
-    let line = line.strip_suffix('\n').unwrap_or(line);
-    let mut fields = line.split('\t');
-    match (
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-    ) {
-        (
-            Some("doc"),
-            Some(raw_id),
-            Some(raw_title),
-            Some(raw_content),
-            Some(raw_embedding),
-            Some(raw_metadata),
-            None,
-        ) => Ok(SearchDocument {
-            id: decode_string(raw_id)?,
-            title: decode_string(raw_title)?,
-            content: decode_string(raw_content)?,
-            embedding: decode_embedding(raw_embedding)?,
-            metadata: decode_metadata(raw_metadata)?,
-        }),
-        _ => Err(SkeinError::Storage(
-            "invalid search document line".to_string(),
-        )),
-    }
+    let fields = document_codec::Fields::parse(line)?;
+    Ok(SearchDocument {
+        id: decode_string(fields.id)?,
+        title: decode_string(fields.title)?,
+        content: decode_string(fields.content)?,
+        embedding: decode_embedding(fields.embedding)?,
+        metadata: decode_metadata(fields.metadata)?,
+    })
 }
 
 fn write_search_segment_payloads(

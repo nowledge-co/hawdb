@@ -25,6 +25,42 @@ character-boundary panic. Invalid-record errors do not echo an arbitrarily large
 input line. The real spool corruption regression repairs the frame checksum so
 it reaches this decoder rather than stopping at the integrity gate.
 
+## Shared input ownership
+
+`create_with_context` uses the optional task memory reservation as the root of
+one operation-local `QueryMemoryLedger`. Its three accounts are shared across
+the writer, spool reader and segment document owner. Accounts are not created
+per document: the ledger retains account metadata until the build ends.
+
+The input chain reserves capacity for:
+
+- owned document string and embedding capacities, including unused capacity;
+- encoded spool records, the 8 KiB writer/reader buffer and raw scan records;
+- decoded strings, embeddings and metadata containers, before decoding;
+- required and discovered metadata keys and retained ordering IDs;
+- segment document slots and temporary descriptor input references.
+
+Decoding counts borrowed wire fields before entering the allocating decoder.
+Embedding allocation requests the exact number of floats. Metadata uses a
+conservative 2 KiB per-entry allowance for tree nodes and transient splits, in
+addition to string bytes; metadata-key sets use 1 KiB per entry. Duplicate keys
+retain the conservative charge while decoding and release unused capacity after
+the final document is known. Even empty metadata reserves one map-node allowance:
+removing the last key can retain an allocated empty leaf root. These allowances
+are not allocator instrumentation.
+
+The raw record and decoded document overlap under the same root. After decoding,
+raw bytes are dropped before the sinks run. The decoded document carries its
+lease into the segment owner instead of releasing capacity at the callback
+boundary. Clearing the segment drops its documents and their leases. Data fields
+precede leases in declaration order so accounting is released after owned data.
+Failed input, partial scans, cancellation and abandoned writers release charges
+without publishing a partial generation. An exhausted root fails closed; it does
+not retry against another account with an independent copy of the task budget.
+
+Without a task reservation, the root uses the address-space maximum and existing
+component caps still apply. This does not introduce a new default total budget.
+
 ## Evidence and boundaries
 
 Normal tests cover exact and one-byte-short limits, accumulated spool/logical
@@ -34,9 +70,19 @@ generation cleanup. A dedicated ignored 25,000-case campaign is available throug
 the mandatory local Bazel fuzz suite; it is not added to CI. See
 `LEXICAL_FUZZ_CAMPAIGNS.md` for commands and acceptance oracles.
 
-The test-only counter marks the output allocation boundary; it is not an allocator
-or RSS measurement. The encoder's bound describes requested encoded capacity,
-not already-owned input strings, allocator overhead, decoded metadata trees,
-segment/compressor buffers, RaBitQ finalization or lexical merge state. This is a
-prerequisite for shared build accounting, not a replacement for #206's aggregate
-cross-phase build/query reservation or representative-corpus acceptance gates.
+The shared-input regressions also cover spare capacity, exact/one-short decode
+admission, malformed and duplicate metadata, fixed account count over 10,000
+documents, cross-thread ownership, raw/decoded overlap, actual segment retention,
+successful finish and fused-scan exhaustion preserving the previous generation
+and allowing a retry. The real partial-scan cancellation regression checks the
+shared ledger is empty after cleanup. Temporary missing-reservation and early
+release mutations must be rejected by the corresponding preflight/lifetime tests.
+
+Test-only counters mark entry into output allocation and decoding; they are not
+allocator or RSS measurements. The shared ledger currently covers input ownership,
+not all build allocations. Segment descriptors/layouts, encoding/compression,
+lexical analysis/merge, RaBitQ construction/finalization and caller-owned delta
+conversion still need admission under the same root. The outer query's concurrent
+candidate/vector/score/hydration state is separate remaining work. Input accounting
+does not replace #206's aggregate cross-phase build/query reservation or
+representative-corpus acceptance gates.

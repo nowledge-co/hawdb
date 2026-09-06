@@ -1,6 +1,9 @@
 use crate::build_control::checkpoint;
+use crate::build_memory::{AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES};
+use crate::checksum_bytes;
 use crate::error::{Result, SkeinError};
-use crate::{checksum_bytes, decode_search_document_line, SearchDocument};
+#[cfg(test)]
+use crate::SearchDocument;
 use skein_core::RuntimeTaskContext;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
@@ -15,6 +18,8 @@ pub(super) struct SpoolSource {
     pub(super) path: PathBuf,
     pub(super) document_count: usize,
     pub(super) max_record_bytes: u64,
+    pub(super) max_metadata_fields: usize,
+    pub(super) memory: BuildMemory,
 }
 
 impl SpoolSource {
@@ -26,16 +31,29 @@ impl SpoolSource {
         self.scan_with_context(&RuntimeTaskContext::default(), consumer)
     }
 
+    #[cfg(test)]
     pub(super) fn scan_with_context(
         &self,
         task_context: &RuntimeTaskContext,
         consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
     ) -> Result<()> {
+        self.scan_admitted(task_context, &mut |ordinal, document| {
+            let (document, _lease) = document.into_parts();
+            consumer(ordinal, document)
+        })
+    }
+
+    pub(super) fn scan_admitted(
+        &self,
+        task_context: &RuntimeTaskContext,
+        consumer: &mut dyn FnMut(u64, AdmittedDocument) -> Result<()>,
+    ) -> Result<()> {
         checkpoint(task_context)?;
+        let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let file = File::open(&self.path)?;
         #[cfg(test)]
         let file = read_evidence::track(file);
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, file);
         let mut header = [0u8; SPOOL_HEADER.len()];
         reader.read_exact(&mut header)?;
         if &header != SPOOL_HEADER {
@@ -43,6 +61,7 @@ impl SpoolSource {
                 "search generation spool header is invalid".to_string(),
             ));
         }
+        let mut _previous_id_memory = None;
         let mut previous_id = None::<String>;
         for ordinal in 0..self.document_count {
             checkpoint(task_context)?;
@@ -69,7 +88,12 @@ impl SpoolSource {
                     "search generation spool record {ordinal} length exceeds usize"
                 ))
             })?;
-            let mut record = vec![0u8; length];
+            let record_memory = self.memory.spool.reserve(length)?;
+            let mut record = Vec::new();
+            record.try_reserve_exact(length).map_err(|error| {
+                SkeinError::Storage(format!("spool record allocation failed: {error}"))
+            })?;
+            record.resize(length, 0);
             reader.read_exact(&mut record).map_err(|error| {
                 SkeinError::Storage(format!(
                     "search generation spool record {ordinal} is truncated: {error}"
@@ -87,10 +111,13 @@ impl SpoolSource {
                     "search generation spool record {ordinal} is not UTF-8: {error}"
                 ))
             })?;
-            let document = decode_search_document_line(line)?;
+            let document = self
+                .memory
+                .decode_document(line, self.max_metadata_fields)?;
             // The sinks need the decoded document, not its encoded spool copy.
             // Release it before lexical analysis and segment/vector buffering.
             drop(record);
+            drop(record_memory);
             checkpoint(task_context)?;
             if previous_id
                 .as_ref()
@@ -100,7 +127,9 @@ impl SpoolSource {
                     "search generation spool record {ordinal} is not strictly ordered"
                 )));
             }
+            let previous_id_memory = self.memory.retained.reserve(document.id.len())?;
             previous_id = Some(document.id.clone());
+            _previous_id_memory = Some(previous_id_memory);
             let document_ordinal = u64::try_from(ordinal).map_err(|_| {
                 SkeinError::Storage("search document ordinal exceeds u64".to_string())
             })?;
