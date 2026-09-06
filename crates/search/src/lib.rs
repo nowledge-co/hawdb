@@ -6755,6 +6755,9 @@ impl IdentifierCharKind {
     }
 }
 
+// Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ
+// estimates are candidate-ranking hints, not final scores; nonpositive exact
+// similarities cannot contribute a vector hit (text may still match).
 fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
@@ -7663,6 +7666,63 @@ mod tests {
             high_filter_selectivity_per_million: u32::MAX,
             flat_scan_memory_budget_bytes: 0,
         }
+    }
+
+    #[test]
+    fn final_vector_similarity_is_positive_only_even_for_opposite_vectors() {
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[-1.0, 0.0]), Some(0.0));
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]), Some(0.0));
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]), Some(1.0));
+    }
+
+    #[test]
+    #[cfg(feature = "vector-search")]
+    fn facade_vector_hits_exclude_nonpositive_scores_for_both_backends() {
+        let path = unique_test_dir("positive-vector-contract");
+        let mut index = SearchIndex::open(&path).unwrap();
+        for (id, vector) in [
+            ("positive", [1.0, 0.0]),
+            ("zero", [0.0, 1.0]),
+            ("negative", [-1.0, 0.0]),
+        ] {
+            index.upsert(doc(id, "vector", "contract", vector)).unwrap();
+        }
+        index.checkpoint().unwrap();
+        let query = [1.0, 0.0];
+        let options = SearchQueryOptions {
+            limit: 3,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch: None,
+        };
+        let resident =
+            index.search_with_options("", Some(&query), SearchMode::Vector, options.clone());
+        assert_eq!(
+            resident
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["positive"]
+        );
+        let out_of_core = SearchOutOfCoreReader::open(&path).unwrap();
+        let persisted = out_of_core
+            .search_with_options("", Some(&query), SearchMode::Vector, options)
+            .unwrap();
+        assert_eq!(
+            persisted
+                .result
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["positive"]
+        );
+        drop(out_of_core);
+        drop(index);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

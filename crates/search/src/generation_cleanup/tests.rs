@@ -6,6 +6,36 @@ use std::{fs, io};
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn lexical_manifest_retention_uses_lexical_not_out_of_core_generation() {
+    for lexical in 1..=8 {
+        for out_of_core in 1..=8 {
+            let generations = SearchProjectionGenerations {
+                lexical: Some(lexical),
+                out_of_core: Some(out_of_core),
+                ..SearchProjectionGenerations::default()
+            };
+            for generation in 1..=8 {
+                let manifest =
+                    CleanupCandidate::parse(format!("search_lexical.manifest.{generation}.skein"))
+                        .unwrap();
+                let artifact =
+                    CleanupCandidate::parse(format!("search_lexical.{generation}.skein")).unwrap();
+                assert_eq!(manifest.kind, CleanupArtifactKind::Lexical);
+                assert_eq!(
+                    manifest.is_obsolete(generations),
+                    artifact.is_obsolete(generations)
+                );
+            }
+        }
+    }
+    let quarantined =
+        CleanupCandidate::parse("search_lexical.manifest.7.skein.corrupt.123.456".to_string())
+            .unwrap();
+    assert_eq!(quarantined.kind, CleanupArtifactKind::Lexical);
+    assert!(quarantined.is_obsolete(SearchProjectionGenerations::default()));
+    assert!(CleanupCandidate::parse("search_lexical.manifest.skein".to_string()).is_none());
+}
+#[test]
 fn failed_deletion_is_observable_and_retryable_without_removing_previous_generation() {
     let root = test_root("retry");
     fs::create_dir_all(&root).unwrap();

@@ -1782,6 +1782,8 @@ fn checksum(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    mod robustness;
+
     fn projection_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "skein-lexical-projection-{name}-{}-{:?}",

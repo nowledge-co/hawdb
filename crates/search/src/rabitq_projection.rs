@@ -77,6 +77,9 @@ pub struct RaBitQCandidateProjection {
     build_report: ProjectionBuildReport,
 }
 
+// Keep ownership dispatch here. Both variants already use vector-projection's
+// private SegmentReader scan kernel; exposing that lower-level trait would
+// couple the search facade to scan buffers and per-segment execution details.
 #[derive(Debug)]
 enum RaBitQCandidateProjectionStorage {
     InMemory(InMemoryProjection),

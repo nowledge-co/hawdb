@@ -259,13 +259,14 @@ impl CleanupCandidate {
             "search_projection_metadata_payloads.",
             "search_projection_vector_payloads.",
             "search_projection_out_of_core_layout.",
-            "search_lexical.manifest.",
         ];
         let (artifact_name, quarantined) = match quarantined_artifact_name(&name) {
             Some(artifact_name) => (artifact_name, true),
             None => (name.as_str(), false),
         };
-        if let Some(generation) = parse_generation(artifact_name, "search_lexical.") {
+        if let Some(generation) = parse_generation(artifact_name, "search_lexical.")
+            .or_else(|| parse_generation(artifact_name, "search_lexical.manifest."))
+        {
             return Some(Self {
                 name,
                 kind: CleanupArtifactKind::Lexical,

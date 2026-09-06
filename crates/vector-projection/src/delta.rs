@@ -249,6 +249,13 @@ pub struct DeltaMergedSearchOutput {
 /// always the more recent write). `base_search` is expected to be
 /// `|q, k, o| base.search(q, k, o)` for whichever `InMemoryProjection` or
 /// `FileProjection` is being queried.
+///
+/// Full shadowing headroom is intentional: more than `top_k` high-ranked base
+/// rows can be replaced by poor delta vectors. Capping the base request at
+/// `2 * top_k` can then discard the best non-shadowed hits. The base search
+/// must enforce `options.max_working_bytes`, returning a budget error rather
+/// than silently shortening a correct result; callers should rebuild when
+/// `DeltaBuffer::should_optimize` signals sustained amplification.
 pub fn search_with_delta<F>(
     query: &[f32],
     top_k: usize,
@@ -300,6 +307,127 @@ where
 mod tests {
     use super::*;
     use crate::{ProjectionBuildConfig, ProjectionBuilder, ProjectionIdentity};
+
+    #[test]
+    fn full_shadowing_headroom_matches_an_independent_merge_oracle() {
+        let report = sample_base()
+            .search(&[1.0, 0.0, 0.0, 0.0], 0, ProjectionSearchOptions::new())
+            .unwrap()
+            .report;
+        let mut unsafe_cap_cases = 0;
+        for seed in 0..32 {
+            for top_k in 1..=4 {
+                let shadowed = 6 + seed % 9;
+                let count = shadowed + top_k + 3;
+                let base = (0..count)
+                    .map(|id| ProjectionHit {
+                        id: id as u64,
+                        score: 1.0 - id as f32 / 100.0,
+                    })
+                    .collect::<Vec<_>>();
+                let mut delta = DeltaBuffer::new(2);
+                let mut replacements = Vec::new();
+                for id in 0..shadowed {
+                    let score = if seed % 3 == 0 && id % 2 == 0 {
+                        0.0
+                    } else {
+                        -1.0
+                    };
+                    let vector = if score == 0.0 {
+                        [0.0, 1.0]
+                    } else {
+                        [-1.0, 0.0]
+                    };
+                    delta.upsert(id as u64, &vector).unwrap();
+                    replacements.push(ProjectionHit {
+                        id: id as u64,
+                        score,
+                    });
+                }
+                for filtered in [false, true] {
+                    let allowed = (0..count as u64)
+                        .filter(|id| id % 3 != 0)
+                        .collect::<Vec<_>>();
+                    let options = if filtered {
+                        ProjectionSearchOptions::new().with_allowed_ids(&allowed)
+                    } else {
+                        ProjectionSearchOptions::new()
+                    };
+                    let eligible = |id: u64| !filtered || allowed.contains(&id);
+                    let base_search =
+                        |_: &[f32], requested: usize, _: ProjectionSearchOptions<'_>| {
+                            Ok(ProjectionSearchOutput {
+                                hits: base
+                                    .iter()
+                                    .filter(|hit| eligible(hit.id))
+                                    .take(requested)
+                                    .cloned()
+                                    .collect(),
+                                report: report.clone(),
+                            })
+                        };
+                    let output =
+                        search_with_delta(&[1.0, 0.0], top_k, options, &delta, |q, k, o| {
+                            assert_eq!(k, top_k + shadowed);
+                            base_search(q, k, o)
+                        })
+                        .unwrap();
+                    // Build the complete latest-value map first, independently
+                    // of the merge implementation's post-top-k filtering.
+                    let mut latest = base
+                        .iter()
+                        .map(|hit| (hit.id, hit.score))
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    for hit in &replacements {
+                        latest.insert(hit.id, hit.score);
+                    }
+                    let mut expected = latest
+                        .into_iter()
+                        .filter(|(id, _)| eligible(*id))
+                        .map(|(id, score)| ProjectionHit { id, score })
+                        .collect::<Vec<_>>();
+                    expected.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
+                    expected.truncate(top_k);
+                    assert_eq!(
+                        output.hits, expected,
+                        "seed {seed}, k {top_k}, filtered {filtered}"
+                    );
+                    let capped =
+                        search_with_delta(&[1.0, 0.0], top_k, options, &delta, |q, _, o| {
+                            base_search(q, 2 * top_k, o)
+                        })
+                        .unwrap();
+                    unsafe_cap_cases += usize::from(capped.hits != expected);
+                }
+            }
+        }
+        assert!(
+            unsafe_cap_cases >= 128,
+            "only {unsafe_cap_cases} counterexamples"
+        );
+    }
+
+    #[test]
+    fn shadowing_headroom_obeys_base_search_memory_admission() {
+        let base = sample_base();
+        let mut delta = DeltaBuffer::new(4);
+        for id in 0..256 {
+            delta.upsert(id, &axis_vector(4, 0)).unwrap();
+        }
+        let error = search_with_delta(
+            &axis_vector(4, 0),
+            2,
+            ProjectionSearchOptions::new().with_max_working_bytes(1024),
+            &delta,
+            |q, k, o| base.search(q, k, o),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ProjectionError::ResourceBudgetExceeded { .. }),
+            "{error}"
+        );
+        assert_eq!(delta.len(), 256);
+    }
 
     fn axis_vector(dimension: usize, axis: usize) -> Vec<f32> {
         let mut vector = vec![0.0; dimension];

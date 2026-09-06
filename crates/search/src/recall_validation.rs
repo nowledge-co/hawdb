@@ -11,6 +11,7 @@ pub const MAX_VECTOR_RECALL_VALIDATION_TOP_K: usize = 100;
 pub const MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT: usize = 1_000;
 pub const MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT: usize = 100_000;
 const PER_MILLION: u64 = 1_000_000;
+const RECALL_SAMPLE_SEED: u64 = 0x534B_4549_4E52_4543;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorRecallValidationOptions {
@@ -68,6 +69,11 @@ impl VectorRecallValidationBlocker {
     }
 }
 
+/// Deterministic sampled recall over indexed vectors used as queries.
+///
+/// Sampling is uniform without replacement with a fixed replay seed, not a
+/// document-ID stride. The query's own ID is excluded from hits, but these are
+/// still in-corpus queries: this is not held-out production-query recall.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorRecallValidationReport {
     pub protocol: String,
@@ -113,6 +119,14 @@ impl VectorRecallValidationReport {
         serde_json::json!({
             "protocol": self.protocol,
             "ready": self.ready,
+            "sampling": {
+                "method": "floyd_splitmix64_without_replacement",
+                "seed": format!("{RECALL_SAMPLE_SEED:016x}"),
+                "query_source": "indexed_vectors",
+                "self_hit_excluded": true,
+                "held_out_queries": false,
+                "caveat": "In-corpus self-queries can overestimate held-out query recall.",
+            },
             "approximate_backend": self.approximate_backend,
             "sample_candidate_count": self.sample_candidate_count,
             "requested_sample_count": self.requested_sample_count,
@@ -529,19 +543,43 @@ impl VectorRecallValidationAccumulator {
 }
 
 pub(super) fn sample_positions(candidate_count: usize, sample_count: usize) -> Vec<usize> {
-    if candidate_count == 0 || sample_count == 0 {
-        return Vec::new();
+    sample_positions_with_seed(candidate_count, sample_count, RECALL_SAMPLE_SEED)
+}
+
+fn sample_positions_with_seed(
+    candidate_count: usize,
+    sample_count: usize,
+    seed: u64,
+) -> Vec<usize> {
+    let sample_count = sample_count
+        .min(candidate_count)
+        .min(MAX_VECTOR_RECALL_VALIDATION_SAMPLES);
+    let mut selected = BTreeSet::new();
+    let mut state = seed;
+    // Floyd sampling uses O(samples) memory rather than shuffling the corpus.
+    // Sorted positions let the caller retain its single ascending document scan.
+    for upper in candidate_count - sample_count..candidate_count {
+        let position = sample_below(&mut state, upper as u64 + 1) as usize;
+        if !selected.insert(position) {
+            selected.insert(upper);
+        }
     }
-    let sample_count = sample_count.min(candidate_count);
-    if sample_count == 1 {
-        return vec![0];
+    selected.into_iter().collect()
+}
+
+fn sample_below(state: &mut u64, bound: u64) -> u64 {
+    let threshold = bound.wrapping_neg() % bound;
+    loop {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut value = *state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^= value >> 31;
+        // Rejection avoids modulo bias for non-power-of-two corpus sizes.
+        if value >= threshold {
+            return value % bound;
+        }
     }
-    (0..sample_count)
-        .map(|sample| {
-            sample.saturating_mul(candidate_count.saturating_sub(1))
-                / sample_count.saturating_sub(1)
-        })
-        .collect()
 }
 
 fn ratio_per_million(numerator: usize, denominator: usize) -> u32 {
@@ -814,9 +852,53 @@ mod tests {
     }
 
     #[test]
-    fn sample_positions_are_bounded_and_spread() {
-        assert_eq!(sample_positions(10, 3), vec![0, 4, 9]);
+    fn sample_positions_are_bounded_and_replayable_without_a_fixed_stride() {
+        assert_ne!(sample_positions(10, 3), vec![0, 4, 9]);
         assert_eq!(sample_positions(2, 10), vec![0, 1]);
         assert!(sample_positions(0, 3).is_empty());
+        assert!(sample_positions(10, 0).is_empty());
+        for count in [1, 2, 10, 31, 128, 100_000, usize::MAX] {
+            for requested in [1, 3, 32, 128, usize::MAX] {
+                for seed in 0..32 {
+                    let positions = sample_positions_with_seed(count, requested, seed);
+                    assert_eq!(
+                        positions,
+                        sample_positions_with_seed(count, requested, seed)
+                    );
+                    assert_eq!(
+                        positions.len(),
+                        count
+                            .min(requested)
+                            .min(MAX_VECTOR_RECALL_VALIDATION_SAMPLES)
+                    );
+                    assert!(positions.iter().all(|position| *position < count));
+                    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_sampling_reaches_every_position_without_endpoint_bias() {
+        let mut counts = [0; 31];
+        for seed in 0..4096 {
+            for position in sample_positions_with_seed(counts.len(), 3, seed) {
+                counts[position] += 1;
+            }
+        }
+        // A deterministic sanity check, not a statistical confidence interval.
+        // The old stride only ever picked 0, 15 and 30.
+        assert!(
+            counts.iter().all(|count| (300..500).contains(count)),
+            "{counts:?}"
+        );
+        let json = ready_recall_report().json();
+        assert_eq!(
+            json["sampling"]["seed"],
+            format!("{RECALL_SAMPLE_SEED:016x}")
+        );
+        assert_eq!(json["sampling"]["query_source"], "indexed_vectors");
+        assert_eq!(json["sampling"]["held_out_queries"], false);
+        assert_eq!(json["sampling"]["self_hit_excluded"], true);
     }
 }
