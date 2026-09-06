@@ -85,14 +85,17 @@ arbitrary serving input with a separately repaired checksum.
 
 ## Verification
 
-Exact/one-short RaBitQ phase trials keep the real build options and startup paths
-charged. A competing reservation pads startup occupancy to a fixed 256 KiB test
-envelope (after asserting startup fits). Stage sequence digits and sandbox-root
+Exact/one-short RaBitQ phase trials keep the real build options, startup paths
+and constructed builder charged. A competing reservation pads that combined
+occupancy to a fixed 256 KiB test envelope (after asserting construction fits).
+Constructor admission is tested independently. Stage sequence digits and sandbox-root
 lengths therefore cannot change the available RaBitQ budget between trials. This
 is test-fixture normalization, not a production allowance or an independent root.
 A regression uses deliberately different path lengths; removing the padding must
 compile and fail its exact retry. One-byte-short trials still reject, and byte
 parity and filename ownership after writer drop remain required.
+The wrapper's path and original name owners are detailed in
+`ARTIFACT_PATH_ADMISSION.md`; backend-internal path copies remain separate.
 
 Normal regressions cover constructor/quantization/directory/finalize rejection
 before backend entry, persistent state/directory/finalize snapshots, filename

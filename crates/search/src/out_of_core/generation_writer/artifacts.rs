@@ -2,11 +2,13 @@ use super::super::{
     append_sidecar_payload, SearchOutOfCoreLayoutBody, SearchOutOfCoreSegmentLayout,
     OUT_OF_CORE_LAYOUT_FORMAT,
 };
+use super::artifact_paths;
+use super::context_memory::OwnedPath;
 use super::segment_io::{self, Kind};
 use super::segment_memory;
 #[cfg(test)]
 use super::spool::SpoolSource;
-use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_mul, AdmittedDocument, BuildMemory};
 use crate::error::{Result, SkeinError};
@@ -15,18 +17,18 @@ use crate::SearchDocument;
 use crate::{
     checksum_bytes, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
     SearchSegmentPayloadRange, SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
-    SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
-    SEARCH_SEGMENT_PAYLOAD_FILE,
+    SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
 };
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) struct SegmentArtifactBuilder<'a> {
-    stage: PathBuf,
+    descriptor_path: OwnedPath,
+    descriptor_temporary: OwnedPath,
     generation: u64,
     options: &'a SearchOutOfCoreGenerationBuildOptions,
     fields: &'a BTreeSet<String>,
@@ -82,6 +84,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_memory(
         stage: &Path,
         generation: u64,
@@ -89,20 +92,41 @@ impl<'a> SegmentArtifactBuilder<'a> {
         options: &'a SearchOutOfCoreGenerationBuildOptions,
         memory: BuildMemory,
     ) -> Result<Self> {
+        Self::new_with_context(
+            stage,
+            generation,
+            fields,
+            options,
+            memory,
+            RuntimeTaskContext::default(),
+        )
+    }
+
+    pub(super) fn new_with_context(
+        stage: &Path,
+        generation: u64,
+        fields: &'a BTreeSet<String>,
+        options: &'a SearchOutOfCoreGenerationBuildOptions,
+        memory: BuildMemory,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
         let document_slots = memory.retained.reserve(checked_mul(
             SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
             std::mem::size_of::<AdmittedDocument>(),
         )?)?;
         let descriptor_memory = memory.retained.reserve(0)?;
         let layout_memory = memory.retained.reserve(OUT_OF_CORE_LAYOUT_FORMAT.len())?;
+        let paths = artifact_paths::Segment::new(stage, &memory, &task_context)?;
         Ok(Self {
-            stage: stage.to_path_buf(),
+            descriptor_path: paths.descriptor,
+            descriptor_temporary: paths.temporary,
             generation,
             options,
             fields,
-            document_file: File::create(stage.join(SEARCH_SEGMENT_PAYLOAD_FILE))?,
-            metadata_file: File::create(stage.join(STAGE_METADATA_FILE))?,
-            vector_file: File::create(stage.join(STAGE_VECTOR_FILE))?,
+            document_file: File::create(&paths.document)?,
+            metadata_file: File::create(&paths.metadata)?,
+            vector_file: File::create(&paths.vector)?,
             documents: Vec::with_capacity(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS),
             segment_encoded_bytes: 0,
             descriptor: SearchSegmentDescriptor {
@@ -119,18 +143,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
             descriptor_working_bytes: 0,
             peak_segment_document_count: 0,
             peak_segment_encoded_bytes: 0,
-            task_context: RuntimeTaskContext::default(),
+            task_context,
             memory,
             _document_slots: document_slots,
             descriptor_memory,
             layout_memory,
             failed: false,
         })
-    }
-
-    pub(super) fn with_context(mut self, task_context: RuntimeTaskContext) -> Self {
-        self.task_context = task_context;
-        self
     }
 
     #[cfg(test)]
@@ -157,16 +176,14 @@ impl<'a> SegmentArtifactBuilder<'a> {
             &self.memory,
             &self.task_context,
         )?;
-        let descriptor_path = self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
-        let temporary = descriptor_path.with_extension("skein.tmp");
-        let mut file = File::create(&temporary)?;
+        let mut file = File::create(&self.descriptor_temporary)?;
         file.write_all(encoded.as_ref())?;
         file.sync_all()?;
         drop(file);
-        skein_storage::durable_replace_file(&temporary, &descriptor_path)?;
+        skein_storage::durable_replace_file(&self.descriptor_temporary, &self.descriptor_path)?;
         drop(encoded);
         checkpoint(&self.task_context)?;
-        let descriptor_bytes = fs::metadata(self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE))?.len();
+        let descriptor_bytes = fs::metadata(&self.descriptor_path)?.len();
         if descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "search generation descriptor requires {descriptor_bytes} bytes, exceeding {}",

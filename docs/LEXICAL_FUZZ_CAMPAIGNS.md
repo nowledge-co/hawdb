@@ -236,6 +236,17 @@ counts without vectors. Reopen compares original document inputs. The target is
 manual/local only. See `PUBLICATION_PATH_ADMISSION.md` for ownership and I/O-error
 boundaries.
 
+## Artifact-builder path admission
+
+The artifact path campaign is `//crates/search:skein_search_artifact_path_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features artifact_path_admission_campaign -- --ignored --nocapture`.
+Seed `0x206a471f` covers 128 cases each for original names, segment paths and
+lexical checksum paths, with 384 independent exact and one-short limits. Sixteen
+real updates include four publications and twelve admission/I/O/cancellation
+rejections; failed updates preserve all old artifact bytes and reader contents.
+Both feature configurations are supported. The target is manual/local only;
+see `ARTIFACT_PATH_ADMISSION.md` for ownership and remaining backend boundaries.
+
 ## Filter and ACL input admission
 
 The filter campaign is `//crates/search:skein_search_filter_admission_fuzz_tests`

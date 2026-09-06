@@ -113,7 +113,8 @@ bazel test --nocache_test_results \
 ```
 
 The manual publication campaign belongs to the explicit local fuzz suite, not
-default or dedicated CI. Artifact-builder and lexical/RaBitQ backend path copies,
+default or dedicated CI. Private artifact-builder owners are described in
+`ARTIFACT_PATH_ADMISSION.md`. Lexical/RaBitQ backend path copies,
 publication-lock discovery/registry paths, cleanup and host-reader lifetimes,
 resident delta maps, combined component limits and retained public outputs still
 need their respective owners. Full #206 also requires tokenizer/Jieba workspace,

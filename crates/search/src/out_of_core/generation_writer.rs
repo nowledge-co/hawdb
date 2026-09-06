@@ -33,9 +33,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
-#[cfg(any(test, feature = "vector-search"))]
+#[cfg(test)]
 use std::path::PathBuf;
 
+mod artifact_paths;
 mod artifacts;
 mod context_memory;
 mod delta;
@@ -482,14 +483,14 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource<'_>,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
-        let mut segments = SegmentArtifactBuilder::new_with_memory(
+        let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
             generation,
             &self.metadata_fields,
             &self.options,
             self.memory.clone(),
-        )?
-        .with_context(self.task_context.clone());
+            self.task_context.clone(),
+        )?;
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
         let lexical_config = LexicalProjectionConfig {
@@ -529,18 +530,23 @@ impl SearchOutOfCoreGenerationWriter {
         drop(lexical);
         checkpoint(&self.task_context)?;
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
-        let lexical_artifact_name = lexical_artifact_file(generation);
+        let lexical_paths = artifact_paths::Lexical::new(
+            &self.stage.path,
+            generation,
+            &self.memory,
+            &self.task_context,
+        )?;
         let (lexical_artifact_bytes, _) = publication::file_len_checksum_with_context(
-            &self.stage.path.join(&lexical_artifact_name),
+            &lexical_paths.artifact,
             &self.task_context,
         )?;
         let (lexical_manifest_bytes, _) = publication::file_len_checksum_with_context(
-            &self.stage.path.join(LEXICAL_MANIFEST_FILE),
+            &lexical_paths.manifest,
             &self.task_context,
         )?;
         Ok(GenerationArtifacts {
             segment,
-            lexical_artifact_name,
+            lexical_artifact_name: lexical_paths.name,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
             lexical_byte_counters,
@@ -689,7 +695,7 @@ impl SearchOutOfCoreGenerationWriter {
 
 struct GenerationArtifacts {
     segment: artifacts::SegmentArtifactOutput,
-    lexical_artifact_name: String,
+    lexical_artifact_name: artifact_paths::Name,
     lexical_artifact_bytes: u64,
     lexical_manifest_bytes: u64,
     lexical_byte_counters: crate::SearchLexicalArtifactBytes,
@@ -698,15 +704,13 @@ struct GenerationArtifacts {
 
 #[derive(Debug)]
 pub(super) struct RaBitQGenerationArtifact {
-    pub(super) file_name: String,
+    file_name: artifact_paths::Name,
     pub(super) artifact_bytes: u64,
     pub(super) artifact_checksum: u64,
     pub(super) source_digest: u64,
     pub(super) document_count: usize,
     pub(super) payload_checksum: u32,
     pub(super) peak_build_working_bytes: usize,
-    // The artifact summary retains its file name after the builder drops.
-    _name_memory: QueryMemoryLease,
 }
 
 #[cfg(all(test, feature = "vector-search"))]
@@ -727,7 +731,8 @@ fn build_rabitq_artifact(
             "search generation has vector documents without an embedding dimension".to_string(),
         )
     })?;
-    let file_name = crate::rabitq_artifact_file(generation);
+    let file_name =
+        artifact_paths::Name::rabitq(generation, &source.memory, &RuntimeTaskContext::default())?;
     let path = stage.join(&file_name);
     let identity = skein_vector_projection::ProjectionIdentity {
         generation,
@@ -764,7 +769,6 @@ fn build_rabitq_artifact(
     let manifest = projection.manifest();
     let (artifact_bytes, artifact_checksum) = file_len_checksum(&path)?;
     Ok(Some(RaBitQGenerationArtifact {
-        _name_memory: source.memory.retained.reserve(file_name.capacity())?,
         file_name,
         artifact_bytes,
         artifact_checksum,

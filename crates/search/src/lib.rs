@@ -176,9 +176,9 @@ const SEARCH_SEGMENT_PAYLOAD_FILE: &str = "search_projection_segment_payloads.sk
 const SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID: u64 = 1;
 const RABITQ_CANDIDATE_BACKEND: &str = "skein_rabitq_candidate_projection";
 static QUARANTINE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "vector-search")]
+#[cfg(any(test, feature = "vector-search"))]
 const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
-#[cfg(feature = "vector-search")]
+#[cfg(any(test, feature = "vector-search"))]
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".skein";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
@@ -3959,7 +3959,7 @@ fn quarantine_rebuildable_artifact(parent: &Path, name: &str) {
     let _ = fs::rename(source, parent.join(quarantine_name));
 }
 
-#[cfg(feature = "vector-search")]
+#[cfg(any(test, feature = "vector-search"))]
 fn rabitq_artifact_file(generation: u64) -> String {
     format!("{SEARCH_RABITQ_PROJECTION_PREFIX}{generation}{SEARCH_RABITQ_PROJECTION_SUFFIX}")
 }

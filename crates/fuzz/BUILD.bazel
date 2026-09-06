@@ -104,6 +104,7 @@ test_suite(
         "//crates/search:skein_search_delta_admission_fuzz_tests",
         "//crates/search:skein_search_context_admission_fuzz_tests",
         "//crates/search:skein_search_publication_admission_fuzz_tests",
+        "//crates/search:skein_search_artifact_path_admission_fuzz_tests",
         "//crates/search:skein_search_filter_admission_fuzz_tests",
         "//crates/vector-projection:skein_vector_projection_search_memory_fuzz_tests",
     ],

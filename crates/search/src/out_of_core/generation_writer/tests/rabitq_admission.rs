@@ -123,9 +123,10 @@ fn trial_at(
 ) -> usize {
     let input = input(&root, limit, options.clone(), documents);
     let ledger = input.memory.ledger.clone();
-    // Startup paths vary with the stage sequence and sandbox root. Keep those
-    // real owners charged, then pad their overlap to a fixed competing owner so
-    // an exact RaBitQ-phase retry cannot inherit another trial's path length.
+    let mut builder = RaBitQArtifactBuilder::new(&input, 1).unwrap();
+    // Startup and builder paths vary with stage sequence and sandbox root.
+    // Retain the real owners and pad their overlap before testing subsequent
+    // backend phases. Constructor boundaries are checked independently.
     let startup_bytes = 256 * 1024;
     assert!(ledger.snapshot().peak_bytes < startup_bytes);
     let startup_padding = input
@@ -134,7 +135,6 @@ fn trial_at(
         .reserve(startup_bytes - ledger.snapshot().used_bytes)
         .unwrap();
     let result = (|| -> Result<Option<RaBitQGenerationArtifact>> {
-        let mut builder = RaBitQArtifactBuilder::new(&input, 1)?;
         for document in documents {
             let admitted = input.memory.admit_document(document.clone())?;
             builder.push(&admitted)?;
@@ -434,13 +434,18 @@ fn state_directory_and_finalize_leases_cover_every_live_backend_phase() {
         .unwrap()
         .peak_working_bytes;
     let name = crate::rabitq_artifact_file(1).capacity();
+    let path = input
+        .stage
+        .path
+        .join(crate::rabitq_artifact_file(1))
+        .capacity();
     let mut builder = RaBitQArtifactBuilder::new(&input, 1).unwrap();
-    assert_eq!(ledger.snapshot().used_bytes, before + state + name);
+    assert_eq!(ledger.snapshot().used_bytes, before + state + name + path);
     for (index, document) in documents.iter().enumerate() {
         builder.push(document).unwrap();
         assert_eq!(
             ledger.snapshot().used_bytes,
-            before + state + name + rabitq_memory::directory_bytes(index + 1).unwrap()
+            before + state + name + path + rabitq_memory::directory_bytes(index + 1).unwrap()
         );
     }
     let prior_finish = ledger.snapshot().used_bytes;

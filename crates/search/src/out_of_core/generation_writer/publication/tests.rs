@@ -278,14 +278,16 @@ fn path_trial(
     };
     let lexical = format!("search_lexical.{generation}.skein");
     let artifact = include_vector.then(|| RaBitQGenerationArtifact {
-        file_name: format!("search_rabitq.{generation}.skein"),
+        file_name: crate::out_of_core::generation_writer::artifact_paths::Name::rabitq(
+            generation, &memory, &context,
+        )
+        .unwrap(),
         artifact_bytes: 0,
         artifact_checksum: 0,
         source_digest: 0,
         document_count: 0,
         payload_checksum: 0,
         peak_build_working_bytes: 0,
-        _name_memory: memory.retained.reserve(128).unwrap(),
     });
     let input = input(
         root,
@@ -311,7 +313,11 @@ fn path_trial(
         let path_bytes = check_paths(&input, &names, &paths, sequence);
         assert_eq!(
             memory.ledger.snapshot().used_bytes,
-            137 + names_bytes + path_bytes + usize::from(include_vector) * 128
+            137 + names_bytes
+                + path_bytes
+                + artifact
+                    .as_ref()
+                    .map_or(0, |artifact| artifact.file_name.capacity())
         );
         drop(paths);
     }

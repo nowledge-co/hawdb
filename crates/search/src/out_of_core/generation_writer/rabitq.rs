@@ -9,36 +9,32 @@ use skein_core::RuntimeTaskContext;
 #[cfg(feature = "vector-search")]
 use super::rabitq_memory::Admission;
 #[cfg(feature = "vector-search")]
-use super::{PathBuf, SkeinError};
+use super::{artifact_paths::Name, context_memory::OwnedPath, SkeinError};
 
 #[cfg(feature = "vector-search")]
 pub(super) struct RaBitQArtifactBuilder {
     writer: Option<skein_vector_projection::ProjectionWriter>,
-    file_name: String,
-    path: PathBuf,
+    file_name: Name,
+    path: OwnedPath,
     expected_documents: usize,
     vector_ordinal: u64,
     task_context: RuntimeTaskContext,
     failed: bool,
     // Data fields drop before these leases, including on partial construction.
     admission: Option<Admission>,
-    name_memory: skein_executor::QueryMemoryLease,
 }
 
 #[cfg(feature = "vector-search")]
 impl RaBitQArtifactBuilder {
     pub(super) fn new(input: &SearchOutOfCoreGenerationWriter, generation: u64) -> Result<Self> {
         checkpoint(&input.task_context)?;
-        // The fixed file-name format and every u64 generation fit in 128 bytes.
-        let mut name_memory = input.memory.retained.reserve(128)?;
-        let file_name = crate::rabitq_artifact_file(generation);
-        if file_name.capacity() > name_memory.bytes() {
-            return Err(SkeinError::Execution(
-                "search RaBitQ name exceeded preflight".to_owned(),
-            ));
-        }
-        name_memory.shrink(128 - file_name.capacity());
-        let path = input.stage.path.join(&file_name);
+        let file_name = Name::rabitq(generation, &input.memory, &input.task_context)?;
+        let path = OwnedPath::join(
+            &input.stage.path,
+            file_name.as_ref(),
+            &input.memory,
+            &input.task_context,
+        )?;
         let mut admission = None;
         let writer = if input.vector_document_count == 0 {
             None
@@ -91,7 +87,6 @@ impl RaBitQArtifactBuilder {
             task_context: input.task_context.clone(),
             failed: false,
             admission,
-            name_memory,
         })
     }
 
@@ -179,7 +174,6 @@ impl RaBitQArtifactBuilder {
             document_count: manifest.document_count,
             payload_checksum: manifest.payload_checksum,
             peak_build_working_bytes: manifest.peak_build_working_bytes,
-            _name_memory: self.name_memory,
         }))
     }
 }
