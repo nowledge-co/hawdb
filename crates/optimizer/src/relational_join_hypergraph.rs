@@ -20,13 +20,43 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 ///
 /// A materialized right input is only safe when the executor has a bounded
 /// materialization implementation, such as a spill-capable blocking operator.
-/// The default preserves the optimizer's standalone behavior; embedded query
-/// planning selects `ProbeOnly` until that implementation is available.
+/// Callers must select this policy according to their executor's capabilities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RelationalCsgCmpRightInputPolicy {
     #[default]
     AllowMaterialized,
     ProbeOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RelationalEquiJoinAlgorithm {
+    Hash,
+    Merge,
+}
+
+impl RelationalEquiJoinAlgorithm {
+    pub const fn right_input(self) -> RelationalJoinRightInput {
+        match self {
+            Self::Hash => RelationalJoinRightInput::Hash,
+            Self::Merge => RelationalJoinRightInput::Merge,
+        }
+    }
+}
+
+/// A pre-bound implementation supported by the caller's two-relation kernel.
+/// It competes inside memo selection, not after choosing a join order. Predicate
+/// IDs name the complete operator, including residual predicates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalCsgCmpJoinImplementation {
+    pub operator_id: RelationalJoinOperatorId,
+    pub operator_kind: RelationalJoinOperatorKind,
+    pub predicate_ids: Vec<RelationalJoinPredicateId>,
+    pub left_binding: BindingId,
+    pub left_access: RelationalJoinAccessPath,
+    pub right_binding: BindingId,
+    pub right_access: RelationalJoinAccessPath,
+    pub algorithm: RelationalEquiJoinAlgorithm,
+    pub selectivity: RelationalJoinSelectivity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +77,7 @@ pub enum RelationalCsgCmpPlanNode {
         operator_id: RelationalJoinOperatorId,
         operator_kind: RelationalJoinOperatorKind,
         predicate_ids: Vec<RelationalJoinPredicateId>,
+        implementation: Option<Box<RelationalCsgCmpJoinImplementation>>,
         left: Box<Self>,
         right: Box<Self>,
     },
@@ -68,13 +99,17 @@ impl RelationalCsgCmpPlanNode {
             } => format!("{}:{}", binding.get(), access_path.descriptor.name),
             Self::Join {
                 operator_id,
+                implementation,
                 left,
                 right,
                 ..
             } => format!(
-                "({})/{}:({})",
+                "({})/{}:{:?}:({})",
                 left.stable_key(),
                 operator_id.get(),
+                implementation
+                    .as_ref()
+                    .map(|implementation| implementation.algorithm),
                 right.stable_key()
             ),
         }
@@ -212,12 +247,55 @@ pub fn enumerate_relational_csg_cmp_joins_with_right_input_policy(
     config: RelationalJoinEnumerationConfig,
     right_input_policy: RelationalCsgCmpRightInputPolicy,
 ) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
+    enumerate_relational_csg_cmp_joins_with_implementations(
+        problem,
+        required_properties,
+        config,
+        right_input_policy,
+        &[],
+    )
+}
+
+pub fn enumerate_relational_csg_cmp_joins_with_implementations(
+    problem: &RelationalJoinRewriteProblem,
+    required_properties: &RequiredProperties,
+    config: RelationalJoinEnumerationConfig,
+    right_input_policy: RelationalCsgCmpRightInputPolicy,
+    implementations: &[RelationalCsgCmpJoinImplementation],
+) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
     let analysis = analyze_relational_join_conflicts(
         &problem.initial_tree,
         problem.post_join_filter.as_ref(),
     )?;
     validate_problem_relations(problem, &analysis)?;
-    let memo = build_csg_cmp_memo(problem, &analysis, config)?;
+    let logical_expression_budget = config
+        .max_expressions
+        .checked_sub(implementations.len())
+        .ok_or(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
+            required_expressions: implementations.len(),
+            max_expressions: config.max_expressions,
+        })?;
+    let memo = build_csg_cmp_memo(
+        problem,
+        &analysis,
+        RelationalJoinEnumerationConfig {
+            max_expressions: logical_expression_budget,
+            ..config
+        },
+    )
+    .map_err(|error| match error {
+        RelationalJoinRewriteError::Enumeration(
+            RelationalJoinEnumerationError::ExpressionBudgetExceeded {
+                required_expressions,
+                ..
+            },
+        ) => RelationalJoinEnumerationError::ExpressionBudgetExceeded {
+            required_expressions: required_expressions.saturating_add(implementations.len()),
+            max_expressions: config.max_expressions,
+        }
+        .into(),
+        other => other,
+    })?;
     let root_key = SemanticKey {
         bindings: analysis.root_bindings.clone(),
         applied_operators: analysis.descriptors.keys().copied().collect(),
@@ -240,6 +318,7 @@ pub fn enumerate_relational_csg_cmp_joins_with_right_input_policy(
         root,
         required_properties,
         right_input_policy,
+        implementations,
         &mut cache,
     )
     .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
@@ -248,7 +327,7 @@ pub fn enumerate_relational_csg_cmp_joins_with_right_input_policy(
         conflict_analysis: analysis,
         alternatives: memo.alternatives,
         memo_groups: memo.memo.group_count(),
-        memo_expressions: memo.expression_count,
+        memo_expressions: memo.expression_count.saturating_add(implementations.len()),
         root_alternatives,
     })
 }
@@ -397,12 +476,14 @@ fn add_csg_cmp_join(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn best_csg_cmp_plan(
     problem: &RelationalJoinRewriteProblem,
     memo: &CsgCmpMemo,
     group: GroupId,
     required_properties: &RequiredProperties,
     right_input_policy: RelationalCsgCmpRightInputPolicy,
+    implementations: &[RelationalCsgCmpJoinImplementation],
     cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalCsgCmpPlan>>,
 ) -> Option<RelationalCsgCmpPlan> {
     let key = (group, required_properties.clone());
@@ -454,6 +535,7 @@ fn best_csg_cmp_plan(
                     left_group,
                     required_properties,
                     right_input_policy,
+                    implementations,
                     cache,
                 );
                 let right_key = memo
@@ -492,6 +574,7 @@ fn best_csg_cmp_plan(
                                 right_group,
                                 &RequiredProperties::default(),
                                 right_input_policy,
+                                implementations,
                                 cache,
                             ),
                             true,
@@ -499,7 +582,7 @@ fn best_csg_cmp_plan(
                     }
                     None => (None, true),
                 };
-                left.zip(right).map(|(left, right)| {
+                let structural = left.zip(right).map(|(left, right)| {
                     let cardinality = match operator_kind {
                         RelationalJoinOperatorKind::Inner => RelationalJoinCardinality::Inner,
                         RelationalJoinOperatorKind::LeftOuter => {
@@ -524,11 +607,85 @@ fn best_csg_cmp_plan(
                             operator_id: *operator_id,
                             operator_kind: *operator_kind,
                             predicate_ids: predicate_ids.clone(),
+                            implementation: None,
                             left: Box::new(left.root),
                             right: Box::new(right.root),
                         },
                     }
-                })
+                });
+                let left_bindings = &memo.keys.get(&left_group)?.bindings;
+                structural
+                    .into_iter()
+                    .chain(
+                        implementations
+                            .iter()
+                            .filter(|implementation| {
+                                implementation.operator_id == *operator_id
+                                    && implementation.operator_kind == *operator_kind
+                                    && implementation.predicate_ids == *predicate_ids
+                                    && *left_bindings
+                                        == BindingSet::from(implementation.left_binding)
+                                    && right_key.bindings
+                                        == BindingSet::from(implementation.right_binding)
+                                    && implementation.left_access.supports_base()
+                                    && implementation.right_access.supports_base()
+                            })
+                            .filter_map(|implementation| {
+                                let properties = match implementation.algorithm {
+                                    // Grace partitioning does not preserve input ordering.
+                                    RelationalEquiJoinAlgorithm::Hash => {
+                                        PhysicalProperties::default()
+                                    }
+                                    RelationalEquiJoinAlgorithm::Merge => {
+                                        implementation.left_access.properties.clone()
+                                    }
+                                };
+                                properties.satisfies(required_properties).then(|| {
+                                    RelationalCsgCmpPlan {
+                                        properties,
+                                        cost_breakdown: estimate_relational_join_cost(
+                                            estimate_relational_access_cost(
+                                                implementation
+                                                    .left_access
+                                                    .descriptor
+                                                    .estimated_rows,
+                                            ),
+                                            estimate_relational_access_cost(
+                                                implementation
+                                                    .right_access
+                                                    .descriptor
+                                                    .estimated_rows,
+                                            ),
+                                            match operator_kind {
+                                                RelationalJoinOperatorKind::Inner => {
+                                                    RelationalJoinCardinality::Inner
+                                                }
+                                                RelationalJoinOperatorKind::LeftOuter => {
+                                                    RelationalJoinCardinality::PreserveLeft
+                                                }
+                                            },
+                                            implementation.algorithm.right_input(),
+                                            implementation.selectivity,
+                                        ),
+                                        root: RelationalCsgCmpPlanNode::Join {
+                                            operator_id: *operator_id,
+                                            operator_kind: *operator_kind,
+                                            predicate_ids: predicate_ids.clone(),
+                                            implementation: Some(Box::new(implementation.clone())),
+                                            left: Box::new(RelationalCsgCmpPlanNode::Relation {
+                                                binding: implementation.left_binding,
+                                                access_path: implementation.left_access.clone(),
+                                            }),
+                                            right: Box::new(RelationalCsgCmpPlanNode::Relation {
+                                                binding: implementation.right_binding,
+                                                access_path: implementation.right_access.clone(),
+                                            }),
+                                        },
+                                    }
+                                })
+                            }),
+                    )
+                    .min_by(compare_csg_cmp_plans)
             }
         };
         if let Some(candidate) = candidate
@@ -620,6 +777,7 @@ fn binding_union(left: &BindingSet, right: &BindingSet) -> BindingSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod implementations;
     use crate::{
         RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinOperator,
         RelationalJoinRelation, RelationalJoinTree,

@@ -1,10 +1,10 @@
 use super::{
-    choose_base_access, choose_join_access, prepare_syntax_access_plan, projection_access_planning,
-    projection_contains_aggregate, PreparedRelationalAccessPlan, PreparedRelationalJoinSelection,
-    RelationalAccessCandidate, RelationalBaseAccess, RelationalBaseAccessPlanning,
-    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalJoinPlanningContext,
-    RelationalOperatorId, RelationalPhysicalAccess, RelationalPhysicalJoinNode,
-    RelationalPhysicalJoinPlan, RelationalQueryLimits, RelationalQueryReadModes,
+    choose_base_access, choose_join_access, projection_access_planning,
+    PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
+    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalJoinAccess,
+    RelationalJoinAccessCandidate, RelationalJoinPlanningContext, RelationalOperatorId,
+    RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
+    RelationalQueryLimits, RelationalQueryReadModes,
 };
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{
@@ -20,7 +20,7 @@ use skein_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
 use skein_optimizer::{
-    enumerate_relational_csg_cmp_joins_with_right_input_policy, enumerate_relational_inner_joins,
+    enumerate_relational_csg_cmp_joins_with_implementations, enumerate_relational_inner_joins,
     enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
     RelationalJoinAccessPath, RelationalJoinEnumerationConfig, RelationalJoinEnumerationError,
@@ -30,6 +30,9 @@ use skein_optimizer::{
     RelationalJoinRewritePlan, RelationalJoinRewriteProblem, RelationalJoinTree,
     RequiredProperties,
 };
+
+mod implementations;
+use implementations::{prepare_join_implementations, PreparedJoinImplementation};
 use skein_sql::timing::measure_nanos;
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -109,23 +112,6 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     };
-    if uses_relaxed_enumeration_gate(&select) && select.joins.len() == 1 {
-        let mut syntax_access_plan =
-            prepare_syntax_access_plan(&select, parameters, state, read_modes, limits)?;
-        syntax_access_plan.finalize_physical_join_plan(&select, state, read_modes.index)?;
-        if syntax_access_plan.uses_specialized_materialized_join() {
-            let outcome = RelationalJoinPlanningOutcome::not_eligible(
-                RelationalJoinPlanningReason::SpecializedJoinNotEnumerated,
-                syntax_order,
-                config,
-            );
-            return Ok(PlannedSelectStatement {
-                statement: select,
-                access_plan: Some(syntax_access_plan),
-                join_planning: outcome,
-            });
-        }
-    }
     let predicates = &bound_joins.predicates;
     let Some(graph_relations) = build_graph_relations(
         &select, parameters, state, read_modes, limits, &relations, predicates,
@@ -166,13 +152,31 @@ pub(super) fn plan_select_join_order(
     });
     let mut attempts = Vec::new();
     if let Some(problem) = &problem {
-        match enumerate_relational_csg_cmp_joins_with_right_input_policy(
-            problem,
-            &RequiredProperties::default(),
-            config,
-            RelationalCsgCmpRightInputPolicy::ProbeOnly,
-        ) {
-            Ok(enumeration) => {
+        let enumeration = prepare_join_implementations(
+            state,
+            read_modes,
+            &relations,
+            &graph_relations,
+            &bound_joins,
+            config.max_expressions,
+        )
+        .map_err(RelationalJoinRewriteError::from)
+        .and_then(|implementations| {
+            let optimizer_implementations = implementations
+                .iter()
+                .map(|implementation| implementation.optimizer.clone())
+                .collect::<Vec<_>>();
+            enumerate_relational_csg_cmp_joins_with_implementations(
+                problem,
+                &RequiredProperties::default(),
+                config,
+                RelationalCsgCmpRightInputPolicy::AllowMaterialized,
+                &optimizer_implementations,
+            )
+            .map(|enumeration| (enumeration, implementations))
+        });
+        match enumeration {
+            Ok((enumeration, implementations)) => {
                 let selected_bindings = csg_cmp_binding_order(&enumeration.plan.root);
                 let selected_order = binding_order_names(&selected_bindings, &relations);
                 let syntax_bindings = relations
@@ -200,6 +204,7 @@ pub(super) fn plan_select_join_order(
                     &graph_relations,
                     enumeration.plan,
                     outcome,
+                    &implementations,
                 );
             }
             Err(error) => attempts.push(fallback_rewrite_attempt(
@@ -397,17 +402,6 @@ fn join_enumeration_eligibility(
         return Err(RelationalJoinPlanningReason::LockingSelect);
     }
     Ok(())
-}
-
-fn uses_relaxed_enumeration_gate(select: &SelectStatement) -> bool {
-    select
-        .projection
-        .iter()
-        .any(|projection| matches!(projection, SelectProjection::Wildcard))
-        || !(select.distinct
-            || !select.order_by.is_empty()
-            || !select.group_by.is_empty()
-            || select.projection.iter().any(projection_contains_aggregate))
 }
 
 fn select_relation_order(select: &SelectStatement) -> Vec<String> {
@@ -698,6 +692,7 @@ fn prepare_csg_cmp_select(
     prepared_relations: &[PreparedGraphRelation],
     plan: RelationalCsgCmpPlan,
     join_planning: RelationalJoinPlanningOutcome,
+    implementations: &[PreparedJoinImplementation],
 ) -> Result<PlannedSelectStatement> {
     let predicate_by_id = predicates
         .iter()
@@ -711,6 +706,7 @@ fn prepare_csg_cmp_select(
         prepared_relations,
         &predicate_by_id,
         &mut next_join_plan_index,
+        implementations,
     )?;
     let mut leaves = Vec::new();
     root.visit_relations(&mut |relation| leaves.push(relation.clone()));
@@ -753,7 +749,25 @@ fn prepare_csg_cmp_node(
     prepared_relations: &[PreparedGraphRelation],
     predicates: &BTreeMap<RelationalJoinPredicateId, SqlPredicate>,
     next_join_plan_index: &mut usize,
+    implementations: &[PreparedJoinImplementation],
 ) -> Result<RelationalPhysicalJoinNode> {
+    if let RelationalCsgCmpPlanNode::Join {
+        implementation: Some(selected),
+        ..
+    } = node
+    {
+        let implementation = implementations
+            .iter()
+            .find(|implementation| implementation.optimizer == **selected)
+            .ok_or_else(|| {
+                SkeinError::Execution(
+                    "CSG-CMP selected an unavailable join implementation".to_string(),
+                )
+            })?;
+        let operator_id = RelationalOperatorId::from_plan_index(*next_join_plan_index);
+        *next_join_plan_index = next_join_plan_index.saturating_add(1);
+        return implementation.physical_node(operator_id, relations, predicates);
+    }
     match node {
         RelationalCsgCmpPlanNode::Relation {
             binding,
@@ -781,6 +795,7 @@ fn prepare_csg_cmp_node(
             predicate_ids,
             left,
             right,
+            ..
         } => {
             let left = prepare_csg_cmp_node(
                 left,
@@ -789,6 +804,7 @@ fn prepare_csg_cmp_node(
                 prepared_relations,
                 predicates,
                 next_join_plan_index,
+                implementations,
             )?;
             let right_role = if matches!(right.as_ref(), RelationalCsgCmpPlanNode::Relation { .. })
             {
@@ -803,6 +819,7 @@ fn prepare_csg_cmp_node(
                 prepared_relations,
                 predicates,
                 next_join_plan_index,
+                implementations,
             )?;
             let predicates = predicate_ids
                 .iter()

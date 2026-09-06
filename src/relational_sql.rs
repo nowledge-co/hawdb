@@ -4060,33 +4060,36 @@ mod tests {
             .expect("profile fully consumed join");
         assert_eq!(
             full.profile.join_planning.strategy,
-            RelationalJoinPlanningStrategy::SyntaxOrder
+            RelationalJoinPlanningStrategy::CsgCmpMemo
         );
         assert_eq!(
             full.profile.join_planning.status,
-            RelationalJoinPlanningStatus::NotEligible
+            RelationalJoinPlanningStatus::Selected
         );
         assert_eq!(
             full.profile.join_planning.reason,
-            RelationalJoinPlanningReason::SpecializedJoinNotEnumerated
+            RelationalJoinPlanningReason::CostReordered
         );
         assert_eq!(full.output.rows.len(), 3);
-        assert_eq!(full.profile.intermediate_rows, 8);
+        assert_eq!(full.profile.intermediate_rows, 6);
         assert_eq!(full.profile.operator_cardinality_profiles.len(), 2);
         let base = &full.profile.operator_cardinality_profiles[0];
         assert_eq!(base.operator_id.get(), 1);
         assert_eq!(base.operator, RelationalOperatorKind::TableFullScan);
-        assert_eq!(base.table, "profile_parents");
-        assert_eq!(base.estimated_rows, 2);
-        assert_eq!(base.actual_rows, Some(2));
+        assert_eq!(base.table, "profile_children");
+        assert_eq!(base.estimated_rows, 3);
+        assert_eq!(base.actual_rows, Some(3));
         assert!(base.fully_consumed);
         let join = &full.profile.operator_cardinality_profiles[1];
         assert_eq!(join.operator_id.get(), 2);
-        assert_eq!(join.operator, RelationalOperatorKind::HashJoin);
-        assert_eq!(join.table, "profile_children");
+        assert_eq!(
+            join.operator,
+            RelationalOperatorKind::BatchedIndexNestedLoopJoin
+        );
+        assert_eq!(join.table, "profile_parents");
         assert_eq!(
             join.access_path.kind,
-            skein_optimizer::RelationalAccessPathKind::FullScan
+            skein_optimizer::RelationalAccessPathKind::PrimaryKey
         );
         assert_eq!(join.estimated_rows, 3);
         assert_eq!(join.actual_rows, Some(3));
@@ -4095,7 +4098,7 @@ mod tests {
             .profile
             .blocking_operator_memory_reports
             .iter()
-            .any(|report| report.operator == "RelationalHashJoinBuild"));
+            .all(|report| report.operator != "RelationalHashJoinBuild"));
 
         let limited = read
             .query_sql_with_params_options_profiled(
@@ -4105,20 +4108,20 @@ mod tests {
             )
             .expect("profile early-stopped join");
         assert_eq!(limited.output.rows.len(), 1);
-        assert_eq!(limited.profile.intermediate_rows, 5);
+        // Batched probing consumes the outer batch before delivering one row.
+        assert_eq!(limited.profile.intermediate_rows, 4);
         assert_eq!(
             limited.profile.operator_cardinality_profiles[0].actual_rows,
-            Some(1)
+            Some(3)
         );
         assert_eq!(
             limited.profile.operator_cardinality_profiles[1].actual_rows,
             Some(1)
         );
-        assert!(limited
-            .profile
-            .operator_cardinality_profiles
-            .iter()
-            .all(|profile| !profile.fully_consumed));
+        // Receiving all rows is not an exhaustion signal: downstream stopped
+        // the callback before the source could report completion.
+        assert!(!limited.profile.operator_cardinality_profiles[0].fully_consumed);
+        assert!(!limited.profile.operator_cardinality_profiles[1].fully_consumed);
 
         let plain = read
             .query_sql_with_params(&format!("EXPLAIN {SELECT}"), &[])
@@ -4136,7 +4139,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(analyzed_ids.len(), analyzed.rows.len());
         for (table, expected_id, estimated_rows, actual_rows) in
-            [("profile_parents", 1, 2, 2), ("profile_children", 2, 3, 3)]
+            [("profile_children", 1, 3, 3), ("profile_parents", 2, 3, 3)]
         {
             let plain_row = relational_explain_access_row(&plain, table);
             let analyzed_row = relational_explain_access_row(&analyzed, table);

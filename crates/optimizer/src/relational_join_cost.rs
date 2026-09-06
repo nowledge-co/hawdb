@@ -15,6 +15,10 @@ pub enum RelationalJoinRightInput {
     Probe,
     /// The right subtree is produced once, then the join charges row-pair work.
     Materialized,
+    /// Build a hash table once, then probe it with the left input.
+    Hash,
+    /// Merge two compatibly ordered inputs without sorting them.
+    Merge,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +101,9 @@ pub fn estimate_relational_join_cost(
     let candidate_pairs = left.estimated_rows.saturating_mul(right.estimated_rows);
     let joined_rows = match right_input {
         RelationalJoinRightInput::Probe => candidate_pairs,
-        RelationalJoinRightInput::Materialized => candidate_pairs
+        RelationalJoinRightInput::Materialized
+        | RelationalJoinRightInput::Hash
+        | RelationalJoinRightInput::Merge => candidate_pairs
             .div_ceil(selectivity.materialized_divisor(left.estimated_rows, right.estimated_rows)),
     };
     let estimated_rows = match cardinality {
@@ -107,6 +113,18 @@ pub fn estimate_relational_join_cost(
     let (right_multiplier, join_cpu) = match right_input {
         RelationalJoinRightInput::Probe => (left.estimated_rows, 0),
         RelationalJoinRightInput::Materialized => (1, candidate_pairs),
+        RelationalJoinRightInput::Hash => (
+            1,
+            left.estimated_rows
+                .saturating_add(right.estimated_rows.saturating_mul(2))
+                .saturating_add(joined_rows),
+        ),
+        RelationalJoinRightInput::Merge => (
+            1,
+            left.estimated_rows
+                .saturating_add(right.estimated_rows)
+                .saturating_add(joined_rows),
+        ),
     };
     PlanCostBreakdown::new(
         estimated_rows,
@@ -126,6 +144,46 @@ pub fn estimate_relational_join_cost(
 mod tests {
     use super::*;
     use crate::PlanCost;
+
+    #[test]
+    fn equi_join_algorithms_charge_linear_work_and_preserve_component_costs() {
+        for input in [
+            RelationalJoinRightInput::Hash,
+            RelationalJoinRightInput::Merge,
+        ] {
+            let left = PlanCostBreakdown::new(100, 7, 11, 13, 17);
+            let right = PlanCostBreakdown::new(200, 19, 23, 29, 31);
+            let result = estimate_relational_join_cost(
+                left,
+                right,
+                RelationalJoinCardinality::Inner,
+                input,
+                RelationalJoinSelectivity::equi_join(Some(100), Some(200)),
+            );
+            assert_eq!(result.estimated_rows, 100);
+            assert_eq!(
+                result.cpu,
+                26 + if input == RelationalJoinRightInput::Hash {
+                    600
+                } else {
+                    400
+                }
+            );
+            assert_eq!(
+                (result.random_io, result.sequential_io, result.output_rows),
+                (34, 42, 48)
+            );
+            let empty = PlanCostBreakdown::new(0, 0, 0, 0, 0);
+            let outer = estimate_relational_join_cost(
+                left,
+                empty,
+                RelationalJoinCardinality::PreserveLeft,
+                input,
+                RelationalJoinSelectivity::Unknown,
+            );
+            assert_eq!(outer.estimated_rows, 100);
+        }
+    }
 
     #[test]
     fn probe_join_preserves_the_existing_scalar_cost() {

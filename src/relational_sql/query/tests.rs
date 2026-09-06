@@ -1,3 +1,4 @@
+use super::preparation::prepare_syntax_access_plan;
 use super::*;
 use crate::relational_sql::{
     compile_relational_statement_sql, RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy,
@@ -5,6 +6,8 @@ use crate::relational_sql::{
 use crate::Value;
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
+
+mod costed_algorithms;
 
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {
@@ -978,7 +981,7 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         RelationalJoinPlanningContext::default(),
         &mut binding_nanos,
     )
-    .expect("plan bushy candidate with probe-only CSG-CMP policy");
+    .expect("plan bushy candidate with bounded materialization enabled");
     let access_plan = planned
         .access_plan
         .expect("eligible bushy candidate retains an access plan");
@@ -988,7 +991,7 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
             .expect("eligible bushy candidate has a physical join plan")
             .root
             .materialized_right_count(),
-        0
+        1
     );
 
     let mut syntax_plan = prepare_syntax_access_plan(

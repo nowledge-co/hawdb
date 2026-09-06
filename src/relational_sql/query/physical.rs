@@ -617,7 +617,7 @@ pub(super) fn merge_join_inputs(
     let RelationalBaseAccess::Index { scan, .. } = &base.access else {
         return None;
     };
-    let RelationalJoinAccess::Index { name, columns } = &right.access else {
+    let RelationalJoinAccess::Index { columns, .. } = &right.access else {
         return None;
     };
     if columns.is_empty()
@@ -648,7 +648,24 @@ pub(super) fn merge_join_inputs(
     {
         return None;
     }
-    let right_base = RelationalAccessCandidate {
+    let right_base = materialized_join_index_access(state, right, right_table)?;
+    Some((
+        right_base,
+        RelationalEquiJoinKeys {
+            columns: columns.clone(),
+        },
+    ))
+}
+
+pub(super) fn materialized_join_index_access(
+    state: &RelationalState,
+    right: &RelationalJoinAccessCandidate,
+    right_table: &str,
+) -> Option<RelationalAccessCandidate> {
+    let RelationalJoinAccess::Index { name, columns } = &right.access else {
+        return None;
+    };
+    Some(RelationalAccessCandidate {
         descriptor: RelationalAccessPathDescriptor {
             kind: RelationalAccessPathKind::Index,
             name: name.clone(),
@@ -671,13 +688,7 @@ pub(super) fn merge_join_inputs(
                 direction: RelationalIndexScanDirection::Forward,
             },
         },
-    };
-    Some((
-        right_base,
-        RelationalEquiJoinKeys {
-            columns: columns.clone(),
-        },
-    ))
+    })
 }
 
 pub(super) fn hash_join_inputs(
@@ -777,19 +788,6 @@ pub(super) fn relational_join_distinct_values(
 }
 
 impl PreparedRelationalAccessPlan {
-    pub(super) fn uses_specialized_materialized_join(&self) -> bool {
-        self.physical_join_plan.as_ref().is_some_and(|plan| {
-            matches!(
-                &plan.root,
-                RelationalPhysicalJoinNode::Join {
-                    algorithm: RelationalPhysicalJoinAlgorithm::Merge
-                        | RelationalPhysicalJoinAlgorithm::Hash,
-                    ..
-                }
-            )
-        })
-    }
-
     pub(super) fn apply_physical_index_coverage(
         &mut self,
         state: &RelationalState,
@@ -856,7 +854,7 @@ impl PreparedRelationalAccessPlan {
                 estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
                 estimate_relational_access_cost(right_access.descriptor.estimated_rows),
                 RelationalJoinCardinality::Inner,
-                RelationalJoinRightInput::Materialized,
+                RelationalJoinRightInput::Merge,
                 selectivity,
             );
             let root = RelationalPhysicalJoinNode::merge_join(
@@ -915,7 +913,7 @@ impl PreparedRelationalAccessPlan {
                     SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
                 },
-                RelationalJoinRightInput::Materialized,
+                RelationalJoinRightInput::Hash,
                 selectivity,
             );
             let root = RelationalPhysicalJoinNode::hash_join(
@@ -1352,9 +1350,9 @@ pub(super) fn planned_tree_operator_cardinality_profiles(
                         | RelationalPhysicalJoinAlgorithm::BatchedIndex => {
                             RelationalJoinRightInput::Probe
                         }
-                        RelationalPhysicalJoinAlgorithm::Merge
-                        | RelationalPhysicalJoinAlgorithm::Hash
-                        | RelationalPhysicalJoinAlgorithm::Materialized => {
+                        RelationalPhysicalJoinAlgorithm::Merge => RelationalJoinRightInput::Merge,
+                        RelationalPhysicalJoinAlgorithm::Hash => RelationalJoinRightInput::Hash,
+                        RelationalPhysicalJoinAlgorithm::Materialized => {
                             RelationalJoinRightInput::Materialized
                         }
                     },

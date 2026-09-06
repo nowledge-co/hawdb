@@ -151,8 +151,8 @@ use pipeline::{
 
 mod preparation;
 use preparation::{
-    plan_relational_field_plan, prepare_relational_select, prepare_syntax_access_plan,
-    prepared_access_descriptors, resolved_access_order_by,
+    plan_relational_field_plan, prepare_relational_select, prepared_access_descriptors,
+    resolved_access_order_by,
 };
 
 mod projection;
