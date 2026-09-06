@@ -78,8 +78,10 @@ public reader signatures change.
 These are source-qualified requested-capacity envelopes, not allocator/RSS,
 native three-platform measurement or complete query-memory claims. Persistent
 reader/cache ownership, predicate pruning/report containers, path/control
-allocations, vector scans/results, ranking/fusion, hydration, public output and
+allocations, RaBitQ candidate generation, ranking/fusion, hydration, public output and
 persistent delta state still require their own complete ownership boundaries.
+Raw vector sidecars and retained vector scores now share this root as described
+in `VECTOR_QUERY_ADMISSION.md`; that does not complete backend workspace admission.
 No new global host budget, I/O backend, dependency, migration, Bazel runtime
 setting or default/dedicated fuzz CI is introduced.
 

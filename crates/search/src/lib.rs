@@ -55,6 +55,7 @@ mod query_memory;
 pub mod rabitq_projection;
 mod range_io;
 mod recall_validation;
+mod score_collector;
 mod snapshot_envelope;
 mod snapshot_writer;
 mod token_parts;

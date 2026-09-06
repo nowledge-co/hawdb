@@ -38,7 +38,7 @@ fn fixture(name: &str) -> (PathBuf, SearchOutOfCoreReader) {
     (root, reader)
 }
 
-fn candidates(
+pub(super) fn candidates(
     reader: &SearchOutOfCoreReader,
     memory: &QueryMemory,
     task: Option<&RuntimeTaskContext>,

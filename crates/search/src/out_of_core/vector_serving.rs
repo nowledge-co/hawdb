@@ -1,7 +1,8 @@
-use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
+use super::{CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use crate::error::{Result, SkeinError};
+use crate::query_memory::{AdmittedScores, QueryMemory};
+use crate::score_collector::ScoreCollector;
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
-use std::collections::BTreeMap;
 #[cfg(feature = "vector-search")]
 use std::num::NonZeroUsize;
 
@@ -11,9 +12,15 @@ fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -
     configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy)]
+pub(super) struct VectorQuery<'a> {
+    pub(super) execution: super::VectorSearchExecutionOptions<'a>,
+    pub(super) memory: &'a QueryMemory,
+}
+
+#[derive(Debug)]
 pub(super) struct VectorScoreScan {
-    pub(super) scores: BTreeMap<String, f64>,
+    pub(super) scores: AdmittedScores,
     pub(super) matching_count: usize,
     pub(super) vector_document_count: usize,
     pub(super) segment_scan_count: usize,
@@ -38,7 +45,7 @@ pub(super) struct VectorScoreScan {
 impl Default for VectorScoreScan {
     fn default() -> Self {
         Self {
-            scores: BTreeMap::new(),
+            scores: AdmittedScores::default(),
             matching_count: 0,
             vector_document_count: 0,
             segment_scan_count: 0,
@@ -69,9 +76,10 @@ impl SearchOutOfCoreReader {
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
         compressed_vector_search_mode: CompressedVectorSearchMode,
-        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
+        query: VectorQuery<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let vector_execution_options = query.execution;
         let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
         match compressed_vector_search_mode {
@@ -79,7 +87,7 @@ impl SearchOutOfCoreReader {
                 query_embedding,
                 candidate_set,
                 retained_limit,
-                vector_execution_options,
+                query,
                 metrics,
             ),
             CompressedVectorSearchMode::Preferred => {
@@ -89,7 +97,7 @@ impl SearchOutOfCoreReader {
                         query_embedding,
                         candidate_set,
                         retained_limit,
-                        vector_execution_options,
+                        query,
                         metrics,
                     );
                 }
@@ -97,7 +105,7 @@ impl SearchOutOfCoreReader {
                     query_embedding,
                     candidate_set,
                     retained_limit,
-                    vector_execution_options,
+                    query,
                     metrics,
                 )?;
                 scan.fallback_reason_codes
@@ -115,7 +123,7 @@ impl SearchOutOfCoreReader {
                         query_embedding,
                         candidate_set,
                         retained_limit,
-                        vector_execution_options,
+                        query,
                         metrics,
                     );
                 }
@@ -132,16 +140,19 @@ impl SearchOutOfCoreReader {
         query_embedding: &[f32],
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
-        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
+        query: VectorQuery<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let vector_execution_options = query.execution;
         let task_context = vector_execution_options.task_context;
-        let mut collector = BoundedScoreCollector::new(
+        let mut collector = ScoreCollector::for_vector(
             retained_limit,
             admitted_score_entries(
                 self.config.max_score_entries.get(),
                 vector_execution_options.max_working_bytes,
             ),
+            (vector_execution_options.max_working_bytes as u64).min(query.memory.result_limit),
+            &query.memory.scores,
         )?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
@@ -151,8 +162,10 @@ impl SearchOutOfCoreReader {
                 continue;
             }
             segment_scan_count = segment_scan_count.saturating_add(1);
-            let documents = self.read_vector_segment(segment, metrics)?;
-            for document in &documents {
+            let documents =
+                self.read_vector_segment(segment, metrics, query.memory, task_context)?;
+            for document in documents.iter() {
+                checkpoint_vector_task(task_context)?;
                 if !candidate_set.contains(&document.id, metrics)? {
                     continue;
                 }
@@ -167,6 +180,7 @@ impl SearchOutOfCoreReader {
                 if let Some(score) = cosine_similarity(query_embedding, embedding)
                     && score > 0.0
                 {
+                    let _incoming = query.memory.working.reserve(document.id.len())?;
                     collector.push(document.id.clone(), score)?;
                 }
             }
@@ -192,9 +206,10 @@ impl SearchOutOfCoreReader {
         query_embedding: &[f32],
         candidate_set: &CandidateSet,
         retained_limit: Option<usize>,
-        vector_execution_options: super::VectorSearchExecutionOptions<'_>,
+        query: VectorQuery<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        let vector_execution_options = query.execution;
         let task_context = vector_execution_options.task_context;
         let projection = self.rabitq_projection.as_ref().ok_or_else(|| {
             SkeinError::Storage("search out-of-core RaBitQ projection is unavailable".to_string())
@@ -254,11 +269,13 @@ impl SearchOutOfCoreReader {
         metrics.rabitq_payload_bytes_read = metrics
             .rabitq_payload_bytes_read
             .saturating_add(projection_report.payload_bytes_read);
-        let mut selected_ordinals = output
-            .hits
-            .into_iter()
-            .map(|hit| hit.id)
-            .collect::<Vec<_>>();
+        let selected_memory = query.memory.working.reserve(super::query_io::mul(
+            output.hits.len(),
+            std::mem::size_of::<u64>(),
+        )?)?;
+        let mut selected_ordinals = Vec::with_capacity(output.hits.len());
+        selected_ordinals.extend(output.hits.iter().map(|hit| hit.id));
+        drop(output.hits);
         selected_ordinals.sort_unstable();
         if selected_ordinals.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(SkeinError::Storage(
@@ -266,6 +283,8 @@ impl SearchOutOfCoreReader {
             ));
         }
 
+        let selected_ordinals =
+            crate::query_memory::Admitted::new(selected_ordinals, selected_memory);
         let retained_working_bytes = allowlist_bytes.saturating_add(
             selected_ordinals
                 .capacity()
@@ -278,9 +297,11 @@ impl SearchOutOfCoreReader {
                     "search vector retained candidates require {retained_working_bytes} bytes, exceeding {total_working_bytes}"
                 ))
             })?;
-        let mut collector = BoundedScoreCollector::new(
+        let mut collector = ScoreCollector::for_vector(
             retained_limit,
             admitted_score_entries(self.config.max_score_entries.get(), score_working_bytes),
+            (score_working_bytes as u64).min(query.memory.result_limit),
+            &query.memory.scores,
         )?;
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
@@ -296,7 +317,10 @@ impl SearchOutOfCoreReader {
                 continue;
             }
             raw_segment_scan_count = raw_segment_scan_count.saturating_add(1);
-            for document in self.read_vector_segment(segment, metrics)? {
+            let documents =
+                self.read_vector_segment(segment, metrics, query.memory, task_context)?;
+            for document in documents.iter() {
+                checkpoint_vector_task(task_context)?;
                 if selected_ordinals[start_index..end_index]
                     .binary_search(&document.vector_ordinal)
                     .is_err()
@@ -311,7 +335,8 @@ impl SearchOutOfCoreReader {
                 if let Some(score) = cosine_similarity(query_embedding, &document.embedding)
                     && score > 0.0
                 {
-                    collector.push(document.id, score)?;
+                    let _incoming = query.memory.working.reserve(document.id.len())?;
+                    collector.push(document.id.clone(), score)?;
                 }
             }
         }

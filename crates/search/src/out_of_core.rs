@@ -4,14 +4,14 @@ use super::lexical_projection::{
 };
 use super::{
     checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
-    decode_search_segment_descriptor_text, decode_search_segment_documents_bounded,
-    decode_search_snapshot_text_bounded, decode_string, encode_embedding, encode_metadata,
-    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, ranked_scores,
-    read_search_segment_descriptor, retriever_candidate_set_report, rrf_child_score,
-    search_empty_reason_codes, search_empty_reasons, search_metadata_predicate_pushdown, tokenize,
-    top_ranked_candidates, top_ranked_ids, validate_search_segment_documents, weighted_rrf_score,
-    window_ranks, CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
+    decode_search_segment_descriptor_text, decode_search_segment_documents_bounded, decode_string,
+    encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
+    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
+    matched_query_terms, ranked_scores, read_search_segment_descriptor,
+    retriever_candidate_set_report, rrf_child_score, search_empty_reason_codes,
+    search_empty_reasons, search_metadata_predicate_pushdown, tokenize, top_ranked_candidates,
+    top_ranked_ids, validate_search_segment_documents, weighted_rrf_score, window_ranks,
+    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
     SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
     SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
     SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions, SearchResultSet,
@@ -24,8 +24,8 @@ use crate::error::{Result, SkeinError};
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use serde::{Deserialize, Serialize};
 use skein_storage::durable_replace_file;
-use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -38,6 +38,7 @@ mod candidate_memory;
 mod generation_writer;
 mod publish_lease;
 mod query_io;
+mod vector_io;
 mod vector_serving;
 pub use generation_writer::{
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
@@ -1163,7 +1164,10 @@ impl SearchOutOfCoreReader {
                 &candidate_set,
                 retained_vector_limit,
                 compressed_vector_search_mode,
-                vector_execution_options,
+                vector_serving::VectorQuery {
+                    execution: vector_execution_options,
+                    memory: &query_memory,
+                },
                 &mut metrics,
             )?
         } else {
@@ -1744,31 +1748,56 @@ impl SearchOutOfCoreReader {
         &self,
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<SearchVectorDocument>> {
+        memory: &crate::query_memory::QueryMemory,
+        task: Option<&crate::RuntimeTaskContext>,
+    ) -> Result<crate::query_memory::Admitted<Vec<SearchVectorDocument>>> {
+        let task = task.cloned().unwrap_or_default();
         let range = self.layout_range(segment.segment_id)?.vectors;
-        let payload = read_out_of_core_payload_range(
+        let payload = query_io::read(
             &self.vector_payload,
-            range,
-            segment.segment_id,
-            "vector",
-            metrics,
+            range.offset,
+            range.length,
+            &memory.working,
+            &task,
         )?;
+        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
+        if checksum_bytes(&payload) != range.checksum {
+            return Err(SkeinError::Storage(
+                "search vector payload checksum mismatch".to_owned(),
+            ));
+        }
         metrics.vector_segment_bytes_read = metrics
             .vector_segment_bytes_read
             .saturating_add(range.length);
-        let text = decode_search_snapshot_text_bounded(
+        let text = query_io::decode(
             &payload,
             self.config.max_uncompressed_segment_bytes.get(),
+            &memory.working,
+            &task,
         )?;
         metrics.peak_vector_segment_bytes =
             metrics.peak_vector_segment_bytes.max(text.len() as u64);
-        decode_vector_segment(
+        let bytes = vector_io::preflight(
+            &text,
+            range.entry_count,
+            self.manifest.embedding_dimension,
+            self.layout_range(segment.segment_id)?.vector_ordinal_base,
+            &task,
+        )?;
+        let lease = memory.working.reserve(bytes)?;
+        #[cfg(test)]
+        vector_io::evidence::decode();
+        let documents = decode_vector_segment(
             &text,
             segment,
             range.entry_count,
             self.layout_range(segment.segment_id)?.vector_ordinal_base,
             self.manifest.embedding_dimension,
-        )
+            &task,
+        )?;
+        query_io::checkpoint(&task)?;
+        Ok(crate::query_memory::Admitted::new(documents, lease))
     }
 
     fn layout_range(&self, segment_id: u64) -> Result<&SearchOutOfCoreSegmentLayout> {
@@ -2287,110 +2316,6 @@ impl CandidateSet {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RankedScore {
-    id: String,
-    score: f64,
-}
-
-impl PartialEq for RankedScore {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.score.to_bits() == other.score.to_bits()
-    }
-}
-
-impl Eq for RankedScore {}
-
-impl PartialOrd for RankedScore {
-    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for RankedScore {
-    fn cmp(&self, other: &Self) -> CmpOrdering {
-        self.score
-            .total_cmp(&other.score)
-            .then_with(|| other.id.cmp(&self.id))
-    }
-}
-
-enum BoundedScoreStorage {
-    Full(BTreeMap<String, f64>),
-    TopK {
-        limit: usize,
-        heap: BinaryHeap<Reverse<RankedScore>>,
-    },
-}
-
-struct BoundedScoreCollector {
-    storage: BoundedScoreStorage,
-    matching_count: usize,
-    max_entries: usize,
-}
-
-impl BoundedScoreCollector {
-    fn new(retained_limit: Option<usize>, max_entries: usize) -> Result<Self> {
-        if retained_limit.is_some_and(|limit| limit > max_entries) {
-            return Err(SkeinError::Storage(format!(
-                "search rank window exceeds the admitted {max_entries} score entries"
-            )));
-        }
-        Ok(Self {
-            storage: match retained_limit {
-                Some(limit) => BoundedScoreStorage::TopK {
-                    limit,
-                    heap: BinaryHeap::with_capacity(limit.saturating_add(1)),
-                },
-                None => BoundedScoreStorage::Full(BTreeMap::new()),
-            },
-            matching_count: 0,
-            max_entries,
-        })
-    }
-
-    fn push(&mut self, id: String, score: f64) -> Result<()> {
-        self.matching_count = self.matching_count.saturating_add(1);
-        match &mut self.storage {
-            BoundedScoreStorage::Full(scores) => {
-                if scores.len() >= self.max_entries {
-                    return Err(SkeinError::Storage(format!(
-                        "vector query matched more than {} documents; provide a rank window or narrow the candidate set",
-                        self.max_entries
-                    )));
-                }
-                scores.insert(id, score);
-            }
-            BoundedScoreStorage::TopK { limit, heap } => {
-                if *limit == 0 {
-                    return Ok(());
-                }
-                let candidate = RankedScore { id, score };
-                if heap.len() < *limit {
-                    heap.push(Reverse(candidate));
-                } else if heap
-                    .peek()
-                    .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
-                {
-                    heap.pop();
-                    heap.push(Reverse(candidate));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn finish(self) -> BTreeMap<String, f64> {
-        match self.storage {
-            BoundedScoreStorage::Full(scores) => scores,
-            BoundedScoreStorage::TopK { heap, .. } => heap
-                .into_iter()
-                .map(|Reverse(candidate)| (candidate.id, candidate.score))
-                .collect(),
-        }
-    }
-}
-
 #[derive(Debug)]
 struct CandidateBlock {
     segment_id: u64,
@@ -2755,56 +2680,45 @@ fn decode_vector_segment(
     expected_count: usize,
     expected_ordinal_base: u64,
     expected_dimension: Option<usize>,
+    task: &crate::RuntimeTaskContext,
 ) -> Result<Vec<SearchVectorDocument>> {
     let mut lines = text.lines();
     if lines.next() != Some("SKEIN_SEARCH_VECTOR_SEGMENT_V1") {
-        return Err(SkeinError::Storage(format!(
-            "search segment {} vector sidecar has an invalid header",
-            segment.segment_id
-        )));
+        return Err(SkeinError::Storage(
+            "search vector sidecar has an invalid header".to_owned(),
+        ));
     }
     let mut documents = Vec::with_capacity(expected_count);
     for line in lines {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["vector", raw_ordinal, raw_id, raw_embedding] => {
-                let vector_ordinal = raw_ordinal.parse::<u64>().map_err(|_| {
-                    SkeinError::Storage(format!(
-                        "search segment {} vector sidecar has an invalid ordinal",
-                        segment.segment_id
-                    ))
-                })?;
-                let embedding = decode_embedding(raw_embedding)?.ok_or_else(|| {
-                    SkeinError::Storage(format!(
-                        "search segment {} vector sidecar contains an empty embedding",
-                        segment.segment_id
-                    ))
-                })?;
-                if embedding.iter().any(|value| !value.is_finite())
-                    || expected_dimension.is_none_or(|dimension| embedding.len() != dimension)
-                {
-                    return Err(SkeinError::Storage(format!(
-                        "search segment {} vector sidecar has an invalid embedding",
-                        segment.segment_id
-                    )));
-                }
-                documents.push(SearchVectorDocument {
-                    vector_ordinal,
-                    id: decode_string(raw_id)?,
-                    embedding,
-                });
-            }
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "search segment {} has an invalid vector sidecar line",
-                    segment.segment_id
-                )));
-            }
+        query_io::checkpoint(task)?;
+        let (raw_ordinal, raw_id, raw_embedding) = vector_io::fields(line)?;
+        if documents.len() == expected_count {
+            return Err(SkeinError::Storage(
+                "search vector sidecar count mismatch".to_owned(),
+            ));
         }
+        let vector_ordinal = raw_ordinal.parse::<u64>().map_err(|_| {
+            SkeinError::Storage("search vector sidecar has an invalid ordinal".to_owned())
+        })?;
+        let embedding = decode_embedding(raw_embedding)?.ok_or_else(|| {
+            SkeinError::Storage("search vector sidecar contains an empty embedding".to_owned())
+        })?;
+        if embedding.iter().any(|value| !value.is_finite())
+            || expected_dimension.is_none_or(|dimension| embedding.len() != dimension)
+        {
+            return Err(SkeinError::Storage(
+                "search vector sidecar has an invalid embedding".to_owned(),
+            ));
+        }
+        documents.push(SearchVectorDocument {
+            vector_ordinal,
+            id: decode_string(raw_id)?,
+            embedding,
+        });
     }
     if documents.len() != expected_count
         || documents.iter().enumerate().any(|(offset, document)| {
-            document.vector_ordinal != expected_ordinal_base.saturating_add(offset as u64)
+            Some(document.vector_ordinal) != expected_ordinal_base.checked_add(offset as u64)
         })
         || documents.windows(2).any(|pair| pair[0].id >= pair[1].id)
         || documents.iter().any(|document| {
@@ -3008,6 +2922,7 @@ pub(super) fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Resul
 mod tests {
     use super::*;
     mod candidate_admission;
+    mod vector_admission;
     use crate::{
         SearchFusionWeights, SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
         SearchLexicalProductionQualificationReport, SearchProjectionCleanupOptions,

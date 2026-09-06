@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ/candidate admission targets, all manual:
+and segment/RaBitQ/candidate/vector admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -126,6 +126,22 @@ are included. Seed `0x206ec0de` also checks 256 concatenated-frame envelopes,
 compared with independently generated text and corruption with the preceding
 streaming decoder. See `CANDIDATE_QUERY_ADMISSION.md` for admitted lifetimes,
 source-qualified zstd bounds and the remaining full-query/native gates.
+
+The raw-vector/result campaign is
+`//crates/search:skein_search_vector_admission_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --all-features vector_admission_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x206cec70` supplies 128 queries to scalar and explicitly attached RaBitQ
+rerank paths. Independent cosine/top-k results, zero/negative queries, metadata
+filters, five retention windows, competing score owners and exact/one-short
+root retries are checked. The same campaign without default features covers
+the scalar path. These are raw-sidecar/retained-score checks, not proof of the
+RaBitQ backend's still-separate workspace envelope or complete query/RSS limits.
+See `VECTOR_QUERY_ADMISSION.md` for the remaining boundaries.
 
 ## Coverage and independent checks
 
