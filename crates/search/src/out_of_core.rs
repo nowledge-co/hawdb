@@ -2707,30 +2707,63 @@ fn latest_recoverable_lexical_generation(root: &Path) -> Result<u64> {
 
 fn publish_generation_link(source: &Path, target: &Path) -> Result<()> {
     let tmp = temporary_artifact_path(target);
-    let mut guard = CandidateFileGuard::new(tmp.clone());
-    match fs::hard_link(source, &tmp) {
+    publish_generation_link_at(source, target, &tmp)
+}
+
+// Prepared generation publication supplies admitted paths before its commit gate.
+// These helpers borrow them and do not introduce a late cancellation checkpoint.
+fn publish_generation_link_at(source: &Path, target: &Path, temporary: &Path) -> Result<()> {
+    let mut guard = ArtifactTempGuard::new(temporary);
+    match fs::hard_link(source, temporary) {
         Ok(()) => {}
         Err(_) => {
-            fs::copy(source, &tmp)?;
-            File::open(&tmp)?.sync_all()?;
+            fs::copy(source, temporary)?;
+            File::open(temporary)?.sync_all()?;
         }
     }
-    durable_replace_file(&tmp, target)?;
+    durable_replace_file(temporary, target)?;
     guard.disarm();
     Ok(())
 }
 
 fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = temporary_artifact_path(target);
-    let mut guard = CandidateFileGuard::new(tmp.clone());
+    write_generation_artifact_at(target, &tmp, bytes)
+}
+
+fn write_generation_artifact_at(target: &Path, temporary: &Path, bytes: &[u8]) -> Result<()> {
+    let mut guard = ArtifactTempGuard::new(temporary);
     {
-        let mut file = File::create(&tmp)?;
+        let mut file = File::create(temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    durable_replace_file(&tmp, target)?;
+    durable_replace_file(temporary, target)?;
     guard.disarm();
     Ok(())
+}
+
+struct ArtifactTempGuard<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> ArtifactTempGuard<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ArtifactTempGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(self.path);
+        }
+    }
 }
 
 fn temporary_artifact_path(target: &Path) -> PathBuf {

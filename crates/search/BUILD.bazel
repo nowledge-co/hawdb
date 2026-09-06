@@ -154,6 +154,25 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Cover publication path ownership and commit-gate behavior outside ordinary CI.
+rust_test(
+    name = "skein_search_publication_admission_fuzz_tests",
+    size = "large",
+    tags = ["manual"],
+    args = [
+        "out_of_core::generation_writer::publication::tests::fuzz::publication_admission_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 # Cover filter/ACL admission and published-candidate parity outside ordinary CI.
 rust_test(
     name = "skein_search_filter_admission_fuzz_tests",

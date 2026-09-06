@@ -452,7 +452,8 @@ fn publication_root_denial_preserves_every_old_artifact_and_releases_layout() {
                 .unwrap();
         writer.push(document(1)).unwrap();
         let ledger = writer.memory.ledger.clone();
-        let mut sibling = None;
+        let sibling = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let held = sibling.clone();
         let error = writer
             .finish_with_artifacts(|input, source, generation| {
                 let artifacts = input.build_artifacts(source, generation)?;
@@ -461,13 +462,17 @@ fn publication_root_denial_preserves_every_old_artifact_and_releases_layout() {
                 } else {
                     0
                 };
-                sibling = Some(
-                    input
-                        .memory
-                        .retained
-                        .reserve(limit - ledger.snapshot().used_bytes - allowed)?,
-                );
-                build_io::evidence::take();
+                // Inject at the encoding boundary so path preparation cannot
+                // mask either the layout or manifest admission failure.
+                publication::before_encoding_for_test(move |memory| {
+                    *held.borrow_mut() = Some(
+                        memory
+                            .retained
+                            .reserve(limit - memory.ledger.snapshot().used_bytes - allowed)
+                            .unwrap(),
+                    );
+                    build_io::evidence::take();
+                });
                 Ok(artifacts)
             })
             .unwrap_err();
@@ -475,7 +480,7 @@ fn publication_root_denial_preserves_every_old_artifact_and_releases_layout() {
         assert_eq!(build_io::evidence::take(), usize::from(allow_layout));
         assert_eq!(
             ledger.snapshot().used_bytes,
-            sibling.as_ref().unwrap().bytes()
+            sibling.borrow().as_ref().unwrap().bytes()
         );
         drop(sibling);
         assert_eq!(ledger.snapshot().used_bytes, 0);

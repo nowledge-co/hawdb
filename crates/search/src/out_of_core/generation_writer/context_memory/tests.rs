@@ -350,6 +350,45 @@ fn cancelled_path_copy_releases_its_allocation_and_charge() {
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }
 
+#[test]
+fn extension_paths_are_preadmitted_without_losing_native_semantics() {
+    for original in ["some/path.skein", "some/no_extension", "parent/.hidden", ""] {
+        for extension in ["tmp.7.18446744073709551615", ""] {
+            let path = Path::new(original);
+            let peak = path.as_os_str().as_encoded_bytes().len() + extension.len() + 1;
+            for limit in [137 + peak - 1, 137 + peak] {
+                let memory = memory(limit);
+                let other = memory.input.reserve(137).unwrap();
+                take();
+                let result = OwnedPath::with_extension(
+                    path,
+                    extension,
+                    &memory,
+                    &RuntimeTaskContext::default(),
+                );
+                assert_eq!(result.is_ok(), limit == 137 + peak);
+                assert_eq!(take(), (0, usize::from(result.is_ok())));
+                if let Ok(owned) = result {
+                    let expected = path.with_extension(extension);
+                    assert_eq!(owned.as_ref(), expected);
+                    assert_eq!(
+                        memory.ledger.snapshot().used_bytes,
+                        137 + expected.capacity()
+                    );
+                    let ledger = memory.ledger.clone();
+                    drop(other);
+                    drop(memory);
+                    assert_eq!(ledger.snapshot().used_bytes, expected.capacity());
+                    drop(owned);
+                    assert_eq!(ledger.snapshot().used_bytes, 0);
+                } else {
+                    assert_eq!(memory.ledger.snapshot().used_bytes, 137);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn opaque_unix_path_bytes_are_not_lossily_converted() {

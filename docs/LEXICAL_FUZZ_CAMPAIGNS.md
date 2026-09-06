@@ -223,6 +223,19 @@ and the writer ledger must release all tracked memory. The target is manual,
 part of the explicit local fuzz suite, and adds no fuzz CI job. See
 `BUILD_CONTEXT_ADMISSION.md` for native-path and ownership boundaries.
 
+## Generation publication admission
+
+The publication campaign is `//crates/search:skein_search_publication_admission_fuzz_tests`
+or `cargo test -p skein-search --all-features publication_admission_campaign -- --ignored --nocapture`.
+Seed `0x206a71f5` covers 128 varied path sets with deterministic sequence values,
+optional RaBitQ paths and exact/one-short competing-root limits. Another 24 real
+updates check 12 successful publications, 12 precommit rejections and six commits
+with late cancellation and no remaining path budget. Full-feature builds include
+eight vector publications; minimal features retain the same commit/rejection
+counts without vectors. Reopen compares original document inputs. The target is
+manual/local only. See `PUBLICATION_PATH_ADMISSION.md` for ownership and I/O-error
+boundaries.
+
 ## Filter and ACL input admission
 
 The filter campaign is `//crates/search:skein_search_filter_admission_fuzz_tests`

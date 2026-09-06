@@ -1,22 +1,28 @@
-use super::super::{
-    publish_generation_link, write_generation_artifact, SearchOutOfCoreLayoutBody,
-    SearchOutOfCoreManifestBody, OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
-};
-use super::{RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use super::super::{SearchOutOfCoreLayoutBody, SearchOutOfCoreManifestBody, OUT_OF_CORE_FORMAT};
+use super::RaBitQGenerationArtifact;
 use crate::build_control::checkpoint;
 use crate::build_io;
 use crate::build_memory::{checked_add, BuildMemory};
 use crate::error::{Result, SkeinError};
 use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
-use crate::{
-    checksum_bytes, SearchEmbeddingManifest, SEARCH_SEGMENT_DESCRIPTOR_FILE,
-    SEARCH_SEGMENT_PAYLOAD_FILE,
-};
+use crate::{checksum_bytes, SearchEmbeddingManifest};
 use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+
+mod paths;
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(super) fn before_encoding_for_test(hook: impl FnOnce(&BuildMemory) + 'static) {
+    tests::PREPARED.with_borrow_mut(|slot| {
+        assert!(slot.is_none());
+        *slot = Some(Box::new(move |memory, _| hook(memory)));
+    });
+}
 
 pub(super) struct PublishGenerationInput<'a> {
     pub(super) task_context: &'a RuntimeTaskContext,
@@ -46,25 +52,18 @@ pub(super) struct PublishedGeneration {
 
 pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<PublishedGeneration> {
     checkpoint(input.task_context)?;
+    #[cfg(test)]
+    tests::run(&tests::BEFORE, &input);
     let generation = input.generation;
-    let descriptor_file = format!("search_projection_segments.{generation}.skein");
-    let payload_file = format!("search_projection_segment_payloads.{generation}.skein");
-    let metadata_payload_file = format!("search_projection_metadata_payloads.{generation}.skein");
-    let vector_payload_file = format!("search_projection_vector_payloads.{generation}.skein");
-    let layout_file = format!("search_projection_out_of_core_layout.{generation}.skein");
-    let lexical_manifest_file = format!("search_lexical.manifest.{generation}.skein");
-
-    let descriptor_source = input.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
-    let payload_source = input.stage.join(SEARCH_SEGMENT_PAYLOAD_FILE);
-    let metadata_source = input.stage.join(STAGE_METADATA_FILE);
-    let vector_source = input.stage.join(STAGE_VECTOR_FILE);
-    let lexical_artifact_source = input.stage.join(input.lexical_artifact_name);
-    let lexical_manifest_source = input.stage.join(LEXICAL_MANIFEST_FILE);
+    let names = paths::Names::new(generation, input.memory, input.task_context)?;
+    let paths = paths::Paths::new(&input, &names)?;
+    #[cfg(test)]
+    tests::run(&tests::PREPARED, &input);
     let (descriptor_len, descriptor_checksum) =
-        file_len_checksum_with_context(&descriptor_source, input.task_context)?;
-    let payload_len = fs::metadata(&payload_source)?.len();
-    let metadata_payload_len = fs::metadata(&metadata_source)?.len();
-    let vector_payload_len = fs::metadata(&vector_source)?.len();
+        file_len_checksum_with_context(&paths.descriptor.source, input.task_context)?;
+    let payload_len = fs::metadata(&paths.payload.source)?.len();
+    let metadata_payload_len = fs::metadata(&paths.metadata.source)?.len();
+    let vector_payload_len = fs::metadata(&paths.vector.source)?.len();
     for (name, actual, expected) in [
         ("document", payload_len, input.payload_bytes),
         (
@@ -81,8 +80,8 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         }
     }
     let (lexical_manifest_len, lexical_manifest_checksum) =
-        file_len_checksum_with_context(&lexical_manifest_source, input.task_context)?;
-    let lexical_artifact_len = fs::metadata(&lexical_artifact_source)?.len();
+        file_len_checksum_with_context(&paths.lexical_manifest.source, input.task_context)?;
+    let lexical_artifact_len = fs::metadata(&paths.lexical.source)?.len();
     let layout_bytes = build_io::json_envelope(
         input.layout,
         input.max_generation_bytes,
@@ -90,15 +89,8 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         input.task_context,
     )
     .map_err(publication_encoding_error)?;
-    let names = [
-        &descriptor_file,
-        &payload_file,
-        &metadata_payload_file,
-        &vector_payload_file,
-        &layout_file,
-        &lexical_manifest_file,
-    ];
     let mut manifest_string_bytes = names
+        .all()
         .iter()
         .try_fold(OUT_OF_CORE_FORMAT.len(), |bytes, name| {
             checked_add(bytes, name.len())
@@ -121,19 +113,19 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
-        descriptor_file: descriptor_file.clone(),
+        descriptor_file: names.descriptor.clone(),
         descriptor_len,
         descriptor_checksum,
-        payload_file: payload_file.clone(),
+        payload_file: names.payload.clone(),
         payload_len,
-        metadata_payload_file: metadata_payload_file.clone(),
+        metadata_payload_file: names.metadata.clone(),
         metadata_payload_len,
-        vector_payload_file: vector_payload_file.clone(),
+        vector_payload_file: names.vector.clone(),
         vector_payload_len,
-        layout_file: layout_file.clone(),
+        layout_file: names.layout.clone(),
         layout_len: layout_bytes.len() as u64,
         layout_checksum: checksum_bytes(layout_bytes.as_ref()),
-        lexical_manifest_file: lexical_manifest_file.clone(),
+        lexical_manifest_file: names.lexical_manifest.clone(),
         lexical_manifest_len,
         lexical_manifest_checksum,
         rabitq_artifact_file: input.rabitq.map(|artifact| artifact.file_name.clone()),
@@ -195,75 +187,70 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
     checkpoint(input.task_context)?;
     #[cfg(test)]
     late_cancellation::trigger();
-    publish_generation_link(&descriptor_source, &input.root.join(&descriptor_file))?;
-    publish_generation_link(&payload_source, &input.root.join(&payload_file))?;
-    publish_generation_link(&metadata_source, &input.root.join(&metadata_payload_file))?;
-    publish_generation_link(&vector_source, &input.root.join(&vector_payload_file))?;
-    publish_generation_link(
-        &lexical_artifact_source,
-        &input.root.join(input.lexical_artifact_name),
-    )?;
-    if let Some(rabitq) = input.rabitq {
-        publish_generation_link(
-            &input.stage.join(&rabitq.file_name),
-            &input.root.join(&rabitq.file_name),
-        )?;
+    #[cfg(test)]
+    tests::run(&tests::COMMITTED, &input);
+    paths.descriptor.publish()?;
+    paths.payload.publish()?;
+    paths.metadata.publish()?;
+    paths.vector.publish()?;
+    paths.lexical.publish()?;
+    if let Some(rabitq) = &paths.rabitq {
+        rabitq.publish()?;
     }
-    publish_generation_link(
-        &lexical_manifest_source,
-        &input.root.join(&lexical_manifest_file),
-    )?;
-    write_generation_artifact(&input.root.join(&layout_file), layout_bytes.as_ref())?;
+    paths.lexical_manifest.publish()?;
+    paths.layout.write(layout_bytes.as_ref())?;
 
     verify_published_artifact(
-        &input.root.join(&descriptor_file),
+        &paths.descriptor.target.path,
         descriptor_len,
         Some(descriptor_checksum),
         "descriptor",
     )?;
     if let Some(rabitq) = input.rabitq {
         verify_published_artifact(
-            &input.root.join(&rabitq.file_name),
+            &paths
+                .rabitq
+                .as_ref()
+                .expect("prepared RaBitQ paths")
+                .target
+                .path,
             rabitq.artifact_bytes,
             Some(rabitq.artifact_checksum),
             "RaBitQ artifact",
         )?;
     }
     verify_published_artifact(
-        &input.root.join(&payload_file),
+        &paths.payload.target.path,
         payload_len,
         None,
         "document payload",
     )?;
     verify_published_artifact(
-        &input.root.join(&metadata_payload_file),
+        &paths.metadata.target.path,
         metadata_payload_len,
         None,
         "metadata payload",
     )?;
     verify_published_artifact(
-        &input.root.join(&vector_payload_file),
+        &paths.vector.target.path,
         vector_payload_len,
         None,
         "vector payload",
     )?;
     verify_published_artifact(
-        &input.root.join(&lexical_manifest_file),
+        &paths.lexical_manifest.target.path,
         lexical_manifest_len,
         Some(lexical_manifest_checksum),
         "lexical manifest",
     )?;
     verify_published_artifact(
-        &input.root.join(input.lexical_artifact_name),
+        &paths.lexical.target.path,
         lexical_artifact_len,
         None,
         "lexical artifact",
     )?;
 
-    write_generation_artifact(
-        &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
-        manifest_bytes.as_ref(),
-    )?;
+    paths.manifest.write(manifest_bytes.as_ref())?;
     Ok(PublishedGeneration {
         manifest_bytes: manifest_bytes.len() as u64,
         generation_bytes,

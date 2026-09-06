@@ -58,6 +58,9 @@ retains its existing best-effort error handling; the intentionally sticky
 publication-lock file is not treated as a leaked stage. Other artifact paths,
 publication-lock registry/canonicalization and filesystem-internal buffers are
 not covered by this startup owner.
+Generation publication now owns its source/destination/temporary paths separately
+on the same root; see `PUBLICATION_PATH_ADMISSION.md`. Artifact-builder and
+publication-lock discovery/registry paths remain outside these owners.
 
 ## Verification
 

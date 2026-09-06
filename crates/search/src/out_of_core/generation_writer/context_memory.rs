@@ -194,6 +194,26 @@ impl OwnedPath {
         Self::finish(parent.join(name), lease, task)
     }
 
+    pub(super) fn with_extension(
+        path: &Path,
+        extension: &str,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(task)?;
+        // Rust 1.97.1 Path::_with_extension reserves the full result up front.
+        // Retaining the old extension in this bound also covers extensionless
+        // and non-file paths without replacing native path semantics.
+        let bytes = add(
+            path.as_os_str().as_encoded_bytes().len(),
+            add(extension.len(), 1)?,
+        )?;
+        let lease = memory.retained.reserve(bytes)?;
+        #[cfg(test)]
+        tests::record_path();
+        Self::finish(path.with_extension(extension), lease, task)
+    }
+
     fn finish(value: PathBuf, lease: QueryMemoryLease, task: &RuntimeTaskContext) -> Result<Self> {
         let mut owned = Self {
             value,
