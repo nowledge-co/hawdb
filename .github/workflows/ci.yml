@@ -50,6 +50,12 @@ jobs:
       - name: Test Tokio adapter
         run: cargo test -p skein-runtime-tokio
 
+      - name: Test admitted planning and query entrypoints
+        run: |
+          cargo test -p skein --features tokio-runtime --lib api::query_runtime::tests
+          cargo test -p skein --features tokio-runtime --lib embedded::tests
+          cargo test -p skein --features tokio-runtime --lib embedded_tokio::tests
+
   vector-projection-platform:
     name: Vector Projection (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
