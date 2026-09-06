@@ -29,7 +29,7 @@ cargo test -p skein-search --no-default-features --lib \
 
 Each campaign is an ignored Rust test and has a separate manual Bazel target
 named `//crates/search:skein_search_lexical_<campaign>_fuzz_tests`. Campaign names
-are `analyzer`, `posting`, `dictionary`, `doclist`, and `state_machine`. Bazel supplies the
+are `analyzer`, `artifact`, `posting`, `dictionary`, `doclist`, and `state_machine`. Bazel supplies the
 exact Rust test name and `--ignored`; each target must report one executed test,
 not a successful zero-test filter. Ordinary Cargo and search unit-test targets
 compile these tests but do not execute them. Do not add these campaigns to
@@ -68,6 +68,11 @@ complete fused-sink budget or allocator/RSS coverage.
 
 ## Coverage and independent checks
 
+- `artifact`: seed `0x206a47`, 12,000 document groups compare the actual document-map
+  encoder with independent direct v1 bytes. Unicode/NUL IDs, full-width u32 lengths,
+  block flush/reuse and cancellation are included. Each group is retried with its
+  exact observed requested-capacity peak and a one-byte-short budget; all results
+  and failures must release the operation's three-account working set.
 - `analyzer`: seed `0x206a11`, 12,000 document/lexicon combinations compare
   incremental production frequencies and weighted length with the preceding
   frozen allocating token-list oracle from `2b9caa56`. Four lexicons include overlapping alias rules and

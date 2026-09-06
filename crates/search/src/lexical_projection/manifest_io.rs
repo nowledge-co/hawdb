@@ -1,4 +1,5 @@
 use super::{Digest, ManifestBody, ManifestEnvelope, MAX_MANIFEST_BYTES};
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use serde::Serialize;
 use std::fs::File;
@@ -24,9 +25,11 @@ fn body_checksum(body: &ManifestBody) -> Result<u64> {
     Ok(writer.0.finish())
 }
 
-struct BoundedBytes {
+pub(super) struct BoundedBytes {
     bytes: Vec<u8>,
     limit: usize,
+    memory: Option<BuildMemory>,
+    _lease: Option<skein_executor::QueryMemoryLease>,
 }
 
 impl BoundedBytes {
@@ -36,7 +39,15 @@ impl BoundedBytes {
             limit: usize::try_from(limit.min(MAX_MANIFEST_BYTES)).map_err(|_| {
                 SkeinError::Storage("lexical manifest budget exceeds the address space".to_string())
             })?,
+            memory: None,
+            _lease: None,
         })
+    }
+}
+
+impl AsRef<[u8]> for BoundedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -52,6 +63,12 @@ impl Write for BoundedBytes {
             let capacity = end
                 .max(self.bytes.capacity().max(1024).saturating_mul(2))
                 .min(self.limit);
+            let next_lease = self
+                .memory
+                .as_ref()
+                .map(|memory| memory.retained.reserve(capacity))
+                .transpose()
+                .map_err(io::Error::other)?;
             self.bytes
                 .try_reserve_exact(capacity - self.bytes.len())
                 .map_err(|_| io::Error::other("lexical manifest allocation failed"))?;
@@ -60,6 +77,8 @@ impl Write for BoundedBytes {
                     "lexical manifest capacity exceeds its budget",
                 ));
             }
+            // The old allocation stays admitted until replacement completes.
+            self._lease = next_lease;
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -116,7 +135,16 @@ impl ManifestBody {
         bytes
     }
 
+    #[cfg(test)]
     pub(super) fn encode_bounded(&self, limit: u64) -> Result<Vec<u8>> {
+        Ok(self.encode_writer(limit, None)?.bytes)
+    }
+
+    pub(super) fn encode_admitted(&self, limit: u64, memory: &BuildMemory) -> Result<BoundedBytes> {
+        self.encode_writer(limit, Some(memory))
+    }
+
+    fn encode_writer(&self, limit: u64, memory: Option<&BuildMemory>) -> Result<BoundedBytes> {
         self.validate()?;
         if self.directory_resident_bytes() > limit.min(MAX_MANIFEST_BYTES) {
             return Err(SkeinError::Storage(
@@ -133,9 +161,10 @@ impl ManifestBody {
             checksum: body_checksum(self)?,
         };
         let mut writer = BoundedBytes::new(limit)?;
+        writer.memory = memory.cloned();
         serde_json::to_writer(&mut writer, &envelope)
             .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        Ok(writer.bytes)
+        Ok(writer)
     }
 
     pub(super) fn decode_bounded(bytes: &[u8], limit: u64) -> Result<Self> {

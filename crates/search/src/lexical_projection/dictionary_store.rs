@@ -1,7 +1,8 @@
 use super::{checksum, dictionary, LexicalProjectionConfig, RemoveOnDrop};
+use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -68,37 +69,75 @@ impl Descriptor {
 /// Shared requested capacity for document and dictionary directories.
 #[derive(Clone)]
 pub(super) struct DirectoryBudget {
-    used: Rc<Cell<u64>>,
+    state: Rc<RefCell<DirectoryState>>,
     limit: u64,
+}
+
+struct DirectoryState {
+    used: u64,
+    memory: Option<skein_executor::QueryMemoryLease>,
 }
 
 impl DirectoryBudget {
     pub(super) fn new(limit: u64) -> Self {
         Self {
-            used: Rc::new(Cell::new(0)),
+            state: Rc::new(RefCell::new(DirectoryState {
+                used: 0,
+                memory: None,
+            })),
             limit,
         }
     }
 
+    pub(super) fn with_memory(self, memory: &BuildMemory) -> Result<Self> {
+        if self.state.borrow().used != 0 || self.state.borrow().memory.is_some() {
+            return Err(SkeinError::Execution(
+                "lexical directory memory is already initialized".to_string(),
+            ));
+        }
+        self.state.borrow_mut().memory = Some(memory.retained.reserve(0)?);
+        Ok(self)
+    }
+
     pub(super) fn admit<T>(&self, entries: &mut Vec<T>, key_bytes: usize) -> Result<()> {
         let invalid = || SkeinError::Storage("lexical directory budget exceeded".to_string());
-        let base = self
+        let mut state = self.state.borrow_mut();
+        let base = state
             .used
-            .get()
             .checked_add(key_bytes as u64)
             .ok_or_else(invalid)?;
         if base > self.limit {
             return Err(invalid());
         }
         let previous_capacity = entries.capacity();
-        if entries.len() == previous_capacity {
+        let growth = if entries.len() == previous_capacity {
             let available = (self.limit - base) / std::mem::size_of::<T>() as u64;
             let available = usize::try_from(available).unwrap_or(usize::MAX);
             let growth = previous_capacity.max(1).min(available);
             if growth == 0 {
                 return Err(invalid());
             }
-            entries.try_reserve_exact(growth).map_err(|_| invalid())?;
+            growth
+        } else {
+            0
+        };
+        let replacement = if growth == 0 {
+            0
+        } else {
+            checked_mul(
+                checked_add(previous_capacity, growth)?,
+                std::mem::size_of::<T>(),
+            )?
+        };
+        let admitted = checked_add(key_bytes, replacement)?;
+        if let Some(memory) = &mut state.memory {
+            memory.grow(admitted)?;
+        }
+        if growth != 0 && entries.try_reserve_exact(growth).is_err() {
+            if let Some(memory) = &mut state.memory {
+                memory.shrink(admitted);
+            }
+            return Err(invalid());
         }
         let allocation = (entries.capacity() - previous_capacity)
             .checked_mul(std::mem::size_of::<T>())
@@ -107,7 +146,12 @@ impl DirectoryBudget {
             .checked_add(allocation as u64)
             .filter(|&bytes| bytes <= self.limit)
             .ok_or_else(invalid)?;
-        self.used.set(next);
+        if growth != 0
+            && let Some(memory) = &mut state.memory
+        {
+            memory.shrink(checked_mul(previous_capacity, std::mem::size_of::<T>())?);
+        }
+        state.used = next;
         Ok(())
     }
 }
@@ -331,6 +375,10 @@ impl Writer {
             .iter()
             .try_fold(0u64, |count, (_, metadata)| count.checked_add(metadata.df))
             .ok_or_else(|| SkeinError::Storage("dictionary posting count overflows".to_string()))?;
+        self.directory.admit(
+            &mut self.descriptors,
+            checked_add(first.0.len(), last.0.len())?,
+        )?;
         let descriptor = Descriptor {
             min_term: first.0.clone(),
             max_term: last.0.clone(),
@@ -344,13 +392,6 @@ impl Writer {
             })?,
             posting_count,
         };
-        self.directory.admit(
-            &mut self.descriptors,
-            descriptor
-                .min_term
-                .capacity()
-                .saturating_add(descriptor.max_term.capacity()),
-        )?;
         self.spill.charge(bytes.len() as u64)?;
         self.file.write_all(&bytes)?;
         self.bytes += bytes.len() as u64;

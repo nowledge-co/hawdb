@@ -110,7 +110,8 @@ dictionary initialization is also not included in these operation counters.
 Jieba's borrowed word visitor avoids a second Skein-owned `Vec<String>`, but its
 dependency-owned result vector still needs admission alongside DAG/HMM state
 before claiming complete analyzer admission. Artifact document buffers/directories,
-external merge, FST, codecs, RaBitQ and outer query/delta ownership likewise need
+manifest output and checksum scratch now share the build root as described in
+`LEXICAL_ARTIFACT_ADMISSION.md`. External merge, FST, codecs, RaBitQ and outer query/delta ownership still need
 the same whole-operation treatment. Existing component estimates, new ledger
 peaks and token-parity tests do not establish allocator/RSS bounds or #206's
 native-platform and representative-corpus acceptance gates. No analyzer digest,

@@ -3,6 +3,7 @@
 use super::*;
 
 mod analysis;
+mod artifact;
 mod bytes;
 mod state_machine;
 

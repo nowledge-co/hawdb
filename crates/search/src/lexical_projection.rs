@@ -22,6 +22,7 @@ static CACHE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 pub(super) const DEFAULT_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
 mod analyzer;
+mod artifact_memory;
 mod dictionary;
 mod dictionary_store;
 mod doclist;
@@ -1231,7 +1232,8 @@ impl LexicalProjectionWriter {
         let artifact_path = root.join(&artifact_name);
         let tmp_path = artifact_path.with_extension("skein.tmp");
         let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
-        let mut artifact = ArtifactBuilder::new(&tmp_path, generation, self.config)?;
+        let mut artifact =
+            ArtifactBuilder::new(&tmp_path, generation, self.config, memory.clone())?;
         artifact.task_context = self.task_context.clone();
         let mut runs = SpillRuns::new(root, generation, self.config);
         runs.task_context = self.task_context.clone();
@@ -1276,7 +1278,7 @@ impl LexicalProjectionWriter {
             previous_id_memory = next_id_memory;
             total_document_len =
                 total_document_len.saturating_add(u64::from(analyzed.document.document_len));
-            artifact.push_document(document.id.clone(), analyzed.document.document_len)?;
+            artifact.push_document(&document.id, analyzed.document.document_len)?;
             for (term, term_frequency) in analyzed.document.frequencies {
                 checkpoint(&self.task_context)?;
                 uncompressed_posting_payload_bytes = uncompressed_posting_payload_bytes
@@ -1348,7 +1350,8 @@ impl LexicalProjectionWriter {
             dictionaries: artifact.dictionaries,
             blocks: artifact.blocks,
         };
-        let manifest_bytes = manifest.encode_bounded(self.config.max_directory_bytes.get())?;
+        let manifest_bytes =
+            manifest.encode_admitted(self.config.max_directory_bytes.get(), &memory)?;
         // No cancellation after entering this manifest-last publication section.
         checkpoint(&self.task_context)?;
         durable_replace_file(&tmp_path, &artifact_path)?;
@@ -1358,7 +1361,7 @@ impl LexicalProjectionWriter {
         let mut manifest_guard = RemoveOnDrop::new(manifest_tmp.clone());
         {
             let mut file = File::create(&manifest_tmp)?;
-            file.write_all(&manifest_bytes)?;
+            file.write_all(manifest_bytes.as_ref())?;
             file.sync_all()?;
         }
         durable_replace_file(&manifest_tmp, &manifest_path)?;
@@ -1385,8 +1388,7 @@ struct ArtifactBuilder {
     config: LexicalProjectionConfig,
     offset: u64,
     next_block_id: u64,
-    document_pending: Vec<(String, u32)>,
-    document_pending_bytes: u64,
+    document_pending: artifact_memory::Documents,
     document_count: u64,
     posting_count: u64,
     posting_offset: u64,
@@ -1396,6 +1398,8 @@ struct ArtifactBuilder {
     blocks: Vec<BlockDescriptor>,
     directory: dictionary_store::DirectoryBudget,
     task_context: RuntimeTaskContext,
+    memory: BuildMemory,
+    _writer_memory: skein_executor::QueryMemoryLease,
 }
 
 struct ArtifactSummary {
@@ -1407,6 +1411,8 @@ struct ArtifactSummary {
     posting_skip_bytes: u64,
     dictionaries: Vec<dictionary_store::Descriptor>,
     blocks: Vec<BlockDescriptor>,
+    // This owner remains live when the directories move into ManifestBody.
+    _directory: dictionary_store::DirectoryBudget,
 }
 
 struct RemoveOnDrop {
@@ -1433,8 +1439,17 @@ impl Drop for RemoveOnDrop {
 }
 
 impl ArtifactBuilder {
-    fn new(path: &Path, generation: u64, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut writer = BufWriter::new(File::create(path)?);
+    fn new(
+        path: &Path,
+        generation: u64,
+        config: LexicalProjectionConfig,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        let writer_memory = memory
+            .retained
+            .reserve(crate::build_memory::SPOOL_BUFFER_BYTES)?;
+        let mut writer =
+            BufWriter::with_capacity(crate::build_memory::SPOOL_BUFFER_BYTES, File::create(path)?);
         writer.write_all(ARTIFACT_HEADER)?;
         writer.write_all(&generation.to_le_bytes())?;
         Ok(Self {
@@ -1444,8 +1459,7 @@ impl ArtifactBuilder {
             config,
             offset: ARTIFACT_HEADER.len() as u64 + 8,
             next_block_id: 0,
-            document_pending: Vec::new(),
-            document_pending_bytes: 0,
+            document_pending: artifact_memory::Documents::new(memory.clone())?,
             document_count: 0,
             posting_count: 0,
             posting_offset: 0,
@@ -1453,27 +1467,30 @@ impl ArtifactBuilder {
             posting_skip_bytes: 0,
             dictionaries: Vec::new(),
             blocks: Vec::new(),
-            directory: dictionary_store::DirectoryBudget::new(config.max_directory_bytes.get()),
+            directory: dictionary_store::DirectoryBudget::new(config.max_directory_bytes.get())
+                .with_memory(&memory)?,
             task_context: RuntimeTaskContext::default(),
+            memory,
+            _writer_memory: writer_memory,
         })
     }
 
-    fn push_document(&mut self, id: String, length: u32) -> Result<()> {
+    fn push_document(&mut self, id: &str, length: u32) -> Result<()> {
         checkpoint(&self.task_context)?;
-        let bytes = 4u64.saturating_add(id.len() as u64).saturating_add(4);
+        let bytes = artifact_memory::Documents::record_bytes(id, self.config)?;
         if !self.document_pending.is_empty()
-            && self.document_pending_bytes.saturating_add(bytes)
+            && self.document_pending.bytes.saturating_add(bytes) as u64
                 > self.config.target_block_bytes.get()
         {
             self.flush_documents()?;
         }
-        self.document_pending_bytes = self.document_pending_bytes.saturating_add(bytes);
-        self.document_pending.push((id, length));
-        Ok(())
+        self.document_pending.push(id, length)
     }
 
     fn finish_documents(&mut self) -> Result<()> {
-        self.flush_documents()
+        self.flush_documents()?;
+        self.document_pending.release();
+        Ok(())
     }
 
     fn flush_documents(&mut self) -> Result<()> {
@@ -1481,24 +1498,14 @@ impl ArtifactBuilder {
         if self.document_pending.is_empty() {
             return Ok(());
         }
-        let mut payload = Vec::with_capacity(self.document_pending_bytes as usize + 29);
-        encode_block_header(
-            &mut payload,
+        let payload = self.document_pending.encode(
             self.generation,
             self.next_block_id,
-            BlockKind::Documents,
-            self.document_pending.len(),
+            self.config,
+            &self.task_context,
         )?;
-        for (id, length) in &self.document_pending {
-            checkpoint(&self.task_context)?;
-            write_string(&mut payload, id)?;
-            payload.extend_from_slice(&length.to_le_bytes());
-        }
-        let min_key = self.document_pending.first().unwrap().0.clone();
-        let max_key = self.document_pending.last().unwrap().0.clone();
-        self.write_block(BlockKind::Documents, min_key, max_key, payload)?;
+        self.write_block(payload)?;
         self.document_pending.clear();
-        self.document_pending_bytes = 0;
         Ok(())
     }
 
@@ -1594,13 +1601,9 @@ impl ArtifactBuilder {
         Ok(())
     }
 
-    fn write_block(
-        &mut self,
-        kind: BlockKind,
-        min_key: String,
-        max_key: String,
-        payload: Vec<u8>,
-    ) -> Result<()> {
+    fn write_block(&mut self, block: artifact_memory::EncodedDocuments) -> Result<()> {
+        let kind = BlockKind::Documents;
+        let payload = &block.payload;
         if payload.len() as u64 > self.config.max_block_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical build produced a {} byte block, exceeding {}",
@@ -1612,17 +1615,13 @@ impl ArtifactBuilder {
         let descriptor = BlockDescriptor {
             block_id: self.next_block_id,
             kind,
-            min_key,
-            max_key,
+            min_key: block.min_key,
+            max_key: block.max_key,
             offset: self.offset,
             length: payload.len() as u64,
-            checksum: checksum(&payload),
+            checksum: checksum(payload),
             entry_count,
-            ordinal_start: if kind == BlockKind::Documents {
-                self.document_count
-            } else {
-                0
-            },
+            ordinal_start: self.document_count,
         };
         self.directory.admit(
             &mut self.blocks,
@@ -1631,18 +1630,16 @@ impl ArtifactBuilder {
                 .capacity()
                 .saturating_add(descriptor.max_key.capacity()),
         )?;
-        self.writer.write_all(&payload)?;
+        self.writer.write_all(payload)?;
         self.offset = self.offset.saturating_add(payload.len() as u64);
         self.next_block_id = self.next_block_id.saturating_add(1);
         self.blocks.push(descriptor);
-        if kind == BlockKind::Documents {
-            self.document_count = self
-                .document_count
-                .checked_add(u64::from(entry_count))
-                .ok_or_else(|| {
-                    SkeinError::Storage("lexical document ordinal range overflows".to_string())
-                })?;
-        }
+        self.document_count = self
+            .document_count
+            .checked_add(u64::from(entry_count))
+            .ok_or_else(|| {
+                SkeinError::Storage("lexical document ordinal range overflows".to_string())
+            })?;
         Ok(())
     }
 
@@ -1650,8 +1647,11 @@ impl ArtifactBuilder {
         checkpoint(&self.task_context)?;
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
-        let (length, digest) =
-            file_digest_with_context(&File::open(&self.path)?, &self.task_context)?;
+        let (length, digest) = file_digest_with_memory(
+            &File::open(&self.path)?,
+            &self.task_context,
+            Some(&self.memory),
+        )?;
         Ok(ArtifactSummary {
             len: length,
             checksum: digest,
@@ -1661,6 +1661,7 @@ impl ArtifactBuilder {
             posting_skip_bytes: self.posting_skip_bytes,
             dictionaries: self.dictionaries,
             blocks: self.blocks,
+            _directory: self.directory,
         })
     }
 }
@@ -2024,12 +2025,24 @@ fn file_digest(file: &File) -> Result<(u64, u64)> {
 }
 
 fn file_digest_with_context(file: &File, task_context: &RuntimeTaskContext) -> Result<(u64, u64)> {
+    file_digest_with_memory(file, task_context, None)
+}
+
+fn file_digest_with_memory(
+    file: &File,
+    task_context: &RuntimeTaskContext,
+    memory: Option<&BuildMemory>,
+) -> Result<(u64, u64)> {
     checkpoint(task_context)?;
     let mut file = file.try_clone()?;
     file.seek(SeekFrom::Start(0))?;
     let mut digest = Digest::new();
     let mut total = 0u64;
-    let mut buffer = vec![0u8; 1024 * 1024];
+    let capacity = file.metadata()?.len().clamp(1, 1024 * 1024) as usize;
+    let _buffer_memory = memory
+        .map(|memory| memory.retained.reserve(capacity))
+        .transpose()?;
+    let mut buffer = vec![0u8; capacity];
     loop {
         checkpoint(task_context)?;
         let read = file.read(&mut buffer)?;
@@ -2055,6 +2068,7 @@ mod tests {
     mod admission;
     mod analyzer_memory;
     mod artifact_accounting;
+    mod artifact_admission;
     mod build_cancellation;
     mod compact_dictionary;
     mod compact_postings;
