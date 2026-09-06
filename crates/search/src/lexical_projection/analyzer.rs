@@ -4,13 +4,13 @@ use super::{DeltaDocument, LexicalProjectionConfig};
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add, BuildMemory, SET_ENTRY_BYTES};
 use crate::error::{Result, SkeinError};
-use crate::{
-    identifier_parts, identifier_tokens, push_analyzed_token, SearchAnalyzerLexicon,
-    SearchDocument, TokenSequence, TITLE_TERM_FREQUENCY_WEIGHT,
-};
+use crate::token_parts::IdentifierParts;
+use crate::{SearchAnalyzerLexicon, SearchDocument, TITLE_TERM_FREQUENCY_WEIGHT};
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) mod tokens;
 
 pub(super) struct AnalyzedDocument {
     pub(super) document: DeltaDocument,
@@ -34,6 +34,12 @@ impl Charge {
             lease.grow(bytes)?;
         }
         Ok(())
+    }
+
+    fn shrink(&mut self, bytes: usize) {
+        if let Some(lease) = &mut self.0 {
+            lease.shrink(bytes);
+        }
     }
 }
 
@@ -102,8 +108,7 @@ impl Frequencies<'_> {
     ) -> Result<()> {
         let mut seen_memory = Charge::new(memory)?;
         let mut seen = BTreeSet::<String>::new();
-        let mut previous_memory = Charge::new(memory)?;
-        let mut previous = None::<String>;
+        let mut previous = None::<&str>;
         for raw in text.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
             self.check()?;
             if raw.is_empty() {
@@ -111,39 +116,33 @@ impl Frequencies<'_> {
             }
             #[cfg(test)]
             evidence::raw();
-            let parts = identifier_parts(raw);
-            if let (Some(previous), Some(first)) = (previous.as_ref(), parts.first()) {
-                let mut boundary = TokenSequence::default();
-                push_analyzed_token(&mut boundary, format!("{previous}_{first}"), lexicon);
-                for token in boundary.into_vec() {
+            let mut parts = IdentifierParts::new(raw);
+            let first = parts.next();
+            if let (Some(previous), Some(first)) = (previous, first) {
+                let boundary = tokens::Text::boundary(previous, first, memory)?;
+                tokens::boundary(boundary.as_str(), lexicon, self.task, memory, |token| {
                     // Boundary tokens are unique across this field. Ordinary
                     // identifier occurrences still contribute repeatedly.
-                    if !seen.contains(&token) {
-                        self.push(&token, weight)?;
-                        seen_memory.grow(checked_add(SET_ENTRY_BYTES, token.capacity())?)?;
-                        seen.insert(token);
+                    if !seen.contains(token) {
+                        self.push(token, weight)?;
+                        seen_memory.grow(checked_add(SET_ENTRY_BYTES, token.len())?)?;
+                        seen.insert(token.to_string());
                     }
-                }
+                    Ok(())
+                })?;
             }
-            // Identifier generation retains its existing local deduplication.
-            // Its scratch/Jieba state is a separate admission boundary, not
-            // covered by the retained frequency/set charges in this module.
-            for token in identifier_tokens(raw, lexicon) {
-                self.push(&token, weight)?;
-                if !seen.contains(&token) {
-                    seen_memory.grow(checked_add(SET_ENTRY_BYTES, token.capacity())?)?;
-                    seen.insert(token);
+            tokens::identifier(raw, lexicon, self.task, memory, |token| {
+                self.push(token, weight)?;
+                if !seen.contains(token) {
+                    seen_memory.grow(checked_add(SET_ENTRY_BYTES, token.len())?)?;
+                    seen.insert(token.to_string());
                 }
-            }
-            if let Some(last) = parts.last() {
-                let mut next_memory = Charge::new(memory)?;
-                next_memory.grow(last.len())?;
-                previous = Some(last.clone());
-                previous_memory = next_memory;
+                Ok(())
+            })?;
+            if let Some(last) = parts.last().or(first) {
+                previous = Some(last);
             }
         }
-        drop(previous);
-        drop(previous_memory);
         drop(seen);
         drop(seen_memory);
         Ok(())

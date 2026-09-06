@@ -7,15 +7,32 @@ pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
 static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(Jieba::new);
 
 pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
-    if !text.chars().any(is_han_search_char) {
-        return Vec::new();
+    let mut tokens = Vec::new();
+    let result: Result<(), std::convert::Infallible> = visit_chinese_search_tokens(text, |word| {
+        tokens.push(word.to_string());
+        Ok(())
+    });
+    match result {
+        Ok(()) => tokens,
+        Err(error) => match error {},
     }
-    CHINESE_TOKENIZER
-        .cut_for_search(text, true)
-        .into_iter()
-        .filter(|token| token.word.chars().any(is_han_search_char))
-        .map(|token| token.word.to_string())
-        .collect()
+}
+
+pub(super) fn visit_chinese_search_tokens<E>(
+    text: &str,
+    mut visit: impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    if !text.chars().any(is_han_search_char) {
+        return Ok(());
+    }
+    // The dependency still owns its output/DAG/HMM scratch. Borrow its words
+    // instead of constructing another unadmitted Vec<String> in the caller.
+    for token in CHINESE_TOKENIZER.cut_for_search(text, true) {
+        if token.word.chars().any(is_han_search_char) {
+            visit(token.word)?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn is_cjk_search_char(ch: char) -> bool {

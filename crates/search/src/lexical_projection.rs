@@ -2060,6 +2060,8 @@ mod tests {
     mod compact_postings;
     mod fuzz;
     mod robustness;
+    mod token_memory;
+    mod token_reference;
 
     pub(super) fn projection_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

@@ -70,13 +70,18 @@ complete fused-sink budget or allocator/RSS coverage.
 
 - `analyzer`: seed `0x206a11`, 12,000 document/lexicon combinations compare
   incremental production frequencies and weighted length with the preceding
-  complete token-list path. Four lexicons include overlapping alias rules and
+  frozen allocating token-list oracle from `2b9caa56`. Four lexicons include overlapping alias rules and
   stopwords; title/content/metadata mix identifiers, punctuation, CJK, NUL and
   Unicode case boundaries. Exact token limits succeed, one-short limits reject,
   and cancelled child contexts do not cancel their parent. Every result/error
   releases retained charges and the operation keeps exactly three accounts.
-  This shares low-level token generation, not field traversal/aggregation; it
-  does not prove admission for temporary identifier or Jieba/TLS allocations.
+  A second seed `0x206b11` compares 12,000 ordered identifier outputs against that
+  oracle for both serving and streaming paths, with exact/one-short shared-memory
+  limits, correct output prefixes on failure, and lease release. The oracle
+  retains the preceding character-vector/parts/ngram/suffix algorithms rather
+  than sharing their new production recipes. A scalar sweep covers lowercase
+  admission/release for all 1,112,064 Unicode scalars. Jieba/TLS allocation and
+  shared dictionary ownership are still outside this admission evidence.
 - `posting`: seed 206, 100,000 valid-encode plus mutated-decode pairs. All three
   modes (128-entry SIMD, varint tails, wide-delta fallback), full-width ordinals
   and term frequencies, truncation, extension, arbitrary bytes and structured

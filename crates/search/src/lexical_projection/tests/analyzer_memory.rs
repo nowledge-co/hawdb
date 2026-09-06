@@ -11,7 +11,7 @@ fn memory(bytes: usize) -> BuildMemory {
 }
 
 fn check_parity(document: &SearchDocument, lexicon: &SearchAnalyzerLexicon) {
-    let tokens = document_tokens(document, lexicon);
+    let tokens = super::token_reference::document_tokens(document, lexicon);
     let length = tokens.len() as u32;
     let mut expected = BTreeMap::<String, u32>::new();
     for token in tokens {

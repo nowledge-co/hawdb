@@ -29,7 +29,7 @@ it reaches this decoder rather than stopping at the integrity gate.
 
 `create_with_context` uses the optional task memory reservation as the root of
 one operation-local `QueryMemoryLedger`. Its three accounts are shared across
-the writer, spool reader, segment document owner and retained lexical analysis
+the writer, spool reader, segment document owner and retained/scratch lexical analysis
 state (see `LEXICAL_ANALYZER_ADMISSION.md`). Accounts are not created
 per document: the ledger retains account metadata until the build ends.
 

@@ -54,6 +54,7 @@ pub mod rabitq_projection;
 mod range_io;
 mod recall_validation;
 mod snapshot_writer;
+mod token_parts;
 mod vector_execution;
 
 mod error {
@@ -126,7 +127,7 @@ mod compiled_capabilities {
     }
 }
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
-use cjk_tokenizer::{chinese_search_tokens, is_cjk_search_char};
+use cjk_tokenizer::chinese_search_tokens;
 pub use generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
@@ -1213,11 +1214,16 @@ impl SearchAnalyzerLexicon {
     }
 
     fn semantic_aliases(&self, token: &str) -> Vec<String> {
+        self.semantic_alias_refs(token)
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn semantic_alias_refs<'a>(&'a self, token: &'a str) -> impl Iterator<Item = &'a str> {
         self.alias_rules
             .iter()
-            .filter(|rule| rule.inputs.iter().any(|input| input == token))
-            .flat_map(|rule| rule.aliases.iter().cloned())
-            .collect()
+            .filter(move |rule| rule.inputs.iter().any(|input| input == token))
+            .flat_map(|rule| rule.aliases.iter().map(String::as_str))
     }
 }
 
@@ -6552,72 +6558,15 @@ fn push_cjk_ngram_tokens(
     raw: &str,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) {
-    let mut run = Vec::new();
-    for ch in raw.chars() {
-        if is_cjk_search_char(ch) {
-            run.push(ch);
-        } else {
-            push_cjk_ngram_run_tokens(tokens, &run, analyzer_lexicon);
-            run.clear();
-        }
-    }
-    push_cjk_ngram_run_tokens(tokens, &run, analyzer_lexicon);
-}
-
-fn push_cjk_ngram_run_tokens(
-    tokens: &mut TokenSequence,
-    run: &[char],
-    analyzer_lexicon: &SearchAnalyzerLexicon,
-) {
-    for width in [2_usize, 3] {
-        if run.len() < width {
-            continue;
-        }
-        for window in run.windows(width) {
-            push_unique_token(tokens, window.iter().collect(), analyzer_lexicon);
-        }
+    for token in token_parts::cjk_ngrams(raw) {
+        push_unique_token(tokens, token.to_string(), analyzer_lexicon);
     }
 }
 
 fn identifier_parts(raw: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut previous_kind = IdentifierCharKind::Other;
-    let chars = raw.chars().collect::<Vec<_>>();
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if ch == '_' {
-            push_identifier_part(&mut parts, &mut current);
-            previous_kind = IdentifierCharKind::Other;
-            continue;
-        }
-        let kind = IdentifierCharKind::from_char(ch);
-        let next_kind = chars
-            .get(index + 1)
-            .copied()
-            .map(IdentifierCharKind::from_char);
-        if !current.is_empty()
-            && ((previous_kind == IdentifierCharKind::Lower && kind == IdentifierCharKind::Upper)
-                || (previous_kind == IdentifierCharKind::Upper
-                    && kind == IdentifierCharKind::Upper
-                    && next_kind == Some(IdentifierCharKind::Lower))
-                || (previous_kind != IdentifierCharKind::Digit
-                    && kind == IdentifierCharKind::Digit)
-                || (previous_kind == IdentifierCharKind::Digit
-                    && kind != IdentifierCharKind::Digit))
-        {
-            push_identifier_part(&mut parts, &mut current);
-        }
-        current.extend(ch.to_lowercase());
-        previous_kind = kind;
-    }
-    push_identifier_part(&mut parts, &mut current);
-    parts
-}
-
-fn push_identifier_part(parts: &mut Vec<String>, current: &mut String) {
-    if !current.is_empty() {
-        parts.push(std::mem::take(current));
-    }
+    token_parts::IdentifierParts::new(raw)
+        .map(|part| part.chars().flat_map(char::to_lowercase).collect())
+        .collect()
 }
 
 fn push_unique_token(
@@ -6704,31 +6653,9 @@ impl TokenSequence {
 }
 
 fn normalize_english_suffixes(token: &str) -> Vec<String> {
-    if token.len() <= 4 || token.contains('_') || token.chars().any(|ch| ch.is_ascii_digit()) {
-        return Vec::new();
-    }
-    if let Some(stem) = token.strip_suffix("ies")
-        && stem.len() >= 2
-    {
-        return vec![format!("{stem}y")];
-    }
-    if let Some(stem) = token.strip_suffix("ing")
-        && stem.len() >= 3
-    {
-        return suffix_stem_variants(trim_doubled_suffix_consonant(stem));
-    }
-    if let Some(stem) = token.strip_suffix("ed")
-        && stem.len() >= 3
-    {
-        return suffix_stem_variants(trim_doubled_suffix_consonant(stem));
-    }
-    if let Some(stem) = token.strip_suffix('s')
-        && stem.len() >= 3
-        && !stem.ends_with('s')
-    {
-        return vec![stem.to_string()];
-    }
-    Vec::new()
+    token_parts::suffix_variants(token)
+        .map(|(stem, suffix)| format!("{stem}{suffix}"))
+        .collect()
 }
 
 fn is_core_search_stopword(token: &str) -> bool {
@@ -6757,14 +6684,6 @@ fn is_core_search_stopword(token: &str) -> bool {
             | "was"
             | "with"
     )
-}
-
-fn suffix_stem_variants(stem: &str) -> Vec<String> {
-    let mut variants = vec![stem.to_string()];
-    if matches!(stem.chars().last(), Some('c' | 'v' | 'z')) {
-        variants.push(format!("{stem}e"));
-    }
-    variants
 }
 
 fn trim_doubled_suffix_consonant(stem: &str) -> &str {
