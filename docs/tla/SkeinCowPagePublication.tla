@@ -488,6 +488,7 @@ PublishCheckpoint ==
     /\ candidateEpoch' = 0
     /\ candidateBaseGeneration' = candidateGeneration
     /\ candidateDirtyPages' = {}
+    /\ candidateRoot' = [page \in Pages |-> 0]
     /\ UNCHANGED <<
         walDurableEpoch,
         walDirtyByEpoch,
@@ -501,7 +502,6 @@ PublishCheckpoint ==
         overflowEpoch,
         durablePages,
         pageEpoch,
-        candidateRoot,
         readerGeneration,
         staleCandidateRejected
         >>
@@ -562,6 +562,7 @@ RejectStaleCandidate ==
     /\ candidateEpoch' = 0
     /\ candidateBaseGeneration' = activeGeneration
     /\ candidateDirtyPages' = {}
+    /\ candidateRoot' = [page \in Pages |-> 0]
     /\ staleCandidateRejected' = TRUE
     /\ UNCHANGED <<
         walDurableEpoch,
@@ -584,7 +585,6 @@ RejectStaleCandidate ==
         canonicalOverflowGeneration,
         durablePages,
         pageEpoch,
-        candidateRoot,
         readerGeneration
         >>
 
@@ -707,6 +707,7 @@ CrashAndRecover ==
     /\ candidateEpoch' = 0
     /\ candidateBaseGeneration' = activeGeneration
     /\ candidateDirtyPages' = {}
+    /\ candidateRoot' = [page \in Pages |-> 0]
     /\ readerGeneration' = [reader \in Readers |-> -1]
     /\ UNCHANGED <<
         walDurableEpoch,
@@ -724,7 +725,6 @@ CrashAndRecover ==
         canonicalOverflowGeneration,
         durablePages,
         pageEpoch,
-        candidateRoot,
         staleCandidateRejected
         >>
 
@@ -829,6 +829,12 @@ CandidateUsesFreshImmutableIdentity ==
 
 DurableCandidateIsNotCanonicalUntilCheckpointPublication ==
     candidatePhase = "idle" \/ candidateGeneration # canonicalOverflowGeneration
+
+(* Rust releases PreparedCheckpoint on publication, rejection, and unwind. *)
+(* No transition reads an idle candidateRoot before overwriting it; use one *)
+(* canonical absent value instead of exploring unreachable object contents. *)
+IdleCandidateRootIsReleased ==
+    candidatePhase = "idle" => candidateRoot = [page \in Pages |-> 0]
 
 CandidateRootCopiesDirtyAndSelectedPages ==
     candidatePhase = "idle" \/

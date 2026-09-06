@@ -201,6 +201,115 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
 }
 
 #[test]
+fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
+    use crate::{SkeinEmbedded, SkeinEmbeddedOpenOptions};
+    use skein_qos::RuntimeGovernorConfig;
+    use std::num::{NonZeroU64, NonZeroUsize};
+
+    let path = unique_test_dir("row_page_compaction_dirty_limits");
+    let mode = StorageResidencyMode::Materialized;
+    drop(churn_database(&path, mode, 4));
+    let mut engine = SkeinEmbedded::open_with_options(
+        SkeinEmbeddedOpenOptions::new(&path)
+            .with_config(open_config(mode))
+            .with_runtime_governor_config(RuntimeGovernorConfig {
+                cpu_slot_limit: NonZeroUsize::new(1),
+                background_task_limit: NonZeroUsize::new(1),
+                memory_budget_bytes: Some(1024 * 1024 * 1024),
+                ..Default::default()
+            }),
+    )
+    .unwrap();
+    for table in 1..=2 {
+        engine
+            .database_mut()
+            .query_sql(&format!(
+                "UPDATE documents_{table} SET revision = 99 WHERE id = 1"
+            ))
+            .unwrap();
+    }
+    let generation = engine
+        .database_mut()
+        .storage_residency_report()
+        .relational_rows
+        .base_generation
+        .unwrap();
+    let epoch = engine.database_mut().commit_epoch();
+    for (config, expected_error) in [
+        (
+            RelationalRowPageCompactionConfig {
+                max_dirty_pages: NonZeroUsize::new(1).unwrap(),
+                ..Default::default()
+            },
+            "dirty-page limit",
+        ),
+        (
+            RelationalRowPageCompactionConfig {
+                max_dirty_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            },
+            "checkpoint capture requires",
+        ),
+        (
+            RelationalRowPageCompactionConfig {
+                max_materialized_checkpoint_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            },
+            "materialized checkpoint allowance",
+        ),
+    ] {
+        let error = engine
+            .database_mut()
+            .compact_relational_row_pages(config)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error}");
+        let snapshot = engine.runtime_governor().snapshot();
+        assert_eq!(snapshot.admissions, snapshot.completions);
+        assert_eq!(snapshot.admission_rejections, 0);
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+        assert_eq!(snapshot.active_cpu_slots, 0);
+        assert_eq!(snapshot.active_background_io_slots, 0);
+        let db = engine.database_mut();
+        assert_eq!(db.commit_epoch(), epoch);
+        assert_eq!(
+            db.storage_residency_report()
+                .relational_rows
+                .base_generation,
+            Some(generation)
+        );
+        assert!(!path
+            .join(format!(".checkpoint.{}.prepare", generation + 1))
+            .exists());
+        assert!(!path
+            .join(skein_storage::relational_row_page_manifest_generation_file(
+                generation + 1
+            ))
+            .exists());
+    }
+    let report = engine
+        .database_mut()
+        .compact_relational_row_pages(Default::default())
+        .unwrap();
+    assert_eq!(report.published_generation, generation + 1);
+    assert_eq!(report.source_commit_epoch, epoch);
+    assert_eq!(report.dirty_pages_written, 2);
+    assert_eq!(engine.runtime_governor().snapshot().admissions, 4);
+    for table in 1..=2 {
+        let output = engine
+            .database_mut()
+            .query_sql(&format!(
+                "SELECT revision FROM documents_{table} WHERE id = 1"
+            ))
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].get("revision"), Some(&Value::Int(99)));
+    }
+    engine.database_mut().scrub_storage().unwrap();
+    drop(engine);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
     use crate::store::{set_checkpoint_failpoint, CheckpointPublishStage};
 

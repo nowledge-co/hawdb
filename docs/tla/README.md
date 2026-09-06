@@ -432,6 +432,11 @@ select any subset of clean pages for relocation. This deliberately
 overapproximates occupancy-based generation selection: an empty subset models
 ordinary base reuse. Numeric occupancy, encoded file lengths, cancellation,
 and memory limits are checked by implementation tests, not this model.
+Released candidates reset their root to a canonical absent value. Every action
+that consumes the candidate root requires a non-idle phase, and BeginCheckpoint
+overwrites it before reuse. This models PreparedCheckpoint destruction and
+removes unobservable stale object contents from the state space; it does not
+restrict readers, epochs, generations, relocation choices, or liveness.
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and
