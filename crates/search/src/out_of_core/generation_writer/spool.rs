@@ -18,7 +18,7 @@ pub(super) struct SpoolSource {
 impl SpoolSource {
     pub(super) fn scan(
         &self,
-        consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
+        consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
     ) -> Result<()> {
         let file = File::open(&self.path)?;
         #[cfg(test)]
@@ -84,7 +84,10 @@ impl SpoolSource {
                 )));
             }
             previous_id = Some(document.id.clone());
-            consumer(document)?;
+            let document_ordinal = u64::try_from(ordinal).map_err(|_| {
+                SkeinError::Storage("search document ordinal exceeds u64".to_string())
+            })?;
+            consumer(document_ordinal, document)?;
         }
         let mut trailing = [0u8; 1];
         if reader.read(&mut trailing)? != 0 {

@@ -1003,8 +1003,11 @@ impl LexicalProjectionWriter {
             analyzer_digest,
             documents_digest,
             |consumer| {
-                for document in documents {
-                    consumer(document)?;
+                for (ordinal, document) in documents.enumerate() {
+                    let ordinal = u64::try_from(ordinal).map_err(|_| {
+                        SkeinError::Storage("lexical document ordinal exceeds u64".to_string())
+                    })?;
+                    consumer(ordinal, document)?;
                 }
                 Ok(())
             },
@@ -1020,7 +1023,7 @@ impl LexicalProjectionWriter {
         source_graph_commit_epoch: Option<u64>,
         analyzer_digest: u64,
         documents_digest: u64,
-        scan: impl FnOnce(&mut dyn FnMut(&SearchDocument) -> Result<()>) -> Result<()>,
+        scan: impl FnOnce(&mut dyn FnMut(u64, &SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
         let artifact_name = artifact_file(generation);
@@ -1033,9 +1036,17 @@ impl LexicalProjectionWriter {
         let mut chunk_bytes = 0u64;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
-        let mut consume = |document: &SearchDocument| -> Result<()> {
+        let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
+            if ordinal != document_count {
+                return Err(SkeinError::Storage(format!(
+                    "lexical document ordinal {ordinal} does not follow {document_count}"
+                )));
+            }
+            let next_document_count = document_count.checked_add(1).ok_or_else(|| {
+                SkeinError::Storage("lexical document ordinal overflow".to_string())
+            })?;
             let analyzed = analyze_delta_document(document, analyzer, self.config)?;
-            document_count = document_count.saturating_add(1);
+            document_count = next_document_count;
             total_document_len =
                 total_document_len.saturating_add(u64::from(analyzed.document_len));
             artifact.push_document(document.id.clone(), analyzed.document_len)?;
@@ -1814,6 +1825,39 @@ mod tests {
             })
             .map(|block| block.length)
             .sum()
+    }
+
+    #[test]
+    fn scan_rejects_non_dense_document_ordinals_without_publishing_artifacts() {
+        for ordinals in [vec![1], vec![0, 2], vec![0, 0]] {
+            let root = projection_root(&format!("ordinal-sequence-{ordinals:?}"));
+            fs::create_dir_all(&root).unwrap();
+            let analyzer = SearchAnalyzerLexicon::default();
+            let result = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
+                .write_scanned(
+                    &root,
+                    1,
+                    None,
+                    11,
+                    13,
+                    |consume| {
+                        for (number, ordinal) in ordinals.iter().enumerate() {
+                            consume(
+                                *ordinal,
+                                &document(&format!("doc-{number}"), "Graph", "storage"),
+                            )?;
+                        }
+                        Ok(())
+                    },
+                    &analyzer,
+                );
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("lexical document ordinal"));
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

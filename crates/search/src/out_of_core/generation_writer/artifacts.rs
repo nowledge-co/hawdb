@@ -35,6 +35,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     metadata_offset: u64,
     vector_offset: u64,
     next_vector_ordinal: u64,
+    next_document_ordinal: u64,
     descriptor_working_bytes: u64,
     peak_segment_document_count: usize,
     peak_segment_encoded_bytes: u64,
@@ -78,6 +79,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             metadata_offset: 0,
             vector_offset: 0,
             next_vector_ordinal: 0,
+            next_document_ordinal: 0,
             descriptor_working_bytes: 0,
             peak_segment_document_count: 0,
             peak_segment_encoded_bytes: 0,
@@ -86,11 +88,16 @@ impl<'a> SegmentArtifactBuilder<'a> {
 
     #[cfg(test)]
     pub(super) fn build(mut self, source: &SpoolSource) -> Result<SegmentArtifactOutput> {
-        source.scan(&mut |document| self.push(document))?;
+        source.scan(&mut |ordinal, document| self.push(ordinal, document))?;
         self.finish(source.document_count)
     }
 
     pub(super) fn finish(mut self, document_count: usize) -> Result<SegmentArtifactOutput> {
+        if u64::try_from(document_count).ok() != Some(self.next_document_ordinal) {
+            return Err(SkeinError::Storage(
+                "search segment document count disagrees with source ordinals".to_string(),
+            ));
+        }
         self.flush_segment()?;
         self.document_file.sync_all()?;
         self.metadata_file.sync_all()?;
@@ -121,7 +128,16 @@ impl<'a> SegmentArtifactBuilder<'a> {
         })
     }
 
-    pub(super) fn push(&mut self, document: SearchDocument) -> Result<()> {
+    pub(super) fn push(&mut self, ordinal: u64, document: SearchDocument) -> Result<()> {
+        if ordinal != self.next_document_ordinal {
+            return Err(SkeinError::Storage(format!(
+                "search segment document ordinal {ordinal} does not follow {}",
+                self.next_document_ordinal
+            )));
+        }
+        let next_document_ordinal = ordinal.checked_add(1).ok_or_else(|| {
+            SkeinError::Storage("search segment document ordinal overflow".to_string())
+        })?;
         let encoded_bytes = encode_search_document_line(&document).len() as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
@@ -138,6 +154,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         }
         self.segment_encoded_bytes = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         self.documents.push(document);
+        self.next_document_ordinal = next_document_ordinal;
         Ok(())
     }
 
