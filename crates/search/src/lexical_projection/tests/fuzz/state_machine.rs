@@ -289,6 +289,44 @@ impl Model {
                 config
             )
             .is_err());
+        self.cancelled_build();
+    }
+
+    fn cancelled_build(&self) {
+        let manifest = fs::read(self.root.join(MANIFEST_FILE)).unwrap();
+        let next = self.reader.generation() + 1;
+        let task = RuntimeTaskContext::default();
+        let stop = self.reader.generation() as usize % 16;
+        let result = LexicalProjectionWriter::new(self.config)
+            .with_context(task.clone())
+            .write_scanned(
+                &self.root,
+                next,
+                None,
+                11,
+                13,
+                |consume| {
+                    for (ordinal, document) in self.documents.values().enumerate() {
+                        consume(ordinal as u64, document)?;
+                        if ordinal == stop {
+                            task.cancellation().cancel();
+                            break;
+                        }
+                    }
+                    Ok(())
+                },
+                &self.analyzer,
+            );
+        let error = result.unwrap_err();
+        assert!(matches!(error, SkeinError::Execution(_)), "{error}");
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert_eq!(fs::read(self.root.join(MANIFEST_FILE)).unwrap(), manifest);
+        assert!(!self.root.join(artifact_file(next)).exists());
+        assert!(fs::read_dir(&self.root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with("tmp")));
     }
 
     fn check(&self, random: &mut Random, step: usize) {

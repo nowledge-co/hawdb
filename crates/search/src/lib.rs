@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
+mod build_control;
 mod cjk_tokenizer;
 mod generation_cleanup;
 mod lexical_projection;

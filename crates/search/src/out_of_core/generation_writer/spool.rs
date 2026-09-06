@@ -1,5 +1,7 @@
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::{checksum_bytes, decode_search_document_line, SearchDocument};
+use skein_core::RuntimeTaskContext;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -16,10 +18,20 @@ pub(super) struct SpoolSource {
 }
 
 impl SpoolSource {
+    #[cfg(test)]
     pub(super) fn scan(
         &self,
         consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
     ) -> Result<()> {
+        self.scan_with_context(&RuntimeTaskContext::default(), consumer)
+    }
+
+    pub(super) fn scan_with_context(
+        &self,
+        task_context: &RuntimeTaskContext,
+        consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
+    ) -> Result<()> {
+        checkpoint(task_context)?;
         let file = File::open(&self.path)?;
         #[cfg(test)]
         let file = read_evidence::track(file);
@@ -33,6 +45,7 @@ impl SpoolSource {
         }
         let mut previous_id = None::<String>;
         for ordinal in 0..self.document_count {
+            checkpoint(task_context)?;
             let mut raw_length = [0u8; 8];
             let mut raw_checksum = [0u8; 8];
             reader.read_exact(&mut raw_length).map_err(|error| {
@@ -75,6 +88,7 @@ impl SpoolSource {
                 ))
             })?;
             let document = decode_search_document_line(line)?;
+            checkpoint(task_context)?;
             if previous_id
                 .as_ref()
                 .is_some_and(|previous| previous >= &document.id)
@@ -88,6 +102,7 @@ impl SpoolSource {
                 SkeinError::Storage("search document ordinal exceeds u64".to_string())
             })?;
             consumer(document_ordinal, document)?;
+            checkpoint(task_context)?;
         }
         let mut trailing = [0u8; 1];
         if reader.read(&mut trailing)? != 0 {
@@ -133,10 +148,29 @@ impl Drop for StageDirectory {
 #[cfg(test)]
 pub(super) mod read_evidence {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
         static READS: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
+        static CANCEL_AFTER: RefCell<Option<(u64, crate::RuntimeCancellationToken)>> = const { RefCell::new(None) };
+    }
+
+    pub(in super::super) struct CancelGuard;
+
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            CANCEL_AFTER.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+
+    pub(in super::super) fn cancel_after_bytes(
+        bytes: u64,
+        token: crate::RuntimeCancellationToken,
+    ) -> CancelGuard {
+        CANCEL_AFTER.with(|slot| *slot.borrow_mut() = Some((bytes, token)));
+        CancelGuard
     }
 
     pub(super) struct TrackedFile(File);
@@ -159,6 +193,15 @@ pub(super) mod read_evidence {
             READS.with(|reads| {
                 let (opens, bytes) = reads.get();
                 reads.set((opens, bytes + count as u64));
+                CANCEL_AFTER.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    if slot
+                        .as_ref()
+                        .is_some_and(|(limit, _)| bytes + count as u64 >= *limit)
+                    {
+                        slot.take().unwrap().1.cancel();
+                    }
+                });
             });
             Ok(count)
         }

@@ -11,6 +11,8 @@ use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod cancellation;
+
 #[test]
 fn fused_generation_reads_source_spool_once() {
     let root = test_dir("fused_generation_read_once");

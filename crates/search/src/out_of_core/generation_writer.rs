@@ -1,4 +1,5 @@
 use super::next_generation;
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
@@ -13,9 +14,12 @@ use crate::{
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
-use publication::{file_len_checksum, publish_generation, PublishGenerationInput};
+#[cfg(test)]
+use publication::file_len_checksum;
+use publication::{publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
@@ -169,6 +173,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     poisoned: bool,
+    task_context: RuntimeTaskContext,
 }
 
 impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
@@ -194,6 +199,22 @@ impl SearchOutOfCoreGenerationWriter {
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
+        Self::create_with_context(root, options, RuntimeTaskContext::default())
+    }
+
+    /// Builds with cooperative cancellation/deadline checks through spooling and
+    /// artifact preparation. Cancellation is checked before final publication;
+    /// once that commit section starts, it completes without observing late
+    /// cancellation. Individual filesystem and bounded codec calls are not
+    /// interruptible. The caller retains ownership of its governor admission.
+    /// Component memory caps still come from the build options; this entry point
+    /// does not yet enforce an aggregate cross-phase memory reservation.
+    pub fn create_with_context(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
         validate_options(&options)?;
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
@@ -238,6 +259,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             poisoned: false,
+            task_context,
         })
     }
 
@@ -262,6 +284,16 @@ impl SearchOutOfCoreGenerationWriter {
         SearchOutOfCoreGenerationUpdate::prepare(reader, delta, options)
     }
 
+    /// Keeps the same build context through delta scanning, spooling and finish.
+    pub fn prepare_delta_with_context(
+        reader: &super::SearchOutOfCoreReader,
+        delta: crate::SearchProjectionDelta,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task_context: RuntimeTaskContext,
+    ) -> Result<SearchOutOfCoreGenerationUpdate> {
+        SearchOutOfCoreGenerationUpdate::prepare_with_context(reader, delta, options, task_context)
+    }
+
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
         self.finish_with_artifacts(Self::build_artifacts)
     }
@@ -270,6 +302,7 @@ impl SearchOutOfCoreGenerationWriter {
         mut self,
         build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        checkpoint(&self.task_context)?;
         if self.poisoned {
             return Err(SkeinError::Storage(
                 "cannot finish a poisoned search generation writer".to_string(),
@@ -281,6 +314,7 @@ impl SearchOutOfCoreGenerationWriter {
         spool.flush()?;
         spool.get_ref().sync_all()?;
         drop(spool);
+        checkpoint(&self.task_context)?;
         let actual_spool_bytes = fs::metadata(&self.spool_path)?.len();
         if actual_spool_bytes != self.spool_bytes {
             return Err(SkeinError::Storage(format!(
@@ -290,6 +324,7 @@ impl SearchOutOfCoreGenerationWriter {
         }
 
         let _publish_lease = super::SearchProjectionPublishLease::acquire(&self.root)?;
+        checkpoint(&self.task_context)?;
         if let Some(expected) = self.expected_active_generation {
             let actual = super::active_manifest_generation(&self.root)?;
             if actual != Some(expected) {
@@ -316,6 +351,7 @@ impl SearchOutOfCoreGenerationWriter {
         } = build(&self, &source, generation)?;
 
         let published = publish_generation(PublishGenerationInput {
+            task_context: &self.task_context,
             root: &self.root,
             stage: &self.stage.path,
             generation,
@@ -395,7 +431,8 @@ impl SearchOutOfCoreGenerationWriter {
             generation,
             &self.metadata_fields,
             &self.options,
-        )?;
+        )?
+        .with_context(self.task_context.clone());
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
         let lexical_config = LexicalProjectionConfig {
@@ -409,33 +446,40 @@ impl SearchOutOfCoreGenerationWriter {
             max_document_source_bytes: self.options.lexical_max_document_source_bytes,
             ..LexicalProjectionConfig::default()
         };
-        let lexical = LexicalProjectionWriter::new(lexical_config).write_scanned(
-            &self.stage.path,
-            generation,
-            self.options.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.options.analyzer_lexicon),
-            self.documents_digest.finish(),
-            |consume| {
-                source.scan(&mut |ordinal, document| {
-                    consume(ordinal, &document)?;
-                    vectors.push(&document)?;
-                    segments.push(ordinal, document)
-                })?;
-                // Drop both writers' buffers before lexical external merge.
-                // All artifacts remain private to the stage until publication.
-                completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
-                Ok(())
-            },
-            &self.options.analyzer_lexicon,
-        )?;
+        let lexical = LexicalProjectionWriter::new(lexical_config)
+            .with_context(self.task_context.clone())
+            .write_scanned(
+                &self.stage.path,
+                generation,
+                self.options.source_graph_commit_epoch,
+                lexical_analyzer_digest(&self.options.analyzer_lexicon),
+                self.documents_digest.finish(),
+                |consume| {
+                    source.scan_with_context(&self.task_context, &mut |ordinal, document| {
+                        consume(ordinal, &document)?;
+                        vectors.push(&document)?;
+                        segments.push(ordinal, document)
+                    })?;
+                    // Drop both writers' buffers before lexical external merge.
+                    // All artifacts remain private to the stage until publication.
+                    completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
+                    Ok(())
+                },
+                &self.options.analyzer_lexicon,
+            )?;
         let lexical_byte_counters = lexical.artifact_bytes();
         drop(lexical);
+        checkpoint(&self.task_context)?;
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
         let lexical_artifact_name = lexical_artifact_file(generation);
-        let (lexical_artifact_bytes, _) =
-            file_len_checksum(&self.stage.path.join(&lexical_artifact_name))?;
-        let (lexical_manifest_bytes, _) =
-            file_len_checksum(&self.stage.path.join(LEXICAL_MANIFEST_FILE))?;
+        let (lexical_artifact_bytes, _) = publication::file_len_checksum_with_context(
+            &self.stage.path.join(&lexical_artifact_name),
+            &self.task_context,
+        )?;
+        let (lexical_manifest_bytes, _) = publication::file_len_checksum_with_context(
+            &self.stage.path.join(LEXICAL_MANIFEST_FILE),
+            &self.task_context,
+        )?;
         Ok(GenerationArtifacts {
             segment,
             lexical_artifact_name,
@@ -447,6 +491,7 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     fn push_inner(&mut self, document: SearchDocument) -> Result<()> {
+        checkpoint(&self.task_context)?;
         if document.id.is_empty() {
             return Err(SkeinError::Storage(
                 "search generation document id must not be empty".to_string(),
@@ -475,6 +520,7 @@ impl SearchOutOfCoreGenerationWriter {
             self.options.embedding_manifest.as_ref(),
         )?;
         let record = encode_search_document_line(&document);
+        checkpoint(&self.task_context)?;
         let record_bytes = record.len() as u64;
         if record_bytes > self.options.max_record_bytes.get() {
             return Err(SkeinError::Storage(format!(
@@ -534,6 +580,7 @@ impl SearchOutOfCoreGenerationWriter {
         spool.write_all(&record_bytes.to_le_bytes())?;
         spool.write_all(&checksum_bytes(record.as_bytes()).to_le_bytes())?;
         spool.write_all(record.as_bytes())?;
+        checkpoint(&self.task_context)?;
 
         self.documents_digest.update(record.as_bytes());
         self.last_document_id = Some(document.id);

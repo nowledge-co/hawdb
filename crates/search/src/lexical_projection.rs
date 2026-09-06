@@ -1,7 +1,9 @@
 use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
 use super::{document_tokens, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher as Digest;
 use skein_storage::{durable_replace_file, SegmentCache, StoreId};
 use std::cmp::Reverse;
@@ -1201,14 +1203,21 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
 pub(super) struct LexicalProjectionWriter {
     config: LexicalProjectionConfig,
     cache: Option<Arc<SegmentCache>>,
+    task_context: RuntimeTaskContext,
 }
 
 impl LexicalProjectionWriter {
-    pub(super) const fn new(config: LexicalProjectionConfig) -> Self {
+    pub(super) fn new(config: LexicalProjectionConfig) -> Self {
         Self {
             config,
             cache: None,
+            task_context: RuntimeTaskContext::default(),
         }
+    }
+
+    pub(super) fn with_context(mut self, task_context: RuntimeTaskContext) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     pub(super) fn with_cache(mut self, cache: Arc<SegmentCache>) -> Self {
@@ -1257,12 +1266,15 @@ impl LexicalProjectionWriter {
         scan: impl FnOnce(&mut dyn FnMut(u64, &SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
+        checkpoint(&self.task_context)?;
         let artifact_name = artifact_file(generation);
         let artifact_path = root.join(&artifact_name);
         let tmp_path = artifact_path.with_extension("skein.tmp");
         let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
         let mut artifact = ArtifactBuilder::new(&tmp_path, generation, self.config)?;
+        artifact.task_context = self.task_context.clone();
         let mut runs = SpillRuns::new(root, generation, self.config);
+        runs.task_context = self.task_context.clone();
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
         let mut document_count = 0u64;
@@ -1270,6 +1282,7 @@ impl LexicalProjectionWriter {
         let mut uncompressed_posting_payload_bytes = 0u64;
         let mut previous_document_id: Option<String> = None;
         let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
+            checkpoint(&self.task_context)?;
             if ordinal != document_count {
                 return Err(SkeinError::Storage(format!(
                     "lexical document ordinal {ordinal} does not follow {document_count}"
@@ -1287,12 +1300,14 @@ impl LexicalProjectionWriter {
                 ));
             }
             let analyzed = analyze_delta_document(document, analyzer, self.config)?;
+            checkpoint(&self.task_context)?;
             document_count = next_document_count;
             previous_document_id = Some(document.id.clone());
             total_document_len =
                 total_document_len.saturating_add(u64::from(analyzed.document_len));
             artifact.push_document(document.id.clone(), analyzed.document_len)?;
             for (term, term_frequency) in analyzed.frequencies {
+                checkpoint(&self.task_context)?;
                 uncompressed_posting_payload_bytes = uncompressed_posting_payload_bytes
                     .checked_add(16)
                     .and_then(|bytes| bytes.checked_add(document.id.len() as u64))
@@ -1325,6 +1340,7 @@ impl LexicalProjectionWriter {
             Ok(())
         };
         scan(&mut consume)?;
+        checkpoint(&self.task_context)?;
         artifact.finish_documents()?;
         if !chunk.is_empty() {
             runs.spill(&mut chunk)?;
@@ -1361,6 +1377,8 @@ impl LexicalProjectionWriter {
             blocks: artifact.blocks,
         };
         let manifest_bytes = manifest.encode_bounded(self.config.max_directory_bytes.get())?;
+        // No cancellation after entering this manifest-last publication section.
+        checkpoint(&self.task_context)?;
         durable_replace_file(&tmp_path, &artifact_path)?;
         artifact_guard.disarm();
         let manifest_path = root.join(MANIFEST_FILE);
@@ -1405,6 +1423,7 @@ struct ArtifactBuilder {
     dictionaries: Vec<dictionary_store::Descriptor>,
     blocks: Vec<BlockDescriptor>,
     directory: dictionary_store::DirectoryBudget,
+    task_context: RuntimeTaskContext,
 }
 
 struct ArtifactSummary {
@@ -1463,10 +1482,12 @@ impl ArtifactBuilder {
             dictionaries: Vec::new(),
             blocks: Vec::new(),
             directory: dictionary_store::DirectoryBudget::new(config.max_directory_bytes.get()),
+            task_context: RuntimeTaskContext::default(),
         })
     }
 
     fn push_document(&mut self, id: String, length: u32) -> Result<()> {
+        checkpoint(&self.task_context)?;
         let bytes = 4u64.saturating_add(id.len() as u64).saturating_add(4);
         if !self.document_pending.is_empty()
             && self.document_pending_bytes.saturating_add(bytes)
@@ -1484,6 +1505,7 @@ impl ArtifactBuilder {
     }
 
     fn flush_documents(&mut self) -> Result<()> {
+        checkpoint(&self.task_context)?;
         if self.document_pending.is_empty() {
             return Ok(());
         }
@@ -1496,6 +1518,7 @@ impl ArtifactBuilder {
             self.document_pending.len(),
         )?;
         for (id, length) in &self.document_pending {
+            checkpoint(&self.task_context)?;
             write_string(&mut payload, id)?;
             payload.extend_from_slice(&length.to_le_bytes());
         }
@@ -1513,19 +1536,22 @@ impl ArtifactBuilder {
         config: LexicalProjectionConfig,
         spill_bytes: u64,
     ) -> Result<()> {
+        checkpoint(&self.task_context)?;
         self.posting_offset = self.offset;
         let budget = dictionary_store::SpillBudget::new(spill_bytes, config.max_spill_bytes.get());
         let mut doclist = doclist::Writer::new(
             &self.path.with_extension("skip.tmp"),
             budget.clone(),
             config.max_block_bytes.get(),
-        )?;
+        )?
+        .with_context(self.task_context.clone());
         let mut dictionary = dictionary_store::Writer::new(
             &self.path.with_extension("dictionary.tmp"),
             config,
             budget,
             self.directory.clone(),
-        )?;
+        )?
+        .with_context(self.task_context.clone());
         let mut readers = paths
             .iter()
             .map(|path| RunReader::open(path, config))
@@ -1540,6 +1566,7 @@ impl ArtifactBuilder {
         let mut term: Option<String> = None;
         let mut frame = Vec::with_capacity(posting_codec::BLOCK_LEN);
         while let Some(Reverse((posting, index))) = heap.pop() {
+            checkpoint(&self.task_context)?;
             if previous.as_ref() != Some(&posting) {
                 if term.as_ref().is_some_and(|term| term != &posting.term) {
                     if !frame.is_empty() {
@@ -1648,9 +1675,11 @@ impl ArtifactBuilder {
     }
 
     fn finish(mut self) -> Result<ArtifactSummary> {
+        checkpoint(&self.task_context)?;
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
-        let (length, digest) = file_digest(&File::open(&self.path)?)?;
+        let (length, digest) =
+            file_digest_with_context(&File::open(&self.path)?, &self.task_context)?;
         Ok(ArtifactSummary {
             len: length,
             checksum: digest,
@@ -1671,6 +1700,7 @@ struct SpillRuns {
     paths: Vec<PathBuf>,
     bytes: u64,
     sequence: usize,
+    task_context: RuntimeTaskContext,
 }
 
 impl SpillRuns {
@@ -1682,31 +1712,37 @@ impl SpillRuns {
             paths: Vec::new(),
             bytes: 0,
             sequence: 0,
+            task_context: RuntimeTaskContext::default(),
         }
     }
 
     fn spill(&mut self, postings: &mut Vec<Posting>) -> Result<()> {
+        checkpoint(&self.task_context)?;
         postings.sort_unstable();
         postings.dedup();
+        checkpoint(&self.task_context)?;
         let path = self.next_path()?;
+        let mut guard = RemoveOnDrop::new(path.clone());
         let mut writer = BufWriter::new(File::create(&path)?);
         writer.write_all(RUN_HEADER)?;
         let mut bytes = RUN_HEADER.len() as u64;
         for posting in postings.iter() {
+            checkpoint(&self.task_context)?;
             encode_posting(&mut writer, posting)?;
             bytes = bytes.saturating_add(posting.encoded_len());
         }
         writer.flush()?;
-        if let Err(error) = self.admit_spill(bytes) {
-            let _ = fs::remove_file(&path);
-            return Err(error);
-        }
+        drop(writer);
+        checkpoint(&self.task_context)?;
+        self.admit_spill(bytes)?;
         self.paths.push(path);
+        guard.disarm();
         postings.clear();
         Ok(())
     }
 
     fn compact(&mut self) -> Result<()> {
+        checkpoint(&self.task_context)?;
         let fan_in = self.config.max_merge_fan_in.get();
         if fan_in < 2 {
             return Err(SkeinError::Storage(
@@ -1714,6 +1750,7 @@ impl SpillRuns {
             ));
         }
         while self.paths.len() > fan_in {
+            checkpoint(&self.task_context)?;
             let old = std::mem::take(&mut self.paths);
             let mut merged = Vec::new();
             for group in old.chunks(fan_in) {
@@ -1724,7 +1761,7 @@ impl SpillRuns {
                         return Err(error);
                     }
                 };
-                let bytes = match merge_runs(group, &path, self.config) {
+                let bytes = match merge_runs(group, &path, self.config, &self.task_context) {
                     Ok(bytes) => bytes,
                     Err(error) => {
                         let _ = fs::remove_file(&path);
@@ -1834,7 +1871,9 @@ fn merge_runs(
     paths: &[PathBuf],
     destination: &Path,
     config: LexicalProjectionConfig,
+    task_context: &RuntimeTaskContext,
 ) -> Result<u64> {
+    checkpoint(task_context)?;
     let mut readers = paths
         .iter()
         .map(|path| RunReader::open(path, config))
@@ -1850,6 +1889,7 @@ fn merge_runs(
     let mut bytes = RUN_HEADER.len() as u64;
     let mut previous = None;
     while let Some(Reverse((posting, index))) = heap.pop() {
+        checkpoint(task_context)?;
         if previous.as_ref() != Some(&posting) {
             encode_posting(&mut writer, &posting)?;
             bytes = bytes.saturating_add(posting.encoded_len());
@@ -2008,12 +2048,18 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
 }
 
 fn file_digest(file: &File) -> Result<(u64, u64)> {
+    file_digest_with_context(file, &RuntimeTaskContext::default())
+}
+
+fn file_digest_with_context(file: &File, task_context: &RuntimeTaskContext) -> Result<(u64, u64)> {
+    checkpoint(task_context)?;
     let mut file = file.try_clone()?;
     file.seek(SeekFrom::Start(0))?;
     let mut digest = Digest::new();
     let mut total = 0u64;
     let mut buffer = vec![0u8; 1024 * 1024];
     loop {
+        checkpoint(task_context)?;
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -2036,6 +2082,7 @@ mod tests {
 
     mod admission;
     mod artifact_accounting;
+    mod build_cancellation;
     mod compact_dictionary;
     mod compact_postings;
     mod fuzz;

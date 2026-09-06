@@ -3,18 +3,21 @@ use super::super::{
     SearchOutOfCoreManifestBody, OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
 };
 use super::{RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
 use crate::{
     checksum_bytes, SearchEmbeddingManifest, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
 pub(super) struct PublishGenerationInput<'a> {
+    pub(super) task_context: &'a RuntimeTaskContext,
     pub(super) root: &'a Path,
     pub(super) stage: &'a Path,
     pub(super) generation: u64,
@@ -39,6 +42,7 @@ pub(super) struct PublishedGeneration {
 }
 
 pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<PublishedGeneration> {
+    checkpoint(input.task_context)?;
     let generation = input.generation;
     let descriptor_file = format!("search_projection_segments.{generation}.skein");
     let payload_file = format!("search_projection_segment_payloads.{generation}.skein");
@@ -53,7 +57,8 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
     let vector_source = input.stage.join(STAGE_VECTOR_FILE);
     let lexical_artifact_source = input.stage.join(input.lexical_artifact_name);
     let lexical_manifest_source = input.stage.join(LEXICAL_MANIFEST_FILE);
-    let (descriptor_len, descriptor_checksum) = file_len_checksum(&descriptor_source)?;
+    let (descriptor_len, descriptor_checksum) =
+        file_len_checksum_with_context(&descriptor_source, input.task_context)?;
     let payload_len = fs::metadata(&payload_source)?.len();
     let metadata_payload_len = fs::metadata(&metadata_source)?.len();
     let vector_payload_len = fs::metadata(&vector_source)?.len();
@@ -73,7 +78,7 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         }
     }
     let (lexical_manifest_len, lexical_manifest_checksum) =
-        file_len_checksum(&lexical_manifest_source)?;
+        file_len_checksum_with_context(&lexical_manifest_source, input.task_context)?;
     let lexical_artifact_len = fs::metadata(&lexical_artifact_source)?.len();
     let layout_bytes = input.layout.encode()?;
     let manifest = SearchOutOfCoreManifestBody {
@@ -140,6 +145,12 @@ pub(super) fn publish_generation(input: PublishGenerationInput<'_>) -> Result<Pu
         )));
     }
 
+    // Cancellation before this point leaves the active manifest untouched. Once
+    // publication begins, finish the manifest-last commit rather than reporting
+    // a late cancellation for a generation that may already be authoritative.
+    checkpoint(input.task_context)?;
+    #[cfg(test)]
+    late_cancellation::trigger();
     publish_generation_link(&descriptor_source, &input.root.join(&descriptor_file))?;
     publish_generation_link(&payload_source, &input.root.join(&payload_file))?;
     publish_generation_link(&metadata_source, &input.root.join(&metadata_payload_file))?;
@@ -232,12 +243,21 @@ fn verify_published_artifact(
 }
 
 pub(super) fn file_len_checksum(path: &Path) -> Result<(u64, u64)> {
+    file_len_checksum_with_context(path, &RuntimeTaskContext::default())
+}
+
+pub(super) fn file_len_checksum_with_context(
+    path: &Path,
+    task_context: &RuntimeTaskContext,
+) -> Result<(u64, u64)> {
+    checkpoint(task_context)?;
     let mut file = File::open(path)?;
     let expected_len = file.metadata()?.len();
     let mut checksum = Crc32cHasher::new();
     let mut actual_len = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        checkpoint(task_context)?;
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -252,4 +272,32 @@ pub(super) fn file_len_checksum(path: &Path) -> Result<(u64, u64)> {
         )));
     }
     Ok((actual_len, checksum.finish()))
+}
+
+#[cfg(test)]
+pub(super) mod late_cancellation {
+    use crate::RuntimeCancellationToken;
+    use std::cell::RefCell;
+    thread_local! {
+        static TOKEN: RefCell<Option<RuntimeCancellationToken>> = const { RefCell::new(None) };
+    }
+    pub(in super::super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            TOKEN.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    pub(in super::super) fn arm(token: RuntimeCancellationToken) -> Guard {
+        TOKEN.with(|slot| *slot.borrow_mut() = Some(token));
+        Guard
+    }
+    pub(super) fn trigger() {
+        TOKEN.with(|slot| {
+            if let Some(token) = slot.borrow_mut().take() {
+                token.cancel();
+            }
+        });
+    }
 }

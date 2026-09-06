@@ -79,6 +79,9 @@ production scorer, DF accounting, delta merge or top-k collector. It checks
 live delta visibility across reopen, pinned old readers across publication,
 manifest preservation and temporary cleanup after early/late build failure,
 cancelled queries, memory/cache rejection and recovery on subsequent queries.
+Rejected-operation transitions also cancel a real lexical build after a
+generation-dependent input prefix, checking unchanged publication and temporary
+cleanup before the next reference query.
 Reported physical byte categories must sum exactly; cache residency stays
 within capacity and query pins return to zero.
 

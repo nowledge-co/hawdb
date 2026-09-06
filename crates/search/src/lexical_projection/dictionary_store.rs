@@ -173,6 +173,7 @@ pub(super) struct Writer {
     bytes: u64,
     limits: dictionary::Limits,
     spill: SpillBudget,
+    task_context: skein_core::RuntimeTaskContext,
 }
 
 impl Writer {
@@ -197,10 +198,17 @@ impl Writer {
             bytes: 0,
             limits,
             spill,
+            task_context: skein_core::RuntimeTaskContext::default(),
         })
     }
 
+    pub(super) fn with_context(mut self, task_context: skein_core::RuntimeTaskContext) -> Self {
+        self.task_context = task_context;
+        self
+    }
+
     pub(super) fn push(&mut self, term: String, metadata: dictionary::Metadata) -> Result<()> {
+        crate::build_control::checkpoint(&self.task_context)?;
         if self
             .entries
             .last()
@@ -280,13 +288,21 @@ impl Writer {
         entries: &[(String, dictionary::Metadata)],
         limits: dictionary::Limits,
     ) -> Result<()> {
-        let encoded = dictionary::build(entries, limits, &mut || Ok(())).and_then(|bytes| {
+        crate::build_control::checkpoint(&self.task_context)?;
+        let mut check = || {
+            self.task_context
+                .checkpoint()
+                .map_err(|reason| reason.as_str())
+        };
+        let encoded = dictionary::build(entries, limits, &mut check).and_then(|bytes| {
             // Do not publish a block that cannot be opened under this generation's
             // configured validation scratch limit. Validation runs after fst drops
             // its builder registry, not concurrently with that allocation.
-            dictionary::Dictionary::open(&bytes, limits, &mut || Ok(()))?;
+            dictionary::Dictionary::open(&bytes, limits, &mut check)?;
             Ok(bytes)
         });
+        // Cancellation is not poor compression and must never trigger partition retries.
+        crate::build_control::checkpoint(&self.task_context)?;
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(_) if entries.len() > 1 => {
@@ -353,11 +369,13 @@ impl Writer {
         let mut buffer = [0u8; 8192];
         let start = *offset;
         while remaining > 0 {
+            crate::build_control::checkpoint(&self.task_context)?;
             let count = remaining.min(buffer.len() as u64) as usize;
             self.file.read_exact(&mut buffer[..count])?;
             writer.write_all(&buffer[..count])?;
             remaining -= count as u64;
         }
+        crate::build_control::checkpoint(&self.task_context)?;
         *offset = offset
             .checked_add(self.bytes)
             .ok_or_else(|| SkeinError::Storage("lexical artifact extent overflows".to_string()))?;

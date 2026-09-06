@@ -1,9 +1,11 @@
 use super::{SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter};
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::{
     SearchDocument, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics,
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionDeltaReport,
 };
+use skein_core::RuntimeTaskContext;
 use std::collections::VecDeque;
 
 #[derive(Debug)]
@@ -17,8 +19,18 @@ impl SearchOutOfCoreGenerationUpdate {
     pub(super) fn prepare(
         reader: &SearchOutOfCoreReader,
         delta: SearchProjectionDelta,
-        mut options: SearchOutOfCoreGenerationBuildOptions,
+        options: SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
+        Self::prepare_with_context(reader, delta, options, RuntimeTaskContext::default())
+    }
+
+    pub(super) fn prepare_with_context(
+        reader: &SearchOutOfCoreReader,
+        delta: SearchProjectionDelta,
+        mut options: SearchOutOfCoreGenerationBuildOptions,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -59,44 +71,51 @@ impl SearchOutOfCoreGenerationUpdate {
             .collect::<Vec<_>>();
         upserts.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         deletes.sort_unstable();
+        checkpoint(&task_context)?;
         validate_delta_ids(&upserts, &deletes)?;
 
         let before_document_count = reader.document_count();
         let upserted_documents = upserts.len();
         let mut upserts = VecDeque::from(upserts);
         let mut deletes = VecDeque::from(deletes);
-        let mut writer = SearchOutOfCoreGenerationWriter::create(&reader.root, options)?;
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &reader.root,
+            options,
+            task_context.clone(),
+        )?;
         writer.expected_active_generation = Some(reader.generation());
         let mut deleted_documents = 0usize;
-        let source_read_metrics = reader.visit_documents_in_order(&mut |document| {
-            while upserts
-                .front()
-                .is_some_and(|upsert| upsert.id < document.id)
-            {
-                writer.push(upserts.pop_front().expect("front was present"))?;
-            }
-            while deletes
-                .front()
-                .is_some_and(|deleted| deleted < &document.id)
-            {
-                deletes.pop_front();
-            }
-            if let Some(upsert) = upserts.pop_front_if(|upsert| upsert.id == document.id) {
-                writer.push(upsert)?;
-                return Ok(());
-            }
-            if deletes
-                .pop_front_if(|deleted| deleted == &document.id)
-                .is_some()
-            {
-                deleted_documents = deleted_documents.saturating_add(1);
-                return Ok(());
-            }
-            writer.push(document)
-        })?;
+        let source_read_metrics =
+            reader.visit_documents_in_order(&task_context, &mut |document| {
+                while upserts
+                    .front()
+                    .is_some_and(|upsert| upsert.id < document.id)
+                {
+                    writer.push(upserts.pop_front().expect("front was present"))?;
+                }
+                while deletes
+                    .front()
+                    .is_some_and(|deleted| deleted < &document.id)
+                {
+                    deletes.pop_front();
+                }
+                if let Some(upsert) = upserts.pop_front_if(|upsert| upsert.id == document.id) {
+                    writer.push(upsert)?;
+                    return Ok(());
+                }
+                if deletes
+                    .pop_front_if(|deleted| deleted == &document.id)
+                    .is_some()
+                {
+                    deleted_documents = deleted_documents.saturating_add(1);
+                    return Ok(());
+                }
+                writer.push(document)
+            })?;
         for document in upserts {
             writer.push(document)?;
         }
+        checkpoint(&task_context)?;
 
         Ok(Self {
             delta_report: SearchProjectionDeltaReport {

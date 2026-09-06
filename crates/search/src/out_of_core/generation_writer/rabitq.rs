@@ -1,11 +1,13 @@
 //! Incremental RaBitQ sink for the shared generation scan.
 
 use super::{RaBitQGenerationArtifact, SearchOutOfCoreGenerationWriter};
+use crate::build_control::checkpoint;
 use crate::error::Result;
 use crate::SearchDocument;
+use skein_core::RuntimeTaskContext;
 
 #[cfg(feature = "vector-search")]
-use super::{file_len_checksum, PathBuf, SkeinError};
+use super::{PathBuf, SkeinError};
 
 #[cfg(feature = "vector-search")]
 pub(super) struct RaBitQArtifactBuilder {
@@ -14,11 +16,13 @@ pub(super) struct RaBitQArtifactBuilder {
     path: PathBuf,
     expected_documents: usize,
     vector_ordinal: u64,
+    task_context: RuntimeTaskContext,
 }
 
 #[cfg(feature = "vector-search")]
 impl RaBitQArtifactBuilder {
     pub(super) fn new(input: &SearchOutOfCoreGenerationWriter, generation: u64) -> Result<Self> {
+        checkpoint(&input.task_context)?;
         let file_name = crate::rabitq_artifact_file(generation);
         let path = input.stage.path.join(&file_name);
         let writer = if input.vector_document_count == 0 {
@@ -60,10 +64,12 @@ impl RaBitQArtifactBuilder {
             path,
             expected_documents: input.vector_document_count,
             vector_ordinal: 0,
+            task_context: input.task_context.clone(),
         })
     }
 
     pub(super) fn push(&mut self, document: &SearchDocument) -> Result<()> {
+        checkpoint(&self.task_context)?;
         let Some(embedding) = document.embedding.as_deref() else {
             return Ok(());
         };
@@ -75,6 +81,7 @@ impl RaBitQArtifactBuilder {
         writer
             .push(self.vector_ordinal, embedding)
             .map_err(rabitq_error)?;
+        checkpoint(&self.task_context)?;
         self.vector_ordinal = self
             .vector_ordinal
             .checked_add(1)
@@ -83,6 +90,7 @@ impl RaBitQArtifactBuilder {
     }
 
     pub(super) fn finish(self) -> Result<Option<RaBitQGenerationArtifact>> {
+        checkpoint(&self.task_context)?;
         if self.vector_ordinal != self.expected_documents as u64 {
             return Err(SkeinError::Storage(
                 "search RaBitQ build did not consume the expected vector document count"
@@ -94,7 +102,8 @@ impl RaBitQArtifactBuilder {
         };
         let projection = writer.finish().map_err(rabitq_error)?;
         let manifest = projection.manifest();
-        let (artifact_bytes, artifact_checksum) = file_len_checksum(&self.path)?;
+        let (artifact_bytes, artifact_checksum) =
+            super::publication::file_len_checksum_with_context(&self.path, &self.task_context)?;
         Ok(Some(RaBitQGenerationArtifact {
             file_name: self.file_name,
             artifact_bytes,
@@ -113,17 +122,19 @@ fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
 }
 
 #[cfg(not(feature = "vector-search"))]
-pub(super) struct RaBitQArtifactBuilder;
+pub(super) struct RaBitQArtifactBuilder(RuntimeTaskContext);
 
 #[cfg(not(feature = "vector-search"))]
 impl RaBitQArtifactBuilder {
-    pub(super) fn new(_: &SearchOutOfCoreGenerationWriter, _: u64) -> Result<Self> {
-        Ok(Self)
+    pub(super) fn new(input: &SearchOutOfCoreGenerationWriter, _: u64) -> Result<Self> {
+        checkpoint(&input.task_context)?;
+        Ok(Self(input.task_context.clone()))
     }
     pub(super) fn push(&mut self, _: &SearchDocument) -> Result<()> {
-        Ok(())
+        checkpoint(&self.0)
     }
     pub(super) fn finish(self) -> Result<Option<RaBitQGenerationArtifact>> {
+        checkpoint(&self.0)?;
         Ok(None)
     }
 }

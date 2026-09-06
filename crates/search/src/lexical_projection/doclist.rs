@@ -33,6 +33,7 @@ pub(super) struct Writer {
     last_ordinal: Option<u64>,
     spill: super::dictionary_store::SpillBudget,
     max_frame_bytes: u64,
+    task_context: skein_core::RuntimeTaskContext,
 }
 
 impl Writer {
@@ -56,7 +57,13 @@ impl Writer {
             last_ordinal: None,
             spill,
             max_frame_bytes,
+            task_context: skein_core::RuntimeTaskContext::default(),
         })
+    }
+
+    pub(super) fn with_context(mut self, task_context: skein_core::RuntimeTaskContext) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     fn spill_entry(&mut self, entry: &[u8]) -> Result<()> {
@@ -71,6 +78,7 @@ impl Writer {
         offset: &mut u64,
         postings: &[posting_codec::Posting],
     ) -> Result<()> {
+        crate::build_control::checkpoint(&self.task_context)?;
         if self.frames > 0 && !self.df.is_multiple_of(posting_codec::BLOCK_LEN as u64) {
             return Err(invalid("a short frame must terminate its doclist"));
         }
@@ -118,6 +126,7 @@ impl Writer {
     }
 
     pub(super) fn finish(&mut self, writer: &mut impl Write, offset: &mut u64) -> Result<Metadata> {
+        crate::build_control::checkpoint(&self.task_context)?;
         if self.df == 0 {
             return Err(invalid("empty doclist"));
         }
@@ -135,6 +144,7 @@ impl Writer {
                 .ok_or_else(|| invalid("skip extent overflow"))?;
             let mut buffer = [0u8; 8192];
             while remaining != 0 {
+                crate::build_control::checkpoint(&self.task_context)?;
                 let count = remaining.min(buffer.len() as u64) as usize;
                 self.skip.read_exact(&mut buffer[..count])?;
                 digest.update(&buffer[..count]);
@@ -143,6 +153,7 @@ impl Writer {
             }
             write_bytes(writer, offset, &(digest.finish() as u32).to_le_bytes())?;
         }
+        crate::build_control::checkpoint(&self.task_context)?;
         let metadata = Metadata {
             df: self.df,
             posting_offset: self.start,

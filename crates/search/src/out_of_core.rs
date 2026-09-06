@@ -966,14 +966,18 @@ impl SearchOutOfCoreReader {
 
     fn visit_documents_in_order(
         &self,
+        task_context: &crate::RuntimeTaskContext,
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
     ) -> Result<SearchOutOfCoreMetrics> {
         let mut metrics = SearchOutOfCoreMetrics::default();
         for segment in &self.descriptor.segments {
+            crate::build_control::checkpoint(task_context)?;
             for document in self.read_hydration_segment(segment, &mut metrics)? {
+                crate::build_control::checkpoint(task_context)?;
                 consumer(document)?;
             }
         }
+        crate::build_control::checkpoint(task_context)?;
         Ok(metrics)
     }
 

@@ -5,6 +5,7 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::{
     checksum_bytes, encode_embedding, encode_metadata, encode_search_document_line,
@@ -13,6 +14,7 @@ use crate::{
     SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
 };
+use skein_core::RuntimeTaskContext;
 use std::collections::BTreeSet;
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
@@ -39,6 +41,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     descriptor_working_bytes: u64,
     peak_segment_document_count: usize,
     peak_segment_encoded_bytes: u64,
+    task_context: RuntimeTaskContext,
 }
 
 pub(super) struct SegmentArtifactOutput {
@@ -83,7 +86,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
             descriptor_working_bytes: 0,
             peak_segment_document_count: 0,
             peak_segment_encoded_bytes: 0,
+            task_context: RuntimeTaskContext::default(),
         })
+    }
+
+    pub(super) fn with_context(mut self, task_context: RuntimeTaskContext) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     #[cfg(test)]
@@ -93,6 +102,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     pub(super) fn finish(mut self, document_count: usize) -> Result<SegmentArtifactOutput> {
+        checkpoint(&self.task_context)?;
         if u64::try_from(document_count).ok() != Some(self.next_document_ordinal) {
             return Err(SkeinError::Storage(
                 "search segment document count disagrees with source ordinals".to_string(),
@@ -104,6 +114,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         self.vector_file.sync_all()?;
         self.descriptor.document_count = document_count;
         write_search_segment_descriptor(&self.stage, &self.descriptor)?;
+        checkpoint(&self.task_context)?;
         let descriptor_bytes = fs::metadata(self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE))?.len();
         if descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
             return Err(SkeinError::Storage(format!(
@@ -129,6 +140,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     pub(super) fn push(&mut self, ordinal: u64, document: SearchDocument) -> Result<()> {
+        checkpoint(&self.task_context)?;
         if ordinal != self.next_document_ordinal {
             return Err(SkeinError::Storage(format!(
                 "search segment document ordinal {ordinal} does not follow {}",
@@ -159,6 +171,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     fn flush_segment(&mut self) -> Result<()> {
+        checkpoint(&self.task_context)?;
         if self.documents.is_empty() {
             return Ok(());
         }
@@ -171,6 +184,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             String::with_capacity(usize::try_from(self.segment_encoded_bytes).unwrap_or_default());
         document_body.push_str("SKEIN_SEARCH_SEGMENT_V1\n");
         for document in &self.documents {
+            checkpoint(&self.task_context)?;
             document_body.push_str(&encode_search_document_line(document));
         }
         let document_payload =
@@ -193,6 +207,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let vector_ordinal_base = self.next_vector_ordinal;
         let mut next_vector_ordinal = vector_ordinal_base;
         for document in &self.documents {
+            checkpoint(&self.task_context)?;
             let vector_ordinal = document.embedding.as_ref().map(|_| {
                 let ordinal = next_vector_ordinal;
                 next_vector_ordinal = next_vector_ordinal.saturating_add(1);
@@ -222,6 +237,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let mut vector_body = String::from("SKEIN_SEARCH_VECTOR_SEGMENT_V1\n");
         let mut vector_count = 0usize;
         for document in &self.documents {
+            checkpoint(&self.task_context)?;
             if let Some(embedding) = document.embedding.as_deref() {
                 writeln!(
                     vector_body,
@@ -272,6 +288,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     fn encode_segment_payload(&self, segment_id: u64, name: &str, body: String) -> Result<Vec<u8>> {
+        checkpoint(&self.task_context)?;
         if body.len() as u64 > self.options.max_segment_uncompressed_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "search generation {name} segment {segment_id} requires {} bytes, exceeding {}",
@@ -280,6 +297,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             )));
         }
         let payload = encode_search_snapshot_text(&body)?;
+        checkpoint(&self.task_context)?;
         if payload.len() as u64 > self.options.max_segment_compressed_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "search generation {name} segment {segment_id} requires {} compressed bytes, exceeding {}",
