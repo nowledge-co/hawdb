@@ -133,12 +133,20 @@ pub struct RelationalRowPageTableRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowPagePhysicalGeneration {
+    pub generation: u64,
+    pub allocated_pages: u64,
+    pub live_pages: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageRootManifest {
     pub generation: u64,
     pub source_commit_epoch: u64,
     pub previous_generation: Option<u64>,
     pub page_bytes: u64,
     pub dirty_page_count: u64,
+    pub relocated_page_count: u64,
     pub root_page_count: u64,
     pub page_artifact: RelationalRowPageArtifactMetadata,
     pub root_descriptor_artifact: RelationalRowPageArtifactMetadata,
@@ -146,6 +154,9 @@ pub struct RelationalRowPageRootManifest {
     pub root_set_digest: Sha256Digest,
     pub overflow_root: Option<RelationalOverflowRootBinding>,
     pub tables: Vec<RelationalRowPageTableRoot>,
+    /// Sorted occupancy for physical files referenced by this root, excluding
+    /// historical files retained only by older readers or checkpoints.
+    pub physical_generations: Vec<RelationalRowPagePhysicalGeneration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

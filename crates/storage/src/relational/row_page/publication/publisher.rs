@@ -235,6 +235,7 @@ impl RelationalRowPagePublisher {
             previous_generation: build.expected_previous_generation,
             page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
             dirty_page_count,
+            relocated_page_count: 0,
             root_page_count: root.root_page_count,
             page_artifact,
             root_descriptor_artifact: root.descriptor_artifact,
@@ -242,6 +243,7 @@ impl RelationalRowPagePublisher {
             root_set_digest: manifest::root_set_digest(&root.tables)?,
             overflow_root: build.overflow_root,
             tables: root.tables,
+            physical_generations: root.physical_generations,
         };
         let encoded_manifest = manifest::encode_manifest(&manifest, self.config)?;
         write_synced(&build.paths.generation_manifest_tmp, &encoded_manifest)?;
@@ -717,7 +719,17 @@ fn preflight_root_resources(
             config.max_tables
         )));
     }
-    let mut manifest_upper_bound = manifest::MANIFEST_HEADER_BYTES;
+    let generation_count = base.map_or(0, |reader| reader.manifest.physical_generations.len());
+    let mut manifest_upper_bound = generation_count
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(manifest::PHYSICAL_GENERATION_BYTES))
+        .and_then(|bytes| bytes.checked_add(manifest::OCCUPANCY_TRAILER_BYTES))
+        .and_then(|bytes| bytes.checked_add(manifest::MANIFEST_HEADER_BYTES))
+        .ok_or_else(|| {
+            RelationalRowPagePublicationError::Admission(
+                "row-page physical-generation inventory length overflow".to_string(),
+            )
+        })?;
     for table_name in table_names {
         let base_table = base.and_then(|reader| {
             reader

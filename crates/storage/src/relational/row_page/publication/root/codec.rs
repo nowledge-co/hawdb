@@ -93,12 +93,19 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
         manifest.source_commit_epoch,
         config,
     )?;
-    if descriptor.physical_generation == manifest.generation
-        && descriptor.physical_slot >= manifest.dirty_page_count
-    {
+    let index = manifest
+        .physical_generations
+        .binary_search_by_key(&descriptor.physical_generation, |entry| entry.generation)
+        .map_err(|_| {
+            RelationalRowPagePublicationError::Corrupt(
+                "row-page descriptor references an unaccounted physical generation".to_string(),
+            )
+        })?;
+    let allocated_pages = manifest.physical_generations[index].allocated_pages;
+    if descriptor.physical_slot >= allocated_pages {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
-            "row-page descriptor references slot {} outside generation {} dirty page count {}",
-            descriptor.physical_slot, manifest.generation, manifest.dirty_page_count
+            "row-page descriptor references slot {} outside generation {} allocation {}",
+            descriptor.physical_slot, descriptor.physical_generation, allocated_pages
         )));
     }
     Ok(descriptor)
