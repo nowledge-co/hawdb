@@ -359,26 +359,26 @@ impl SkeinEmbedded {
         task_context: &RuntimeTaskContext,
     ) -> std::result::Result<QueryOutput, EmbeddedQueryError> {
         self.check_admitted_query_context(task_context)?;
-        let admission = self
-            .database
-            .runtime_admission_plan(cypher_text, parameters)?;
+        let planning_request = crate::api::runtime_planning_request(
+            cypher_text.len(),
+            skein_qos::RuntimeWorkPriority::Foreground,
+        );
+        let admission = {
+            let _planning_permit = self.try_admit_query(planning_request)?;
+            self.database
+                .runtime_admission_plan(cypher_text, parameters)?
+        };
+        self.check_admitted_query_context(task_context)?;
         let result_budget_bytes = self.admitted_result_budget_bytes();
         let request = admission.clone().runtime_work_request_for_snapshot(
             result_budget_bytes,
             self.runtime_governor.snapshot(),
         );
+        let request =
+            request.with_memory_bytes(request.memory_bytes.max(planning_request.memory_bytes));
         let is_mutation = admission.is_mutation;
         let streaming_eligible = admission.streaming_eligible;
-        let permit = match self.runtime_governor.try_admit(request) {
-            Ok(permit) => permit,
-            Err(error) => {
-                if error.is_retryable() {
-                    self.runtime_governor
-                        .record_admission_wait(request, error.code, 0);
-                }
-                return Err(EmbeddedQueryError::Admission(error));
-            }
-        };
+        let permit = self.try_admit_query(request)?;
         let execution_task_context = permit.bind_task_context(task_context.clone());
         let _permit = permit;
         let result = if is_mutation || !streaming_eligible {
@@ -417,6 +417,22 @@ impl SkeinEmbedded {
             return Err(EmbeddedQueryError::Stopped(reason));
         }
         result.map_err(EmbeddedQueryError::Database)
+    }
+
+    fn try_admit_query(
+        &self,
+        request: skein_qos::RuntimeWorkRequest,
+    ) -> std::result::Result<skein_qos::RuntimePermit, EmbeddedQueryError> {
+        match self.runtime_governor.try_admit(request) {
+            Ok(permit) => Ok(permit),
+            Err(error) => {
+                if error.is_retryable() {
+                    self.runtime_governor
+                        .record_admission_wait(request, error.code, 0);
+                }
+                Err(EmbeddedQueryError::Admission(error))
+            }
+        }
     }
 
     pub(crate) fn admitted_result_budget_bytes(&self) -> u64 {
@@ -687,10 +703,41 @@ mod tests {
             Some(&Value::String("admitted".to_string()))
         );
         let snapshot = engine.runtime_governor().snapshot();
-        assert_eq!(snapshot.admissions, 2);
-        assert_eq!(snapshot.completions, 2);
+        // Each query has a planning phase and an execution phase.
+        assert_eq!(snapshot.admissions, 4);
+        assert_eq!(snapshot.completions, 4);
         assert_eq!(snapshot.admitted_memory_bytes, 0);
         assert!(engine.admitted_query_path_readiness().admission_safe);
+    }
+
+    #[test]
+    fn saturated_sync_admission_rejects_before_parsing() {
+        let root = unique_test_dir("embedded-planning-gate");
+        let mut engine = SkeinEmbedded::open(root.join("graph")).unwrap();
+        let governor = engine.runtime_governor().clone();
+        let busy = governor
+            .try_admit(
+                skein_qos::RuntimeWorkRequest::new(
+                    skein_qos::RuntimeWorkPriority::Foreground,
+                    skein_qos::RuntimeWorkKind::Control,
+                )
+                .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+            )
+            .unwrap();
+        let malformed = "MATCH (";
+        assert!(matches!(
+            engine.query_admitted(malformed),
+            Err(EmbeddedQueryError::Admission(_))
+        ));
+        drop(busy);
+        assert!(matches!(
+            engine.query_admitted(malformed),
+            Err(EmbeddedQueryError::Database(_))
+        ));
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+        assert_eq!(snapshot.active_cpu_slots, 0);
+        assert_eq!(snapshot.admissions, snapshot.completions);
     }
 
     #[test]

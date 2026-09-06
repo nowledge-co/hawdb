@@ -99,7 +99,9 @@ mod system_variables;
 mod transaction_locks;
 mod types;
 
-pub(crate) use query_runtime::PreparedRuntimeQuery;
+pub(crate) use query_runtime::{runtime_planning_request, PreparedRuntimeQuery};
+#[cfg(feature = "tokio-runtime")]
+pub(crate) use query_runtime::{RuntimeAdmissionPlan, RuntimePlanningSnapshot};
 pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
@@ -212,9 +214,9 @@ pub struct Database {
     catalog: Catalog,
     store: GraphStore,
     optimizer: CascadesOptimizer,
-    plan_cache: SharedState<PlanCache>,
+    plan_cache: Arc<SharedState<PlanCache>>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
-    optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
+    optimizer_planning_cache: Arc<SharedState<OptimizerPlanningCache>>,
     slow_query_log: SharedState<system_sql::SlowQueryLog>,
     statement_summary: SharedState<system_sql::StatementSummary>,
     config: DatabaseConfig,
@@ -861,7 +863,7 @@ pub struct DatabaseReadTransaction {
     optimizer: CascadesOptimizer,
     plan_cache: SharedState<PlanCache>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
-    optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
+    optimizer_planning_cache: Arc<SharedState<OptimizerPlanningCache>>,
     slow_query_snapshot: Vec<system_sql::SlowQueryRecord>,
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
@@ -878,7 +880,7 @@ struct ProjectionRelationalReadSnapshot {
 
 struct ReadStreamingExecutionContext<'a> {
     task_context: Option<&'a skein_core::RuntimeTaskContext>,
-    external: &'a mut dyn executor::ExternalReadOperator,
+    external: Option<&'a mut dyn executor::ExternalReadOperator>,
     delivery: executor::StreamDelivery,
 }
 
@@ -926,11 +928,13 @@ impl Default for Database {
             catalog: Catalog::default(),
             store,
             optimizer: optimizer_from_database_config(&config),
-            plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                config.max_plan_cache_entries,
+            ))),
             relational_plan_template_cache: relational_plan_template_cache_from_database_config(
                 &config,
             ),
-            optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
+            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             )),
@@ -1002,11 +1006,13 @@ impl Database {
             catalog: Catalog::default(),
             store,
             optimizer,
-            plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                config.max_plan_cache_entries,
+            ))),
             relational_plan_template_cache: relational_plan_template_cache_from_database_config(
                 &config,
             ),
-            optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
+            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             )),
@@ -1128,11 +1134,13 @@ impl Database {
             catalog,
             store,
             optimizer: optimizer_from_database_config(&config),
-            plan_cache: SharedState::new(PlanCache::new(config.max_plan_cache_entries)),
+            plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                config.max_plan_cache_entries,
+            ))),
             relational_plan_template_cache: relational_plan_template_cache_from_database_config(
                 &config,
             ),
-            optimizer_planning_cache: SharedState::new(OptimizerPlanningCache::default()),
+            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
             slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             )),
@@ -1379,17 +1387,7 @@ impl Database {
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
         task_context: Option<skein_core::RuntimeTaskContext>,
     ) -> DatabaseReadTransaction {
-        let published_read_view = self.store.published_read_view();
-        let pin = {
-            let mut pins = self
-                .reader_pins
-                .lock()
-                .expect("database reader pins lock should not be poisoned");
-            let id = pins.next_reader_id;
-            pins.next_reader_id += 1;
-            pins.active_views.insert(id, published_read_view);
-            ReaderPin::new(id, Arc::clone(&self.reader_pins))
-        };
+        let (published_read_view, pin) = self.pin_read_view();
         DatabaseReadTransaction {
             catalog: self.catalog.clone(),
             store: self.store.snapshot(),
@@ -1397,9 +1395,7 @@ impl Database {
             optimizer: self.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
             relational_plan_template_cache: Arc::clone(&self.relational_plan_template_cache),
-            optimizer_planning_cache: SharedState::new(
-                self.optimizer_planning_cache.borrow().clone(),
-            ),
+            optimizer_planning_cache: Arc::clone(&self.optimizer_planning_cache),
             slow_query_snapshot: self.slow_query_log.borrow().snapshot(),
             statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
             config: self.config.clone(),
@@ -1407,6 +1403,21 @@ impl Database {
             task_context,
             _pin: pin,
         }
+    }
+
+    fn pin_read_view(&self) -> (PublishedReadView, ReaderPin) {
+        let published_read_view = self.store.published_read_view();
+        let mut pins = self
+            .reader_pins
+            .lock()
+            .expect("database reader pins lock should not be poisoned");
+        let id = pins.next_reader_id;
+        pins.next_reader_id += 1;
+        pins.active_views.insert(id, published_read_view);
+        (
+            published_read_view,
+            ReaderPin::new(id, Arc::clone(&self.reader_pins)),
+        )
     }
 
     pub fn explain_query(&self, cypher_text: &str) -> Result<ExplainOutput> {
@@ -21048,13 +21059,16 @@ impl DatabaseReadTransaction {
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
         let task_context = self.task_context.clone();
-        self.query_with_params_streaming_prepared_internal(
+        self.query_with_params_streaming_prepared_external_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
-            executor::StreamDelivery::Validated,
-            task_context.as_ref(),
+            ReadStreamingExecutionContext {
+                task_context: task_context.as_ref(),
+                external: None,
+                delivery: executor::StreamDelivery::Validated,
+            },
             &mut consumer,
         )
     }
@@ -21088,13 +21102,16 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
-        self.query_with_params_streaming_prepared_internal(
+        self.query_with_params_streaming_prepared_external_internal(
             cypher_text,
             query_runtime::parse_runtime_execution(cypher_text)?,
             parameters,
             options,
-            executor::StreamDelivery::Validated,
-            Some(task_context),
+            ReadStreamingExecutionContext {
+                task_context: Some(task_context),
+                external: None,
+                delivery: executor::StreamDelivery::Validated,
+            },
             &mut consumer,
         )
     }
@@ -21116,7 +21133,7 @@ impl DatabaseReadTransaction {
             options,
             ReadStreamingExecutionContext {
                 task_context: task_context.as_ref(),
-                external,
+                external: Some(external),
                 delivery: executor::StreamDelivery::Validated,
             },
             &mut consumer,
@@ -21134,39 +21151,17 @@ impl DatabaseReadTransaction {
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
-        self.query_with_params_streaming_prepared_internal(
+        self.query_with_params_streaming_prepared_external_internal(
             &cypher_text,
             prepared,
             parameters,
             options,
-            delivery,
-            Some(task_context),
-            &mut consumer,
-        )
-    }
-
-    fn query_with_params_streaming_prepared_internal(
-        &mut self,
-        cypher_text: &str,
-        prepared: query_runtime::PreparedRuntimeExecution,
-        parameters: &BTreeMap<String, Value>,
-        options: QueryStreamOptions,
-        delivery: executor::StreamDelivery,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
-        consumer: &mut impl FnMut(Row) -> Result<()>,
-    ) -> Result<QueryStreamReport> {
-        let mut external = executor::NoExternalReadOperator;
-        self.query_with_params_streaming_prepared_external_internal(
-            cypher_text,
-            prepared,
-            parameters,
-            options,
             ReadStreamingExecutionContext {
-                task_context,
-                external: &mut external,
+                task_context: Some(task_context),
+                external: None,
                 delivery,
             },
-            consumer,
+            &mut consumer,
         )
     }
 
@@ -21226,7 +21221,9 @@ impl DatabaseReadTransaction {
             &mut self.catalog,
             &mut self.store,
             parameters,
-            context.external,
+            context
+                .external
+                .unwrap_or(&mut executor::NoExternalReadOperator),
             max_rows,
             max_payload_bytes,
             consumer,

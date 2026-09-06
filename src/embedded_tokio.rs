@@ -3,7 +3,9 @@ use crate::{
     QueryStreamReport, Row, SkeinEmbedded, SkeinEmbeddedOpenOptions, SkeinError, Value,
 };
 use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
-use skein_qos::{RuntimeGovernorSnapshot, RuntimeWorkKind, RuntimeWorkRequest};
+use skein_qos::{
+    RuntimeGovernorSnapshot, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
+};
 use skein_runtime_tokio::{
     tokio_bounded_channel, TokioBoundedReceiver, TokioBoundedTrySendError, TokioHandle,
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
@@ -16,6 +18,36 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const DEFAULT_STREAM_CHANNEL_CAPACITY: usize = 2;
+const MAX_MUTATION_PLANNING_ATTEMPTS: usize = 3;
+
+struct RuntimeQueryInput {
+    cypher_text: String,
+    parameters: BTreeMap<String, Value>,
+}
+
+impl RuntimeQueryInput {
+    fn planning_request(&self, priority: RuntimeWorkPriority) -> RuntimeWorkRequest {
+        crate::api::runtime_planning_request(self.cypher_text.len(), priority)
+    }
+
+    fn prepare_for_execution(
+        &self,
+        planning: &crate::api::RuntimePlanningSnapshot,
+        admitted: &crate::api::RuntimeAdmissionPlan,
+        context: &RuntimeTaskContext,
+    ) -> Result<crate::api::PreparedRuntimeQuery, SkeinError> {
+        context
+            .checkpoint()
+            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}")))?;
+        let prepared = planning.prepare(self.cypher_text.clone(), &self.parameters)?;
+        if prepared.admission() != admitted {
+            return Err(SkeinError::Execution(
+                "query admission changed during preparation; retry the query".to_string(),
+            ));
+        }
+        Ok(prepared)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SkeinTokioEmbedded {
@@ -249,25 +281,28 @@ impl SkeinTokioEmbedded {
         parameters: BTreeMap<String, Value>,
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
-        let cypher_text = cypher_text.into();
-        let prepared = self.with_embedded_mut(|embedded| {
-            embedded
-                .database_mut()
-                .prepare_runtime_query(cypher_text, &parameters)
-        })?;
+        let input = Arc::new(RuntimeQueryInput {
+            cypher_text: cypher_text.into(),
+            parameters,
+        });
+        let admission = self
+            .prepare_admission(
+                Arc::clone(&input),
+                RuntimeWorkPriority::Foreground,
+                task_context.clone(),
+            )
+            .await?;
         let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
         let snapshot = self.with_embedded(|embedded| embedded.runtime_governor().snapshot());
-        let admission = prepared.admission().clone();
         let request = admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
-        let streaming_eligible = prepared.admission().streaming_eligible;
+        let request_admission = admission.clone();
         self.execute_query_with_request_factory(
-            prepared,
-            parameters,
+            input,
+            admission,
             request,
             move |snapshot| {
-                admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot)
+                request_admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot)
             },
-            streaming_eligible,
             task_context,
         )
         .await
@@ -280,13 +315,13 @@ impl SkeinTokioEmbedded {
         request: RuntimeWorkRequest,
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
-        let cypher_text = cypher_text.into();
-        let prepared = self.with_embedded_mut(|embedded| {
-            embedded
-                .database_mut()
-                .prepare_runtime_query(cypher_text, &parameters)
-        })?;
-        let admission = prepared.admission().clone();
+        let input = Arc::new(RuntimeQueryInput {
+            cypher_text: cypher_text.into(),
+            parameters,
+        });
+        let admission = self
+            .prepare_admission(Arc::clone(&input), request.priority, task_context.clone())
+            .await?;
         let request = if admission.is_mutation {
             request
                 .with_kind(RuntimeWorkKind::Mutation)
@@ -310,12 +345,11 @@ impl SkeinTokioEmbedded {
         } else {
             request.with_result_bytes(result_budget_bytes)
         };
-        let streaming_eligible = admission.streaming_eligible;
-        self.execute_query_with_request(
-            prepared,
-            parameters,
+        self.execute_query_with_request_factory(
+            input,
+            admission,
             request,
-            streaming_eligible,
+            move |_| request,
             task_context,
         )
         .await
@@ -372,13 +406,17 @@ impl SkeinTokioEmbedded {
         options: TokioQueryStreamOptions,
         task_context: RuntimeTaskContext,
     ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
-        let cypher_text = cypher_text.into();
-        let prepared = self.with_embedded_mut(|embedded| {
-            embedded
-                .database_mut()
-                .prepare_runtime_query(cypher_text, &parameters)
-        })?;
-        let admission = prepared.admission().clone();
+        let input = Arc::new(RuntimeQueryInput {
+            cypher_text: cypher_text.into(),
+            parameters,
+        });
+        let admission = self
+            .prepare_admission(
+                Arc::clone(&input),
+                RuntimeWorkPriority::Foreground,
+                task_context.clone(),
+            )
+            .await?;
         if admission.is_mutation {
             return Err(SkeinTokioEmbeddedError::StreamingMutation);
         }
@@ -416,11 +454,18 @@ impl SkeinTokioEmbedded {
         let selected_executor_memory =
             Arc::new(std::sync::atomic::AtomicU64::new(executor_memory_bytes));
         let request_memory = Arc::clone(&selected_executor_memory);
+        let request_admission = admission.clone();
+        let planning_memory_bytes = input.planning_request(request.priority).memory_bytes;
         let request_for_snapshot = move |snapshot| {
             let request =
-                admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
+                request_admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
             request_memory.store(request.memory_bytes, std::sync::atomic::Ordering::Release);
-            request.with_memory_bytes(request.memory_bytes.saturating_add(buffered_payload_bytes))
+            request.with_memory_bytes(
+                request
+                    .memory_bytes
+                    .max(planning_memory_bytes)
+                    .saturating_add(buffered_payload_bytes),
+            )
         };
         let execute_stream = move |task_context: &RuntimeTaskContext| {
             let task_context = task_context.clone().with_memory_reservation(
@@ -429,12 +474,21 @@ impl SkeinTokioEmbedded {
                     request.result_bytes,
                 ),
             );
-            let mut read_transaction = lock_embedded(&embedded).database().begin_read_transaction();
+            let (planning, mut read_transaction) = {
+                let embedded = lock_embedded(&embedded);
+                let database = embedded.database();
+                (
+                    database.runtime_planning_snapshot(),
+                    database.begin_read_transaction(),
+                )
+            };
+            let prepared = input.prepare_for_execution(&planning, &admission, &task_context)?;
+            drop(planning);
             let mut batch = Vec::with_capacity(batch_rows);
             let mut batch_bytes = 0usize;
             let report = read_transaction.query_prepared_with_params_streaming_context(
                 prepared,
-                &parameters,
+                &input.parameters,
                 QueryStreamOptions {
                     max_rows,
                     max_payload_bytes: Some(max_payload_bytes),
@@ -487,47 +541,80 @@ impl SkeinTokioEmbedded {
         })
     }
 
-    async fn execute_query_with_request(
+    async fn prepare_admission(
         &self,
-        prepared: crate::api::PreparedRuntimeQuery,
-        parameters: BTreeMap<String, Value>,
-        request: RuntimeWorkRequest,
-        streaming_eligible: bool,
+        input: Arc<RuntimeQueryInput>,
+        priority: RuntimeWorkPriority,
         task_context: RuntimeTaskContext,
-    ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
-        self.execute_query_with_request_factory(
-            prepared,
-            parameters,
-            request,
-            move |_| request,
-            streaming_eligible,
-            task_context,
-        )
-        .await
+    ) -> Result<crate::api::RuntimeAdmissionPlan, SkeinTokioEmbeddedError> {
+        let embedded = Arc::clone(&self.embedded);
+        self.runtime
+            .execute_blocking(
+                input.planning_request(priority),
+                task_context,
+                move |context| {
+                    let planning = lock_embedded(&embedded)
+                        .database()
+                        .runtime_planning_snapshot();
+                    // Only this fixed-size descriptor may outlive the planning permit.
+                    // Parsed and optimized state is dropped before the operation returns.
+                    context.checkpoint().map_err(|reason| {
+                        SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                    })?;
+                    let prepared =
+                        planning.prepare(input.cypher_text.clone(), &input.parameters)?;
+                    Ok(prepared.admission().clone())
+                },
+            )
+            .await
+            .map_err(SkeinTokioEmbeddedError::Task)
     }
 
     async fn execute_query_with_request_factory<R>(
         &self,
-        prepared: crate::api::PreparedRuntimeQuery,
-        parameters: BTreeMap<String, Value>,
+        input: Arc<RuntimeQueryInput>,
+        admission: crate::api::RuntimeAdmissionPlan,
         request: RuntimeWorkRequest,
-        request_for_snapshot: R,
-        streaming_eligible: bool,
+        mut request_for_snapshot: R,
         task_context: RuntimeTaskContext,
     ) -> Result<QueryOutput, SkeinTokioEmbeddedError>
     where
         R: FnMut(skein_qos::RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
     {
         let embedded = Arc::clone(&self.embedded);
+        let planning_memory_bytes = input.planning_request(request.priority).memory_bytes;
+        let request_for_snapshot = move |snapshot| {
+            let request = request_for_snapshot(snapshot);
+            request
+                .with_cpu_slots(request.cpu_slots.max(1))
+                .with_memory_bytes(request.memory_bytes.max(planning_memory_bytes))
+        };
         if request.kind == RuntimeWorkKind::Mutation {
             self.runtime
                 .execute_blocking_with_request_factory(
                     request_for_snapshot,
                     task_context,
                     move |task_context| {
-                        lock_embedded(&embedded)
-                            .database_mut()
-                            .query_prepared_with_params_context(prepared, &parameters, task_context)
+                        for _ in 0..MAX_MUTATION_PLANNING_ATTEMPTS {
+                            let planning = lock_embedded(&embedded)
+                                .database()
+                                .runtime_planning_snapshot();
+                            let prepared =
+                                input.prepare_for_execution(&planning, &admission, task_context)?;
+                            let mut embedded = lock_embedded(&embedded);
+                            if planning.is_current_for(embedded.database(), &prepared) {
+                                return embedded.database_mut().query_prepared_with_params_context(
+                                    prepared,
+                                    &input.parameters,
+                                    task_context,
+                                );
+                            }
+                            // Drop both the stale plan and lock before another planning attempt.
+                        }
+                        Err(SkeinError::Execution(
+                            "database changed during mutation planning; retry the query"
+                                .to_string(),
+                        ))
                     },
                 )
                 .await
@@ -541,19 +628,28 @@ impl SkeinTokioEmbedded {
                     request_for_snapshot,
                     task_context,
                     move |task_context| {
-                        let mut read_transaction =
-                            lock_embedded(&embedded).database().begin_read_transaction();
-                        if !streaming_eligible {
+                        let (planning, mut read_transaction) = {
+                            let embedded = lock_embedded(&embedded);
+                            let database = embedded.database();
+                            (
+                                database.runtime_planning_snapshot(),
+                                database.begin_read_transaction(),
+                            )
+                        };
+                        let prepared =
+                            input.prepare_for_execution(&planning, &admission, task_context)?;
+                        drop(planning);
+                        if !admission.streaming_eligible {
                             return read_transaction.query_prepared_with_params_context(
                                 prepared,
-                                &parameters,
+                                &input.parameters,
                                 task_context,
                             );
                         }
                         let mut rows = Vec::new();
                         read_transaction.query_prepared_with_params_streaming_context(
                             prepared,
-                            &parameters,
+                            &input.parameters,
                             QueryStreamOptions {
                                 max_rows,
                                 max_payload_bytes: Some(max_payload_bytes),
@@ -641,6 +737,68 @@ mod tests {
     }
 
     #[test]
+    fn saturated_tokio_entrypoints_wait_before_parsing() {
+        let path = unique_test_path("planning-admission-gate");
+        let embedded =
+            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+        let governor = embedded.runtime().governor();
+        let busy = governor
+            .try_admit(
+                RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Control)
+                    .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+            )
+            .unwrap();
+        embedded
+            .runtime()
+            .block_on(async {
+                for route in 0..3 {
+                    let context =
+                        RuntimeTaskContext::with_timeout(std::time::Duration::from_millis(20));
+                    let result = match route {
+                        0 => embedded.query("MATCH (", context).await.map(|_| ()),
+                        1 => embedded
+                            .query_with_request(
+                                "MATCH (",
+                                BTreeMap::new(),
+                                RuntimeWorkRequest::foreground_query(0, 0),
+                                context,
+                            )
+                            .await
+                            .map(|_| ()),
+                        _ => embedded.query_stream("MATCH (", context).await.map(|_| ()),
+                    };
+                    assert!(matches!(
+                        result,
+                        Err(SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
+                            skein_core::RuntimeCancellationReason::DeadlineExceeded
+                        )))
+                    ));
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            governor.snapshot().admissions,
+            1,
+            "only the occupying task was admitted"
+        );
+        drop(busy);
+        let error = embedded
+            .runtime()
+            .block_on(embedded.query("MATCH (", RuntimeTaskContext::default()))
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SkeinTokioEmbeddedError::Task(TokioTaskError::Operation(_))
+        ));
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+        assert_eq!(snapshot.active_cpu_slots, 0);
+        assert_eq!(snapshot.active_blocking_tasks, 0);
+        assert_eq!(snapshot.admissions, snapshot.completions);
+    }
+
+    #[test]
     fn custom_request_preserves_task_scope_without_segment_io() {
         let request = RuntimeWorkRequest::io(skein_qos::RuntimeWorkPriority::Foreground, 1, 0);
 
@@ -696,7 +854,7 @@ mod tests {
             output.rows[0].get("id"),
             Some(&Value::String("runtime".to_string()))
         );
-        assert_eq!(embedded.runtime_snapshot().completions, 2);
+        assert_eq!(embedded.runtime_snapshot().completions, 4);
     }
 
     #[test]
@@ -838,16 +996,41 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(embedded.runtime_snapshot().completions, 1);
-        assert!(events
+        assert_eq!(embedded.runtime_snapshot().completions, 2);
+        let phases: Vec<_> = events
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
-            .any(|event| {
-                event.kind == RuntimeTelemetryEventKind::Admitted
-                    && event.work_kind == Some(RuntimeWorkKind::Mutation)
-            }));
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    RuntimeTelemetryEventKind::Admitted | RuntimeTelemetryEventKind::Completed
+                )
+            })
+            .map(|event| (event.kind, event.work_kind))
+            .collect();
+        assert_eq!(
+            phases,
+            vec![
+                (
+                    RuntimeTelemetryEventKind::Admitted,
+                    Some(RuntimeWorkKind::Control)
+                ),
+                (
+                    RuntimeTelemetryEventKind::Completed,
+                    Some(RuntimeWorkKind::Control)
+                ),
+                (
+                    RuntimeTelemetryEventKind::Admitted,
+                    Some(RuntimeWorkKind::Mutation)
+                ),
+                (
+                    RuntimeTelemetryEventKind::Completed,
+                    Some(RuntimeWorkKind::Mutation)
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -949,14 +1132,16 @@ mod tests {
                 .query_memory_budget_bytes,
             usize::try_from(admitted_executor_bytes).unwrap()
         );
-        assert_eq!(embedded.runtime_snapshot().completions, 1);
+        assert_eq!(embedded.runtime_snapshot().completions, 2);
     }
 
     #[test]
     fn asynchronous_row_stream_surfaces_a_terminal_limit_after_prior_batches() {
         let path = unique_test_path("terminal-row-limit");
-        let mut config = crate::DatabaseConfig::default();
-        config.max_read_result_rows = Some(2);
+        let mut config = crate::DatabaseConfig {
+            max_read_result_rows: Some(2),
+            ..crate::DatabaseConfig::default()
+        };
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
         config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
         let embedded = SkeinTokioEmbedded::open_owned(
@@ -1119,7 +1304,10 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, SkeinTokioEmbeddedError::StreamingMutation));
-        assert_eq!(embedded.runtime_snapshot().admissions, 0);
+        // Classification requires an admitted parse, but execution never starts.
+        assert_eq!(embedded.runtime_snapshot().admissions, 1);
+        assert_eq!(embedded.runtime_snapshot().completions, 1);
+        assert_eq!(embedded.runtime_snapshot().admitted_memory_bytes, 0);
     }
 
     fn tokio_runtime() -> skein_runtime_tokio::TokioRuntime {

@@ -22,6 +22,63 @@ pub(crate) struct PreparedRuntimeQuery {
     parse_metrics: skein_cypher::ParseMetrics,
 }
 
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+pub(crate) struct RuntimePlanningSnapshot {
+    catalog: Catalog,
+    store: GraphStore,
+    optimizer: CascadesOptimizer,
+    config: DatabaseConfig,
+    system_variables: QuerySystemVariables,
+    plan_cache: Arc<SharedState<PlanCache>>,
+    planning_cache: Arc<SharedState<OptimizerPlanningCache>>,
+    _pin: ReaderPin,
+}
+
+struct RuntimePlanningContext<'a> {
+    catalog: &'a Catalog,
+    store: &'a GraphStore,
+    optimizer: &'a CascadesOptimizer,
+    config: &'a DatabaseConfig,
+    system_variables: &'a QuerySystemVariables,
+}
+
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+impl RuntimePlanningSnapshot {
+    pub(crate) fn is_current_for(
+        &self,
+        database: &Database,
+        prepared: &PreparedRuntimeQuery,
+    ) -> bool {
+        self.store.published_read_view() == database.store.published_read_view()
+            && self.config == database.config
+            && self.system_variables == database.system_variables
+            && prepared
+                .optimizer_environment
+                .as_ref()
+                .is_none_or(|environment| environment.is_execution_compatible(&database.catalog))
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        cypher_text: String,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<PreparedRuntimeQuery> {
+        RuntimePlanningContext {
+            catalog: &self.catalog,
+            store: &self.store,
+            optimizer: &self.optimizer,
+            config: &self.config,
+            system_variables: &self.system_variables,
+        }
+        .prepare(
+            cypher_text,
+            parameters,
+            &self.plan_cache,
+            &self.planning_cache,
+        )
+    }
+}
+
 pub(super) struct PreparedRuntimeExecution {
     pub(super) statement: cypher::Statement,
     pub(super) optimized: Option<OptimizedQueryPlan>,
@@ -197,7 +254,47 @@ impl RuntimeAdmissionPlan {
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 const CONTROL_STATEMENT_MEMORY_BYTES: u64 = 1024 * 1024;
 
+/// A cheap pre-parse reservation, not a measurement of allocator usage. The
+/// source length is available without parsing or walking caller parameters.
+pub(crate) fn runtime_planning_request(
+    source_bytes: usize,
+    priority: skein_qos::RuntimeWorkPriority,
+) -> skein_qos::RuntimeWorkRequest {
+    skein_qos::RuntimeWorkRequest::new(priority, skein_qos::RuntimeWorkKind::Control)
+        .with_cpu_slots(1)
+        .with_memory_bytes(
+            CONTROL_STATEMENT_MEMORY_BYTES
+                .saturating_add(u64::try_from(source_bytes).unwrap_or(u64::MAX)),
+        )
+}
+
 impl Database {
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    pub(crate) fn runtime_planning_snapshot(&self) -> RuntimePlanningSnapshot {
+        let (_, pin) = self.pin_read_view();
+        RuntimePlanningSnapshot {
+            catalog: self.catalog.clone(),
+            store: self.store.snapshot(),
+            optimizer: self.optimizer.clone(),
+            config: self.config.clone(),
+            system_variables: self.system_variables.clone(),
+            // Templates and their generation counter must have the same ownership.
+            plan_cache: Arc::clone(&self.plan_cache),
+            planning_cache: Arc::clone(&self.optimizer_planning_cache),
+            _pin: pin,
+        }
+    }
+
+    fn runtime_planning_context(&self) -> RuntimePlanningContext<'_> {
+        RuntimePlanningContext {
+            catalog: &self.catalog,
+            store: &self.store,
+            optimizer: &self.optimizer,
+            config: &self.config,
+            system_variables: &self.system_variables,
+        }
+    }
+
     pub fn query_work_request(&self) -> WorkRequest {
         self.system_variables.query_work_request()
     }
@@ -215,13 +312,14 @@ impl Database {
     ) -> Result<RuntimeAdmissionPlan> {
         let plan_cache = SharedState::new(PlanCache::new(self.config.max_plan_cache_entries));
         let planning_cache = SharedState::new(self.optimizer_planning_cache.borrow().clone());
-        self.prepare_runtime_query_with_caches(
-            cypher_text.to_string(),
-            parameters,
-            &plan_cache,
-            &planning_cache,
-        )
-        .map(|prepared| prepared.admission)
+        self.runtime_planning_context()
+            .prepare(
+                cypher_text.to_string(),
+                parameters,
+                &plan_cache,
+                &planning_cache,
+            )
+            .map(|prepared| prepared.admission)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -230,15 +328,17 @@ impl Database {
         cypher_text: String,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<PreparedRuntimeQuery> {
-        self.prepare_runtime_query_with_caches(
+        self.runtime_planning_context().prepare(
             cypher_text,
             parameters,
             &self.plan_cache,
             &self.optimizer_planning_cache,
         )
     }
+}
 
-    fn prepare_runtime_query_with_caches(
+impl RuntimePlanningContext<'_> {
+    fn prepare(
         &self,
         cypher_text: String,
         parameters: &BTreeMap<String, Value>,
@@ -249,7 +349,7 @@ impl Database {
         let parsed = skein_cypher::parse_profiled(&cypher_text);
         let parse_metrics = parsed.metrics;
         let statement = parsed.result?;
-        let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
+        let work_request = query_work_request_for_statement(self.system_variables, &statement)?;
         let body = statement_body(&statement);
         let streaming_eligible = !matches!(body, cypher::Statement::Explain(_));
         let mut prepared_optimized = None;
@@ -304,13 +404,13 @@ impl Database {
                 let parallel_morsel_eligible = !is_mutation
                     && executor::supports_default_morsel_parallelism(
                         &optimized.physical_plan,
-                        &self.catalog,
+                        self.catalog,
                     );
                 let morsel_parallelism = if parallel_morsel_eligible {
                     executor::default_morsel_parallelism(
                         &optimized.physical_plan,
-                        &self.catalog,
-                        &self.store,
+                        self.catalog,
+                        self.store,
                         &self.config.execution_memory,
                     )
                 } else {
@@ -362,7 +462,7 @@ impl Database {
         planning_cache: &SharedState<OptimizerPlanningCache>,
     ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
-            query_statement_variables_for_statement(&self.system_variables, statement)?
+            query_statement_variables_for_statement(self.system_variables, statement)?
                 .optimizer_search;
         let cache_mode = if optimizer_search != OptimizerSearchDirective::Auto {
             PlanCacheMode::Bypass(plan_cache::PlanCacheBypassReason::OptimizerDirective)
@@ -378,10 +478,10 @@ impl Database {
             cache_mode,
             PlanTraceMode::Template,
             PlanCacheContext {
-                catalog: &self.catalog,
-                store: &self.store,
-                optimizer: &self.optimizer,
-                config: &self.config,
+                catalog: self.catalog,
+                store: self.store,
+                optimizer: self.optimizer,
+                config: self.config,
                 cache: plan_cache,
                 planning_cache,
                 access_control: None,
@@ -389,7 +489,9 @@ impl Database {
             },
         )
     }
+}
 
+impl Database {
     pub fn query(&mut self, cypher_text: &str) -> Result<QueryOutput> {
         self.query_with_params(cypher_text, &BTreeMap::new())
     }
@@ -826,6 +928,174 @@ mod tests {
 
         assert_eq!(request.cpu_slots, 4);
         assert_eq!(request.memory_bytes, 4 * 1024);
+    }
+
+    #[test]
+    fn planning_cache_invalidation_does_not_reuse_an_in_flight_generation() {
+        let db = Database::new();
+        let planning = db.runtime_planning_snapshot();
+        let parameters = BTreeMap::new();
+        let before = planning
+            .prepare(
+                "MATCH (m:Memory) RETURN m.id AS id".to_string(),
+                &parameters,
+            )
+            .unwrap();
+        db.optimizer_planning_cache.borrow_mut().invalidate();
+        let after = planning
+            .prepare(
+                "MATCH (m:Memory) RETURN m.id AS id".to_string(),
+                &parameters,
+            )
+            .unwrap();
+        assert_ne!(before.optimizer_environment, after.optimizer_environment);
+        assert_eq!(
+            after.optimized.unwrap().plan_cache_lookup,
+            PlanCacheLookup::Miss
+        );
+    }
+
+    #[test]
+    fn mutation_planning_freshness_checks_data_schema_and_configuration() {
+        let mut db = Database::new();
+        let query = "CREATE (:Memory {id: 'new'})";
+        let parameters = BTreeMap::new();
+        let old = db.runtime_planning_snapshot();
+        let prepared = old.prepare(query.to_string(), &parameters).unwrap();
+        assert!(old.is_current_for(&db, &prepared));
+        db.query("CREATE (:Memory {id: 'other'})").unwrap();
+        assert!(!old.is_current_for(&db, &prepared));
+        let current = db.runtime_planning_snapshot();
+        let prepared = current.prepare(query.to_string(), &parameters).unwrap();
+        assert!(current.is_current_for(&db, &prepared));
+        db.config.max_read_result_rows = Some(1);
+        assert!(!current.is_current_for(&db, &prepared));
+        let current = db.runtime_planning_snapshot();
+        assert!(current.is_current_for(&db, &prepared));
+        db.system_variables.estimated_operations += 1;
+        assert!(!current.is_current_for(&db, &prepared));
+    }
+
+    #[test]
+    fn planning_snapshot_reuses_the_database_template_cache() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'existing'})").unwrap();
+        let query = "MATCH (m:Memory) WHERE m.id = $id RETURN m.id AS id";
+        let parameters =
+            BTreeMap::from([("id".to_string(), Value::String("existing".to_string()))]);
+        let first = db
+            .runtime_planning_snapshot()
+            .prepare(query.to_string(), &parameters)
+            .unwrap();
+        assert_eq!(
+            first.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Miss
+        );
+        let second = db
+            .runtime_planning_snapshot()
+            .prepare(query.to_string(), &parameters)
+            .unwrap();
+        assert_eq!(
+            second.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Hit
+        );
+        let direct = db
+            .prepare_runtime_query(query.to_string(), &parameters)
+            .unwrap();
+        assert_eq!(
+            direct.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Hit
+        );
+        assert_eq!(first.admission, second.admission);
+        assert_eq!(second.admission, direct.admission);
+    }
+
+    #[test]
+    fn planning_snapshot_does_not_require_the_database_mutex() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'existing'})").unwrap();
+        let db = Mutex::new(db);
+        let planning = db.lock().unwrap().runtime_planning_snapshot();
+        let guard = db.lock().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let prepared = planning.prepare(
+                "MATCH (m:Memory) RETURN m.id AS id".to_string(),
+                &BTreeMap::new(),
+            );
+            sender
+                .send(prepared.map(|prepared| prepared.admission.is_mutation))
+                .unwrap();
+        });
+        // Keep the writer mutex held until the independent planner reports completion.
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(5));
+        drop(guard);
+        worker.join().unwrap();
+        assert!(!result.unwrap().unwrap());
+    }
+
+    #[test]
+    fn planning_snapshots_keep_schema_keys_separate_and_release_reader_pins() {
+        let mut db = Database::new();
+        db.query("CREATE (:Memory {id: 'existing'})").unwrap();
+        let old = db.runtime_planning_snapshot();
+        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 1);
+        db.query("CREATE (:NewLabel {id: 'new'})").unwrap();
+        let new = db.runtime_planning_snapshot();
+        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 2);
+        assert!(old.catalog.label_id("NewLabel").is_none());
+        assert!(new.catalog.label_id("NewLabel").is_some());
+        let query = "MATCH (m:Memory) RETURN m.id AS id";
+        let parameters = BTreeMap::new();
+        let old_prepared = old.prepare(query.to_string(), &parameters).unwrap();
+        let new_prepared = new.prepare(query.to_string(), &parameters).unwrap();
+        assert_ne!(
+            old_prepared.optimizer_environment,
+            new_prepared.optimizer_environment
+        );
+        assert_eq!(
+            old_prepared.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Miss
+        );
+        assert_eq!(
+            new_prepared.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Miss
+        );
+        // An older snapshot may populate the shared cache after a newer one.
+        let old_again = old.prepare(query.to_string(), &parameters).unwrap();
+        let old_warm = old.prepare(query.to_string(), &parameters).unwrap();
+        let new_again = new.prepare(query.to_string(), &parameters).unwrap();
+        let new_warm = new.prepare(query.to_string(), &parameters).unwrap();
+        // Republishing different statistics advances the shared generation; it
+        // must not alias a generation independently reused by another snapshot.
+        assert_ne!(
+            old_again.optimizer_environment,
+            old_prepared.optimizer_environment
+        );
+        assert_ne!(
+            new_again.optimizer_environment,
+            new_prepared.optimizer_environment
+        );
+        assert_eq!(
+            old_again.optimizer_environment,
+            old_warm.optimizer_environment
+        );
+        assert_eq!(
+            new_again.optimizer_environment,
+            new_warm.optimizer_environment
+        );
+        assert_eq!(
+            old_warm.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Hit
+        );
+        assert_eq!(
+            new_warm.optimized.as_ref().unwrap().plan_cache_lookup,
+            PlanCacheLookup::Hit
+        );
+        drop(old);
+        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 1);
+        drop(new);
+        assert!(db.reader_pins.lock().unwrap().active_views.is_empty());
     }
 
     #[test]

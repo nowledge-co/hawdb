@@ -251,7 +251,8 @@ impl OptimizerPlanningCache {
         self.statistics_schema = None;
         self.statistics_source_graph_commit_epoch = None;
         self.statistics_publication = None;
-        self.statistics_generation = 0;
+        // In-flight snapshots can still publish plans after invalidation. Keep
+        // generations monotonic so a refreshed environment cannot reuse their key.
         self.catalog = None;
     }
 
