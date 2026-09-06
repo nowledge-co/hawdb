@@ -16,7 +16,7 @@ fn random_document(random: &mut Random, id: &str) -> SearchDocument {
 
 // The oracle shares tokenization, but no persisted statistics, delta accounting,
 // posting merge, ranking collector or production BM25 scoring implementation.
-fn reference_scores(
+pub(super) fn reference_scores(
     documents: &BTreeMap<String, SearchDocument>,
     analyzer: &SearchAnalyzerLexicon,
     terms: &BTreeSet<String>,

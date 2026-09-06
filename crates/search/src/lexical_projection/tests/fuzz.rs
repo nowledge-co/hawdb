@@ -7,6 +7,7 @@ mod artifact;
 mod bytes;
 mod dictionary_memory;
 mod merge;
+mod query_memory;
 mod state_machine;
 
 struct Random(u64);

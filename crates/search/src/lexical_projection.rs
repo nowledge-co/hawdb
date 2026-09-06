@@ -494,11 +494,12 @@ fn analyze_delta_document(
     Ok(analyzer::analyze(document, analyzer, config, None, None)?.document)
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub(super) struct LexicalQueryReport {
-    pub scores: BTreeMap<String, f64>,
+    pub scores: crate::query_memory::AdmittedScores,
     pub matching_document_count: usize,
     pub postings_visited: u64,
+    #[cfg(test)]
     pub bytes_read: u64,
     pub document_bytes_read: u64,
     pub dictionary_bytes_read: u64,
@@ -660,6 +661,33 @@ impl LexicalProjectionReader {
         delta: &LexicalMiniDelta,
         retained_score_limit: Option<usize>,
         task_context: Option<&skein_core::RuntimeTaskContext>,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<LexicalQueryReport> {
+        let memory = self.query_memory(task_context)?;
+        self.score_with_memory(
+            query_terms,
+            delta,
+            retained_score_limit,
+            task_context,
+            &memory,
+            allowed,
+        )
+    }
+
+    pub(super) fn query_memory(
+        &self,
+        task: Option<&skein_core::RuntimeTaskContext>,
+    ) -> Result<crate::query_memory::QueryMemory> {
+        crate::query_memory::QueryMemory::new(self.config.query_memory_bytes, task)
+    }
+
+    pub(super) fn score_with_memory(
+        &self,
+        query_terms: &BTreeSet<String>,
+        delta: &LexicalMiniDelta,
+        retained_score_limit: Option<usize>,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
+        memory: &crate::query_memory::QueryMemory,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
         let read = ReadContext {
@@ -694,14 +722,7 @@ impl LexicalProjectionReader {
             .saturating_mul(per_stream_bytes)
             .saturating_add(self.config.max_block_bytes.get().saturating_mul(2))
             .saturating_add(self.config.dictionary_validation_bytes.get());
-        let reservation = task_context.and_then(|context| context.memory_reservation());
-        let query_memory_bytes =
-            reservation.map_or(self.config.query_memory_bytes.get(), |reservation| {
-                self.config
-                    .query_memory_bytes
-                    .get()
-                    .min(reservation.memory_bytes())
-            });
+        let query_memory_bytes = memory.limit.min(self.config.query_memory_bytes.get());
         if admitted_stream_bytes > query_memory_bytes {
             return Err(SkeinError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
@@ -716,12 +737,14 @@ impl LexicalProjectionReader {
         if document_count == 0 {
             return Ok(LexicalQueryReport::default());
         }
+        // Keep stream capacity charged until all cursors, lookup buffers and
+        // collector conversion scratch have dropped, including error unwinding.
+        let _streams_memory = memory.working.reserve(admitted_stream_bytes as usize)?;
         let mut collector = ScoreCollector::new(
             retained_score_limit,
             self.config.max_query_score_entries.get(),
-            reservation.map_or(query_memory_bytes - admitted_stream_bytes, |reservation| {
-                (query_memory_bytes - admitted_stream_bytes).min(reservation.result_bytes())
-            }),
+            (query_memory_bytes - admitted_stream_bytes).min(memory.result_limit),
+            &memory.scores,
         )?;
         let mut document_frequency = BTreeMap::new();
         let mut base_metadata = BTreeMap::new();
@@ -821,6 +844,9 @@ impl LexicalProjectionReader {
                 }
             }
             if score > 0.0 {
+                // Delta IDs are not borrowed from the admitted mapping buffer.
+                // Cover the copy before allocation and until collector transfer.
+                let _incoming_id = memory.working.reserve(id.len())?;
                 collector.push(id.clone(), score)?;
             }
         }
@@ -831,6 +857,7 @@ impl LexicalProjectionReader {
             scores,
             matching_document_count,
             postings_visited,
+            #[cfg(test)]
             bytes_read: bytes_read.saturating_add(documents.bytes_read),
             document_bytes_read: documents.bytes_read,
             dictionary_bytes_read,
@@ -1029,11 +1056,12 @@ struct ScoreCollector {
 struct ScoreBudget {
     used: u64,
     limit: u64,
+    memory: skein_executor::QueryMemoryLease,
 }
 
 impl ScoreBudget {
     fn replace(&mut self, removed: u64, added: u64) -> Result<()> {
-        self.used = self
+        let next = self
             .used
             .checked_sub(removed)
             .and_then(|bytes| bytes.checked_add(added))
@@ -1044,6 +1072,15 @@ impl ScoreBudget {
                     self.limit
                 ))
             })?;
+        if next > self.used {
+            self.memory
+                .grow(usize::try_from(next - self.used).map_err(|_| {
+                    SkeinError::Storage("lexical score capacity exceeds address space".to_string())
+                })?)?;
+        } else {
+            self.memory.shrink((self.used - next) as usize);
+        }
+        self.used = next;
         Ok(())
     }
 }
@@ -1055,7 +1092,12 @@ fn score_entry_bytes(id: &String) -> u64 {
 }
 
 impl ScoreCollector {
-    fn new(retained_limit: Option<usize>, max_entries: usize, max_bytes: u64) -> Result<Self> {
+    fn new(
+        retained_limit: Option<usize>,
+        max_entries: usize,
+        max_bytes: u64,
+        account: &skein_executor::QueryMemoryAccount,
+    ) -> Result<Self> {
         if retained_limit.is_some_and(|limit| limit > max_entries) {
             return Err(SkeinError::Storage(format!(
                 "lexical rank window exceeds the admitted {max_entries} score entries"
@@ -1064,6 +1106,7 @@ impl ScoreCollector {
         let mut bytes = ScoreBudget {
             used: 0,
             limit: max_bytes,
+            memory: account.reserve(0)?,
         };
         let storage = match retained_limit {
             Some(limit) => {
@@ -1119,11 +1162,15 @@ impl ScoreCollector {
                     .peek()
                     .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
                 {
-                    self.bytes.replace(
-                        score_entry_bytes(&heap.peek().unwrap().0.id),
-                        score_entry_bytes(&candidate.id),
-                    )?;
-                    heap.pop();
+                    let removed = score_entry_bytes(&heap.peek().unwrap().0.id);
+                    let added = score_entry_bytes(&candidate.id);
+                    // Preflight growth before mutation. If the replacement is
+                    // smaller, keep the old charge until its ID actually drops.
+                    self.bytes.replace(removed.min(added), added)?;
+                    drop(heap.pop());
+                    if removed > added {
+                        self.bytes.replace(removed - added, 0)?;
+                    }
                     heap.push(Reverse(candidate));
                 }
             }
@@ -1131,14 +1178,15 @@ impl ScoreCollector {
         Ok(())
     }
 
-    fn finish(self) -> BTreeMap<String, f64> {
-        match self.storage {
+    fn finish(self) -> crate::query_memory::AdmittedScores {
+        let scores = match self.storage {
             ScoreStorage::Full(scores) => scores,
             ScoreStorage::TopK { heap, .. } => heap
                 .into_iter()
                 .map(|Reverse(candidate)| (candidate.id, candidate.score))
                 .collect(),
-        }
+        };
+        crate::query_memory::AdmittedScores::new(scores, self.bytes.memory)
     }
 }
 
@@ -2030,6 +2078,7 @@ mod tests {
     mod dictionary_admission;
     mod fuzz;
     mod merge_admission;
+    mod query_admission;
     mod robustness;
     mod token_memory;
     mod token_reference;

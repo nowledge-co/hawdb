@@ -69,6 +69,7 @@ rust_test(
         ("analyzer", "analysis::frequency_parity_campaign"),
         ("artifact", "artifact::document_mapping_admission_campaign"),
         ("merge", "merge::merge_admission_campaign"),
+        ("query_memory", "query_memory::query_memory_campaign"),
         ("posting", "bytes::posting_bytes_campaign"),
         ("dictionary", "bytes::dictionary_bytes_campaign"),
         ("dictionary_memory", "dictionary_memory::dictionary_admission_campaign"),

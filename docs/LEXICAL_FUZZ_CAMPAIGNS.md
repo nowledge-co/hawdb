@@ -8,7 +8,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes eight lexical targets, one record-codec target
+The required local suite includes nine lexical targets, one record-codec target
 and segment/RaBitQ admission targets, all manual:
 
 ```bash
@@ -30,7 +30,7 @@ cargo test -p skein-search --no-default-features --lib \
 Each campaign is an ignored Rust test and has a separate manual Bazel target
 named `//crates/search:skein_search_lexical_<campaign>_fuzz_tests`. Campaign names
 are `analyzer`, `artifact`, `merge`, `posting`, `dictionary`, `dictionary_memory`,
-`doclist`, and `state_machine`. Bazel supplies the
+`doclist`, `query_memory`, and `state_machine`. Bazel supplies the
 exact Rust test name and `--ignored`; each target must report one executed test,
 not a successful zero-test filter. Ordinary Cargo and search unit-test targets
 compile these tests but do not execute them. Do not add these campaigns to
@@ -41,6 +41,14 @@ the complete inputs and action sequences. Logs report accepted/rejected byte
 cases, all posting encoding modes, and state-machine transition counts. A
 failed filesystem campaign leaves its uniquely named temporary fixture intact;
 a successful campaign removes only its own fixture, after dropping readers.
+
+The query-memory campaign uses seed `0x2065c0e` for 512 queries against a real
+published lexical artifact, with replacements/deletes/inserts, filters and six
+retention windows. Scores are compared with the existing independent document
+frequency/BM25 oracle. Each query shares its root with competing live work,
+retries exact/one-short peak budgets, and keeps returned score IDs charged.
+Thirty-two cancelled traversals release charges and cache pins. See
+`LEXICAL_QUERY_ADMISSION.md` for the ownership boundary and remaining query work.
 
 The generation-input campaign is
 `//crates/search:skein_search_record_fuzz_tests`, or:

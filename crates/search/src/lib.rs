@@ -50,6 +50,7 @@ mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
 mod out_of_core;
+mod query_memory;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;
@@ -3260,7 +3261,7 @@ impl SearchIndex {
             })
             .transpose()?;
         let (
-            mut text_scores,
+            projected_text_scores,
             lexical_matching_document_count,
             lexical_postings_visited,
             lexical_bytes_read,
@@ -3268,7 +3269,7 @@ impl SearchIndex {
             lexical_document_bytes_read,
         ) = if let Some(report) = lexical_report {
             (
-                report.scores,
+                Some(report.scores),
                 report.matching_document_count,
                 report.postings_visited,
                 report.posting_bytes_read,
@@ -3276,8 +3277,9 @@ impl SearchIndex {
                 report.document_bytes_read,
             )
         } else {
-            (BTreeMap::new(), 0, 0, 0, 0, 0)
+            (None, 0, 0, 0, 0, 0)
         };
+        let mut resident_text_scores = BTreeMap::new();
         if lexical_projection.is_none() {
             for document in &filtered_documents {
                 let text_score = if text_available && mode != SearchMode::Vector {
@@ -3291,10 +3293,13 @@ impl SearchIndex {
                     0.0
                 };
                 if text_score > 0.0 {
-                    text_scores.insert(document.id.clone(), text_score);
+                    resident_text_scores.insert(document.id.clone(), text_score);
                 }
             }
         }
+        let text_scores = projected_text_scores
+            .as_deref()
+            .unwrap_or(&resident_text_scores);
         let segmented_lexical_projection_used = lexical_projection.is_some();
         let text_candidate_count = if segmented_lexical_projection_used {
             lexical_matching_document_count
@@ -3307,7 +3312,7 @@ impl SearchIndex {
         fallback_reasons.extend(text_fallback_reasons.iter().cloned());
 
         let vector_ranks = ranked_scores(&vector_scores);
-        let text_ranks = ranked_scores(&text_scores);
+        let text_ranks = ranked_scores(text_scores);
         let vector_window_ranks = window_ranks(&vector_ranks, options.rank_window);
         let text_window_ranks = window_ranks(&text_ranks, options.rank_window);
         let retrievers = vec![
@@ -3519,7 +3524,7 @@ impl SearchIndex {
                 fallback_reasons: text_fallback_reasons,
                 candidate_top_ids: Vec::new(),
                 top_hit_ids: top_ranked_ids(&text_window_ranks, limit),
-                top_candidates: top_ranked_candidates(&text_window_ranks, &text_scores, limit),
+                top_candidates: top_ranked_candidates(&text_window_ranks, text_scores, limit),
             },
         ];
         let mut scored_candidates = vector_scores

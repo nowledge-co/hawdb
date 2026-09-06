@@ -1116,12 +1116,14 @@ impl SearchOutOfCoreReader {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
+        let query_memory = self.lexical_projection.query_memory(task_context)?;
         let lexical_report = if text_available && mode != SearchMode::Vector {
-            Some(self.lexical_projection.score_with_context(
+            Some(self.lexical_projection.score_with_memory(
                 &query_terms,
                 &LexicalMiniDelta::default(),
                 retained_text_limit,
                 task_context,
+                &query_memory,
                 |id| candidate_set.contains(id, &mut metrics),
             )?)
         } else {

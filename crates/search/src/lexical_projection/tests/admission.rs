@@ -205,7 +205,9 @@ fn lexical_io_admission_and_cache_hits_have_distinct_permit_lifetimes() {
 
 #[test]
 fn score_collectors_charge_owned_id_capacity_and_reject_without_replacing_results() {
-    let mut full = ScoreCollector::new(None, 10, 514).unwrap();
+    let memory =
+        crate::query_memory::QueryMemory::new(NonZeroU64::new(4096).unwrap(), None).unwrap();
+    let mut full = ScoreCollector::new(None, 10, 514, &memory.scores).unwrap();
     full.push("a".to_string(), 1.0).unwrap();
     full.push("b".to_string(), 2.0).unwrap();
     assert!(full
@@ -214,11 +216,11 @@ fn score_collectors_charge_owned_id_capacity_and_reject_without_replacing_result
         .to_string()
         .contains("score byte budget"));
     assert_eq!(full.finish().len(), 2);
-    let mut top = ScoreCollector::new(Some(1), 10, 300).unwrap();
+    let mut top = ScoreCollector::new(Some(1), 10, 300, &memory.scores).unwrap();
     top.push("a".to_string(), 1.0).unwrap();
     let mut oversized = String::with_capacity(1024);
     oversized.push('b');
     assert!(top.push(oversized, 2.0).is_err());
     assert_eq!(top.finish(), BTreeMap::from([("a".to_string(), 1.0)]));
-    assert!(ScoreCollector::new(Some(1000), 1000, 1).is_err());
+    assert!(ScoreCollector::new(Some(1000), 1000, 1, &memory.scores).is_err());
 }

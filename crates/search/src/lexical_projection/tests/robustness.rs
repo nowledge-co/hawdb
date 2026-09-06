@@ -34,7 +34,7 @@ impl Fixture {
         LexicalProjectionReader::load(&self.root, Some(7), 11, 13, config)
     }
 
-    fn scores(&self, delta: &LexicalMiniDelta) -> BTreeMap<String, f64> {
+    fn scores(&self, delta: &LexicalMiniDelta) -> crate::query_memory::AdmittedScores {
         self.reader
             .score(&BTreeSet::from(["graph".to_string()]), delta, None, |_| {
                 Ok(true)
