@@ -858,6 +858,54 @@ mod tests {
     }
 
     #[test]
+    fn checkpointed_and_reopened_facade_accepts_mutations() {
+        use skein_storage::StorageResidencyMode;
+
+        for mode in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_path("checkpointed-mutation");
+            let options = SkeinEmbeddedOpenOptions::new(&path).with_config(crate::DatabaseConfig {
+                storage_residency_mode: mode,
+                ..crate::DatabaseConfig::default()
+            });
+            for round in 0..2 {
+                let embedded = SkeinTokioEmbedded::open_owned(options.clone()).unwrap();
+                embedded
+                    .runtime()
+                    .block_on(async {
+                        for query in [
+                            "CREATE (:Memory {id: 'before-checkpoint'})",
+                            "CHECKPOINT",
+                            "CREATE (:Memory {id: 'after-checkpoint'})",
+                        ] {
+                            embedded
+                                .query(query, RuntimeTaskContext::default())
+                                .await
+                                .unwrap();
+                        }
+                        let output = embedded
+                            .query(
+                                "MATCH (m:Memory) RETURN m.id AS id",
+                                RuntimeTaskContext::default(),
+                            )
+                            .await
+                            .unwrap();
+                        assert_eq!(output.rows.len(), 2 * (round + 1));
+                    })
+                    .unwrap();
+                let snapshot = embedded.runtime_snapshot();
+                assert_eq!(snapshot.admissions, 8);
+                assert_eq!(snapshot.completions, 8);
+                assert_eq!(snapshot.admitted_memory_bytes, 0);
+                drop(embedded);
+            }
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+    }
+
+    #[test]
     fn borrowed_facade_keeps_the_host_runtime_alive() {
         let path = unique_test_path("borrowed");
         let host = tokio_runtime();

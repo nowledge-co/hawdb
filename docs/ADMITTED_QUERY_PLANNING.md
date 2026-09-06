@@ -38,6 +38,9 @@ state share ownership across snapshots. Statistics invalidation does not reset
 the generation counter: an in-flight old planner must not publish a template
 under a key that a newer statistics publication can reuse. Read transactions
 share the planning cache handle without locking it while capturing the read view.
+Freshness retains the full published identity captured with the pin, including
+checkpoint generation and epoch. It must not reconstruct that identity from
+the read-only store snapshot, which deliberately omits the durable writer handle.
 
 Tokio read execution captures its planning view and read transaction together,
 then plans and executes outside the embedded mutex. Mutation execution plans

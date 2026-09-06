@@ -977,17 +977,23 @@ mod tests {
             std::env::temp_dir().join(format!("skein-qualification-{}-{id}", std::process::id()));
         let mut config = MixedSoakConfig::scheduled(root.join("database"), "test-revision");
         config.dataset_id = "test-dataset".to_string();
-        config.node_count = 256;
+        config.node_count = 512;
         config.payload_bytes = 8 * 1024;
         config.foreground_workers = 2;
         config.foreground_rounds_per_worker = 2;
         config.background_rounds = 1;
         config.segment_cache_bytes = 64 * 1024;
-        config.runtime_memory_budget_bytes = 1024 * 1024;
+        // Admit the planning phase and bounded stream buffers while keeping the
+        // raw dataset twice the governor budget. Operator/cache limits stay small.
+        config.runtime_memory_budget_bytes = 2 * 1024 * 1024;
         config.result_budget_bytes = 64 * 1024;
         config.blocking_operator_bytes = 32 * 1024;
         // Avoid treating shared-runner scheduling delays as workload failures.
         config.task_timeout = Duration::from_secs(120);
+        assert_eq!(
+            raw_dataset_bytes(&config),
+            2 * config.runtime_memory_budget_bytes
+        );
 
         let report = run_mixed_soak(&config).unwrap();
 
@@ -1010,7 +1016,26 @@ mod tests {
             report.errors
         );
         assert!(report.storage.raw_dataset_exceeds_runtime_memory);
+        assert!(
+            report.checkpoint.completed,
+            "checkpoint errors: {:?}",
+            report.errors
+        );
+        assert!(report.checkpoint.canonical_generation_advanced);
+        assert!(
+            report.errors.is_empty(),
+            "workload errors: {:?}",
+            report.errors
+        );
+        assert_eq!(report.runtime.final_active_foreground_tasks, 0);
+        assert_eq!(report.runtime.final_active_background_tasks, 0);
+        assert_eq!(report.runtime.final_active_blocking_tasks, 0);
         assert_eq!(report.runtime.final_admitted_memory_bytes, 0);
+        assert_eq!(
+            report.runtime.admissions_delta,
+            report.runtime.completions_delta
+        );
+        assert!(!report.runtime.final_overcommitted);
         assert!(report.json().is_object());
 
         let _ = std::fs::remove_dir_all(root);

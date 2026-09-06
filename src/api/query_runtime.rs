@@ -26,6 +26,7 @@ pub(crate) struct PreparedRuntimeQuery {
 pub(crate) struct RuntimePlanningSnapshot {
     catalog: Catalog,
     store: GraphStore,
+    published_read_view: PublishedReadView,
     optimizer: CascadesOptimizer,
     config: DatabaseConfig,
     system_variables: QuerySystemVariables,
@@ -49,7 +50,7 @@ impl RuntimePlanningSnapshot {
         database: &Database,
         prepared: &PreparedRuntimeQuery,
     ) -> bool {
-        self.store.published_read_view() == database.store.published_read_view()
+        self.published_read_view == database.store.published_read_view()
             && self.config == database.config
             && self.system_variables == database.system_variables
             && prepared
@@ -271,10 +272,13 @@ pub(crate) fn runtime_planning_request(
 impl Database {
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     pub(crate) fn runtime_planning_snapshot(&self) -> RuntimePlanningSnapshot {
-        let (_, pin) = self.pin_read_view();
+        let (published_read_view, pin) = self.pin_read_view();
         RuntimePlanningSnapshot {
             catalog: self.catalog.clone(),
             store: self.store.snapshot(),
+            // Store snapshots omit the writable durable handle and its checkpoint
+            // metadata. Freshness must compare the original pinned publication.
+            published_read_view,
             optimizer: self.optimizer.clone(),
             config: self.config.clone(),
             system_variables: self.system_variables.clone(),
@@ -974,6 +978,59 @@ mod tests {
         assert!(current.is_current_for(&db, &prepared));
         db.system_variables.estimated_operations += 1;
         assert!(!current.is_current_for(&db, &prepared));
+    }
+
+    #[test]
+    fn durable_mutation_planning_preserves_checkpoint_identity() {
+        use skein_storage::StorageResidencyMode;
+
+        for mode in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "skein-planning-durable-{}-{nonce}-{mode:?}",
+                std::process::id()
+            ));
+            let config = DatabaseConfig {
+                storage_residency_mode: mode,
+                ..DatabaseConfig::default()
+            };
+            let parameters = BTreeMap::new();
+            let query = "CREATE (:Memory {id: 'planned'})";
+            let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+            db.query("CREATE (:Memory {id: 'existing'})").unwrap();
+            let before = db.runtime_planning_snapshot();
+            let prepared = before.prepare(query.to_string(), &parameters).unwrap();
+            assert!(before.is_current_for(&db, &prepared));
+            let epoch = db.store.commit_epoch();
+            db.checkpoint().unwrap();
+            assert_eq!(db.store.commit_epoch(), epoch);
+            assert!(!before.is_current_for(&db, &prepared));
+            drop(before);
+
+            let checkpointed = db.runtime_planning_snapshot();
+            let prepared = checkpointed
+                .prepare(query.to_string(), &parameters)
+                .unwrap();
+            assert!(checkpointed.is_current_for(&db, &prepared), "{mode:?}");
+            drop(checkpointed);
+            drop(db);
+
+            let mut db = Database::open_with_config(&path, config).unwrap();
+            let reopened = db.runtime_planning_snapshot();
+            let prepared = reopened.prepare(query.to_string(), &parameters).unwrap();
+            assert!(reopened.is_current_for(&db, &prepared), "{mode:?}");
+            db.query("CREATE (:Memory {id: 'concurrent'})").unwrap();
+            assert!(!reopened.is_current_for(&db, &prepared));
+            drop(reopened);
+            drop(db);
+            std::fs::remove_dir_all(&path).unwrap();
+        }
     }
 
     #[test]
