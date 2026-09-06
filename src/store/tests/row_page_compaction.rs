@@ -248,7 +248,7 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
                 max_dirty_bytes: NonZeroU64::new(1).unwrap(),
                 ..Default::default()
             },
-            "checkpoint capture requires",
+            "checkpoint change key set retains",
         ),
         (
             RelationalRowPageCompactionConfig {
