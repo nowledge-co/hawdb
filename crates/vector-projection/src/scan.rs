@@ -10,6 +10,9 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
+mod memory;
+use memory::SearchMemoryPlan;
+
 const SCAN_BLOCK_ROWS: usize = 32;
 const DEFAULT_SEARCH_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const WORKER_FIXED_BYTES: usize = 1_024;
@@ -129,10 +132,10 @@ pub struct ProjectionSearchOutput {
     pub report: ProjectionSearchReport,
 }
 
-/// The physical data plane a query scans: given a segment index, produce
-/// that segment's scored candidates. `InMemoryProjection` and
-/// `FileProjection` are today's only two backends; a future mmap-range or
-/// remote-object backend would implement this same boundary rather than
+/// The physical data plane a query scans: given a segment index, accumulate
+/// its scores into the worker's bounded heap. `InMemoryProjection` and
+/// `FileProjection` are today's only two backends; a future remote-object
+/// backend would implement this same boundary rather than
 /// growing another bespoke `search` method.
 trait SegmentReader: Sync {
     fn manifest(&self) -> &ProjectionManifest;
@@ -141,9 +144,9 @@ trait SegmentReader: Sync {
     /// per-worker allowlist mask budget before scanning starts.
     fn max_segment_rows(&self) -> usize;
 
-    /// Upper bound on any single segment's on-disk payload size, used to
-    /// size the per-worker read-buffer budget. Zero for backends (e.g.
-    /// in-memory) that do not materialize a transient per-read buffer.
+    /// Per-worker file payload allowance. Mapped reads retain this conservative
+    /// working-set allowance even though they do not copy a read buffer. It is
+    /// not an owner for the mapping's full host lifetime.
     fn max_segment_payload_bytes(&self) -> usize;
 
     #[allow(clippy::too_many_arguments)]
@@ -151,7 +154,7 @@ trait SegmentReader: Sync {
         &self,
         segment_index: usize,
         query: &[f32],
-        top_k: usize,
+        top: &mut TopK,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
         context: Option<&RuntimeTaskContext>,
@@ -179,7 +182,7 @@ impl SegmentReader for InMemoryProjection {
         &self,
         segment_index: usize,
         query: &[f32],
-        top_k: usize,
+        top: &mut TopK,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
         context: Option<&RuntimeTaskContext>,
@@ -194,7 +197,7 @@ impl SegmentReader for InMemoryProjection {
             |row| segment.reconstruction_offsets[row],
             &segment.codes,
             query,
-            top_k,
+            top,
             kernel,
             allowed_ids,
             context,
@@ -230,7 +233,7 @@ impl SegmentReader for FileProjection {
         &self,
         segment_index: usize,
         query: &[f32],
-        top_k: usize,
+        top: &mut TopK,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
         context: Option<&RuntimeTaskContext>,
@@ -245,7 +248,7 @@ impl SegmentReader for FileProjection {
             self.manifest().dimension,
             bit_width,
             query,
-            top_k,
+            top,
             kernel,
             allowed_ids,
             context,
@@ -283,8 +286,6 @@ fn search_projection<R: SegmentReader>(
     options: ProjectionSearchOptions<'_>,
 ) -> Result<ProjectionSearchOutput> {
     let manifest = reader.manifest();
-    let max_segment_rows = reader.max_segment_rows();
-    let max_segment_payload_bytes = reader.max_segment_payload_bytes();
     if query.len() != manifest.dimension {
         return Err(ProjectionError::InvalidVector(format!(
             "expected query dimension {}, got {}",
@@ -303,10 +304,13 @@ fn search_projection<R: SegmentReader>(
         context.checkpoint()?;
     }
     let kernel = select_kernel(options.kernel)?;
+    let memory = SearchMemoryPlan::admit(reader, top_k, options)?;
+    #[cfg(test)]
+    memory::tests::record_query_allocation();
     let mut transformed_query = vec![0.0; manifest.dimension];
     normalize_and_transform(query, manifest.transform_seed, &mut transformed_query)?;
     let segment_count = manifest.segments.len();
-    if top_k == 0 || segment_count == 0 || allowed_ids.is_some_and(<[u64]>::is_empty) {
+    if memory.worker_count == 0 {
         return Ok(ProjectionSearchOutput {
             hits: Vec::new(),
             report: ProjectionSearchReport {
@@ -320,58 +324,14 @@ fn search_projection<R: SegmentReader>(
                 scanned_block_count: 0,
                 skipped_block_count: manifest.document_count.div_ceil(SCAN_BLOCK_ROWS),
                 payload_bytes_read: 0,
-                admitted_working_bytes: transformed_query
-                    .len()
-                    .saturating_mul(std::mem::size_of::<f32>()),
+                admitted_working_bytes: memory.working_bytes,
                 candidate_count: 0,
                 candidate_set_exact,
             },
         });
     }
 
-    let query_bytes = transformed_query
-        .len()
-        .saturating_mul(std::mem::size_of::<f32>());
-    let mask_bytes = allowed_ids.map_or(0, |_| {
-        max_segment_rows.div_ceil(u64::BITS as usize) * std::mem::size_of::<u64>()
-    });
-    let top_k_bytes = top_k.saturating_mul(std::mem::size_of::<ProjectionHit>());
-    let per_worker_bytes = max_segment_payload_bytes
-        .saturating_add(mask_bytes)
-        .saturating_add(top_k_bytes)
-        .saturating_add(WORKER_STACK_BYTES)
-        .saturating_add(WORKER_FIXED_BYTES);
-    let global_top_k_bytes = top_k.saturating_mul(std::mem::size_of::<ProjectionHit>());
-    let global_bytes = query_bytes
-        .saturating_add(global_top_k_bytes)
-        .saturating_add(SEARCH_FIXED_BYTES);
-    let available_for_workers = options.max_working_bytes.saturating_sub(global_bytes);
-    let admitted_by_memory = available_for_workers / per_worker_bytes.max(1);
-    if admitted_by_memory == 0 {
-        return Err(ProjectionError::ResourceBudgetExceeded {
-            required: global_bytes.saturating_add(per_worker_bytes),
-            available: options.max_working_bytes,
-        });
-    }
-    let admitted_by_allowlist = allowed_ids.map_or(usize::MAX, |allowed| {
-        allowed
-            .len()
-            .div_ceil(MIN_ALLOWLIST_DOCUMENTS_PER_WORKER)
-            .max(1)
-    });
-    let worker_count = options
-        .max_parallelism
-        .get()
-        .min(
-            options
-                .task_context
-                .map_or(usize::MAX, |context| context.admitted_parallelism().get()),
-        )
-        .min(segment_count)
-        .min(admitted_by_memory)
-        .min(admitted_by_allowlist)
-        .max(1);
-    let admitted_working_bytes = global_bytes.saturating_add(worker_count * per_worker_bytes);
+    let worker_count = memory.worker_count;
 
     let report = Mutex::new(ReportAccumulator::default());
     let first_error = Mutex::new(None);
@@ -379,10 +339,11 @@ fn search_projection<R: SegmentReader>(
     let next_segment = AtomicUsize::new(0);
 
     // Each worker accumulates its own bounded top-k with no cross-thread
-    // locking on the scan hot path; the per-worker heaps are merged into one
-    // final top-k only once, after every worker has finished.
+    // locking on the scan hot path. Segments write directly into it, avoiding
+    // a second heap and sorted result vector for every segment. Joining a
+    // worker moves its heap entries directly into the final top-k.
     let run_worker = || -> TopK {
-        let mut local_top_k = TopK::new(top_k);
+        let mut local_top_k = TopK::new(memory.top_k);
         loop {
             if stopped.load(AtomicOrdering::Acquire) {
                 break;
@@ -400,7 +361,7 @@ fn search_projection<R: SegmentReader>(
             match reader.scan_segment(
                 segment_index,
                 &transformed_query,
-                top_k,
+                &mut local_top_k,
                 kernel,
                 allowed_ids,
                 options.task_context,
@@ -410,7 +371,6 @@ fn search_projection<R: SegmentReader>(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .add(&segment_result);
-                    local_top_k.extend(segment_result.hits);
                 }
                 Err(error) => {
                     store_error(&first_error, &stopped, error);
@@ -421,10 +381,10 @@ fn search_projection<R: SegmentReader>(
         local_top_k
     };
 
-    let mut merged_top_k = TopK::new(top_k);
-    if worker_count == 1 {
-        merged_top_k = run_worker();
+    let merged_top_k = if worker_count == 1 {
+        run_worker()
     } else {
+        let mut merged_top_k = TopK::new(memory.top_k);
         let panic_payload = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(worker_count);
             for worker in 0..worker_count {
@@ -443,7 +403,7 @@ fn search_projection<R: SegmentReader>(
             let mut panic_payload = None;
             for handle in handles {
                 match handle.join() {
-                    Ok(local_top_k) => merged_top_k.extend(local_top_k.into_hits()),
+                    Ok(local_top_k) => merged_top_k.merge(local_top_k),
                     Err(payload) => {
                         panic_payload.get_or_insert(payload);
                     }
@@ -454,7 +414,8 @@ fn search_projection<R: SegmentReader>(
         if let Some(payload) = panic_payload {
             std::panic::resume_unwind(payload);
         }
-    }
+        merged_top_k
+    };
 
     if let Some(error) = first_error
         .into_inner()
@@ -481,7 +442,7 @@ fn search_projection<R: SegmentReader>(
             scanned_block_count: accumulated.scanned_block_count,
             skipped_block_count: accumulated.skipped_block_count,
             payload_bytes_read: accumulated.payload_bytes_read,
-            admitted_working_bytes,
+            admitted_working_bytes: memory.working_bytes,
             candidate_count: hits.len(),
             candidate_set_exact,
         },
@@ -496,7 +457,7 @@ fn scan_file_segment(
     dimension: usize,
     bit_width: RaBitQBitWidth,
     query: &[f32],
-    top_k: usize,
+    top: &mut TopK,
     kernel: ScanKernel,
     allowed_ids: Option<&[u64]>,
     context: Option<&RuntimeTaskContext>,
@@ -511,7 +472,7 @@ fn scan_file_segment(
         |row| parts.reconstruction_offset(row),
         parts.codes,
         query,
-        top_k,
+        top,
         kernel,
         allowed_ids,
         context,
@@ -529,7 +490,7 @@ fn scan_segment<Id, Scale, Offset>(
     offset_at: Offset,
     codes: &[u8],
     query: &[f32],
-    top_k: usize,
+    top: &mut TopK,
     kernel: ScanKernel,
     allowed_ids: Option<&[u64]>,
     context: Option<&RuntimeTaskContext>,
@@ -549,7 +510,6 @@ where
     let mask = allowed_ids.map(|allowed| build_allowed_mask(rows, &id_at, allowed));
     let score = score_function(kernel);
     let query_sum = query.iter().sum::<f32>();
-    let mut top = TopK::new(top_k);
     let mut scored_document_count = 0usize;
     let mut scanned_block_count = 0usize;
     let mut skipped_block_count = 0usize;
@@ -606,7 +566,6 @@ where
         }
     }
     Ok(SegmentSearchResult {
-        hits: top.finish(),
         scanned_segment_count: 1,
         scored_document_count,
         filtered_document_count: rows.saturating_sub(scored_document_count),
@@ -716,7 +675,6 @@ fn store_error(
 
 #[derive(Debug)]
 struct SegmentSearchResult {
-    hits: Vec<ProjectionHit>,
     scanned_segment_count: usize,
     scored_document_count: usize,
     filtered_document_count: usize,
@@ -789,6 +747,8 @@ impl Ord for RankedHit {
 
 impl TopK {
     fn new(limit: usize) -> Self {
+        #[cfg(test)]
+        memory::tests::record_heap_allocation(limit);
         Self {
             limit,
             heap: BinaryHeap::with_capacity(limit),
@@ -817,22 +777,31 @@ impl TopK {
         }
     }
 
-    fn extend(&mut self, hits: Vec<ProjectionHit>) {
+    fn extend(&mut self, hits: impl IntoIterator<Item = ProjectionHit>) {
         for hit in hits {
             self.push(hit);
         }
     }
 
+    fn merge(&mut self, other: Self) {
+        self.extend(other.heap.into_iter().map(|Reverse(RankedHit(hit))| hit));
+    }
+
     fn into_hits(self) -> Vec<ProjectionHit> {
-        self.heap
-            .into_iter()
-            .map(|Reverse(RankedHit(hit))| hit)
-            .collect()
+        // Account for both allocations; iterator allocation reuse is not part
+        // of the search memory contract.
+        let mut hits = Vec::with_capacity(self.heap.len());
+        for Reverse(RankedHit(hit)) in self.heap {
+            hits.push(hit);
+        }
+        hits
     }
 
     fn finish(self) -> Vec<ProjectionHit> {
         let mut hits = self.into_hits();
-        hits.sort_by(|left, right| compare_best(right, left));
+        // Scores and IDs define a total order, so stable sorting has no semantic
+        // benefit and would introduce an additional scratch allocation.
+        hits.sort_unstable_by(|left, right| compare_best(right, left));
         hits
     }
 }

@@ -91,12 +91,13 @@ and ignored in ordinary runs, with no default/dedicated fuzz CI additions.
 
 ## Remaining full-issue boundaries
 
-This is not complete vector/query/RSS admission. RaBitQ candidate generation in
-`crates/vector-projection/src/scan.rs::search_projection` remains outside the
-shared ledger: its transformed-query allocation precedes the standalone memory
-check, and its local/segment top-k, conversion and merge lifetimes need a full
-overlap envelope plus retained projection-hit ownership. That envelope must be
-connected before backend entry, not charged from a report after allocation.
+This is not complete vector/query/RSS admission. RaBitQ candidate generation now
+checks its standalone envelope before transforming the query and accumulates
+segments directly into one heap per worker, with explicit merge/output overlap
+and no sorting scratch (`PROJECTION_QUERY_ADMISSION.md`). It still remains
+outside the shared ledger. The envelope needs a shared-root lease before backend
+entry, not a charge inferred from a report after allocation. Returned projection
+hits also need a retained owner through conversion into selected ordinals.
 The combined vector component limit also needs to cover every live phase,
 not only its existing score-entry and projection allowances.
 

@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ/candidate/vector admission targets, all manual:
+and segment/RaBitQ/candidate/vector/projection-search admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -141,6 +141,24 @@ filters, five retention windows, competing score owners and exact/one-short
 root retries are checked. The same campaign without default features covers
 the scalar path. These are raw-sidecar/retained-score checks, not proof of the
 RaBitQ backend's still-separate workspace envelope or complete query/RSS limits.
+
+The projection-search campaign is
+`//crates/vector-projection:skein_vector_projection_search_memory_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-vector-projection projection_search_memory_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x2065ca11` generates 192 corpora across one/four-bit encodings, seven
+dimensions and ten corpus sizes. Both in-memory and reopened mapped artifacts
+exercise five budgets, including one-byte-short rejection before query-buffer
+allocation. Independent bit decoding and full sorting check quantized ranking;
+an independent phase envelope checks worker counts and memory reports. Zero
+queries, empty/missing/sparse/dense allowlists, huge top-k requests and real
+parallel scans are included. This qualifies the standalone buffer envelope,
+not a shared-root lease or full reader/output lifetime ownership. See
+`PROJECTION_QUERY_ADMISSION.md` for the exact boundary and negative controls.
 See `VECTOR_QUERY_ADMISSION.md` for the remaining boundaries.
 
 ## Coverage and independent checks
