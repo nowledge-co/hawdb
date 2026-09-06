@@ -22,6 +22,17 @@ impl Default for RelationalRowPageRewriteConfig {
     }
 }
 
+impl RelationalRowPageRewriteConfig {
+    pub fn validate(self) -> Result<(), RelationalRowPagePublicationError> {
+        if !(1..=100).contains(&self.max_live_ratio_percent) {
+            return Err(RelationalRowPagePublicationError::Admission(
+                "row-page rewrite live ratio must be in 1..=100 percent".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct RowPageRewriteControls<'a> {
     pub config: RelationalRowPageRewriteConfig,
@@ -34,11 +45,7 @@ impl RowPageRewriteControls<'_> {
         base: Option<&RelationalRowPageRootReader>,
     ) -> Result<(), RelationalRowPagePublicationError> {
         self.checkpoint()?;
-        if !(1..=100).contains(&self.config.max_live_ratio_percent) {
-            return Err(RelationalRowPagePublicationError::Admission(
-                "row-page rewrite live ratio must be in 1..=100 percent".to_string(),
-            ));
-        }
+        self.config.validate()?;
         if base
             .is_some_and(|base| base.manifest().root_page_count > self.config.max_scan_pages.get())
         {

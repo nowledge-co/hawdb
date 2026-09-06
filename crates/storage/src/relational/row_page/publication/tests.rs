@@ -418,6 +418,83 @@ fn incremental_publication_reuses_clean_pages_and_keeps_pinned_roots() {
 }
 
 #[test]
+fn physical_scrub_rejects_authenticated_occupancy_drift_and_old_file_growth() {
+    let directory = unique_test_dir("physical-occupancy-scrub");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    publisher
+        .publish(
+            &directory,
+            2,
+            11,
+            Some(1),
+            vec![table_delta(
+                "documents",
+                vec![page(1, 2, 11, 1, 2), page(3, 2, 11, 5, 6)],
+            )],
+        )
+        .unwrap();
+    publisher
+        .publish(&directory, 3, 11, Some(2), Vec::new())
+        .unwrap();
+    let reader = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    reader.scrub_physical_pages().unwrap();
+    let manifest_path = directory.join(relational_row_page_manifest_generation_file(3));
+    let original = reader.manifest().clone();
+    for (mut changed, expected) in [
+        (original.clone(), "live pages"),
+        (original.clone(), "bytes, expected"),
+    ] {
+        if expected == "live pages" {
+            // Preserve the total and each allocation bound, but lie about which
+            // old generation owns the pages. Recompute a valid manifest digest.
+            changed.physical_generations[0].live_pages = 2;
+            changed.physical_generations[1].live_pages = 1;
+        } else {
+            changed.physical_generations[0].allocated_pages += 1;
+        }
+        fs::write(
+            &manifest_path,
+            manifest::encode_manifest(&changed, config).unwrap(),
+        )
+        .unwrap();
+        let changed = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+        assert!(matches!(changed.scrub_physical_pages(),
+            Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains(expected)
+        ));
+    }
+    fs::write(
+        manifest_path,
+        manifest::encode_manifest(&original, config).unwrap(),
+    )
+    .unwrap();
+    let old_file = OpenOptions::new()
+        .write(true)
+        .open(directory.join(relational_row_page_artifact_file(1)))
+        .unwrap();
+    old_file
+        .set_len(old_file.metadata().unwrap().len() + 1)
+        .unwrap();
+    assert!(matches!(reader.scrub_physical_pages(),
+        Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("bytes, expected")
+    ));
+    drop(old_file);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn candidate_compaction_rewrites_only_sparse_physical_generations() {
     let directory = unique_test_dir("candidate-compaction");
     let config = RelationalRowPagePublicationConfig::default();
@@ -481,6 +558,7 @@ fn candidate_compaction_rewrites_only_sparse_physical_generations() {
         2
     );
     let candidate = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    candidate.scrub_physical_pages().unwrap();
     let descriptors = collect_descriptors(&candidate, "documents");
     assert_eq!(physical_generations(&descriptors), vec![2, 2, 2, 3]);
     assert_eq!(

@@ -279,6 +279,10 @@ fn relational_row_residency_json(
         "base_commit_epoch": report.base_commit_epoch,
         "visible_commit_epoch": report.visible_commit_epoch,
         "root_page_count": report.root_page_count,
+        "physical_generation_count": report.physical_generation_count,
+        "allocated_page_count": report.allocated_page_count,
+        "live_page_bytes": report.live_page_bytes,
+        "allocated_page_bytes": report.allocated_page_bytes,
         "page_artifact_bytes": report.page_artifact_bytes,
         "root_descriptor_artifact_bytes": report.root_descriptor_artifact_bytes,
         "root_key_artifact_bytes": report.root_key_artifact_bytes,
@@ -605,5 +609,27 @@ fn check_optional_metric(
         Some(_) => {}
         None if required => blocker_codes.push(format!("{name}_unavailable")),
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod row_page_residency_tests {
+    #[test]
+    fn row_page_occupancy_is_visible_in_resource_profile_json() {
+        let report = crate::store::RelationalRowStorageResidencyReport {
+            physical_generation_count: 2,
+            allocated_page_count: 7,
+            root_page_count: 3,
+            live_page_bytes: 3 * 128 * 1024,
+            allocated_page_bytes: 7 * 128 * 1024,
+            page_artifact_bytes: 2 * 128 * 1024,
+            ..Default::default()
+        };
+        let json = super::relational_row_residency_json(&report);
+        assert_eq!(json["physical_generation_count"], 2);
+        assert_eq!(json["allocated_page_count"], 7);
+        assert_eq!(json["live_page_bytes"], 3 * 128 * 1024);
+        assert_eq!(json["allocated_page_bytes"], 7 * 128 * 1024);
+        assert_eq!(json["canonical_artifact_bytes"], 7 * 128 * 1024);
     }
 }

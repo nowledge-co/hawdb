@@ -5,8 +5,9 @@ use skein::{
     SearchIndex, SearchMode, Value, ValueRef,
 };
 use skein_fuzz::{
-    compiled_capabilities_json, emit_fuzz_report, run_wal_tail_recovery_case,
-    DEFAULT_FUZZ_LOG_DIRECTORY, WAL_TAIL_RECOVERY_PROTOCOL,
+    compiled_capabilities_json, emit_fuzz_report, run_row_page_compaction_case,
+    run_wal_tail_recovery_case, DEFAULT_FUZZ_LOG_DIRECTORY, ROW_PAGE_COMPACTION_PROTOCOL,
+    WAL_TAIL_RECOVERY_PROTOCOL,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,7 +41,7 @@ fn run() -> Result<bool, String> {
     let workspace =
         unique_workspace().map_err(|error| format!("create storage fuzz workspace: {error}"))?;
     let fixture = workspace.join("fixture");
-    let targets = if options.wal_tail {
+    let targets = if options.wal_tail || options.row_page_compaction {
         Vec::new()
     } else {
         create_fixture(&fixture)?;
@@ -58,18 +59,29 @@ fn run() -> Result<bool, String> {
     let mut cases = Vec::with_capacity(indexes.len());
     let mut success = true;
     for index in indexes {
-        let report = if options.wal_tail {
+        let report = if options.wal_tail || options.row_page_compaction {
             let seed = mix_seed(options.seed, index as u64);
-            let outcome = catch_unwind(AssertUnwindSafe(|| run_wal_tail_recovery_case(seed)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                if options.wal_tail {
+                    run_wal_tail_recovery_case(seed)
+                } else {
+                    run_row_page_compaction_case(seed)
+                }
+            }));
             let mut report = match outcome {
                 Ok(Ok(report)) => report,
                 Ok(Err(error)) => json!({"success": false, "detail": error}),
-                Err(_) => json!({"success": false, "detail": "WAL tail recovery panicked"}),
+                Err(_) => json!({"success": false, "detail": "storage state machine panicked"}),
             };
             report["case_seed"] = json!(seed);
             report["index"] = json!(index);
+            let oracle = if options.wal_tail {
+                "--wal-tail"
+            } else {
+                "--row-page-compaction"
+            };
             report["reproduction_command"] = json!(format!(
-                "bazel run //crates/fuzz:skein_storage_fuzz -- --wal-tail --seed {} --case-index {index}", options.seed
+                "bazel run //crates/fuzz:skein_storage_fuzz -- {oracle} --seed {} --case-index {index}", options.seed
             ));
             report
         } else {
@@ -81,7 +93,8 @@ fn run() -> Result<bool, String> {
     let _ = fs::remove_dir_all(&workspace);
 
     let report = json!({
-        "protocol": if options.wal_tail { WAL_TAIL_RECOVERY_PROTOCOL } else { PROTOCOL },
+        "protocol": if options.wal_tail { WAL_TAIL_RECOVERY_PROTOCOL }
+            else if options.row_page_compaction { ROW_PAGE_COMPACTION_PROTOCOL } else { PROTOCOL },
         "compiled_capabilities": compiled_capabilities_json(),
         "seed": options.seed,
         "requested_case_count": cases.len(),
@@ -551,6 +564,7 @@ struct Options {
     log_directory: PathBuf,
     print_report: bool,
     wal_tail: bool,
+    row_page_compaction: bool,
 }
 
 impl Options {
@@ -562,6 +576,7 @@ impl Options {
             log_directory: PathBuf::from(DEFAULT_FUZZ_LOG_DIRECTORY),
             print_report: false,
             wal_tail: false,
+            row_page_compaction: false,
         };
         let mut args = args.into_iter();
         while let Some(argument) = args.next() {
@@ -591,9 +606,13 @@ impl Options {
                 }
                 "--print-report" => options.print_report = true,
                 "--wal-tail" => options.wal_tail = true,
+                "--row-page-compaction" => options.row_page_compaction = true,
                 "--help" | "-h" => return Err(usage().to_string()),
                 _ => return Err(format!("unknown argument '{argument}'\n{}", usage())),
             }
+        }
+        if options.wal_tail && options.row_page_compaction {
+            return Err("select only one storage state-machine oracle".to_string());
         }
         if options.cases > MAX_CASES {
             return Err(format!("--cases must not exceed {MAX_CASES}"));
@@ -611,11 +630,17 @@ fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<S
 }
 
 fn usage() -> &'static str {
-    "usage: skein-storage-fuzz [--wal-tail] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
+    "usage: skein-storage-fuzz [--wal-tail | --row-page-compaction] [--seed <u64>] [--cases <usize>] [--case-index <usize>] [--log-directory <path>] [--print-report]"
 }
 
 fn run_id(options: &Options) -> String {
-    let prefix = if options.wal_tail { "wal-tail-" } else { "" };
+    let prefix = if options.wal_tail {
+        "wal-tail-"
+    } else if options.row_page_compaction {
+        "row-page-compaction-"
+    } else {
+        ""
+    };
     options.case_index.map_or_else(
         || format!("{prefix}seed-{}-cases-{}", options.seed, options.cases),
         |index| format!("{prefix}seed-{}-case-{index}", options.seed),
@@ -625,6 +650,20 @@ fn run_id(options: &Options) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_page_compaction_oracle_is_replayable_and_exclusive() {
+        let options = Options::parse(
+            ["--row-page-compaction", "--seed", "7", "--case-index", "3"].map(str::to_string),
+        )
+        .unwrap();
+        assert!(options.row_page_compaction);
+        assert_eq!(options.case_index, Some(3));
+        assert_eq!(run_id(&options), "row-page-compaction-seed-7-case-3");
+        assert!(
+            Options::parse(["--row-page-compaction", "--wal-tail"].map(str::to_string)).is_err()
+        );
+    }
 
     #[test]
     fn case_seed_is_stable_and_indexed() {

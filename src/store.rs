@@ -1119,6 +1119,81 @@ pub enum GraphScanControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalRowPageCompactionConfig {
+    pub rewrite: skein_storage::RelationalRowPageRewriteConfig,
+    pub max_dirty_pages: NonZeroUsize,
+    pub max_dirty_bytes: NonZeroU64,
+    /// Allowance for existing materialized checkpoint sidecars, not row-page
+    /// relocation. Out-of-core row pages are streamed independently of this cap.
+    pub max_materialized_checkpoint_bytes: NonZeroU64,
+}
+
+impl Default for RelationalRowPageCompactionConfig {
+    fn default() -> Self {
+        Self {
+            rewrite: skein_storage::RelationalRowPageRewriteConfig::default(),
+            max_dirty_pages: NonZeroUsize::new(128).unwrap(),
+            max_dirty_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+            max_materialized_checkpoint_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
+        }
+    }
+}
+
+impl RelationalRowPageCompactionConfig {
+    fn publication_config(self) -> RelationalRowPagePublicationConfig {
+        RelationalRowPagePublicationConfig {
+            max_dirty_pages: self.max_dirty_pages,
+            max_dirty_bytes: self.max_dirty_bytes,
+            ..RelationalRowPagePublicationConfig::default()
+        }
+    }
+
+    /// Estimated transient reservation for row planning and checkpoint writers.
+    /// Materialized sidecars and enabled columnar shadow add their own allowance.
+    /// This is not allocator/RSS accounting.
+    pub fn admission_bytes(self) -> Result<u64> {
+        let publication = self.publication_config();
+        let adjacency = CanonicalAdjacencyConfig::default();
+        let projection = PersistentPropertyProjectionConfig::default();
+        let canonical = CanonicalSegmentConfig::default();
+        self.max_dirty_bytes
+            .get()
+            .checked_mul(4)
+            .and_then(|bytes| {
+                bytes.checked_add((publication.max_manifest_bytes.get() as u64).saturating_mul(4))
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    (publication.page_limits.max_page_bytes.get() as u64).saturating_mul(4),
+                )
+            })
+            .and_then(|bytes| bytes.checked_add(adjacency.memory_budget_bytes.get()))
+            .and_then(|bytes| bytes.checked_add(projection.memory_budget_bytes.get()))
+            .and_then(|bytes| bytes.checked_add(projection.max_definition_bytes.get()))
+            .and_then(|bytes| bytes.checked_add(canonical.max_record_bytes.get().saturating_mul(2)))
+            .and_then(|bytes| {
+                bytes.checked_add(canonical.target_segment_bytes.get().saturating_mul(2))
+            })
+            .ok_or_else(|| {
+                SkeinError::Storage("row-page compaction admission byte count overflow".to_string())
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowPageCompactionReport {
+    pub source_commit_epoch: u64,
+    pub published_generation: u64,
+    pub root_pages: u64,
+    pub dirty_pages_written: u64,
+    pub relocated_pages_written: u64,
+    pub reused_pages: u64,
+    pub previous_allocated_pages: u64,
+    pub allocated_pages: u64,
+    pub admitted_memory_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalOverflowCompactionConfig {
     pub max_scan_rows: NonZeroUsize,
     pub max_scan_pages: NonZeroUsize,
@@ -1255,6 +1330,12 @@ pub struct RelationalRowStorageResidencyReport {
     pub base_commit_epoch: Option<u64>,
     pub visible_commit_epoch: Option<u64>,
     pub root_page_count: u64,
+    pub physical_generation_count: usize,
+    pub allocated_page_count: u64,
+    pub live_page_bytes: u64,
+    /// Physical allocation referenced by the active root. Historical files held
+    /// only by old reader pins or delayed cleanup are not included.
+    pub allocated_page_bytes: u64,
     pub page_artifact_bytes: u64,
     pub root_descriptor_artifact_bytes: u64,
     pub root_key_artifact_bytes: u64,
@@ -1278,7 +1359,7 @@ pub struct RelationalRowStorageResidencyReport {
 
 impl RelationalRowStorageResidencyReport {
     pub fn canonical_artifact_bytes(&self) -> u64 {
-        self.page_artifact_bytes
+        self.allocated_page_bytes
             .saturating_add(self.root_descriptor_artifact_bytes)
             .saturating_add(self.root_key_artifact_bytes)
             .saturating_add(self.overflow_extent_artifact_bytes)

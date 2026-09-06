@@ -10,6 +10,29 @@ struct ExactRelationalOverflowCheckpoint<'a> {
     task: &'a RuntimeTaskContext,
 }
 
+struct RelationalRowCompactionCheckpoint<'a> {
+    config: RelationalRowPageCompactionConfig,
+    admitted_memory_bytes: u64,
+    task: &'a RuntimeTaskContext,
+}
+
+fn row_compaction_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
+    task.checkpoint().map_err(|reason| {
+        SkeinError::Execution(format!("relational row-page compaction stopped: {reason}"))
+    })
+}
+
+fn row_compaction_publication_error(
+    error: skein_storage::RelationalRowPagePublicationError,
+) -> SkeinError {
+    match error {
+        skein_storage::RelationalRowPagePublicationError::Corrupt(_) => {
+            SkeinError::StorageIntegrity(error.to_string())
+        }
+        _ => SkeinError::Storage(error.to_string()),
+    }
+}
+
 fn exact_overflow_publication_error(
     error: skein_storage::RelationalOverflowPublicationError,
 ) -> SkeinError {
@@ -98,6 +121,141 @@ impl GraphStore {
         self.checkpoint_with_reader_epoch(catalog, None)
     }
 
+    pub(crate) fn compact_relational_row_pages(
+        &mut self,
+        catalog: &Catalog,
+        oldest_reader_commit_epoch: Option<u64>,
+        config: RelationalRowPageCompactionConfig,
+        task: &RuntimeTaskContext,
+    ) -> Result<RelationalRowPageCompactionReport> {
+        let result = self.compact_relational_row_pages_inner(
+            catalog,
+            oldest_reader_commit_epoch,
+            config,
+            task,
+        );
+        if matches!(&result, Err(SkeinError::StorageIntegrity(_))) {
+            self.integrity_poisoned.store(true, AtomicOrdering::Release);
+        }
+        result
+    }
+
+    fn compact_relational_row_pages_inner(
+        &mut self,
+        catalog: &Catalog,
+        oldest_reader_commit_epoch: Option<u64>,
+        config: RelationalRowPageCompactionConfig,
+        task: &RuntimeTaskContext,
+    ) -> Result<RelationalRowPageCompactionReport> {
+        self.ensure_usable()?;
+        row_compaction_checkpoint(task)?;
+        config
+            .rewrite
+            .validate()
+            .map_err(row_compaction_publication_error)?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            SkeinError::Storage(
+                "relational row-page compaction requires durable storage".to_string(),
+            )
+        })?;
+        if durable.read_only {
+            return Err(SkeinError::Storage(
+                "read-only database cannot compact relational row pages".to_string(),
+            ));
+        }
+        let materialized_sidecars = !self.canonical_base_out_of_core
+            || !self.relational_state.canonical_row_metadata_only();
+        let materialized_bytes = if materialized_sidecars {
+            config
+                .max_materialized_checkpoint_bytes
+                .get()
+                .checked_mul(2)
+                .ok_or_else(|| {
+                    SkeinError::Storage(
+                        "row-page checkpoint materialization allowance overflow".to_string(),
+                    )
+                })?
+        } else {
+            0
+        };
+        let shadow_bytes = self.columnar_shadow_admission_bytes();
+        let admitted_memory_bytes = config
+            .admission_bytes()?
+            .checked_add(materialized_bytes)
+            .and_then(|bytes| bytes.checked_add(shadow_bytes))
+            .ok_or_else(|| {
+                SkeinError::Storage("row-page compaction admission byte count overflow".to_string())
+            })?;
+        let _permit = match &self.runtime_governor {
+            Some(governor) => Some(
+                governor
+                    .try_admit(skein_storage::BackgroundWorkRequest {
+                        cpu_slots: 1,
+                        memory_bytes: admitted_memory_bytes,
+                        io_slots: 1,
+                    })
+                    .map_err(|error| {
+                        SkeinError::Storage(format!(
+                            "row-page compaction admission denied: {error}"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        if materialized_sidecars {
+            let graph_bytes = if self.canonical_base_out_of_core {
+                0
+            } else {
+                self.estimated_logical_record_bytes()
+            };
+            let materialized_estimate = graph_bytes
+                .checked_add(self.relational_state.estimated_materialized_row_bytes())
+                .ok_or_else(|| {
+                    SkeinError::Storage(
+                        "row-page checkpoint materialization estimate overflow".to_string(),
+                    )
+                })?;
+            if materialized_estimate > config.max_materialized_checkpoint_bytes.get() {
+                return Err(SkeinError::Storage(
+                    "row-page compaction exceeds its materialized checkpoint allowance".to_string(),
+                ));
+            }
+        }
+        row_compaction_checkpoint(task)?;
+        let prepared = self
+            .prepare_checkpoint_with_maintenance(
+                catalog,
+                DerivedArtifactBuildConfig::default(),
+                None,
+                Some(RelationalRowCompactionCheckpoint {
+                    config,
+                    admitted_memory_bytes,
+                    task,
+                }),
+            )?
+            .ok_or_else(|| {
+                SkeinError::Storage(
+                    "row-page compaction did not prepare a durable checkpoint".to_string(),
+                )
+            })?;
+        if let Err(error) = row_compaction_checkpoint(task) {
+            durable.discard_prepared_checkpoint(prepared.generation, &prepared.staging_path)?;
+            return Err(error);
+        }
+        let report = prepared
+            .relational_row_compaction_report
+            .clone()
+            .expect("row-page compaction preparation includes its report");
+        self.publish_prepared_checkpoint_with_shadow_admission(
+            prepared,
+            oldest_reader_commit_epoch,
+            self.runtime_governor
+                .as_ref()
+                .map(|_| ColumnarShadowAdmission::pre_admitted(shadow_bytes)),
+        )?;
+        Ok(report)
+    }
+
     pub(crate) fn compact_relational_overflow(
         &mut self,
         catalog: &Catalog,
@@ -162,7 +320,7 @@ impl GraphStore {
             SkeinError::Execution(format!("relational overflow compaction stopped: {reason}"))
         })?;
         let prepared = self
-            .prepare_checkpoint_with_overflow_mode(
+            .prepare_checkpoint_with_maintenance(
                 catalog,
                 DerivedArtifactBuildConfig::default(),
                 Some(ExactRelationalOverflowCheckpoint {
@@ -172,6 +330,7 @@ impl GraphStore {
                     max_rewrite_bytes: config.max_rewrite_bytes,
                     task,
                 }),
+                None,
             )?
             .ok_or_else(|| {
                 SkeinError::Storage(
@@ -266,14 +425,15 @@ impl GraphStore {
         catalog: &Catalog,
         build_config: DerivedArtifactBuildConfig,
     ) -> Result<Option<PreparedCheckpoint>> {
-        self.prepare_checkpoint_with_overflow_mode(catalog, build_config, None)
+        self.prepare_checkpoint_with_maintenance(catalog, build_config, None, None)
     }
 
-    fn prepare_checkpoint_with_overflow_mode(
+    fn prepare_checkpoint_with_maintenance(
         &self,
         catalog: &Catalog,
         build_config: DerivedArtifactBuildConfig,
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
+        row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
     ) -> Result<Option<PreparedCheckpoint>> {
         let Some(durable) = self.durable.as_ref() else {
             return Ok(None);
@@ -537,7 +697,19 @@ impl GraphStore {
                 .as_ref()
                 .map(|overflow| durable.open_bound_relational_row_pages(overflow))
                 .transpose()?;
-            let row_publication_config = RelationalRowPagePublicationConfig::default();
+            let previous_allocated_pages = previous_row.as_ref().map_or(0, |reader| {
+                reader
+                    .manifest()
+                    .physical_generations
+                    .iter()
+                    .map(|entry| entry.allocated_pages)
+                    .sum()
+            });
+            let row_publication_config = row_compaction
+                .as_ref()
+                .map_or_else(RelationalRowPagePublicationConfig::default, |row| {
+                    row.config.publication_config()
+                });
             let row_plan = self.plan_relational_row_page_checkpoint(
                 previous_row,
                 generation,
@@ -667,21 +839,60 @@ impl GraphStore {
                 )
                 .map_err(|error| SkeinError::Storage(error.to_string()))?;
 
-            let relational_row_report = RelationalRowPagePublisher::new(row_publication_config)
-                .persist_generation(
-                    RelationalRowPageGenerationRequest {
-                        directory: durable.root_path(),
+            let row_request = RelationalRowPageGenerationRequest {
+                directory: durable.root_path(),
+                generation,
+                source_commit_epoch: commit_epoch,
+                base: row_plan.base.as_deref(),
+                expected_previous_generation: durable
+                    .relational_row_generation_artifacts
+                    .map(|binding| binding.generation),
+                overflow_root: Some(&relational_overflow_root),
+            };
+            let row_publisher = RelationalRowPagePublisher::new(row_publication_config);
+            let relational_row_report = match row_compaction.as_ref() {
+                Some(compaction) => {
+                    row_compaction_checkpoint(compaction.task)?;
+                    let result = row_publisher.persist_generation_compacting(
+                        row_request,
+                        row_plan.deltas,
+                        compaction.config.rewrite,
+                        compaction.task,
+                    );
+                    row_compaction_checkpoint(compaction.task)?;
+                    result.map_err(row_compaction_publication_error)?
+                }
+                None => row_publisher
+                    .persist_generation(row_request, row_plan.deltas)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+            };
+            let relational_row_compaction_report = row_compaction
+                .as_ref()
+                .map(|compaction| {
+                    let root = skein_storage::RelationalRowPageRootReader::open_generation(
+                        durable.root_path(),
                         generation,
+                        row_publication_config,
+                    )
+                    .map_err(row_compaction_publication_error)?;
+                    Ok::<_, SkeinError>(RelationalRowPageCompactionReport {
                         source_commit_epoch: commit_epoch,
-                        base: row_plan.base.as_deref(),
-                        expected_previous_generation: durable
-                            .relational_row_generation_artifacts
-                            .map(|binding| binding.generation),
-                        overflow_root: Some(&relational_overflow_root),
-                    },
-                    row_plan.deltas,
-                )
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                        published_generation: generation,
+                        root_pages: relational_row_report.root_pages,
+                        dirty_pages_written: relational_row_report.dirty_pages_written,
+                        relocated_pages_written: relational_row_report.relocated_pages_written,
+                        reused_pages: relational_row_report.reused_pages,
+                        previous_allocated_pages,
+                        allocated_pages: root
+                            .manifest()
+                            .physical_generations
+                            .iter()
+                            .map(|entry| entry.allocated_pages)
+                            .sum(),
+                        admitted_memory_bytes: compaction.admitted_memory_bytes,
+                    })
+                })
+                .transpose()?;
             let relational_index_candidate =
                 self.prepare_relational_index_candidate(generation, commit_epoch);
             self.require_authoritative_relational_index_candidate(&relational_index_candidate)?;
@@ -710,6 +921,9 @@ impl GraphStore {
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;
             durable.prepare_wal_generation(generation)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::WalPrepared)?;
+            if let Some(compaction) = row_compaction.as_ref() {
+                row_compaction_checkpoint(compaction.task)?;
+            }
             Ok(PreparedCheckpoint {
                 source_commit_epoch: commit_epoch,
                 source_checkpoint_epoch: durable.checkpoint_epoch,
@@ -724,6 +938,7 @@ impl GraphStore {
                 checkpoint_append_reader,
                 relational_index_candidate,
                 relational_overflow_compaction_report,
+                relational_row_compaction_report,
                 manifest_artifacts: CheckpointManifestArtifacts {
                     checkpoint: checkpoint_artifact,
                     relational_checkpoint: relational_checkpoint_artifact,

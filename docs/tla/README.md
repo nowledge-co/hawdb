@@ -422,12 +422,16 @@ overlay from durable WAL.
 The configured instance uses two readers, two logical commit epochs, four
 physical generations, and two logical pages. Page zero represents a durable
 graph-only commit with no relational dirty page. TLC checks WAL-before-visible,
-manifest-last publication, immutable physical page identity, dirty-only COW,
+manifest-last publication, immutable physical page identity, dirty-page COW,
 stale-builder rejection, pinned-root retention, durable reference and schema
 closure,
 exact row/overflow generation agreement, candidate isolation before outer
-checkpoint publication, complete base-root reuse for an empty dirty set, and
-crash recovery.
+checkpoint publication, source-epoch preservation for relocated clean pages,
+and crash recovery. Maintenance may begin without a new logical commit and
+select any subset of clean pages for relocation. This deliberately
+overapproximates occupancy-based generation selection: an empty subset models
+ordinary base reuse. Numeric occupancy, encoded file lengths, cancellation,
+and memory limits are checked by implementation tests, not this model.
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and

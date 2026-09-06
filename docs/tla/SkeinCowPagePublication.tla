@@ -4,7 +4,8 @@ EXTENDS Integers, Naturals, FiniteSets
 (***************************************************************************)
 (* Canonical row pages use immutable physical identities. A commit becomes  *)
 (* visible only after its WAL record is durable. A checkpoint writes new    *)
-(* versions of dirty pages, reuses clean page references from the selected  *)
+(* versions of dirty pages, optionally relocates clean pages, reuses other  *)
+(* page references from the selected                                      *)
 (* root, and publishes one generation-fenced manifest only after every new  *)
 (* page is durable. Readers pin manifest generations, so reclamation keeps  *)
 (* the complete page-reference closure of active, previous, and pinned      *)
@@ -129,6 +130,9 @@ RequiredPageRefs ==
 StaleCandidate ==
     /\ candidatePhase # "idle"
     /\ candidateBaseGeneration # activeGeneration
+
+CandidateWrittenPages ==
+    {page \in Pages : candidateRoot[page] = candidateGeneration}
 
 Init ==
     /\ walDurableEpoch = 0
@@ -275,18 +279,19 @@ PublishCommit ==
 BeginCheckpoint ==
     /\ candidatePhase = "idle"
     /\ pendingPhase = "none"
-    /\ manifestEpoch < visibleEpoch
+    /\ manifestEpoch <= visibleEpoch
     /\ nextGeneration <= MaxGeneration
     /\ candidatePhase' = "building"
     /\ candidateGeneration' = nextGeneration
     /\ candidateEpoch' = visibleEpoch
     /\ candidateBaseGeneration' = activeGeneration
     /\ candidateDirtyPages' = dirtyPages
-    /\ candidateRoot' =
-        [page \in Pages |->
-            IF page \in dirtyPages
-            THEN nextGeneration
-            ELSE rootByGeneration[activeGeneration][page]]
+    /\ \E relocated \in SUBSET (Pages \ dirtyPages):
+        candidateRoot' =
+            [page \in Pages |->
+                IF page \in dirtyPages \cup relocated
+                THEN nextGeneration
+                ELSE rootByGeneration[activeGeneration][page]]
     /\ nextGeneration' = nextGeneration + 1
     /\ staleCandidateRejected' = FALSE
     /\ UNCHANGED <<
@@ -316,13 +321,18 @@ PersistCandidatePages ==
     /\ candidatePhase = "overflowDurable"
     /\ LET refs == {
             PageRef(candidateGeneration, page) :
-                page \in candidateDirtyPages
+                page \in CandidateWrittenPages
         }
        IN /\ \A ref \in refs: pageEpoch[ref] = -1
           /\ durablePages' = durablePages \cup refs
           /\ pageEpoch' =
               [ref \in PageRefs |->
-                  IF ref \in refs THEN candidateEpoch ELSE pageEpoch[ref]]
+                  IF ref \in refs
+                  THEN IF ref.page \in candidateDirtyPages
+                       THEN candidateEpoch
+                       ELSE pageEpoch[PageRef(
+                           rootByGeneration[candidateBaseGeneration][ref.page], ref.page)]
+                  ELSE pageEpoch[ref]]
     /\ candidatePhase' = "pagesDurable"
     /\ UNCHANGED <<
         walDurableEpoch,
@@ -461,7 +471,7 @@ PublishCheckpoint ==
     /\ candidateGeneration \in durableOverflowRoots
     /\ candidateGeneration \in durableSchemaCatalogs
     /\ overflowEpoch[candidateGeneration] = candidateEpoch
-    /\ \A page \in candidateDirtyPages:
+    /\ \A page \in CandidateWrittenPages:
         PageRef(candidateGeneration, page) \in durablePages
     /\ previousGeneration' = activeGeneration
     /\ activeGeneration' = candidateGeneration
@@ -820,35 +830,30 @@ CandidateUsesFreshImmutableIdentity ==
 DurableCandidateIsNotCanonicalUntilCheckpointPublication ==
     candidatePhase = "idle" \/ candidateGeneration # canonicalOverflowGeneration
 
-CandidateRootCopiesOnlyDirtyPages ==
+CandidateRootCopiesDirtyAndSelectedPages ==
     candidatePhase = "idle" \/
         \A page \in Pages:
-            candidateRoot[page] =
-                IF page \in candidateDirtyPages
-                THEN candidateGeneration
-                ELSE rootByGeneration[candidateBaseGeneration][page]
+            IF page \in candidateDirtyPages
+            THEN candidateRoot[page] = candidateGeneration
+            ELSE candidateRoot[page] \in {
+                candidateGeneration, rootByGeneration[candidateBaseGeneration][page]}
 
-EmptyDirtyCandidateReusesEntireBase ==
-    candidatePhase = "idle" \/
-        candidateDirtyPages # {} \/
-        candidateRoot = rootByGeneration[candidateBaseGeneration]
+RelocationPreservesSourceEpoch ==
+    candidatePhase \in {"pagesDurable", "rootDurable", "manifestDurable"} =>
+        \A page \in CandidateWrittenPages \ candidateDirtyPages:
+            pageEpoch[PageRef(candidateGeneration, page)] =
+                pageEpoch[PageRef(rootByGeneration[candidateBaseGeneration][page], page)]
 
 DurableCandidateHasCompletePages ==
     candidatePhase \in {"pagesDurable", "rootDurable", "manifestDurable"} =>
-        \A page \in candidateDirtyPages:
+        \A page \in CandidateWrittenPages:
             LET ref == PageRef(candidateGeneration, page)
             IN /\ ref \in durablePages
-               /\ pageEpoch[ref] = candidateEpoch
+               /\ (page \in candidateDirtyPages => pageEpoch[ref] = candidateEpoch)
 
 ManifestCandidateHasDurableClosure ==
     candidatePhase = "manifestDurable" =>
-        /\ \A page \in candidateDirtyPages:
-            PageRef(candidateGeneration, page) \in durablePages
-        /\ \A page \in Pages:
-            candidateRoot[page] =
-                IF page \in candidateDirtyPages
-                THEN candidateGeneration
-                ELSE rootByGeneration[candidateBaseGeneration][page]
+        RootRefs(candidateRoot) \subseteq durablePages
 
 ReclamationPreservesRequiredClosure ==
     /\ RequiredRootGenerations \subseteq publishedRoots
