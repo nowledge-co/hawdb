@@ -98,6 +98,7 @@ test_suite(
         "//crates/search:skein_search_rabitq_admission_fuzz_tests",
         "//crates/search:skein_search_candidate_admission_fuzz_tests",
         "//crates/search:skein_search_vector_admission_fuzz_tests",
+        "//crates/search:skein_search_pruning_admission_fuzz_tests",
         "//crates/vector-projection:skein_vector_projection_search_memory_fuzz_tests",
     ],
 )

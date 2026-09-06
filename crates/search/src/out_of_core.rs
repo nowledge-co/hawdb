@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 mod candidate_codec;
 mod candidate_memory;
 mod generation_writer;
+mod pruning_memory;
 mod publish_lease;
 mod query_io;
 mod vector_io;
@@ -1825,6 +1826,7 @@ impl SearchOutOfCoreReader {
         report.segment_count = self.descriptor.segments.len();
         report.segment_pruning_candidate_document_count = self.descriptor.document_count;
         report.persisted_segment_descriptor_used = true;
+        let pruning = pruning_memory::SegmentPruning::new(predicates, &memory.working, &task)?;
         let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
 
         if predicates.is_empty() {
@@ -1849,8 +1851,7 @@ impl SearchOutOfCoreReader {
 
         for segment in &self.descriptor.segments {
             query_io::checkpoint(&task)?;
-            field_pruning.observe_persisted_segment(segment, predicates);
-            if !segment.may_match_predicates(predicates) {
+            if !pruning.evaluate(segment, &mut field_pruning, &memory.working, &task)? {
                 report.pruned_segment_count = report.pruned_segment_count.saturating_add(1);
                 report.segment_pruned_document_count = report
                     .segment_pruned_document_count

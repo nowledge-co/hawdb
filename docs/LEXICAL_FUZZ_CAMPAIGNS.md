@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ/candidate/vector/projection-search admission targets, all manual:
+and segment/RaBitQ/candidate/vector/projection-search/pruning admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -159,6 +159,22 @@ queries, empty/missing/sparse/dense allowlists, huge top-k requests and real
 parallel scans are included. This qualifies the standalone buffer envelope,
 not a shared-root lease or full reader/output lifetime ownership. See
 `PROJECTION_QUERY_ADMISSION.md` for the exact boundary and negative controls.
+
+The pruning campaign is
+`//crates/search:skein_search_pruning_admission_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --all-features pruning_admission_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x206f111e` covers 512 generated document/predicate groups, comparing
+decisions and field reports with the prior all-field path. Unicode/NUL, missing
+values, aliases, all current predicate operator families, duplicate fields and
+competing result owners are included. Exact/one-short root retries verify
+release and the two-account bound. This is legacy parity and transient workspace
+admission, not public report ownership or an independent predicate-semantics
+oracle. See `PRUNING_QUERY_ADMISSION.md` for scope and negative controls.
 See `VECTOR_QUERY_ADMISSION.md` for the remaining boundaries.
 
 ## Coverage and independent checks

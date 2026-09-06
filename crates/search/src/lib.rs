@@ -5331,7 +5331,26 @@ struct SearchFieldPruningStats {
     value_summary_used: bool,
 }
 
+impl SearchFieldPruningStats {
+    fn observe(&mut self, may_match: bool) {
+        self.segment_count += 1;
+        if may_match {
+            self.scanned_segment_count += 1;
+        } else {
+            self.pruned_segment_count += 1;
+        }
+    }
+}
+
 impl SearchFieldPruningAccumulator {
+    fn observe_field(&mut self, field: &str, may_match: bool) {
+        let stats = self
+            .fields
+            .get_mut(field)
+            .expect("pruning field must be registered");
+        stats.observe(may_match);
+    }
+
     fn new(predicates: &SearchPredicateSet) -> Self {
         let mut fields = BTreeMap::<String, SearchFieldPruningStats>::new();
         for predicate in predicates.predicates() {
@@ -5403,12 +5422,7 @@ impl SearchFieldPruningAccumulator {
         }
         for (field, field_predicates) in predicates_by_field {
             let stats = self.fields.entry(field).or_default();
-            stats.segment_count += 1;
-            if may_match(&field_predicates) {
-                stats.scanned_segment_count += 1;
-            } else {
-                stats.pruned_segment_count += 1;
-            }
+            stats.observe(may_match(&field_predicates));
         }
     }
 
@@ -5841,31 +5855,10 @@ impl SearchSegmentDescriptorEntry {
     fn storage_summary(&self) -> SegmentSummary {
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
         for (field, persisted) in &self.metadata {
-            let mut summary = FieldSummary::new(self.document_count as u64)
-                .with_presence_counts(
-                    persisted.present_count as u64,
-                    0,
-                    self.document_count as u64 - persisted.present_count as u64,
-                )
-                .expect("persisted search summary counts must match segment rows");
-            if let Some(range) = persisted.numeric_range {
-                summary = summary
-                    .with_numeric_min_max(range.min, range.max)
-                    .expect("persisted numeric summary must be finite and ordered");
-            }
-            if let Some(range) = persisted.timestamp_range {
-                summary = summary
-                    .with_datetime_min_max(range.min_epoch_millis, range.max_epoch_millis)
-                    .expect("persisted timestamp summary must be ordered");
-            }
-            summary = summary.with_enum_dictionary(EnumDictionaryStats::complete(
-                persisted
-                    .values
-                    .iter()
-                    .map(|value| search_segment_summary_value(field, value))
-                    .map(Value::String),
-            ));
-            segment.insert_field(field.clone(), summary);
+            segment.insert_field(
+                field.clone(),
+                persisted.storage_summary(field, self.document_count, true),
+            );
         }
         segment
     }
@@ -6004,6 +5997,35 @@ fn search_range_summary_value(value: &SearchScalarValue) -> Value {
 }
 
 impl SearchSegmentFieldSummary {
+    fn storage_summary(&self, field: &str, rows: usize, with_values: bool) -> FieldSummary {
+        let mut summary = FieldSummary::new(rows as u64)
+            .with_presence_counts(
+                self.present_count as u64,
+                0,
+                rows as u64 - self.present_count as u64,
+            )
+            .expect("persisted search summary counts must match segment rows");
+        if let Some(range) = self.numeric_range {
+            summary = summary
+                .with_numeric_min_max(range.min, range.max)
+                .expect("persisted numeric summary must be finite and ordered");
+        }
+        if let Some(range) = self.timestamp_range {
+            summary = summary
+                .with_datetime_min_max(range.min_epoch_millis, range.max_epoch_millis)
+                .expect("persisted timestamp summary must be ordered");
+        }
+        if with_values {
+            summary = summary.with_enum_dictionary(EnumDictionaryStats::complete(
+                self.values
+                    .iter()
+                    .map(|value| search_segment_summary_value(field, value))
+                    .map(Value::String),
+            ));
+        }
+        summary
+    }
+
     fn update_range_summaries(&mut self, value: &str) {
         if let Some(number) = metadata_numeric_value(value) {
             self.numeric_range = Some(match self.numeric_range {

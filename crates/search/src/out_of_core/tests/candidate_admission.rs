@@ -191,6 +191,38 @@ fn exact_candidate_build_and_one_short_failure_preserve_publication() {
 }
 
 #[test]
+fn pruning_budget_rejection_precedes_payload_io_and_cleans_query_spill() {
+    let (root, reader) = fixture("candidate-pruning-budget");
+    let published = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let referenced = &reader.descriptor.segments[0].metadata["space_id"];
+    let actual = referenced.values.iter().map(String::len).max().unwrap();
+    let comparison_bytes = 1024 + 12 * (actual + "team".len());
+    let base = std::mem::size_of::<&crate::SearchPredicate>()
+        + std::mem::size_of::<SpilledCandidateSet>()
+        + candidate_memory::directory_bytes(&reader.descriptor.segments).unwrap();
+    let memory = memory(base + comparison_bytes - 1);
+    query_io::evidence::take();
+    pruning_memory::tests::take();
+    assert!(candidates(&reader, &memory, None).is_err());
+    assert_eq!(query_io::evidence::take(), (0, 0));
+    let evidence = pruning_memory::tests::take();
+    assert_eq!(evidence.orders, 1);
+    assert_eq!(evidence.comparisons, 0);
+    assert_eq!(evidence.summaries, 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert!(fs::read_dir(root.join("spill")).unwrap().next().is_none());
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        published
+    );
+    drop(reader);
+    let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reopened.document_count(), 9);
+    drop(reopened);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn failed_cache_replacement_keeps_old_entries_and_charges() {
     let root = test_dir("candidate-cache-replace");
     let memory = memory(8192);

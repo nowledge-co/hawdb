@@ -101,7 +101,8 @@ hits also need a retained owner through conversion into selected ordinals.
 The combined vector component limit also needs to cover every live phase,
 not only its existing score-entry and projection allowances.
 
-Pruning/report containers, rank/fusion copies, hydration, public output,
+Pruning scratch now shares the root (`PRUNING_QUERY_ADMISSION.md`), while
+parsed-input/report containers, rank/fusion copies, hydration, public output,
 persistent delta and published-reader host ownership remain full-query work.
 The resident vector path is not newly instrumented by this change. Jieba
 workspace maintenance, exact-head native qualification and representative-corpus
