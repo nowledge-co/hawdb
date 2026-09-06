@@ -280,7 +280,14 @@ impl Writer {
         entries: &[(String, dictionary::Metadata)],
         limits: dictionary::Limits,
     ) -> Result<()> {
-        let bytes = match dictionary::build(entries, limits, &mut || Ok(())) {
+        let encoded = dictionary::build(entries, limits, &mut || Ok(())).and_then(|bytes| {
+            // Do not publish a block that cannot be opened under this generation's
+            // configured validation scratch limit. Validation runs after fst drops
+            // its builder registry, not concurrently with that allocation.
+            dictionary::Dictionary::open(&bytes, limits, &mut || Ok(()))?;
+            Ok(bytes)
+        });
+        let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(_) if entries.len() > 1 => {
                 // A bounded partition may compress poorly; split deterministically

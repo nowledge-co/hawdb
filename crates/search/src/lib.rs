@@ -1,4 +1,5 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
+pub use lexical_projection::SearchLexicalArtifactBytes;
 #[cfg(feature = "vector-search")]
 use simsimd::SpatialSimilarity;
 use skein_core::{Catalog, Result, RuntimeCapabilities, RuntimeCapability, SkeinError, Value};
@@ -1343,6 +1344,14 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
+    pub fn lexical_artifact_bytes(&self) -> Option<SearchLexicalArtifactBytes> {
+        self.lexical_projection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|projection| projection.artifact_bytes())
+    }
+
     pub fn in_memory() -> Self {
         Self::default()
     }
@@ -3227,11 +3236,17 @@ impl SearchIndex {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone();
-                projection.score(&query_terms, &delta, retained_text_score_limit, |id| {
-                    Ok(filtered_documents
-                        .binary_search_by(|document| document.id.as_str().cmp(id))
-                        .is_ok())
-                })
+                projection.score_with_context(
+                    &query_terms,
+                    &delta,
+                    retained_text_score_limit,
+                    vector_execution_options.task_context,
+                    |id| {
+                        Ok(filtered_documents
+                            .binary_search_by(|document| document.id.as_str().cmp(id))
+                            .is_ok())
+                    },
+                )
             })
             .transpose()?;
         let (

@@ -32,10 +32,15 @@ pub(super) struct Writer {
     first_skip: [u8; 16],
     last_ordinal: Option<u64>,
     spill: super::dictionary_store::SpillBudget,
+    max_frame_bytes: u64,
 }
 
 impl Writer {
-    pub(super) fn new(path: &Path, spill: super::dictionary_store::SpillBudget) -> Result<Self> {
+    pub(super) fn new(
+        path: &Path,
+        spill: super::dictionary_store::SpillBudget,
+        max_frame_bytes: u64,
+    ) -> Result<Self> {
         let skip = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -50,6 +55,7 @@ impl Writer {
             first_skip: [0; 16],
             last_ordinal: None,
             spill,
+            max_frame_bytes,
         })
     }
 
@@ -69,6 +75,9 @@ impl Writer {
             return Err(invalid("a short frame must terminate its doclist"));
         }
         let encoded = posting_codec::encode(postings).map_err(invalid)?;
+        if encoded.len() as u64 > self.max_frame_bytes {
+            return Err(invalid("frame exceeds the configured read budget"));
+        }
         if self
             .last_ordinal
             .is_some_and(|previous| postings[0].ordinal <= previous)
@@ -322,6 +331,7 @@ mod tests {
         let mut writer = Writer::new(
             &path,
             super::super::dictionary_store::SpillBudget::new(0, 4096),
+            4096,
         )
         .unwrap();
         let postings = (0..257)
@@ -379,7 +389,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("skip.tmp");
         let budget = super::super::dictionary_store::SpillBudget::new(0, 31);
-        let mut writer = Writer::new(&path, budget.clone()).unwrap();
+        let mut writer = Writer::new(&path, budget.clone(), 4096).unwrap();
         let mut bytes = Vec::new();
         let mut offset = 0;
         let postings = (0..129)
@@ -395,7 +405,7 @@ mod tests {
         assert_eq!(bytes, before);
         drop(writer);
         assert!(!path.exists());
-        let mut writer = Writer::new(&path, budget).unwrap();
+        let mut writer = Writer::new(&path, budget, 4096).unwrap();
         writer
             .push_frame(&mut bytes, &mut offset, &postings[..1])
             .unwrap();
@@ -406,6 +416,26 @@ mod tests {
             .contains("short frame"));
         drop(writer);
         assert!(!path.exists());
+        let mut writer = Writer::new(
+            &path,
+            super::super::dictionary_store::SpillBudget::new(0, 4096),
+            128,
+        )
+        .unwrap();
+        let wide = (0..128)
+            .map(|ordinal| posting_codec::Posting {
+                ordinal: ordinal * (u64::from(u32::MAX) + 1),
+                tf: u32::MAX,
+            })
+            .collect::<Vec<_>>();
+        let before = bytes.clone();
+        assert!(writer
+            .push_frame(&mut bytes, &mut offset, &wide)
+            .unwrap_err()
+            .to_string()
+            .contains("configured read budget"));
+        assert_eq!(bytes, before);
+        drop(writer);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

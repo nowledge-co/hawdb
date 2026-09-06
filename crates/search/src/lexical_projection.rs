@@ -3,10 +3,7 @@ use super::{document_tokens, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_integrity::Crc32cHasher as Digest;
-use skein_storage::{
-    durable_replace_file, ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache,
-    SegmentCacheKey, StoreId,
-};
+use skein_storage::{durable_replace_file, SegmentCache, StoreId};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
@@ -24,8 +21,11 @@ mod dictionary_store;
 mod doclist;
 mod documents;
 mod fst_validation;
+mod manifest_io;
 mod posting_codec;
+mod read_context;
 use documents::DocumentLookup;
+use read_context::ReadContext;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
@@ -38,13 +38,8 @@ pub(super) fn artifact_file(generation: u64) -> String {
 }
 
 pub(super) fn manifest_generation(path: &Path) -> Result<u64> {
-    let length = fs::metadata(path)?.len();
-    if length > MAX_MANIFEST_BYTES {
-        return Err(SkeinError::Storage(format!(
-            "lexical projection manifest requires {length} bytes, exceeding {MAX_MANIFEST_BYTES}"
-        )));
-    }
-    Ok(ManifestBody::decode(&fs::read(path)?)?.generation)
+    let bytes = manifest_io::read(path, MAX_MANIFEST_BYTES)?;
+    Ok(ManifestBody::decode_bounded(&bytes, MAX_MANIFEST_BYTES)?.generation)
 }
 
 pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
@@ -127,6 +122,20 @@ enum BlockKind {
     Postings = 2,
 }
 
+/// Disjoint physical byte categories of one immutable lexical artifact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchLexicalArtifactBytes {
+    pub header_bytes: u64,
+    pub document_mapping_bytes: u64,
+    pub posting_frame_bytes: u64,
+    pub posting_skip_bytes: u64,
+    pub dictionary_bytes: u64,
+    /// Exact size of the former full-string posting records for this input.
+    /// Excludes old block headers and is not a measured legacy artifact size.
+    pub uncompressed_posting_payload_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockDescriptor {
@@ -153,6 +162,7 @@ struct ManifestBody {
     artifact_file: String,
     artifact_len: u64,
     artifact_checksum: u64,
+    byte_counters: SearchLexicalArtifactBytes,
     document_count: u64,
     total_document_len: u64,
     posting_count: u64,
@@ -235,32 +245,33 @@ impl ManifestBody {
         {
             return Err(invalid());
         }
+        let bytes = self.byte_counters;
+        if bytes.header_bytes != ARTIFACT_HEADER.len() as u64 + 8
+            || bytes.document_mapping_bytes != self.posting_offset - bytes.header_bytes
+            || bytes
+                .posting_frame_bytes
+                .checked_add(bytes.posting_skip_bytes)
+                != Some(self.posting_bytes)
+            || bytes
+                .header_bytes
+                .checked_add(bytes.document_mapping_bytes)
+                .and_then(|total| total.checked_add(self.posting_bytes))
+                .and_then(|total| total.checked_add(bytes.dictionary_bytes))
+                != Some(self.artifact_len)
+            || (self.posting_count == 0) != (bytes.uncompressed_posting_payload_bytes == 0)
+            || self
+                .posting_count
+                .checked_mul(16)
+                .is_none_or(|minimum| minimum > bytes.uncompressed_posting_payload_bytes)
+        {
+            return Err(invalid());
+        }
         Ok(())
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        let body =
-            serde_json::to_vec(self).map_err(|error| SkeinError::Storage(error.to_string()))?;
-        serde_json::to_vec(&ManifestEnvelope {
-            body: self.clone(),
-            checksum: checksum(&body),
-        })
-        .map_err(|error| SkeinError::Storage(error.to_string()))
-    }
-
+    #[cfg(test)]
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
-            .map_err(|error| SkeinError::Storage(format!("invalid lexical manifest: {error}")))?;
-        let body = serde_json::to_vec(&envelope.body)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        if checksum(&body) != envelope.checksum {
-            return Err(SkeinError::Storage(
-                "lexical projection manifest checksum mismatch".to_string(),
-            ));
-        }
-        envelope.body.validate()?;
-        Ok(envelope.body)
+        Self::decode_bounded(bytes, MAX_MANIFEST_BYTES)
     }
 }
 
@@ -607,14 +618,10 @@ impl LexicalProjectionReader {
         if !manifest_path.exists() {
             return Ok(None);
         }
-        if fs::metadata(&manifest_path)?.len()
-            > MAX_MANIFEST_BYTES.min(config.max_directory_bytes.get())
-        {
-            return Err(SkeinError::Storage(
-                "lexical projection manifest exceeds its read budget".to_string(),
-            ));
-        }
-        let manifest = ManifestBody::decode(&fs::read(&manifest_path)?)?;
+        let manifest_bytes = manifest_io::read(&manifest_path, config.max_directory_bytes.get())?;
+        let manifest =
+            ManifestBody::decode_bounded(&manifest_bytes, config.max_directory_bytes.get())?;
+        drop(manifest_bytes);
         if manifest.source_graph_commit_epoch != expected_source_epoch
             || manifest.analyzer_digest != expected_analyzer_digest
             || manifest.documents_digest != expected_documents_digest
@@ -675,13 +682,34 @@ impl LexicalProjectionReader {
         self.manifest.generation
     }
 
+    pub(super) fn artifact_bytes(&self) -> SearchLexicalArtifactBytes {
+        self.manifest.byte_counters
+    }
+
+    #[cfg(test)]
     pub(super) fn score(
         &self,
         query_terms: &BTreeSet<String>,
         delta: &LexicalMiniDelta,
         retained_score_limit: Option<usize>,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<LexicalQueryReport> {
+        self.score_with_context(query_terms, delta, retained_score_limit, None, allowed)
+    }
+
+    pub(super) fn score_with_context(
+        &self,
+        query_terms: &BTreeSet<String>,
+        delta: &LexicalMiniDelta,
+        retained_score_limit: Option<usize>,
+        task_context: Option<&skein_core::RuntimeTaskContext>,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
+        let read = ReadContext {
+            projection: self,
+            task: task_context,
+        };
+        read.checkpoint()?;
         if query_terms.len() > self.config.max_query_terms.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical query produced {} terms, exceeding {}",
@@ -692,6 +720,14 @@ impl LexicalProjectionReader {
         if query_terms.is_empty() {
             return Ok(LexicalQueryReport::default());
         }
+        if query_terms
+            .iter()
+            .any(|term| term.len() as u64 > self.config.max_term_bytes.get())
+        {
+            return Err(SkeinError::Storage(
+                "lexical query term exceeds its byte budget".to_string(),
+            ));
+        }
         let per_stream_bytes = (posting_codec::BLOCK_LEN
             * std::mem::size_of::<posting_codec::Posting>()) as u64
             + posting_codec::MAX_BLOCK_BYTES as u64
@@ -701,10 +737,18 @@ impl LexicalProjectionReader {
             .saturating_mul(per_stream_bytes)
             .saturating_add(self.config.max_block_bytes.get().saturating_mul(2))
             .saturating_add(self.config.dictionary_validation_bytes.get());
-        if admitted_stream_bytes > self.config.query_memory_bytes.get() {
+        let reservation = task_context.and_then(|context| context.memory_reservation());
+        let query_memory_bytes =
+            reservation.map_or(self.config.query_memory_bytes.get(), |reservation| {
+                self.config
+                    .query_memory_bytes
+                    .get()
+                    .min(reservation.memory_bytes())
+            });
+        if admitted_stream_bytes > query_memory_bytes {
             return Err(SkeinError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
-                self.config.query_memory_bytes
+                query_memory_bytes
             )));
         }
         let (document_count, total_document_len) = delta.projected_corpus(
@@ -715,11 +759,18 @@ impl LexicalProjectionReader {
         if document_count == 0 {
             return Ok(LexicalQueryReport::default());
         }
+        let mut collector = ScoreCollector::new(
+            retained_score_limit,
+            self.config.max_query_score_entries.get(),
+            reservation.map_or(query_memory_bytes - admitted_stream_bytes, |reservation| {
+                (query_memory_bytes - admitted_stream_bytes).min(reservation.result_bytes())
+            }),
+        )?;
         let mut document_frequency = BTreeMap::new();
         let mut base_metadata = BTreeMap::new();
         let mut postings_visited = 0u64;
         for term in query_terms {
-            let metadata = self.term_metadata(term, &mut bytes_read)?;
+            let metadata = read.term_metadata(term, &mut bytes_read)?;
             document_frequency.insert(
                 term.clone(),
                 delta
@@ -728,10 +779,6 @@ impl LexicalProjectionReader {
             base_metadata.insert(term, metadata);
         }
         let average_document_len = (total_document_len as f64 / document_count as f64).max(1.0);
-        let mut collector = ScoreCollector::new(
-            retained_score_limit,
-            self.config.max_query_score_entries.get(),
-        )?;
         let mut streams = Vec::new();
         let mut stream_idf = Vec::new();
         for term in query_terms {
@@ -739,18 +786,19 @@ impl LexicalProjectionReader {
             if df > 0
                 && let Some(metadata) = base_metadata[term]
             {
-                streams.push(TermPostingStream::new(self, term, metadata)?);
+                streams.push(TermPostingStream::with_context(read, term, metadata)?);
                 stream_idf.push(idf(document_count, df));
             }
         }
         let mut heap = BinaryHeap::new();
-        let mut documents = DocumentLookup::new(self);
+        let mut documents = DocumentLookup::with_context(read);
         for (index, stream) in streams.iter_mut().enumerate() {
             if let Some(posting) = stream.next()? {
                 heap.push(Reverse((posting.ordinal, index, posting)));
             }
         }
         while let Some(Reverse((ordinal, stream_index, posting))) = heap.pop() {
+            read.checkpoint()?;
             let (document_id, document_len) = documents.get(ordinal)?;
             let mut score = 0.0;
             validate_posting_length(&posting, document_len)?;
@@ -796,6 +844,7 @@ impl LexicalProjectionReader {
             posting_bytes_read = posting_bytes_read.saturating_add(stream.bytes_read);
         }
         for (id, document) in &delta.upserts {
+            read.checkpoint()?;
             if !allowed(id)? {
                 continue;
             }
@@ -820,6 +869,7 @@ impl LexicalProjectionReader {
         }
         let matching_document_count = collector.matching_count;
         let scores = collector.finish();
+        read.checkpoint()?;
         Ok(LexicalQueryReport {
             scores,
             matching_document_count,
@@ -831,88 +881,40 @@ impl LexicalProjectionReader {
         })
     }
 
+    #[cfg(test)]
     fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
-        self.validate_range(offset, length)?;
-        let mut bytes = vec![0; length];
-        super::out_of_core::read_exact_at(&self.file, offset, &mut bytes)?;
-        Ok(bytes)
-    }
-
-    fn validate_range(&self, offset: u64, length: usize) -> Result<()> {
-        if length as u64 > self.config.max_block_bytes.get()
-            || offset
-                .checked_add(length as u64)
-                .is_none_or(|end| end > self.manifest.artifact_len)
-        {
-            return Err(SkeinError::Storage(
-                "lexical range exceeds its artifact or read budget".to_string(),
-            ));
+        ReadContext {
+            projection: self,
+            task: None,
         }
-        Ok(())
+        .read_range(offset, length)
     }
 
+    #[cfg(test)]
     fn term_metadata(
         &self,
         term: &str,
         bytes_read: &mut u64,
     ) -> Result<Option<dictionary::Metadata>> {
-        let dictionaries = &self.manifest.dictionaries;
-        let index = dictionaries.partition_point(|block| block.max_term.as_str() < term);
-        let Some(descriptor) = dictionaries
-            .get(index)
-            .filter(|block| block.min_term.as_str() <= term)
-        else {
-            return Ok(None);
-        };
-        let length = usize::try_from(descriptor.length)
-            .map_err(|_| SkeinError::Storage("dictionary exceeds the address space".to_string()))?;
-        let (bytes, read) =
-            self.read_cached_range(descriptor.offset, length, descriptor.checksum)?;
-        *bytes_read = bytes_read.saturating_add(read);
-        let dictionary = dictionary::Dictionary::open(
-            &bytes,
-            dictionary_store::limits(self.config)?,
-            &mut || Ok(()),
-        )
-        .map_err(|error| SkeinError::Storage(format!("invalid lexical dictionary: {error}")))?;
-        descriptor.validate_dictionary(&dictionary, self.manifest.document_count)?;
-        dictionary
-            .get(term)
-            .map_err(|error| SkeinError::Storage(error.to_string()))
+        ReadContext {
+            projection: self,
+            task: None,
+        }
+        .term_metadata(term, bytes_read)
     }
 
+    #[cfg(test)]
     fn read_cached_range(
         &self,
         offset: u64,
         length: usize,
         digest: u64,
     ) -> Result<(Arc<[u8]>, u64)> {
-        self.validate_range(offset, length)?;
-        let key = SegmentCacheKey {
-            store_id: self.cache_namespace,
-            manifest_generation: ManifestGeneration(self.manifest.generation),
-            segment_id: offset,
-            content_digest: ContentDigest(digest),
-            representation: RepresentationKind::LexicalProjectionBlock,
-        };
-        if let Some(lease) = self.cache.get(&key) {
-            if lease.len() != length {
-                return Err(SkeinError::Storage(
-                    "lexical cache extent mismatch".to_string(),
-                ));
-            }
-            return Ok((lease.into_arc(), 0));
+        ReadContext {
+            projection: self,
+            task: None,
         }
-        let bytes = self.read_range(offset, length)?;
-        if checksum(&bytes) != digest {
-            return Err(SkeinError::Storage(
-                "lexical range checksum mismatch".to_string(),
-            ));
-        }
-        let lease = self.cache.insert(key, bytes).map_err(|error| {
-            SkeinError::Storage(format!("lexical cache admission failed: {error}"))
-        })?;
-        Ok((lease.into_arc(), length as u64))
+        .read_cached_range(offset, length, digest)
     }
 
     #[cfg(test)]
@@ -948,7 +950,7 @@ fn validate_posting_length(posting: &Posting, document_len: u32) -> Result<()> {
 }
 
 struct TermPostingStream<'a> {
-    projection: &'a LexicalProjectionReader,
+    read: ReadContext<'a>,
     term: &'a str,
     cursor: doclist::Cursor,
     current: std::vec::IntoIter<posting_codec::Posting>,
@@ -957,13 +959,29 @@ struct TermPostingStream<'a> {
 }
 
 impl<'a> TermPostingStream<'a> {
+    #[cfg(test)]
     fn new(
         projection: &'a LexicalProjectionReader,
         term: &'a str,
         metadata: dictionary::Metadata,
     ) -> Result<Self> {
+        Self::with_context(
+            ReadContext {
+                projection,
+                task: None,
+            },
+            term,
+            metadata,
+        )
+    }
+
+    fn with_context(
+        read: ReadContext<'a>,
+        term: &'a str,
+        metadata: dictionary::Metadata,
+    ) -> Result<Self> {
         Ok(Self {
-            projection,
+            read,
             term,
             cursor: doclist::Cursor::new(metadata)?,
             current: Vec::new().into_iter(),
@@ -973,6 +991,7 @@ impl<'a> TermPostingStream<'a> {
     }
 
     fn next(&mut self) -> Result<Option<Posting>> {
+        self.read.checkpoint()?;
         loop {
             if let Some(posting) = self.current.next() {
                 self.postings_visited += 1;
@@ -984,10 +1003,10 @@ impl<'a> TermPostingStream<'a> {
             }
             let Some(postings) = self.cursor.next_frame(&mut |offset, length, digest| {
                 let (bytes, read) = if let Some(digest) = digest {
-                    self.projection.read_cached_range(offset, length, digest)?
+                    self.read.read_cached_range(offset, length, digest)?
                 } else {
                     (
-                        Arc::from(self.projection.read_range(offset, length)?),
+                        Arc::from(self.read.read_range(offset, length)?),
                         length as u64,
                     )
                 };
@@ -997,7 +1016,7 @@ impl<'a> TermPostingStream<'a> {
             else {
                 return Ok(None);
             };
-            if postings.last().unwrap().ordinal >= self.projection.manifest.document_count {
+            if postings.last().unwrap().ordinal >= self.read.projection.manifest.document_count {
                 return Err(SkeinError::Storage(
                     "lexical posting ordinal exceeds its generation".to_string(),
                 ));
@@ -1047,25 +1066,74 @@ struct ScoreCollector {
     storage: ScoreStorage,
     matching_count: usize,
     max_entries: usize,
+    bytes: ScoreBudget,
+}
+
+struct ScoreBudget {
+    used: u64,
+    limit: u64,
+}
+
+impl ScoreBudget {
+    fn replace(&mut self, removed: u64, added: u64) -> Result<()> {
+        self.used = self
+            .used
+            .checked_sub(removed)
+            .and_then(|bytes| bytes.checked_add(added))
+            .filter(|&bytes| bytes <= self.limit)
+            .ok_or_else(|| {
+                SkeinError::Storage(format!(
+                    "lexical score byte budget exceeded: limit {}",
+                    self.limit
+                ))
+            })?;
+        Ok(())
+    }
+}
+
+fn score_entry_bytes(id: &String) -> u64 {
+    // Requested capacity for the owned ID, B-tree node slack and the temporary
+    // tree produced while consuming a top-k heap. Not allocator/RSS telemetry.
+    256u64.saturating_add(id.capacity() as u64)
 }
 
 impl ScoreCollector {
-    fn new(retained_limit: Option<usize>, max_entries: usize) -> Result<Self> {
+    fn new(retained_limit: Option<usize>, max_entries: usize, max_bytes: u64) -> Result<Self> {
         if retained_limit.is_some_and(|limit| limit > max_entries) {
             return Err(SkeinError::Storage(format!(
                 "lexical rank window exceeds the admitted {max_entries} score entries"
             )));
         }
+        let mut bytes = ScoreBudget {
+            used: 0,
+            limit: max_bytes,
+        };
+        let storage = match retained_limit {
+            Some(limit) => {
+                let allocation = (limit as u64)
+                    .checked_mul(std::mem::size_of::<Reverse<ScoredDocument>>() as u64)
+                    .ok_or_else(|| {
+                        SkeinError::Storage("lexical score allocation overflow".to_string())
+                    })?;
+                bytes.replace(0, allocation)?;
+                let mut heap = BinaryHeap::new();
+                heap.try_reserve_exact(limit).map_err(|_| {
+                    SkeinError::Storage("lexical score allocation failed".to_string())
+                })?;
+                bytes.replace(
+                    allocation,
+                    (heap.capacity() as u64)
+                        .saturating_mul(std::mem::size_of::<Reverse<ScoredDocument>>() as u64),
+                )?;
+                ScoreStorage::TopK { limit, heap }
+            }
+            None => ScoreStorage::Full(BTreeMap::new()),
+        };
         Ok(Self {
-            storage: match retained_limit {
-                Some(limit) => ScoreStorage::TopK {
-                    limit,
-                    heap: BinaryHeap::with_capacity(limit.saturating_add(1)),
-                },
-                None => ScoreStorage::Full(BTreeMap::new()),
-            },
+            storage,
             matching_count: 0,
             max_entries,
+            bytes,
         })
     }
 
@@ -1079,6 +1147,7 @@ impl ScoreCollector {
                         self.max_entries
                     )));
                 }
+                self.bytes.replace(0, score_entry_bytes(&id))?;
                 scores.insert(id, score);
             }
             ScoreStorage::TopK { limit, heap } => {
@@ -1087,11 +1156,16 @@ impl ScoreCollector {
                 }
                 let candidate = ScoredDocument { id, score };
                 if heap.len() < *limit {
+                    self.bytes.replace(0, score_entry_bytes(&candidate.id))?;
                     heap.push(Reverse(candidate));
                 } else if heap
                     .peek()
                     .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
                 {
+                    self.bytes.replace(
+                        score_entry_bytes(&heap.peek().unwrap().0.id),
+                        score_entry_bytes(&candidate.id),
+                    )?;
                     heap.pop();
                     heap.push(Reverse(candidate));
                 }
@@ -1193,6 +1267,7 @@ impl LexicalProjectionWriter {
         let mut chunk_bytes = 0u64;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
+        let mut uncompressed_posting_payload_bytes = 0u64;
         let mut previous_document_id: Option<String> = None;
         let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
             if ordinal != document_count {
@@ -1218,6 +1293,15 @@ impl LexicalProjectionWriter {
                 total_document_len.saturating_add(u64::from(analyzed.document_len));
             artifact.push_document(document.id.clone(), analyzed.document_len)?;
             for (term, term_frequency) in analyzed.frequencies {
+                uncompressed_posting_payload_bytes = uncompressed_posting_payload_bytes
+                    .checked_add(16)
+                    .and_then(|bytes| bytes.checked_add(document.id.len() as u64))
+                    .and_then(|bytes| bytes.checked_add(term.len() as u64))
+                    .ok_or_else(|| {
+                        SkeinError::Storage(
+                            "uncompressed posting byte counter overflow".to_string(),
+                        )
+                    })?;
                 let posting = Posting {
                     term,
                     ordinal,
@@ -1248,6 +1332,15 @@ impl LexicalProjectionWriter {
         runs.compact()?;
         artifact.merge_postings(&runs.paths, self.config, runs.bytes)?;
         let artifact = artifact.finish()?;
+        let header_bytes = ARTIFACT_HEADER.len() as u64 + 8;
+        let byte_counters = SearchLexicalArtifactBytes {
+            header_bytes,
+            document_mapping_bytes: artifact.posting_offset - header_bytes,
+            posting_frame_bytes: artifact.posting_bytes - artifact.posting_skip_bytes,
+            posting_skip_bytes: artifact.posting_skip_bytes,
+            dictionary_bytes: artifact.len - artifact.posting_offset - artifact.posting_bytes,
+            uncompressed_posting_payload_bytes,
+        };
         let manifest = ManifestBody {
             format: "SKEIN_LEXICAL_MANIFEST_V1".to_string(),
             layout: "SKEIN_LEXICAL_COMPACT_V1".to_string(),
@@ -1258,6 +1351,7 @@ impl LexicalProjectionWriter {
             artifact_file: artifact_name,
             artifact_len: artifact.len,
             artifact_checksum: artifact.checksum,
+            byte_counters,
             document_count,
             total_document_len,
             posting_count: artifact.posting_count,
@@ -1266,15 +1360,7 @@ impl LexicalProjectionWriter {
             dictionaries: artifact.dictionaries,
             blocks: artifact.blocks,
         };
-        let manifest_bytes = manifest.encode()?;
-        if manifest_bytes.len() as u64
-            > MAX_MANIFEST_BYTES.min(self.config.max_directory_bytes.get())
-        {
-            return Err(SkeinError::Storage(format!(
-                "lexical projection manifest requires {} bytes, exceeding {MAX_MANIFEST_BYTES}",
-                manifest_bytes.len()
-            )));
-        }
+        let manifest_bytes = manifest.encode_bounded(self.config.max_directory_bytes.get())?;
         durable_replace_file(&tmp_path, &artifact_path)?;
         artifact_guard.disarm();
         let manifest_path = root.join(MANIFEST_FILE);
@@ -1315,6 +1401,7 @@ struct ArtifactBuilder {
     posting_count: u64,
     posting_offset: u64,
     posting_bytes: u64,
+    posting_skip_bytes: u64,
     dictionaries: Vec<dictionary_store::Descriptor>,
     blocks: Vec<BlockDescriptor>,
     directory: dictionary_store::DirectoryBudget,
@@ -1326,6 +1413,7 @@ struct ArtifactSummary {
     posting_count: u64,
     posting_offset: u64,
     posting_bytes: u64,
+    posting_skip_bytes: u64,
     dictionaries: Vec<dictionary_store::Descriptor>,
     blocks: Vec<BlockDescriptor>,
 }
@@ -1371,6 +1459,7 @@ impl ArtifactBuilder {
             posting_count: 0,
             posting_offset: 0,
             posting_bytes: 0,
+            posting_skip_bytes: 0,
             dictionaries: Vec::new(),
             blocks: Vec::new(),
             directory: dictionary_store::DirectoryBudget::new(config.max_directory_bytes.get()),
@@ -1426,8 +1515,11 @@ impl ArtifactBuilder {
     ) -> Result<()> {
         self.posting_offset = self.offset;
         let budget = dictionary_store::SpillBudget::new(spill_bytes, config.max_spill_bytes.get());
-        let mut doclist =
-            doclist::Writer::new(&self.path.with_extension("skip.tmp"), budget.clone())?;
+        let mut doclist = doclist::Writer::new(
+            &self.path.with_extension("skip.tmp"),
+            budget.clone(),
+            config.max_block_bytes.get(),
+        )?;
         let mut dictionary = dictionary_store::Writer::new(
             &self.path.with_extension("dictionary.tmp"),
             config,
@@ -1455,6 +1547,7 @@ impl ArtifactBuilder {
                         frame.clear();
                     }
                     let metadata = doclist.finish(&mut self.writer, &mut self.offset)?;
+                    self.add_skip_bytes(metadata)?;
                     dictionary.push(term.take().unwrap(), metadata)?;
                 }
                 if term.is_none() {
@@ -1482,10 +1575,23 @@ impl ArtifactBuilder {
                 doclist.push_frame(&mut self.writer, &mut self.offset, &frame)?;
             }
             let metadata = doclist.finish(&mut self.writer, &mut self.offset)?;
+            self.add_skip_bytes(metadata)?;
             dictionary.push(term, metadata)?;
         }
         self.posting_bytes = self.offset - self.posting_offset;
         self.dictionaries = dictionary.finish(&mut self.writer, &mut self.offset)?;
+        Ok(())
+    }
+
+    fn add_skip_bytes(&mut self, metadata: dictionary::Metadata) -> Result<()> {
+        if metadata.skip_offset != 0 {
+            self.posting_skip_bytes = self
+                .posting_skip_bytes
+                .checked_add(metadata.posting_bytes - metadata.skip_offset)
+                .ok_or_else(|| {
+                    SkeinError::Storage("posting skip byte counter overflow".to_string())
+                })?;
+        }
         Ok(())
     }
 
@@ -1551,6 +1657,7 @@ impl ArtifactBuilder {
             posting_count: self.posting_count,
             posting_offset: self.posting_offset,
             posting_bytes: self.posting_bytes,
+            posting_skip_bytes: self.posting_skip_bytes,
             dictionaries: self.dictionaries,
             blocks: self.blocks,
         })
@@ -1927,6 +2034,8 @@ fn checksum(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    mod admission;
+    mod artifact_accounting;
     mod compact_dictionary;
     mod compact_postings;
     mod robustness;

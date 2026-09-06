@@ -129,6 +129,7 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub vector_payload_bytes: u64,
     pub lexical_artifact_bytes: u64,
     pub lexical_manifest_bytes: u64,
+    pub lexical_byte_counters: crate::SearchLexicalArtifactBytes,
     pub rabitq_artifact_bytes: u64,
     pub rabitq_source_digest: Option<u64>,
     pub rabitq_peak_build_working_bytes: usize,
@@ -310,6 +311,7 @@ impl SearchOutOfCoreGenerationWriter {
             lexical_artifact_name,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
+            lexical_byte_counters,
             rabitq,
         } = build(&self, &source, generation)?;
 
@@ -363,6 +365,7 @@ impl SearchOutOfCoreGenerationWriter {
             vector_payload_bytes: segment_output.vector_payload_bytes,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
+            lexical_byte_counters,
             rabitq_artifact_bytes: rabitq
                 .as_ref()
                 .map_or(0, |artifact| artifact.artifact_bytes),
@@ -425,6 +428,7 @@ impl SearchOutOfCoreGenerationWriter {
             },
             &self.options.analyzer_lexicon,
         )?;
+        let lexical_byte_counters = lexical.artifact_bytes();
         drop(lexical);
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
         let lexical_artifact_name = lexical_artifact_file(generation);
@@ -437,6 +441,7 @@ impl SearchOutOfCoreGenerationWriter {
             lexical_artifact_name,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
+            lexical_byte_counters,
             rabitq,
         })
     }
@@ -551,6 +556,7 @@ struct GenerationArtifacts {
     lexical_artifact_name: String,
     lexical_artifact_bytes: u64,
     lexical_manifest_bytes: u64,
+    lexical_byte_counters: crate::SearchLexicalArtifactBytes,
     rabitq: Option<RaBitQGenerationArtifact>,
 }
 

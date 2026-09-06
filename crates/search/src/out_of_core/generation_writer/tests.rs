@@ -123,6 +123,7 @@ fn three_pass_artifacts(
         |consume| source.scan(&mut |ordinal, document| consume(ordinal, &document)),
         &input.options.analyzer_lexicon,
     )?;
+    let lexical_byte_counters = lexical.artifact_bytes();
     drop(lexical);
     let lexical_artifact_name = lexical_artifact_file(generation);
     let (lexical_artifact_bytes, _) =
@@ -143,6 +144,7 @@ fn three_pass_artifacts(
         lexical_artifact_name,
         lexical_artifact_bytes,
         lexical_manifest_bytes,
+        lexical_byte_counters,
         rabitq,
     })
 }
@@ -314,6 +316,7 @@ fn fused_generation_sink_failures_preserve_active_artifacts() {
     for fault in [
         "lexical",
         "dictionary",
+        "dictionary_validation",
         "lexical_directory",
         "spill",
         "segment",
@@ -345,6 +348,10 @@ fn fused_generation_sink_failures_preserve_active_artifacts() {
             }
             "dictionary" => {
                 options.lexical_dictionary_build_memory_bytes = NonZeroU64::MIN;
+                "dictionary"
+            }
+            "dictionary_validation" => {
+                options.lexical_dictionary_validation_bytes = NonZeroU64::MIN;
                 "dictionary"
             }
             "lexical_directory" => {

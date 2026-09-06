@@ -59,6 +59,7 @@ pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
     pub max_uncompressed_segment_bytes: NonZeroU64,
     pub max_descriptor_bytes: NonZeroU64,
+    /// Bounds both encoded lexical metadata and its retained directory capacity.
     pub max_lexical_manifest_bytes: NonZeroU64,
     pub max_candidate_spill_bytes: NonZeroU64,
     pub max_candidate_block_bytes: NonZeroU64,
@@ -79,7 +80,7 @@ impl Default for SearchOutOfCoreConfig {
             max_compressed_segment_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_uncompressed_segment_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_descriptor_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
-            max_lexical_manifest_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            max_lexical_manifest_bytes: NonZeroU64::new(32 * 1024 * 1024).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
             max_score_entries: NonZeroUsize::new(1_000_000).unwrap(),
@@ -481,6 +482,10 @@ impl SearchOutOfCoreLayoutBody {
 }
 
 impl SearchOutOfCoreReader {
+    pub fn lexical_artifact_bytes(&self) -> crate::SearchLexicalArtifactBytes {
+        self.lexical_projection.artifact_bytes()
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_config_and_analyzer(
             path,
@@ -616,6 +621,7 @@ impl SearchOutOfCoreReader {
         drop(lexical_manifest_bytes);
         let lexical_config = LexicalProjectionConfig {
             max_query_score_entries: config.max_score_entries,
+            max_directory_bytes: config.max_lexical_manifest_bytes,
             ..LexicalProjectionConfig::default()
         };
         let lexical_projection = LexicalProjectionReader::load_named_with_cache(
@@ -1107,10 +1113,11 @@ impl SearchOutOfCoreReader {
             SearchMode::Vector => Some(0),
         };
         let lexical_report = if text_available && mode != SearchMode::Vector {
-            Some(self.lexical_projection.score(
+            Some(self.lexical_projection.score_with_context(
                 &query_terms,
                 &LexicalMiniDelta::default(),
                 retained_text_limit,
+                task_context,
                 |id| candidate_set.contains(id, &mut metrics),
             )?)
         } else {
