@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes eight lexical targets, one record-codec target
-and one segment-admission target, all manual:
+and segment/RaBitQ admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -84,6 +84,22 @@ tracked memory and retains three accounts. Thirty-two cancelled compressions
 must not enter zstd. Normal tests separately prove retained layout lifetime,
 before-allocation denial, publication rollback and compression block boundaries.
 See `SEGMENT_BUILD_ADMISSION.md` for dependency envelopes and remaining gates.
+
+The RaBitQ campaign is
+`//crates/search:skein_search_rabitq_admission_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --all-features --lib rabitq_admission_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x2064ab1` generates 500 groups across all 64 combinations of eight vector
+dimensions, one/four-bit encoding and four segment-row limits. Finite float bit
+patterns, zero/missing vectors, identity escaping, epochs and transform seeds
+vary. Artifact bytes match an independent direct-writer schedule. Each group
+checks exact/one-short root budgets and complete release with three accounts;
+16 cancellations must stop before backend reentry. See `RABITQ_BUILD_ADMISSION.md`
+for source-qualified bounds and the distinct remaining serving-reader gate.
 
 ## Coverage and independent checks
 

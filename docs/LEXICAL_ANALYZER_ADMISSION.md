@@ -115,7 +115,8 @@ manifest output and checksum scratch now share the build root as described in
 doclist encoding follow `LEXICAL_MERGE_ADMISSION.md`; grouping-term/dictionary
 staging and FST follow `LEXICAL_DICTIONARY_ADMISSION.md`.
 Segment codecs, descriptors and publication follow `SEGMENT_BUILD_ADMISSION.md`.
-RaBitQ and outer query/delta ownership still need
+The generation RaBitQ sink follows `RABITQ_BUILD_ADMISSION.md`.
+Published-reader and outer query/delta ownership still need
 the same whole-operation treatment. Existing component estimates, new ledger
 peaks and token-parity tests do not establish allocator/RSS bounds or #206's
 native-platform and representative-corpus acceptance gates. No analyzer digest,

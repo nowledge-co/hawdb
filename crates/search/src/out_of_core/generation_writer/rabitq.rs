@@ -7,6 +7,8 @@ use crate::SearchDocument;
 use skein_core::RuntimeTaskContext;
 
 #[cfg(feature = "vector-search")]
+use super::rabitq_memory::Admission;
+#[cfg(feature = "vector-search")]
 use super::{PathBuf, SkeinError};
 
 #[cfg(feature = "vector-search")]
@@ -17,14 +19,27 @@ pub(super) struct RaBitQArtifactBuilder {
     expected_documents: usize,
     vector_ordinal: u64,
     task_context: RuntimeTaskContext,
+    failed: bool,
+    // Data fields drop before these leases, including on partial construction.
+    admission: Option<Admission>,
+    name_memory: skein_executor::QueryMemoryLease,
 }
 
 #[cfg(feature = "vector-search")]
 impl RaBitQArtifactBuilder {
     pub(super) fn new(input: &SearchOutOfCoreGenerationWriter, generation: u64) -> Result<Self> {
         checkpoint(&input.task_context)?;
+        // The fixed file-name format and every u64 generation fit in 128 bytes.
+        let mut name_memory = input.memory.retained.reserve(128)?;
         let file_name = crate::rabitq_artifact_file(generation);
+        if file_name.capacity() > name_memory.bytes() {
+            return Err(SkeinError::Execution(
+                "search RaBitQ name exceeded preflight".to_owned(),
+            ));
+        }
+        name_memory.shrink(128 - file_name.capacity());
         let path = input.stage.path.join(&file_name);
+        let mut admission = None;
         let writer = if input.vector_document_count == 0 {
             None
         } else {
@@ -34,6 +49,7 @@ impl RaBitQArtifactBuilder {
                         .to_string(),
                 )
             })?;
+            let mut memory = Admission::new(&input.options, input.memory.clone())?;
             let identity = skein_vector_projection::ProjectionIdentity {
                 generation,
                 source_epoch: input.options.source_graph_commit_epoch,
@@ -53,6 +69,14 @@ impl RaBitQArtifactBuilder {
                 .with_segment_rows(input.options.rabitq_segment_rows.get())
                 .with_max_working_bytes(input.options.rabitq_build_memory_bytes.get())
                 .with_transform_seed(input.options.rabitq_transform_seed);
+            memory.admit_state(
+                config.resource_admission().map_err(rabitq_error)?,
+                dimension,
+                input.options.rabitq_bit_width,
+            )?;
+            admission = Some(memory);
+            #[cfg(test)]
+            evidence::create();
             Some(
                 skein_vector_projection::ProjectionWriter::create(&path, config)
                     .map_err(rabitq_error)?,
@@ -65,32 +89,64 @@ impl RaBitQArtifactBuilder {
             expected_documents: input.vector_document_count,
             vector_ordinal: 0,
             task_context: input.task_context.clone(),
+            failed: false,
+            admission,
+            name_memory,
         })
     }
 
     pub(super) fn push(&mut self, document: &SearchDocument) -> Result<()> {
+        if self.failed {
+            return Err(SkeinError::Storage(
+                "search RaBitQ writer already failed".to_owned(),
+            ));
+        }
+        let result = self.push_inner(document);
+        self.failed = result.is_err();
+        result
+    }
+
+    fn push_inner(&mut self, document: &SearchDocument) -> Result<()> {
         checkpoint(&self.task_context)?;
         let Some(embedding) = document.embedding.as_deref() else {
             return Ok(());
         };
+        if self.vector_ordinal >= self.expected_documents as u64 {
+            return Err(SkeinError::Storage(
+                "search RaBitQ exceeded the expected vector document count".to_owned(),
+            ));
+        }
+        let next = self
+            .vector_ordinal
+            .checked_add(1)
+            .ok_or_else(|| SkeinError::Storage("search vector ordinal overflow".to_owned()))?;
+        let memory = self.admission.as_mut().ok_or_else(|| {
+            SkeinError::Storage("search RaBitQ has no admitted writer".to_owned())
+        })?;
+        memory.admit_directory(next as usize / memory.segment_rows)?;
+        let _quantization = memory.quantization()?;
         let writer = self.writer.as_mut().ok_or_else(|| {
             SkeinError::Storage(
                 "search generation contains unexpected vector documents".to_string(),
             )
         })?;
+        #[cfg(test)]
+        evidence::push();
         writer
             .push(self.vector_ordinal, embedding)
             .map_err(rabitq_error)?;
         checkpoint(&self.task_context)?;
-        self.vector_ordinal = self
-            .vector_ordinal
-            .checked_add(1)
-            .ok_or_else(|| SkeinError::Storage("search vector ordinal overflow".to_string()))?;
+        self.vector_ordinal = next;
         Ok(())
     }
 
-    pub(super) fn finish(self) -> Result<Option<RaBitQGenerationArtifact>> {
+    pub(super) fn finish(mut self) -> Result<Option<RaBitQGenerationArtifact>> {
         checkpoint(&self.task_context)?;
+        if self.failed {
+            return Err(SkeinError::Storage(
+                "search RaBitQ writer already failed".to_owned(),
+            ));
+        }
         if self.vector_ordinal != self.expected_documents as u64 {
             return Err(SkeinError::Storage(
                 "search RaBitQ build did not consume the expected vector document count"
@@ -100,7 +156,18 @@ impl RaBitQArtifactBuilder {
         let Some(writer) = self.writer else {
             return Ok(None);
         };
+        let memory = self
+            .admission
+            .as_mut()
+            .expect("a vector writer owns admission");
+        let segments = self.expected_documents.div_ceil(memory.segment_rows);
+        memory.admit_directory(segments)?;
+        let _finalize = memory.finalize(segments)?;
+        #[cfg(test)]
+        evidence::finish();
         let projection = writer.finish().map_err(rabitq_error)?;
+        #[cfg(test)]
+        evidence::reopened(memory.used_bytes());
         let manifest = projection.manifest();
         let (artifact_bytes, artifact_checksum) =
             super::publication::file_len_checksum_with_context(&self.path, &self.task_context)?;
@@ -112,6 +179,7 @@ impl RaBitQArtifactBuilder {
             document_count: manifest.document_count,
             payload_checksum: manifest.payload_checksum,
             peak_build_working_bytes: manifest.peak_build_working_bytes,
+            _name_memory: self.name_memory,
         }))
     }
 }
@@ -119,6 +187,40 @@ impl RaBitQArtifactBuilder {
 #[cfg(feature = "vector-search")]
 fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
     SkeinError::Storage(format!("search RaBitQ projection: {error}"))
+}
+
+#[cfg(all(test, feature = "vector-search"))]
+pub(super) mod evidence {
+    use std::cell::Cell;
+    thread_local! { static CALLS: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) }; }
+    thread_local! { static REOPENED_BYTES: Cell<usize> = const { Cell::new(0) }; }
+    pub(super) fn create() {
+        CALLS.with(|c| {
+            let (a, b, d) = c.get();
+            c.set((a + 1, b, d));
+        });
+    }
+    pub(super) fn push() {
+        CALLS.with(|c| {
+            let (a, b, d) = c.get();
+            c.set((a, b + 1, d));
+        });
+    }
+    pub(super) fn finish() {
+        CALLS.with(|c| {
+            let (a, b, d) = c.get();
+            c.set((a, b, d + 1));
+        });
+    }
+    pub(in super::super) fn take() -> (usize, usize, usize) {
+        CALLS.with(|c| c.replace((0, 0, 0)))
+    }
+    pub(super) fn reopened(bytes: usize) {
+        REOPENED_BYTES.with(|value| value.set(bytes));
+    }
+    pub(in super::super) fn take_reopened_bytes() -> usize {
+        REOPENED_BYTES.with(|value| value.replace(0))
+    }
 }
 
 #[cfg(not(feature = "vector-search"))]

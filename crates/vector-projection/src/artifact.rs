@@ -19,6 +19,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 thread_local! {
     static SEGMENT_CHECKSUM_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MANIFEST_READ_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Debug)]
@@ -98,7 +99,9 @@ impl ProjectionWriter {
         fs::rename(&self.temporary, &self.target)?;
         sync_parent(&self.target)?;
         self.finished = true;
-        FileProjection::open(&self.target)
+        // Bind the private reopen to the manifest just serialized. A damaged
+        // footer must not expand its allocation beyond this known extent.
+        FileProjection::open_inner(&self.target, Some(manifest_bytes.len()))
     }
 
     fn flush_segment(&mut self, reserve_next_segment: bool) -> Result<()> {
@@ -175,6 +178,10 @@ pub struct FileProjection {
 
 impl FileProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_inner(path, None)
+    }
+
+    fn open_inner(path: impl AsRef<Path>, manifest_limit: Option<usize>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)?;
         let file_bytes = file.metadata()?.len();
@@ -202,7 +209,14 @@ impl FileProjection {
         let manifest_len = usize::try_from(manifest_bytes).map_err(|_| {
             ProjectionError::CorruptArtifact("manifest length exceeds address space".to_string())
         })?;
+        if manifest_limit.is_some_and(|limit| manifest_len > limit) {
+            return Err(ProjectionError::CorruptArtifact(
+                "manifest length exceeds the writer's reopen extent".to_owned(),
+            ));
+        }
         file.seek(SeekFrom::Start(manifest_offset))?;
+        #[cfg(test)]
+        MANIFEST_READ_ALLOCATIONS.with(|count| count.set(count.get() + 1));
         let mut encoded_manifest = vec![0u8; manifest_len];
         file.read_exact(&mut encoded_manifest)?;
         if crc32fast::hash(&encoded_manifest) != manifest_checksum {
@@ -562,6 +576,38 @@ mod tests {
         file.sync_all().unwrap();
         let error = FileProjection::open(&artifact).unwrap_err();
         assert!(matches!(error, ProjectionError::CorruptArtifact(_)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_writer_reopen_rejects_before_manifest_allocation() {
+        let root = unique_test_dir("bounded-reopen");
+        let artifact = root.join("search_rabitq.1.skein");
+        let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1));
+        let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
+        writer.push(0, &[1.0; 8]).unwrap();
+        let projection = writer.finish().unwrap();
+        let manifest_len = serde_json::to_vec(projection.manifest()).unwrap().len();
+        drop(projection);
+        MANIFEST_READ_ALLOCATIONS.with(|count| count.set(0));
+        assert!(FileProjection::open_inner(&artifact, Some(manifest_len - 1)).is_err());
+        assert_eq!(MANIFEST_READ_ALLOCATIONS.with(std::cell::Cell::get), 0);
+        FileProjection::open_inner(&artifact, Some(manifest_len)).unwrap();
+        assert_eq!(MANIFEST_READ_ALLOCATIONS.with(std::cell::Cell::get), 1);
+        // Keep the forged footer inside the file's overall extent; the known
+        // manifest bound, not the generic file-length check, must reject it.
+        let mut file = OpenOptions::new().write(true).open(&artifact).unwrap();
+        file.seek(SeekFrom::End(-(FOOTER_BYTES as i64))).unwrap();
+        file.write_all(&(manifest_len as u64 + 1).to_le_bytes())
+            .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        MANIFEST_READ_ALLOCATIONS.with(|count| count.set(0));
+        assert!(FileProjection::open_inner(&artifact, Some(manifest_len))
+            .unwrap_err()
+            .to_string()
+            .contains("reopen extent"));
+        assert_eq!(MANIFEST_READ_ALLOCATIONS.with(std::cell::Cell::get), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

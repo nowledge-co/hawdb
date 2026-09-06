@@ -84,8 +84,9 @@ allocator or RSS measurements. The shared ledger includes the subsequent
 Skein-owned analyzer, lexical artifact, external merge and dictionary owners;
 their respective `LEXICAL_*_ADMISSION.md` documents define the boundaries.
 Segment descriptors/layouts, encoding/compression and publication are covered in
-`SEGMENT_BUILD_ADMISSION.md`. Jieba workspace, RaBitQ construction/finalization
-and caller-owned delta conversion still need admission under the same root.
+`SEGMENT_BUILD_ADMISSION.md`; the generation RaBitQ sink follows
+`RABITQ_BUILD_ADMISSION.md`. Jieba workspace and caller-owned delta conversion
+still need admission under the same root.
 The outer query's concurrent
 candidate/vector/score/hydration state is separate remaining work. Input accounting
 does not replace #206's aggregate cross-phase build/query reservation or

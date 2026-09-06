@@ -99,7 +99,8 @@ No persisted encoding is bumped or migrated here. Document and compressed
 envelopes stay v1; the pre-existing descriptor header is preserved byte-for-byte.
 There is no public API change, new backend, io_uring or Bazel settings override.
 
-This is not complete operation memory admission. RaBitQ construction/finalization,
+The generation RaBitQ sink now follows `RABITQ_BUILD_ADMISSION.md`.
+This is not complete operation memory admission:
 published-reader reopen, persistent outer query/delta owners, small path/control
 allocations and ledger/allocator overhead still need their respective boundaries.
 Jieba's persistent HMM workspace needs the separate dependency-maintenance

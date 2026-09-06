@@ -64,7 +64,7 @@ External run readers, merge heaps/frames and doclist encoding buffers now share
 the operation root as described in `LEXICAL_MERGE_ADMISSION.md`. Grouping-term
 and dictionary staging/FST lifetimes follow `LEXICAL_DICTIONARY_ADMISSION.md`.
 Segment codecs, descriptors and publication follow `SEGMENT_BUILD_ADMISSION.md`.
-RaBitQ still needs its complete simultaneous working set connected to the root.
+The generation RaBitQ sink follows `RABITQ_BUILD_ADMISSION.md`.
 Small control/path
 allocations and ledger bookkeeping are not allocator-instrumented by these
 requested-capacity counters. Reopening the published reader and outer query/delta

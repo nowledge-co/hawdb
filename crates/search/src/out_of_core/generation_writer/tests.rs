@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cancellation;
 mod input_memory;
+#[cfg(feature = "vector-search")]
+mod rabitq_admission;
 mod record_admission;
 mod segment_admission;
 

@@ -76,9 +76,10 @@ staging and FST build/validation now share the operation root with owned leases
 as described in `LEXICAL_DICTIONARY_ADMISSION.md`.
 Segment codecs, descriptors and publication follow `SEGMENT_BUILD_ADMISSION.md`.
 Small path/control allocations, ledger metadata, dependency workspace,
-RaBitQ, published-reader reopen and outer query/delta retained state still
+published-reader reopen and outer query/delta retained state still
 need their appropriate complete ownership boundaries. Stack scratch and allocator
 overhead are not measured by these counters.
+The generation RaBitQ sink follows `RABITQ_BUILD_ADMISSION.md`.
 
 Jieba's private persistent HMM workspace remains a separate pending dependency
 maintenance decision. No dependency patch, HMM change, helper thread, io_uring,

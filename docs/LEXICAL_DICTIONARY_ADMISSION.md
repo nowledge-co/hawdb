@@ -86,9 +86,10 @@ reallocation. Restore every control before final positive verification.
 Segment descriptors, codec buffers, layouts and publication now share this root
 as described in `SEGMENT_BUILD_ADMISSION.md`.
 This does not establish complete build/query memory admission. Small path/control
-allocations, dependency workspace, RaBitQ, published-reader reopen
+allocations, dependency workspace, published-reader reopen
 and persistent outer query/delta owners still need their respective boundaries.
 Stack scratch and allocator overhead are not included in these ledger counters.
+The generation RaBitQ sink follows `RABITQ_BUILD_ADMISSION.md`.
 Jieba's private persistent HMM workspace remains a separate pending dependency
 maintenance decision; no patch, HMM change or helper thread is included here.
 

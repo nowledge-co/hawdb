@@ -38,6 +38,8 @@ mod artifacts;
 mod delta;
 mod publication;
 mod rabitq;
+#[cfg(feature = "vector-search")]
+mod rabitq_memory;
 mod segment_io;
 mod segment_memory;
 mod spool;
@@ -680,6 +682,8 @@ pub(super) struct RaBitQGenerationArtifact {
     pub(super) document_count: usize,
     pub(super) payload_checksum: u32,
     pub(super) peak_build_working_bytes: usize,
+    // The artifact summary retains its file name after the builder drops.
+    _name_memory: QueryMemoryLease,
 }
 
 #[cfg(all(test, feature = "vector-search"))]
@@ -737,6 +741,7 @@ fn build_rabitq_artifact(
     let manifest = projection.manifest();
     let (artifact_bytes, artifact_checksum) = file_len_checksum(&path)?;
     Ok(Some(RaBitQGenerationArtifact {
+        _name_memory: source.memory.retained.reserve(file_name.capacity())?,
         file_name,
         artifact_bytes,
         artifact_checksum,
