@@ -96,6 +96,7 @@ test_suite(
         "//crates/search:skein_search_record_fuzz_tests",
         "//crates/search:skein_search_segment_admission_fuzz_tests",
         "//crates/search:skein_search_rabitq_admission_fuzz_tests",
+        "//crates/search:skein_search_candidate_admission_fuzz_tests",
     ],
 )
 

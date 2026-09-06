@@ -9,7 +9,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 ## Running and replaying
 
 The required local suite includes nine lexical targets, one record-codec target
-and segment/RaBitQ admission targets, all manual:
+and segment/RaBitQ/candidate admission targets, all manual:
 
 ```bash
 bazel test --nocache_test_results \
@@ -108,6 +108,24 @@ vary. Artifact bytes match an independent direct-writer schedule. Each group
 checks exact/one-short root budgets and complete release with three accounts;
 16 cancellations must stop before backend reentry. See `RABITQ_BUILD_ADMISSION.md`
 for source-qualified bounds and the distinct remaining serving-reader gate.
+
+The candidate campaign is
+`//crates/search:skein_search_candidate_admission_fuzz_tests`, or:
+
+```bash
+cargo test -p skein-search --all-features candidate_admission_campaign \
+  -- --ignored --nocapture
+```
+
+Seed `0x206ca11` covers 1,000 groups, exact/one-short shared roots, competing
+owners and 4,000 mutated candidate blocks. Independent equality filtering and
+direct wire/cursor oracles check ID/count/order rather than calling production
+predicate or decoder helpers. UTF-8/NUL IDs, optional ordinals and cancellation
+are included. Seed `0x206ec0de` also checks 256 concatenated-frame envelopes,
+256 exact/one-short roots, 768 corrupt inputs and 16 cancellations. Output is
+compared with independently generated text and corruption with the preceding
+streaming decoder. See `CANDIDATE_QUERY_ADMISSION.md` for admitted lifetimes,
+source-qualified zstd bounds and the remaining full-query/native gates.
 
 ## Coverage and independent checks
 

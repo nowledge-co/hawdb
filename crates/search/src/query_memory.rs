@@ -6,6 +6,29 @@ use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Deref;
 
+#[derive(Debug)]
+pub(crate) struct Admitted<T> {
+    value: T,
+    // Drop the complete value (including indirect allocations) before its charge.
+    _memory: QueryMemoryLease,
+}
+
+impl<T> Admitted<T> {
+    pub(crate) fn new(value: T, memory: QueryMemoryLease) -> Self {
+        Self {
+            value,
+            _memory: memory,
+        }
+    }
+}
+
+impl<T> Deref for Admitted<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct AdmittedScores {
     scores: BTreeMap<String, f64>,

@@ -9,10 +9,9 @@ use super::{
     encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
     matched_query_spans_bounded, matched_query_terms, ranked_scores,
     read_search_segment_descriptor, retriever_candidate_set_report, rrf_child_score,
-    search_document_matches_predicates, search_empty_reason_codes, search_empty_reasons,
-    search_metadata_predicate_pushdown, tokenize, top_ranked_candidates, top_ranked_ids,
-    validate_search_segment_documents, weighted_rrf_score, window_ranks,
-    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
+    search_empty_reason_codes, search_empty_reasons, search_metadata_predicate_pushdown, tokenize,
+    top_ranked_candidates, top_ranked_ids, validate_search_segment_documents, weighted_rrf_score,
+    window_ranks, CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
     SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
     SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
     SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions, SearchResultSet,
@@ -34,8 +33,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod candidate_codec;
+mod candidate_memory;
 mod generation_writer;
 mod publish_lease;
+mod query_io;
 mod vector_serving;
 pub use generation_writer::{
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
@@ -230,9 +232,8 @@ struct SearchOutOfCoreRange {
 
 #[derive(Debug)]
 struct SearchMetadataDocument {
-    id: String,
+    document: SearchDocument,
     vector_ordinal: Option<u64>,
-    metadata: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -1050,10 +1051,13 @@ impl SearchOutOfCoreReader {
             .or(options.policy_epoch);
         let mut predicate_pushdown = search_metadata_predicate_pushdown(&metadata_filters);
         let mut metrics = SearchOutOfCoreMetrics::default();
+        let query_memory = self.lexical_projection.query_memory(task_context)?;
         let candidate_set = self.build_candidate_set(
             &predicate_pushdown.predicates,
             &mut predicate_pushdown.report,
             &mut metrics,
+            &query_memory,
+            task_context,
         )?;
         let filtered_document_count = candidate_set.cardinality();
         let candidate_report = SearchCandidateSetReport {
@@ -1116,7 +1120,6 @@ impl SearchOutOfCoreReader {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
-        let query_memory = self.lexical_projection.query_memory(task_context)?;
         let lexical_report = if text_available && mode != SearchMode::Vector {
             Some(self.lexical_projection.score_with_memory(
                 &query_terms,
@@ -1685,41 +1688,56 @@ impl SearchOutOfCoreReader {
         &self,
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<SearchMetadataDocument>> {
+        memory: &crate::query_memory::QueryMemory,
+        task: &crate::RuntimeTaskContext,
+    ) -> Result<crate::query_memory::Admitted<Vec<SearchMetadataDocument>>> {
         let range = self.layout_range(segment.segment_id)?.metadata;
-        let payload = read_out_of_core_payload_range(
+        let payload = query_io::read(
             &self.metadata_payload,
-            range,
-            segment.segment_id,
-            "metadata",
-            metrics,
+            range.offset,
+            range.length,
+            &memory.working,
+            task,
         )?;
+        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
+        if checksum_bytes(&payload) != range.checksum {
+            return Err(SkeinError::Storage(
+                "search metadata payload checksum mismatch".to_owned(),
+            ));
+        }
         metrics.metadata_segment_bytes_read = metrics
             .metadata_segment_bytes_read
             .saturating_add(range.length);
-        let text = decode_search_snapshot_text_bounded(
+        let text = query_io::decode(
             &payload,
             self.config.max_uncompressed_segment_bytes.get(),
+            &memory.working,
+            task,
         )?;
         metrics.peak_metadata_segment_bytes =
             metrics.peak_metadata_segment_bytes.max(text.len() as u64);
+        let admission = query_io::metadata_bytes(&text, range.entry_count, task)?;
+        let lease = memory.working.reserve(admission)?;
         let documents = decode_metadata_segment(&text, segment, range.entry_count)?;
         let layout = self.layout_range(segment.segment_id)?;
-        let ordinals = documents
+        let mut count = 0usize;
+        let invalid = documents
             .iter()
             .filter_map(|document| document.vector_ordinal)
-            .collect::<Vec<_>>();
-        if ordinals.len() != layout.vectors.entry_count
-            || ordinals.iter().enumerate().any(|(offset, ordinal)| {
-                *ordinal != layout.vector_ordinal_base.saturating_add(offset as u64)
-            })
-        {
+            .any(|ordinal| {
+                let expected = layout.vector_ordinal_base.checked_add(count as u64);
+                count += 1;
+                Some(ordinal) != expected
+            });
+        if invalid || count != layout.vectors.entry_count {
             return Err(SkeinError::Storage(format!(
                 "search segment {} metadata vector ordinals do not match its layout",
                 segment.segment_id
             )));
         }
-        Ok(documents)
+        query_io::checkpoint(task)?;
+        Ok(crate::query_memory::Admitted::new(documents, lease))
     }
 
     fn read_vector_segment(
@@ -1770,7 +1788,11 @@ impl SearchOutOfCoreReader {
         predicates: &skein_optimizer::SearchPredicateSet,
         report: &mut SearchPredicatePushdownReport,
         metrics: &mut SearchOutOfCoreMetrics,
+        memory: &crate::query_memory::QueryMemory,
+        task: Option<&crate::RuntimeTaskContext>,
     ) -> Result<CandidateSet> {
+        let task = task.cloned().unwrap_or_default();
+        query_io::checkpoint(&task)?;
         report.segment_count = self.descriptor.segments.len();
         report.segment_pruning_candidate_document_count = self.descriptor.document_count;
         report.persisted_segment_descriptor_used = true;
@@ -1781,20 +1803,23 @@ impl SearchOutOfCoreReader {
             return Ok(CandidateSet::All(self.descriptor.document_count));
         }
 
+        let set_memory = memory
+            .working
+            .reserve(std::mem::size_of::<SpilledCandidateSet>())?;
+        let directory_memory = memory.working.reserve(candidate_memory::directory_bytes(
+            &self.descriptor.segments,
+        )?)?;
+
         fs::create_dir_all(&self.config.spill_directory)?;
         let path = unique_candidate_path(&self.config.spill_directory);
-        let mut guard = CandidateFileGuard::new(path.clone());
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
+        let (mut guard, mut file) = CandidateFileGuard::create_new(&path)?;
         file.write_all(CANDIDATE_FILE_HEADER)?;
         let mut offset = CANDIDATE_FILE_HEADER.len() as u64;
         let mut cardinality = 0usize;
         let mut blocks = Vec::with_capacity(self.descriptor.segments.len());
 
         for segment in &self.descriptor.segments {
+            query_io::checkpoint(&task)?;
             field_pruning.observe_persisted_segment(segment, predicates);
             if !segment.may_match_predicates(predicates) {
                 report.pruned_segment_count = report.pruned_segment_count.saturating_add(1);
@@ -1808,40 +1833,18 @@ impl SearchOutOfCoreReader {
             report.segment_scanned_document_count = report
                 .segment_scanned_document_count
                 .saturating_add(segment.document_count);
-            let documents = self.read_metadata_segment(segment, metrics)?;
-            let mut encoded = Vec::new();
-            let mut block_cardinality = 0usize;
-            for document in documents {
-                let candidate = SearchDocument {
-                    id: document.id,
-                    title: String::new(),
-                    content: String::new(),
-                    embedding: None,
-                    metadata: document.metadata,
-                };
-                if !search_document_matches_predicates(&candidate, predicates) {
-                    continue;
-                }
-                let id_len = u32::try_from(candidate.id.len()).map_err(|_| {
-                    SkeinError::Storage(format!(
-                        "search candidate id {} exceeds the supported length",
-                        candidate.id
-                    ))
-                })?;
-                encoded.extend_from_slice(&id_len.to_le_bytes());
-                encoded.extend_from_slice(candidate.id.as_bytes());
-                encoded
-                    .extend_from_slice(&document.vector_ordinal.unwrap_or(u64::MAX).to_le_bytes());
-                block_cardinality = block_cardinality.saturating_add(1);
-            }
-            if encoded.len() as u64 > self.config.max_candidate_block_bytes.get() {
-                return Err(SkeinError::Storage(format!(
-                    "search candidate block for segment {} requires {} bytes, exceeding {}",
-                    segment.segment_id,
-                    encoded.len(),
-                    self.config.max_candidate_block_bytes
-                )));
-            }
+            let documents = self.read_metadata_segment(segment, metrics, memory, &task)?;
+            let (encoded, block_cardinality) = candidate_memory::encode(
+                &documents,
+                predicates,
+                self.config.max_candidate_block_bytes.get(),
+                self.config
+                    .max_candidate_spill_bytes
+                    .get()
+                    .saturating_sub(offset - CANDIDATE_FILE_HEADER.len() as u64),
+                &memory.working,
+                &task,
+            )?;
             let next_spill_bytes = offset
                 .saturating_add(encoded.len() as u64)
                 .saturating_sub(CANDIDATE_FILE_HEADER.len() as u64);
@@ -1851,6 +1854,7 @@ impl SearchOutOfCoreReader {
                     self.config.max_candidate_spill_bytes
                 )));
             }
+            query_io::checkpoint(&task)?;
             file.write_all(&encoded)?;
             blocks.push(CandidateBlock {
                 segment_id: segment.segment_id,
@@ -1860,24 +1864,34 @@ impl SearchOutOfCoreReader {
                 length: encoded.len() as u64,
                 cardinality: block_cardinality,
             });
-            offset = offset.saturating_add(encoded.len() as u64);
-            cardinality = cardinality.saturating_add(block_cardinality);
+            offset = offset.checked_add(encoded.len() as u64).ok_or_else(|| {
+                SkeinError::Storage("search candidate offset overflow".to_owned())
+            })?;
+            cardinality = query_io::add(cardinality, block_cardinality)?;
         }
+        query_io::checkpoint(&task)?;
         file.sync_all()?;
+        query_io::checkpoint(&task)?;
         metrics.candidate_spill_bytes = offset.saturating_sub(CANDIDATE_FILE_HEADER.len() as u64);
         report.physical_range_read_count =
             usize::try_from(metrics.segment_range_reads).unwrap_or(usize::MAX);
         report.physical_bytes_read = metrics.segment_bytes_read;
         report.field_summaries = field_pruning.into_reports();
         guard.disarm();
-        Ok(CandidateSet::Spilled(SpilledCandidateSet {
-            file: Some(file),
-            path,
-            blocks,
-            cardinality,
-            max_block_bytes: self.config.max_candidate_block_bytes.get(),
-            cache: Mutex::new(None),
-        }))
+        Ok(CandidateSet::Spilled(crate::query_memory::Admitted::new(
+            Box::new(SpilledCandidateSet {
+                file: Some(file),
+                path,
+                blocks,
+                cardinality,
+                max_block_bytes: self.config.max_candidate_block_bytes.get(),
+                cache: Mutex::new(None),
+                memory: memory.working.clone(),
+                task,
+                _directory_memory: directory_memory,
+            }),
+            set_memory,
+        )))
     }
 }
 
@@ -2220,7 +2234,7 @@ struct HitHydrationContext<'a> {
 
 enum CandidateSet {
     All(usize),
-    Spilled(SpilledCandidateSet),
+    Spilled(crate::query_memory::Admitted<Box<SpilledCandidateSet>>),
 }
 
 impl CandidateSet {
@@ -2263,7 +2277,7 @@ impl CandidateSet {
         max_bytes: u64,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Option<Vec<u64>>> {
+    ) -> Result<Option<crate::query_memory::Admitted<Vec<u64>>>> {
         match self {
             Self::All(_) => Ok(None),
             Self::Spilled(set) => set
@@ -2407,7 +2421,7 @@ impl CandidateBlock {
 #[derive(Debug)]
 struct CandidateCache {
     segment_id: u64,
-    entries: Vec<CandidateEntry>,
+    entries: crate::query_memory::Admitted<Vec<CandidateEntry>>,
 }
 
 #[derive(Debug)]
@@ -2423,29 +2437,31 @@ struct SpilledCandidateSet {
     cardinality: usize,
     max_block_bytes: u64,
     cache: Mutex<Option<CandidateCache>>,
+    memory: skein_executor::QueryMemoryAccount,
+    task: crate::RuntimeTaskContext,
+    _directory_memory: skein_executor::QueryMemoryLease,
 }
 
 impl SpilledCandidateSet {
     fn contains(&self, id: &str, metrics: &mut SearchOutOfCoreMetrics) -> Result<bool> {
+        query_io::checkpoint(&self.task)?;
         let block = self
             .blocks
             .binary_search_by(|block| {
                 if id < block.first_document_id.as_str() {
-                    std::cmp::Ordering::Greater
+                    CmpOrdering::Greater
                 } else if id > block.last_document_id.as_str() {
-                    std::cmp::Ordering::Less
+                    CmpOrdering::Less
                 } else {
-                    std::cmp::Ordering::Equal
+                    CmpOrdering::Equal
                 }
             })
             .ok()
             .and_then(|index| self.blocks.get(index));
-        let Some(block) = block.filter(|block| block.contains_range(id)) else {
+        let Some(block) = block.filter(|block| block.contains_range(id) && block.cardinality > 0)
+        else {
             return Ok(false);
         };
-        if block.cardinality == 0 {
-            return Ok(false);
-        }
         let mut cache = self
             .cache
             .lock()
@@ -2454,29 +2470,15 @@ impl SpilledCandidateSet {
             .as_ref()
             .is_none_or(|cached| cached.segment_id != block.segment_id)
         {
-            if block.length > self.max_block_bytes {
-                return Err(SkeinError::Storage(format!(
-                    "search candidate block {} exceeds its read budget",
-                    block.segment_id
-                )));
-            }
-            let length = usize::try_from(block.length).map_err(|_| {
-                SkeinError::Storage("search candidate block length exceeds usize".to_string())
-            })?;
-            let mut bytes = vec![0u8; length];
-            read_exact_at(
-                self.file.as_ref().ok_or_else(|| {
-                    SkeinError::Storage("search candidate spill file is closed".to_string())
-                })?,
-                block.offset,
-                &mut bytes,
-            )?;
-            metrics.candidate_block_reads = metrics.candidate_block_reads.saturating_add(1);
-            metrics.candidate_bytes_read =
-                metrics.candidate_bytes_read.saturating_add(block.length);
+            // Keep the old cache owner until the incoming raw/decoded block has
+            // passed admission and validation. Failure leaves the old cache intact.
+            let bytes = self.read_block_bytes(block, metrics)?;
+            let entries =
+                candidate_codec::entries(&bytes, block.cardinality, &self.memory, &self.task)?;
+            query_io::checkpoint(&self.task)?;
             *cache = Some(CandidateCache {
                 segment_id: block.segment_id,
-                entries: decode_candidate_entries(&bytes, block.cardinality)?,
+                entries,
             });
         }
         Ok(cache.as_ref().is_some_and(|cached| {
@@ -2493,71 +2495,76 @@ impl SpilledCandidateSet {
         max_bytes: u64,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<u64>> {
-        let ordinal_capacity_bytes = (self.cardinality as u64)
-            .checked_mul(std::mem::size_of::<u64>() as u64)
-            .ok_or_else(|| {
-                SkeinError::Storage("search vector allowlist size overflow".to_string())
-            })?;
+    ) -> Result<crate::query_memory::Admitted<Vec<u64>>> {
+        query_io::checkpoint(&self.task)?;
+        let ordinal_bytes = query_io::mul(self.cardinality, std::mem::size_of::<u64>())?;
         let max_block_bytes = self
             .blocks
             .iter()
             .map(|block| block.length)
             .max()
             .unwrap_or_default();
-        let required_working_bytes = ordinal_capacity_bytes
+        let required = (ordinal_bytes as u64)
             .checked_add(max_block_bytes)
             .ok_or_else(|| {
-                SkeinError::Storage("search vector allowlist working set overflow".to_string())
+                SkeinError::Storage("search vector allowlist working set overflow".to_owned())
             })?;
-        if required_working_bytes > max_bytes {
+        if required > max_bytes {
             return Err(SkeinError::Storage(format!(
-                "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
+                "search vector candidate allowlist and block require {required} bytes, exceeding {max_bytes}"
             )));
         }
+        let lease = self.memory.reserve(ordinal_bytes)?;
         let mut ordinals = Vec::with_capacity(self.cardinality);
         for block in &self.blocks {
-            if let Some(task_context) = task_context {
-                task_context.checkpoint().map_err(|reason| {
-                    SkeinError::Execution(format!("search vector task {reason}"))
-                })?;
+            query_io::checkpoint(&self.task)?;
+            if let Some(task) = task_context {
+                query_io::checkpoint(task)?;
             }
             if block.cardinality == 0 {
                 continue;
             }
             let bytes = self.read_block_bytes(block, metrics)?;
-            decode_candidate_ordinals_into(&bytes, block.cardinality, &mut ordinals)?;
+            candidate_codec::visit(&bytes, block.cardinality, &self.task, |_, _| Ok(()))?;
+            candidate_codec::visit(&bytes, block.cardinality, &self.task, |_, ordinal| {
+                if let Some(ordinal) = ordinal {
+                    if ordinals.len() == self.cardinality {
+                        return Err(SkeinError::Storage(
+                            "search candidate allowlist count mismatch".to_owned(),
+                        ));
+                    }
+                    ordinals.push(ordinal);
+                }
+                Ok(())
+            })?;
         }
         if ordinals.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(SkeinError::Storage(
-                "search vector candidate ordinals are not strictly ordered".to_string(),
+                "search vector candidate ordinals are not strictly ordered".to_owned(),
             ));
         }
-        Ok(ordinals)
+        Ok(crate::query_memory::Admitted::new(ordinals, lease))
     }
 
-    #[cfg(feature = "vector-search")]
     fn read_block_bytes(
         &self,
         block: &CandidateBlock,
         metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<crate::query_memory::Admitted<Vec<u8>>> {
         if block.length > self.max_block_bytes {
             return Err(SkeinError::Storage(format!(
                 "search candidate block {} exceeds its read budget",
                 block.segment_id
             )));
         }
-        let length = usize::try_from(block.length).map_err(|_| {
-            SkeinError::Storage("search candidate block length exceeds usize".to_string())
-        })?;
-        let mut bytes = vec![0u8; length];
-        read_exact_at(
+        let bytes = query_io::read(
             self.file.as_ref().ok_or_else(|| {
-                SkeinError::Storage("search candidate spill file is closed".to_string())
+                SkeinError::Storage("search candidate spill file is closed".to_owned())
             })?,
             block.offset,
-            &mut bytes,
+            block.length,
+            &self.memory,
+            &self.task,
         )?;
         metrics.candidate_block_reads = metrics.candidate_block_reads.saturating_add(1);
         metrics.candidate_bytes_read = metrics.candidate_bytes_read.saturating_add(block.length);
@@ -2578,6 +2585,21 @@ struct CandidateFileGuard {
 }
 
 impl CandidateFileGuard {
+    fn create_new(path: &Path) -> Result<(Self, File)> {
+        // Never arm cleanup for a file that create_new did not create.
+        let mut guard = Self {
+            path: path.to_path_buf(),
+            armed: false,
+        };
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        guard.armed = true;
+        Ok((guard, file))
+    }
+
     fn new(path: PathBuf) -> Self {
         Self { path, armed: true }
     }
@@ -2593,93 +2615,6 @@ impl Drop for CandidateFileGuard {
             let _ = fs::remove_file(&self.path);
         }
     }
-}
-
-fn decode_candidate_entries(bytes: &[u8], expected: usize) -> Result<Vec<CandidateEntry>> {
-    let mut offset = 0usize;
-    let mut entries = Vec::with_capacity(expected);
-    while offset < bytes.len() {
-        let end = offset.saturating_add(4);
-        let length_bytes = bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated length".to_string())
-        })?;
-        let length = u32::from_le_bytes(length_bytes.try_into().unwrap()) as usize;
-        offset = end;
-        let end = offset.checked_add(length).ok_or_else(|| {
-            SkeinError::Storage("search candidate id length overflows".to_string())
-        })?;
-        let raw = bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated id".to_string())
-        })?;
-        let id = String::from_utf8(raw.to_vec()).map_err(|error| {
-            SkeinError::Storage(format!("search candidate id is not UTF-8: {error}"))
-        })?;
-        offset = end;
-        let end = offset.saturating_add(std::mem::size_of::<u64>());
-        let raw_ordinal = bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated vector ordinal".to_string())
-        })?;
-        let _vector_ordinal = u64::from_le_bytes(raw_ordinal.try_into().unwrap());
-        entries.push(CandidateEntry { id });
-        offset = end;
-    }
-    if entries.len() != expected || entries.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-        return Err(SkeinError::Storage(
-            "search candidate block count or ordering mismatch".to_string(),
-        ));
-    }
-    Ok(entries)
-}
-
-#[cfg(feature = "vector-search")]
-fn decode_candidate_ordinals_into(
-    bytes: &[u8],
-    expected: usize,
-    ordinals: &mut Vec<u64>,
-) -> Result<()> {
-    let mut offset = 0usize;
-    let mut count = 0usize;
-    let mut previous_id = None;
-    while offset < bytes.len() {
-        let end = offset.saturating_add(std::mem::size_of::<u32>());
-        let length_bytes = bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated length".to_string())
-        })?;
-        let length = u32::from_le_bytes(length_bytes.try_into().unwrap()) as usize;
-        offset = end;
-        let end = offset.checked_add(length).ok_or_else(|| {
-            SkeinError::Storage("search candidate id length overflows".to_string())
-        })?;
-        let id = std::str::from_utf8(bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated id".to_string())
-        })?)
-        .map_err(|error| {
-            SkeinError::Storage(format!("search candidate id is not UTF-8: {error}"))
-        })?;
-        if previous_id.is_some_and(|previous| previous >= id) {
-            return Err(SkeinError::Storage(
-                "search candidate block ids are not strictly ordered".to_string(),
-            ));
-        }
-        previous_id = Some(id);
-        offset = end;
-        let end = offset.saturating_add(std::mem::size_of::<u64>());
-        let raw_ordinal = bytes.get(offset..end).ok_or_else(|| {
-            SkeinError::Storage("search candidate block has a truncated vector ordinal".to_string())
-        })?;
-        let vector_ordinal = u64::from_le_bytes(raw_ordinal.try_into().unwrap());
-        if vector_ordinal != u64::MAX {
-            ordinals.push(vector_ordinal);
-        }
-        offset = end;
-        count = count.saturating_add(1);
-    }
-    if count != expected {
-        return Err(SkeinError::Storage(
-            "search candidate block count mismatch".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn search_document_bytes(document: &SearchDocument) -> u64 {
@@ -2776,29 +2711,35 @@ fn decode_metadata_segment(
     }
     let mut documents = Vec::with_capacity(expected_count);
     for line in lines {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["meta", raw_id, raw_vector_ordinal, raw_metadata] => {
-                documents.push(SearchMetadataDocument {
-                    id: decode_string(raw_id)?,
-                    vector_ordinal: decode_optional_vector_ordinal(raw_vector_ordinal)?,
-                    metadata: decode_metadata(raw_metadata)?,
-                })
-            }
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "search segment {} has an invalid metadata sidecar line",
-                    segment.segment_id
-                )));
-            }
+        let (raw_id, raw_vector_ordinal, raw_metadata) = query_io::metadata_fields(line)?;
+        if documents.len() == expected_count {
+            return Err(SkeinError::Storage(
+                "search metadata sidecar count mismatch".to_owned(),
+            ));
         }
+        documents.push(SearchMetadataDocument {
+            document: SearchDocument {
+                id: decode_string(raw_id)?,
+                title: String::new(),
+                content: String::new(),
+                embedding: None,
+                metadata: decode_metadata(raw_metadata)?,
+            },
+            vector_ordinal: decode_optional_vector_ordinal(raw_vector_ordinal)?,
+        });
     }
     if documents.len() != expected_count
-        || documents.first().map(|document| document.id.as_str())
+        || documents
+            .first()
+            .map(|document| document.document.id.as_str())
             != Some(segment.first_document_id.as_str())
-        || documents.last().map(|document| document.id.as_str())
+        || documents
+            .last()
+            .map(|document| document.document.id.as_str())
             != Some(segment.last_document_id.as_str())
-        || documents.windows(2).any(|pair| pair[0].id >= pair[1].id)
+        || documents
+            .windows(2)
+            .any(|pair| pair[0].document.id >= pair[1].document.id)
     {
         return Err(SkeinError::Storage(format!(
             "search segment {} metadata sidecar count, bounds, or ordering mismatch",
@@ -3066,6 +3007,7 @@ pub(super) fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod candidate_admission;
     use crate::{
         SearchFusionWeights, SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
         SearchLexicalProductionQualificationReport, SearchProjectionCleanupOptions,

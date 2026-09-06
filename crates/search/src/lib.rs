@@ -55,6 +55,7 @@ mod query_memory;
 pub mod rabitq_projection;
 mod range_io;
 mod recall_validation;
+mod snapshot_envelope;
 mod snapshot_writer;
 mod token_parts;
 mod vector_execution;
@@ -7369,92 +7370,9 @@ fn decode_search_snapshot_text_bounded(
     bytes: &[u8],
     max_uncompressed_bytes: u64,
 ) -> Result<String> {
-    let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
-        return Err(SkeinError::Storage(
-            "search projection compressed envelope missing header terminator".to_string(),
-        ));
-    };
-    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        SkeinError::Storage(format!(
-            "search projection compressed envelope header is invalid: {error}"
-        ))
-    })?;
-    let payload = &bytes[header_end + 2..];
-    let mut codec = None;
-    let mut compressed_checksum = None;
-    let mut uncompressed_checksum = None;
-    let mut compressed_len = None;
-    let mut uncompressed_len = None;
-    let mut seen_fields = BTreeSet::new();
-    for line in header.lines() {
-        if line == SEARCH_COMPRESSION_HEADER {
-            continue;
-        }
-        let fields = line.split('\t').collect::<Vec<_>>();
-        if !seen_fields.insert(fields[0]) {
-            return Err(SkeinError::Storage(format!(
-                "search projection compressed envelope has duplicate field: {}",
-                fields[0]
-            )));
-        }
-        match fields.as_slice() {
-            ["codec", value] => codec = Some(*value),
-            ["compressed_checksum", value] => {
-                compressed_checksum = Some(parse_u64(value, "compressed checksum")?);
-            }
-            ["uncompressed_checksum", value] => {
-                uncompressed_checksum = Some(parse_u64(value, "uncompressed checksum")?);
-            }
-            ["compressed_len", value] => {
-                compressed_len = Some(parse_usize(value, "compressed length")?);
-            }
-            ["uncompressed_len", value] => {
-                uncompressed_len = Some(parse_usize(value, "uncompressed length")?);
-            }
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "search projection compressed envelope has invalid header line: {line}"
-                )));
-            }
-        }
-    }
-    if codec != Some("zstd") {
-        return Err(SkeinError::Storage(
-            "search projection compressed envelope uses unsupported codec".to_string(),
-        ));
-    }
-    let expected_compressed_len = compressed_len.ok_or_else(|| {
-        SkeinError::Storage(
-            "search projection compressed envelope missing compressed_len".to_string(),
-        )
-    })?;
-    if payload.len() != expected_compressed_len {
-        return Err(SkeinError::Storage(format!(
-            "search projection compressed length mismatch: expected {expected_compressed_len}, got {}",
-            payload.len()
-        )));
-    }
-    let expected_compressed_checksum = compressed_checksum.ok_or_else(|| {
-        SkeinError::Storage(
-            "search projection compressed envelope missing compressed_checksum".to_string(),
-        )
-    })?;
-    let actual_compressed_checksum = checksum_bytes(payload);
-    if actual_compressed_checksum != expected_compressed_checksum {
-        return Err(SkeinError::Storage(format!(
-            "search projection compressed checksum mismatch: expected {expected_compressed_checksum}, got {actual_compressed_checksum}"
-        )));
-    }
-    let expected_uncompressed_len = uncompressed_len.ok_or_else(|| {
-        SkeinError::Storage(
-            "search projection compressed envelope missing uncompressed_len".to_string(),
-        )
-    })?;
-    if expected_uncompressed_len as u64 > max_uncompressed_bytes {
-        return Err(SkeinError::Storage(format!(
-            "search projection uncompressed payload requires {expected_uncompressed_len} bytes, exceeding {max_uncompressed_bytes}"
-        )));
-    }
+    let envelope = snapshot_envelope::Envelope::parse(bytes, max_uncompressed_bytes)?;
+    let payload = envelope.payload;
+    let expected_uncompressed_len = envelope.decoded_len;
     let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
         SkeinError::Storage(format!(
             "search projection zstd decompression failed: {error}"
@@ -7480,11 +7398,7 @@ fn decode_search_snapshot_text_bounded(
             decoded.len()
         )));
     }
-    let expected_uncompressed_checksum = uncompressed_checksum.ok_or_else(|| {
-        SkeinError::Storage(
-            "search projection compressed envelope missing uncompressed_checksum".to_string(),
-        )
-    })?;
+    let expected_uncompressed_checksum = envelope.decoded_checksum;
     let actual_uncompressed_checksum = checksum_bytes(&decoded);
     if actual_uncompressed_checksum != expected_uncompressed_checksum {
         return Err(SkeinError::Storage(format!(

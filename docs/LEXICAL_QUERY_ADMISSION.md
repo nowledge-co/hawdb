@@ -47,9 +47,11 @@ ignored in ordinary test runs, not an additional CI job.
 ## Remaining full-issue boundaries
 
 This connects the existing lexical stream/score allowances to a shared owner;
-it does not establish complete query memory or RSS coverage. Vector scans,
-candidate spill/cache buffers, ranking/fusion copies, hydration, and public
-result payloads still need their own reservations under the outer query root.
+it does not establish complete query memory or RSS coverage. Candidate metadata,
+spill/cache buffers and vector allowlists now share that root as described in
+`CANDIDATE_QUERY_ADMISSION.md`. Vector scans/results, predicate pruning/report
+containers, ranking/fusion copies, hydration and public result payloads still
+need their own reservations under the outer query root.
 Persistent delta maps and tokenizer/dependency workspaces remain separate owners.
 The task reservation describes admitted bytes, not a newly acquired governor
 permit; no global host budget is invented here.
