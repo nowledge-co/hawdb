@@ -9,14 +9,17 @@ const MIN_TABLES: usize = 2;
 const MAX_TABLES: usize = 8;
 const WARMUPS: usize = 3;
 const SAMPLES: usize = 31;
+// Expressions include admitted physical implementations: three for the first
+// filtered edge, then two for each additional edge. Group count and the winning
+// probe plan's cost remain unchanged for this single-row fixture.
 const EXPECTED_PLAN_SIGNATURES: [(usize, usize, u64); MAX_TABLES - MIN_TABLES + 1] = [
-    (3, 4, 2),
-    (6, 11, 3),
-    (10, 24, 4),
-    (15, 45, 5),
-    (21, 76, 6),
-    (28, 119, 7),
-    (36, 176, 8),
+    (3, 7, 2),
+    (6, 16, 3),
+    (10, 31, 4),
+    (15, 54, 5),
+    (21, 87, 6),
+    (28, 132, 7),
+    (36, 191, 8),
 ];
 
 fn main() {

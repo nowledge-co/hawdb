@@ -29,8 +29,14 @@ The JSON report uses protocol `skein-relational-join-planning-v1` and retains:
 
 Memo counts and canonical cost must remain identical across all samples for one
 shape. The harness also pins the protocol-v1 structural baseline to
-`groups/expressions/cost` values `3/4/2`, `6/11/3`, `10/24/4`, `15/45/5`,
-`21/76/6`, `28/119/7`, and `36/176/8` for two through eight tables. Timing
+`groups/expressions/cost` values `3/7/2`, `6/16/3`, `10/31/4`, `15/54/5`,
+`21/87/6`, `28/132/7`, and `36/191/8` for two through eight tables.
+Expression counts include physical hash/merge implementations admitted to the
+shared memo budget. For this fixture that adds three candidates on the first
+filtered edge and two on each later edge; groups and the winning probe plan's
+cost are unchanged. The earlier logical-only expression counts were 4, 11, 24,
+45, 76, 119 and 176. This is a structural accounting update, not a protocol
+version change or a new performance claim. Timing
 values are machine-local trend evidence and require a
 same-revision, same-target reference before they can enforce a regression
 threshold. They are not representative Mem-replica qualification and do not
