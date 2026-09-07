@@ -477,6 +477,22 @@ record-key and dense-key checks each generated 138,204,089 states and found
 The fresh-epoch, stale-publication, lost-WAL-suffix and partial-generation mutants
 still violate their respective invariants with the dense representation.
 
+Stale-candidate rejection uses `WF_candidatePhase(RejectStaleCandidate)`.
+The action requires a non-idle phase and sets the next phase to idle, so it
+implies both `candidatePhase' # candidatePhase` and `vars' # vars`.
+Consequently, `<<RejectStaleCandidate>>_candidatePhase` and
+`<<RejectStaleCandidate>>_vars` each equal `RejectStaleCandidate`, including
+their enabled predicates. Their weak fairness formulas are therefore equivalent;
+this is not an additional progress assumption or a change to the liveness
+property. TLC's [liveness action evaluation](https://github.com/tlaplus/tlaplus/blob/5a47802/tlatools/org.lamport.tlatools/src/tlc2/tool/liveness/LNAction.java#L57)
+evaluates the fairness subscript before the action body, so the scalar avoids
+constructing and comparing the complete state tuple on every edge. The state
+graph, bounds, transitions and checked properties are unchanged.
+The complete scalar-subscript check retains the same 138,204,089 generated
+states, 23,127,068 distinct states and depth 37, including successful liveness
+checking. A disabled-rejection mutant still produces an infinite stale-candidate
+counterexample; the fairness formula does not assume eventual termination.
+
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and

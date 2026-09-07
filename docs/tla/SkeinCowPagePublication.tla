@@ -930,6 +930,11 @@ StaleCandidateRejectionIsTerminal ==
 StaleCandidateEventuallyTerminates ==
     StaleCandidate ~> (candidatePhase = "idle")
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(RejectStaleCandidate)
+(* RejectStaleCandidate always changes candidatePhase from non-idle to idle. *)
+(* Thus <<RejectStaleCandidate>>_candidatePhase and                          *)
+(* <<RejectStaleCandidate>>_vars both equal RejectStaleCandidate: their      *)
+(* enabled predicates and weak fairness obligations are identical. The      *)
+(* scalar subscript avoids comparing all state fields on every TLC edge.   *)
+Spec == Init /\ [][Next]_vars /\ WF_candidatePhase(RejectStaleCandidate)
 
 =============================================================================
