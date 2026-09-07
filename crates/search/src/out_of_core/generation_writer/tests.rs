@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cancellation;
 mod input_memory;
+mod publisher_admission;
 #[cfg(feature = "vector-search")]
 mod rabitq_admission;
 mod record_admission;

@@ -63,6 +63,9 @@ on the same root; see `PUBLICATION_PATH_ADMISSION.md`. Private artifact builders
 are covered in `ARTIFACT_PATH_ADMISSION.md`; backend copies and publication-lock
 discovery/registry paths remain separate. Private lexical backend paths and run
 registries now reuse this owner; see `LEXICAL_PATH_ADMISSION.md`.
+The later `PUBLISHER_MEMORY_ADMISSION.md` checkpoint covers Rust-owned canonical
+output and individually admitted publisher registration, while retaining the
+native resolver and filesystem-internal exclusions.
 
 ## Verification
 

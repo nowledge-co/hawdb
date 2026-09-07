@@ -89,8 +89,12 @@ bazel test --nocache_test_results \
 This is source-qualified requested-capacity accounting, not allocator/RSS proof.
 The standard-library native-path caveats in `BUILD_CONTEXT_ADMISSION.md` apply.
 It does not cover filesystem internals, vector-backend copies, returned public
-outputs/readers, publication-lock discovery/registry, resident delta maps,
+outputs/readers, resident delta maps,
 combined component limits or tokenizer/Jieba workspace. Representative-corpus
 reduction and exact-head native-platform qualification remain full-issue gates.
 No I/O backend, io_uring, dependency, v1 format, Bazel runtime setting or fuzz CI
 change is included.
+
+The later [publication-lock checkpoint](PUBLISHER_MEMORY_ADMISSION.md) separately
+covers canonical Rust output and per-publisher registry ownership, including its
+native resolver exclusions and direct platform dependency edges.

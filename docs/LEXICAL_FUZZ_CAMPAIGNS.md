@@ -45,6 +45,12 @@ With Cargo, use `cargo test -p skein-search lexical_path_admission_campaign --
 --ignored --nocapture` (also with `--no-default-features`). See
 `LEXICAL_PATH_ADMISSION.md` for normal regressions and the ownership boundary.
 
+The publisher target `//crates/search:skein_search_publisher_admission_fuzz_tests`
+runs `out_of_core::publish_lease::tests::fuzz::publisher_admission_campaign` with
+seed `0x20610cc`. Its 128 native path sets cover exact/one-short shared budgets,
+alias contenders, 256 cancellations, unchanged sticky-lock contents and complete
+release. See `PUBLISHER_MEMORY_ADMISSION.md` for OS-lock and native-path boundaries.
+
 The generator and seeds are fixed in source, making the commands above replay
 the complete inputs and action sequences. Logs report accepted/rejected byte
 cases, all posting encoding modes, and state-machine transition counts. A

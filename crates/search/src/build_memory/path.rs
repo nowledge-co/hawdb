@@ -9,6 +9,8 @@ use std::mem::size_of;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 
+mod canonical;
+
 #[derive(Debug)]
 pub(crate) struct OwnedPath {
     value: PathBuf,
@@ -16,6 +18,15 @@ pub(crate) struct OwnedPath {
 }
 
 impl OwnedPath {
+    pub(crate) fn canonicalize(
+        path: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(task)?;
+        canonical::resolve(path, memory, task)
+    }
+
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.value.capacity()

@@ -1112,6 +1112,7 @@ dependencies = [
  "chrono",
  "fst",
  "jieba-rs",
+ "libc",
  "serde",
  "serde_json",
  "simsimd",
@@ -1125,6 +1126,7 @@ dependencies = [
  "skein-storage",
  "skein-telemetry",
  "skein-vector-projection",
+ "windows-sys",
  "zstd",
 ]
 

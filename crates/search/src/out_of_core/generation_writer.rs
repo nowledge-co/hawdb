@@ -377,7 +377,11 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
-        let _publish_lease = super::SearchProjectionPublishLease::acquire(&self.root)?;
+        let _publish_lease = super::SearchProjectionPublishLease::acquire_with_context(
+            &self.root,
+            &self.memory,
+            &self.task_context,
+        )?;
         checkpoint(&self.task_context)?;
         if let Some(expected) = self.expected_active_generation {
             let actual = super::active_manifest_generation(&self.root)?;
