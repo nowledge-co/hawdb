@@ -4,6 +4,8 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
+pub(super) mod committed;
+
 pub const SEARCH_PROJECTION_CLEANUP_PROTOCOL: &str =
     "skein-search-projection-generation-cleanup-v1";
 
@@ -183,31 +185,17 @@ impl SearchProjectionCleanupState {
             );
         }
 
-        match fs::read_dir(root) {
-            Ok(entries) => {
-                for entry in entries {
-                    report.scanned_entries = report.scanned_entries.saturating_add(1);
-                    let entry = match entry {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            report.scan_failures = report.scan_failures.saturating_add(1);
-                            record_failure(&mut report, io_error_code(&error));
-                            continue;
-                        }
-                    };
-                    let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                        continue;
-                    };
-                    let Some(candidate) = CleanupCandidate::parse(name) else {
-                        continue;
-                    };
-                    if known.contains(&candidate.name) || !candidate.is_obsolete(generations) {
-                        continue;
+        if let Err(error) = scan_candidates(root, |entry| {
+            report.scanned_entries = report.scanned_entries.saturating_add(1);
+            match entry {
+                ScannedEntry::Candidate(candidate) => {
+                    if known.contains(candidate.name) || !candidate.is_obsolete(generations) {
+                        return;
                     }
                     report.eligible_files = report.eligible_files.saturating_add(1);
                     process_candidate(
                         root,
-                        candidate,
+                        candidate.into_owned(),
                         capacity,
                         delete_limit,
                         &mut pending,
@@ -215,11 +203,15 @@ impl SearchProjectionCleanupState {
                         &mut remove,
                     );
                 }
+                ScannedEntry::Error(error) => {
+                    report.scan_failures = report.scan_failures.saturating_add(1);
+                    record_failure(&mut report, io_error_code(&error));
+                }
+                ScannedEntry::Ignored => {}
             }
-            Err(error) => {
-                report.scan_failures = report.scan_failures.saturating_add(1);
-                record_failure(&mut report, io_error_code(&error));
-            }
+        }) {
+            report.scan_failures = report.scan_failures.saturating_add(1);
+            record_failure(&mut report, io_error_code(&error));
         }
 
         report.pending_after = pending.len();
@@ -244,15 +236,50 @@ enum CleanupArtifactKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CleanupCandidate {
-    name: String,
+struct CleanupCandidate<N = String> {
+    name: N,
     kind: CleanupArtifactKind,
     generation: u64,
     quarantined: bool,
 }
 
-impl CleanupCandidate {
-    fn parse(name: String) -> Option<Self> {
+enum ScannedEntry<'a> {
+    Candidate(CleanupCandidate<&'a str>),
+    Ignored,
+    Error(io::Error),
+}
+
+fn scan_candidates(root: &Path, mut visit: impl FnMut(ScannedEntry<'_>)) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        match entry {
+            Ok(entry) => {
+                // Native enumeration/name buffers remain filesystem inputs;
+                // candidate classification borrows them without another copy.
+                let name = entry.file_name();
+                match name.to_str().and_then(CleanupCandidate::parse) {
+                    Some(candidate) => visit(ScannedEntry::Candidate(candidate)),
+                    None => visit(ScannedEntry::Ignored),
+                }
+            }
+            Err(error) => visit(ScannedEntry::Error(error)),
+        }
+    }
+    Ok(())
+}
+
+impl CleanupCandidate<&str> {
+    fn into_owned(self) -> CleanupCandidate {
+        CleanupCandidate {
+            name: self.name.to_owned(),
+            kind: self.kind,
+            generation: self.generation,
+            quarantined: self.quarantined,
+        }
+    }
+}
+
+impl<N: AsRef<str>> CleanupCandidate<N> {
+    fn parse(name: N) -> Option<Self> {
         const OUT_OF_CORE_PREFIXES: &[&str] = &[
             "search_projection_segments.",
             "search_projection_segment_payloads.",
@@ -260,9 +287,9 @@ impl CleanupCandidate {
             "search_projection_vector_payloads.",
             "search_projection_out_of_core_layout.",
         ];
-        let (artifact_name, quarantined) = match quarantined_artifact_name(&name) {
+        let (artifact_name, quarantined) = match quarantined_artifact_name(name.as_ref()) {
             Some(artifact_name) => (artifact_name, true),
-            None => (name.as_str(), false),
+            None => (name.as_ref(), false),
         };
         if let Some(generation) = parse_generation(artifact_name, "search_lexical.")
             .or_else(|| parse_generation(artifact_name, "search_lexical.manifest."))
@@ -282,13 +309,14 @@ impl CleanupCandidate {
                 quarantined,
             });
         }
-        OUT_OF_CORE_PREFIXES.iter().find_map(|prefix| {
-            parse_generation(artifact_name, prefix).map(|generation| Self {
-                name: name.clone(),
-                kind: CleanupArtifactKind::OutOfCore,
-                generation,
-                quarantined,
-            })
+        let generation = OUT_OF_CORE_PREFIXES
+            .iter()
+            .find_map(|prefix| parse_generation(artifact_name, prefix))?;
+        Some(Self {
+            name,
+            kind: CleanupArtifactKind::OutOfCore,
+            generation,
+            quarantined,
         })
     }
 

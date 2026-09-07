@@ -6,9 +6,8 @@ use crate::build_memory::{
 #[cfg(test)]
 use crate::encode_search_document_line;
 use crate::error::{Result, SkeinError};
-use crate::generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
-};
+use crate::generation_cleanup::committed::cleanup_committed_generation;
+use crate::generation_cleanup::{SearchProjectionCleanupOptions, SearchProjectionGenerations};
 use crate::lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, artifact_file as lexical_artifact_file,
     LexicalProjectionConfig, LexicalProjectionWriter, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
@@ -431,8 +430,7 @@ impl SearchOutOfCoreGenerationWriter {
             max_generation_bytes: self.options.max_generation_bytes.get(),
         })?;
 
-        let mut cleanup_state = SearchProjectionCleanupState::default();
-        let cleanup = cleanup_state.run(
+        let cleanup = cleanup_committed_generation(
             &self.root,
             SearchProjectionGenerations {
                 lexical: Some(lexical_generation),
@@ -442,6 +440,7 @@ impl SearchOutOfCoreGenerationWriter {
                 out_of_core_discovery_failed: false,
             },
             self.options.cleanup_options,
+            &self.memory,
         );
 
         Ok(SearchOutOfCoreGenerationBuildReport {

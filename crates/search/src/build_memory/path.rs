@@ -51,7 +51,26 @@ impl OwnedPath {
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
-        checkpoint(task)?;
+        Self::join_with_task(parent, name, memory, Some(task))
+    }
+
+    /// Best-effort cleanup after a successful commit may defer on admission
+    /// failure, but must not turn late cancellation into a publication error.
+    pub(crate) fn join_after_commit(
+        parent: &Path,
+        name: &Path,
+        memory: &BuildMemory,
+    ) -> Result<Self> {
+        Self::join_with_task(parent, name, memory, None)
+    }
+
+    fn join_with_task(
+        parent: &Path,
+        name: &Path,
+        memory: &BuildMemory,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
         let verbatim = matches!(parent.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim());
         let bytes = join_bytes(
             parent.as_os_str().as_encoded_bytes().len(),
@@ -61,7 +80,7 @@ impl OwnedPath {
         let lease = memory.retained.reserve(bytes)?;
         #[cfg(test)]
         evidence::record();
-        Self::finish(parent.join(name), lease, task)
+        Self::finish_with_task(parent.join(name), lease, task)
     }
 
     pub(crate) fn with_extension(
@@ -85,11 +104,19 @@ impl OwnedPath {
     }
 
     fn finish(value: PathBuf, lease: QueryMemoryLease, task: &RuntimeTaskContext) -> Result<Self> {
+        Self::finish_with_task(value, lease, Some(task))
+    }
+
+    fn finish_with_task(
+        value: PathBuf,
+        lease: QueryMemoryLease,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<Self> {
         let mut owned = Self {
             value,
             _memory: lease,
         };
-        checkpoint(task)?;
+        task.map_or(Ok(()), checkpoint)?;
         if owned.value.capacity() > owned._memory.bytes() {
             return Err(SkeinError::Execution(
                 "search writer path exceeds preflight capacity".into(),

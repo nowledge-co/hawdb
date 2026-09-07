@@ -51,6 +51,12 @@ seed `0x20610cc`. Its 128 native path sets cover exact/one-short shared budgets,
 alias contenders, 256 cancellations, unchanged sticky-lock contents and complete
 release. See `PUBLISHER_MEMORY_ADMISSION.md` for OS-lock and native-path boundaries.
 
+`//crates/search:skein_search_committed_cleanup_fuzz_tests` runs the manual
+`generation_cleanup::committed::tests::fuzz::committed_cleanup_campaign` with seed
+`0x206c1ea`: 128 directories, 4,480 generated files, exact/one-short roots, independent
+retention metadata, bounded I/O attempts and retry/release checks. See
+`COMMITTED_CLEANUP_ADMISSION.md` for its commit and filesystem-input boundaries.
+
 The generator and seeds are fixed in source, making the commands above replay
 the complete inputs and action sequences. Logs report accepted/rejected byte
 cases, all posting encoding modes, and state-machine transition counts. A

@@ -457,6 +457,80 @@ fn committed_publication_needs_no_new_path_admission_even_when_cancelled() {
 }
 
 #[test]
+fn committed_cleanup_defers_on_the_real_root_without_failing_or_missing_new_quarantine() {
+    use crate::generation_cleanup::{SearchProjectionCleanupState, SearchProjectionGenerations};
+    for deny in [false, true] {
+        let (root, generation) = fixture();
+        let context = task(16 * 1024 * 1024);
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &root,
+            Default::default(),
+            context.clone(),
+        )
+        .unwrap();
+        writer.push(document(1)).unwrap();
+        let ledger = writer.memory.ledger.clone();
+        let original_memory = writer.memory.clone();
+        let quarantined = root.join("search_lexical.0.skein.corrupt.42.1");
+        let created = quarantined.clone();
+        COMMITTED.with_borrow_mut(|slot| {
+            *slot = Some(Box::new(move |_, task| {
+                fs::write(&created, b"late quarantine").unwrap();
+                task.cancellation().cancel();
+            }));
+        });
+        let checked_root = root.clone();
+        crate::generation_cleanup::committed::before_cleanup_for_test(move |memory| {
+            assert_eq!(
+                SearchOutOfCoreReader::open(&checked_root)
+                    .unwrap()
+                    .generation(),
+                generation + 1
+            );
+            if deny {
+                occupy(&original_memory, 0);
+            }
+            assert_eq!(
+                memory.ledger.snapshot().used_bytes,
+                original_memory.ledger.snapshot().used_bytes
+            );
+        });
+        let report = writer.finish().unwrap();
+        assert!(context.cancellation().is_cancelled());
+        assert_eq!(report.generation, generation + 1);
+        assert_eq!(report.cleanup_deleted_files, usize::from(!deny));
+        assert_eq!(report.cleanup_pending_files, usize::from(deny));
+        assert_eq!(report.cleanup_retry_required, deny);
+        assert_eq!(quarantined.exists(), deny);
+        HELD.with_borrow_mut(|slot| slot.take());
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(reader.generation(), generation + 1);
+        assert_eq!(
+            reader
+                .hydrate_documents(&[document(1).id])
+                .unwrap()
+                .documents,
+            vec![document(1)]
+        );
+        drop(reader);
+        let retried = SearchProjectionCleanupState::default().run(
+            &root,
+            SearchProjectionGenerations {
+                lexical: Some(generation + 1),
+                out_of_core: Some(generation + 1),
+                ..Default::default()
+            },
+            Default::default(),
+        );
+        assert_eq!(retried.deleted_files, usize::from(deny));
+        assert!(!retried.retry_required);
+        assert!(!quarantined.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn failed_manifest_last_publication_keeps_the_old_generation_and_cleans_temporaries() {
     let (root, generation) = fixture();
     let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();

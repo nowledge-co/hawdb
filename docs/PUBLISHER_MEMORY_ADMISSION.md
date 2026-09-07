@@ -104,3 +104,9 @@ Local macOS execution and Windows/Linux type checking are separate evidence from
 native platform execution. Returned public cleanup/output/reader ownership,
 resident delta maps, combined component limits, tokenizer/Jieba workspaces and
 representative-corpus qualification remain full-issue gates.
+
+The later [committed cleanup checkpoint](COMMITTED_CLEANUP_ADMISSION.md) removes
+throwaway generation cleanup state and admits deletion paths on the same root.
+It preserves the successful-commit boundary by reporting memory denial as
+retryable cleanup, not as publication failure. Stateful public cleanup report
+ownership remains separate.
