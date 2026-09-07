@@ -6,7 +6,8 @@ use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
 use skein_plan::{
-    CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, RelationshipCountLeg,
+    CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
+    RelationshipCountLeg,
 };
 use std::collections::BTreeMap;
 
@@ -17,6 +18,16 @@ pub(super) const NODE_INDEX_TEXT_STARTUP_COST: u64 = 3;
 const NODE_FULL_SCAN_STARTUP_COST: u64 = 4;
 const NODE_INDEX_SMALL_LABEL_SCAN_THRESHOLD: u64 = 8;
 const VECTOR_SEED_TOTAL_COST_PER_ROW: u64 = 10;
+
+#[cfg(test)]
+thread_local! {
+    static COST_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_cost_evaluations() -> usize {
+    COST_EVALUATIONS.with(|count| count.replace(0))
+}
 
 pub(super) fn estimate_node_cartesian_product_cost(
     left_cost: PlanCost,
@@ -174,6 +185,32 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
 ) -> PlanCostBreakdown {
+    let inputs = estimate_input_costs(plan, |input| {
+        estimate_physical_plan_cost_breakdown(input, catalog)
+    });
+    estimate_operator_cost(plan, catalog, inputs)
+}
+
+// Finish the child traversal before entering the large operator-cost match, so
+// its stack frame does not accumulate with plan depth in unoptimized builds.
+pub(super) fn estimate_input_costs(
+    plan: &PhysicalPlan,
+    mut visit: impl FnMut(&PhysicalPlan) -> PlanCostBreakdown,
+) -> [Option<PlanCostBreakdown>; 2] {
+    match plan.children() {
+        PlanChildren::None => [None, None],
+        PlanChildren::Unary(input) => [Some(visit(input)), None],
+        PlanChildren::Binary(left, right) => [Some(visit(left)), Some(visit(right))],
+    }
+}
+
+pub(super) fn estimate_operator_cost(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    inputs: [Option<PlanCostBreakdown>; 2],
+) -> PlanCostBreakdown {
+    #[cfg(test)]
+    COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
     match plan {
         PhysicalPlan::EmptyExec => PlanCostBreakdown::new(1, 0, 0, 0, 0),
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
@@ -221,13 +258,13 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
             let total_cost = rows.saturating_mul(VECTOR_SEED_TOTAL_COST_PER_ROW).max(1);
             PlanCostBreakdown::new(rows, total_cost.saturating_sub(rows), 0, 0, rows)
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            let left_cost = estimate_physical_plan_cost_breakdown(left, catalog);
-            let right_cost = estimate_physical_plan_cost_breakdown(right, catalog);
+        PhysicalPlan::NodeCartesianProductExec { .. } => {
+            let left_cost = inputs[0].expect("left input cost");
+            let right_cost = inputs[1].expect("right input cost");
             combine_node_cartesian_product_cost(left_cost, right_cost)
         }
-        PhysicalPlan::NodeColumnLookupExec { label, input, .. } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::NodeColumnLookupExec { label, .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             let label_rows = catalog.label_count(label).max(1);
             input_cost.with_random_io(
                 input_cost.estimated_rows.max(1),
@@ -323,10 +360,9 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
             target_label,
             min_hops,
             max_hops,
-            input,
             ..
         } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+            let input_cost = inputs[0].expect("unary input cost");
             let expand_estimate = catalog.estimate_expand_rows(
                 source_label,
                 rel_type,
@@ -347,17 +383,17 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
                 0,
             )
         }
-        PhysicalPlan::AdjacencyExistsExec { input, .. } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::AdjacencyExistsExec { .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             input_cost.with_random_io(input_cost.estimated_rows, input_cost.estimated_rows, 0)
         }
         PhysicalPlan::FilterExec { predicate, input } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+            let input_cost = inputs[0].expect("unary input cost");
             let rows = estimate_filter_rows(predicate, input, input_cost.estimated_rows, catalog);
             input_cost.with_cpu(rows, input_cost.estimated_rows, 0)
         }
-        PhysicalPlan::ProjectExec { input, .. } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::ProjectExec { .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             input_cost.with_cpu(input_cost.estimated_rows, input_cost.estimated_rows, 0)
         }
         PhysicalPlan::OptionalDegreeExec {
@@ -366,10 +402,9 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
             direction,
             target_label,
             target_properties,
-            input,
             ..
         } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+            let input_cost = inputs[0].expect("unary input cost");
             let degree_work = estimate_optional_degree_work(
                 rel_type,
                 rel_properties,
@@ -407,32 +442,27 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
             items,
             input,
         } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+            let input_cost = inputs[0].expect("unary input cost");
             let rows =
                 estimate_aggregate_rows(group_keys, input, input_cost.estimated_rows, catalog);
             let work_rows =
                 estimate_aggregate_work_rows(items, input, input_cost.estimated_rows, catalog);
             input_cost.with_cpu(rows, work_rows, 0)
         }
-        PhysicalPlan::DistinctExec { input } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::DistinctExec { .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             input_cost.with_cpu(input_cost.estimated_rows, input_cost.estimated_rows, 0)
         }
-        PhysicalPlan::SortExec { input, .. } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::SortExec { .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             input_cost.with_cpu(
                 input_cost.estimated_rows,
                 input_cost.estimated_rows.saturating_mul(2),
                 0,
             )
         }
-        PhysicalPlan::TopNExec {
-            offset,
-            limit,
-            input,
-            ..
-        } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::TopNExec { offset, limit, .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             let retained_rows =
                 (offset.saturating_add(*limit) as u64).min(input_cost.estimated_rows);
             let rows = input_cost
@@ -445,12 +475,8 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
                 .saturating_add(retained_rows.saturating_mul(heap_depth));
             input_cost.with_cpu(rows, selection_cost, 0)
         }
-        PhysicalPlan::LimitExec {
-            offset,
-            limit,
-            input,
-        } => {
-            let input_cost = estimate_physical_plan_cost_breakdown(input, catalog);
+        PhysicalPlan::LimitExec { offset, limit, .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
             let remaining_rows = input_cost.estimated_rows.saturating_sub(*offset as u64);
             let rows = limit
                 .map(|limit| remaining_rows.min(limit as u64))

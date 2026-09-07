@@ -1,15 +1,20 @@
 use super::{costing, properties, OptimizerCatalog, PhysicalPlan};
 use crate::{
-    plan_class_counts, plan_operator_counts, visit_plan_with_ids, OperatorCardinalityEstimate,
-    OptimizerContext, SelectedPlanTrace,
+    plan_class_counts, plan_operator_counts, OperatorCardinalityEstimate, OptimizerContext,
+    PlanCostBreakdown, SelectedPlanTrace,
 };
+use skein_plan::PhysicalOperatorId;
+
+#[cfg(test)]
+mod differential;
 
 pub(super) fn selected_plan_trace(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     context: &OptimizerContext,
 ) -> SelectedPlanTrace {
-    let cost_breakdown = costing::estimate_physical_plan_cost_breakdown(plan, catalog);
+    let mut cardinality_estimates = Vec::new();
+    let cost_breakdown = collect_operator_costs(plan, catalog, &mut cardinality_estimates);
     SelectedPlanTrace {
         query_digest: context.query_digest().map(str::to_string),
         explain: plan.explain(0),
@@ -17,25 +22,31 @@ pub(super) fn selected_plan_trace(
         cost: cost_breakdown.as_plan_cost(),
         cost_breakdown,
         properties: properties::selected_plan_properties(plan),
-        cardinality_estimates: operator_cardinality_estimates(plan, catalog),
+        cardinality_estimates,
         operator_counts: plan_operator_counts(plan),
         class_counts: plan_class_counts(plan),
     }
 }
 
-fn operator_cardinality_estimates(
+fn collect_operator_costs(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
-) -> Vec<OperatorCardinalityEstimate> {
-    let mut estimates = Vec::new();
-    visit_plan_with_ids(plan, &mut |operator_id, operator| {
-        estimates.push(OperatorCardinalityEstimate {
-            operator_id,
-            operator: operator.kind(),
-            estimated_rows: costing::estimate_physical_plan_cost(operator, catalog).estimated_rows,
-        });
+    estimates: &mut Vec<OperatorCardinalityEstimate>,
+) -> PlanCostBreakdown {
+    // Reserve IDs before traversing children, matching visit_plan_with_ids even
+    // though a parent's cost is only available after both child costs.
+    let ordinal = estimates.len();
+    estimates.push(OperatorCardinalityEstimate {
+        operator_id: PhysicalOperatorId::from_ordinal(ordinal),
+        operator: plan.kind(),
+        estimated_rows: 0,
     });
-    estimates
+    let inputs = costing::estimate_input_costs(plan, |input| {
+        collect_operator_costs(input, catalog, estimates)
+    });
+    let cost = costing::estimate_operator_cost(plan, catalog, inputs);
+    estimates[ordinal].estimated_rows = cost.estimated_rows;
+    cost
 }
 
 #[cfg(test)]
@@ -45,7 +56,59 @@ mod tests {
         CascadesOptimizer, OptimizationSearchReport, OptimizerCatalogIndexes,
         OptimizerCatalogStatistics, OptimizerContext,
     };
-    use skein_plan::{PhysicalOperatorId, PhysicalPlanKind};
+    use skein_plan::PhysicalPlanKind;
+
+    #[test]
+    fn selected_trace_costs_each_operator_once() {
+        for depth in [32, 0, 1] {
+            let mut plan = PhysicalPlan::IndexNodeRangeSeek {
+                variable: "n".to_string(),
+                label: "Node".to_string(),
+                property: "score".to_string(),
+                lower: Some((skein_core::Value::Int(5), false)),
+                upper: None,
+            };
+            for _ in 0..depth {
+                plan = PhysicalPlan::ProjectExec {
+                    items: Vec::new(),
+                    input: Box::new(plan),
+                };
+            }
+            costing::take_cost_evaluations();
+            let trace = selected_plan_trace(
+                &plan,
+                &OptimizerCatalog::default(),
+                &OptimizerContext::default(),
+            );
+            let evaluations = costing::take_cost_evaluations();
+            assert_eq!(trace.cardinality_estimates.len(), depth + 1);
+            assert_eq!(evaluations, depth + 1, "each operator must be costed once");
+        }
+    }
+
+    #[test]
+    fn deep_cost_collection_does_not_reenter_operator_cost_frames() {
+        for depth in [127, 255] {
+            let mut plan = PhysicalPlan::EmptyExec;
+            for _ in 0..depth {
+                plan = PhysicalPlan::ProjectExec {
+                    items: Vec::new(),
+                    input: Box::new(plan),
+                };
+            }
+            let mut estimates = Vec::new();
+            costing::take_cost_evaluations();
+            let cost = collect_operator_costs(&plan, &OptimizerCatalog::default(), &mut estimates);
+            assert_eq!(costing::take_cost_evaluations(), depth + 1);
+            assert_eq!(estimates.len(), depth + 1);
+            assert_eq!(cost.estimated_rows, 1);
+            assert_eq!(cost.cost, depth as u64);
+            assert_eq!(
+                cost,
+                costing::estimate_physical_plan_cost_breakdown(&plan, &OptimizerCatalog::default())
+            );
+        }
+    }
 
     #[test]
     fn selected_trace_assigns_estimates_to_stable_operator_ids() {

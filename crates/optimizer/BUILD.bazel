@@ -45,3 +45,20 @@ rust_test(
     ],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+# Private production costing, exercised only by an explicitly selected campaign.
+rust_test(
+    name = "skein_optimizer_trace_cost_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "graph::selected_trace::differential::selected_trace_cost_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_optimizer",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
