@@ -54,6 +54,16 @@ sh_test(
     data = ["scripts/check-cargo-bazel-package-parity.sh"],
 )
 
+sh_test(
+    name = "storage_tla_evidence_script_test",
+    size = "small",
+    srcs = ["scripts/check-storage-tla.test.sh"],
+    data = [
+        "scripts/check-storage-tla.sh",
+        "//docs/tla/tests:fake-java.sh",
+    ],
+)
+
 _SKEIN_SRCS = glob(
     ["src/**/*.rs"],
     exclude = [

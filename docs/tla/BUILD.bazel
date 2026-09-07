@@ -1,4 +1,4 @@
-load("@rules_tla//tla:defs.bzl", "tla_check")
+load("@rules_tla//tla:defs.bzl", "tla_check", "tla_test_suite")
 load(":storage_models.bzl", "STORAGE_MODELS")
 
 package(default_visibility = ["//visibility:public"])
@@ -22,7 +22,14 @@ package(default_visibility = ["//visibility:public"])
     for model in STORAGE_MODELS
 ]
 
-test_suite(
+tla_test_suite(
     name = "storage_models",
+    shard_count = 1,
     tests = [":" + model + "_check" for model in STORAGE_MODELS],
+)
+
+# Materialize the same actions' evidence, including on remote-cache hits.
+alias(
+    name = "storage_model_evidence",
+    actual = ":storage_models_evidence",
 )

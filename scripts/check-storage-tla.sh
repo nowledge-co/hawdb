@@ -73,6 +73,17 @@ manifest_json() {
     "$revision" "$tla_version" "$tla_sha256" "$models"
 }
 
+verify_tlc_log() {
+  local result="$1"
+  [[ -s "$result" ]] &&
+    grep -Fq 'Model checking completed. No error has been found.' "$result" &&
+    grep -q '^Finished in ' "$result" &&
+    ! grep -q '^Error:' "$result" || {
+    printf 'TLA+ complete success evidence is missing or contains an error: %s\n' "$result" >&2
+    return 1
+  }
+}
+
 verify_results() {
   local results_dir="$1"
   local source_revision="$2"
@@ -95,10 +106,7 @@ verify_results() {
       printf 'TLA+ result is missing for %s\n' "$specification" >&2
       return 1
     }
-    grep -Fq 'Model checking completed. No error has been found.' "$result" || {
-      printf 'TLA+ success marker is missing for %s\n' "$specification" >&2
-      return 1
-    }
+    verify_tlc_log "$result"
     cmp "$repository_root/docs/tla/$specification.tla" \
       "$results_dir/models/$specification.tla"
     cmp "$repository_root/docs/tla/$specification.cfg" \
@@ -108,6 +116,79 @@ verify_results() {
     printf 'TLA+ tool binaries must not be retained in release evidence\n' >&2
     return 1
   fi
+}
+
+collect_bazel_results() {
+  local -a bazel_tla_dirs=("$1" "${@:4}")
+  local results_dir="$2"
+  local source_revision="$3"
+  local shard_count="${#bazel_tla_dirs[@]}"
+  if [[ "$shard_count" -gt "${#specifications[@]}" ]]; then
+    printf 'TLA+ shard count must not exceed the model count\n' >&2
+    return 1
+  fi
+  manifest_json "$source_revision" > /dev/null
+  mkdir -p "$results_dir"
+  if find "$results_dir" -mindepth 1 -print -quit | grep -q .; then
+    printf 'TLA+ results directory must be empty before collection\n' >&2
+    return 1
+  fi
+  mkdir "$results_dir/models" "$results_dir/bazel"
+
+  local specification
+  local model_index=0
+  for specification in "${specifications[@]}"; do
+    local shard_index=$((model_index % shard_count))
+    local evidence="${bazel_tla_dirs[$shard_index]}/${specification}_check.run.tlc-evidence"
+    local receipt="$results_dir/bazel/$specification"
+    local index
+    for ((index = 0; index < shard_count; index++)); do
+      if [[ "$index" -ne "$shard_index" ]] &&
+        [[ -e "${bazel_tla_dirs[$index]}/${specification}_check.run.tlc-evidence" ]]; then
+        printf 'TLA+ model appears in a duplicate or incorrect shard: %s\n' "$specification" >&2
+        return 1
+      fi
+    done
+    if [[ ! -f "$evidence/result.txt" ]] ||
+      [[ "$(< "$evidence/result.txt")" != $'ok\n0' ]]; then
+      printf 'TLA+ Bazel action did not complete successfully: %s\n' "$specification" >&2
+      return 1
+    fi
+    if [[ ! -f "$evidence/tla2tools.sha256" ]] ||
+      [[ "$(< "$evidence/tla2tools.sha256")" != "$tla_sha256" ]]; then
+      printf 'TLA+ Bazel tool digest mismatch: %s\n' "$specification" >&2
+      return 1
+    fi
+    if [[ ! -f "$evidence/tlc-args.txt" ]] ||
+      [[ "$(< "$evidence/tlc-args.txt")" != $'-cleanup\n-workers\nauto' ]]; then
+      printf 'TLA+ Bazel full-check arguments mismatch: %s\n' "$specification" >&2
+      return 1
+    fi
+    verify_tlc_log "$evidence/tlc.log"
+    cmp "$repository_root/docs/tla/$specification.tla" "$evidence/module.tla"
+    cmp "$repository_root/docs/tla/$specification.cfg" "$evidence/model.cfg"
+    [[ -s "$evidence/java-version.txt" ]] || {
+      printf 'TLA+ Bazel Java version evidence is missing: %s\n' "$specification" >&2
+      return 1
+    }
+    if [[ -f "$results_dir/java-version.txt" ]]; then
+      cmp "$results_dir/java-version.txt" "$evidence/java-version.txt"
+    else
+      cp "$evidence/java-version.txt" "$results_dir/java-version.txt"
+    fi
+    cp "$evidence/tlc.log" "$results_dir/$specification.txt"
+    cp "$evidence/module.tla" "$results_dir/models/$specification.tla"
+    cp "$evidence/model.cfg" "$results_dir/models/$specification.cfg"
+    mkdir "$receipt"
+    cp "$evidence/result.txt" "$evidence/tla2tools.sha256" \
+      "$evidence/tlc-args.txt" "$evidence/java-version.txt" "$receipt/"
+    model_index=$((model_index + 1))
+  done
+
+  # Publish the commit-bound manifest only after the complete model set passes.
+  manifest_json "$source_revision" > "$results_dir/manifest.json"
+  printf '\n' >> "$results_dir/manifest.json"
+  verify_results "$results_dir" "$source_revision"
 }
 
 if [[ "${1:-}" == "--manifest-json" ]]; then
@@ -129,9 +210,27 @@ if [[ "${1:-}" == "--verify-results" ]]; then
   exit
 fi
 
+if [[ "${1:-}" == "--collect-bazel-results" ]]; then
+  [[ "$#" -eq 4 ]] || {
+    printf 'usage: %s --collect-bazel-results BAZEL_TLA_DIR RESULTS_DIR SOURCE_REVISION\n' "$0" >&2
+    exit 2
+  }
+  collect_bazel_results "$2" "$3" "$4"
+  exit
+fi
+
+if [[ "${1:-}" == "--collect-bazel-shards" ]]; then
+  [[ "$#" -ge 4 ]] || {
+    printf 'usage: %s --collect-bazel-shards RESULTS_DIR SOURCE_REVISION BAZEL_TLA_DIR...\n' "$0" >&2
+    exit 2
+  }
+  collect_bazel_results "$4" "$2" "$3" "${@:5}"
+  exit
+fi
+
 if [[ "$#" -ne 0 ]] &&
   ! [[ "$#" -eq 1 && "${1:-}" == "--check-mutants" ]]; then
-  printf 'usage: %s [--manifest-json SOURCE_REVISION | --verify-results RESULTS_DIR SOURCE_REVISION | --check-mutants]\n' "$0" >&2
+  printf 'usage: %s [--manifest-json SOURCE_REVISION | --verify-results RESULTS_DIR SOURCE_REVISION | --collect-bazel-results BAZEL_TLA_DIR RESULTS_DIR SOURCE_REVISION | --collect-bazel-shards RESULTS_DIR SOURCE_REVISION BAZEL_TLA_DIR... | --check-mutants]\n' "$0" >&2
   exit 2
 fi
 

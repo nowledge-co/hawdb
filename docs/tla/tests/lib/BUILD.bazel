@@ -1,0 +1,7 @@
+load("@rules_tla//tla:defs.bzl", "tla_library")
+
+tla_library(
+    name = "limit",
+    srcs = ["Limit.tla"],
+    visibility = ["//docs/tla/tests:__pkg__"],
+)

@@ -15,7 +15,8 @@ pool:
 bazel test //docs/tla:storage_models --jobs=1 --test_output=errors
 ```
 
-`rules_tla` 0.2.0 is source-pinned in `MODULE.bazel`. It resolves TLA+ Tools
+`rules_tla` is maintained locally in `third_party/rules_tla`, based on upstream
+0.2.0 with its source revision and MIT license retained. It resolves TLA+ Tools
 1.7.4 by version and SHA-256 and uses Bazel's Java runtime toolchain. Each
 `.tla`/`.cfg` pair is an individual `tla_check`; the `storage_models` suite is
 the CI gate. [`storage_models.bzl`](storage_models.bzl) is the single,
@@ -24,18 +25,60 @@ evidence collection. The collector rejects duplicates, a missing model pair,
 or any `.tla`/`.cfg` file omitted from that manifest, so its artifact cannot
 silently lag the authoritative Bazel suite.
 
-The release-evidence collector remains separate because `rules_tla` 0.2.0
-declares a success marker but does not expose a successful action log as an
-output after a cache hit. Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` when
-running `scripts/check-storage-tla.sh` to retain exact `.tla` and `.cfg` inputs,
-one complete TLC log per model, the Java version, and a revision- and tool-bound
-manifest. This repeats the bounded checks for audit retention; it is not the
-authoritative Bazel gate. The retained manifest covers the complete model set,
-not a hand-maintained subset. CI validates the downloaded artifact with:
+Each model-checking action now declares its complete evidence as an output:
+the actual `.tla` and `.cfg` inputs, full TLC log, Java version, JAR digest,
+TLC arguments, and outcome/exit code. The `storage_model_evidence` target
+materializes these outputs, including on cache hits. Request it alongside the
+suite to check each model only once and retain the same action's evidence:
 
 ```bash
-scripts/check-storage-tla.sh --verify-results tla-results "$GITHUB_SHA"
+bazel test //docs/tla:storage_models //docs/tla:storage_model_evidence \
+  //docs/tla/tests:rule_contract_tests //:storage_tla_evidence_script_test \
+  --jobs=1 --test_output=errors
+scripts/check-storage-tla.sh --check-mutants
+scripts/check-storage-tla.sh --collect-bazel-results \
+  bazel-bin/docs/tla tla-results "$SOURCE_REVISION"
+scripts/check-storage-tla.sh --verify-results tla-results "$SOURCE_REVISION"
 ```
+
+The collector does not launch Java, download TLC, or recompute any state graph.
+It requires a successful zero-exit action for every declared model, complete
+success logs without errors, byte-identical source/configuration snapshots,
+the pinned tool digest, and unchanged full-check arguments. A passing expected
+counterexample cannot substitute for successful model evidence. The output
+directory must be empty, and the source-revision-bound manifest is published
+only after the complete model set passes validation. Cache reuse is retained
+evidence from identical action inputs, not a claim of fresh TLC execution.
+
+The standalone `scripts/check-storage-tla.sh` entrypoint remains available for
+developer use. Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain its full
+campaign evidence. CI must not run that no-argument entrypoint after Bazel:
+collection replaces that duplicate computation, not the model or mutant gates.
+
+### Model shards
+
+The `tla_test_suite` declaration supports `shard_count`, currently `1`. With
+`shard_count = N`, it exposes `storage_models_shard_0` through
+`storage_models_shard_<N-1>` and corresponding `_evidence` filegroups. Each
+shard checks different complete models; it does not split a single model's
+state graph or disable any property. The unsuffixed suite still checks all
+models. Increasing this setting alone does not provision more CI jobs.
+
+For example, after configuring two shards, run each shard's suite and evidence
+target in its own worker. Retain only the declared evidence outputs, then merge
+the extracted TLA directories in zero-based shard order:
+
+```bash
+scripts/check-storage-tla.sh --collect-bazel-shards \
+  tla-results "$SOURCE_REVISION" shard-0/docs/tla shard-1/docs/tla
+scripts/check-storage-tla.sh --verify-results tla-results "$SOURCE_REVISION"
+```
+
+The collector infers the shard count from the directory list and checks the
+same round-robin assignment as the suite. Every model must appear exactly once
+in the correct shard. Partial shards never receive a full-campaign manifest.
+The separate mutant gate remains mandatory. CI keeps one shard by default;
+timeouts and resource settings are unchanged.
 
 ## Durable WAL and Checkpoint Publication
 

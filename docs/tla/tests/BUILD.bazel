@@ -1,0 +1,92 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_tla//tla:defs.bzl", "tla_check", "tla_test_suite")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["fake-java.sh"])
+
+[
+    tla_check(
+        name = name + "_check",
+        config = config,
+        deps = ["//docs/tla/tests/lib:limit"] if module == "Counter.tla" else [],
+        expect = outcome,
+        module = module,
+        shard_count = 1,
+        timeout_seconds = 30,
+        tlc_args = ["-cleanup", "-workers", "2"],
+    )
+    for name, module, config, outcome in [
+        ("positive", "Counter.tla", "Counter.cfg", "ok"),
+        ("invariant", "Counter.tla", "Invariant.cfg", "invariant_violation"),
+        ("temporal", "Counter.tla", "Temporal.cfg", "temporal_violation"),
+        ("deadlock", "Deadlock.tla", "Deadlock.cfg", "deadlock"),
+    ]
+]
+
+[
+    filegroup(
+        name = name + "_evidence",
+        testonly = True,
+        srcs = [":" + name + "_check.run"],
+        output_group = "tla_evidence",
+    )
+    for name in ["positive", "invariant", "temporal", "deadlock"]
+]
+
+sh_test(
+    name = "rule_evidence_test",
+    size = "small",
+    srcs = ["rule-evidence.test.sh"],
+    args = [
+        "$(location :positive_evidence)",
+        "$(location :invariant_evidence)",
+        "$(location :temporal_evidence)",
+        "$(location :deadlock_evidence)",
+    ],
+    data = [":%s_evidence" % name for name in ["positive", "invariant", "temporal", "deadlock"]],
+)
+
+test_suite(
+    name = "rule_contract_tests",
+    tests = [
+        ":contract_models",
+        ":rule_evidence_test",
+        ":rule_sharding_test",
+    ],
+)
+
+tla_test_suite(
+    name = "contract_models",
+    shard_count = 3,
+    tests = [":positive_check", ":invariant_check", ":temporal_check", ":deadlock_check"],
+)
+
+sh_test(
+    name = "rule_sharding_test",
+    size = "small",
+    srcs = ["rule-sharding.test.sh"],
+    args = [arg for index in range(3) for arg in [
+        "--shard=" + str(index),
+        "$(locations :contract_models_shard_%s_evidence)" % index,
+    ]],
+    data = [":contract_models_shard_%s_evidence" % index for index in range(3)],
+)
+
+# These targets must fail. Exercise them explicitly, never as passing tests.
+tla_check(
+    name = "unexpected_invariant_check",
+    module = "Counter.tla",
+    config = "Invariant.cfg",
+    deps = ["//docs/tla/tests/lib:limit"],
+    tags = ["manual"],
+    timeout_seconds = 30,
+)
+
+tla_check(
+    name = "timeout_check",
+    module = "Unbounded.tla",
+    config = "Unbounded.cfg",
+    tags = ["manual"],
+    timeout_seconds = 1,
+)

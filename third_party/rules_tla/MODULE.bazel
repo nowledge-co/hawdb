@@ -1,0 +1,17 @@
+# ⚠ The registry serves its OWN copy of this file, and 0.1.1 was published with
+# `version = "0.1.1"` while this file still said 0.1.0. Bump both, or a consumer
+# resolves a version that does not exist in the repo it was cut from.
+module(
+    name = "rules_tla",
+    version = "0.2.0",
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+
+# The TLA+ tools jar (SANY + TLC + PlusCal), pinned and hermetic. TLC runs on the
+# JDK resolved by Bazel's built-in java runtime toolchain, so there is no extra
+# language dependency.
+tla2tools = use_extension("//tla:extensions.bzl", "tla2tools")
+use_repo(tla2tools, "tla2tools")

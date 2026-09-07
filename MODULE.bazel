@@ -7,12 +7,10 @@ bazel_dep(name = "rules_rust", version = "0.67.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_tla", version = "0.2.0")
 
-# rules_tla 0.2.0 is not yet available from the Bazel Central Registry.
-# Pin the released source revision so model checks remain reproducible.
-git_override(
+# Maintain the rules locally so the authoritative check also retains evidence.
+local_path_override(
     module_name = "rules_tla",
-    commit = "b39eb6fc672a67a7d40f1cd258d2eb3abc13f0a3",
-    remote = "https://github.com/tomato-bazel/rules_tla.git",
+    path = "third_party/rules_tla",
 )
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
