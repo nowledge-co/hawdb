@@ -38,7 +38,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 mod analyzer_lexicon;
 mod build_control;
@@ -49,6 +49,8 @@ mod document_codec;
 mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
+#[cfg(test)]
+mod lexical_state_tests;
 mod out_of_core;
 mod query_memory;
 #[cfg(feature = "vector-search")]
@@ -1340,8 +1342,7 @@ pub struct SearchIndex {
     durable_source_graph_commit_epoch: Mutex<Option<u64>>,
     marker_lines: Mutex<BTreeMap<String, Vec<String>>>,
     analyzer_lexicon: SearchAnalyzerLexicon,
-    lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
-    lexical_delta: Mutex<LexicalMiniDelta>,
+    lexical_state: RwLock<LexicalProjectionState>,
     lexical_config: LexicalProjectionConfig,
     segment_cache: Arc<SearchSegmentCache>,
     #[cfg(feature = "vector-search")]
@@ -1355,11 +1356,19 @@ pub struct SearchIndex {
     telemetry: Option<Arc<dyn TelemetrySink>>,
 }
 
+#[derive(Debug, Default)]
+struct LexicalProjectionState {
+    // The delta's base statistics belong to exactly this reader generation.
+    projection: Option<Arc<LexicalProjectionReader>>,
+    delta: LexicalMiniDelta,
+}
+
 impl SearchIndex {
     pub fn lexical_artifact_bytes(&self) -> Option<SearchLexicalArtifactBytes> {
-        self.lexical_projection
-            .lock()
+        self.lexical_state
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .projection
             .as_ref()
             .map(|projection| projection.artifact_bytes())
     }
@@ -1414,13 +1423,9 @@ impl SearchIndex {
 
     fn invalidate_lexical_projection(&self) {
         *self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+            .lexical_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalProjectionState::default();
     }
 
     fn load_lexical_projection(&self) -> Result<()> {
@@ -1437,9 +1442,12 @@ impl SearchIndex {
             Arc::clone(&self.segment_cache),
         )?;
         *self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = projection;
+            .lexical_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalProjectionState {
+            projection,
+            delta: LexicalMiniDelta::default(),
+        };
         Ok(())
     }
 
@@ -1536,50 +1544,40 @@ impl SearchIndex {
     }
 
     fn record_lexical_upsert(&self, document: &SearchDocument) {
-        if self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_none()
-        {
+        let mut state = self
+            .lexical_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.projection.is_none() {
             return;
         }
-        let result = self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .upsert(
-                document,
-                self.documents.get(&document.id),
-                &self.analyzer_lexicon,
-                self.lexical_config,
-            );
+        let result = state.delta.upsert(
+            document,
+            self.documents.get(&document.id),
+            &self.analyzer_lexicon,
+            self.lexical_config,
+        );
         if result.is_err() {
-            self.invalidate_lexical_projection();
+            *state = LexicalProjectionState::default();
         }
     }
 
     fn record_lexical_delete(&self, document_id: &str) {
-        if self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_none()
-        {
+        let mut state = self
+            .lexical_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.projection.is_none() {
             return;
         }
-        let admitted = self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .delete(
-                document_id,
-                self.documents.get(document_id),
-                &self.analyzer_lexicon,
-                self.lexical_config,
-            );
+        let admitted = state.delta.delete(
+            document_id,
+            self.documents.get(document_id),
+            &self.analyzer_lexicon,
+            self.lexical_config,
+        );
         if !matches!(admitted, Ok(true)) {
-            self.invalidate_lexical_projection();
+            *state = LexicalProjectionState::default();
         }
     }
 
@@ -2318,9 +2316,10 @@ impl SearchIndex {
             };
         let generations = SearchProjectionGenerations {
             lexical: self
-                .lexical_projection
-                .lock()
+                .lexical_state
+                .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .projection
                 .as_ref()
                 .map(|projection| projection.generation()),
             out_of_core: out_of_core_generation,
@@ -2410,14 +2409,15 @@ impl SearchIndex {
                 self.documents.values(),
                 &self.analyzer_lexicon,
             )?;
+        #[cfg(test)]
+        lexical_state_tests::before_swap();
         *self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(projection);
-        *self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+            .lexical_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalProjectionState {
+            projection: Some(projection),
+            delta: LexicalMiniDelta::default(),
+        };
         Ok(())
     }
 
@@ -3190,26 +3190,6 @@ impl SearchIndex {
             } else {
                 (Vec::new(), Vec::new())
             };
-        let lexical_projection = if text_available
-            && mode != SearchMode::Vector
-            && matches!(payload_access, SearchPayloadAccess::PrunedRanges)
-        {
-            self.lexical_projection
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-        } else {
-            None
-        };
-        let text_corpus =
-            if text_available && mode != SearchMode::Vector && lexical_projection.is_none() {
-                Some(TextCorpusStats::from_documents(
-                    filtered_documents.iter().copied(),
-                    &self.analyzer_lexicon,
-                ))
-            } else {
-                None
-            };
         let projection_freshness = self.projection_freshness();
         let (vector_index_covered_document_count, vector_index_candidate_document_count) =
             vector_backend.index_coverage(&filtered_documents);
@@ -3240,27 +3220,36 @@ impl SearchIndex {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
-        let lexical_report = lexical_projection
+        let lexical_state = (text_available
+            && mode != SearchMode::Vector
+            && matches!(payload_access, SearchPayloadAccess::PrunedRanges))
+        .then(|| {
+            self.lexical_state
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        #[cfg(test)]
+        lexical_state_tests::after_pin();
+        let lexical_report = lexical_state
             .as_ref()
-            .map(|projection| {
-                let delta = self
-                    .lexical_delta
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                projection.score_with_context(
-                    &query_terms,
-                    &delta,
-                    retained_text_score_limit,
-                    vector_execution_options.task_context,
-                    |id| {
-                        Ok(filtered_documents
-                            .binary_search_by(|document| document.id.as_str().cmp(id))
-                            .is_ok())
-                    },
-                )
+            .and_then(|state| {
+                state.projection.as_ref().map(|projection| {
+                    projection.score_with_context(
+                        &query_terms,
+                        &state.delta,
+                        retained_text_score_limit,
+                        vector_execution_options.task_context,
+                        |id| {
+                            Ok(filtered_documents
+                                .binary_search_by(|document| document.id.as_str().cmp(id))
+                                .is_ok())
+                        },
+                    )
+                })
             })
             .transpose()?;
+        let segmented_lexical_projection_used = lexical_report.is_some();
+        drop(lexical_state);
         let (
             projected_text_scores,
             lexical_matching_document_count,
@@ -3281,7 +3270,15 @@ impl SearchIndex {
             (None, 0, 0, 0, 0, 0)
         };
         let mut resident_text_scores = BTreeMap::new();
-        if lexical_projection.is_none() {
+        if !segmented_lexical_projection_used {
+            let text_corpus = if text_available && mode != SearchMode::Vector {
+                Some(TextCorpusStats::from_documents(
+                    filtered_documents.iter().copied(),
+                    &self.analyzer_lexicon,
+                ))
+            } else {
+                None
+            };
             for document in &filtered_documents {
                 let text_score = if text_available && mode != SearchMode::Vector {
                     text_corpus
@@ -3301,7 +3298,6 @@ impl SearchIndex {
         let text_scores = projected_text_scores
             .as_deref()
             .unwrap_or(&resident_text_scores);
-        let segmented_lexical_projection_used = lexical_projection.is_some();
         let text_candidate_count = if segmented_lexical_projection_used {
             lexical_matching_document_count
         } else {
@@ -3930,8 +3926,7 @@ impl Default for SearchIndex {
             durable_source_graph_commit_epoch: Mutex::new(None),
             marker_lines: Mutex::new(BTreeMap::new()),
             analyzer_lexicon: SearchAnalyzerLexicon::default(),
-            lexical_projection: Mutex::new(None),
-            lexical_delta: Mutex::new(LexicalMiniDelta::default()),
+            lexical_state: RwLock::new(LexicalProjectionState::default()),
             lexical_config: LexicalProjectionConfig::default(),
             segment_cache: Arc::new(SearchSegmentCache::new(
                 lexical_projection::DEFAULT_CACHE_BYTES,
@@ -13829,9 +13824,10 @@ mod tests {
 
         index.checkpoint().unwrap();
         let generation = index
-            .lexical_projection
-            .lock()
+            .lexical_state
+            .read()
             .unwrap()
+            .projection
             .as_ref()
             .unwrap()
             .generation();

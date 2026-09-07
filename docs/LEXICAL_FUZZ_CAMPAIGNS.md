@@ -63,6 +63,11 @@ cases, all posting encoding modes, and state-machine transition counts. A
 failed filesystem campaign leaves its uniquely named temporary fixture intact;
 a successful campaign removes only its own fixture, after dropping readers.
 
+The state-machine campaign also checks ID-buffer and base-tree identity across
+replacement, deletion and resurrection. A pinned old reader receives the original
+delta by ownership transfer, not a clone. See `LEXICAL_DELTA_OWNERSHIP.md` for the
+real concurrent-query/publication regressions and remaining resident-budget scope.
+
 The query-memory campaign uses seed `0x2065c0e` for 512 queries against a real
 published lexical artifact, with replacements/deletes/inserts, filters and six
 retention windows. Scores are compared with the existing independent document

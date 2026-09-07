@@ -76,6 +76,7 @@ struct Model {
     config: LexicalProjectionConfig,
     cache: Arc<SegmentCache>,
     seed: u64,
+    ownership_checks: usize,
 }
 
 impl Model {
@@ -122,10 +123,12 @@ impl Model {
             config,
             cache,
             seed,
+            ownership_checks: 0,
         }
     }
 
     fn upsert(&mut self, document: SearchDocument) {
+        let before = self.ownership(&document.id);
         self.delta
             .upsert(
                 &document,
@@ -134,15 +137,43 @@ impl Model {
                 self.config,
             )
             .unwrap();
+        self.check_ownership(&document.id, before);
         self.documents.insert(document.id.clone(), document);
     }
 
     fn delete(&mut self, id: &str) {
+        let before = self.ownership(id);
         assert!(self
             .delta
             .delete(id, self.documents.get(id), &self.analyzer, self.config)
             .unwrap());
+        self.check_ownership(id, before);
         self.documents.remove(id);
+    }
+
+    fn ownership(&self, id: &str) -> Option<DeltaOwnership> {
+        let (id, base) = if let Some((id, document)) = self.delta.upserts.get_key_value(id) {
+            (id, document.base.as_ref())
+        } else {
+            let (id, base) = self.delta.deletes.get_key_value(id)?;
+            (id, Some(base))
+        };
+        Some(DeltaOwnership {
+            id: id.as_ptr() as usize,
+            base: base.map(|base| super::super::mini_delta::identities(&base.terms)),
+        })
+    }
+
+    fn check_ownership(&mut self, id: &str, before: Option<DeltaOwnership>) {
+        if let Some(before) = before {
+            if let Some(after) = self.ownership(id) {
+                assert_eq!(after, before, "delta ownership: {id}, seed={}", self.seed);
+            } else {
+                // Deleting a generation-local insertion creates no tombstone.
+                assert!(before.base.is_none());
+            }
+            self.ownership_checks += 1;
+        }
     }
 
     fn reopen(&mut self) {
@@ -165,10 +196,9 @@ impl Model {
 
     fn publish(&mut self) {
         let old_reader = self.reader.clone();
-        let old_delta = self.delta.clone();
         let terms = BTreeSet::from(["graph".to_string(), "query".to_string()]);
         let old_scores = old_reader
-            .score(&terms, &old_delta, None, |_| Ok(true))
+            .score(&terms, &self.delta, None, |_| Ok(true))
             .unwrap()
             .scores;
         self.reader = LexicalProjectionWriter::new(self.config)
@@ -183,7 +213,7 @@ impl Model {
                 &self.analyzer,
             )
             .unwrap();
-        self.delta = LexicalMiniDelta::default();
+        let old_delta = std::mem::take(&mut self.delta);
         assert_eq!(
             self.reader
                 .score(&terms, &self.delta, None, |_| Ok(true))
@@ -394,6 +424,12 @@ impl Model {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DeltaOwnership {
+    id: usize,
+    base: Option<Vec<(usize, usize, usize)>>,
+}
+
 #[test]
 #[ignore = "local production-reader campaign; run the explicit Bazel fuzz suite"]
 fn projection_state_machine_campaign() {
@@ -423,6 +459,8 @@ fn projection_state_machine_campaign() {
             }
         }
         assert_eq!(actions, [3; 11]);
+        // Five directed mutations per cycle start with an existing delta entry.
+        assert_eq!(model.ownership_checks, 15);
         let mut random_actions = [0; 7];
         for step in 0..64 {
             let id = format!("memory:{:04}", random.index(320));
@@ -439,6 +477,11 @@ fn projection_state_machine_campaign() {
             model.check(&mut random, 34 + step);
         }
         assert!(random_actions.iter().all(|&count| count > 0));
+        assert!(model.ownership_checks >= 15);
+        eprintln!(
+            "projection delta seed={seed}: ownership_checks={}",
+            model.ownership_checks
+        );
         eprintln!("projection state seed={seed}: directed={actions:?}, random={random_actions:?}, queries=196");
         model.finish();
     }

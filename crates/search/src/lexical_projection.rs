@@ -311,7 +311,7 @@ impl Posting {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct DeltaDocument {
     document_len: u32,
     frequencies: BTreeMap<String, u32>,
@@ -326,10 +326,10 @@ impl DeltaDocument {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BaseDocumentTerms {
     document_len: u32,
-    terms: BTreeSet<String>,
+    terms: BTreeMap<String, u32>,
     resident_bytes: u64,
 }
 
@@ -337,13 +337,14 @@ impl BaseDocumentTerms {
     fn from_analyzed(document: DeltaDocument) -> Self {
         Self {
             document_len: document.document_len,
-            terms: document.frequencies.into_keys().collect(),
+            // Keep the analyzed nodes and keys; base statistics only need membership.
+            terms: document.frequencies,
             resident_bytes: document.resident_bytes,
         }
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub(super) struct LexicalMiniDelta {
     upserts: BTreeMap<String, DeltaDocument>,
     deletes: BTreeMap<String, BaseDocumentTerms>,
@@ -359,40 +360,47 @@ impl LexicalMiniDelta {
         config: LexicalProjectionConfig,
     ) -> Result<()> {
         let mut delta = analyze_delta_document(document, analyzer, config)?;
-        let base = if let Some(previous) = self.upserts.get(&document.id) {
-            previous.base.clone()
-        } else if let Some(previous) = self.deletes.get(&document.id) {
-            Some(previous.clone())
-        } else {
+        let existing_upsert = self.upserts.get(&document.id);
+        let existing_delete = self.deletes.get(&document.id);
+        let analyzed_base = if existing_upsert.is_none() && existing_delete.is_none() {
             previous_document
                 .map(|document| analyze_delta_document(document, analyzer, config))
                 .transpose()?
                 .map(BaseDocumentTerms::from_analyzed)
+        } else {
+            None
         };
-        let removed_upsert = self
-            .upserts
-            .get(&document.id)
-            .map_or(0, DeltaDocument::total_resident_bytes);
-        let removed_delete = self
-            .deletes
-            .get(&document.id)
-            .map_or(0, |document| document.resident_bytes);
-        delta.base = base;
+        let base = existing_upsert
+            .and_then(|document| document.base.as_ref())
+            .or(existing_delete)
+            .or(analyzed_base.as_ref());
+        let removed_upsert = existing_upsert.map_or(0, DeltaDocument::total_resident_bytes);
+        let removed_delete = existing_delete.map_or(0, |document| document.resident_bytes);
         let required = self
             .resident_bytes
             .saturating_sub(removed_upsert)
             .saturating_sub(removed_delete)
-            .saturating_add(delta.total_resident_bytes());
+            .saturating_add(delta.resident_bytes)
+            .saturating_add(base.map_or(0, |base| base.resident_bytes));
         if required > config.mini_delta_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical mini-delta requires {required} bytes, exceeding {}",
                 config.mini_delta_bytes
             )));
         }
-        self.upserts.remove(&document.id);
-        self.deletes.remove(&document.id);
+        // All fallible work precedes ownership transfer. A rejected replacement
+        // must retain the original generation's terms, not the last update's.
+        if let Some(previous) = self.upserts.get_mut(&document.id) {
+            delta.base = previous.base.take();
+            *previous = delta;
+        } else if let Some((id, base)) = self.deletes.remove_entry(&document.id) {
+            delta.base = Some(base);
+            self.upserts.insert(id, delta);
+        } else {
+            delta.base = analyzed_base;
+            self.upserts.insert(document.id.clone(), delta);
+        }
         self.resident_bytes = required;
-        self.upserts.insert(document.id.clone(), delta);
         Ok(())
     }
 
@@ -407,14 +415,17 @@ impl LexicalMiniDelta {
             return Ok(true);
         }
         let existing_upsert = self.upserts.get(document_id);
-        let base = if let Some(previous) = existing_upsert {
-            previous.base.clone()
-        } else {
+        let analyzed_base = if existing_upsert.is_none() {
             previous_document
                 .map(|document| analyze_delta_document(document, analyzer, config))
                 .transpose()?
                 .map(BaseDocumentTerms::from_analyzed)
+        } else {
+            None
         };
+        let base = existing_upsert
+            .and_then(|document| document.base.as_ref())
+            .or(analyzed_base.as_ref());
         let removed = existing_upsert.map_or(0, DeltaDocument::total_resident_bytes);
         let Some(base) = base else {
             self.upserts.remove(document_id);
@@ -428,8 +439,15 @@ impl LexicalMiniDelta {
         if required > config.mini_delta_bytes.get() {
             return Ok(false);
         }
-        self.upserts.remove(document_id);
-        self.deletes.insert(document_id.to_string(), base);
+        let (id, base) = if let Some((id, mut previous)) = self.upserts.remove_entry(document_id) {
+            (id, previous.base.take().expect("base terms were checked"))
+        } else {
+            (
+                document_id.to_string(),
+                analyzed_base.expect("base terms were analyzed"),
+            )
+        };
+        self.deletes.insert(id, base);
         self.resident_bytes = required;
         Ok(true)
     }
@@ -446,13 +464,13 @@ impl LexicalMiniDelta {
                 document
                     .base
                     .as_ref()
-                    .is_some_and(|base| base.terms.contains(term))
+                    .is_some_and(|base| base.terms.contains_key(term))
             })
             .count()
             .saturating_add(
                 self.deletes
                     .values()
-                    .filter(|document| document.terms.contains(term))
+                    .filter(|document| document.terms.contains_key(term))
                     .count(),
             );
         let added = self
@@ -1941,6 +1959,7 @@ mod tests {
     mod dictionary_admission;
     mod fuzz;
     mod merge_admission;
+    mod mini_delta;
     mod query_admission;
     mod robustness;
     mod token_memory;
