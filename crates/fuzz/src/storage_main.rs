@@ -14,11 +14,15 @@ use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROTOCOL: &str = "skein-storage-parser-fuzz-v1";
 const DEFAULT_CASES: usize = 256;
 const MAX_CASES: usize = 10_000;
+const MAX_WORKSPACE_ATTEMPTS: usize = 128;
+
+static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> ExitCode {
     match run() {
@@ -33,7 +37,8 @@ fn main() -> ExitCode {
 
 fn run() -> Result<bool, String> {
     let options = Options::parse(std::env::args().skip(1))?;
-    let workspace = unique_workspace();
+    let workspace =
+        unique_workspace().map_err(|error| format!("create storage fuzz workspace: {error}"))?;
     let fixture = workspace.join("fixture");
     let targets = if options.wal_tail {
         Vec::new()
@@ -481,14 +486,34 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn unique_workspace() -> PathBuf {
+fn unique_workspace() -> io::Result<PathBuf> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "skein-storage-fuzz-{}-{timestamp}",
-        std::process::id()
+    reserve_workspace(&std::env::temp_dir(), timestamp, &NEXT_WORKSPACE_ID)
+}
+
+fn reserve_workspace(parent: &Path, timestamp: u128, sequence: &AtomicU64) -> io::Result<PathBuf> {
+    for _ in 0..MAX_WORKSPACE_ATTEMPTS {
+        // The counter supplies unique candidates, not synchronization of data.
+        let id = sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| io::Error::other("storage fuzz workspace sequence exhausted"))?;
+        let path = parent.join(format!(
+            "skein-storage-fuzz-{}-{timestamp}-{id}",
+            std::process::id()
+        ));
+        // Only atomic creation establishes ownership; never reuse a stale path.
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "storage fuzz workspace allocation exhausted its collision retries",
     ))
 }
 
@@ -613,8 +638,142 @@ mod tests {
     }
 
     #[test]
+    fn workspace_is_reserved_before_it_is_returned() {
+        let workspace = unique_workspace().unwrap();
+        assert!(workspace.is_dir(), "workspace must be atomically reserved");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn workspace_same_timestamp_reserves_distinct_directories() {
+        let parent = unique_workspace().unwrap();
+        let sequence = AtomicU64::new(0);
+        let first = reserve_workspace(&parent, 7, &sequence).unwrap();
+        let second = reserve_workspace(&parent, 7, &sequence).unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.is_dir());
+        assert!(second.is_dir());
+        fs::write(second.join("retained"), b"other owner").unwrap();
+        fs::remove_dir_all(first).unwrap();
+        assert_eq!(fs::read(second.join("retained")).unwrap(), b"other owner");
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn workspace_concurrent_fixed_timestamp_allocations_are_exclusive() {
+        use std::collections::HashSet;
+        use std::sync::Barrier;
+
+        let parent = unique_workspace().unwrap();
+        let sequence = AtomicU64::new(0);
+        let barrier = Barrier::new(8);
+        let paths = std::thread::scope(|scope| {
+            let workers = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        (0..64)
+                            .map(|_| reserve_workspace(&parent, 7, &sequence).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(paths.len(), 512);
+        assert_eq!(paths.iter().collect::<HashSet<_>>().len(), paths.len());
+        assert!(paths.iter().all(|path| path.is_dir()));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), paths.len());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn workspace_collision_preserves_existing_directories_and_files() {
+        let parent = unique_workspace().unwrap();
+        let existing = reserve_workspace(&parent, 7, &AtomicU64::new(0)).unwrap();
+        fs::write(existing.join("retained"), b"previous owner").unwrap();
+        let existing_file = parent.join(format!("skein-storage-fuzz-{}-7-1", std::process::id()));
+        fs::write(&existing_file, b"existing file").unwrap();
+        let sequence = AtomicU64::new(0);
+
+        let workspace = reserve_workspace(&parent, 7, &sequence).unwrap();
+        assert_ne!(workspace, existing);
+        assert_ne!(workspace, existing_file);
+        assert!(workspace.is_dir());
+        assert_eq!(sequence.load(Ordering::Relaxed), 3);
+        fs::remove_dir_all(workspace).unwrap();
+        assert_eq!(
+            fs::read(existing.join("retained")).unwrap(),
+            b"previous owner"
+        );
+        assert_eq!(fs::read(existing_file).unwrap(), b"existing file");
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn workspace_collision_retries_are_bounded() {
+        let parent = unique_workspace().unwrap();
+        let existing_sequence = AtomicU64::new(0);
+        let existing = (0..MAX_WORKSPACE_ATTEMPTS)
+            .map(|_| reserve_workspace(&parent, 7, &existing_sequence).unwrap())
+            .collect::<Vec<_>>();
+        let sequence = AtomicU64::new(0);
+
+        let error = reserve_workspace(&parent, 7, &sequence).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            sequence.load(Ordering::Relaxed),
+            MAX_WORKSPACE_ATTEMPTS as u64
+        );
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), existing.len());
+        assert!(existing.iter().all(|path| path.is_dir()));
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn workspace_invalid_parent_errors_are_not_retried() {
+        let parent = unique_workspace().unwrap();
+        let file = parent.join("file");
+        fs::write(&file, b"not a directory").unwrap();
+        for invalid_parent in [parent.join("missing"), file.clone()] {
+            let expected = fs::create_dir(invalid_parent.join("probe")).unwrap_err();
+            let sequence = AtomicU64::new(0);
+            let error = reserve_workspace(&invalid_parent, 7, &sequence).unwrap_err();
+            assert_eq!(error.kind(), expected.kind());
+            assert_eq!(error.raw_os_error(), expected.raw_os_error());
+            assert_eq!(sequence.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(fs::read(file).unwrap(), b"not a directory");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn workspace_sequence_exhaustion_does_not_wrap_or_create_a_directory() {
+        let parent = unique_workspace().unwrap();
+        let sequence = AtomicU64::new(u64::MAX - 1);
+        let last = reserve_workspace(&parent, 7, &sequence).unwrap();
+        assert!(last.is_dir());
+
+        let error = reserve_workspace(&parent, 7, &sequence).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            "storage fuzz workspace sequence exhausted"
+        );
+        assert_eq!(sequence.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
     fn clean_fixture_passes_targeted_hydration() {
-        let workspace = unique_workspace();
+        let workspace = unique_workspace().unwrap();
         create_fixture(&workspace).unwrap();
 
         assert!(validate_graph_fixture(&workspace.join("graph")).is_ok());
@@ -625,7 +784,7 @@ mod tests {
 
     #[test]
     fn targeted_hydration_detects_wrong_fixture_content() {
-        let workspace = unique_workspace();
+        let workspace = unique_workspace().unwrap();
         create_fixture(&workspace).unwrap();
         let mut database = Database::open(workspace.join("graph")).unwrap();
         database
