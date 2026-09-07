@@ -56,6 +56,15 @@ load_specifications() {
 load_specifications
 readonly -a specifications
 
+model_tlc_args() {
+  tlc_args=(-cleanup -workers auto)
+  if [[ "$1" == "SkeinCowPagePublication" ]]; then
+    # Match the Bazel action: defer repeated partial-graph liveness scans, not
+    # the final check over the complete graph. No model property is disabled.
+    tlc_args+=(-lncheck final)
+  fi
+}
+
 manifest_json() {
   local revision="$1"
   if [[ ! "$revision" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
@@ -82,6 +91,11 @@ verify_tlc_log() {
     printf 'TLA+ complete success evidence is missing or contains an error: %s\n' "$result" >&2
     return 1
   }
+  if [[ "${2:-}" == "SkeinCowPagePublication" ]] &&
+    ! grep -Fq 'Checking temporal properties for the complete state space' "$result"; then
+    printf 'TLA+ final complete-state-space liveness evidence is missing: %s\n' "$result" >&2
+    return 1
+  fi
 }
 
 verify_results() {
@@ -106,7 +120,7 @@ verify_results() {
       printf 'TLA+ result is missing for %s\n' "$specification" >&2
       return 1
     }
-    verify_tlc_log "$result"
+    verify_tlc_log "$result" "$specification"
     cmp "$repository_root/docs/tla/$specification.tla" \
       "$results_dir/models/$specification.tla"
     cmp "$repository_root/docs/tla/$specification.cfg" \
@@ -159,12 +173,13 @@ collect_bazel_results() {
       printf 'TLA+ Bazel tool digest mismatch: %s\n' "$specification" >&2
       return 1
     fi
+    model_tlc_args "$specification"
     if [[ ! -f "$evidence/tlc-args.txt" ]] ||
-      [[ "$(< "$evidence/tlc-args.txt")" != $'-cleanup\n-workers\nauto' ]]; then
+      [[ "$(< "$evidence/tlc-args.txt")" != "$(printf '%s\n' "${tlc_args[@]}")" ]]; then
       printf 'TLA+ Bazel full-check arguments mismatch: %s\n' "$specification" >&2
       return 1
     fi
-    verify_tlc_log "$evidence/tlc.log"
+    verify_tlc_log "$evidence/tlc.log" "$specification"
     cmp "$repository_root/docs/tla/$specification.tla" "$evidence/module.tla"
     cmp "$repository_root/docs/tla/$specification.cfg" "$evidence/model.cfg"
     [[ -s "$evidence/java-version.txt" ]] || {
@@ -338,11 +353,11 @@ readonly evidence_source_revision
 for specification in "${specifications[@]}"; do
   model_state_dir="$tla_work_root/states/$specification"
   mkdir -p "$model_state_dir"
+  model_tlc_args "$specification"
   tla_command=(
     "$tla_java" -XX:+UseParallelGC -jar "$tla_jar"
-    -cleanup
+    "${tlc_args[@]}"
     -metadir "$model_state_dir"
-    -workers auto
     -config "$repository_root/docs/tla/$specification.cfg"
     "$repository_root/docs/tla/$specification.tla"
   )

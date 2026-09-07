@@ -55,6 +55,22 @@ developer use. Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain its ful
 campaign evidence. CI must not run that no-argument entrypoint after Bazel:
 collection replaces that duplicate computation, not the model or mutant gates.
 
+### COW liveness scheduling
+
+`SkeinCowPagePublication` uses TLC's `-lncheck final` in both Bazel and the
+standalone runner. TLC still explores the complete configured state graph,
+checks every invariant, and checks the unchanged liveness property over that
+complete graph. Only intermediate liveness scans of growing partial graphs
+are deferred; liveness counterexamples may therefore be reported later.
+See the [TLC option documentation](https://github.com/tlaplus/tlaplus/blob/5a47802/general/docs/current-tools.md#command-line-options).
+
+The evidence collector requires this model's exact arguments and a completed
+success log containing the final complete-state-space temporal check. Other
+models keep their original arguments. Model/configuration bytes, state bounds,
+transitions, fairness, invariants, liveness properties, worker selection and
+timeouts are unchanged. This is not a switch to simulation or safety-only
+checking, and moving full verification to a periodic job is a separate decision.
+
 ### Model shards
 
 The `tla_test_suite` declaration supports `shard_count`, currently `1`. With

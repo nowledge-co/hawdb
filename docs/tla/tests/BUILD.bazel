@@ -14,13 +14,14 @@ exports_files(["fake-java.sh"])
         module = module,
         shard_count = 1,
         timeout_seconds = 30,
-        tlc_args = ["-cleanup", "-workers", "2"],
+        tlc_args = ["-cleanup", "-workers", "2"] + (["-lncheck", "final"] if name == "temporal_final" else []),
     )
     for name, module, config, outcome in [
         ("positive", "Counter.tla", "Counter.cfg", "ok"),
         ("invariant", "Counter.tla", "Invariant.cfg", "invariant_violation"),
         ("temporal", "Counter.tla", "Temporal.cfg", "temporal_violation"),
         ("deadlock", "Deadlock.tla", "Deadlock.cfg", "deadlock"),
+        ("temporal_final", "Counter.tla", "Temporal.cfg", "temporal_violation"),
     ]
 ]
 
@@ -31,7 +32,7 @@ exports_files(["fake-java.sh"])
         srcs = [":" + name + "_check.run"],
         output_group = "tla_evidence",
     )
-    for name in ["positive", "invariant", "temporal", "deadlock"]
+    for name in ["positive", "invariant", "temporal", "deadlock", "temporal_final"]
 ]
 
 sh_test(
@@ -43,8 +44,9 @@ sh_test(
         "$(location :invariant_evidence)",
         "$(location :temporal_evidence)",
         "$(location :deadlock_evidence)",
+        "$(location :temporal_final_evidence)",
     ],
-    data = [":%s_evidence" % name for name in ["positive", "invariant", "temporal", "deadlock"]],
+    data = [":%s_evidence" % name for name in ["positive", "invariant", "temporal", "deadlock", "temporal_final"]],
 )
 
 test_suite(
@@ -53,6 +55,7 @@ test_suite(
         ":contract_models",
         ":rule_evidence_test",
         ":rule_sharding_test",
+        ":temporal_final_check",
     ],
 )
 
