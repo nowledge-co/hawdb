@@ -6,6 +6,12 @@ Skein is an embedded Rust graph database for Nowledge local runtimes. It is
 intended to replace the current Ladybug/Kuzu dependency while preserving the
 Cypher-facing behavior that Nowledge relies on today.
 
+Today's shipped concurrency contract is single-writer, enforced by
+`DatabaseDirectoryLease` (see `specs/EMBEDDED_RUNTIME_SPEC.md`). Multi-process
+writers against shared storage are a target direction; expanding the boundary
+requires a new specification and evidence plan before implementation, per
+`specs/PRODUCTION_READINESS_SPEC.md`.
+
 The production concurrency, durability, repair, incremental-index, resource
 budget, and OpenTelemetry contracts are defined in
 [`specs/EMBEDDED_RUNTIME_SPEC.md`](specs/EMBEDDED_RUNTIME_SPEC.md). Architecture
