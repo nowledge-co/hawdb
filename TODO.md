@@ -5,13 +5,12 @@ in the contracts indexed by [`docs/specs/README.md`](docs/specs/README.md), in
 supporting design documents, and in Git history. Do not use checked tasks as a
 second specification or completion archive.
 
-The scope remains product-driven: Skein is an embedded Rust database for
-Nowledge graph and search workloads. Multi-process writers against shared
-storage are a target direction, pending a dedicated specification and
-evidence plan before implementation; today's shipped contract is still
-single-writer, enforced by `DatabaseDirectoryLease`. Distributed replication,
-cloud-primary execution, broad openCypher coverage, and algorithms outside
-active routes remain out of scope and are not implied backlog items.
+The scope remains product-driven: Skein is a single-process embedded Rust
+database for Nowledge graph and search workloads, with thread-safe concurrent
+reads and writes inside that one process as a first-class goal (see #226 for
+the intra-process concurrency design). Multi-process writers, distributed
+replication, cloud-primary execution, broad openCypher coverage, and
+algorithms outside active routes are not implied backlog items.
 
 ## P0: Production Release Blockers
 
