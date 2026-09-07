@@ -1,5 +1,7 @@
 //! Operation-owned generation working-set accounting shared across build stages.
 
+pub(crate) mod path;
+
 use crate::document_codec::Fields;
 use crate::error::{Result, SkeinError};
 use crate::{SearchDocument, SearchProjectionRow};

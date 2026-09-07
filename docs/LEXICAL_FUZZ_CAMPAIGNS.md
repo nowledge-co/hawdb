@@ -8,7 +8,7 @@ issue's complete resource, native-platform or representative-corpus acceptance.
 
 ## Running and replaying
 
-The required local suite includes nine lexical targets, one record-codec target
+The required local suite includes ten lexical targets, one record-codec target
 and segment/RaBitQ/candidate/vector/projection-search/pruning/ranking/hydration/delta/filter
 admission targets, all manual:
 
@@ -36,6 +36,14 @@ exact Rust test name and `--ignored`; each target must report one executed test,
 not a successful zero-test filter. Ordinary Cargo and search unit-test targets
 compile these tests but do not execute them. Do not add these campaigns to
 default or dedicated CI jobs. The existing native regressions are separate.
+
+The additional `path_admission` target runs
+`lexical_projection::paths::tests::fuzz::lexical_path_admission_campaign` with
+seed `0x206bac4`. It covers 128 native publication-path sets and 128 multi-run
+merge groups, exact/one-short shared roots, direct v1 run bytes and cleanup.
+With Cargo, use `cargo test -p skein-search lexical_path_admission_campaign --
+--ignored --nocapture` (also with `--no-default-features`). See
+`LEXICAL_PATH_ADMISSION.md` for normal regressions and the ownership boundary.
 
 The generator and seeds are fixed in source, making the commands above replay
 the complete inputs and action sequences. Logs report accepted/rejected byte

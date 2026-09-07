@@ -2,13 +2,13 @@
 
 use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_control::checkpoint;
+pub(super) use crate::build_memory::path::OwnedPath;
 use crate::build_memory::{checked_add as add, checked_mul as mul, BuildMemory, SET_ENTRY_BYTES};
 use crate::{Result, SearchEmbeddingManifest, SearchOutOfCoreReader, SkeinError};
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::mem::size_of;
 use std::ops::Deref;
-use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug)]
 pub(super) struct Options {
@@ -153,111 +153,6 @@ fn options_bytes(
         )?;
     }
     Ok(bytes)
-}
-
-#[derive(Debug)]
-pub(super) struct OwnedPath {
-    value: PathBuf,
-    _memory: QueryMemoryLease,
-}
-
-impl OwnedPath {
-    pub(super) fn copy(
-        path: &Path,
-        memory: &BuildMemory,
-        task: &RuntimeTaskContext,
-    ) -> Result<Self> {
-        checkpoint(task)?;
-        let bytes = path.as_os_str().as_encoded_bytes().len();
-        let lease = memory.retained.reserve(bytes)?;
-        #[cfg(test)]
-        tests::record_path();
-        Self::finish(path.to_path_buf(), lease, task)
-    }
-
-    pub(super) fn join(
-        parent: &Path,
-        name: &Path,
-        memory: &BuildMemory,
-        task: &RuntimeTaskContext,
-    ) -> Result<Self> {
-        checkpoint(task)?;
-        let verbatim = matches!(parent.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim());
-        let bytes = join_bytes(
-            parent.as_os_str().as_encoded_bytes().len(),
-            name.as_os_str().as_encoded_bytes().len(),
-            verbatim,
-        )?;
-        let lease = memory.retained.reserve(bytes)?;
-        #[cfg(test)]
-        tests::record_path();
-        Self::finish(parent.join(name), lease, task)
-    }
-
-    pub(super) fn with_extension(
-        path: &Path,
-        extension: &str,
-        memory: &BuildMemory,
-        task: &RuntimeTaskContext,
-    ) -> Result<Self> {
-        checkpoint(task)?;
-        // Rust 1.97.1 Path::_with_extension reserves the full result up front.
-        // Retaining the old extension in this bound also covers extensionless
-        // and non-file paths without replacing native path semantics.
-        let bytes = add(
-            path.as_os_str().as_encoded_bytes().len(),
-            add(extension.len(), 1)?,
-        )?;
-        let lease = memory.retained.reserve(bytes)?;
-        #[cfg(test)]
-        tests::record_path();
-        Self::finish(path.with_extension(extension), lease, task)
-    }
-
-    fn finish(value: PathBuf, lease: QueryMemoryLease, task: &RuntimeTaskContext) -> Result<Self> {
-        let mut owned = Self {
-            value,
-            _memory: lease,
-        };
-        checkpoint(task)?;
-        if owned.value.capacity() > owned._memory.bytes() {
-            return Err(SkeinError::Execution(
-                "search writer path exceeds preflight capacity".into(),
-            ));
-        }
-        owned
-            ._memory
-            .shrink(owned._memory.bytes() - owned.value.capacity());
-        Ok(owned)
-    }
-}
-
-impl Deref for OwnedPath {
-    type Target = Path;
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
-impl AsRef<Path> for OwnedPath {
-    fn as_ref(&self) -> &Path {
-        &self.value
-    }
-}
-
-fn join_bytes(parent: usize, name: usize, verbatim: bool) -> Result<usize> {
-    let length = add(parent, add(name, 1)?)?;
-    // Rust 1.97.1 PathBuf::_push uses amortized OsString growth. Verbatim
-    // prefixes additionally collect components and reconstruct another buffer.
-    // Preserve the standard library's platform-specific normalization semantics.
-    if verbatim {
-        add(
-            mul(length.max(8), 4)?,
-            mul(mul(length.max(4), 4)?, size_of::<Component<'_>>())?,
-        )
-    } else {
-        mul(length.max(8), 3)
-    }
 }
 
 #[cfg(test)]

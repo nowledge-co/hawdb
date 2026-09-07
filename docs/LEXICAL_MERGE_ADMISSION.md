@@ -75,7 +75,8 @@ The separate grouping-term clone retained by `ArtifactBuilder`, dictionary
 staging and FST build/validation now share the operation root with owned leases
 as described in `LEXICAL_DICTIONARY_ADMISSION.md`.
 Segment codecs, descriptors and publication follow `SEGMENT_BUILD_ADMISSION.md`.
-Small path/control allocations, ledger metadata, dependency workspace,
+Lexical backend paths and run registries follow `LEXICAL_PATH_ADMISSION.md`.
+Other control allocations, ledger metadata, dependency workspace,
 published-reader reopen and outer query/delta retained state still
 need their appropriate complete ownership boundaries. Stack scratch and allocator
 overhead are not measured by these counters.

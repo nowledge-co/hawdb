@@ -1,8 +1,10 @@
 use super::{dictionary::Metadata, posting_codec, Digest, RemoveOnDrop};
+use crate::build_memory::path::OwnedPath;
 use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,7 +28,7 @@ fn write_bytes(writer: &mut impl Write, offset: &mut u64, bytes: &[u8]) -> Resul
 /// Skip records spill as they are produced; a frequent term cannot grow a Vec.
 pub(super) struct Writer {
     skip: File,
-    _guard: RemoveOnDrop,
+    _guard: RemoveOnDrop<OwnedPath>,
     start: u64,
     df: u64,
     frames: u64,
@@ -39,20 +41,34 @@ pub(super) struct Writer {
 }
 
 impl Writer {
+    #[cfg(test)]
     pub(super) fn new(
         path: &Path,
         spill: super::dictionary_store::SpillBudget,
         max_frame_bytes: u64,
         memory: BuildMemory,
     ) -> Result<Self> {
+        let task = skein_core::RuntimeTaskContext::default();
+        let path = OwnedPath::copy(path, &memory, &task)?;
+        Self::new_with_context(path, spill, max_frame_bytes, memory, task)
+    }
+
+    pub(super) fn new_with_context(
+        path: OwnedPath,
+        spill: super::dictionary_store::SpillBudget,
+        max_frame_bytes: u64,
+        memory: BuildMemory,
+        task_context: skein_core::RuntimeTaskContext,
+    ) -> Result<Self> {
+        crate::build_control::checkpoint(&task_context)?;
         let skip = OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(&path)?;
         Ok(Self {
             skip,
-            _guard: RemoveOnDrop::new(path.to_owned()),
+            _guard: RemoveOnDrop::new(path),
             start: 0,
             df: 0,
             frames: 0,
@@ -60,11 +76,12 @@ impl Writer {
             last_ordinal: None,
             spill,
             max_frame_bytes,
-            task_context: skein_core::RuntimeTaskContext::default(),
+            task_context,
             memory,
         })
     }
 
+    #[cfg(test)]
     pub(super) fn with_context(mut self, task_context: skein_core::RuntimeTaskContext) -> Self {
         self.task_context = task_context;
         self

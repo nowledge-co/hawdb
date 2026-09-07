@@ -3,6 +3,7 @@ use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
 use super::document_tokens;
 use super::{SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
 use crate::build_control::checkpoint;
+use crate::build_memory::path::OwnedPath;
 use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use crate::score_collector::ScoreCollector;
@@ -15,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -32,6 +35,7 @@ mod documents;
 mod fst_validation;
 mod manifest_io;
 mod merge;
+mod paths;
 mod posting_chunk;
 mod posting_codec;
 mod read_context;
@@ -1102,15 +1106,23 @@ impl LexicalProjectionWriter {
             .memory
             .clone()
             .map_or_else(|| BuildMemory::new(&self.task_context), Ok)?;
-        let artifact_name = artifact_file(generation);
-        let artifact_path = root.join(&artifact_name);
-        let tmp_path = artifact_path.with_extension("skein.tmp");
-        let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
-        let mut artifact =
-            ArtifactBuilder::new(&tmp_path, generation, self.config, memory.clone())?;
-        artifact.task_context = self.task_context.clone();
-        let mut runs = SpillRuns::new(root, generation, self.config, memory.clone());
-        runs.task_context = self.task_context.clone();
+        let names = paths::Names::new(generation, &memory, &self.task_context)?;
+        let paths = paths::Publication::new(root, names.artifact(), &memory, &self.task_context)?;
+        let mut artifact_guard = RemoveOnDrop::new(&paths.temporary);
+        let mut artifact = ArtifactBuilder::new_with_context(
+            &paths.temporary,
+            generation,
+            self.config,
+            memory.clone(),
+            self.task_context.clone(),
+        )?;
+        let mut runs = SpillRuns::new_with_context(
+            root,
+            generation,
+            self.config,
+            memory.clone(),
+            self.task_context.clone(),
+        )?;
         let mut chunk = posting_chunk::PostingChunk::new(memory.clone())?;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
@@ -1205,14 +1217,14 @@ impl LexicalProjectionWriter {
             dictionary_bytes: artifact.len - artifact.posting_offset - artifact.posting_bytes,
             uncompressed_posting_payload_bytes,
         };
-        let manifest = ManifestBody {
-            format: "SKEIN_LEXICAL_MANIFEST_V1".to_string(),
-            layout: "SKEIN_LEXICAL_COMPACT_V1".to_string(),
+        let manifest = names.into_manifest(|format, layout, artifact_file| ManifestBody {
+            format,
+            layout,
             generation,
             source_graph_commit_epoch,
             analyzer_digest,
             documents_digest,
-            artifact_file: artifact_name,
+            artifact_file,
             artifact_len: artifact.len,
             artifact_checksum: artifact.checksum,
             byte_counters,
@@ -1223,22 +1235,23 @@ impl LexicalProjectionWriter {
             posting_bytes: artifact.posting_bytes,
             dictionaries: artifact.dictionaries,
             blocks: artifact.blocks,
-        };
-        let manifest_bytes =
-            manifest.encode_admitted(self.config.max_directory_bytes.get(), &memory)?;
+        });
+        let manifest_bytes = manifest
+            .body
+            .encode_admitted(self.config.max_directory_bytes.get(), &memory)?;
         // No cancellation after entering this manifest-last publication section.
         checkpoint(&self.task_context)?;
-        durable_replace_file(&tmp_path, &artifact_path)?;
+        #[cfg(test)]
+        let _publication_pressure = paths::evidence::after_gate(&memory, &self.task_context)?;
+        durable_replace_file(&paths.temporary, &paths.artifact)?;
         artifact_guard.disarm();
-        let manifest_path = root.join(MANIFEST_FILE);
-        let manifest_tmp = manifest_path.with_extension("skein.tmp");
-        let mut manifest_guard = RemoveOnDrop::new(manifest_tmp.clone());
+        let mut manifest_guard = RemoveOnDrop::new(&paths.manifest_temporary);
         {
-            let mut file = File::create(&manifest_tmp)?;
+            let mut file = File::create(&paths.manifest_temporary)?;
             file.write_all(manifest_bytes.as_ref())?;
             file.sync_all()?;
         }
-        durable_replace_file(&manifest_tmp, &manifest_path)?;
+        durable_replace_file(&paths.manifest_temporary, &paths.manifest)?;
         manifest_guard.disarm();
         LexicalProjectionReader::load_named_with_cache(
             root,
@@ -1255,9 +1268,9 @@ impl LexicalProjectionWriter {
     }
 }
 
-struct ArtifactBuilder {
+struct ArtifactBuilder<'a> {
     writer: BufWriter<File>,
-    path: PathBuf,
+    path: &'a Path,
     generation: u64,
     config: LexicalProjectionConfig,
     offset: u64,
@@ -1289,13 +1302,13 @@ struct ArtifactSummary {
     _directory: dictionary_store::DirectoryBudget,
 }
 
-struct RemoveOnDrop {
-    path: PathBuf,
+struct RemoveOnDrop<P: AsRef<Path>> {
+    path: P,
     armed: bool,
 }
 
-impl RemoveOnDrop {
-    fn new(path: PathBuf) -> Self {
+impl<P: AsRef<Path>> RemoveOnDrop<P> {
+    fn new(path: P) -> Self {
         Self { path, armed: true }
     }
 
@@ -1304,7 +1317,7 @@ impl RemoveOnDrop {
     }
 }
 
-impl Drop for RemoveOnDrop {
+impl<P: AsRef<Path>> Drop for RemoveOnDrop<P> {
     fn drop(&mut self) {
         if self.armed {
             let _ = fs::remove_file(&self.path);
@@ -1312,13 +1325,31 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-impl ArtifactBuilder {
+impl<'a> ArtifactBuilder<'a> {
+    #[cfg(test)]
     fn new(
-        path: &Path,
+        path: &'a Path,
         generation: u64,
         config: LexicalProjectionConfig,
         memory: BuildMemory,
     ) -> Result<Self> {
+        Self::new_with_context(
+            path,
+            generation,
+            config,
+            memory,
+            RuntimeTaskContext::default(),
+        )
+    }
+
+    fn new_with_context(
+        path: &'a Path,
+        generation: u64,
+        config: LexicalProjectionConfig,
+        memory: BuildMemory,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
         let writer_memory = memory
             .retained
             .reserve(crate::build_memory::SPOOL_BUFFER_BYTES)?;
@@ -1328,7 +1359,7 @@ impl ArtifactBuilder {
         writer.write_all(&generation.to_le_bytes())?;
         Ok(Self {
             writer,
-            path: path.to_path_buf(),
+            path,
             generation,
             config,
             offset: ARTIFACT_HEADER.len() as u64 + 8,
@@ -1343,7 +1374,7 @@ impl ArtifactBuilder {
             blocks: Vec::new(),
             directory: dictionary_store::DirectoryBudget::new(config.max_directory_bytes.get())
                 .with_memory(&memory)?,
-            task_context: RuntimeTaskContext::default(),
+            task_context,
             memory,
             _writer_memory: writer_memory,
         })
@@ -1385,28 +1416,36 @@ impl ArtifactBuilder {
 
     fn merge_postings(
         &mut self,
-        paths: &[PathBuf],
+        paths: &[impl AsRef<Path>],
         config: LexicalProjectionConfig,
         spill_bytes: u64,
     ) -> Result<()> {
         checkpoint(&self.task_context)?;
         self.posting_offset = self.offset;
         let budget = dictionary_store::SpillBudget::new(spill_bytes, config.max_spill_bytes.get());
-        let mut doclist = doclist::Writer::new(
-            &self.path.with_extension("skip.tmp"),
+        let skip_path =
+            OwnedPath::with_extension(self.path, "skip.tmp", &self.memory, &self.task_context)?;
+        let dictionary_path = OwnedPath::with_extension(
+            self.path,
+            "dictionary.tmp",
+            &self.memory,
+            &self.task_context,
+        )?;
+        let mut doclist = doclist::Writer::new_with_context(
+            skip_path,
             budget.clone(),
             config.max_block_bytes.get(),
             self.memory.clone(),
-        )?
-        .with_context(self.task_context.clone());
-        let mut dictionary = dictionary_store::Writer::new(
-            &self.path.with_extension("dictionary.tmp"),
+            self.task_context.clone(),
+        )?;
+        let mut dictionary = dictionary_store::Writer::new_with_context(
+            dictionary_path,
             config,
             budget,
             self.directory.clone(),
             self.memory.clone(),
-        )?
-        .with_context(self.task_context.clone());
+            self.task_context.clone(),
+        )?;
         let mut postings = MergedPostings::new(
             paths,
             config,
@@ -1528,7 +1567,7 @@ impl ArtifactBuilder {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
         let (length, digest) = file_digest_with_memory(
-            &File::open(&self.path)?,
+            &File::open(self.path)?,
             &self.task_context,
             Some(&self.memory),
         )?;
@@ -1546,34 +1585,52 @@ impl ArtifactBuilder {
     }
 }
 
-struct SpillRuns {
-    root: PathBuf,
+struct SpillRuns<'a> {
+    root: &'a Path,
     generation: u64,
     config: LexicalProjectionConfig,
-    paths: Vec<PathBuf>,
+    paths: paths::Runs,
     bytes: u64,
     sequence: usize,
     task_context: RuntimeTaskContext,
     memory: BuildMemory,
 }
 
-impl SpillRuns {
+impl<'a> SpillRuns<'a> {
+    #[cfg(test)]
     fn new(
-        root: &Path,
+        root: &'a Path,
         generation: u64,
         config: LexicalProjectionConfig,
         memory: BuildMemory,
-    ) -> Self {
-        Self {
-            root: root.to_path_buf(),
+    ) -> Result<Self> {
+        Self::new_with_context(
+            root,
             generation,
             config,
-            paths: Vec::new(),
+            memory,
+            RuntimeTaskContext::default(),
+        )
+    }
+
+    fn new_with_context(
+        root: &'a Path,
+        generation: u64,
+        config: LexicalProjectionConfig,
+        memory: BuildMemory,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
+        Ok(Self {
+            root,
+            generation,
+            config,
+            paths: paths::Runs::new(&memory)?,
             bytes: 0,
             sequence: 0,
-            task_context: RuntimeTaskContext::default(),
+            task_context,
             memory,
-        }
+        })
     }
 
     fn spill(&mut self, postings: &mut Vec<Posting>) -> Result<()> {
@@ -1585,8 +1642,9 @@ impl SpillRuns {
             .memory
             .spool
             .reserve(crate::build_memory::SPOOL_BUFFER_BYTES)?;
+        self.paths.reserve_one(&self.memory, &self.task_context)?;
         let path = self.next_path()?;
-        let mut guard = RemoveOnDrop::new(path.clone());
+        let mut guard = RemoveOnDrop::new(&path);
         let mut writer = BufWriter::with_capacity(
             crate::build_memory::SPOOL_BUFFER_BYTES,
             File::create(&path)?,
@@ -1602,8 +1660,9 @@ impl SpillRuns {
         drop(writer);
         checkpoint(&self.task_context)?;
         self.admit_spill(bytes)?;
-        self.paths.push(path);
         guard.disarm();
+        drop(guard);
+        self.paths.push_reserved(path);
         postings.clear();
         Ok(())
     }
@@ -1625,21 +1684,23 @@ impl SpillRuns {
         }
         while self.paths.len() > fan_in {
             checkpoint(&self.task_context)?;
-            let old = RunPaths(std::mem::take(&mut self.paths));
-            let mut merged = RunPaths(Vec::new());
-            for group in old.0.chunks(fan_in) {
+            let old = std::mem::replace(&mut self.paths, paths::Runs::new(&self.memory)?);
+            let mut merged = paths::Runs::new(&self.memory)?;
+            for group in old.chunks(fan_in) {
+                merged.reserve_one(&self.memory, &self.task_context)?;
                 let path = self.next_path()?;
-                let mut guard = RemoveOnDrop::new(path.clone());
+                let mut guard = RemoveOnDrop::new(&path);
                 let bytes =
                     merge_runs(group, &path, self.config, &self.task_context, &self.memory)?;
                 self.admit_spill(bytes)?;
-                merged.0.push(path);
                 guard.disarm();
+                drop(guard);
+                merged.push_reserved(path);
                 for source in group {
                     remove(source)?;
                 }
             }
-            self.paths = std::mem::take(&mut merged.0);
+            self.paths = merged;
         }
         Ok(())
     }
@@ -1656,7 +1717,7 @@ impl SpillRuns {
         Ok(())
     }
 
-    fn next_path(&mut self) -> Result<PathBuf> {
+    fn next_path(&mut self) -> Result<OwnedPath> {
         let required = self.sequence.saturating_add(1);
         if required > self.config.max_spill_runs.get() {
             return Err(SkeinError::Storage(format!(
@@ -1664,39 +1725,20 @@ impl SpillRuns {
                 self.config.max_spill_runs
             )));
         }
-        let path = self.root.join(format!(
-            ".search-lexical.{}.{}.tmp",
-            self.generation, self.sequence
-        ));
+        let path = paths::run(
+            self.root,
+            self.generation,
+            self.sequence,
+            &self.memory,
+            &self.task_context,
+        )?;
         self.sequence = required;
         Ok(path)
     }
 }
 
-// Keep every owned run under cleanup even after moving paths out of SpillRuns.
-// A failed source deletion must also clean completed outputs.
-struct RunPaths(Vec<PathBuf>);
-
-fn remove_paths(paths: &[PathBuf]) {
-    for path in paths {
-        let _ = fs::remove_file(path);
-    }
-}
-
-impl Drop for RunPaths {
-    fn drop(&mut self) {
-        remove_paths(&self.0);
-    }
-}
-
-impl Drop for SpillRuns {
-    fn drop(&mut self) {
-        remove_paths(&self.paths);
-    }
-}
-
 fn merge_runs(
-    paths: &[PathBuf],
+    paths: &[impl AsRef<Path>],
     destination: &Path,
     config: LexicalProjectionConfig,
     task_context: &RuntimeTaskContext,

@@ -182,13 +182,8 @@ fn completed_artifact_keeps_directory_ownership_until_manifest_handoff_finishes(
     let root = projection_root("artifact-directory-handoff");
     fs::create_dir_all(&root).unwrap();
     let memory = memory(64 * 1024);
-    let mut artifact = ArtifactBuilder::new(
-        &root.join("artifact.tmp"),
-        1,
-        Default::default(),
-        memory.clone(),
-    )
-    .unwrap();
+    let path = root.join("artifact.tmp");
+    let mut artifact = ArtifactBuilder::new(&path, 1, Default::default(), memory.clone()).unwrap();
     artifact.push_document("abc", 7).unwrap();
     artifact.finish_documents().unwrap();
     assert_eq!(artifact.document_pending.retained_bytes(), 0);
@@ -216,7 +211,14 @@ fn failed_document_encoding_preserves_the_published_generation() {
         .write(&root, 1, None, 11, 13, std::iter::once(&input), &lexicon)
         .unwrap();
     let before = fs::read(root.join(MANIFEST_FILE)).unwrap();
-    let memory = memory(SPOOL_BUFFER_BYTES + 3 + 4 * size_of::<(String, u32)>() + 3 + 45);
+    let memory = memory(
+        SPOOL_BUFFER_BYTES
+            + 3
+            + 4 * size_of::<(String, u32)>()
+            + 3
+            + 45
+            + paths::tests::publication_bytes(&root, 2),
+    );
     artifact_memory::evidence::take();
     let error = LexicalProjectionWriter::new(Default::default())
         .with_memory(memory.clone())

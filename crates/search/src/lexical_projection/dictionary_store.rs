@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(test)]
 use std::path::Path;
 use std::rc::Rc;
 
@@ -211,7 +212,7 @@ pub(super) fn limits(config: LexicalProjectionConfig) -> Result<dictionary::Limi
 
 pub(super) struct Writer {
     file: File,
-    _guard: RemoveOnDrop,
+    _guard: RemoveOnDrop<crate::build_memory::path::OwnedPath>,
     entries: Vec<(Term, dictionary::Metadata)>,
     descriptors: Vec<Descriptor>,
     directory: DirectoryBudget,
@@ -225,6 +226,7 @@ pub(super) struct Writer {
 }
 
 impl Writer {
+    #[cfg(test)]
     pub(super) fn new(
         path: &Path,
         config: LexicalProjectionConfig,
@@ -232,29 +234,44 @@ impl Writer {
         directory: DirectoryBudget,
         memory: BuildMemory,
     ) -> Result<Self> {
+        let task = skein_core::RuntimeTaskContext::default();
+        let path = crate::build_memory::path::OwnedPath::copy(path, &memory, &task)?;
+        Self::new_with_context(path, config, spill, directory, memory, task)
+    }
+
+    pub(super) fn new_with_context(
+        path: crate::build_memory::path::OwnedPath,
+        config: LexicalProjectionConfig,
+        spill: SpillBudget,
+        directory: DirectoryBudget,
+        memory: BuildMemory,
+        task_context: skein_core::RuntimeTaskContext,
+    ) -> Result<Self> {
+        crate::build_control::checkpoint(&task_context)?;
         let limits = limits(config)?;
         let slots = memory.retained.reserve(0)?;
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(&path)?;
         Ok(Self {
             file,
-            _guard: RemoveOnDrop::new(path.to_owned()),
+            _guard: RemoveOnDrop::new(path),
             entries: Vec::new(),
             descriptors: Vec::new(),
             directory,
             bytes: 0,
             limits,
             spill,
-            task_context: skein_core::RuntimeTaskContext::default(),
+            task_context,
             memory,
             slots,
             failed: false,
         })
     }
 
+    #[cfg(test)]
     pub(super) fn with_context(mut self, task_context: skein_core::RuntimeTaskContext) -> Self {
         self.task_context = task_context;
         self

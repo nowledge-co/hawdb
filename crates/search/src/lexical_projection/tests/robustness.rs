@@ -350,7 +350,8 @@ fn compaction_charges_output_runs_and_cleans_up_when_budget_is_exhausted() {
         2,
         config,
         BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
-    );
+    )
+    .unwrap();
     for ordinal in [0, 1, 2] {
         runs.spill(&mut vec![Posting {
             term: "graph".to_string(),

@@ -11,7 +11,7 @@ use std::collections::BinaryHeap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem::size_of;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug)]
 pub(super) struct AdmittedPosting {
@@ -131,7 +131,7 @@ pub(super) struct MergedPostings {
 
 impl MergedPostings {
     pub(super) fn new(
-        paths: &[PathBuf],
+        paths: &[impl AsRef<Path>],
         config: LexicalProjectionConfig,
         memory: BuildMemory,
         task: RuntimeTaskContext,
@@ -162,7 +162,7 @@ impl MergedPostings {
             .map_err(allocation)?;
         for (source, path) in paths.iter().enumerate() {
             checkpoint(&cursor.task)?;
-            let reader = RunReader::open(path, config, memory.clone())?;
+            let reader = RunReader::open(path.as_ref(), config, memory.clone())?;
             cursor.readers.push(Some(reader));
             cursor.refill(source)?;
         }

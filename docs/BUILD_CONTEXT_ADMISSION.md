@@ -30,7 +30,7 @@ abandoned prepared update. The borrowed reader manifest is not newly admitted.
 
 ## Startup paths
 
-`OwnedPath` admits root copies and standard-library joins for the stage and spool
+The crate-private `build_memory::path::OwnedPath` admits root copies and standard-library joins for the stage and spool
 paths before allocating. It exposes borrowed `Path` access, not mutable or cloned
 owners. After the operation, actual retained capacity is checked and excess
 temporary allowance released. Spool scans borrow the existing spool path.
@@ -61,7 +61,8 @@ not covered by this startup owner.
 Generation publication now owns its source/destination/temporary paths separately
 on the same root; see `PUBLICATION_PATH_ADMISSION.md`. Private artifact builders
 are covered in `ARTIFACT_PATH_ADMISSION.md`; backend copies and publication-lock
-discovery/registry paths remain separate.
+discovery/registry paths remain separate. Private lexical backend paths and run
+registries now reuse this owner; see `LEXICAL_PATH_ADMISSION.md`.
 
 ## Verification
 

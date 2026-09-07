@@ -83,10 +83,12 @@ fn term_admission_precedes_cloning_and_follows_the_staging_owner() {
     }
     let root = projection_root("dictionary-term-handoff");
     fs::create_dir(&root).unwrap();
+    let path = root.join("dictionary.tmp");
+    let path_bytes = path.as_os_str().as_encoded_bytes().len();
     let slots = 4 * size_of::<(Term, dictionary::Metadata)>();
-    let memory = memory(slots + 5);
+    let memory = memory(path_bytes + slots + 5);
     let mut writer = Writer::new(
-        &root.join("dictionary.tmp"),
+        &path,
         Default::default(),
         SpillBudget::new(0, u64::MAX),
         DirectoryBudget::new(u64::MAX),
@@ -95,10 +97,10 @@ fn term_admission_precedes_cloning_and_follows_the_staging_owner() {
     .unwrap();
     let term = Term::new("graph", &memory).unwrap();
     writer.push(term, metadata(0)).unwrap();
-    assert_eq!(memory.ledger.snapshot().used_bytes, slots + 5);
+    assert_eq!(memory.ledger.snapshot().used_bytes, path_bytes + slots + 5);
     assert_eq!(
         memory.ledger.snapshot().peak_bytes,
-        slots + 5,
+        path_bytes + slots + 5,
         "transfer must not charge a second key copy"
     );
     drop(writer);
@@ -110,12 +112,14 @@ fn term_admission_precedes_cloning_and_follows_the_staging_owner() {
 fn staging_slot_growth_keeps_old_and_new_arrays_admitted() {
     let root = projection_root("dictionary-slot-growth");
     fs::create_dir(&root).unwrap();
+    let path = root.join("dictionary.tmp");
+    let path_bytes = path.as_os_str().as_encoded_bytes().len();
     let slot = size_of::<(Term, dictionary::Metadata)>();
-    let peak = 12 * slot + 10;
+    let peak = path_bytes + 12 * slot + 10;
     for (limit, succeeds) in [(peak, true), (peak - 1, false)] {
         let memory = memory(limit);
         let mut writer = Writer::new(
-            &root.join("dictionary.tmp"),
+            &path,
             Default::default(),
             SpillBudget::new(0, u64::MAX),
             DirectoryBudget::new(u64::MAX),
@@ -135,9 +139,9 @@ fn staging_slot_growth_keeps_old_and_new_arrays_admitted() {
         assert_eq!(
             memory.ledger.snapshot().used_bytes,
             if succeeds {
-                8 * slot + 10
+                path_bytes + 8 * slot + 10
             } else {
-                4 * slot + 8
+                path_bytes + 4 * slot + 8
             }
         );
         if succeeds {
@@ -220,6 +224,8 @@ fn validation_scratch_is_admitted_alongside_the_retained_encoded_buffer() {
 fn incoming_term_stays_admitted_while_the_previous_partition_flushes() {
     let root = projection_root("dictionary-held-term");
     fs::create_dir(&root).unwrap();
+    let path = root.join("dictionary.tmp");
+    let path_bytes = path.as_os_str().as_encoded_bytes().len();
     let base = LexicalProjectionConfig::default();
     let needed = dictionary::builder_reservation(
         &[("aaaa", metadata(0))],
@@ -231,10 +237,10 @@ fn incoming_term_stays_admitted_while_the_previous_partition_flushes() {
         dictionary_build_memory_bytes: NonZeroU64::new((needed + slots + 8) as u64).unwrap(),
         ..base
     };
-    let memory = memory(needed + slots + 8);
+    let memory = memory(path_bytes + needed + slots + 8);
     let directory = DirectoryBudget::new(u64::MAX).with_memory(&memory).unwrap();
     let mut writer = Writer::new(
-        &root.join("dictionary.tmp"),
+        &path,
         config,
         SpillBudget::new(0, u64::MAX),
         directory.clone(),
@@ -249,9 +255,15 @@ fn incoming_term_stays_admitted_while_the_previous_partition_flushes() {
         .push(Term::new("bbbb", &memory).unwrap(), metadata(1))
         .unwrap();
     assert_eq!(dictionary_memory::evidence::take(), (1, 1, 1));
-    assert_eq!(memory.ledger.snapshot().peak_bytes, needed + slots + 8);
+    assert_eq!(
+        memory.ledger.snapshot().peak_bytes,
+        path_bytes + needed + slots + 8
+    );
     let descriptor = size_of::<dictionary_store::Descriptor>() + 8;
-    assert_eq!(memory.ledger.snapshot().used_bytes, slots + 4 + descriptor);
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        path_bytes + slots + 4 + descriptor
+    );
     drop(writer);
     drop(directory);
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
@@ -262,9 +274,11 @@ fn incoming_term_stays_admitted_while_the_previous_partition_flushes() {
 fn rejected_writer_cannot_publish_after_a_retry() {
     let root = projection_root("dictionary-poison");
     fs::create_dir(&root).unwrap();
-    let memory = memory(5);
+    let path = root.join("dictionary.tmp");
+    let path_bytes = path.as_os_str().as_encoded_bytes().len();
+    let memory = memory(path_bytes + 5);
     let mut writer = Writer::new(
-        &root.join("dictionary.tmp"),
+        &path,
         Default::default(),
         SpillBudget::new(0, u64::MAX),
         DirectoryBudget::new(u64::MAX),
@@ -274,7 +288,7 @@ fn rejected_writer_cannot_publish_after_a_retry() {
     assert!(writer
         .push(Term::new("graph", &memory).unwrap(), metadata(0))
         .is_err());
-    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, path_bytes);
     let error = writer
         .push(Term::new("retry", &memory).unwrap(), metadata(1))
         .unwrap_err();

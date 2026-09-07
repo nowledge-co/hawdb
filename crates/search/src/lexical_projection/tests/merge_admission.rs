@@ -21,7 +21,8 @@ pub(super) fn run_bytes(postings: &[Posting]) -> Vec<u8> {
     bytes
 }
 
-pub(super) fn drain(paths: &[PathBuf], memory: &BuildMemory) -> Result<Vec<Posting>> {
+pub(super) fn drain(paths: &[impl AsRef<Path>], memory: &BuildMemory) -> Result<Vec<Posting>> {
+    let retained = memory.ledger.snapshot().used_bytes;
     let mut cursor = MergedPostings::new(
         paths,
         Default::default(),
@@ -33,7 +34,7 @@ pub(super) fn drain(paths: &[PathBuf], memory: &BuildMemory) -> Result<Vec<Posti
         output.push(posting.clone());
     }
     // End of iteration, not only dropping the cursor, releases its working set.
-    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained);
     assert!(cursor.next()?.is_none());
     Ok(output)
 }
@@ -234,7 +235,7 @@ fn failed_compaction_removes_prior_outputs_and_every_input_run() {
         max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     };
-    let mut runs = SpillRuns::new(&root, 2, config, memory.clone());
+    let mut runs = SpillRuns::new(&root, 2, config, memory.clone()).unwrap();
     for ordinal in 0..5 {
         runs.spill(&mut vec![posting("graph", ordinal)]).unwrap();
     }
@@ -256,14 +257,14 @@ fn spill_writer_and_merge_output_share_the_root_before_creating_files() {
     let root = projection_root("merge-output-budget");
     fs::create_dir(&root).unwrap();
     let memory = memory(SPOOL_BUFFER_BYTES - 1);
-    let mut runs = SpillRuns::new(&root, 1, Default::default(), memory.clone());
+    let mut runs = SpillRuns::new(&root, 1, Default::default(), memory.clone()).unwrap();
     let mut postings = vec![posting("graph", 0)];
     assert!(runs.spill(&mut postings).is_err());
     assert_eq!(postings.len(), 1);
     assert_eq!(runs.sequence, 0);
     let output = root.join("output.tmp");
     assert!(merge_runs(
-        &[],
+        &[] as &[PathBuf],
         &output,
         Default::default(),
         &RuntimeTaskContext::default(),
@@ -281,9 +282,10 @@ fn doclist_encoding_is_admitted_before_output_and_retains_no_heap_scratch() {
     let root = projection_root("doclist-encode-budget");
     fs::create_dir(&root).unwrap();
     let path = root.join("skip.tmp");
+    let path_bytes = path.as_os_str().as_encoded_bytes().len();
     for (limit, succeeds) in [
-        (posting_codec::MAX_BLOCK_BYTES - 1, false),
-        (posting_codec::MAX_BLOCK_BYTES, true),
+        (path_bytes + posting_codec::MAX_BLOCK_BYTES - 1, false),
+        (path_bytes + posting_codec::MAX_BLOCK_BYTES, true),
     ] {
         let memory = memory(limit);
         let mut writer = doclist::Writer::new(
@@ -304,10 +306,11 @@ fn doclist_encoding_is_admitted_before_output_and_retains_no_heap_scratch() {
         assert_eq!(!bytes.is_empty(), succeeds);
         assert_eq!(offset > 0, succeeds);
         assert_eq!(fs::metadata(&path).unwrap().len(), 0);
-        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, path_bytes);
         assert!(memory.ledger.snapshot().peak_bytes <= limit);
         drop(writer);
         assert!(!path.exists());
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
     fs::remove_dir(root).unwrap();
 }
@@ -325,7 +328,13 @@ fn artifact_merge_frame_denial_preserves_the_published_generation() {
     let artifact = fs::read(root.join(artifact_file(1))).unwrap();
     // Enough for analysis/spill and the seeded cursor, but not the frame
     // alongside the artifact writer, directory, reader and live posting.
-    let memory = memory(2 * SPOOL_BUFFER_BYTES + 1024);
+    let temporary = root.join(artifact_file(2)).with_extension("skein.tmp");
+    let paths = paths::tests::publication_bytes(&root, 2)
+        + 4 * std::mem::size_of::<OwnedPath>()
+        + root.join(".search-lexical.2.0.tmp").capacity()
+        + temporary.with_extension("skip.tmp").capacity()
+        + temporary.with_extension("dictionary.tmp").capacity();
+    let memory = memory(2 * SPOOL_BUFFER_BYTES + 1024 + paths);
     merge::evidence::take();
     let error = LexicalProjectionWriter::new(Default::default())
         .with_memory(memory.clone())
@@ -354,7 +363,7 @@ fn multi_pass_compaction_admits_readers_and_output_together() {
         ..Default::default()
     };
     let compact = |memory: &BuildMemory| -> Result<()> {
-        let mut runs = SpillRuns::new(&root, 1, config, memory.clone());
+        let mut runs = SpillRuns::new(&root, 1, config, memory.clone())?;
         for ordinal in 0..9 {
             runs.spill(&mut vec![posting("graph", ordinal)])?;
         }
@@ -394,7 +403,7 @@ fn source_deletion_error_cleans_the_completed_output_and_moved_inputs() {
         max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     };
-    let mut runs = SpillRuns::new(&root, 1, config, memory.clone());
+    let mut runs = SpillRuns::new(&root, 1, config, memory.clone()).unwrap();
     for ordinal in 0..3 {
         runs.spill(&mut vec![posting("graph", ordinal)]).unwrap();
     }

@@ -1,18 +1,18 @@
 use super::*;
+use crate::build_memory::path::{evidence as path_evidence, join_bytes};
 use crate::{
     RuntimeCancellationToken, SearchAnalyzerAliasRule, SearchAnalyzerLexicon, SearchDocument,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod fuzz;
 
 thread_local! {
     static IDENTITIES: Cell<usize> = const { Cell::new(0) };
-    static PATHS: Cell<usize> = const { Cell::new(0) };
     static CANCEL_IDENTITY: RefCell<Option<RuntimeCancellationToken>> = const { RefCell::new(None) };
-    static CANCEL_PATH: RefCell<Option<RuntimeCancellationToken>> = const { RefCell::new(None) };
 }
 
 pub(super) fn record_identity() {
@@ -23,16 +23,8 @@ pub(super) fn record_identity() {
         }
     });
 }
-pub(super) fn record_path() {
-    PATHS.set(PATHS.get() + 1);
-    CANCEL_PATH.with_borrow_mut(|value| {
-        if let Some(token) = value.take() {
-            token.cancel();
-        }
-    });
-}
 fn take() -> (usize, usize) {
-    (IDENTITIES.replace(0), PATHS.replace(0))
+    (IDENTITIES.replace(0), path_evidence::take())
 }
 
 fn task(bytes: usize) -> RuntimeTaskContext {
@@ -318,7 +310,7 @@ fn path_copy_and_join_reserve_before_allocation_and_retain_actual_capacity() {
                         parent.join(name)
                     }
                 );
-                let retained = owned.value.capacity();
+                let retained = owned.capacity();
                 assert_eq!(memory.ledger.snapshot().peak_bytes, 137 + peak);
                 assert_eq!(memory.ledger.snapshot().used_bytes, 137 + retained);
                 let ledger = memory.ledger.clone();
@@ -343,7 +335,7 @@ fn cancelled_path_copy_releases_its_allocation_and_charge() {
     let memory = memory(4096);
     let token = RuntimeCancellationToken::new();
     let task = RuntimeTaskContext::without_deadline(token.clone());
-    CANCEL_PATH.with_borrow_mut(|value| *value = Some(token));
+    path_evidence::cancel_next(token);
     take();
     assert!(OwnedPath::copy(Path::new("some/path"), &memory, &task).is_err());
     assert_eq!(take(), (0, 1));
@@ -527,9 +519,9 @@ fn abandoned_delta_retains_context_until_drop_without_publishing() {
     );
     assert_eq!(
         ledger.snapshot().used_bytes,
-        raw + writer.root.value.capacity()
-            + writer.stage.path.value.capacity()
-            + writer.spool_path.value.capacity()
+        raw + writer.root.capacity()
+            + writer.stage.path.capacity()
+            + writer.spool_path.capacity()
             + writer.metadata_memory.bytes()
             + writer.spool_memory.as_ref().unwrap().bytes()
             + writer.last_id_memory.as_ref().unwrap().bytes()
@@ -557,9 +549,8 @@ fn writer_retains_owned_context_and_spool_scan_borrows_its_path() {
     let pointer = value.embedding_manifest.as_ref().unwrap().model.as_ptr();
     let writer = super::super::SearchOutOfCoreGenerationWriter::create(&path, value).unwrap();
     let ledger = writer.memory.ledger.clone();
-    let path_bytes = writer.root.value.capacity()
-        + writer.stage.path.value.capacity()
-        + writer.spool_path.value.capacity();
+    let path_bytes =
+        writer.root.capacity() + writer.stage.path.capacity() + writer.spool_path.capacity();
     assert_eq!(
         writer
             .options
