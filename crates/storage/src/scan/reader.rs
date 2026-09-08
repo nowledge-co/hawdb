@@ -1,4 +1,5 @@
 use super::{SegmentReadRange, SegmentReadSchedule};
+use crate::io::read_exact_at;
 use crate::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
@@ -8,9 +9,6 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::File;
-use std::io::ErrorKind;
-#[cfg(not(any(unix, windows)))]
-use std::io::Read;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -294,49 +292,6 @@ impl SegmentRangeReader for FileSegmentRangeReader {
     fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
         self.read_range_with_report(range).map(|read| read.payload)
     }
-}
-
-#[cfg(unix)]
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::unix::fs::FileExt;
-
-    file.read_at(buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-
-    file.seek_read(buffer, offset)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    use std::io::{Seek, SeekFrom};
-
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read(buffer)
-}
-
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    while !buffer.is_empty() {
-        match read_at(file, buffer, offset) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "segment range ended before the admitted length",
-                ));
-            }
-            Ok(read) => {
-                offset = offset.saturating_add(read as u64);
-                buffer = &mut buffer[read..];
-            }
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -685,6 +640,14 @@ fn segment_read_checkpoint<E>(
 }
 
 fn range_io_error(range: &SegmentReadRange, source: std::io::Error) -> SegmentReadError {
+    let source = if source.kind() == std::io::ErrorKind::UnexpectedEof {
+        std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "segment range ended before the admitted length",
+        )
+    } else {
+        source
+    };
     SegmentReadError::Io {
         artifact_id: range.artifact_id,
         offset: range.offset,
@@ -995,7 +958,11 @@ mod tests {
         let range = SegmentReadRange::new(7, 1, 2, NonZeroU64::new(8).unwrap());
 
         let error = reader.read_range(&range).unwrap_err();
-        assert!(matches!(error, SegmentReadError::Io { .. }));
+        assert!(matches!(
+            &error,
+            SegmentReadError::Io { source, .. }
+                if source.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
         assert_eq!(
             error.source().unwrap().to_string(),
             "segment range ended before the admitted length"

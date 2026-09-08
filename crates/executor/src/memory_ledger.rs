@@ -322,6 +322,15 @@ pub struct QueryMemoryAccount {
 }
 
 impl QueryMemoryAccount {
+    pub(crate) fn sibling(
+        &self,
+        class: QueryMemoryClass,
+        owner: impl Into<Arc<str>>,
+        budget_bytes: NonZeroUsize,
+    ) -> Self {
+        self.ledger.account(class, owner, budget_bytes)
+    }
+
     pub fn reserve(&self, bytes: usize) -> Result<QueryMemoryLease> {
         self.ledger.reserve(self.account_id, bytes)?;
         Ok(QueryMemoryLease {
@@ -436,6 +445,24 @@ mod tests {
         assert!(error.to_string().contains("query_memory_bytes 10"));
         assert_eq!(ledger.snapshot().used_bytes, 6);
         drop(left_lease);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn derived_sibling_account_keeps_the_original_query_root() {
+        let budget = NonZeroUsize::new(8).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let state = ledger.account(QueryMemoryClass::BlockingState, "merge", budget);
+        let output = state.sibling(QueryMemoryClass::PipelineBatch, "output", budget);
+        let state_lease = state.reserve(6).unwrap();
+        assert!(output
+            .reserve(3)
+            .unwrap_err()
+            .to_string()
+            .contains("query_memory_bytes 8"));
+        let output_lease = output.reserve(2).unwrap();
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        drop((state_lease, output_lease));
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 

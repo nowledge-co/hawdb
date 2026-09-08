@@ -1,4 +1,5 @@
 use crate::cache::SegmentCacheIdentity;
+use crate::io::read_exact_at;
 use crate::{
     content_digest, decode_residual_row_properties, durable_replace_file,
     encode_residual_row_properties, sync_parent_directory, ManifestGeneration, RepresentationKind,
@@ -1702,44 +1703,6 @@ fn read_u64(bytes: &[u8]) -> u64 {
 
 fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> StableIdentityMappingError {
     move |error| StableIdentityMappingError::Durability(format!("{context}: {error}"))
-}
-
-#[cfg(unix)]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    FileExt::read_exact_at(file, buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::io::{Error, ErrorKind};
-    use std::os::windows::fs::FileExt;
-    while !buffer.is_empty() {
-        let read = file.seek_read(buffer, offset)?;
-        if read == 0 {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                "failed to fill buffer",
-            ));
-        }
-        offset = offset
-            .checked_add(read as u64)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "read offset overflow"))?;
-        buffer = &mut buffer[read..];
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::sync::Mutex;
-    static POSITIONED_READ_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = POSITIONED_READ_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = file;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
 }
 
 #[cfg(test)]

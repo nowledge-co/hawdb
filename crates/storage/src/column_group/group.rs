@@ -25,6 +25,7 @@ use super::zone::{ChunkZoneMap, ZONE_MAP_RECORD_BYTES};
 use super::DeletionVectorBinding;
 use super::{corrupt, unsupported, ColumnGroupError, COLUMN_GROUP_MAGIC};
 use crate::durability::durable_replace_file;
+use crate::io::read_exact_at;
 use crate::scan::RangeBound;
 use crate::ManifestGeneration;
 use skein_core::{PropertyId, Value};
@@ -913,29 +914,6 @@ impl ColumnGroupByteSource for FileByteSource {
         read_exact_at(&self.file, &mut buffer, offset)?;
         Ok(buffer)
     }
-}
-
-#[cfg(unix)]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    while !buffer.is_empty() {
-        let read = file.seek_read(buffer, offset)?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "reached end of file before filling the buffer",
-            ));
-        }
-        buffer = &mut buffer[read..];
-        offset += read as u64;
-    }
-    Ok(())
 }
 
 // --- reader -----------------------------------------------------------------
