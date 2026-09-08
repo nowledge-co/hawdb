@@ -13,7 +13,6 @@ use super::{
 };
 use crate::relational::RelationalError;
 use crate::{durable_replace_file, sync_directory};
-use fs2::FileExt;
 use skein_integrity::{integrity_digest, IntegrityHasher};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -1144,7 +1143,7 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalOverflow
         .write(true)
         .open(directory.join(RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE))
         .map_err(durability("open overflow publication lock"))?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(durability("lock overflow publication"))?;
     Ok(lock)
 }
@@ -1245,5 +1244,28 @@ impl PublicationPaths {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn publication_lock_contract() {
+        crate::file_lock_tests::assert_contract(
+            RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+            "open overflow publication lock",
+        );
+    }
+
+    #[test]
+    #[ignore = "deterministic local publication lock campaign"]
+    fn publication_lock_state_machine_campaign() {
+        crate::file_lock_tests::assert_state_machine(
+            RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+        );
     }
 }

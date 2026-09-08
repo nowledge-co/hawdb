@@ -14,7 +14,6 @@ use crate::relational::{
     RelationalRowChangeCaptureLimits, RelationalRowPagePublicationConfig, RelationalState,
 };
 use crate::{durable_replace_file, sync_directory};
-use fs2::FileExt;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -765,7 +764,7 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalRowDelta
         .write(true)
         .open(directory.join(RELATIONAL_ROW_DELTA_PUBLICATION_LOCK_FILE))
         .map_err(durability("open row delta publication lock"))?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(durability("lock row delta publication"))?;
     Ok(lock)
 }
@@ -880,4 +879,27 @@ fn table_metadata_for_state(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn publication_lock_contract() {
+        crate::file_lock_tests::assert_contract(
+            RELATIONAL_ROW_DELTA_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+            "open row delta publication lock",
+        );
+    }
+
+    #[test]
+    #[ignore = "deterministic local publication lock campaign"]
+    fn publication_lock_state_machine_campaign() {
+        crate::file_lock_tests::assert_state_machine(
+            RELATIONAL_ROW_DELTA_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+        );
+    }
 }
