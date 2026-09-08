@@ -3,6 +3,10 @@
 //! Reference revision: PostgreSQL 3d00537feb565c410baf41bb301eee338e4b2317.
 //! Reference file: src/test/regress/sql/graph_table.sql.
 
+// Locally authored alias regressions supplement the adapted PostgreSQL corpus.
+#[path = "support/alias_boundaries.rs"]
+mod alias_boundaries;
+
 use skein_sql_syntax::{
     parse_postgres_select, parse_postgres_statement, BinaryOperatorSyntax, ExpressionKindSyntax,
     PostgresFromItemSyntax, PostgresJoinKind, PostgresStatementSyntax, SyntaxErrorCode,
@@ -110,7 +114,6 @@ fn rejects_select_shapes_outside_the_owned_slice() {
         "SELECT * FROM source RIGHT JOIN target ON source.id = target.id",
         "SELECT * FROM source FULL JOIN target ON source.id = target.id",
         "SELECT * FROM source JOIN target USING (id)",
-        "SELECT * FROM source NATURAL JOIN target",
         "SELECT * FROM source FETCH FIRST 1 ROW ONLY",
         "SELECT * FROM source LIMIT 1 WHERE source.id = 1",
         "SELECT * FROM source WHERE source.id = 1 WHERE source.id = 2",

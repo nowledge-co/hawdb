@@ -81,12 +81,12 @@ impl RuntimeResourceDetector {
         #[cfg(target_os = "linux")]
         {
             let cgroup = LinuxCgroupSnapshot::detect();
-            return resource_snapshot_from_cgroup(
+            resource_snapshot_from_cgroup(
                 host_parallelism,
                 host_total_bytes,
                 host_available_bytes,
                 &cgroup,
-            );
+            )
         }
 
         #[cfg(not(target_os = "linux"))]

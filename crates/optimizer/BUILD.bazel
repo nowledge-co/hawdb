@@ -48,6 +48,22 @@ rust_test(
 
 # Private production costing, exercised only by an explicitly selected campaign.
 rust_test(
+    name = "skein_optimizer_cardinality_defaults_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "graph::tests::cardinality_defaults::cardinality_defaults_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_optimizer",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_optimizer_candidate_fingerprint_fuzz_tests",
     tags = ["manual"],
     args = [
