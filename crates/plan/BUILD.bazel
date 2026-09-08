@@ -27,3 +27,19 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+rust_test(
+    name = "skein_plan_explain_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "physical::explain::tests::explain_shape_and_payload_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_plan",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

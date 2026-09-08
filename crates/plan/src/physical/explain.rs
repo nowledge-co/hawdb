@@ -1,9 +1,37 @@
-use super::PhysicalPlan;
+use super::{PhysicalPlan, PlanChildren};
 use crate::{SetAssignment, SetNodePropertiesReturnMode, SetValue};
 use skein_cypher::RelationshipDirection;
 
+#[cfg(test)]
+mod allocation_tests;
+
+#[cfg(test)]
+mod tests;
+
 impl PhysicalPlan {
     pub fn explain(&self, indent: usize) -> String {
+        let mut output = String::new();
+        let mut pending = vec![(self, indent)];
+        // Render each header once: copying complete child strings at every
+        // ancestor multiplies the already depth-sensitive indentation cost.
+        while let Some((plan, indent)) = pending.pop() {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&plan.explain_operator(indent));
+            match plan.children() {
+                PlanChildren::None => {}
+                PlanChildren::Unary(input) => pending.push((input, indent + 2)),
+                PlanChildren::Binary(left, right) => {
+                    pending.push((right, indent + 2));
+                    pending.push((left, indent + 2));
+                }
+            }
+        }
+        output
+    }
+
+    fn explain_operator(&self, indent: usize) -> String {
         let pad = " ".repeat(indent);
         match self {
             PhysicalPlan::CreateNodeLabel { label } => {
@@ -330,12 +358,8 @@ impl PhysicalPlan {
             PhysicalPlan::SourceSegmentScan { variable, predicate } => {
                 format!("{pad}SourceSegmentScan variable={variable} predicate={predicate:?}")
             }
-            PhysicalPlan::NodeCartesianProductExec { left, right } => {
-                format!(
-                    "{pad}NodeCartesianProductExec\n{}\n{}",
-                    left.explain(indent + 2),
-                    right.explain(indent + 2)
-                )
+            PhysicalPlan::NodeCartesianProductExec { .. } => {
+                format!("{pad}NodeCartesianProductExec")
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
@@ -343,11 +367,10 @@ impl PhysicalPlan {
                 property,
                 column,
                 optional,
-                input,
+                ..
             } => {
                 format!(
-                    "{pad}NodeColumnLookupExec variable={variable} label={label} property={property} column={column} optional={optional}\n{}",
-                    input.explain(indent + 2)
+                    "{pad}NodeColumnLookupExec variable={variable} label={label} property={property} column={column} optional={optional}"
                 )
             }
             PhysicalPlan::IndexNodeSeek {
@@ -431,7 +454,7 @@ impl PhysicalPlan {
                 rel_properties,
                 optional,
                 graph_budget,
-                input,
+                ..
             } => {
                 let arrow = match direction {
                     RelationshipDirection::Outgoing => "->",
@@ -451,8 +474,7 @@ impl PhysicalPlan {
                     })
                     .unwrap_or_default();
                 format!(
-                    "{pad}AdjacencyExpandExec source={source_variable}:{source_label}{rel} direction={arrow} properties={rel_properties:?} hops={min_hops}..{max_hops} optional={optional}{budget} target={target_variable}:{target_label}\n{}",
-                    input.explain(indent + 2)
+                    "{pad}AdjacencyExpandExec source={source_variable}:{source_label}{rel} direction={arrow} properties={rel_properties:?} hops={min_hops}..{max_hops} optional={optional}{budget} target={target_variable}:{target_label}"
                 )
             }
             PhysicalPlan::AdjacencyExistsExec {
@@ -460,25 +482,6 @@ impl PhysicalPlan {
                 rel_type,
                 direction,
                 target_variable,
-                input,
-            } => {
-                let arrow = match direction {
-                    RelationshipDirection::Outgoing => "->",
-                    RelationshipDirection::Incoming => "<-",
-                    RelationshipDirection::Undirected => "-",
-                };
-                format!(
-                    "{pad}AdjacencyExistsExec source={source_variable} direction={arrow} rel_type={rel_type} target={target_variable}\n{}",
-                    input.explain(indent + 2)
-                )
-            }
-            PhysicalPlan::OptionalDegreeExec {
-                source_variable,
-                rel_type,
-                direction,
-                target_label,
-                alias,
-                input,
                 ..
             } => {
                 let arrow = match direction {
@@ -487,8 +490,24 @@ impl PhysicalPlan {
                     RelationshipDirection::Undirected => "-",
                 };
                 format!(
-                    "{pad}OptionalDegreeExec source={source_variable} rel_type={rel_type} direction={arrow} target={target_label} alias={alias}\n{}",
-                    input.explain(indent + 2)
+                    "{pad}AdjacencyExistsExec source={source_variable} direction={arrow} rel_type={rel_type} target={target_variable}"
+                )
+            }
+            PhysicalPlan::OptionalDegreeExec {
+                source_variable,
+                rel_type,
+                direction,
+                target_label,
+                alias,
+                ..
+            } => {
+                let arrow = match direction {
+                    RelationshipDirection::Outgoing => "->",
+                    RelationshipDirection::Incoming => "<-",
+                    RelationshipDirection::Undirected => "-",
+                };
+                format!(
+                    "{pad}OptionalDegreeExec source={source_variable} rel_type={rel_type} direction={arrow} target={target_label} alias={alias}"
                 )
             }
             PhysicalPlan::OptionalRelationshipCountSumExec {
@@ -538,27 +557,21 @@ impl PhysicalPlan {
                     "{pad}ShortestPathExec source={source_variable}:{source_label} rel_type={rel_type} direction={arrow} hops={min_hops}..{max_hops} target={target_variable}:{target_label} columns=[{columns}]"
                 )
             }
-            PhysicalPlan::FilterExec { predicate, input } => {
-                format!(
-                    "{pad}FilterExec predicate={predicate:?}\n{}",
-                    input.explain(indent + 2)
-                )
+            PhysicalPlan::FilterExec { predicate, .. } => {
+                format!("{pad}FilterExec predicate={predicate:?}")
             }
-            PhysicalPlan::ProjectExec { items, input } => {
+            PhysicalPlan::ProjectExec { items, .. } => {
                 let columns = items
                     .iter()
                     .map(|item| item.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!(
-                    "{pad}ProjectExec columns=[{columns}]\n{}",
-                    input.explain(indent + 2)
-                )
+                format!("{pad}ProjectExec columns=[{columns}]")
             }
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
-                input,
+                ..
             } => {
                 let mut columns = group_keys
                     .iter()
@@ -566,40 +579,28 @@ impl PhysicalPlan {
                     .collect::<Vec<_>>();
                 columns.extend(items.iter().map(|item| item.name.as_str()));
                 let columns = columns.join(", ");
-                format!(
-                    "{pad}AggregateExec columns=[{columns}]\n{}",
-                    input.explain(indent + 2)
-                )
+                format!("{pad}AggregateExec columns=[{columns}]")
             }
-            PhysicalPlan::DistinctExec { input } => {
-                format!("{pad}DistinctExec\n{}", input.explain(indent + 2))
+            PhysicalPlan::DistinctExec { .. } => {
+                format!("{pad}DistinctExec")
             }
-            PhysicalPlan::SortExec { items, input } => {
-                format!(
-                    "{pad}SortExec keys={items:?}\n{}",
-                    input.explain(indent + 2)
-                )
+            PhysicalPlan::SortExec { items, .. } => {
+                format!("{pad}SortExec keys={items:?}")
             }
             PhysicalPlan::TopNExec {
                 items,
                 offset,
                 limit,
-                input,
+                ..
             } => {
-                format!(
-                    "{pad}TopNExec keys={items:?} offset={offset} limit={limit}\n{}",
-                    input.explain(indent + 2)
-                )
+                format!("{pad}TopNExec keys={items:?} offset={offset} limit={limit}")
             }
             PhysicalPlan::LimitExec {
                 offset,
                 limit,
-                input,
+                ..
             } => {
-                format!(
-                    "{pad}LimitExec offset={offset} limit={limit:?}\n{}",
-                    input.explain(indent + 2)
-                )
+                format!("{pad}LimitExec offset={offset} limit={limit:?}")
             }
         }
     }
