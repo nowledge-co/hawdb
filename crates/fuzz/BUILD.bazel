@@ -84,6 +84,7 @@ test_suite(
         ":skein_append_fuzz_cli_tests",
         ":skein_parser_fuzz_cli_tests",
         ":skein_storage_fuzz_tests",
+        "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_sort_merge_account_fuzz_tests",
         "//crates/optimizer:skein_optimizer_candidate_fingerprint_fuzz_tests",
         "//crates/optimizer:skein_optimizer_ddl_command_fuzz_tests",

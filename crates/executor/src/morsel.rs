@@ -161,6 +161,8 @@ pub fn admit_morsels(request: MorselAdmissionRequest) -> Result<MorselAdmission>
     MorselAdmission::try_new(request)
 }
 
+/// Materializing sequential baseline for scheduler qualification and benchmarks.
+/// Production bounded output uses `SharedPoolMorselScheduler::execute_accounted_ordered`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SequentialMorselScheduler;
 
@@ -433,8 +435,13 @@ fn execute_catching_panic<T>(
     })
 }
 
-/// Executes morsels in ordinal order. This is the deterministic baseline and
-/// differential oracle for future shared-pool parallel schedulers.
+/// Executes morsels in ordinal order, stopping at the first callback error.
+///
+/// This materializing baseline is consumed by the executor vectorization
+/// benchmark and `tests/morsel_oracle.rs`, which qualifies both materializing
+/// shared-pool methods and the production accounted stream against an independent
+/// row oracle. Parallel callbacks may already be running when one fails; their
+/// side effects need not match the sequential baseline's fail-fast behavior.
 pub fn execute_morsels_ordered<T>(
     admission: &MorselAdmission,
     mut execute: impl FnMut(Morsel) -> Result<T>,
