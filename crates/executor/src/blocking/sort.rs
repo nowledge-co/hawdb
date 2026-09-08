@@ -10,6 +10,7 @@ struct SortOperator<'plan, 'runtime> {
     items: &'plan [SortItem],
     catalog: &'runtime Catalog,
     memory: &'runtime ExecutionMemoryConfig,
+    memory_ledger: &'runtime QueryMemoryLedger,
     task_context: Option<&'runtime RuntimeTaskContext>,
     observer: &'runtime dyn ExecutionObserver,
     blocking_account: QueryMemoryAccount,
@@ -122,6 +123,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             items,
             catalog: context.catalog,
             memory: context.memory,
+            memory_ledger: context.memory_ledger,
             task_context: context.task_context,
             observer: context.observer,
             blocking_account,
@@ -191,14 +193,19 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             self.task_context,
         )?;
         self.record_memory_report(self.input_rows as usize);
-        merge_sort_runs(
+        merge_sort_runs_with_output(
             &self.runs,
             self.items,
             self.catalog,
             self.memory.blocking_operator_bytes,
             &self.spill_budget,
             &self.blocking_account,
-            self.memory.batch_rows.get(),
+            AccountedBindingBatch::with_ledger(
+                "SortExec",
+                self.memory.batch_rows.get(),
+                self.memory.batch_payload_bytes,
+                self.memory_ledger,
+            ),
             0,
             execution_limit.output_rows.unwrap_or(usize::MAX),
             self.task_context,
@@ -253,6 +260,7 @@ struct TopNOperator<'plan, 'runtime> {
     retained: usize,
     catalog: &'runtime Catalog,
     memory: &'runtime ExecutionMemoryConfig,
+    memory_ledger: &'runtime QueryMemoryLedger,
     task_context: Option<&'runtime RuntimeTaskContext>,
     observer: &'runtime dyn ExecutionObserver,
     blocking_account: QueryMemoryAccount,
@@ -283,6 +291,7 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
             retained: offset.saturating_add(limit),
             catalog: context.catalog,
             memory: context.memory,
+            memory_ledger: context.memory_ledger,
             task_context: context.task_context,
             observer: context.observer,
             blocking_account,
@@ -374,14 +383,19 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
                 self.task_context,
             )?;
             self.record_memory_report();
-            return merge_sort_runs(
+            return merge_sort_runs_with_output(
                 &self.runs,
                 self.items,
                 self.catalog,
                 self.memory.blocking_operator_bytes,
                 &self.spill_budget,
                 &self.blocking_account,
-                self.memory.batch_rows.get(),
+                AccountedBindingBatch::with_ledger(
+                    "TopNExec",
+                    self.memory.batch_rows.get(),
+                    self.memory.batch_payload_bytes,
+                    self.memory_ledger,
+                ),
                 self.offset,
                 self.limit
                     .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
@@ -553,6 +567,48 @@ pub fn merge_sort_runs(
     task_context: Option<&RuntimeTaskContext>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    // Preserve the existing entrypoint's single budget parameter while keeping
+    // output separate from merge state and charged to the caller's query root.
+    runtime_checkpoint(task_context)?;
+    let output = AccountedBindingBatch::with_account(
+        "SortExec",
+        batch_rows,
+        memory_budget,
+        blocking_account.sibling(
+            QueryMemoryClass::PipelineBatch,
+            "SortExec output batch",
+            memory_budget,
+        ),
+    );
+    merge_sort_runs_with_output(
+        runs,
+        items,
+        catalog,
+        memory_budget,
+        spill_budget,
+        blocking_account,
+        output,
+        skip_rows,
+        output_rows,
+        task_context,
+        emit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_sort_runs_with_output(
+    runs: &[spill::SpillRun],
+    items: &[SortItem],
+    catalog: &Catalog,
+    memory_budget: NonZeroUsize,
+    spill_budget: &SpillBudgetTracker,
+    blocking_account: &QueryMemoryAccount,
+    mut output: AccountedBindingBatch,
+    skip_rows: usize,
+    output_rows: usize,
+    task_context: Option<&RuntimeTaskContext>,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
     runtime_checkpoint(task_context)?;
     let mut readers = runs
         .iter()
@@ -580,9 +636,6 @@ pub fn merge_sort_runs(
     }
     let mut skipped = 0usize;
     let mut emitted = 0usize;
-    let mut batch = Vec::with_capacity(batch_rows);
-    let mut batch_tracker =
-        OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
     while let Some(entry) = heap.pop() {
         runtime_checkpoint(task_context)?;
         let run_index = entry.run_index;
@@ -590,11 +643,15 @@ pub fn merge_sort_runs(
             tracker.release(entry.row.memory_bytes());
             skipped = skipped.saturating_add(1);
         } else {
-            let binding_bytes = binding_memory_bytes(&entry.row.binding);
-            tracker.release(entry.row.memory_bytes());
-            ensure_operator_item_fits("SortExec output", binding_bytes, &batch_tracker)?;
-            batch_tracker.try_charge(binding_bytes)?;
-            batch.push(entry.row.binding);
+            if output.transfer_from(
+                &mut tracker,
+                entry.row.memory_bytes(),
+                entry.row.binding,
+                emit,
+            )? == BatchControl::Stop
+            {
+                return Ok(BatchControl::Stop);
+            }
             emitted = emitted.saturating_add(1);
         }
         if let Some(next) = read_sort_merge_entry(
@@ -609,9 +666,7 @@ pub fn merge_sort_runs(
         )? {
             heap.push(next);
         }
-        if (batch.len() == batch_rows || emitted == output_rows)
-            && emit_accounted_sort_batch(&mut batch, &mut batch_tracker, batch_rows, emit)?
-                == BatchControl::Stop
+        if (output.is_full() || emitted == output_rows) && output.emit(emit)? == BatchControl::Stop
         {
             return Ok(BatchControl::Stop);
         }
@@ -620,10 +675,7 @@ pub fn merge_sort_runs(
         }
     }
     runtime_checkpoint(task_context)?;
-    if !batch.is_empty()
-        && emit_accounted_sort_batch(&mut batch, &mut batch_tracker, batch_rows, emit)?
-            == BatchControl::Stop
-    {
+    if !output.is_empty() && output.emit(emit)? == BatchControl::Stop {
         return Ok(BatchControl::Stop);
     }
     Ok(BatchControl::Continue)
@@ -659,13 +711,5 @@ fn read_sort_merge_entry(
         .transpose()
 }
 
-fn emit_accounted_sort_batch(
-    batch: &mut BindingBatch,
-    tracker: &mut OperatorMemoryTracker,
-    batch_rows: usize,
-    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-) -> Result<BatchControl> {
-    let outgoing = std::mem::replace(batch, Vec::with_capacity(batch_rows));
-    tracker.reset();
-    emit(outgoing)
-}
+#[cfg(test)]
+mod tests;
