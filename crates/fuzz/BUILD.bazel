@@ -87,6 +87,7 @@ test_suite(
         "//crates/optimizer:skein_optimizer_candidate_fingerprint_fuzz_tests",
         "//crates/optimizer:skein_optimizer_full_text_cost_fuzz_tests",
         "//crates/optimizer:skein_optimizer_trace_cost_fuzz_tests",
+        "//crates/storage:skein_storage_file_lock_fuzz_tests",
     ],
 )
 

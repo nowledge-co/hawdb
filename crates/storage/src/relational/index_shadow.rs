@@ -16,7 +16,6 @@ use crate::{
     IndexPostingPage, IndexRootPage, IndexRowId, ManifestGeneration, RepresentationKind,
     SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId,
 };
-use fs2::FileExt;
 use skein_integrity::{
     integrity_digest, IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES,
 };
@@ -861,7 +860,7 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalIndexSha
         .write(true)
         .open(directory.join(RELATIONAL_INDEX_SHADOW_LOCK_FILE))
         .map_err(durability("open relational index publication lock"))?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(durability("lock relational index publication"))?;
     Ok(lock)
 }
@@ -2770,5 +2769,28 @@ mod tests {
             Err(RelationalIndexShadowError::Admission(message))
                 if message.contains("inconsistent counts")
         ));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn publication_lock_contract() {
+        crate::file_lock_tests::assert_contract(
+            RELATIONAL_INDEX_SHADOW_LOCK_FILE,
+            acquire_publication_lock,
+            "create relational index directory",
+        );
+    }
+
+    #[test]
+    #[ignore = "deterministic local publication lock campaign"]
+    fn publication_lock_state_machine_campaign() {
+        crate::file_lock_tests::assert_state_machine(
+            RELATIONAL_INDEX_SHADOW_LOCK_FILE,
+            acquire_publication_lock,
+        );
     }
 }

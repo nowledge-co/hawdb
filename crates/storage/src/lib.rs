@@ -37,6 +37,9 @@ pub mod telemetry;
 pub mod wal;
 pub mod wire;
 
+#[cfg(test)]
+mod file_lock_tests;
+
 pub use adjacency::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
     AdjacencyLayout, AdjacencyPostingIter, AdjacencyPostingList, OrderedAdjacencyEntry,

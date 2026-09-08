@@ -25,3 +25,18 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+rust_test(
+    name = "skein_storage_file_lock_fuzz_tests",
+    args = [
+        "publication_lock_state_machine_campaign",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_storage",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
