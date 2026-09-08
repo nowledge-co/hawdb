@@ -234,13 +234,15 @@ fn optimizer_smoke_cases() -> Vec<OptimizerSmokeCase> {
             logical: text_seek_plan(),
             catalog: text_seek_catalog(),
             expected_cost: PlanCost {
-                estimated_rows: 25,
-                cost: 228,
+                // Projection preserves all 1,000 / 4 full-text candidates.
+                // Seek I/O is 3 + 2 * 250; fused filter/projection adds 250 CPU.
+                estimated_rows: 250,
+                cost: 753,
             },
             instance_fingerprint_contains: "access=full_text",
             decision_contains: &[
                 "choose IndexNodeTextSeek",
-                "selected physical plan cost: estimated_rows=25 cost=228",
+                "selected physical plan cost: estimated_rows=250 cost=753",
             ],
         },
         OptimizerSmokeCase {
