@@ -1,5 +1,23 @@
 use super::*;
+use crate::relational_join_cost::{estimate_relational_probe_join_cost, RelationalJoinCardinality};
+use crate::{
+    enumerate_relational_inner_joins, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+};
 use std::collections::BTreeSet;
+
+#[test]
+fn memo_identity_includes_applied_operator_set() {
+    let bindings = BindingSet::from([BindingId::new(1), BindingId::new(2)]);
+    let first = SemanticKey {
+        bindings: bindings.clone(),
+        applied_operators: BTreeSet::from([RelationalJoinOperatorId::new(1)]),
+    };
+    let second = SemanticKey {
+        bindings,
+        applied_operators: BTreeSet::from([RelationalJoinOperatorId::new(2)]),
+    };
+    assert_ne!(first, second);
+}
 
 #[test]
 fn thirteen_relation_chain_uses_actual_connected_memo_budget() {
@@ -108,10 +126,10 @@ fn failed_memo_admission_does_not_mutate_groups_or_expressions() {
         max_groups: 1,
         max_expressions: 2,
     };
-    let mut memo = RelationalJoinMemo::new();
+    let mut memo = JoinMemo::new();
     memo.add(
-        binding.into(),
-        RelationalJoinExpression::Relation(binding),
+        SemanticKey::relation(binding),
+        JoinExpression::Relation(binding),
         config,
     )
     .unwrap();
@@ -119,8 +137,8 @@ fn failed_memo_admission_does_not_mutate_groups_or_expressions() {
     let before = normalize_memo(&memo);
     assert_eq!(
         memo.add(
-            other.into(),
-            RelationalJoinExpression::Relation(other),
+            SemanticKey::relation(other),
+            JoinExpression::Relation(other),
             config
         ),
         Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
@@ -130,15 +148,15 @@ fn failed_memo_admission_does_not_mutate_groups_or_expressions() {
     );
     assert_eq!(normalize_memo(&memo), before);
     assert_eq!(memo.expression_count, 1);
-    assert_eq!(memo.group_bindings.len(), 1);
+    assert_eq!(memo.keys.len(), 1);
     let exhausted = RelationalJoinEnumerationConfig {
         max_expressions: 1,
         ..config
     };
     assert_eq!(
         memo.add(
-            binding.into(),
-            RelationalJoinExpression::Relation(binding),
+            SemanticKey::relation(binding),
+            JoinExpression::Relation(binding),
             exhausted
         ),
         Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
@@ -185,7 +203,13 @@ fn all_five_relation_graphs_match_exhaustive_subset_pairs() {
                 bindings: [BindingId::new(*left), BindingId::new(*right)].into(),
             })
             .collect();
-        let memo = build_join_memo(&graph, RelationalJoinEnumerationConfig::default()).unwrap();
+        let memo = build_join_memo(
+            &graph.relations,
+            Connectivity::Predicates(&graph.predicates),
+            EnumerationDomain::Inner,
+            RelationalJoinEnumerationConfig::default(),
+        )
+        .unwrap();
         let expected = exhaustive_subset_pairs(&graph);
         assert_eq!(normalize_memo(&memo), expected, "graph mask={mask}");
         assert_eq!(
@@ -236,7 +260,13 @@ fn hyperedges_and_shuffled_bindings_preserve_all_predicate_activations() {
             predicate.bindings = predicate.bindings.iter().map(remap).collect();
         }
         graph.relations.rotate_left(seed as usize % 7);
-        let memo = build_join_memo(&graph, RelationalJoinEnumerationConfig::default()).unwrap();
+        let memo = build_join_memo(
+            &graph.relations,
+            Connectivity::Predicates(&graph.predicates),
+            EnumerationDomain::Inner,
+            RelationalJoinEnumerationConfig::default(),
+        )
+        .unwrap();
         assert_eq!(
             normalize_memo(&memo),
             exhaustive_subset_pairs(&graph),
@@ -305,33 +335,63 @@ fn selected_plans_match_exhaustive_connected_permutations() {
 
 type Pairs = BTreeMap<BindingSet, Vec<(BindingSet, BindingId, Vec<RelationalJoinPredicateId>)>>;
 
-fn normalize_memo(memo: &RelationalJoinMemo) -> Pairs {
+fn normalize_memo(memo: &JoinMemo) -> Pairs {
     memo.groups
         .iter()
-        .map(|(bindings, group)| {
+        .map(|(key, group)| {
             let mut pairs = Vec::new();
+            assert!(key.applied_operators.is_empty());
             for expression in memo.memo.group(*group).unwrap().expressions() {
                 match expression {
-                    RelationalJoinExpression::Relation(binding) => {
-                        assert_eq!(bindings, &BindingSet::from(*binding))
+                    JoinExpression::Relation(binding) => {
+                        assert_eq!(key.bindings, BindingSet::from(*binding))
                     }
-                    RelationalJoinExpression::InnerJoin {
+                    JoinExpression::Join {
                         left,
                         right,
-                        activated_predicates,
+                        operator_id,
+                        operator_kind,
+                        predicate_ids,
                     } => {
+                        assert!(operator_id.is_none());
+                        assert_eq!(*operator_kind, RelationalJoinOperatorKind::Inner);
+                        assert_eq!(memo.keys[right].bindings.len(), 1);
                         pairs.push((
-                            memo.group_bindings[left].clone(),
-                            *right,
-                            activated_predicates.clone(),
+                            memo.keys[left].bindings.clone(),
+                            memo.keys[right].bindings.iter().next().unwrap(),
+                            predicate_ids.clone(),
                         ));
                     }
                 }
             }
             pairs.sort();
-            (bindings.clone(), pairs)
+            (key.bindings.clone(), pairs)
         })
         .collect()
+}
+
+// Keep the exhaustive oracle's tie-break independent from the shared selector.
+fn compare_plans(left: &RelationalJoinPlan, right: &RelationalJoinPlan) -> std::cmp::Ordering {
+    let key = |plan: &RelationalJoinPlan| {
+        std::iter::once((plan.base_binding, &plan.base_access_path))
+            .chain(
+                plan.steps
+                    .iter()
+                    .map(|step| (step.binding, &step.access_path)),
+            )
+            .map(|(binding, access)| format!("{}:{}", binding.get(), access.descriptor.name))
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    left.cost_breakdown
+        .cost
+        .cmp(&right.cost_breakdown.cost)
+        .then_with(|| {
+            left.cost_breakdown
+                .estimated_rows
+                .cmp(&right.cost_breakdown.estimated_rows)
+        })
+        .then_with(|| key(left).cmp(&key(right)))
 }
 
 // Deliberately enumerate every small subset and partition in the oracle; it
