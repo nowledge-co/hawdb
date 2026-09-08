@@ -1,4 +1,5 @@
 mod aggregate_costing;
+mod cardinality_defaults;
 mod costing;
 mod ddl;
 mod fulltext_costing;

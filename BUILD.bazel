@@ -1,7 +1,7 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//:benchmarks.bzl", "SKEIN_BENCHMARK_TARGETS", "skein_benchmark_binaries")
+load("//:benchmarks.bzl", "SKEIN_BENCHMARKS", "SKEIN_BENCHMARK_TARGETS", "skein_benchmark_binaries")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -398,7 +398,6 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
         ("fuzz", "enormous", []),
         ("optimizer_summary", "medium", ["exclusive"]),
         ("optimizer_group_1", "large", ["exclusive"]),
-        ("optimizer_group_2", "medium", ["exclusive"]),
         ("optimizer_group_3", "medium", ["exclusive"]),
         ("relational_row_page_lending", "medium", ["exclusive"]),
         ("wal_group_commit", "medium", ["exclusive"]),
@@ -410,6 +409,51 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
         ("migration_gate_blocked", "medium", []),
     ]
 ]
+
+# Preserve the CI entrypoint without making six complete benchmarks share one
+# deadline. Each child keeps the original medium deadline and runs exclusively.
+_SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS = [
+    "index_restart_cost",
+    "integrity_checksum",
+    "relational_index_access",
+    "relational_index_page_cache",
+    "relational_monotonic_append",
+    "relational_oltp_mix",
+]
+
+[
+    sh_test(
+        name = "skein_linux_ci_benchmark_%s_smoke_test" % benchmark,
+        size = "medium",
+        srcs = ["scripts/check-linux-ci-smokes.sh"],
+        args = ["benchmark:%s" % benchmark] + _SKEIN_LINUX_CI_SMOKE_ARGS,
+        data = _SKEIN_LINUX_CI_SMOKE_DATA,
+        tags = [
+            "exclusive",
+            "manual",
+        ],
+    )
+    for benchmark in _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS
+]
+
+sh_test(
+    name = "skein_linux_ci_benchmark_dispatch_tests",
+    size = "small",
+    srcs = ["scripts/check-linux-ci-smokes.test.sh"],
+    args = ["$(location scripts/check-linux-ci-smokes.sh)"] +
+           _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS + ["--"] + SKEIN_BENCHMARKS,
+    data = ["scripts/check-linux-ci-smokes.sh"],
+    tags = ["manual"],
+)
+
+test_suite(
+    name = "skein_linux_ci_optimizer_group_2_smoke_test",
+    tags = ["manual"],
+    tests = [
+        ":skein_linux_ci_benchmark_%s_smoke_test" % benchmark
+        for benchmark in _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS
+    ] + [":skein_linux_ci_benchmark_dispatch_tests"],
+)
 
 # Fuzz smoke remains available as a standalone local target, but is excluded
 # from the default CI smoke suite.

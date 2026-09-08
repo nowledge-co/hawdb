@@ -19,12 +19,42 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_executor_tests",
+    name = "skein_executor_unit_tests",
     crate = ":skein_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+[
+    rust_test(
+        name = name,
+        srcs = ["tests/morsel_oracle.rs"],
+        crate_root = "tests/morsel_oracle.rs",
+        args = args,
+        tags = tags,
+        edition = "2024",
+        aliases = aliases(normal_dev = True, proc_macro_dev = True),
+        deps = all_crate_deps(normal_dev = True) + [
+            ":skein_executor",
+            "//crates/core:skein_core",
+        ],
+        proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    )
+    for name, args, tags in [
+        ("skein_morsel_oracle_tests", [], []),
+        ("skein_morsel_oracle_fuzz_tests", ["scheduler_differential_campaign", "--exact", "--ignored", "--nocapture"], ["manual"]),
+    ]
+]
+
+# The existing CI entrypoint must consume public contracts as well as unit tests.
+test_suite(
+    name = "skein_executor_tests",
+    tests = [
+        ":skein_executor_unit_tests",
+        ":skein_morsel_oracle_tests",
+    ],
 )
 
 rust_test(

@@ -517,8 +517,29 @@ impl<'a> Parser<'a> {
             self.current().kind,
             TokenKind::Comma | TokenKind::RightParen | TokenKind::Semicolon | TokenKind::End
         ) || [
-            "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "JOIN",
-            "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "ON", "USING",
+            "WHERE",
+            "GROUP",
+            "HAVING",
+            "ORDER",
+            "LIMIT",
+            "OFFSET",
+            "FETCH",
+            "FOR",
+            "JOIN",
+            "INNER",
+            "LEFT",
+            "RIGHT",
+            "FULL",
+            "CROSS",
+            "ON",
+            "USING",
+            "NATURAL",
+            "UNION",
+            "EXCEPT",
+            "INTERSECT",
+            "LATERAL",
+            "TABLESAMPLE",
+            "WINDOW",
         ]
         .into_iter()
         .any(|keyword| self.at_keyword(keyword))
