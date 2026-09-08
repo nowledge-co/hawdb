@@ -27,3 +27,20 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+# This campaign runs only when explicitly selected for local fuzz verification.
+rust_test(
+    name = "skein_sql_clause_diagnostics_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "parser::clause_tests::clause_diagnostics_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_sql",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

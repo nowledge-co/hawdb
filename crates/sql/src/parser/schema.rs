@@ -11,59 +11,90 @@ use sqlparser::ast::{
 pub(super) fn lower_create_table_statement(
     create: &sqlparser::ast::CreateTable,
 ) -> Result<SqlStatement> {
-    if create.or_replace
-        || create.temporary
-        || create.external
-        || create.dynamic
-        || create.global.is_some()
-        || create.transient
-        || create.volatile
-        || create.iceberg
-        || !matches!(create.hive_distribution, HiveDistributionStyle::NONE)
-        || create.hive_formats.is_some()
-        || create.file_format.is_some()
-        || create.location.is_some()
-        || create.query.is_some()
-        || create.without_rowid
-        || create.like.is_some()
-        || create.clone.is_some()
-        || create.version.is_some()
-        || create.comment.is_some()
-        || create.on_commit.is_some()
-        || create.on_cluster.is_some()
-        || create.primary_key.is_some()
-        || create.order_by.is_some()
-        || create.partition_by.is_some()
-        || create.cluster_by.is_some()
-        || create.clustered_by.is_some()
-        || create.inherits.is_some()
-        || create.partition_of.is_some()
-        || create.for_values.is_some()
-        || create.strict
-        || create.copy_grants
-        || create.enable_schema_evolution.is_some()
-        || create.change_tracking.is_some()
-        || create.data_retention_time_in_days.is_some()
-        || create.max_data_extension_time_in_days.is_some()
-        || create.default_ddl_collation.is_some()
-        || create.with_aggregation_policy.is_some()
-        || create.with_row_access_policy.is_some()
-        || create.with_tags.is_some()
-        || create.external_volume.is_some()
-        || create.base_location.is_some()
-        || create.catalog.is_some()
-        || create.catalog_sync.is_some()
-        || create.storage_serialization_policy.is_some()
-        || create.target_lag.is_some()
-        || create.warehouse.is_some()
-        || create.refresh_mode.is_some()
-        || create.initialize.is_some()
-        || create.require_user
-    {
-        return Err(SkeinError::Semantic(
-            "unsupported PostgreSQL CREATE TABLE clause".to_string(),
-        ));
-    }
+    super::reject_unsupported_clauses(
+        "CREATE TABLE",
+        &[
+            ("OR REPLACE", create.or_replace),
+            ("TEMPORARY", create.temporary),
+            ("EXTERNAL", create.external),
+            ("DYNAMIC", create.dynamic),
+            (
+                if create.global == Some(false) {
+                    "LOCAL"
+                } else {
+                    "GLOBAL"
+                },
+                create.global.is_some(),
+            ),
+            ("TRANSIENT", create.transient),
+            ("VOLATILE", create.volatile),
+            ("ICEBERG", create.iceberg),
+            (
+                "Hive distribution",
+                !matches!(create.hive_distribution, HiveDistributionStyle::NONE),
+            ),
+            ("Hive format", create.hive_formats.is_some()),
+            ("STORED AS", create.file_format.is_some()),
+            ("LOCATION", create.location.is_some()),
+            ("AS query", create.query.is_some()),
+            ("WITHOUT ROWID", create.without_rowid),
+            ("LIKE", create.like.is_some()),
+            ("CLONE", create.clone.is_some()),
+            ("VERSION", create.version.is_some()),
+            ("COMMENT", create.comment.is_some()),
+            ("ON COMMIT", create.on_commit.is_some()),
+            ("ON CLUSTER", create.on_cluster.is_some()),
+            ("PRIMARY KEY expression", create.primary_key.is_some()),
+            ("ORDER BY", create.order_by.is_some()),
+            ("PARTITION BY", create.partition_by.is_some()),
+            ("CLUSTER BY", create.cluster_by.is_some()),
+            ("CLUSTERED BY", create.clustered_by.is_some()),
+            ("INHERITS", create.inherits.is_some()),
+            ("PARTITION OF", create.partition_of.is_some()),
+            ("FOR VALUES", create.for_values.is_some()),
+            ("STRICT", create.strict),
+            ("COPY GRANTS", create.copy_grants),
+            (
+                "ENABLE_SCHEMA_EVOLUTION",
+                create.enable_schema_evolution.is_some(),
+            ),
+            ("CHANGE_TRACKING", create.change_tracking.is_some()),
+            (
+                "DATA_RETENTION_TIME_IN_DAYS",
+                create.data_retention_time_in_days.is_some(),
+            ),
+            (
+                "MAX_DATA_EXTENSION_TIME_IN_DAYS",
+                create.max_data_extension_time_in_days.is_some(),
+            ),
+            (
+                "DEFAULT_DDL_COLLATION",
+                create.default_ddl_collation.is_some(),
+            ),
+            (
+                "WITH AGGREGATION POLICY",
+                create.with_aggregation_policy.is_some(),
+            ),
+            (
+                "WITH ROW ACCESS POLICY",
+                create.with_row_access_policy.is_some(),
+            ),
+            ("WITH TAG", create.with_tags.is_some()),
+            ("EXTERNAL_VOLUME", create.external_volume.is_some()),
+            ("BASE_LOCATION", create.base_location.is_some()),
+            ("CATALOG", create.catalog.is_some()),
+            ("CATALOG_SYNC", create.catalog_sync.is_some()),
+            (
+                "STORAGE_SERIALIZATION_POLICY",
+                create.storage_serialization_policy.is_some(),
+            ),
+            ("TARGET_LAG", create.target_lag.is_some()),
+            ("WAREHOUSE", create.warehouse.is_some()),
+            ("REFRESH_MODE", create.refresh_mode.is_some()),
+            ("INITIALIZE", create.initialize.is_some()),
+            ("REQUIRE USER", create.require_user),
+        ],
+    )?;
     Ok(SqlStatement::CreateTable(CreateTableStatement {
         table: lower_table_name(&create.name)?,
         if_not_exists: create.if_not_exists,
