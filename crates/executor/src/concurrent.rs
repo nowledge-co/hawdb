@@ -123,6 +123,9 @@ impl BoundedExecutor {
         self.pool.as_ref().err()
     }
 
+    /// Materializes one output per input in input order, regardless of completion
+    /// order. An output that is itself a `Result` does not short-circuit workers.
+    /// This bounds worker concurrency, not the collected vector's memory.
     pub fn map_ordered<T, R, F>(self, inputs: &[T], operation: F) -> Vec<R>
     where
         T: Sync,
@@ -171,6 +174,8 @@ impl BoundedExecutor {
             .collect()
     }
 
+    /// The materializing map with cooperative cancellation checks. In-flight
+    /// callbacks may finish after cancellation; no partial vector is returned.
     pub fn map_ordered_with_context<T, R, F>(
         self,
         inputs: &[T],
