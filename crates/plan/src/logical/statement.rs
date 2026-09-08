@@ -37,22 +37,22 @@ pub fn plan_with_params(
             Ok(LogicalPlan::CreateRelationshipTable { name: name.clone() })
         }
         Statement::CreateProperty(property) => Ok(LogicalPlan::CreateProperty {
-            table_kind: plan_schema_table_kind(property.table_kind),
+            table_kind: property.table_kind,
             table: property.table.clone(),
             property: property.property.clone(),
-            value_type: plan_schema_property_type(property.value_type),
+            value_type: property.value_type,
             nullable: property.nullable,
         }),
         Statement::AlterTableState(alter) => Ok(LogicalPlan::AlterTableState {
-            table_kind: plan_schema_table_kind(alter.table_kind),
+            table_kind: alter.table_kind,
             table: alter.table.clone(),
-            state: plan_schema_object_state(alter.state),
+            state: alter.state,
         }),
         Statement::AlterPropertyState(alter) => Ok(LogicalPlan::AlterPropertyState {
-            table_kind: plan_schema_table_kind(alter.table_kind),
+            table_kind: alter.table_kind,
             table: alter.table.clone(),
             property: alter.property.clone(),
-            state: plan_schema_object_state(alter.state),
+            state: alter.state,
         }),
         Statement::CreateIndex(index) => Ok(LogicalPlan::CreateIndex {
             label: index.label.clone(),
