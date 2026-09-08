@@ -4,12 +4,11 @@ use skein_cypher::{
     GraphAlgorithmOptions as CypherGraphAlgorithmOptions, MatchReturn,
     OrderDirection as CypherOrderDirection, OrderExpression, OrderItem, PostWithNodeLookup,
     PropertyPredicate, RelationshipDirection, RelationshipExpand as CypherRelationshipExpand,
-    ReturnExpression, ReturnItem, ReturnValueExpression,
-    SchemaObjectState as CypherSchemaObjectState, SchemaPropertyType as CypherSchemaPropertyType,
-    SchemaTableKind as CypherSchemaTableKind, SetProperty, SetValueExpression, ShortestPathReturn,
-    ShortestPathReturnExpression, Statement, ValueExpression, VectorSearch as CypherVectorSearch,
-    WithAggregateProjection, WithAliasFilter, WithAliasFilterExpression, WithAliasFilterOp,
-    WithCollect, WithDistinctProjection, WithProjection,
+    ReturnExpression, ReturnItem, ReturnValueExpression, SetProperty, SetValueExpression,
+    ShortestPathReturn, ShortestPathReturnExpression, Statement, ValueExpression,
+    VectorSearch as CypherVectorSearch, WithAggregateProjection, WithAliasFilter,
+    WithAliasFilterExpression, WithAliasFilterOp, WithCollect, WithDistinctProjection,
+    WithProjection,
 };
 pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use skein_expression::{

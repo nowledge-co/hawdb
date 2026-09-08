@@ -35,6 +35,22 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+# Match Cargo's explicit `skein-search/acl` forwarding without enabling ACL
+# for the default library or introducing a production integration target.
+rust_library(
+    name = "skein_search_acl",
+    testonly = True,
+    crate_name = "skein_search",
+    crate_root = "src/lib.rs",
+    crate_features = _SEARCH_DEFAULT_FEATURES + ["acl"],
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _SEARCH_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
 rust_test(
     name = "skein_search_tests",
     crate = ":skein_search",
@@ -64,6 +80,7 @@ rust_test(
         proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     )
     for profile, features in {
+        "acl": _SEARCH_DEFAULT_FEATURES + ["acl"],
         "minimal": [],
         "text_only": ["full-text-search"],
         "vector_only": ["vector-search"],

@@ -84,4 +84,20 @@ mod tests {
         assert_eq!(SchemaObjectState::Public.as_str(), "public");
         assert_eq!(SchemaObjectState::Gc.as_str(), "gc");
     }
+
+    #[test]
+    fn maps_all_ddl_object_states_to_core_schema_states() {
+        use skein_core::schema::SchemaObjectState as CoreState;
+
+        for (command, catalog) in [
+            (SchemaObjectState::DeleteOnly, CoreState::DeleteOnly),
+            (SchemaObjectState::WriteOnly, CoreState::WriteOnly),
+            (SchemaObjectState::Backfill, CoreState::Backfill),
+            (SchemaObjectState::Validating, CoreState::Validating),
+            (SchemaObjectState::Public, CoreState::Public),
+            (SchemaObjectState::Gc, CoreState::Gc),
+        ] {
+            assert_eq!(object_state_to_core(command), catalog);
+        }
+    }
 }

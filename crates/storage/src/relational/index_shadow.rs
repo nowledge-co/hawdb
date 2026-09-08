@@ -9,6 +9,7 @@ use super::{
     RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
+use crate::io::read_exact_at;
 use crate::{
     content_digest, durable_replace_file, ImmutableIndexPage, ImmutableIndexPageBody,
     ImmutableIndexPageError, ImmutableIndexPageLimits, IndexIdentity, IndexInteriorEntry,
@@ -1344,38 +1345,6 @@ impl RelationalIndexShadowReader {
         }
         Ok(root)
     }
-}
-
-#[cfg(unix)]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    while !buffer.is_empty() {
-        let read = file.seek_read(buffer, offset)?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "relational index page ended before the fixed slot was filled",
-            ));
-        }
-        buffer = &mut buffer[read..];
-        offset = offset.saturating_add(read as u64);
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::io::Read;
-
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
 }
 
 struct SlotWriter {
