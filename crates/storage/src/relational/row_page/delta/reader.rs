@@ -5,6 +5,7 @@ use super::{
     RelationalRowDeltaTableMetadata, RowDeltaRunContext, RowDeltaRunDescriptor, RowDeltaValue,
     RELATIONAL_ROW_DELTA_MANIFEST_FILE,
 };
+use crate::io::read_exact_at;
 use crate::relational::row_page::demand::RelationalRowPageProjectedOverlayValue;
 use crate::relational::row_page::RelationalRowPageRecoveredValue;
 #[cfg(test)]
@@ -1408,40 +1409,6 @@ fn descriptor_offset(entry_ordinal: u32) -> Result<u64, RelationalRowDeltaError>
         .ok_or_else(|| {
             RelationalRowDeltaError::Corrupt("row delta descriptor offset overflow".to_string())
         })
-}
-
-#[cfg(unix)]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::io::{Error, ErrorKind};
-    use std::os::windows::fs::FileExt;
-    while !buffer.is_empty() {
-        let read = file.seek_read(buffer, offset)?;
-        if read == 0 {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                "failed to fill buffer",
-            ));
-        }
-        offset = offset
-            .checked_add(read as u64)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "read offset overflow"))?;
-        buffer = &mut buffer[read..];
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
 }
 
 pub(super) fn decode_staged_value(

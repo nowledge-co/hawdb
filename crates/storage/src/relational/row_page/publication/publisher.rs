@@ -13,7 +13,6 @@ use crate::relational::{
     RelationalValue,
 };
 use crate::{durable_replace_file, sync_directory};
-use fs2::FileExt;
 use skein_integrity::{integrity_digest, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -780,7 +779,7 @@ pub(crate) fn acquire_publication_lock(
         .write(true)
         .open(directory.join(RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE))
         .map_err(durability("open row-page publication lock"))?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(durability("lock row-page publication"))?;
     Ok(lock)
 }
@@ -892,5 +891,28 @@ impl PublicationPaths {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn publication_lock_contract() {
+        crate::file_lock_tests::assert_contract(
+            RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+            "open row-page publication lock",
+        );
+    }
+
+    #[test]
+    #[ignore = "deterministic local publication lock campaign"]
+    fn publication_lock_state_machine_campaign() {
+        crate::file_lock_tests::assert_state_machine(
+            RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,
+            acquire_publication_lock,
+        );
     }
 }

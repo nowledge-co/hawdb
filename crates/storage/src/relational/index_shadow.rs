@@ -9,6 +9,7 @@ use super::{
     RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
+use crate::io::read_exact_at;
 use crate::{
     content_digest, durable_replace_file, ImmutableIndexPage, ImmutableIndexPageBody,
     ImmutableIndexPageError, ImmutableIndexPageLimits, IndexIdentity, IndexInteriorEntry,
@@ -16,7 +17,6 @@ use crate::{
     IndexPostingPage, IndexRootPage, IndexRowId, ManifestGeneration, RepresentationKind,
     SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId,
 };
-use fs2::FileExt;
 use skein_integrity::{
     integrity_digest, IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES,
 };
@@ -861,7 +861,7 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalIndexSha
         .write(true)
         .open(directory.join(RELATIONAL_INDEX_SHADOW_LOCK_FILE))
         .map_err(durability("open relational index publication lock"))?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(durability("lock relational index publication"))?;
     Ok(lock)
 }
@@ -1345,38 +1345,6 @@ impl RelationalIndexShadowReader {
         }
         Ok(root)
     }
-}
-
-#[cfg(unix)]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buffer, offset)
-}
-
-#[cfg(windows)]
-fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    while !buffer.is_empty() {
-        let read = file.seek_read(buffer, offset)?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "relational index page ended before the fixed slot was filled",
-            ));
-        }
-        buffer = &mut buffer[read..];
-        offset = offset.saturating_add(read as u64);
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::io::Read;
-
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
 }
 
 struct SlotWriter {
@@ -2770,5 +2738,28 @@ mod tests {
             Err(RelationalIndexShadowError::Admission(message))
                 if message.contains("inconsistent counts")
         ));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn publication_lock_contract() {
+        crate::file_lock_tests::assert_contract(
+            RELATIONAL_INDEX_SHADOW_LOCK_FILE,
+            acquire_publication_lock,
+            "create relational index directory",
+        );
+    }
+
+    #[test]
+    #[ignore = "deterministic local publication lock campaign"]
+    fn publication_lock_state_machine_campaign() {
+        crate::file_lock_tests::assert_state_machine(
+            RELATIONAL_INDEX_SHADOW_LOCK_FILE,
+            acquire_publication_lock,
+        );
     }
 }

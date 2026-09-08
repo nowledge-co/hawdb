@@ -72,7 +72,7 @@ _SKEIN_SRCS = glob(
     ],
 )
 
-_SKEIN_BASE_DEPS = [
+_SKEIN_COMMON_DEPS = [
     "@crate_index//:chrono",
     "@crate_index//:getrandom",
     "@crate_index//:serde",
@@ -95,11 +95,12 @@ _SKEIN_BASE_DEPS = [
     "//crates/readiness:skein_readiness",
     "//crates/relational:skein_relational",
     "//crates/route-ownership:skein_route_ownership",
-    "//crates/search:skein_search",
     "//crates/sql:skein_sql",
     "//crates/storage:skein_storage",
     "//crates/telemetry:skein_telemetry",
 ]
+
+_SKEIN_BASE_DEPS = _SKEIN_COMMON_DEPS + ["//crates/search:skein_search"]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
@@ -184,9 +185,19 @@ rust_test(
 test_suite(
     name = "skein_unit_tests",
     tests = [
+        ":skein_acl_capability_tests",
         ":skein_unit_fast_tests",
         ":skein_unit_storage_crash_matrix_tests",
     ],
+)
+
+# Reuse the qualification binary without running the full root suite twice.
+sh_test(
+    name = "skein_acl_capability_tests",
+    size = "small",
+    srcs = ["scripts/check-acl-capabilities.sh"],
+    args = ["$(location :skein_storage_crash_recovery_tests)"],
+    data = [":skein_storage_crash_recovery_tests"],
 )
 
 rust_test(
@@ -222,7 +233,9 @@ rust_test(
 rust_test(
     name = "skein_storage_crash_recovery_tests",
     size = "large",
-    crate = ":skein",
+    crate_name = "skein",
+    crate_root = "src/lib.rs",
+    srcs = _SKEIN_SRCS,
     crate_features = [
         "acl",
         "background-maintenance",
@@ -233,11 +246,16 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(
+        normal = True,
         normal_dev = True,
+        proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal_dev = True),
-    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    # Unlike `crate = ":skein"`, this selects the ACL-enabled dependency graph.
+    deps = _SKEIN_COMMON_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
+        "//crates/search:skein_search_acl",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 _SKEIN_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])

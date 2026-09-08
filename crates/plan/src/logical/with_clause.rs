@@ -133,13 +133,6 @@ pub(super) fn find_endpoint_id_value(
     }
 }
 
-pub(super) fn plan_schema_table_kind(kind: CypherSchemaTableKind) -> SchemaTableKind {
-    match kind {
-        CypherSchemaTableKind::Node => SchemaTableKind::Node,
-        CypherSchemaTableKind::Relationship => SchemaTableKind::Relationship,
-    }
-}
-
 pub(super) fn validate_collect_with_match_return(
     query: &MatchReturn,
     collect_with: &WithCollect,
@@ -1351,29 +1344,4 @@ pub(super) fn plan_with_alias_filter_expression(
             ProjectionExpression::Literal(bind_value(value, parameters)?)
         }
     })
-}
-
-pub(super) fn plan_schema_property_type(
-    value_type: CypherSchemaPropertyType,
-) -> SchemaPropertyType {
-    match value_type {
-        CypherSchemaPropertyType::Any => SchemaPropertyType::Any,
-        CypherSchemaPropertyType::Bool => SchemaPropertyType::Bool,
-        CypherSchemaPropertyType::Int => SchemaPropertyType::Int,
-        CypherSchemaPropertyType::Float => SchemaPropertyType::Float,
-        CypherSchemaPropertyType::String => SchemaPropertyType::String,
-        CypherSchemaPropertyType::Text => SchemaPropertyType::Text,
-        CypherSchemaPropertyType::List => SchemaPropertyType::List,
-    }
-}
-
-pub(super) fn plan_schema_object_state(state: CypherSchemaObjectState) -> SchemaObjectState {
-    match state {
-        CypherSchemaObjectState::DeleteOnly => SchemaObjectState::DeleteOnly,
-        CypherSchemaObjectState::WriteOnly => SchemaObjectState::WriteOnly,
-        CypherSchemaObjectState::Backfill => SchemaObjectState::Backfill,
-        CypherSchemaObjectState::Validating => SchemaObjectState::Validating,
-        CypherSchemaObjectState::Public => SchemaObjectState::Public,
-        CypherSchemaObjectState::Gc => SchemaObjectState::Gc,
-    }
 }

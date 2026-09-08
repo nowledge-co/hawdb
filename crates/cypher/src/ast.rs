@@ -1,5 +1,6 @@
 pub use skein_core::RelationshipDirection;
 use skein_core::Value;
+pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,33 +100,6 @@ pub struct AlterPropertyState {
     pub table: String,
     pub property: String,
     pub state: SchemaObjectState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaTableKind {
-    Node,
-    Relationship,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaPropertyType {
-    Any,
-    Bool,
-    Int,
-    Float,
-    String,
-    Text,
-    List,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaObjectState {
-    DeleteOnly,
-    WriteOnly,
-    Backfill,
-    Validating,
-    Public,
-    Gc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
