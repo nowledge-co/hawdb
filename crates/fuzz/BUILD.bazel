@@ -84,6 +84,7 @@ test_suite(
         ":skein_append_fuzz_cli_tests",
         ":skein_parser_fuzz_cli_tests",
         ":skein_storage_fuzz_tests",
+        "//crates/optimizer:skein_optimizer_full_text_cost_fuzz_tests",
         "//crates/optimizer:skein_optimizer_trace_cost_fuzz_tests",
     ],
 )
