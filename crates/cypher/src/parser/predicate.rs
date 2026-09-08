@@ -95,6 +95,7 @@ impl Parser<'_> {
                 Ok(PropertyPredicate::ParameterIsNull { parameter })
             };
         }
+        let expression_start = self.checkpoint();
         let variable = self.parse_ident()?;
         if variable.eq_ignore_ascii_case("list_contains") && self.peek_char() == Some('(') {
             self.expect_char('(')?;
@@ -135,12 +136,12 @@ impl Parser<'_> {
         if matches_ignore_ascii_case(&variable, &["coalesce", "left", "lower", "case"])
             && self.peek_char() == Some('(')
         {
-            self.pos -= variable.len();
+            self.restore(expression_start);
             let expression = self.parse_return_value_expression()?;
             return self.parse_expression_predicate(expression);
         }
         if variable.eq_ignore_ascii_case("case") {
-            self.pos -= variable.len();
+            self.restore(expression_start);
             let expression = self.parse_return_value_expression()?;
             return self.parse_expression_predicate(expression);
         }
@@ -274,7 +275,7 @@ impl Parser<'_> {
 
     fn parse_property_predicate_right(&mut self) -> Result<PropertyPredicateRight> {
         self.skip_ws();
-        let value_start = self.pos;
+        let value_start = self.checkpoint();
         if matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_') {
             let variable = self.parse_ident()?;
             if self.consume_char('.') {
@@ -285,7 +286,7 @@ impl Parser<'_> {
                     },
                 ));
             }
-            self.pos = value_start;
+            self.restore(value_start);
         }
         self.parse_value().map(PropertyPredicateRight::Value)
     }
@@ -635,10 +636,8 @@ impl Parser<'_> {
         self.skip_ws();
         self.expect_char('=')?;
         self.skip_ws();
-        let value_start = self.pos;
-        let case_start = self.pos;
-        let starts_case = self.consume_keyword("CASE");
-        self.pos = case_start;
+        let value_start = self.checkpoint();
+        let starts_case = self.next_keyword_is("CASE");
         let value = if starts_case {
             self.parse_case_set_value()?
         } else if self.consume_keyword("COALESCE") {
@@ -681,7 +680,7 @@ impl Parser<'_> {
                     }
                 }
             } else {
-                self.pos = value_start;
+                self.restore(value_start);
                 SetValueExpression::Value(self.parse_value()?)
             }
         } else {

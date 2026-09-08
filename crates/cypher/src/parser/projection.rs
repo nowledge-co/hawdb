@@ -88,6 +88,7 @@ impl Parser<'_> {
         let mut items = Vec::new();
         loop {
             self.skip_ws();
+            let expression_start = self.checkpoint();
             let first = self.parse_ident()?;
             let expression = if first.eq_ignore_ascii_case("count") && self.consume_char('(') {
                 let distinct = self.consume_keyword("DISTINCT");
@@ -121,7 +122,7 @@ impl Parser<'_> {
                 || (matches_ignore_ascii_case(&first, &["coalesce", "left", "lower"])
                     && self.peek_char() == Some('('))
             {
-                self.pos -= first.len();
+                self.restore(expression_start);
                 OrderExpression::Value(self.parse_return_value_expression()?)
             } else if self.consume_char('.') {
                 OrderExpression::Property {
@@ -313,31 +314,31 @@ impl Parser<'_> {
             });
         }
         if variable.eq_ignore_ascii_case("case") {
-            let start = self.pos;
+            let start = self.checkpoint();
             if let Ok(expression) = self.parse_case_entity_search_rank_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             if let Ok(expression) = self.parse_case_column_search_rank_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             if let Ok(expression) = self.parse_case_lower_property_default_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             if let Ok(expression) = self.parse_default_if_null_or_eq_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             if let Ok(expression) = self.parse_case_coalesce_difference_floor_zero_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             if let Ok(expression) = self.parse_case_property_equals_rank_expression() {
                 return Ok(expression);
             }
-            self.pos = start;
+            self.restore(start);
             return self.parse_case_property_not_null_or_eq_expression();
         }
         if self.consume_char('.') {

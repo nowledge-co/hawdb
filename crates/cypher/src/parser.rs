@@ -12,6 +12,9 @@ mod projection;
 mod query;
 mod scalar;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) const MAX_CYPHER_INPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_CYPHER_PARSER_DEPTH: usize = 32;
 
@@ -111,6 +114,12 @@ pub(super) struct Parser<'a> {
     recursion_depth: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParserCheckpoint {
+    pos: usize,
+    anonymous_variable_id: usize,
+}
+
 impl<'a> Parser<'a> {
     pub(super) fn new(input: &'a str) -> Self {
         Self {
@@ -123,6 +132,20 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_statement(&mut self) -> Result<Statement> {
         self.with_recursion(|parser| parser.parse_statement_inner())
+    }
+
+    fn checkpoint(&self) -> ParserCheckpoint {
+        ParserCheckpoint {
+            pos: self.pos,
+            anonymous_variable_id: self.anonymous_variable_id,
+        }
+    }
+
+    fn restore(&mut self, checkpoint: ParserCheckpoint) {
+        // Speculative branches must not consume names used by the accepted AST.
+        // Recursion depth is scoped by with_recursion, not parser backtracking.
+        self.pos = checkpoint.pos;
+        self.anonymous_variable_id = checkpoint.anonymous_variable_id;
     }
 
     fn parse_statement_inner(&mut self) -> Result<Statement> {
