@@ -19,6 +19,8 @@ pub mod graph_descriptor_tree;
 pub mod graph_index_metrics;
 pub mod ids;
 pub mod index_page;
+#[doc(hidden)]
+pub mod io;
 pub mod mutation;
 mod ownership;
 pub mod pressure;
