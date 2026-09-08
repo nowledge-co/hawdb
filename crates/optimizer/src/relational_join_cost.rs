@@ -1,5 +1,6 @@
 //! Canonical cost composition for relational join enumeration.
 
+use crate::cardinality_defaults::JOIN_SELECTIVITY_DIVISOR;
 use crate::cost::PlanCostBreakdown;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,11 +51,9 @@ impl RelationalJoinSelectivity {
     }
 
     fn materialized_divisor(self, left_rows: u64, right_rows: u64) -> u64 {
-        const DEFAULT_SELECTIVITY_DIVISOR: u64 = 10;
-
         let cap = |distinct_values: u64, rows: u64| distinct_values.max(1).min(rows.max(1));
         match self {
-            Self::Unknown => DEFAULT_SELECTIVITY_DIVISOR,
+            Self::Unknown => JOIN_SELECTIVITY_DIVISOR,
             Self::EquiJoin {
                 left_distinct_values,
                 right_distinct_values,
@@ -65,7 +64,7 @@ impl RelationalJoinSelectivity {
                     right_distinct_values.map(|distinct_values| cap(distinct_values, right_rows)),
                 )
                 .max()
-                .unwrap_or(DEFAULT_SELECTIVITY_DIVISOR),
+                .unwrap_or(JOIN_SELECTIVITY_DIVISOR),
         }
     }
 }
