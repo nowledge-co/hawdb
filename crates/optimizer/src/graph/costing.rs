@@ -1,6 +1,6 @@
 use super::cardinality::{
     estimate_aggregate_rows, estimate_aggregate_work_rows, estimate_filter_rows,
-    estimate_full_text_rows, estimate_optional_degree_work,
+    estimate_full_text_rows, estimate_optional_degree_work, PlanBindings,
 };
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use skein_core::Value;
@@ -185,18 +185,39 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
 ) -> PlanCostBreakdown {
-    let inputs = estimate_input_costs(plan, |input| {
-        estimate_physical_plan_cost_breakdown(input, catalog)
-    });
+    estimate_costed_plan(plan, catalog).cost
+}
+
+pub(super) struct CostedPlan<'a> {
+    pub(super) cost: PlanCostBreakdown,
+    bindings: PlanBindings<'a>,
+}
+
+fn estimate_costed_plan<'a>(plan: &'a PhysicalPlan, catalog: &OptimizerCatalog) -> CostedPlan<'a> {
+    let inputs = estimate_input_costs(plan, |input| estimate_costed_plan(input, catalog));
     estimate_operator_cost(plan, catalog, inputs)
+}
+
+// Keep the cost formulas fixed while tests substitute the original recursive
+// metadata queries for the production fold.
+#[cfg(test)]
+pub(super) fn estimate_cost_with_test_bindings<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
+) -> PlanCostBreakdown {
+    let inputs = estimate_input_costs(plan, |input| {
+        estimate_cost_with_test_bindings(input, catalog, bindings)
+    });
+    estimate_local_operator_cost(plan, catalog, inputs, &bindings(plan))
 }
 
 // Finish the child traversal before entering the large operator-cost match, so
 // its stack frame does not accumulate with plan depth in unoptimized builds.
-pub(super) fn estimate_input_costs(
-    plan: &PhysicalPlan,
-    mut visit: impl FnMut(&PhysicalPlan) -> PlanCostBreakdown,
-) -> [Option<PlanCostBreakdown>; 2] {
+pub(super) fn estimate_input_costs<'a, T>(
+    plan: &'a PhysicalPlan,
+    mut visit: impl FnMut(&'a PhysicalPlan) -> T,
+) -> [Option<T>; 2] {
     match plan.children() {
         PlanChildren::None => [None, None],
         PlanChildren::Unary(input) => [Some(visit(input)), None],
@@ -204,10 +225,25 @@ pub(super) fn estimate_input_costs(
     }
 }
 
-pub(super) fn estimate_operator_cost(
+pub(super) fn estimate_operator_cost<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    inputs: [Option<CostedPlan<'a>>; 2],
+) -> CostedPlan<'a> {
+    let costs = inputs
+        .each_ref()
+        .map(|input| input.as_ref().map(|input| input.cost));
+    let bindings =
+        PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)));
+    let cost = estimate_local_operator_cost(plan, catalog, costs, &bindings);
+    CostedPlan { cost, bindings }
+}
+
+fn estimate_local_operator_cost(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
     inputs: [Option<PlanCostBreakdown>; 2],
+    bindings: &PlanBindings<'_>,
 ) -> PlanCostBreakdown {
     #[cfg(test)]
     COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
@@ -229,7 +265,7 @@ pub(super) fn estimate_operator_cost(
         } => {
             let (input_rows, access_cost) = projected_access_cost(access, label, catalog);
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
-                estimate_filter_rows(predicate, plan, input_rows, catalog).max(1)
+                estimate_filter_rows(predicate, plan, input_rows, catalog, bindings).max(1)
             });
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
@@ -384,7 +420,13 @@ pub(super) fn estimate_operator_cost(
         }
         PhysicalPlan::FilterExec { predicate, input } => {
             let input_cost = inputs[0].expect("unary input cost");
-            let rows = estimate_filter_rows(predicate, input, input_cost.estimated_rows, catalog);
+            let rows = estimate_filter_rows(
+                predicate,
+                input,
+                input_cost.estimated_rows,
+                catalog,
+                bindings,
+            );
             input_cost.with_cpu(rows, input_cost.estimated_rows, 0)
         }
         PhysicalPlan::ProjectExec { .. } => {
@@ -433,15 +475,13 @@ pub(super) fn estimate_operator_cost(
             0,
         ),
         PhysicalPlan::AggregateExec {
-            group_keys,
-            items,
-            input,
+            group_keys, items, ..
         } => {
             let input_cost = inputs[0].expect("unary input cost");
             let rows =
-                estimate_aggregate_rows(group_keys, input, input_cost.estimated_rows, catalog);
+                estimate_aggregate_rows(group_keys, bindings, input_cost.estimated_rows, catalog);
             let work_rows =
-                estimate_aggregate_work_rows(items, input, input_cost.estimated_rows, catalog);
+                estimate_aggregate_work_rows(items, bindings, input_cost.estimated_rows, catalog);
             input_cost.with_cpu(rows, work_rows, 0)
         }
         PhysicalPlan::DistinctExec { .. } => {

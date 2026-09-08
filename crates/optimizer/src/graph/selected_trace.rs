@@ -33,6 +33,14 @@ fn collect_operator_costs(
     catalog: &OptimizerCatalog,
     estimates: &mut Vec<OperatorCardinalityEstimate>,
 ) -> PlanCostBreakdown {
+    collect_costed_plan(plan, catalog, estimates).cost
+}
+
+fn collect_costed_plan<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    estimates: &mut Vec<OperatorCardinalityEstimate>,
+) -> costing::CostedPlan<'a> {
     // Reserve IDs before traversing children, matching visit_plan_with_ids even
     // though a parent's cost is only available after both child costs.
     let ordinal = estimates.len();
@@ -41,12 +49,11 @@ fn collect_operator_costs(
         operator: plan.kind(),
         estimated_rows: 0,
     });
-    let inputs = costing::estimate_input_costs(plan, |input| {
-        collect_operator_costs(input, catalog, estimates)
-    });
-    let cost = costing::estimate_operator_cost(plan, catalog, inputs);
-    estimates[ordinal].estimated_rows = cost.estimated_rows;
-    cost
+    let inputs =
+        costing::estimate_input_costs(plan, |input| collect_costed_plan(input, catalog, estimates));
+    let costed = costing::estimate_operator_cost(plan, catalog, inputs);
+    estimates[ordinal].estimated_rows = costed.cost.estimated_rows;
+    costed
 }
 
 #[cfg(test)]
@@ -57,6 +64,52 @@ mod tests {
         OptimizerCatalogStatistics, OptimizerContext,
     };
     use skein_plan::PhysicalPlanKind;
+
+    #[test]
+    fn selected_trace_derives_cardinality_metadata_once_per_operator() {
+        let mut measurements = Vec::new();
+        for depth in [0, 8, 16, 32] {
+            let mut catalog = OptimizerCatalog::default();
+            catalog.label_counts.insert("Node".to_string(), 64);
+            catalog
+                .property_distinct_counts
+                .insert(("Node".to_string(), "key".to_string()), 1);
+            let mut plan = PhysicalPlan::SeqNodeScan {
+                variable: "n".to_string(),
+                label: "Node".to_string(),
+            };
+            for _ in 0..depth {
+                plan = PhysicalPlan::FilterExec {
+                    predicate: skein_plan::Predicate::PropertyEq {
+                        variable: "n".to_string(),
+                        property: "key".to_string(),
+                        value: skein_core::Value::Int(7),
+                    },
+                    input: Box::new(plan),
+                };
+            }
+            super::super::cardinality::take_metadata_visits();
+            let trace = selected_plan_trace(&plan, &catalog, &OptimizerContext::default());
+            let visits = super::super::cardinality::take_metadata_visits();
+            assert_eq!(trace.cardinality_estimates.len(), depth + 1);
+            assert!(trace
+                .cardinality_estimates
+                .iter()
+                .all(|item| item.estimated_rows == 64));
+            assert_eq!(
+                trace.cost_breakdown,
+                PlanCostBreakdown::new(64, depth as u64 * 64, 0, 68, 0)
+            );
+            measurements.push((depth, visits));
+        }
+        eprintln!("Cardinality metadata (depth, node visits): {measurements:?}");
+        for (depth, visits) in measurements {
+            assert!(
+                visits <= depth + 1,
+                "depth {depth}: {visits} metadata node visits"
+            );
+        }
+    }
 
     #[test]
     fn selected_trace_costs_each_operator_once() {

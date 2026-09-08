@@ -1,5 +1,5 @@
 use super::super::{
-    cardinality::{estimate_aggregate_rows, estimate_filter_rows, estimate_full_text_rows},
+    cardinality::{self, estimate_full_text_rows, PlanBindings},
     OptimizerCatalog, OptimizerIndexStatistics,
 };
 use crate::{
@@ -10,6 +10,30 @@ use skein_core::Value;
 use skein_cypher::RelationshipDirection;
 use skein_plan::{ComparisonOp, PhysicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
+
+fn estimate_filter_rows(
+    predicate: &Predicate,
+    input: &PhysicalPlan,
+    rows: u64,
+    catalog: &OptimizerCatalog,
+) -> u64 {
+    cardinality::estimate_filter_rows(
+        predicate,
+        input,
+        rows,
+        catalog,
+        &PlanBindings::for_plan(input),
+    )
+}
+
+fn estimate_aggregate_rows(
+    keys: &[Projection],
+    input: &PhysicalPlan,
+    rows: u64,
+    catalog: &OptimizerCatalog,
+) -> u64 {
+    cardinality::estimate_aggregate_rows(keys, &PlanBindings::for_plan(input), rows, catalog)
+}
 
 const COUNTS: &[u64] = &[
     0,

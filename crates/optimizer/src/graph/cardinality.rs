@@ -5,10 +5,21 @@ use crate::cardinality_defaults::{
 };
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
-use skein_plan::{
-    AggregateTarget, Aggregation, NodeProjectionAccess, Predicate, Projection, ProjectionExpression,
-};
+use skein_plan::{AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression};
 use std::collections::{BTreeMap, BTreeSet};
+
+mod bindings;
+pub(super) use bindings::PlanBindings;
+
+#[cfg(test)]
+thread_local! {
+    static METADATA_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_metadata_visits() -> usize {
+    METADATA_VISITS.with(|count| count.replace(0))
+}
 
 pub(super) fn estimate_full_text_rows(label_rows: u64) -> u64 {
     label_rows.div_ceil(FULL_TEXT_SELECTIVITY_DIVISOR).max(1)
@@ -19,16 +30,17 @@ pub(super) fn estimate_filter_rows(
     input: &PhysicalPlan,
     input_rows: u64,
     catalog: &OptimizerCatalog,
+    bindings: &PlanBindings<'_>,
 ) -> u64 {
-    estimate_relationship_filter_rows(predicate, input, input_rows, catalog)
-        .or_else(|| estimate_node_property_filter_rows(predicate, input, input_rows, catalog))
+    estimate_relationship_filter_rows(predicate, input, input_rows, catalog, bindings)
+        .or_else(|| estimate_node_property_filter_rows(predicate, bindings, input_rows, catalog))
         .unwrap_or_else(|| input_rows.div_ceil(FILTER_SELECTIVITY_DIVISOR).max(1))
         .max(1)
 }
 
 pub(super) fn estimate_aggregate_rows(
     group_keys: &[Projection],
-    input: &PhysicalPlan,
+    input: &PlanBindings<'_>,
     input_rows: u64,
     catalog: &OptimizerCatalog,
 ) -> u64 {
@@ -40,9 +52,9 @@ pub(super) fn estimate_aggregate_rows(
         let ProjectionExpression::Property { variable, property } = &group_key.expression else {
             return input_rows.div_ceil(AGGREGATE_GROUPS_DIVISOR).max(1);
         };
-        let distinct_count = if let Some(label) = physical_plan_node_label(input, variable) {
+        let distinct_count = if let Some(label) = input.node_label(variable) {
             catalog.known_distinct_count(label, property)
-        } else if let Some(rel_type) = physical_plan_relationship_type(input, variable) {
+        } else if let Some(rel_type) = input.relationship_type(variable) {
             catalog.known_rel_property_distinct_count(rel_type, property)
         } else {
             None
@@ -57,7 +69,7 @@ pub(super) fn estimate_aggregate_rows(
 
 pub(super) fn estimate_aggregate_work_rows(
     items: &[Aggregation],
-    input: &PhysicalPlan,
+    input: &PlanBindings<'_>,
     input_rows: u64,
     catalog: &OptimizerCatalog,
 ) -> u64 {
@@ -69,20 +81,18 @@ pub(super) fn estimate_aggregate_work_rows(
             }
             match &item.target {
                 AggregateTarget::Variable(variable) => {
-                    if let Some(distinct_count) =
-                        physical_plan_node_variable_distinct_count(input, variable, catalog)
-                    {
+                    if let Some(distinct_count) = input.node_distinct_count(variable, catalog) {
                         Some(distinct_count)
                     } else {
-                        physical_plan_relationship_type(input, variable)
+                        input
+                            .relationship_type(variable)
                             .map(|rel_type| catalog.relationship_count(rel_type))
                     }
                 }
                 AggregateTarget::Property { variable, property } => {
-                    if let Some(label) = physical_plan_node_label(input, variable) {
+                    if let Some(label) = input.node_label(variable) {
                         catalog.known_distinct_count(label, property)
-                    } else if let Some(rel_type) = physical_plan_relationship_type(input, variable)
-                    {
+                    } else if let Some(rel_type) = input.relationship_type(variable) {
                         catalog.known_rel_property_distinct_count(rel_type, property)
                     } else {
                         None
@@ -152,73 +162,6 @@ pub(super) fn estimate_optional_degree_work(
         .saturating_add(1)
 }
 
-fn physical_plan_node_variable_distinct_count(
-    plan: &PhysicalPlan,
-    variable: &str,
-    catalog: &OptimizerCatalog,
-) -> Option<u64> {
-    match plan {
-        PhysicalPlan::AdjacencyExpandExec {
-            source_variable,
-            source_label,
-            rel_type,
-            target_variable,
-            target_label,
-            min_hops,
-            max_hops,
-            input,
-            ..
-        } => {
-            if source_variable == variable {
-                catalog
-                    .bounded_path_source_distinct_count(
-                        source_label,
-                        rel_type,
-                        target_label,
-                        *min_hops,
-                        *max_hops,
-                    )
-                    .or_else(|| {
-                        catalog.path_source_distinct_count(source_label, rel_type, target_label)
-                    })
-                    .or_else(|| Some(catalog.label_count(source_label)))
-            } else if target_variable == variable {
-                catalog
-                    .bounded_path_target_distinct_count(
-                        source_label,
-                        rel_type,
-                        target_label,
-                        *min_hops,
-                        *max_hops,
-                    )
-                    .or_else(|| {
-                        catalog.path_target_distinct_count(source_label, rel_type, target_label)
-                    })
-                    .or_else(|| Some(catalog.label_count(target_label)))
-            } else {
-                physical_plan_node_variable_distinct_count(input, variable, catalog)
-            }
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            physical_plan_node_variable_distinct_count(left, variable, catalog)
-                .or_else(|| physical_plan_node_variable_distinct_count(right, variable, catalog))
-        }
-        PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::NodeColumnLookupExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::AggregateExec { input, .. }
-        | PhysicalPlan::DistinctExec { input }
-        | PhysicalPlan::SortExec { input, .. }
-        | PhysicalPlan::TopNExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => {
-            physical_plan_node_variable_distinct_count(input, variable, catalog)
-        }
-        _ => physical_plan_node_label(plan, variable).map(|label| catalog.label_count(label)),
-    }
-}
-
 fn estimate_id_in_rows(values: &[Value], input_rows: u64) -> u64 {
     values
         .iter()
@@ -229,7 +172,7 @@ fn estimate_id_in_rows(values: &[Value], input_rows: u64) -> u64 {
 
 fn estimate_node_property_filter_rows(
     predicate: &Predicate,
-    input: &PhysicalPlan,
+    input: &PlanBindings<'_>,
     input_rows: u64,
     catalog: &OptimizerCatalog,
 ) -> Option<u64> {
@@ -275,29 +218,30 @@ fn estimate_node_property_filter_rows(
             Some(rows)
         }
         Predicate::ConstantBool(value) => Some(if *value { input_rows } else { 0 }),
-        Predicate::IdEq { variable, .. } => {
-            physical_plan_node_label(input, variable).map(|_| input_rows.min(1))
-        }
-        Predicate::IdNotEq { variable, .. } => {
-            physical_plan_node_label(input, variable).map(|_| input_rows.saturating_sub(1))
-        }
+        Predicate::IdEq { variable, .. } => input.node_label(variable).map(|_| input_rows.min(1)),
+        Predicate::IdNotEq { variable, .. } => input
+            .node_label(variable)
+            .map(|_| input_rows.saturating_sub(1)),
         Predicate::IdIn {
             variable, values, ..
-        } => physical_plan_node_label(input, variable)
+        } => input
+            .node_label(variable)
             .map(|_| estimate_id_in_rows(values, input_rows)),
         Predicate::PropertyEq {
             variable, property, ..
         } => {
-            if physical_plan_access_path_covers_property(input, variable, property) {
+            if input.covers_property(variable, property) {
                 None
             } else {
-                physical_plan_node_label(input, variable)
+                input
+                    .node_label(variable)
                     .map(|label| catalog.estimate_property_eq_rows(label, property, input_rows))
             }
         }
         Predicate::PropertyNotEq {
             variable, property, ..
-        } => physical_plan_node_label(input, variable)
+        } => input
+            .node_label(variable)
             .map(|label| catalog.estimate_property_not_eq_rows(label, property, input_rows)),
         Predicate::PropertyCompare {
             variable,
@@ -305,10 +249,10 @@ fn estimate_node_property_filter_rows(
             op,
             value,
         } => {
-            if physical_plan_access_path_covers_property(input, variable, property) {
+            if input.covers_property(variable, property) {
                 None
             } else {
-                physical_plan_node_label(input, variable).map(|label| {
+                input.node_label(variable).map(|label| {
                     catalog.estimate_property_range_rows(label, property, *op, value, input_rows)
                 })
             }
@@ -318,10 +262,10 @@ fn estimate_node_property_filter_rows(
             property,
             values,
         } => {
-            if physical_plan_access_path_covers_property(input, variable, property) {
+            if input.covers_property(variable, property) {
                 None
             } else {
-                physical_plan_node_label(input, variable).map(|label| {
+                input.node_label(variable).map(|label| {
                     catalog.estimate_property_in_rows(label, property, values, input_rows)
                 })
             }
@@ -329,10 +273,10 @@ fn estimate_node_property_filter_rows(
         Predicate::PropertyContains {
             variable, property, ..
         } => {
-            if physical_plan_access_path_covers_property(input, variable, property) {
-                physical_plan_node_label(input, variable).map(|_| input_rows)
+            if input.covers_property(variable, property) {
+                input.node_label(variable).map(|_| input_rows)
             } else {
-                physical_plan_node_label(input, variable).map(|label| {
+                input.node_label(variable).map(|label| {
                     catalog.estimate_property_string_match_rows(
                         label,
                         property,
@@ -344,7 +288,7 @@ fn estimate_node_property_filter_rows(
         }
         Predicate::PropertyStartsWith {
             variable, property, ..
-        } => physical_plan_node_label(input, variable).map(|label| {
+        } => input.node_label(variable).map(|label| {
             catalog.estimate_property_string_match_rows(
                 label,
                 property,
@@ -354,7 +298,7 @@ fn estimate_node_property_filter_rows(
         }),
         Predicate::PropertyEndsWith {
             variable, property, ..
-        } => physical_plan_node_label(input, variable).map(|label| {
+        } => input.node_label(variable).map(|label| {
             catalog.estimate_property_string_match_rows(
                 label,
                 property,
@@ -362,19 +306,17 @@ fn estimate_node_property_filter_rows(
                 ENDS_WITH_SELECTIVITY_DIVISOR,
             )
         }),
-        Predicate::PropertyIsNull { variable, property } => {
-            physical_plan_node_label(input, variable)
-                .map(|label| catalog.estimate_property_null_rows(label, property, input_rows))
-        }
-        Predicate::PropertyIsNotNull { variable, property } => {
-            physical_plan_node_label(input, variable)
-                .map(|label| catalog.estimate_property_not_null_rows(label, property, input_rows))
-        }
+        Predicate::PropertyIsNull { variable, property } => input
+            .node_label(variable)
+            .map(|label| catalog.estimate_property_null_rows(label, property, input_rows)),
+        Predicate::PropertyIsNotNull { variable, property } => input
+            .node_label(variable)
+            .map(|label| catalog.estimate_property_not_null_rows(label, property, input_rows)),
         _ => None,
     }
 }
 
-fn exact_property_predicate_is_covered(predicate: &Predicate, input: &PhysicalPlan) -> bool {
+fn exact_property_predicate_is_covered(predicate: &Predicate, input: &PlanBindings<'_>) -> bool {
     match predicate {
         Predicate::PropertyEq {
             variable, property, ..
@@ -384,206 +326,8 @@ fn exact_property_predicate_is_covered(predicate: &Predicate, input: &PhysicalPl
         }
         | Predicate::PropertyCompare {
             variable, property, ..
-        } => physical_plan_access_path_covers_property(input, variable, property),
+        } => input.covers_property(variable, property),
         _ => false,
-    }
-}
-
-fn physical_plan_access_path_covers_property(
-    plan: &PhysicalPlan,
-    variable: &str,
-    property: &str,
-) -> bool {
-    match plan {
-        PhysicalPlan::IndexNodeSeek {
-            variable: plan_variable,
-            property: plan_property,
-            ..
-        }
-        | PhysicalPlan::IndexNodeMultiSeek {
-            variable: plan_variable,
-            property: plan_property,
-            ..
-        }
-        | PhysicalPlan::IndexNodeRangeSeek {
-            variable: plan_variable,
-            property: plan_property,
-            ..
-        }
-        | PhysicalPlan::IndexNodeTextSeek {
-            variable: plan_variable,
-            property: plan_property,
-            ..
-        }
-        | PhysicalPlan::NodeProjectionScanExec {
-            variable: plan_variable,
-            access:
-                NodeProjectionAccess::FullText {
-                    property: plan_property,
-                    ..
-                },
-            ..
-        } => plan_variable == variable && plan_property == property,
-        PhysicalPlan::IndexNodeCompositeSeek {
-            variable: plan_variable,
-            predicates,
-            ..
-        } => {
-            plan_variable == variable
-                && predicates
-                    .iter()
-                    .any(|(plan_property, _)| plan_property == property)
-        }
-        PhysicalPlan::IndexNodeCompositeRangeSeek {
-            variable: plan_variable,
-            seek,
-            ..
-        } => {
-            plan_variable == variable
-                && (seek.range_property == property
-                    || seek
-                        .equality_prefix
-                        .iter()
-                        .any(|(plan_property, _)| plan_property == property))
-        }
-        PhysicalPlan::IndexNodeUnionSeek {
-            variable: plan_variable,
-            branches,
-            ..
-        } => plan_variable == variable && branches.iter().any(|branch| branch.property == property),
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            physical_plan_access_path_covers_property(left, variable, property)
-                || physical_plan_access_path_covers_property(right, variable, property)
-        }
-        PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::NodeColumnLookupExec { input, .. }
-        | PhysicalPlan::AdjacencyExpandExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::AggregateExec { input, .. }
-        | PhysicalPlan::DistinctExec { input }
-        | PhysicalPlan::SortExec { input, .. }
-        | PhysicalPlan::TopNExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => {
-            physical_plan_access_path_covers_property(input, variable, property)
-        }
-        _ => false,
-    }
-}
-
-fn physical_plan_node_label<'a>(plan: &'a PhysicalPlan, variable: &str) -> Option<&'a str> {
-    match plan {
-        PhysicalPlan::SeqNodeScan {
-            variable: plan_variable,
-            label,
-        }
-        | PhysicalPlan::IndexNodeSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeMultiSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeUnionSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeCompositeSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeCompositeRangeSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeRangeSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::IndexNodeTextSeek {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::NodeProjectionScanExec {
-            variable: plan_variable,
-            label,
-            ..
-        }
-        | PhysicalPlan::NodeColumnLookupExec {
-            variable: plan_variable,
-            label,
-            ..
-        } if plan_variable == variable => Some(label.as_str()),
-        PhysicalPlan::AdjacencyExpandExec {
-            source_variable,
-            source_label,
-            target_variable,
-            target_label,
-            input,
-            ..
-        } => {
-            if source_variable == variable {
-                Some(source_label.as_str())
-            } else if target_variable == variable {
-                Some(target_label.as_str())
-            } else {
-                physical_plan_node_label(input, variable)
-            }
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            physical_plan_node_label(left, variable)
-                .or_else(|| physical_plan_node_label(right, variable))
-        }
-        PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::AggregateExec { input, .. }
-        | PhysicalPlan::DistinctExec { input }
-        | PhysicalPlan::SortExec { input, .. }
-        | PhysicalPlan::TopNExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => physical_plan_node_label(input, variable),
-        _ => None,
-    }
-}
-
-fn physical_plan_relationship_type<'a>(plan: &'a PhysicalPlan, variable: &str) -> Option<&'a str> {
-    match plan {
-        PhysicalPlan::AdjacencyExpandExec {
-            rel_variable: Some(rel_variable),
-            rel_type,
-            input,
-            ..
-        } => {
-            if rel_variable == variable {
-                Some(rel_type.as_str())
-            } else {
-                physical_plan_relationship_type(input, variable)
-            }
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            physical_plan_relationship_type(left, variable)
-                .or_else(|| physical_plan_relationship_type(right, variable))
-        }
-        PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::AggregateExec { input, .. }
-        | PhysicalPlan::DistinctExec { input }
-        | PhysicalPlan::SortExec { input, .. }
-        | PhysicalPlan::TopNExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => physical_plan_relationship_type(input, variable),
-        _ => None,
     }
 }
 
@@ -592,6 +336,7 @@ fn estimate_relationship_filter_rows(
     input: &PhysicalPlan,
     input_rows: u64,
     catalog: &OptimizerCatalog,
+    bindings: &PlanBindings<'_>,
 ) -> Option<u64> {
     match predicate {
         Predicate::And(predicates) => {
@@ -599,7 +344,7 @@ fn estimate_relationship_filter_rows(
             let mut matched = false;
             for predicate in predicates {
                 if let Some(estimated) =
-                    estimate_relationship_filter_rows(predicate, input, rows, catalog)
+                    estimate_relationship_filter_rows(predicate, input, rows, catalog, bindings)
                 {
                     rows = estimated;
                     matched = true;
@@ -613,8 +358,9 @@ fn estimate_relationship_filter_rows(
         Predicate::Or(predicates) => {
             let mut rows = 0_u64;
             for predicate in predicates {
-                let estimated =
-                    estimate_relationship_filter_rows(predicate, input, input_rows, catalog)?;
+                let estimated = estimate_relationship_filter_rows(
+                    predicate, input, input_rows, catalog, bindings,
+                )?;
                 rows = rows.saturating_add(estimated);
                 if rows >= input_rows {
                     return Some(input_rows);
@@ -623,15 +369,16 @@ fn estimate_relationship_filter_rows(
             Some(rows)
         }
         Predicate::ConstantBool(value) => Some(if *value { input_rows } else { 0 }),
-        Predicate::IdEq { variable, .. } => {
-            physical_plan_relationship_type(input, variable).map(|_| input_rows.min(1))
-        }
-        Predicate::IdNotEq { variable, .. } => {
-            physical_plan_relationship_type(input, variable).map(|_| input_rows.saturating_sub(1))
-        }
+        Predicate::IdEq { variable, .. } => bindings
+            .relationship_type(variable)
+            .map(|_| input_rows.min(1)),
+        Predicate::IdNotEq { variable, .. } => bindings
+            .relationship_type(variable)
+            .map(|_| input_rows.saturating_sub(1)),
         Predicate::IdIn {
             variable, values, ..
-        } => physical_plan_relationship_type(input, variable)
+        } => bindings
+            .relationship_type(variable)
             .map(|_| estimate_id_in_rows(values, input_rows)),
         Predicate::PropertyEq {
             variable, property, ..
