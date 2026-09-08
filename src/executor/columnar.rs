@@ -2,6 +2,9 @@
 
 mod lending;
 
+#[cfg(test)]
+mod scan_error_tests;
+
 use super::*;
 use lending::{
     admitted_numeric_batch_rows, LendingBatchCursor, NumericNodeBatch, NumericNodeBatchCursor,
@@ -810,7 +813,6 @@ fn stream_owned_numeric_nodes(
         context.observer,
         emit,
     );
-    let mut callback_error = None;
     let mut stopped = false;
     {
         let mut consume = |node: NodeRecord| {
@@ -822,14 +824,9 @@ fn stream_owned_numeric_nodes(
                 && buffered_bytes.saturating_add(node_bytes)
                     > context.memory.batch_payload_bytes.get()
             {
-                match batch_emitter.emit_owned(&mut nodes) {
-                    Ok(BatchControl::Continue) => buffered_bytes = 0,
-                    Ok(BatchControl::Stop) => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                    Err(error) => {
-                        callback_error = Some(error);
+                match batch_emitter.emit_owned(&mut nodes)? {
+                    BatchControl::Continue => buffered_bytes = 0,
+                    BatchControl::Stop => {
                         stopped = true;
                         return Ok(ScanControl::Stop);
                     }
@@ -840,14 +837,9 @@ fn stream_owned_numeric_nodes(
             if nodes.len() == context.memory.batch_rows.get()
                 || buffered_bytes >= context.memory.batch_payload_bytes.get()
             {
-                match batch_emitter.emit_owned(&mut nodes) {
-                    Ok(BatchControl::Continue) => buffered_bytes = 0,
-                    Ok(BatchControl::Stop) => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                    Err(error) => {
-                        callback_error = Some(error);
+                match batch_emitter.emit_owned(&mut nodes)? {
+                    BatchControl::Continue => buffered_bytes = 0,
+                    BatchControl::Stop => {
                         stopped = true;
                         return Ok(ScanControl::Stop);
                     }
@@ -863,9 +855,6 @@ fn stream_owned_numeric_nodes(
         context
             .store
             .visit_nodes_owned(Some(label_id), &mut consume)?;
-    }
-    if let Some(error) = callback_error {
-        return Err(error);
     }
     if !stopped && !nodes.is_empty() {
         stopped = batch_emitter.emit_owned(&mut nodes)? == BatchControl::Stop;
@@ -892,27 +881,17 @@ fn stream_owned_typed_numeric_nodes(
         context.observer,
         emit,
     );
-    let mut callback_error = None;
     let mut stopped = false;
     {
         let mut consume = |node: NodeRecord| {
             if stopped {
                 return Ok(ScanControl::Stop);
             }
-            if let Err(error) = buffer.push_owned(node) {
-                callback_error = Some(error);
-                stopped = true;
-                return Ok(ScanControl::Stop);
-            }
+            buffer.push_owned(node)?;
             if buffer.is_full() {
-                match batch_emitter.emit_typed(buffer.take_batch()) {
-                    Ok(BatchControl::Continue) => buffer.clear(),
-                    Ok(BatchControl::Stop) => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                    Err(error) => {
-                        callback_error = Some(error);
+                match batch_emitter.emit_typed(buffer.take_batch())? {
+                    BatchControl::Continue => buffer.clear(),
+                    BatchControl::Stop => {
                         stopped = true;
                         return Ok(ScanControl::Stop);
                     }
@@ -928,9 +907,6 @@ fn stream_owned_typed_numeric_nodes(
         context
             .store
             .visit_nodes_owned(Some(label_id), &mut consume)?;
-    }
-    if let Some(error) = callback_error {
-        return Err(error);
     }
     if !stopped && !buffer.is_empty() {
         stopped = batch_emitter.emit_typed(buffer.take_batch())? == BatchControl::Stop;

@@ -554,13 +554,9 @@ pub(super) fn execute_bindings_with_limit(
                 .collect::<Vec<_>>();
             let label_ids = label_ids_for_pattern(catalog, label);
             let mut ids = Vec::new();
-            let mut callback_error = None;
-            store.visit_nodes_owned(None, |node| {
-                if callback_error.is_some() {
-                    return GraphScanControl::Stop;
-                }
+            store.try_visit_nodes_owned(None, |node| {
                 if !node_matches_label_pattern(&node, label_ids.as_deref()) {
-                    return GraphScanControl::Continue;
+                    return Ok(GraphScanControl::Continue);
                 }
                 let id = node.id;
                 let binding = Binding {
@@ -568,22 +564,14 @@ pub(super) fn execute_bindings_with_limit(
                     nodes: BTreeMap::from([(variable.clone(), node)]),
                     relationships: BTreeMap::new(),
                 };
-                if let Some(predicate) = predicate {
-                    match evaluate_predicate(predicate, catalog, store, &binding) {
-                        Ok(true) => {}
-                        Ok(false) => return GraphScanControl::Continue,
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return GraphScanControl::Stop;
-                        }
-                    }
+                if let Some(predicate) = predicate
+                    && !evaluate_predicate(predicate, catalog, store, &binding)?
+                {
+                    return Ok(GraphScanControl::Continue);
                 }
                 ids.push(id);
-                GraphScanControl::Continue
+                Ok(GraphScanControl::Continue)
             })?;
-            if let Some(error) = callback_error {
-                return Err(error);
-            }
             let ids = store.set_node_properties_by_ids(catalog, &ids, &assignments)?;
             match returns {
                 SetNodePropertiesReturnMode::Project(returns) => ids
@@ -713,16 +701,12 @@ pub(super) fn execute_bindings_with_limit(
                 .as_ref()
                 .and_then(|predicate| node_scan_filter_from_predicate(predicate, variable));
             let mut ids = Vec::new();
-            let mut callback_error = None;
-            store.visit_nodes_owned(label_id, |node| {
-                if callback_error.is_some() {
-                    return GraphScanControl::Stop;
-                }
+            store.try_visit_nodes_owned(label_id, |node| {
                 if candidate_filter
                     .as_ref()
                     .is_some_and(|filter| !node_matches_property_filter(&node, filter))
                 {
-                    return GraphScanControl::Continue;
+                    return Ok(GraphScanControl::Continue);
                 }
                 let id = node.id;
                 let binding = Binding {
@@ -730,22 +714,14 @@ pub(super) fn execute_bindings_with_limit(
                     nodes: BTreeMap::from([(variable.clone(), node)]),
                     relationships: BTreeMap::new(),
                 };
-                if let Some(predicate) = predicate {
-                    match evaluate_predicate(predicate, catalog, store, &binding) {
-                        Ok(true) => {}
-                        Ok(false) => return GraphScanControl::Continue,
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return GraphScanControl::Stop;
-                        }
-                    }
+                if let Some(predicate) = predicate
+                    && !evaluate_predicate(predicate, catalog, store, &binding)?
+                {
+                    return Ok(GraphScanControl::Continue);
                 }
                 ids.push(id);
-                GraphScanControl::Continue
+                Ok(GraphScanControl::Continue)
             })?;
-            if let Some(error) = callback_error {
-                return Err(error);
-            }
             let ids = store.delete_node_ids(catalog, &ids, *detach)?;
             Ok(ids
                 .into_iter()

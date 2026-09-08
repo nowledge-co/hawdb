@@ -185,30 +185,14 @@ pub(super) fn stream_visited_node_batches(
         context.memory_ledger,
     );
     let mut emitted = 0usize;
-    let mut callback_error = None;
     let mut consumer = |node| {
-        if let Err(error) = runtime_checkpoint(context.task_context) {
-            callback_error = Some(error);
+        runtime_checkpoint(context.task_context)?;
+        if batch.push(single_node_binding(variable, node), emit)? == BatchControl::Stop {
             return Ok(ScanControl::Stop);
         }
-        match batch.push(single_node_binding(variable, node), emit) {
-            Ok(BatchControl::Continue) => {}
-            Ok(BatchControl::Stop) => return Ok(ScanControl::Stop),
-            Err(error) => {
-                callback_error = Some(error);
-                return Ok(ScanControl::Stop);
-            }
-        }
         emitted = emitted.saturating_add(1);
-        if batch.is_full() {
-            match batch.emit(emit) {
-                Ok(BatchControl::Continue) => {}
-                Ok(BatchControl::Stop) => return Ok(ScanControl::Stop),
-                Err(error) => {
-                    callback_error = Some(error);
-                    return Ok(ScanControl::Stop);
-                }
-            }
+        if batch.is_full() && batch.emit(emit)? == BatchControl::Stop {
+            return Ok(ScanControl::Stop);
         }
         if execution_limit.is_reached(emitted) {
             Ok(ScanControl::Stop)
@@ -217,9 +201,6 @@ pub(super) fn stream_visited_node_batches(
         }
     };
     let control = visit(&mut consumer)?;
-    if let Some(error) = callback_error {
-        return Err(error);
-    }
     if !batch.is_empty() && batch.emit(emit)? == BatchControl::Stop {
         return Ok(BatchControl::Stop);
     }
