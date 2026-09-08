@@ -25,11 +25,32 @@ rust_test(
     deps = [":skein_sql_syntax"],
 )
 
+_POSTGRES_SELECT_TEST_SRCS = [
+    "tests/postgres_select_pgq.rs",
+    "tests/support/alias_boundaries.rs",
+]
+
 rust_test(
     name = "postgres_select_pgq_tests",
     crate_name = "postgres_select_pgq_tests",
     crate_root = "tests/postgres_select_pgq.rs",
-    srcs = ["tests/postgres_select_pgq.rs"],
+    srcs = _POSTGRES_SELECT_TEST_SRCS,
+    edition = "2024",
+    deps = [":skein_sql_syntax"],
+)
+
+rust_test(
+    name = "skein_sql_alias_boundary_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "alias_boundaries::table_alias_boundary_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate_name = "postgres_select_pgq_tests",
+    crate_root = "tests/postgres_select_pgq.rs",
+    srcs = _POSTGRES_SELECT_TEST_SRCS,
     edition = "2024",
     deps = [":skein_sql_syntax"],
 )

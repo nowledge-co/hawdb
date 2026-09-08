@@ -1,3 +1,9 @@
+//! Canonical graph DDL command types shared by syntax ASTs and query plans.
+//!
+//! Frontends re-export these types instead of defining parser-specific copies.
+//! Core catalog types remain behind the explicit conversions in [`convert`];
+//! this crate does not own catalog execution or persistent encoding.
+
 pub mod convert;
 pub mod types;
 

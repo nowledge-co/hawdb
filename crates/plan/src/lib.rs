@@ -7,3 +7,6 @@ pub use logical::*;
 pub use physical::*;
 pub use root::*;
 pub use vector::*;
+
+#[cfg(test)]
+mod schema_tests;

@@ -1,4 +1,8 @@
 use super::value_range::{compare_histogram_value, range_bound_matches, ValueRangeBound};
+use crate::cardinality_defaults::{
+    NULL_SELECTIVITY_DIVISOR_CAP, RANGE_SELECTIVITY_DIVISOR, SAMPLED_HISTOGRAM_MATCH_PSEUDOCOUNT,
+    SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT,
+};
 use skein_core::Value;
 use skein_plan::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
@@ -477,7 +481,9 @@ impl OptimizerCatalog {
         input_rows: u64,
     ) -> u64 {
         let distinct_count = self.rel_property_distinct_count(rel_type, property).max(1);
-        input_rows.div_ceil(distinct_count.min(10)).max(1)
+        input_rows
+            .div_ceil(distinct_count.min(NULL_SELECTIVITY_DIVISOR_CAP))
+            .max(1)
     }
 
     pub(super) fn estimate_rel_property_not_null_rows(
@@ -505,7 +511,7 @@ impl OptimizerCatalog {
             .get(&key)
             .filter(|values| !values.is_empty())
         else {
-            return input_rows.div_ceil(2).max(1);
+            return input_rows.div_ceil(RANGE_SELECTIVITY_DIVISOR).max(1);
         };
         let matching_values = histogram
             .iter()
@@ -536,7 +542,7 @@ impl OptimizerCatalog {
             .get(&key)
             .filter(|values| !values.is_empty())
         else {
-            return label_count.div_ceil(2).max(1);
+            return label_count.div_ceil(RANGE_SELECTIVITY_DIVISOR).max(1);
         };
         let matching_values = histogram
             .iter()
@@ -617,7 +623,9 @@ impl OptimizerCatalog {
         input_rows: u64,
     ) -> u64 {
         let distinct_count = self.distinct_count(label, property).max(1);
-        input_rows.div_ceil(distinct_count.min(10)).max(1)
+        input_rows
+            .div_ceil(distinct_count.min(NULL_SELECTIVITY_DIVISOR_CAP))
+            .max(1)
     }
 
     pub(super) fn estimate_property_not_null_rows(
@@ -645,7 +653,7 @@ impl OptimizerCatalog {
             .get(&key)
             .filter(|values| !values.is_empty())
         else {
-            return input_rows.div_ceil(2).max(1);
+            return input_rows.div_ceil(RANGE_SELECTIVITY_DIVISOR).max(1);
         };
         let matching_values = histogram
             .iter()
@@ -676,7 +684,7 @@ impl OptimizerCatalog {
             .get(&key)
             .filter(|values| !values.is_empty())
         else {
-            return label_count.div_ceil(2).max(1);
+            return label_count.div_ceil(RANGE_SELECTIVITY_DIVISOR).max(1);
         };
         let matching_values = histogram
             .iter()
@@ -777,8 +785,8 @@ fn estimate_histogram_rows(
     // the actual sample size, while leaving complete histograms exact.
     let (matching_values, histogram_values) = if sampled {
         (
-            matching_values.saturating_add(1),
-            histogram_values.saturating_add(2),
+            matching_values.saturating_add(SAMPLED_HISTOGRAM_MATCH_PSEUDOCOUNT),
+            histogram_values.saturating_add(SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT),
         )
     } else {
         (matching_values, histogram_values)

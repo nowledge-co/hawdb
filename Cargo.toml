@@ -101,7 +101,7 @@ lto = false
 incremental = true
 panic = "unwind"
 debug-assertions = true
-overflow-checks = false
+overflow-checks = true
 rpath = false
 
 [profile.release]

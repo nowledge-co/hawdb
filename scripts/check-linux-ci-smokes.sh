@@ -149,16 +149,42 @@ run_optimizer_benchmark_group_smoke() {
     echo "optimizer benchmark group [$start, $((start + length))) exceeds ${#benchmark_smokes[@]} benchmarks" >&2
     exit 2
   fi
-  local root="$work_root/optimizer-benchmarks-$start"
+  local root="${TEST_UNDECLARED_OUTPUTS_DIR:-$work_root}/optimizer-benchmarks-$start"
   mkdir -p "$root"
   local benchmark
   for benchmark in "${benchmark_smokes[@]:start:length}"; do
     local output="$root/$(basename "$benchmark").txt"
-    if ! "$benchmark" > "$output"; then
+    local started=$SECONDS
+    echo "benchmark started: $(basename "$benchmark")" >&2
+    if "$benchmark" > "$output"; then
+      echo "benchmark completed: $(basename "$benchmark") ($((SECONDS - started))s)" >&2
+    else
+      local status=$?
       cat "$output" >&2
-      return 1
+      echo "benchmark failed: $(basename "$benchmark") (exit $status)" >&2
+      return "$status"
     fi
   done
+}
+
+run_named_optimizer_benchmark_smoke() {
+  local name="$1"
+  local selected=-1
+  local index
+  for index in "${!benchmark_smokes[@]}"; do
+    if [[ "$(basename "${benchmark_smokes[index]}")" == "skein_bench_$name" ]]; then
+      if (( selected >= 0 )); then
+        echo "duplicate optimizer benchmark: $name" >&2
+        return 2
+      fi
+      selected=$index
+    fi
+  done
+  if (( selected < 0 )); then
+    echo "unknown optimizer benchmark: $name" >&2
+    return 2
+  fi
+  run_optimizer_benchmark_group_smoke "$selected" 1
 }
 
 run_final_optimizer_benchmark_group_smoke() {
@@ -700,6 +726,7 @@ case "$smoke" in
   optimizer_group_1) run_optimizer_benchmark_group_smoke 1 "$optimizer_benchmark_group_size" ;;
   optimizer_group_2) run_optimizer_benchmark_group_smoke "$((1 + optimizer_benchmark_group_size))" "$optimizer_benchmark_group_size" ;;
   optimizer_group_3) run_final_optimizer_benchmark_group_smoke ;;
+  benchmark:*) run_named_optimizer_benchmark_smoke "${smoke#benchmark:}" ;;
   relational_row_page_lending) run_optimizer_benchmark_group_smoke "$row_page_lending_benchmark_index" 1 ;;
   wal_group_commit) run_optimizer_benchmark_group_smoke "$wal_group_commit_benchmark_index" 1 ;;
   fixture_contract) run_fixture_contract_smoke ;;

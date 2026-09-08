@@ -1,14 +1,14 @@
 use super::{OptimizerCatalog, PhysicalPlan};
+use crate::cardinality_defaults::{
+    AGGREGATE_GROUPS_DIVISOR, CONTAINS_SELECTIVITY_DIVISOR, ENDS_WITH_SELECTIVITY_DIVISOR,
+    FILTER_SELECTIVITY_DIVISOR, FULL_TEXT_SELECTIVITY_DIVISOR, STARTS_WITH_SELECTIVITY_DIVISOR,
+};
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
 use skein_plan::{
     AggregateTarget, Aggregation, NodeProjectionAccess, Predicate, Projection, ProjectionExpression,
 };
 use std::collections::{BTreeMap, BTreeSet};
-
-// Until query-specific full-text statistics exist, use the same quarter-label
-// fallback before and after projection fusion. Materialization is not selectivity.
-const FULL_TEXT_SELECTIVITY_DIVISOR: u64 = 4;
 
 pub(super) fn estimate_full_text_rows(label_rows: u64) -> u64 {
     label_rows.div_ceil(FULL_TEXT_SELECTIVITY_DIVISOR).max(1)
@@ -22,7 +22,7 @@ pub(super) fn estimate_filter_rows(
 ) -> u64 {
     estimate_relationship_filter_rows(predicate, input, input_rows, catalog)
         .or_else(|| estimate_node_property_filter_rows(predicate, input, input_rows, catalog))
-        .unwrap_or_else(|| input_rows.div_ceil(2).max(1))
+        .unwrap_or_else(|| input_rows.div_ceil(FILTER_SELECTIVITY_DIVISOR).max(1))
         .max(1)
 }
 
@@ -38,7 +38,7 @@ pub(super) fn estimate_aggregate_rows(
     let mut distinct_product = 1_u64;
     for group_key in group_keys {
         let ProjectionExpression::Property { variable, property } = &group_key.expression else {
-            return input_rows.div_ceil(4).max(1);
+            return input_rows.div_ceil(AGGREGATE_GROUPS_DIVISOR).max(1);
         };
         let distinct_count = if let Some(label) = physical_plan_node_label(input, variable) {
             catalog.known_distinct_count(label, property)
@@ -48,7 +48,7 @@ pub(super) fn estimate_aggregate_rows(
             None
         };
         let Some(distinct_count) = distinct_count else {
-            return input_rows.div_ceil(4).max(1);
+            return input_rows.div_ceil(AGGREGATE_GROUPS_DIVISOR).max(1);
         };
         distinct_product = distinct_product.saturating_mul(distinct_count.max(1));
     }
@@ -333,19 +333,34 @@ fn estimate_node_property_filter_rows(
                 physical_plan_node_label(input, variable).map(|_| input_rows)
             } else {
                 physical_plan_node_label(input, variable).map(|label| {
-                    catalog.estimate_property_string_match_rows(label, property, input_rows, 4)
+                    catalog.estimate_property_string_match_rows(
+                        label,
+                        property,
+                        input_rows,
+                        CONTAINS_SELECTIVITY_DIVISOR,
+                    )
                 })
             }
         }
         Predicate::PropertyStartsWith {
             variable, property, ..
         } => physical_plan_node_label(input, variable).map(|label| {
-            catalog.estimate_property_string_match_rows(label, property, input_rows, 8)
+            catalog.estimate_property_string_match_rows(
+                label,
+                property,
+                input_rows,
+                STARTS_WITH_SELECTIVITY_DIVISOR,
+            )
         }),
         Predicate::PropertyEndsWith {
             variable, property, ..
         } => physical_plan_node_label(input, variable).map(|label| {
-            catalog.estimate_property_string_match_rows(label, property, input_rows, 6)
+            catalog.estimate_property_string_match_rows(
+                label,
+                property,
+                input_rows,
+                ENDS_WITH_SELECTIVITY_DIVISOR,
+            )
         }),
         Predicate::PropertyIsNull { variable, property } => {
             physical_plan_node_label(input, variable)
@@ -680,7 +695,12 @@ fn estimate_relationship_filter_rows(
             input_rows,
             catalog,
             |catalog, rel_type, property, rows| {
-                catalog.estimate_rel_property_string_match_rows(rel_type, property, rows, 4)
+                catalog.estimate_rel_property_string_match_rows(
+                    rel_type,
+                    property,
+                    rows,
+                    CONTAINS_SELECTIVITY_DIVISOR,
+                )
             },
         ),
         Predicate::PropertyStartsWith {
@@ -692,7 +712,12 @@ fn estimate_relationship_filter_rows(
             input_rows,
             catalog,
             |catalog, rel_type, property, rows| {
-                catalog.estimate_rel_property_string_match_rows(rel_type, property, rows, 8)
+                catalog.estimate_rel_property_string_match_rows(
+                    rel_type,
+                    property,
+                    rows,
+                    STARTS_WITH_SELECTIVITY_DIVISOR,
+                )
             },
         ),
         Predicate::PropertyEndsWith {
@@ -704,7 +729,12 @@ fn estimate_relationship_filter_rows(
             input_rows,
             catalog,
             |catalog, rel_type, property, rows| {
-                catalog.estimate_rel_property_string_match_rows(rel_type, property, rows, 6)
+                catalog.estimate_rel_property_string_match_rows(
+                    rel_type,
+                    property,
+                    rows,
+                    ENDS_WITH_SELECTIVITY_DIVISOR,
+                )
             },
         ),
         Predicate::PropertyIsNull { variable, property } => {

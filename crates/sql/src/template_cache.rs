@@ -1,8 +1,6 @@
+use crate::timing::elapsed_nanos;
 use crate::{prepare_postgres_sql, PreparedPostgresStatement, SqlStatement};
 use skein_core::Result;
-fn elapsed_nanos(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-}
 use skein_plan_cache::{LfuCache, PlanCacheStats};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;

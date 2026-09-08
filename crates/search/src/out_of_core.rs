@@ -2421,7 +2421,7 @@ impl SpilledCandidateSet {
                 SkeinError::Storage("search candidate block length exceeds usize".to_string())
             })?;
             let mut bytes = vec![0u8; length];
-            read_exact_at(
+            read_search_range(
                 self.file.as_ref().ok_or_else(|| {
                     SkeinError::Storage("search candidate spill file is closed".to_string())
                 })?,
@@ -2509,7 +2509,7 @@ impl SpilledCandidateSet {
             SkeinError::Storage("search candidate block length exceeds usize".to_string())
         })?;
         let mut bytes = vec![0u8; length];
-        read_exact_at(
+        read_search_range(
             self.file.as_ref().ok_or_else(|| {
                 SkeinError::Storage("search candidate spill file is closed".to_string())
             })?,
@@ -2706,7 +2706,7 @@ fn read_out_of_core_payload_range(
         ))
     })?;
     let mut payload = vec![0u8; length];
-    read_exact_at(file, range.offset, &mut payload)?;
+    read_search_range(file, range.offset, &mut payload)?;
     metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
     metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
     let actual_checksum = checksum_bytes(&payload);
@@ -2992,32 +2992,25 @@ fn temporary_artifact_path(target: &Path) -> PathBuf {
     ))
 }
 
-fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
-    #[cfg(unix)]
+fn read_search_range(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
+    #[cfg(any(unix, windows))]
     {
-        use std::os::unix::fs::FileExt;
-        file.read_exact_at(bytes, offset)?;
-        return Ok(());
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileExt;
-        let mut read = 0usize;
-        while read < bytes.len() {
-            let count = file.seek_read(&mut bytes[read..], offset.saturating_add(read as u64))?;
-            if count == 0 {
-                return Err(SkeinError::Storage(
-                    "search range read reached an unexpected EOF".to_string(),
-                ));
-            }
-            read = read.saturating_add(count);
+        match skein_storage::io::read_exact_at(file, bytes, offset) {
+            Ok(()) => Ok(()),
+            #[cfg(windows)]
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Err(
+                SkeinError::Storage("search range read reached an unexpected EOF".to_string()),
+            ),
+            Err(error) => Err(error.into()),
         }
-        return Ok(());
     }
-    #[allow(unreachable_code)]
-    Err(SkeinError::Storage(
-        "search out-of-core range reads are unsupported on this platform".to_string(),
-    ))
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, offset, bytes);
+        Err(SkeinError::Storage(
+            "search out-of-core range reads are unsupported on this platform".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -3050,6 +3043,41 @@ mod tests {
             metadata_filters: BTreeMap::new(),
             policy_epoch: None,
         }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn search_range_adapter_preserves_exact_reads_and_eof_errors() {
+        let directory = test_dir("positioned-read-adapter");
+        let path = directory.join("range.skein");
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"abcdefgh").unwrap();
+        let mut bytes = [0; 4];
+        read_search_range(&file, 2, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"cdef");
+        let error = read_search_range(&file, 6, &mut bytes).unwrap_err();
+        #[cfg(unix)]
+        assert_eq!(
+            error,
+            SkeinError::Storage("failed to fill whole buffer".to_string())
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            error,
+            SkeinError::Storage("search range read reached an unexpected EOF".to_string())
+        );
+        assert_eq!(
+            read_search_range(&file, u64::MAX, &mut bytes).unwrap_err(),
+            SkeinError::Storage("read range end overflows u64".to_string())
+        );
+        drop(file);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     fn document(number: usize, space: &str) -> SearchDocument {
