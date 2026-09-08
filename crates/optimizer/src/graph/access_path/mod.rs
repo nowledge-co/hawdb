@@ -1,3 +1,4 @@
+use super::cardinality::estimate_full_text_rows;
 use super::costing::{
     estimate_node_full_scan_cost, estimate_node_index_seek_cost, node_index_seek_is_cheaper,
     NODE_INDEX_EQ_STARTUP_COST, NODE_INDEX_RANGE_STARTUP_COST, NODE_INDEX_TEXT_STARTUP_COST,
@@ -170,7 +171,7 @@ fn scan_decision(
             String::new(),
         ),
         Predicate::PropertyContains { .. } => (
-            label_count.div_ceil(4).max(1),
+            estimate_full_text_rows(label_count),
             NODE_INDEX_TEXT_STARTUP_COST,
             String::new(),
         ),
@@ -256,7 +257,7 @@ impl OptimizerRule<GraphRuleExpr> for NodeTextSeekRule<'_> {
             return RulePromise::NEVER;
         }
         let label_count = self.catalog.label_count(label);
-        let estimated_rows = label_count.div_ceil(4).max(1);
+        let estimated_rows = estimate_full_text_rows(label_count);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_TEXT_STARTUP_COST);
         if node_index_seek_is_cheaper(label_count, seek_cost) {
             RulePromise::new(85)
@@ -289,7 +290,7 @@ impl OptimizerRule<GraphRuleExpr> for NodeTextSeekRule<'_> {
             return None;
         }
         let label_count = self.catalog.label_count(label);
-        let estimated_rows = label_count.div_ceil(4).max(1);
+        let estimated_rows = estimate_full_text_rows(label_count);
         let scan_cost = estimate_node_full_scan_cost(label_count);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_TEXT_STARTUP_COST);
         if !node_index_seek_is_cheaper(label_count, seek_cost) {
