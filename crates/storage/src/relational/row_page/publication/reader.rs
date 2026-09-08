@@ -114,6 +114,46 @@ impl RelationalRowPageRootReader {
         &self.manifest
     }
 
+    /// Verifies all referenced slots and their physical-generation accounting.
+    /// Keeps one page and one counter per manifest inventory entry in memory;
+    /// this explicit full scrub is not part of opening a reader.
+    pub fn scrub_physical_pages(&self) -> Result<(), RelationalRowPagePublicationError> {
+        let inventory = &self.manifest.physical_generations;
+        let mut live_counts = vec![0u64; inventory.len()];
+        for entry in inventory {
+            validate_artifact_length(
+                &self
+                    .directory
+                    .join(relational_row_page_artifact_file(entry.generation)),
+                entry.allocated_pages * self.manifest.page_bytes,
+                "row-page physical generation",
+            )?;
+        }
+        for table in &self.manifest.tables {
+            self.visit_table_pages(&table.table, |descriptor| {
+                let index = inventory
+                    .binary_search_by_key(&descriptor.physical_generation, |entry| entry.generation)
+                    .map_err(|_| {
+                        RelationalRowPagePublicationError::Corrupt(
+                            "row-page descriptor references an unaccounted generation".to_string(),
+                        )
+                    })?;
+                live_counts[index] += 1;
+                self.read_page(descriptor)?;
+                Ok(())
+            })?;
+        }
+        for (entry, actual) in inventory.iter().zip(live_counts) {
+            if entry.live_pages != actual {
+                return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                    "row-page physical generation {} has {actual} live pages, expected {}",
+                    entry.generation, entry.live_pages,
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) const fn publication_config(&self) -> RelationalRowPagePublicationConfig {
         self.config
     }

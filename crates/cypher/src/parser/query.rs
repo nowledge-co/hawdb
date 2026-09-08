@@ -299,13 +299,13 @@ impl Parser<'_> {
         }
         let optional_expand = if self.consume_keyword("OPTIONAL") {
             self.expect_keyword("MATCH")?;
-            let thread_repair_start = self.pos;
+            let thread_repair_start = self.checkpoint();
             if let Ok(statement) =
                 self.parse_thread_repair_stats_after_optional_match(&variable, &label)
             {
                 return Ok(statement);
             }
-            self.pos = thread_repair_start;
+            self.restore(thread_repair_start);
             let mut scope = BTreeSet::from([variable.clone()]);
             if let Some(expand) = &expand {
                 scope.insert(expand.target_variable.clone());

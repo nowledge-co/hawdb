@@ -9,6 +9,8 @@ use super::{
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use skein_core::Value;
 
+mod backtracking;
+
 const EXCESSIVE_CYPHER_NESTING: usize = 100_000;
 
 #[test]

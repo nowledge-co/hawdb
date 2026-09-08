@@ -10,8 +10,10 @@ use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod compaction;
 mod pool;
 
+pub(crate) use compaction::compact_runs;
 pub use pool::SpillPoolSnapshot;
 pub(crate) use pool::{spill_pool_snapshot, SpillPool, SpillWriteReservation};
 

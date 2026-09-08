@@ -507,35 +507,29 @@ fn read_partial_row(
 }
 
 fn compact_partial_runs(
-    mut runs: Vec<spill::SpillRun>,
+    runs: Vec<spill::SpillRun>,
     items: &[Aggregation],
     memory: &ExecutionMemoryConfig,
     spill_budget: &mut SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    while runs.len() > 2 {
-        runtime_checkpoint(task_context)?;
-        let mut compacted = Vec::with_capacity(runs.len().div_ceil(2));
-        let mut pending = runs.into_iter();
-        while let Some(left) = pending.next() {
-            let Some(right) = pending.next() else {
-                compacted.push(left);
-                break;
-            };
-            compacted.push(merge_partial_run_pair(
-                &left,
-                &right,
+    spill::compact_runs(
+        runs,
+        NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        task_context,
+        |left, right| {
+            merge_partial_run_pair(
+                left,
+                right,
                 items,
                 memory.blocking_operator_bytes,
                 spill_budget,
                 blocking_account,
                 task_context,
-            )?);
-        }
-        runs = compacted;
-    }
-    Ok(runs)
+            )
+        },
+    )
 }
 
 fn merge_partial_run_pair(

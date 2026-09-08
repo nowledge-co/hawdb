@@ -857,6 +857,14 @@ impl RelationalRowPageState {
         report.base_commit_epoch = Some(identity.base_commit_epoch);
         report.visible_commit_epoch = Some(identity.visible_commit_epoch);
         report.root_page_count = base.root_page_count;
+        report.physical_generation_count = base.physical_generations.len();
+        report.allocated_page_count = base
+            .physical_generations
+            .iter()
+            .map(|entry| entry.allocated_pages)
+            .sum();
+        report.live_page_bytes = base.root_page_count * base.page_bytes;
+        report.allocated_page_bytes = report.allocated_page_count * base.page_bytes;
         report.page_artifact_bytes = base.page_artifact.encoded_len;
         report.root_descriptor_artifact_bytes = base.root_descriptor_artifact.encoded_len;
         report.root_key_artifact_bytes = base.root_key_artifact.encoded_len;
@@ -1052,7 +1060,16 @@ impl GraphStore {
                         Ok(self.relational_state.row(table, primary_key).cloned())
                     }
                 },
-                self.relational_row_pages.live_limits,
+                RelationalRowChangeCaptureLimits {
+                    max_bytes: nonzero_min(
+                        self.relational_row_pages.live_limits.max_bytes,
+                        NonZeroUsize::new(
+                            usize::try_from(config.max_dirty_bytes.get()).unwrap_or(usize::MAX),
+                        )
+                        .unwrap(),
+                    ),
+                    ..self.relational_row_pages.live_limits
+                },
             )
             .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
         let RelationalRowChangeCapture::Captured { changes, .. } = capture else {
@@ -2385,6 +2402,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
 #[cfg(test)]
 mod tests {
     mod overflow_compaction;
+    mod row_page_compaction;
 
     use super::*;
     use crate::schema::Catalog;

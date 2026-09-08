@@ -16,6 +16,98 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn streamed_page_relocation_preserves_rows_epochs_and_overflow_references() {
+    let directory = unique_test_dir("streamed-relocation");
+    fs::create_dir_all(&directory).unwrap();
+    let config = RelationalRowPagePublicationConfig::default();
+    let path = directory.join(relational_row_page_artifact_file(2));
+    let mut writer = root::PageArtifactWriter::new(&path, config.page_limits).unwrap();
+    let reference = *RelationalOverflowExtentInput::encode(
+        RelationalScalarType::Text,
+        b"relocated overflow payload",
+        RelationalOverflowConfig::default(),
+    )
+    .unwrap()
+    .reference();
+    let mut expected = Vec::new();
+    for index in 0..3u64 {
+        let mut original = page(index + 1, 1, 10, index as i64, index as i64);
+        original.rows[0].row = RelationalRow::new(vec![
+            RelationalValue::BigInt(index as i64),
+            RelationalValue::Overflow(reference),
+        ]);
+        let original_bytes = original.encode(config.page_limits).unwrap();
+        let mut relocated =
+            ImmutableRelationalRowPage::decode(&original_bytes, config.page_limits).unwrap();
+        relocated.generation = 2;
+        let mut prepared = root::prepare_dirty_page(relocated, config.page_limits).unwrap();
+        writer.write(&mut prepared).unwrap();
+        assert_eq!(prepared.descriptor.logical_page_id, original.page_id);
+        assert_eq!(prepared.descriptor.physical_generation, 2);
+        assert_eq!(prepared.descriptor.physical_slot, index);
+        assert_eq!(prepared.descriptor.source_commit_epoch, 10);
+        assert_eq!(prepared.page.rows, original.rows);
+        expected.push(prepared);
+    }
+    let (artifact, count) = writer.finish().unwrap();
+    assert_eq!(count, 3);
+    let bytes = fs::read(path).unwrap();
+    assert_eq!(artifact.encoded_len, bytes.len() as u64);
+    assert_eq!(
+        artifact.encoded_crc32c,
+        integrity_digest(&bytes).crc32c.get()
+    );
+    assert_eq!(artifact.encoded_sha256, integrity_digest(&bytes).sha256);
+    for (slot, expected) in bytes
+        .chunks_exact(config.page_limits.max_page_bytes.get())
+        .zip(expected)
+    {
+        let digest = integrity_digest(slot);
+        assert_eq!(
+            expected.descriptor.slot_integrity.slot_crc32c,
+            digest.crc32c.get()
+        );
+        assert_eq!(
+            expected.descriptor.slot_integrity.slot_sha256,
+            digest.sha256
+        );
+        assert_eq!(
+            ImmutableRelationalRowPage::decode_slot(slot, config.page_limits).unwrap(),
+            expected.page
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn streamed_page_writer_rejects_identity_drift_before_appending() {
+    let directory = unique_test_dir("streamed-identity-drift");
+    fs::create_dir_all(&directory).unwrap();
+    let config = RelationalRowPagePublicationConfig::default();
+    let path = directory.join(relational_row_page_artifact_file(2));
+    let mut writer = root::PageArtifactWriter::new(&path, config.page_limits).unwrap();
+    for field in 0..3 {
+        let mut prepared =
+            root::prepare_dirty_page(page(1, 2, 10, 1, 2), config.page_limits).unwrap();
+        match field {
+            0 => prepared.descriptor.logical_page_id = page_id(2),
+            1 => prepared.descriptor.physical_generation = 1,
+            _ => prepared.descriptor.source_commit_epoch = 9,
+        }
+        assert!(matches!(
+            writer.write(&mut prepared),
+            Err(RelationalRowPagePublicationError::Corrupt(message))
+                if message.contains("metadata changed")
+        ));
+    }
+    let (artifact, count) = writer.finish().unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(artifact.encoded_len, 0);
+    assert_eq!(fs::metadata(path).unwrap().len(), 0);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn publish_last_root_round_trips_with_a_concrete_refinement_trace() {
     let directory = unique_test_dir("round-trip");
     let config = RelationalRowPagePublicationConfig::default();
@@ -297,15 +389,414 @@ fn incremental_publication_reuses_clean_pages_and_keeps_pinned_roots() {
     let current_descriptors = collect_descriptors(&current, "documents");
     assert_eq!(page_id_values(&current_descriptors), vec![1, 2, 3]);
     assert_eq!(physical_generations(&current_descriptors), vec![2, 1, 2]);
+    assert_eq!(
+        current.manifest().physical_generations,
+        vec![
+            RelationalRowPagePhysicalGeneration {
+                generation: 1,
+                allocated_pages: 2,
+                live_pages: 1,
+            },
+            RelationalRowPagePhysicalGeneration {
+                generation: 2,
+                allocated_pages: 2,
+                live_pages: 2,
+            },
+        ]
+    );
 
     assert_eq!(pinned.manifest().generation, 1);
     let pinned_descriptors = collect_descriptors(&pinned, "documents");
     assert_eq!(page_id_values(&pinned_descriptors), vec![1, 2]);
     assert_eq!(physical_generations(&pinned_descriptors), vec![1, 1]);
+    assert_eq!(pinned.manifest().physical_generations[0].live_pages, 2);
     assert!(directory
         .join(relational_row_page_artifact_file(1))
         .exists());
 
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn physical_scrub_rejects_authenticated_occupancy_drift_and_old_file_growth() {
+    let directory = unique_test_dir("physical-occupancy-scrub");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    publisher
+        .publish(
+            &directory,
+            2,
+            11,
+            Some(1),
+            vec![table_delta(
+                "documents",
+                vec![page(1, 2, 11, 1, 2), page(3, 2, 11, 5, 6)],
+            )],
+        )
+        .unwrap();
+    publisher
+        .publish(&directory, 3, 11, Some(2), Vec::new())
+        .unwrap();
+    let reader = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    reader.scrub_physical_pages().unwrap();
+    let manifest_path = directory.join(relational_row_page_manifest_generation_file(3));
+    let original = reader.manifest().clone();
+    for (mut changed, expected) in [
+        (original.clone(), "live pages"),
+        (original.clone(), "bytes, expected"),
+    ] {
+        if expected == "live pages" {
+            // Preserve the total and each allocation bound, but lie about which
+            // old generation owns the pages. Recompute a valid manifest digest.
+            changed.physical_generations[0].live_pages = 2;
+            changed.physical_generations[1].live_pages = 1;
+        } else {
+            changed.physical_generations[0].allocated_pages += 1;
+        }
+        fs::write(
+            &manifest_path,
+            manifest::encode_manifest(&changed, config).unwrap(),
+        )
+        .unwrap();
+        let changed = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+        assert!(matches!(changed.scrub_physical_pages(),
+            Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains(expected)
+        ));
+    }
+    fs::write(
+        manifest_path,
+        manifest::encode_manifest(&original, config).unwrap(),
+    )
+    .unwrap();
+    let old_file = OpenOptions::new()
+        .write(true)
+        .open(directory.join(relational_row_page_artifact_file(1)))
+        .unwrap();
+    old_file
+        .set_len(old_file.metadata().unwrap().len() + 1)
+        .unwrap();
+    assert!(matches!(reader.scrub_physical_pages(),
+        Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("bytes, expected")
+    ));
+    drop(old_file);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn candidate_compaction_rewrites_only_sparse_physical_generations() {
+    for rewritten in [2, 3] {
+        assert_candidate_compaction_rewrites_sparse_generation(rewritten);
+    }
+}
+
+fn assert_candidate_compaction_rewrites_sparse_generation(rewritten: u64) {
+    let directory = unique_test_dir("candidate-compaction");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                (1..=4)
+                    .map(|id| page(id, 1, 10, id as i64, id as i64))
+                    .collect(),
+            )],
+        )
+        .unwrap();
+    let pinned = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let mut changed = table_delta(
+        "documents",
+        (1..=rewritten)
+            .map(|id| page(id, 2, 11, id as i64, id as i64))
+            .collect(),
+    );
+    changed.next_page_id = NonZeroU64::new(5).unwrap();
+    publisher
+        .publish(&directory, 2, 11, Some(1), vec![changed])
+        .unwrap();
+    let base = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let task = skein_core::RuntimeTaskContext::default();
+    let report = publisher
+        .persist_generation_compacting(
+            RelationalRowPageGenerationRequest {
+                directory: &directory,
+                generation: 3,
+                source_commit_epoch: 11,
+                base: Some(&base),
+                expected_previous_generation: Some(2),
+                overflow_root: None,
+            },
+            Vec::new(),
+            RelationalRowPageRewriteConfig::default(),
+            &task,
+        )
+        .unwrap();
+    assert_eq!(report.dirty_pages_written, 0);
+    assert_eq!(report.relocated_pages_written, 4 - rewritten);
+    assert_eq!(report.reused_pages, rewritten);
+    assert_eq!(report.events, CANDIDATE_PUBLICATION_TRACE);
+    assert_eq!(
+        RelationalRowPageRootReader::open_latest(&directory, config)
+            .unwrap()
+            .unwrap()
+            .manifest()
+            .generation,
+        2
+    );
+    let candidate = RelationalRowPageRootReader::open_generation(&directory, 3, config).unwrap();
+    candidate.scrub_physical_pages().unwrap();
+    let descriptors = collect_descriptors(&candidate, "documents");
+    assert_eq!(
+        physical_generations(&descriptors),
+        (1..=4)
+            .map(|id| if id <= rewritten { 2 } else { 3 })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        candidate
+            .manifest()
+            .physical_generations
+            .iter()
+            .map(|entry| entry.allocated_pages)
+            .sum::<u64>(),
+        4
+    );
+    for (old, new) in collect_descriptors(&base, "documents")
+        .iter()
+        .zip(&descriptors)
+    {
+        let old_page = base.read_page(old).unwrap();
+        let new_page = candidate.read_page(new).unwrap();
+        assert_eq!(old_page.rows, new_page.rows);
+        assert_eq!(old_page.page_id, new_page.page_id);
+        assert_eq!(old_page.source_commit_epoch, new_page.source_commit_epoch);
+    }
+    for descriptor in collect_descriptors(&pinned, "documents") {
+        assert_eq!(pinned.read_page(&descriptor).unwrap().generation, 1);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
+    let directory = unique_test_dir("compaction-failure");
+    let config = RelationalRowPagePublicationConfig::default();
+    let publisher = RelationalRowPagePublisher::new(config);
+    publisher
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    let base = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let request = RelationalRowPageGenerationRequest {
+        directory: &directory,
+        generation: 2,
+        source_commit_epoch: 10,
+        base: Some(&base),
+        expected_previous_generation: Some(1),
+        overflow_root: None,
+    };
+    let rewrite = RelationalRowPageRewriteConfig {
+        max_live_ratio_percent: 100,
+        ..RelationalRowPageRewriteConfig::default()
+    };
+    let task = skein_core::RuntimeTaskContext::default();
+    for limit in [
+        RelationalRowPageRewriteConfig {
+            max_live_ratio_percent: 0,
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_live_ratio_percent: 101,
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_scan_pages: NonZeroU64::new(1).unwrap(),
+            ..rewrite
+        },
+        RelationalRowPageRewriteConfig {
+            max_rewrite_bytes: NonZeroU64::new(config.page_limits.max_page_bytes.get() as u64)
+                .unwrap(),
+            ..rewrite
+        },
+    ] {
+        assert!(matches!(
+            publisher.persist_generation_compacting(request, Vec::new(), limit, &task),
+            Err(RelationalRowPagePublicationError::Admission(_))
+        ));
+        assert!(!directory
+            .join(relational_row_page_manifest_generation_file(2))
+            .exists());
+        assert!(!directory
+            .join(relational_row_page_artifact_file(2))
+            .exists());
+    }
+    task.cancellation().cancel();
+    assert!(
+        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &task),
+        Err(RelationalRowPagePublicationError::Admission(message)) if message.contains("stopped"))
+    );
+    let mut artifact = OpenOptions::new()
+        .write(true)
+        .open(directory.join(relational_row_page_artifact_file(1)))
+        .unwrap();
+    artifact.seek(SeekFrom::Start(200)).unwrap();
+    artifact.write_all(b"corrupt").unwrap();
+    artifact.sync_all().unwrap();
+    drop(artifact);
+    assert!(
+        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &skein_core::RuntimeTaskContext::default()),
+        Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("checksum"))
+    );
+    assert!(!directory
+        .join(relational_row_page_manifest_generation_file(2))
+        .exists());
+    assert_eq!(
+        RelationalRowPageRootReader::open_latest(&directory, config)
+            .unwrap()
+            .unwrap()
+            .manifest()
+            .generation,
+        1
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn occupancy_validation_rejects_authenticated_invalid_counts() {
+    let directory = unique_test_dir("invalid-occupancy");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 2)])],
+        )
+        .unwrap();
+    let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    let original = fs::read(&path).unwrap();
+    for invalid_count in [false, true] {
+        let mut encoded = original.clone();
+        let end = encoded.len();
+        if invalid_count {
+            encoded[end - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+        } else {
+            let live_offset = end - manifest::OCCUPANCY_TRAILER_BYTES - 8;
+            encoded[live_offset..live_offset + 8].copy_from_slice(&0u64.to_le_bytes());
+        }
+        let mut hasher = skein_integrity::IntegrityHasher::new();
+        hasher.update(&encoded[..280]);
+        hasher.update(&encoded[manifest::MANIFEST_HEADER_BYTES..]);
+        let digest = hasher.finish();
+        encoded[280..284].copy_from_slice(&digest.crc32c.get().to_le_bytes());
+        encoded[284..316].copy_from_slice(digest.sha256.as_bytes());
+        fs::write(&path, encoded).unwrap();
+        assert!(matches!(
+            RelationalRowPageRootReader::open_latest(&directory, config),
+            Err(RelationalRowPagePublicationError::Corrupt(message))
+                if message.contains("invalid live/allocated")
+                    || message.contains("count exceeds its manifest payload")
+        ));
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn relocated_page_inventory_is_independent_of_dirty_vector_limit() {
+    let directory = unique_test_dir("relocated-inventory");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta(
+                "documents",
+                vec![page(1, 1, 10, 1, 2), page(2, 1, 10, 3, 4)],
+            )],
+        )
+        .unwrap();
+    let reader = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    let mut relocated = reader.manifest().clone();
+    relocated.dirty_page_count = 0;
+    relocated.relocated_page_count = 2;
+    let config = RelationalRowPagePublicationConfig {
+        max_dirty_pages: NonZeroUsize::new(1).unwrap(),
+        ..config
+    };
+    let encoded = manifest::encode_manifest(&relocated, config).unwrap();
+    fs::write(directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE), &encoded).unwrap();
+    let reader = RelationalRowPageRootReader::open_latest(&directory, config)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.manifest().relocated_page_count, 2);
+    for descriptor in collect_descriptors(&reader, "documents") {
+        assert_eq!(reader.read_page(&descriptor).unwrap().rows.len(), 2);
+    }
+    relocated.physical_generations[0].allocated_pages = 1;
+    assert!(matches!(
+        manifest::encode_manifest(&relocated, config),
+        Err(RelationalRowPagePublicationError::Admission(_))
+    ));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn unaccounted_development_manifest_requires_recreation() {
+    let directory = unique_test_dir("unaccounted-manifest");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 2)])],
+        )
+        .unwrap();
+    let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    let mut encoded = fs::read(&path).unwrap();
+    encoded[10..12].copy_from_slice(&0u16.to_le_bytes());
+    fs::write(path, encoded).unwrap();
+    assert!(
+        matches!(RelationalRowPageRootReader::open_latest(&directory, config),
+        Err(RelationalRowPagePublicationError::Corrupt(message))
+            if message.contains("recreate the development database"))
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 

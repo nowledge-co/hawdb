@@ -15,6 +15,7 @@ mod output;
 mod parser_oracle;
 mod predicate_rewrite;
 mod query_ast;
+mod row_page_oracle;
 mod sql_oracle;
 mod wal_tail_oracle;
 
@@ -34,6 +35,7 @@ pub use parser_oracle::{
     generate_parser_fuzz_case, parser_fuzz_seed_count, parser_input_fingerprint,
     run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
+pub use row_page_oracle::{run_row_page_compaction_case, ROW_PAGE_COMPACTION_PROTOCOL};
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
     SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,

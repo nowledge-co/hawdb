@@ -232,7 +232,7 @@ fn spill_distinct_run(
 }
 
 fn compact_distinct_runs(
-    mut runs: Vec<spill::SpillRun>,
+    runs: Vec<spill::SpillRun>,
     memory: &ExecutionMemoryConfig,
     spill_budget: &mut SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
@@ -240,31 +240,20 @@ fn compact_distinct_runs(
     task_context: Option<&RuntimeTaskContext>,
     peak_tracked_bytes: &mut usize,
 ) -> Result<Vec<spill::SpillRun>> {
-    while runs.len() > 1 {
-        runtime_checkpoint(task_context)?;
-        let mut compacted = Vec::with_capacity(runs.len().div_ceil(2));
-        let mut pending = runs.into_iter();
-        while let Some(left) = pending.next() {
-            let Some(right) = pending.next() else {
-                compacted.push(left);
-                break;
-            };
-            compacted.push(merge_distinct_run_pair(
-                &left,
-                &right,
-                spill_budget,
-                DistinctMergeContext {
-                    memory,
-                    blocking_account,
-                    schemas,
-                    task_context,
-                },
-                peak_tracked_bytes,
-            )?);
-        }
-        runs = compacted;
-    }
-    Ok(runs)
+    spill::compact_runs(runs, NonZeroUsize::MIN, task_context, |left, right| {
+        merge_distinct_run_pair(
+            left,
+            right,
+            spill_budget,
+            DistinctMergeContext {
+                memory,
+                blocking_account,
+                schemas,
+                task_context,
+            },
+            peak_tracked_bytes,
+        )
+    })
 }
 
 struct DistinctRunRow {

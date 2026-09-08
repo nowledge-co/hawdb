@@ -55,6 +55,22 @@ developer use. Set `TLA_RESULTS_DIR` and `TLA_SOURCE_REVISION` to retain its ful
 campaign evidence. CI must not run that no-argument entrypoint after Bazel:
 collection replaces that duplicate computation, not the model or mutant gates.
 
+### COW liveness scheduling
+
+`SkeinCowPagePublication` uses TLC's `-lncheck final` in both Bazel and the
+standalone runner. TLC still explores the complete configured state graph,
+checks every invariant, and checks the unchanged liveness property over that
+complete graph. Only intermediate liveness scans of growing partial graphs
+are deferred; liveness counterexamples may therefore be reported later.
+See the [TLC option documentation](https://github.com/tlaplus/tlaplus/blob/5a47802/general/docs/current-tools.md#command-line-options).
+
+The evidence collector requires this model's exact arguments and a completed
+success log containing the final complete-state-space temporal check. Other
+models keep their original arguments. Model/configuration bytes, state bounds,
+transitions, fairness, invariants, liveness properties, worker selection and
+timeouts are unchanged. This is not a switch to simulation or safety-only
+checking, and moving full verification to a periodic job is a separate decision.
+
 ### Model shards
 
 The `tla_test_suite` declaration supports `shard_count`, currently `1`. With
@@ -422,12 +438,77 @@ overlay from durable WAL.
 The configured instance uses two readers, two logical commit epochs, four
 physical generations, and two logical pages. Page zero represents a durable
 graph-only commit with no relational dirty page. TLC checks WAL-before-visible,
-manifest-last publication, immutable physical page identity, dirty-only COW,
+manifest-last publication, immutable physical page identity, dirty-page COW,
 stale-builder rejection, pinned-root retention, durable reference and schema
 closure,
 exact row/overflow generation agreement, candidate isolation before outer
-checkpoint publication, complete base-root reuse for an empty dirty set, and
-crash recovery.
+checkpoint publication, source-epoch preservation for relocated clean pages,
+and crash recovery. Maintenance may begin without a new logical commit and
+select any subset of physical source generations for relocation. Every clean
+page from a selected generation is relocated: `RowPageRewriteControls::selects`
+depends only on that generation's immutable occupancy, and
+`RootWriter::write_base_descriptor` applies it to every surviving descriptor.
+An exceeded rewrite budget fails preparation instead of publishing a partially
+relocated generation. `RelocationSelectsWholeGenerations` checks this contract.
+The choice still overapproximates occupancy-based selection: an empty subset
+models ordinary base reuse, and every eligible whole-generation choice remains
+possible. Independent choices for two clean pages in the same generation are
+not implementation behaviors and are not modeled. Numeric occupancy, encoded
+file lengths, cancellation, and memory limits are checked by implementation
+tests, not this model.
+Released candidates reset their root to a canonical absent value. Every action
+that consumes the candidate root requires a non-idle phase, and BeginCheckpoint
+overwrites it before reuse. This models PreparedCheckpoint destruction and
+removes unobservable stale object contents from the state space; it does not
+restrict readers, epochs, generations, relocation choices, or liveness.
+
+The model also normalizes retired payloads instead of retaining the contents of
+deleted objects indefinitely. `Reclaim` keeps every required root and physical
+page unchanged. Only root contents outside the published set and epochs outside
+the durable sets become zero; `-1` remains the distinct never-written marker.
+Thus the immutable-identity guards still reject reuse of a previously written
+page, including one that was reclaimed. Reclamation requires an idle candidate,
+so no in-flight relocation can lose its source epoch or base-root contents.
+The model checks `RetiredPayloadIsReleased` and
+`RetiredRootMetadataIsReleased` alongside the existing closure invariants.
+
+Checkpoint publication also releases per-epoch dirty-page bookkeeping at or
+below the selected manifest epoch. Every subsequent `DirtyAfter` call starts
+at that epoch or later: the manifest never moves backward, and a candidate
+captured before a competing publication cannot pass its base-generation fence.
+In-flight candidates retain their own captured dirty set. This abstracts dead
+bookkeeping, not a new physical WAL truncation transition or a weakened recovery
+suffix. `CheckpointedWalMetadataIsReleased` checks the normalization. No reader,
+commit, checkpoint, relocation, crash, or rejection transition is removed, and
+all prior invariants and the stale-candidate liveness property remain enabled.
+
+Physical page references use the dense address `generation * MaxPage + page`.
+`RefGeneration` and `RefPage` invert it; a model assumption checks the bijection
+over the entire configured domain. This changes the representation of the
+page-epoch function to an interval-indexed table, avoiding repeated record-key
+construction and lookup in TLC. It does not quotient or remove states, change
+physical identity, or weaken transitions or properties. The complete configured
+record-key and dense-key checks each generated 138,204,089 states and found
+23,127,068 distinct states at depth 37, including successful liveness checking.
+The fresh-epoch, stale-publication, lost-WAL-suffix and partial-generation mutants
+still violate their respective invariants with the dense representation.
+
+Stale-candidate rejection uses `WF_candidatePhase(RejectStaleCandidate)`.
+The action requires a non-idle phase and sets the next phase to idle, so it
+implies both `candidatePhase' # candidatePhase` and `vars' # vars`.
+Consequently, `<<RejectStaleCandidate>>_candidatePhase` and
+`<<RejectStaleCandidate>>_vars` each equal `RejectStaleCandidate`, including
+their enabled predicates. Their weak fairness formulas are therefore equivalent;
+this is not an additional progress assumption or a change to the liveness
+property. TLC's [liveness action evaluation](https://github.com/tlaplus/tlaplus/blob/5a47802/tlatools/org.lamport.tlatools/src/tlc2/tool/liveness/LNAction.java#L57)
+evaluates the fairness subscript before the action body, so the scalar avoids
+constructing and comparing the complete state tuple on every edge. The state
+graph, bounds, transitions and checked properties are unchanged.
+The complete scalar-subscript check retains the same 138,204,089 generated
+states, 23,127,068 distinct states and depth 37, including successful liveness
+checking. A disabled-rejection mutant still produces an infinite stale-candidate
+counterexample; the fairness formula does not assume eventual termination.
+
 `RelationalRowPagePublicationReport.events` maps the canonical runtime sequence
 `CandidateStarted`, `CandidatePagesDurable`, `CandidateRootDurable`,
 `CandidateManifestDurable`, `BaseRevalidated`, and

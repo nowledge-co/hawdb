@@ -25,3 +25,19 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+rust_test(
+    name = "skein_cypher_backtracking_fuzz_tests",
+    args = [
+        "tests::backtracking::parser_backtracking_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_cypher",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    tags = ["manual"],
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

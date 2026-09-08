@@ -456,6 +456,86 @@ fn seeded_hash_distinct_preserves_schema_and_order_across_spills() {
     }
 }
 
+fn check_unique_groups_compaction(buffered: bool) {
+    for count in [65, 97, 129] {
+        let mut rows = rows(220);
+        rows.truncate(count);
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.nodes
+                .get_mut("n")
+                .unwrap()
+                .properties
+                .insert("group".into(), Value::Int(index as i64));
+        }
+        let fixture = Fixture::new(4 * 1024);
+        let expected = aggregate_oracle(&rows, buffered);
+        let mut source = Source {
+            rows: rows.clone(),
+            batch_rows: 7,
+            cancel_after_input: None,
+        };
+        let mut output = Vec::new();
+        stream_aggregate_batches(
+            &input(),
+            &group_keys(),
+            &aggregations(buffered),
+            &mut source,
+            fixture.context(),
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap_or_else(|error| panic!("count={count}, buffered={buffered}: {error}"));
+        assert_eq!(output, expected, "count={count}, buffered={buffered}");
+        fixture.assert_report(true);
+        assert!(fixture.reports.0.borrow()[0].spill_run_count >= 8);
+    }
+}
+
+#[test]
+fn unique_groups_survive_raw_multilevel_compaction() {
+    check_unique_groups_compaction(true);
+}
+
+#[test]
+fn unique_groups_survive_partial_multilevel_compaction() {
+    check_unique_groups_compaction(false);
+}
+
+#[test]
+fn unique_distinct_rows_survive_multilevel_compaction() {
+    for count in [65, 97, 129] {
+        let rows = (0..count)
+            .rev()
+            .map(|value| Binding::scalar("value", Value::Int(value)))
+            .collect::<Vec<_>>();
+        let expected = rows.iter().rev().cloned().collect::<Vec<_>>();
+        let fixture = Fixture::new(4 * 1024);
+        let mut source = Source {
+            rows,
+            batch_rows: 7,
+            cancel_after_input: None,
+        };
+        let mut output = Vec::new();
+        stream_distinct_batches(
+            &input(),
+            &mut source,
+            fixture.context(),
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(output, expected, "count={count}");
+        fixture.assert_report(true);
+        assert!(fixture.reports.0.borrow()[0].spill_run_count >= 7);
+    }
+}
+
 #[test]
 fn hash_operators_release_memory_and_runs_on_stop_error_and_cancellation() {
     for kind in 0..3 {

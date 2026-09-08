@@ -128,6 +128,9 @@ jobs:
       - name: Test durable storage recovery
         run: cargo test -p skein --features acl --lib api::tests::storage_recovery
 
+      - name: Test row-page compaction and reclamation
+        run: cargo test -p skein --features acl --lib row_page_compaction
+
       - name: Test out-of-core search projection I/O
         run: cargo test -p skein --features acl --lib search::out_of_core::tests
 

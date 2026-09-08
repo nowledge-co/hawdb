@@ -8,11 +8,13 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 
+mod compaction;
 mod manifest;
 mod publisher;
 mod reader;
 mod root;
 
+pub use compaction::RelationalRowPageRewriteConfig;
 pub(crate) use publisher::acquire_publication_lock;
 pub use publisher::RelationalRowPagePublisher;
 pub use reader::RelationalRowPageRootReader;
@@ -133,12 +135,20 @@ pub struct RelationalRowPageTableRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowPagePhysicalGeneration {
+    pub generation: u64,
+    pub allocated_pages: u64,
+    pub live_pages: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageRootManifest {
     pub generation: u64,
     pub source_commit_epoch: u64,
     pub previous_generation: Option<u64>,
     pub page_bytes: u64,
     pub dirty_page_count: u64,
+    pub relocated_page_count: u64,
     pub root_page_count: u64,
     pub page_artifact: RelationalRowPageArtifactMetadata,
     pub root_descriptor_artifact: RelationalRowPageArtifactMetadata,
@@ -146,6 +156,9 @@ pub struct RelationalRowPageRootManifest {
     pub root_set_digest: Sha256Digest,
     pub overflow_root: Option<RelationalOverflowRootBinding>,
     pub tables: Vec<RelationalRowPageTableRoot>,
+    /// Sorted occupancy for physical files referenced by this root, excluding
+    /// historical files retained only by older readers or checkpoints.
+    pub physical_generations: Vec<RelationalRowPagePhysicalGeneration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +213,7 @@ pub struct RelationalRowPagePublicationReport {
     pub generation: u64,
     pub source_commit_epoch: u64,
     pub dirty_pages_written: u64,
+    pub relocated_pages_written: u64,
     pub root_pages: u64,
     pub reused_pages: u64,
     pub page_artifact_bytes: u64,

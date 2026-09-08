@@ -234,6 +234,7 @@ pub(crate) struct PreparedCheckpoint {
         Option<super::relational_index_shadow::PreparedRelationalIndexCandidate>,
     pub(super) relational_overflow_compaction_report:
         Option<super::RelationalOverflowCompactionReport>,
+    pub(super) relational_row_compaction_report: Option<super::RelationalRowPageCompactionReport>,
     pub(super) manifest_artifacts: CheckpointManifestArtifacts,
     pub(super) staging_path: PathBuf,
 }
@@ -1589,36 +1590,18 @@ impl DurableStore {
             .saturating_add(older_overflow_files);
         scrub.checked_bytes = scrub.checked_bytes.saturating_add(older_overflow_bytes);
 
-        let mut row_page_generations = BTreeSet::new();
-        let mut older_row_page_bytes = 0u64;
-        let tables = row_root
+        row_root
+            .scrub_physical_pages()
+            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        let older_generations = row_root
             .manifest()
-            .tables
+            .physical_generations
             .iter()
-            .map(|table| table.table.clone())
-            .collect::<Vec<_>>();
-        for table in tables {
-            row_root
-                .visit_table_pages(&table, |descriptor| {
-                    row_page_generations.insert(descriptor.physical_generation);
-                    row_root.read_page(descriptor)?;
-                    if descriptor.physical_generation != row_binding.generation {
-                        older_row_page_bytes = older_row_page_bytes
-                            .checked_add(row_root.manifest().page_bytes)
-                            .ok_or_else(|| {
-                                skein_storage::RelationalRowPagePublicationError::Admission(
-                                    "row-page scrub byte count overflow".to_string(),
-                                )
-                            })?;
-                    }
-                    Ok(())
-                })
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        }
-        let older_row_page_files = row_page_generations
-            .iter()
-            .filter(|generation| **generation != row_binding.generation)
-            .count();
+            .filter(|entry| entry.generation != row_binding.generation);
+        let older_row_page_files = older_generations.clone().count();
+        let older_row_page_bytes = older_generations
+            .map(|entry| entry.live_pages * row_root.manifest().page_bytes)
+            .sum::<u64>();
         scrub.checked_file_count = scrub
             .checked_file_count
             .saturating_add(older_row_page_files);

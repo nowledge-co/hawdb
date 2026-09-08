@@ -11,6 +11,7 @@ use crate::{
 use skein_core::{Result, RuntimeTaskContext, SkeinError};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::num::NonZeroUsize;
 
 const EXTERNAL_ORDER_RECORD_VERSION: u8 = 1;
 const EXTERNAL_ORDER_HEADER_BYTES: usize = 1 + std::mem::size_of::<u64>();
@@ -250,18 +251,14 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
     }
 
     fn compact_runs(&mut self) -> Result<()> {
-        while self.runs.len() > 2 {
-            runtime_checkpoint(self.task_context)?;
-            let mut compacted = Vec::with_capacity(self.runs.len().div_ceil(2));
-            let mut pending = std::mem::take(&mut self.runs).into_iter();
-            while let Some(left) = pending.next() {
-                let Some(right) = pending.next() else {
-                    compacted.push(left);
-                    break;
-                };
+        self.runs = crate::spill::compact_runs(
+            std::mem::take(&mut self.runs),
+            NonZeroUsize::new(2).expect("two-way merge fan-in"),
+            self.task_context,
+            |left, right| {
                 let (run, peak) = merge_run_pair::<R>(
-                    &left,
-                    &right,
+                    left,
+                    right,
                     self.retained,
                     self.operator,
                     self.file_operator,
@@ -271,10 +268,9 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
                     self.task_context,
                 )?;
                 self.merge_peak_bytes = self.merge_peak_bytes.max(peak);
-                compacted.push(run);
-            }
-            self.runs = compacted;
-        }
+                Ok(run)
+            },
+        )?;
         Ok(())
     }
 

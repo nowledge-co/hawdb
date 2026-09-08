@@ -464,7 +464,7 @@ pub fn spill_top_n_run(
 }
 
 pub fn compact_sort_runs(
-    mut runs: Vec<spill::SpillRun>,
+    runs: Vec<spill::SpillRun>,
     items: &[SortItem],
     catalog: &Catalog,
     memory: &ExecutionMemoryConfig,
@@ -472,29 +472,23 @@ pub fn compact_sort_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    while runs.len() > 2 {
-        runtime_checkpoint(task_context)?;
-        let mut compacted = Vec::with_capacity(runs.len().div_ceil(2));
-        let mut pending = runs.into_iter();
-        while let Some(left) = pending.next() {
-            let Some(right) = pending.next() else {
-                compacted.push(left);
-                break;
-            };
-            compacted.push(merge_sort_run_pair(
-                &left,
-                &right,
+    spill::compact_runs(
+        runs,
+        NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        task_context,
+        |left, right| {
+            merge_sort_run_pair(
+                left,
+                right,
                 items,
                 catalog,
                 memory,
                 spill_budget,
                 blocking_account,
                 task_context,
-            )?);
-        }
-        runs = compacted;
-    }
-    Ok(runs)
+            )
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

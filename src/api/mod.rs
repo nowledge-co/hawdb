@@ -1725,6 +1725,33 @@ impl Database {
         self.store.append_storage_residency_report()
     }
 
+    /// Rewrites sparse physical row-page generations through the ordinary
+    /// manifest-last checkpoint boundary, retaining older pinned readers.
+    pub fn compact_relational_row_pages(
+        &mut self,
+        config: crate::store::RelationalRowPageCompactionConfig,
+    ) -> Result<crate::store::RelationalRowPageCompactionReport> {
+        self.compact_relational_row_pages_context(
+            config,
+            &skein_core::RuntimeTaskContext::default(),
+        )
+    }
+
+    pub fn compact_relational_row_pages_context(
+        &mut self,
+        config: crate::store::RelationalRowPageCompactionConfig,
+        task: &skein_core::RuntimeTaskContext,
+    ) -> Result<crate::store::RelationalRowPageCompactionReport> {
+        self.ensure_writable()?;
+        let oldest_reader_epoch = self
+            .reader_pins
+            .lock()
+            .expect("database reader pins lock should not be poisoned")
+            .oldest_epoch();
+        self.store
+            .compact_relational_row_pages(&self.catalog, oldest_reader_epoch, config, task)
+    }
+
     /// Runs an explicitly admitted full relational-row closure scan and
     /// publishes an exact overflow root through the ordinary manifest-last
     /// checkpoint boundary. Large overflow payloads are not hydrated.
