@@ -1,6 +1,6 @@
 use super::cardinality::{
     estimate_aggregate_rows, estimate_aggregate_work_rows, estimate_filter_rows,
-    estimate_optional_degree_work,
+    estimate_full_text_rows, estimate_optional_degree_work,
 };
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use skein_core::Value;
@@ -114,7 +114,7 @@ fn projected_access_cost(
             )
         }
         NodeProjectionAccess::FullText { .. } => {
-            let rows = catalog.label_count(label).div_ceil(10).max(1);
+            let rows = estimate_full_text_rows(catalog.label_count(label));
             (
                 rows,
                 estimate_node_index_seek_cost(rows, NODE_INDEX_TEXT_STARTUP_COST),
@@ -221,20 +221,15 @@ pub(super) fn estimate_operator_cost(
             PlanCostBreakdown::new(rows, 0, 0, estimate_node_full_scan_cost(rows), 0)
         }
         PhysicalPlan::NodeProjectionScanExec {
-            variable,
             label,
             access,
             predicate,
             items,
             ..
         } => {
-            let scan = PhysicalPlan::SeqNodeScan {
-                variable: variable.clone(),
-                label: label.clone(),
-            };
             let (input_rows, access_cost) = projected_access_cost(access, label, catalog);
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
-                estimate_filter_rows(predicate, &scan, input_rows, catalog).max(1)
+                estimate_filter_rows(predicate, plan, input_rows, catalog).max(1)
             });
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
@@ -344,7 +339,7 @@ pub(super) fn estimate_operator_cost(
             )
         }
         PhysicalPlan::IndexNodeTextSeek { label, .. } => {
-            let rows = catalog.label_count(label).div_ceil(4).max(1);
+            let rows = estimate_full_text_rows(catalog.label_count(label));
             PlanCostBreakdown::new(
                 rows,
                 0,

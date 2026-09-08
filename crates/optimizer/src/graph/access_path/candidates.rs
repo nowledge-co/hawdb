@@ -2,14 +2,67 @@ use super::*;
 use crate::graph::costing::estimate_physical_plan_cost;
 use crate::{RuleEvent, StageStats};
 use skein_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
+use std::cell::OnceCell;
 
 const MAX_EXACT_UNION_LOOKUP_VALUES: usize = 64;
 
-struct PhysicalCandidate {
+#[cfg(test)]
+thread_local! {
+    static FINGERPRINT_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn candidate_fingerprint(plan: &PhysicalPlan) -> String {
+    #[cfg(test)]
+    FINGERPRINT_EVALUATIONS.with(|count| count.set(count.get() + 1));
+    plan.instance_fingerprint()
+}
+
+struct AccessCandidate {
     plan: PhysicalPlan,
     decision: String,
+    // The plan stays immutable across ranking stages. Only cost ties need this key.
+    fingerprint: OnceCell<String>,
+}
+
+impl AccessCandidate {
+    fn fingerprint(&self) -> &str {
+        self.fingerprint
+            .get_or_init(|| candidate_fingerprint(&self.plan))
+    }
+}
+
+struct PhysicalCandidate {
+    access: AccessCandidate,
     cost: u64,
     rule_id: &'static str,
+}
+
+fn keep_best_candidate(
+    best: &mut Option<(u64, AccessCandidate)>,
+    cost: u64,
+    plan: PhysicalPlan,
+    decision: String,
+) {
+    let candidate = AccessCandidate {
+        plan,
+        decision,
+        fingerprint: OnceCell::new(),
+    };
+    let replace = best.as_ref().is_none_or(|(best_cost, best)| {
+        cost < *best_cost || (cost == *best_cost && candidate.fingerprint() < best.fingerprint())
+    });
+    if replace {
+        *best = Some((cost, candidate));
+    }
+}
+
+fn sort_candidates(candidates: &mut [PhysicalCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.cost
+            .cmp(&right.cost)
+            .then_with(|| left.access.fingerprint().cmp(right.access.fingerprint()))
+            .then_with(|| left.rule_id.cmp(right.rule_id))
+    });
 }
 
 pub(super) fn exact_union_index_seek_candidate(
@@ -102,13 +155,13 @@ pub(super) fn exact_union_index_seek_candidate(
     ))
 }
 
-pub(super) fn composite_range_index_seek_candidate(
+fn composite_range_index_seek_candidate(
     predicates: &[Predicate],
     full_predicate: &Predicate,
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> Option<(PhysicalPlan, String)> {
+) -> Option<AccessCandidate> {
     let mut equality_values = BTreeMap::<String, Value>::new();
     let mut ranges = BTreeMap::<String, ValueRangeBounds>::new();
     for predicate in predicates {
@@ -138,7 +191,7 @@ pub(super) fn composite_range_index_seek_candidate(
 
     let label_count = catalog.label_count(label);
     let scan_cost = estimate_node_full_scan_cost(label_count);
-    let mut best: Option<(u64, PhysicalPlan, String)> = None;
+    let mut best = None;
     for index_properties in catalog.composite_property_indexes_for_label(label) {
         if index_properties.len() < 2
             || !catalog.has_composite_property_index(label, &index_properties)
@@ -204,16 +257,9 @@ pub(super) fn composite_range_index_seek_candidate(
                 seek,
             }),
         };
-        let replace = best.as_ref().is_none_or(|(best_cost, best_plan, _)| {
-            seek_cost < *best_cost
-                || (seek_cost == *best_cost
-                    && plan.instance_fingerprint() < best_plan.instance_fingerprint())
-        });
-        if replace {
-            best = Some((seek_cost, plan, decision));
-        }
+        keep_best_candidate(&mut best, seek_cost, plan, decision);
     }
-    best.map(|(_, plan, decision)| (plan, decision))
+    best.map(|(_, candidate)| candidate)
 }
 
 pub(super) fn index_seek_from_conjunction(
@@ -261,16 +307,7 @@ pub(super) fn index_seek_from_conjunction(
             evaluated_rule_count.saturating_sub(alternative_count),
         ),
     ));
-    candidates.sort_by(|left, right| {
-        left.cost
-            .cmp(&right.cost)
-            .then_with(|| {
-                left.plan
-                    .instance_fingerprint()
-                    .cmp(&right.plan.instance_fingerprint())
-            })
-            .then_with(|| left.rule_id.cmp(right.rule_id))
-    });
+    sort_candidates(&mut candidates);
     let selected = candidates.into_iter().next()?;
     decisions.push(
         RuleEvent::applied(
@@ -286,20 +323,20 @@ pub(super) fn index_seek_from_conjunction(
         "select access path candidate: rule={} total_cost={} alternatives_considered={}",
         selected.rule_id, selected.cost, alternative_count,
     ));
-    decisions.push(selected.decision);
-    Some(selected.plan)
+    decisions.push(selected.access.decision);
+    Some(selected.access.plan)
 }
 
-pub(super) fn equality_index_seek_candidate(
+fn equality_index_seek_candidate(
     predicates: &[Predicate],
     full_predicate: &Predicate,
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> Option<(PhysicalPlan, String)> {
+) -> Option<AccessCandidate> {
     let label_count = catalog.label_count(label);
     let scan_cost = estimate_node_full_scan_cost(label_count);
-    let mut best_candidate: Option<(u64, PhysicalPlan, String)> = None;
+    let mut best_candidate = None;
     for predicate in predicates {
         let Predicate::PropertyEq {
             variable,
@@ -328,16 +365,7 @@ pub(super) fn equality_index_seek_candidate(
                     value: value.clone(),
                 }),
             };
-            let replace = best_candidate
-                .as_ref()
-                .is_none_or(|(best_cost, best_plan, _)| {
-                    seek_cost < *best_cost
-                        || (seek_cost == *best_cost
-                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
-                });
-            if replace {
-                best_candidate = Some((seek_cost, plan, decision));
-            }
+            keep_best_candidate(&mut best_candidate, seek_cost, plan, decision);
         }
     }
     for predicate in predicates {
@@ -370,28 +398,19 @@ pub(super) fn equality_index_seek_candidate(
                     values: values.clone(),
                 }),
             };
-            let replace = best_candidate
-                .as_ref()
-                .is_none_or(|(best_cost, best_plan, _)| {
-                    seek_cost < *best_cost
-                        || (seek_cost == *best_cost
-                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
-                });
-            if replace {
-                best_candidate = Some((seek_cost, plan, decision));
-            }
+            keep_best_candidate(&mut best_candidate, seek_cost, plan, decision);
         }
     }
-    best_candidate.map(|(_, plan, decision)| (plan, decision))
+    best_candidate.map(|(_, candidate)| candidate)
 }
 
-pub(super) fn composite_index_seek_candidate(
+fn composite_index_seek_candidate(
     predicates: &[Predicate],
     full_predicate: &Predicate,
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> Option<(PhysicalPlan, String)> {
+) -> Option<AccessCandidate> {
     let mut equality_values = BTreeMap::<String, Value>::new();
     for predicate in predicates {
         let Predicate::PropertyEq {
@@ -406,7 +425,7 @@ pub(super) fn composite_index_seek_candidate(
             equality_values.insert(property.clone(), value.clone());
         }
     }
-    let mut best_candidate: Option<(u64, PhysicalPlan, String)> = None;
+    let mut best_candidate = None;
     for properties in catalog.composite_property_indexes_for_label(label) {
         if properties.len() < 2 || !catalog.has_composite_property_index(label, &properties) {
             continue;
@@ -440,19 +459,10 @@ pub(super) fn composite_index_seek_candidate(
                     predicates: seek_predicates,
                 }),
             };
-            let replace = best_candidate
-                .as_ref()
-                .is_none_or(|(best_cost, best_plan, _)| {
-                    seek_cost < *best_cost
-                        || (seek_cost == *best_cost
-                            && plan.instance_fingerprint() < best_plan.instance_fingerprint())
-                });
-            if replace {
-                best_candidate = Some((seek_cost, plan, decision));
-            }
+            keep_best_candidate(&mut best_candidate, seek_cost, plan, decision);
         }
     }
-    best_candidate.map(|(_, plan, decision)| (plan, decision))
+    best_candidate.map(|(_, candidate)| candidate)
 }
 
 fn range_index_seek_candidate(
@@ -461,7 +471,7 @@ fn range_index_seek_candidate(
     scan_variable: &str,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> Option<(PhysicalPlan, String)> {
+) -> Option<AccessCandidate> {
     let mut ranges = BTreeMap::<String, ValueRangeBounds>::new();
     for predicate in predicates {
         let Predicate::PropertyCompare {
@@ -482,8 +492,7 @@ fn range_index_seek_candidate(
         merge_upper_bound(upper, candidate_upper);
     }
 
-    let mut best_plan: Option<(PhysicalPlan, String)> = None;
-    let mut best_seek_cost = u64::MAX;
+    let mut best_plan: Option<(u64, AccessCandidate)> = None;
     for (property, (lower, upper)) in ranges {
         let label_count = catalog.label_count(label);
         let estimated_rows =
@@ -491,6 +500,7 @@ fn range_index_seek_candidate(
         let scan_cost = estimate_node_full_scan_cost(label_count);
         let seek_cost =
             estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_RANGE_STARTUP_COST);
+        let best_seek_cost = best_plan.as_ref().map_or(u64::MAX, |(cost, _)| *cost);
         if node_index_seek_is_cheaper(label_count, seek_cost) && seek_cost <= best_seek_cost {
             let decision = format!(
                 "choose IndexNodeRangeSeek for {label}.{property} in conjunction: seek_cost={seek_cost} scan_cost={scan_cost} label_count={label_count} estimated_rows={estimated_rows}"
@@ -505,32 +515,26 @@ fn range_index_seek_candidate(
                     upper,
                 }),
             };
-            let replace = best_plan.as_ref().is_none_or(|(best_plan, _)| {
-                seek_cost < best_seek_cost
-                    || (seek_cost == best_seek_cost
-                        && plan.instance_fingerprint() < best_plan.instance_fingerprint())
-            });
-            if replace {
-                best_seek_cost = seek_cost;
-                best_plan = Some((plan, decision));
-            }
+            keep_best_candidate(&mut best_plan, seek_cost, plan, decision);
         }
     }
-    best_plan
+    best_plan.map(|(_, candidate)| candidate)
 }
 
 fn push_candidate(
     candidates: &mut Vec<PhysicalCandidate>,
-    candidate: Option<(PhysicalPlan, String)>,
+    candidate: Option<AccessCandidate>,
     rule_id: &'static str,
     catalog: &OptimizerCatalog,
 ) {
-    if let Some((plan, decision)) = candidate {
+    if let Some(access) = candidate {
         candidates.push(PhysicalCandidate {
-            cost: estimate_physical_plan_cost(&plan, catalog).cost,
-            plan,
-            decision,
+            cost: estimate_physical_plan_cost(&access.plan, catalog).cost,
+            access,
             rule_id,
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

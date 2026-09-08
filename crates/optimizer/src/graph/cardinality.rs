@@ -1,8 +1,18 @@
 use super::{OptimizerCatalog, PhysicalPlan};
 use skein_core::Value;
 use skein_cypher::RelationshipDirection;
-use skein_plan::{AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression};
+use skein_plan::{
+    AggregateTarget, Aggregation, NodeProjectionAccess, Predicate, Projection, ProjectionExpression,
+};
 use std::collections::{BTreeMap, BTreeSet};
+
+// Until query-specific full-text statistics exist, use the same quarter-label
+// fallback before and after projection fusion. Materialization is not selectivity.
+const FULL_TEXT_SELECTIVITY_DIVISOR: u64 = 4;
+
+pub(super) fn estimate_full_text_rows(label_rows: u64) -> u64 {
+    label_rows.div_ceil(FULL_TEXT_SELECTIVITY_DIVISOR).max(1)
+}
 
 pub(super) fn estimate_filter_rows(
     predicate: &Predicate,
@@ -388,6 +398,15 @@ fn physical_plan_access_path_covers_property(
         | PhysicalPlan::IndexNodeTextSeek {
             variable: plan_variable,
             property: plan_property,
+            ..
+        }
+        | PhysicalPlan::NodeProjectionScanExec {
+            variable: plan_variable,
+            access:
+                NodeProjectionAccess::FullText {
+                    property: plan_property,
+                    ..
+                },
             ..
         } => plan_variable == variable && plan_property == property,
         PhysicalPlan::IndexNodeCompositeSeek {
