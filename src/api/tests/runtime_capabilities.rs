@@ -617,22 +617,29 @@ fn enabled_access_control_filters_before_ranking_without_exposing_policy_inputs(
 
 #[test]
 fn runtime_capabilities_cannot_exceed_compiled_availability() {
-    let requested = RuntimeCapabilities::shared_host().with(RuntimeCapability::AccessControl, true);
-    let db = Database::new_with_config(DatabaseConfig {
-        runtime_capabilities: requested,
-        ..DatabaseConfig::default()
-    });
-    let mut search = SearchIndex::in_memory();
-    search.set_runtime_capabilities(requested);
+    for mask in 0_u8..32 {
+        let requested = RuntimeCapabilities {
+            access_control: mask & 1 != 0,
+            full_text_search: mask & 2 != 0,
+            vector_search: mask & 4 != 0,
+            graph_analytics: mask & 8 != 0,
+            background_maintenance: mask & 16 != 0,
+        };
+        let db = Database::new_with_config(DatabaseConfig {
+            runtime_capabilities: requested,
+            ..DatabaseConfig::default()
+        });
+        let mut search = SearchIndex::in_memory();
+        search.set_runtime_capabilities(requested);
+        let expected = requested.intersection(crate::compiled_runtime_capabilities());
 
-    assert_eq!(
-        db.runtime_capabilities(),
-        requested.intersection(crate::compiled_runtime_capabilities())
-    );
-    assert_eq!(
-        search.runtime_capabilities(),
-        requested.intersection(crate::compiled_runtime_capabilities())
-    );
+        assert_eq!(db.runtime_capabilities(), expected, "database mask {mask}");
+        assert_eq!(
+            search.runtime_capabilities(),
+            expected,
+            "search mask {mask}"
+        );
+    }
 }
 
 #[cfg(not(any(
