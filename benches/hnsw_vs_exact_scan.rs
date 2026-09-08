@@ -2,12 +2,16 @@
 //! (brute-force, unquantized) cosine ranking, p50/p95/p99 query latency,
 //! memory footprint, and build cost.
 //!
-//! The quantized base is itself approximate (4-bit TurboQuant codes), so
+//! The quantized base is itself approximate (default 1-bit RaBitQ codes), so
 //! this compares three things at once: true exact cosine ranking (ground
 //! truth), the existing quantized-scan recall against that ground truth,
 //! and HnswIndex's recall against the same ground truth -- to show whether
 //! HNSW's approximation is worth its extra memory relative to just
 //! scanning the quantized base directly.
+//!
+//! This standalone experiment does not exercise embedded serving, persistence,
+//! candidate filters, or production qualification. See
+//! `docs/VECTOR_EXPERIMENT_ROADMAP.md` for the integration gates.
 
 use serde_json::json;
 use skein_vector_projection::{

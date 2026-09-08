@@ -1,5 +1,9 @@
 //! Un-indexed writes held ahead of an immutable base projection.
 //!
+//! This is an experimental upsert-only buffer, not the embedded search write
+//! path. It has no delete/tombstone, durable publication, or recovery contract.
+//! See the [experimental API roadmap](crate#experimental-apis).
+//!
 //! `InMemoryProjection`/`FileProjection` are built once (via `ProjectionBuilder`
 //! / `ProjectionWriter`) and have no update path: every row is an immutable
 //! RaBitQ-quantized artifact. `DeltaBuffer` holds recent upserts that
@@ -24,6 +28,8 @@
 //! accordingly; callers whose delta scan is cheaper relative to their base
 //! (smaller dimension, larger base) or who can tolerate more latency
 //! between rebuilds can raise it via `with_optimize_threshold`.
+//! That historical calibration is not a current 1-bit RaBitQ production result;
+//! the retained benchmark must be rerun and qualified before integration.
 
 use crate::error::{ProjectionError, Result};
 use crate::scan::{compare_best, ProjectionHit, ProjectionSearchOptions, ProjectionSearchOutput};
@@ -45,6 +51,8 @@ struct DeltaEntry {
 }
 
 /// A small, unindexed set of upserted vectors awaiting a full rebuild.
+///
+/// Experimental and upsert-only; see the [roadmap](crate#experimental-apis).
 #[derive(Debug, Clone)]
 pub struct DeltaBuffer {
     dimension: usize,
@@ -235,6 +243,9 @@ fn cosine_similarity(query: &[f32], query_norm: f64, vector: &[f32]) -> Option<f
 }
 
 /// Result of merging a base projection search with a `DeltaBuffer` scan.
+///
+/// An [experimental candidate result](crate#experimental-apis), not the embedded
+/// facade's final raw-reranked output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeltaMergedSearchOutput {
     pub hits: Vec<ProjectionHit>,
@@ -256,6 +267,9 @@ pub struct DeltaMergedSearchOutput {
 /// must enforce `options.max_working_bytes`, returning a budget error rather
 /// than silently shortening a correct result; callers should rebuild when
 /// `DeltaBuffer::should_optimize` signals sustained amplification.
+///
+/// This [experimental helper](crate#experimental-apis) has no tombstone or
+/// generation contract and is not used by the embedded serving path.
 pub fn search_with_delta<F>(
     query: &[f32],
     top_k: usize,

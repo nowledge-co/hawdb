@@ -1,3 +1,25 @@
+//! Rebuildable RaBitQ candidate projections. Applications integrate through
+//! the embedded `skein` facade, not through experimental index primitives.
+//!
+//! # Experimental APIs
+//!
+//! The HNSW, delta, and advisor exports are retained for standalone experiments
+//! and benchmarks, not used by the embedded serving or maintenance path:
+//!
+//! - [`HnswIndex`] and [`HnswBuildConfig`] have no persistent generation binding
+//!   or candidate-filter support.
+//! - [`DeltaBuffer`], [`search_with_delta`], and [`DeltaMergedSearchOutput`] have
+//!   no delete/tombstone or checkpoint/recovery contract.
+//! - [`IndexAdvisor`], [`IndexPlanner`], [`AutoIndexPolicy`], [`WorkloadSample`],
+//!   [`IndexRecommendation`], [`IndexAction`], and [`QueryPath`] express
+//!   recommendations or caller-supplied availability, not serving readiness.
+//!
+//! Their retention decision, prerequisites, verification gates, and removal
+//! criteria are tracked in the
+//! [vector experiment roadmap](https://github.com/nowledge-co/skein/blob/main/docs/VECTOR_EXPERIMENT_ROADMAP.md)
+//! for [issue #228](https://github.com/nowledge-co/skein/issues/228).
+//! This is not approval to wire them into production or auto-apply advice.
+
 mod advisor;
 mod artifact;
 mod build;
