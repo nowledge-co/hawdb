@@ -19,7 +19,7 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_executor_tests",
+    name = "skein_executor_unit_tests",
     crate = ":skein_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -47,6 +47,15 @@ rust_test(
         ("skein_morsel_oracle_fuzz_tests", ["scheduler_differential_campaign", "--exact", "--ignored", "--nocapture"], ["manual"]),
     ]
 ]
+
+# The existing CI entrypoint must consume public contracts as well as unit tests.
+test_suite(
+    name = "skein_executor_tests",
+    tests = [
+        ":skein_executor_unit_tests",
+        ":skein_morsel_oracle_tests",
+    ],
+)
 
 rust_test(
     name = "skein_sort_merge_account_fuzz_tests",
