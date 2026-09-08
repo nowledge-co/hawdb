@@ -67,12 +67,15 @@
 //! Nested messages:
 //!
 //! - property_entry: `1 key:str, 2 value:msg`
-//! - value: exactly one of `1 null:varint(0), 2 bool:varint, 3 int:varint(zigzag),
+//! - value: the encoder writes one kind of value using
+//!   `1 null:varint(0), 2 bool:varint, 3 int:varint(zigzag),
 //!   4 float:fixed64(bits), 5 string:str, 6 element:msg (repeated, list),
-//!   7 map_entry:msg (repeated, property_entry shape)`
+//!   7 map_entry:msg (repeated, property_entry shape), 8 binary:bytes,
+//!   9 uuid:bytes (exactly 16 raw UUID bytes, not a string)`.
+//!   Empty lists and maps use one zero-length field 6 or 7 respectively.
 //!
 //! Enum wire values (append-only): TableKind Node=0 Relationship=1;
-//! PropertyType Any=0 Bool=1 Int=2 Float=3 String=4 List=5;
+//! PropertyType Any=0 Bool=1 Int=2 Float=3 String=4 List=5 Text=6;
 //! SchemaObjectState DeleteOnly=0 WriteOnly=1 Backfill=2 Validating=3
 //! Public=4 Gc=5.
 
@@ -995,6 +998,100 @@ mod tests {
         // The legacy text renderer remains the canonical identity for
         // comparison because WalOp intentionally does not implement PartialEq.
         assert_eq!(decoded.encode(), entry.encode());
+    }
+
+    #[test]
+    fn value_message_wire_fixtures_cover_every_field() {
+        // Literal bytes, independent of the codec constants and helpers, pin
+        // the append-only field IDs as well as their wire types and payloads.
+        let fixtures: Vec<(Value, Vec<u8>)> = vec![
+            (Value::Null, vec![0x08, 0x00]),
+            (Value::Bool(true), vec![0x10, 0x01]),
+            (Value::Int(-3), vec![0x18, 0x05]),
+            (
+                Value::Float(-0.5),
+                vec![0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0xbf],
+            ),
+            (Value::String("a".to_string()), vec![0x2a, 0x01, b'a']),
+            (
+                Value::List(vec![Value::Null, Value::Bool(true)]),
+                vec![0x32, 0x02, 0x08, 0x00, 0x32, 0x02, 0x10, 0x01],
+            ),
+            (Value::List(Vec::new()), vec![0x32, 0x00]),
+            (
+                Value::Map(BTreeMap::from([("k".to_string(), Value::Int(-3))])),
+                vec![0x3a, 0x07, 0x0a, 0x01, b'k', 0x12, 0x02, 0x18, 0x05],
+            ),
+            (Value::Map(BTreeMap::new()), vec![0x3a, 0x00]),
+            (
+                Value::Binary(vec![0x00, 0x01, 0xfe, 0xff]),
+                vec![0x42, 0x04, 0x00, 0x01, 0xfe, 0xff],
+            ),
+            (Value::Binary(Vec::new()), vec![0x42, 0x00]),
+            (
+                Value::Uuid(
+                    skein_core::Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+                ),
+                vec![
+                    0x4a, 0x10, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
+                    0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                ],
+            ),
+        ];
+        for (value, expected) in fixtures {
+            let mut encoded = Vec::new();
+            encode_value_message(&value, &mut encoded);
+            assert_eq!(encoded, expected, "encoding {value:?}");
+            assert_eq!(decode_value_message(&expected, 1).unwrap(), value);
+            let record = encoded_set_node_property_record(&expected);
+            let BinaryWalRecordDecode::Entry { entry, .. } =
+                decode_binary_wal_record(&record).unwrap()
+            else {
+                panic!("literal value fixture was rejected: {value:?}");
+            };
+            assert!(
+                matches!(entry.op, WalOp::SetNodeProperty { value: actual, .. } if actual == value)
+            );
+        }
+    }
+
+    #[test]
+    fn property_type_wire_assignments_are_append_only() {
+        for (value_type, code) in [
+            (PropertyType::Any, 0),
+            (PropertyType::Bool, 1),
+            (PropertyType::Int, 2),
+            (PropertyType::Float, 3),
+            (PropertyType::String, 4),
+            (PropertyType::List, 5),
+            (PropertyType::Text, 6),
+        ] {
+            assert_eq!(property_type_code(value_type), code);
+            assert_eq!(decode_property_type_code(code).unwrap(), value_type);
+        }
+    }
+
+    #[test]
+    fn uuid_value_records_require_exactly_sixteen_payload_bytes() {
+        for len in 0u8..=32 {
+            let mut value = vec![0x4a, len];
+            value.extend(std::iter::repeat_n(0xa5, usize::from(len)));
+            let record = encoded_set_node_property_record(&value);
+            match decode_binary_wal_record(&record).unwrap() {
+                BinaryWalRecordDecode::Entry { entry, .. } => {
+                    assert_eq!(len, 16);
+                    assert!(matches!(
+                        entry.op,
+                        WalOp::SetNodeProperty { value: Value::Uuid(actual), .. }
+                            if actual.as_bytes() == &[0xa5; 16]
+                    ));
+                }
+                BinaryWalRecordDecode::Corrupt(reason) => {
+                    assert_ne!(len, 16);
+                    assert!(reason.contains("WAL UUID value must contain 16 bytes"));
+                }
+            }
+        }
     }
 
     #[test]
