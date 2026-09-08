@@ -764,35 +764,29 @@ fn spill_group_run(
 }
 
 fn compact_group_runs(
-    mut runs: Vec<spill::SpillRun>,
+    runs: Vec<spill::SpillRun>,
     aggregate_input_count: usize,
     memory: &ExecutionMemoryConfig,
     spill_budget: &mut SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    while runs.len() > 2 {
-        runtime_checkpoint(task_context)?;
-        let mut compacted = Vec::with_capacity(runs.len().div_ceil(2));
-        let mut pending = runs.into_iter();
-        while let Some(left) = pending.next() {
-            let Some(right) = pending.next() else {
-                compacted.push(left);
-                break;
-            };
-            compacted.push(merge_group_run_pair(
-                &left,
-                &right,
+    spill::compact_runs(
+        runs,
+        NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        task_context,
+        |left, right| {
+            merge_group_run_pair(
+                left,
+                right,
                 aggregate_input_count,
                 memory,
                 spill_budget,
                 blocking_account,
                 task_context,
-            )?);
-        }
-        runs = compacted;
-    }
-    Ok(runs)
+            )
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -193,7 +193,11 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, exit: Exit) {
             drop(runs);
         }
         Exit::Panic(at) => {
-            assert!(outcome.is_err());
+            let payload = outcome.err().expect("merge must unwind");
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"injected merge panic")
+            );
             assert_eq!(observed.len(), at + 1);
         }
         _ => {
@@ -209,6 +213,7 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, exit: Exit) {
                 }
                 Exit::RunBudget(allowed) => {
                     assert_eq!(budget.run_count, seeded_runs + allowed);
+                    assert_eq!(observed.len(), allowed + 1);
                     "max_spill_runs"
                 }
                 Exit::ByteBudget => "max_spill_bytes",
@@ -235,6 +240,7 @@ fn real_runs_match_pairwise_reference_at_both_final_fanins() {
     for count in 0..=17 {
         for final_count in [1, 2] {
             check_case(values(count, 100), final_count, Exit::Complete);
+            check_case(vec![Vec::new(); count], final_count, Exit::Complete);
         }
     }
 }
@@ -275,12 +281,29 @@ fn cancelled_levels_release_runs_without_calling_the_merger() {
 #[ignore = "local deterministic spill-file compaction campaign"]
 fn compaction_differential_campaign() {
     let mut state = 220u64;
+    let mut failures = 0;
     for _ in 0..128 {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         let count = (state >> 32) as usize % 33;
         for final_count in [1, 2] {
-            check_case(values(count, state % 10_000), final_count, Exit::Complete);
+            let input = values(count, state % 10_000);
+            check_case(input.clone(), final_count, Exit::Complete);
+            let (_, pairs) = reference(input.clone(), final_count);
+            if !pairs.is_empty() {
+                let at = state as usize % pairs.len();
+                for exit in [Exit::Error(at), Exit::RunBudget(at), Exit::ByteBudget] {
+                    check_case(input.clone(), final_count, exit);
+                    failures += 1;
+                }
+            }
+            // Cancellation must precede another checkpoint, not the final return.
+            if pairs.len() > 1 {
+                check_case(input, final_count, Exit::Cancel);
+                failures += 1;
+            }
         }
     }
-    println!("Spill compaction differential: 256 real-file fixtures, both final fan-ins");
+    println!(
+        "Spill compaction differential: 256 successful and {failures} failing real-file fixtures, both final fan-ins"
+    );
 }
