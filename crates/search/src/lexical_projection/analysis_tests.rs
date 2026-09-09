@@ -19,7 +19,7 @@ fn reference_tokens(text: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String>
     tokens.into_vec()
 }
 
-fn reference_document_tokens(
+pub(super) fn reference_document_tokens(
     document: &SearchDocument,
     analyzer: &SearchAnalyzerLexicon,
 ) -> Vec<String> {

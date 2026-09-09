@@ -1,11 +1,18 @@
-//! Executable reduction proof for document-local spill. Kept test-only until
-//! the admitted run writer and two-pass posting emission are integrated.
+//! Document-local analysis with an in-memory fast path and private sorted runs.
 
 use super::*;
 
-/// Summary for one (term, field), over a disjoint subset of occurrence ordinals.
-/// Every ordinary occurrence counts. A unique-in-field occurrence counts only
-/// when it is the earliest occurrence of either kind in that field.
+mod run;
+use run::{merge_pair, write_run, FrequencyRun, FrequencyRunReader};
+
+#[cfg(test)]
+mod proof;
+
+#[cfg(test)]
+mod tests;
+
+/// The first event of either kind suppresses all later unique-in-field events.
+/// Partial sums alone cannot preserve this rule across physical spill boundaries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PartialFieldFrequency {
     repeated_weight: u64,
@@ -14,16 +21,21 @@ struct PartialFieldFrequency {
 
 impl PartialFieldFrequency {
     fn push(&mut self, ordinal: u64, occurrence: TokenOccurrence, weight: u64) -> Result<()> {
-        let mut incoming = Self::default();
-        let unique_weight = match occurrence {
-            TokenOccurrence::Repeated => {
-                incoming.repeated_weight = weight;
+        self.merge(Self {
+            repeated_weight: if occurrence == TokenOccurrence::Repeated {
+                weight
+            } else {
                 0
-            }
-            TokenOccurrence::UniqueInField => weight,
-        };
-        incoming.first_event = Some((ordinal, unique_weight));
-        self.merge(incoming)
+            },
+            first_event: Some((
+                ordinal,
+                if occurrence == TokenOccurrence::UniqueInField {
+                    weight
+                } else {
+                    0
+                },
+            )),
+        })
     }
 
     fn merge(&mut self, incoming: Self) -> Result<()> {
@@ -43,326 +55,379 @@ impl PartialFieldFrequency {
 
     fn frequency(self) -> Result<u64> {
         self.repeated_weight
-            .checked_add(
-                self.first_event
-                    .map_or(0, |(_, unique_weight)| unique_weight),
-            )
+            .checked_add(self.first_event.map_or(0, |(_, weight)| weight))
             .ok_or_else(|| SkeinError::Storage("document term frequency overflow".into()))
     }
 }
 
-#[derive(Debug, Clone)]
-struct Event {
+#[derive(Debug)]
+struct FrequencyRecord {
     term: String,
-    occurrence: TokenOccurrence,
     field: u8,
-    weight: usize,
+    summary: PartialFieldFrequency,
 }
 
-type Frequencies = BTreeMap<String, u32>;
-type PartialRun = BTreeMap<(String, u8), PartialFieldFrequency>;
-
-fn reference(events: &[Event]) -> (Frequencies, u32) {
-    let mut analysis = DocumentAnalysis::new("spill-proof", Default::default()).unwrap();
-    for event in events {
-        analysis
-            .push(
-                event.term.clone(),
-                event.occurrence,
-                event.field,
-                event.weight,
-            )
-            .unwrap();
+impl FrequencyRecord {
+    fn key(&self) -> (&str, u8) {
+        (&self.term, self.field)
     }
-    let document = analysis.finish();
-    (document.frequencies, document.document_len)
+    fn encoded_len(&self) -> u64 {
+        self.term.len() as u64 + 29
+    }
 }
 
-fn partial_runs(events: &[Event], split_after: impl Fn(usize) -> bool) -> Vec<PartialRun> {
-    let mut runs = Vec::new();
-    let mut current = PartialRun::new();
-    for (ordinal, event) in events.iter().enumerate() {
-        current
-            .entry((event.term.clone(), event.field))
-            .or_default()
-            .push(ordinal as u64, event.occurrence, event.weight as u64)
-            .unwrap();
-        if split_after(ordinal) {
-            runs.push(std::mem::take(&mut current));
+// Binary carries keep at most one live run per level, instead of retaining
+// one path for every flushed chunk of a large document.
+struct DocumentRuns {
+    levels: [Option<FrequencyRun>; usize::BITS as usize],
+}
+
+impl Default for DocumentRuns {
+    fn default() -> Self {
+        Self {
+            levels: std::array::from_fn(|_| None),
         }
     }
-    if !current.is_empty() {
-        runs.push(current);
-    }
-    runs
 }
 
-fn merge_runs(mut left: PartialRun, right: PartialRun) -> PartialRun {
-    for (key, summary) in right {
-        left.entry(key).or_default().merge(summary).unwrap();
+impl DocumentRuns {
+    fn insert(&mut self, mut incoming: FrequencyRun, pool: &mut SpillRuns) -> Result<()> {
+        for level in &mut self.levels {
+            let Some(previous) = level.take() else {
+                *level = Some(incoming);
+                return Ok(());
+            };
+            incoming = merge_pair(previous, incoming, pool)?;
+        }
+        Err(SkeinError::Storage(
+            "document frequency spill levels exhausted".into(),
+        ))
     }
-    left
-}
 
-fn reduce(mut runs: Vec<PartialRun>, reverse: bool) -> (Frequencies, u32) {
-    if reverse {
-        runs.reverse();
-    }
-    // Pairwise merges deliberately differ from a sequential traversal and
-    // exercise summaries from several prior merge generations.
-    while runs.len() > 1 {
-        let mut next = Vec::new();
-        let mut inputs = runs.into_iter();
-        while let Some(left) = inputs.next() {
-            next.push(match inputs.next() {
-                Some(right) => merge_runs(left, right),
-                None => left,
+    fn finish(self, pool: &mut SpillRuns) -> Result<FrequencyRun> {
+        let mut merged = None;
+        for run in self.levels.into_iter().flatten() {
+            merged = Some(match merged {
+                Some(previous) => merge_pair(previous, run, pool)?,
+                None => run,
             });
         }
-        runs = next;
+        merged.ok_or_else(|| SkeinError::Storage("document frequency spill has no runs".into()))
     }
-    let mut frequencies = Frequencies::new();
-    let mut document_len = 0u32;
-    for ((term, _field), summary) in runs.pop().unwrap_or_default() {
-        let frequency = u32::try_from(summary.frequency().unwrap()).unwrap();
-        *frequencies.entry(term).or_default() += frequency;
-        document_len += frequency;
-    }
-    (frequencies, document_len)
 }
 
-#[test]
-fn independent_chunk_tf_sums_are_not_an_exact_reducer() {
-    let events = [
-        TokenOccurrence::UniqueInField,
-        TokenOccurrence::Repeated,
-        TokenOccurrence::UniqueInField,
-    ]
-    .map(|occurrence| Event {
-        term: "graph".into(),
-        occurrence,
-        field: 0,
-        weight: 2,
-    });
-    let exact = reference(&events);
-    let naive_len = events
-        .chunks(1)
-        .map(|chunk| reference(chunk).1)
-        .sum::<u32>();
-    assert_eq!(exact.1, 4);
-    assert_eq!(naive_len, 6);
-    assert_ne!(naive_len, exact.1);
-    assert_eq!(reduce(partial_runs(&events, |_| true), true), exact);
+struct SpillingAnalysis {
+    records: Vec<FrequencyRecord>,
+    string_bytes: u64,
+    buffer_limit: u64,
+    lower_bound: u64,
+    runs: DocumentRuns,
 }
 
-#[test]
-fn all_small_occurrence_partitions_match_the_existing_document_analysis() {
-    for length in 0..=5usize {
-        for pattern in 0..4usize.pow(length as u32) {
-            for field_boundary in 0..=length {
-                let events = (0..length)
-                    .map(|position| {
-                        let symbol = (pattern >> (position * 2)) & 3;
-                        Event {
-                            term: if symbol & 1 == 0 { "alpha" } else { "beta" }.into(),
-                            occurrence: if symbol & 2 == 0 {
-                                TokenOccurrence::Repeated
-                            } else {
-                                TokenOccurrence::UniqueInField
-                            },
-                            field: u8::from(position >= field_boundary),
-                            weight: if position < field_boundary { 2 } else { 1 },
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let expected = reference(&events);
-                for partition in 0..(1usize << length.saturating_sub(1)) {
-                    let runs = partial_runs(&events, |position| partition & (1 << position) != 0);
-                    for reverse in [false, true] {
-                        assert_eq!(
-                            reduce(runs.clone(), reverse),
-                            expected,
-                            "pattern={pattern}, boundary={field_boundary}, partition={partition}, reverse={reverse}"
-                        );
-                    }
+impl SpillingAnalysis {
+    fn push(&mut self, record: FrequencyRecord, pool: &mut SpillRuns) -> Result<()> {
+        let lower_bound = self
+            .lower_bound
+            .checked_add(record.summary.repeated_weight)
+            .ok_or_else(|| SkeinError::Storage("lexical document length overflow".into()))?;
+        admit_document_len(lower_bound, pool.config)?;
+        let string_bytes = record.term.capacity() as u64;
+        let slot_bytes = std::mem::size_of::<FrequencyRecord>() as u64;
+        let mut capacity = self.records.capacity();
+        if self.records.len() == capacity {
+            capacity = capacity.saturating_mul(2).max(1);
+        }
+        let required = self
+            .string_bytes
+            .saturating_add(string_bytes)
+            .saturating_add((capacity as u64).saturating_mul(slot_bytes));
+        if required > self.buffer_limit {
+            self.flush(pool)?;
+            capacity = 1;
+        }
+        if string_bytes.saturating_add(slot_bytes.saturating_mul(capacity as u64))
+            > self.buffer_limit
+        {
+            return Err(SkeinError::Storage(
+                "one document frequency record exceeds analyzer bytes".into(),
+            ));
+        }
+        if capacity > self.records.capacity() {
+            self.records
+                .try_reserve_exact(capacity - self.records.len())
+                .map_err(|error| {
+                    SkeinError::Storage(format!("reserve document frequency records: {error}"))
+                })?;
+        }
+        self.string_bytes = self.string_bytes.saturating_add(string_bytes);
+        self.records.push(record);
+        self.lower_bound = lower_bound;
+        Ok(())
+    }
+
+    fn flush(&mut self, pool: &mut SpillRuns) -> Result<()> {
+        if self.records.is_empty() {
+            return Ok(());
+        }
+        self.records
+            .sort_unstable_by(|left, right| left.key().cmp(&right.key()));
+        let records = std::mem::take(&mut self.records);
+        self.string_bytes = 0;
+        let run = write_run(records.into_iter().map(Ok), pool, &mut FileSpillIo)?;
+        self.runs.insert(run, pool)
+    }
+
+    fn finish(mut self, pool: &mut SpillRuns) -> Result<FrequencyRun> {
+        self.flush(pool)?;
+        self.runs.finish(pool)
+    }
+}
+
+pub(super) enum AnalyzedDocument<'a> {
+    Resident(DocumentAnalysis<'a>),
+    Spilled {
+        run: FrequencyRun,
+        document_len: u32,
+        read_memory_bytes: u64,
+    },
+}
+
+impl AnalyzedDocument<'_> {
+    pub(super) fn document_len(&self) -> u32 {
+        match self {
+            Self::Resident(analysis) => analysis.document_len,
+            Self::Spilled { document_len, .. } => *document_len,
+        }
+    }
+
+    /// The callback receives the analysis state that still coexists with the
+    /// corpus posting buffer. The resident map uses the existing estimated
+    /// charge; disk reads have a conservative fixed progress reservation.
+    pub(super) fn visit(
+        self,
+        config: LexicalProjectionConfig,
+        mut emit: impl FnMut(String, u32, u64) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            Self::Resident(analysis) => {
+                let mut resident = analysis
+                    .required_map_bytes(analysis.resident_bytes, analysis.frequencies.len());
+                for (term, entry) in analysis.frequencies {
+                    let marker_bytes =
+                        (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
+                    resident = resident.saturating_sub(term.len() as u64 + 32 + marker_bytes);
+                    emit(term, entry.frequency, resident)?;
                 }
+                Ok(())
             }
+            Self::Spilled {
+                run,
+                read_memory_bytes,
+                ..
+            } => visit_frequencies(&run, config, |term, frequency| {
+                emit(term, frequency, read_memory_bytes)
+            }),
         }
     }
 }
 
-#[test]
-fn real_analyzer_fields_remain_exact_across_spill_and_merge_boundaries() {
-    let analyzer = SearchAnalyzerLexicon::default();
-    let fields = [
-        "graph graph storage graph_storage graph storage",
-        "APIClient api client API_client APIClient",
-        "\u{4e2d}\u{6587}\u{6570}\u{636e}\u{5e93} \u{4e2d}\u{6587} GraphRAG",
-        "\u{20000}\u{20001}\u{20002} FooBAR foo bar",
-    ];
-    for title in fields {
-        for content in fields {
-            let document = SearchDocument {
-                id: "spill-proof".into(),
-                title: title.into(),
-                content: content.into(),
-                embedding: None,
-                metadata: BTreeMap::from([
-                    ("kind".into(), "graph graph storage".into()),
-                    ("external_id".into(), "GraphRAG_graph_rag".into()),
-                    ("space_id".into(), "graph storage".into()),
-                ]),
-            };
-            let mut events = Vec::new();
-            for (field, (text, weight)) in document_token_fields(&document).enumerate() {
-                visit_token_list(text, &analyzer, |term, occurrence| {
-                    events.push(Event {
+fn admit_document_len(length: u64, config: LexicalProjectionConfig) -> Result<u32> {
+    if length > config.max_document_tokens.get() as u64 {
+        return Err(SkeinError::Storage(format!(
+            "lexical document produced at least {length} tokens, exceeding {}",
+            config.max_document_tokens
+        )));
+    }
+    u32::try_from(length)
+        .map_err(|_| SkeinError::Storage("lexical document length exceeds u32".into()))
+}
+
+fn progress_memory(pool: &SpillRuns, document_id: &str) -> u64 {
+    let levels = u64::from(usize::BITS - pool.config.max_spill_runs.get().leading_zeros());
+    let paths = levels.saturating_mul(pool.root.as_os_str().len() as u64 + 96);
+    // Three fixed I/O buffers, current/read-order/reduction keys, run metadata,
+    // and one final posting. Source and opaque analyzer scratch remain separate.
+    (3u64 * SPILL_IO_BUFFER_BYTES as u64)
+        .saturating_add(
+            8u64.saturating_mul(
+                pool.config
+                    .max_term_bytes
+                    .get()
+                    .saturating_add(std::mem::size_of::<FrequencyRecord>() as u64),
+            ),
+        )
+        .saturating_add(paths)
+        .saturating_add(std::mem::size_of::<DocumentRuns>() as u64)
+        .saturating_add(document_id.len() as u64)
+        .saturating_add(128)
+}
+
+pub(super) fn analyze<'a>(
+    document: &'a SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    pool: &mut SpillRuns,
+    pending: &mut Vec<Posting>,
+    pending_bytes: &mut u64,
+) -> Result<AnalyzedDocument<'a>> {
+    let config = pool.config;
+    admit_document_source(document, config)?;
+    let progress = progress_memory(pool, &document.id);
+    let base = document.id.len() as u64 + 64;
+    let spill_buffer = config
+        .build_memory_bytes
+        .get()
+        .checked_sub(progress)
+        .filter(|bytes| *bytes >= base);
+    let map_limit = spill_buffer.unwrap_or(config.build_memory_bytes.get());
+    if base.saturating_add(*pending_bytes) > map_limit {
+        flush_pending(pool, pending, pending_bytes)?;
+    }
+    let mut resident = Some(DocumentAnalysis::new(
+        &document.id,
+        LexicalProjectionConfig {
+            build_memory_bytes: NonZeroU64::new(map_limit).unwrap(),
+            ..config
+        },
+    )?);
+    let mut spilled: Option<SpillingAnalysis> = None;
+    let mut ordinal = 0u64;
+    for (field, (text, weight)) in document_token_fields(document).enumerate() {
+        let field = u8::try_from(field).expect("at most six analysis fields");
+        visit_token_list(text, analyzer, |term, occurrence| {
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| SkeinError::Storage("document token ordinal overflow".into()))?;
+            if term.len() as u64 > config.max_term_bytes.get() {
+                return Err(SkeinError::Storage(format!(
+                    "lexical term uses {} bytes, exceeding {}",
+                    term.len(),
+                    config.max_term_bytes
+                )));
+            }
+            if let Some(analysis) = resident.as_ref() {
+                let new_term = !analysis.frequencies.contains_key(&term);
+                let required = analysis.required_map_bytes(
+                    analysis.resident_bytes.saturating_add(if new_term {
+                        (term.len() as u64).saturating_add(32)
+                    } else {
+                        0
+                    }),
+                    analysis
+                        .frequencies
+                        .len()
+                        .saturating_add(usize::from(new_term)),
+                );
+                if required.saturating_add(*pending_bytes) > map_limit {
+                    flush_pending(pool, pending, pending_bytes)?;
+                }
+                if required > map_limit {
+                    let Some(buffer_limit) = spill_buffer else {
+                        return Err(SkeinError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
+                    };
+                    if config.max_merge_fan_in.get() < 2 {
+                        return Err(SkeinError::Storage(
+                            "lexical merge fan-in must be at least two".into(),
+                        ));
+                    }
+                    let analysis = resident.take().expect("resident accumulator");
+                    let mut external = SpillingAnalysis {
+                        records: Vec::new(),
+                        string_bytes: 0,
+                        buffer_limit,
+                        lower_bound: u64::from(analysis.document_len),
+                        runs: DocumentRuns::default(),
+                    };
+                    if !analysis.frequencies.is_empty() {
+                        let prefix = analysis.frequencies.into_iter().map(|(term, entry)| {
+                            Ok(FrequencyRecord {
+                                term,
+                                field: entry.last_field,
+                                summary: PartialFieldFrequency {
+                                    repeated_weight: u64::from(entry.frequency),
+                                    first_event: Some((0, 0)),
+                                },
+                            })
+                        });
+                        let run = write_run(prefix, pool, &mut FileSpillIo)?;
+                        external.runs.insert(run, pool)?;
+                    }
+                    spilled = Some(external);
+                }
+            }
+            if let Some(analysis) = resident.as_mut() {
+                analysis.push(term, occurrence, field, weight)
+            } else {
+                let mut summary = PartialFieldFrequency::default();
+                summary.push(ordinal, occurrence, weight as u64)?;
+                spilled.as_mut().expect("spilling accumulator").push(
+                    FrequencyRecord {
                         term,
-                        occurrence,
-                        field: field as u8,
-                        weight,
-                    });
-                    Ok(())
-                })
-                .unwrap();
+                        field,
+                        summary,
+                    },
+                    pool,
+                )
             }
-            let expected =
-                analyze_delta_document(&document, &analyzer, Default::default()).unwrap();
-            for chunk_size in 1..=events.len().max(1) {
-                for reverse in [false, true] {
-                    let actual = reduce(
-                        partial_runs(&events, |position| (position + 1) % chunk_size == 0),
-                        reverse,
-                    );
-                    assert_eq!(
-                        actual.0, expected.frequencies,
-                        "chunk={chunk_size}, reverse={reverse}"
-                    );
-                    assert_eq!(actual.1, expected.document_len);
+        })?;
+    }
+    if let Some(analysis) = resident {
+        return Ok(AnalyzedDocument::Resident(analysis));
+    }
+    let run = spilled.expect("spilling accumulator").finish(pool)?;
+    let mut document_len = 0u64;
+    visit_frequencies(&run, config, |_, frequency| {
+        document_len = document_len
+            .checked_add(u64::from(frequency))
+            .ok_or_else(|| SkeinError::Storage("lexical document length overflow".into()))?;
+        admit_document_len(document_len, config)?;
+        Ok(())
+    })?;
+    Ok(AnalyzedDocument::Spilled {
+        run,
+        document_len: admit_document_len(document_len, config)?,
+        read_memory_bytes: progress,
+    })
+}
+
+fn visit_frequencies(
+    run: &FrequencyRun,
+    config: LexicalProjectionConfig,
+    mut emit: impl FnMut(String, u32) -> Result<()>,
+) -> Result<()> {
+    let mut reader = FrequencyRunReader::open(&run.guard.path, config)?;
+    let mut current: Option<(String, u64)> = None;
+    while let Some(record) = reader.next()? {
+        let frequency = record.summary.frequency()?;
+        match current.as_mut() {
+            Some((term, total)) if term == &record.term => {
+                *total = total.checked_add(frequency).ok_or_else(|| {
+                    SkeinError::Storage("document term frequency overflow".into())
+                })?;
+            }
+            _ => {
+                if let Some((term, total)) = current.take() {
+                    emit(term, admit_document_len(total, config)?)?;
                 }
+                current = Some((record.term, frequency));
             }
         }
     }
-}
-
-#[test]
-fn summary_overflow_is_checked_and_rejected_merge_is_atomic() {
-    let mut summary = PartialFieldFrequency {
-        repeated_weight: u64::MAX,
-        first_event: Some((1, 0)),
-    };
-    let before = summary;
-    assert!(summary.push(0, TokenOccurrence::Repeated, 1).is_err());
-    assert_eq!(summary, before);
-    assert_eq!(summary.frequency().unwrap(), u64::MAX);
-    summary.push(0, TokenOccurrence::UniqueInField, 1).unwrap();
-    assert!(summary.frequency().is_err());
-}
-
-fn resolved_prefix_run(events: &[Event]) -> PartialRun {
-    let mut analysis = DocumentAnalysis::new("spill-prefix", Default::default()).unwrap();
-    for event in events {
-        analysis
-            .push(
-                event.term.clone(),
-                event.occurrence,
-                event.field,
-                event.weight,
-            )
-            .unwrap();
+    if let Some((term, total)) = current {
+        emit(term, admit_document_len(total, config)?)?;
     }
-    analysis
-        .frequencies
-        .into_iter()
-        .map(|(term, entry)| {
-            // Earlier fields are already resolved. Carry their full count in
-            // the last seen field, whose marker suppresses later phrase aliases.
-            // No later token may revisit an earlier field in this contract.
-            (
-                (term, entry.last_field),
-                PartialFieldFrequency {
-                    repeated_weight: u64::from(entry.frequency),
-                    first_event: Some((0, 0)),
-                },
-            )
-        })
-        .collect()
+    Ok(())
 }
 
-#[test]
-fn switching_an_existing_accumulator_to_spill_preserves_every_prefix() {
-    for length in 1..=6usize {
-        for pattern in 0..4usize.pow(length as u32) {
-            for boundary in 0..=length {
-                let events = (0..length)
-                    .map(|position| {
-                        let symbol = (pattern >> (position * 2)) & 3;
-                        Event {
-                            term: if symbol & 1 == 0 { "alpha" } else { "beta" }.into(),
-                            occurrence: if symbol & 2 == 0 {
-                                TokenOccurrence::Repeated
-                            } else {
-                                TokenOccurrence::UniqueInField
-                            },
-                            field: u8::from(position >= boundary),
-                            weight: if position < boundary { 2 } else { 1 },
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let expected = reference(&events);
-                for prefix in 1..=length {
-                    let mut runs = vec![resolved_prefix_run(&events[..prefix])];
-                    for (offset, event) in events[prefix..].iter().enumerate() {
-                        let mut summary = PartialFieldFrequency::default();
-                        summary
-                            .push(
-                                (prefix + offset) as u64,
-                                event.occurrence,
-                                event.weight as u64,
-                            )
-                            .unwrap();
-                        runs.push(BTreeMap::from([(
-                            (event.term.clone(), event.field),
-                            summary,
-                        )]));
-                    }
-                    for reverse in [false, true] {
-                        assert_eq!(
-                            reduce(runs.clone(), reverse),
-                            expected,
-                            "length={length}, pattern={pattern}, boundary={boundary}, prefix={prefix}, reverse={reverse}"
-                        );
-                    }
-                }
-            }
-        }
+pub(super) fn flush_pending(
+    pool: &mut SpillRuns,
+    pending: &mut Vec<Posting>,
+    bytes: &mut u64,
+) -> Result<()> {
+    if !pending.is_empty() {
+        pool.spill(pending)?;
     }
-}
-
-#[test]
-fn forgetting_the_prefix_field_marker_is_not_an_exact_transition() {
-    let events =
-        [TokenOccurrence::Repeated, TokenOccurrence::UniqueInField].map(|occurrence| Event {
-            term: "graph".into(),
-            occurrence,
-            field: 0,
-            weight: 2,
-        });
-    let expected = reference(&events);
-    let mut tail = PartialFieldFrequency::default();
-    tail.push(1, events[1].occurrence, 2).unwrap();
-    let tail = BTreeMap::from([(("graph".into(), 0), tail)]);
-    let correct_prefix = resolved_prefix_run(&events[..1]);
-    assert_eq!(
-        reduce(vec![correct_prefix.clone(), tail.clone()], false),
-        expected
-    );
-    let mut broken_prefix = correct_prefix;
-    for summary in broken_prefix.values_mut() {
-        summary.first_event = None;
-    }
-    let incorrect = reduce(vec![broken_prefix, tail], false);
-    assert_eq!(expected.1, 2);
-    assert_eq!(incorrect.1, 4);
-    assert_ne!(incorrect, expected);
+    // Capacity must not stay resident beside the document-local accumulator.
+    *pending = Vec::new();
+    *bytes = 0;
+    Ok(())
 }
