@@ -1,7 +1,8 @@
 # Search robustness contracts
 
-This document records the disposition of all seven items in issue #230. The
-changes preserve the v1 persisted codecs and public Rust option/report fields.
+This document records the disposition of all seven items in issue #230 and the
+generation record admission prerequisite for #392. The changes preserve the
+v1 persisted codecs and public Rust option/report fields.
 Recall report JSON gains sampling metadata; the analyzer fingerprint changes
 because supplementary Han n-grams change derived term contents.
 
@@ -87,6 +88,35 @@ Two small ownership-dispatch matches do not duplicate the algorithm. Exposing
 scan buffers/per-segment implementation types merely to remove those matches
 would create an unnecessary cross-crate API. This is not the separately
 requested injectable storage-engine API.
+
+## Generation record admission (#392)
+
+Generation ingestion computes the exact encoded record length before allocating
+the record buffer. The counter and encoder share the existing wire grammar:
+UTF-8 text is lowercase hex, floats retain Rust's `Display` representation, and
+field, vector, and metadata separators are unchanged. The counter checks size
+arithmetic and does not scan or copy text bytes; it formats vector components
+without collecting per-component strings.
+
+Per-record, cumulative logical-byte, spool-byte (including frame headers), and
+descriptor-field admission all precede record materialization. Accepted records
+use fallible reservation and write directly into their final record buffer.
+Metadata field names move from the admitted document rather than being cloned
+before admission. Segment batching also uses the counter instead of encoding
+and discarding a complete record just to measure it.
+
+Regression coverage includes exact/one-short limits, cumulative admission,
+unchanged spool framing, an 8 MiB rejected source, a 1,024-case legacy-codec
+differential, and a 48-case public generation/reopen/hydration campaign. Rejected
+replacement generations must preserve the active generation and clean staging.
+The public campaign is part of the existing local storage fuzz test target.
+
+This is an allocation-order prerequisite, not completion of large-document
+support. The caller-owned document and admitted encoded record still coexist;
+decoder, analyzer, metadata/vector sidecar, and segment buffers have separate
+resident costs. No process-RSS bound, new source/term limit, streaming-source
+API, analyzer change, or persisted-format change is implied. The fixed lexical
+4 MiB source ceiling remains pending the complete #392 lifecycle work.
 
 ## Verification
 

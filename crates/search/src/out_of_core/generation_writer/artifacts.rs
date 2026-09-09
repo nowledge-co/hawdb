@@ -5,6 +5,7 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
 use crate::{
     checksum_bytes, encode_embedding, encode_metadata, encode_search_document_line,
@@ -122,7 +123,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 
     pub(super) fn push(&mut self, document: SearchDocument) -> Result<()> {
-        let encoded_bytes = encode_search_document_line(&document).len() as u64;
+        let encoded_bytes = DocumentEncoding::new(&document)?.len() as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
             && (self.documents.len() == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS

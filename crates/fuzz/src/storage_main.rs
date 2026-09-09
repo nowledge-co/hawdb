@@ -652,6 +652,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn search_record_admission_seeded_campaign_preserves_published_generation() {
+        use skein::{
+            SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter,
+            SearchOutOfCoreReader,
+        };
+        use std::num::NonZeroU64;
+
+        fn text(rng: &mut DeterministicRng) -> String {
+            const PARTS: &[&str] = &[
+                "word ",
+                "\t",
+                "\n",
+                "\0",
+                ";=",
+                "\u{4e2d}\u{6587}",
+                "\u{1f980}",
+                "e\u{301}",
+            ];
+            (0..rng.next_u64() % 24)
+                .map(|_| PARTS[rng.next_u64() as usize % PARTS.len()])
+                .collect()
+        }
+
+        // Independent size oracle for the existing hex/tab/comma wire format.
+        fn encoded_bytes(document: &SearchDocument) -> u64 {
+            let text_bytes = document.id.len() + document.title.len() + document.content.len();
+            let vector_bytes = document.embedding.as_ref().map_or(0, |values| {
+                values
+                    .iter()
+                    .map(|value| value.to_string().len())
+                    .sum::<usize>()
+                    + values.len().saturating_sub(1)
+            });
+            let metadata_bytes = document
+                .metadata
+                .iter()
+                .map(|(key, value)| 2 * (key.len() + value.len()) + 1)
+                .sum::<usize>()
+                + document.metadata.len().saturating_sub(1);
+            (9 + 2 * text_bytes + vector_bytes + metadata_bytes) as u64
+        }
+
+        let workspace = unique_workspace().unwrap();
+        for case in 0..48 {
+            let mut rng = DeterministicRng::new(mix_seed(392, case));
+            let document = SearchDocument {
+                id: format!("record-{case}"),
+                title: text(&mut rng),
+                content: text(&mut rng),
+                embedding: Some(vec![1.0, (rng.next_u64() as u32) as f32 / u32::MAX as f32]),
+                metadata: (0..rng.next_u64() % 6)
+                    .map(|field| (format!("field-{field}-{}", text(&mut rng)), text(&mut rng)))
+                    .collect(),
+            };
+            let bytes = encoded_bytes(&document);
+            let root = workspace.join(format!("case-{case}"));
+            let options = SearchOutOfCoreGenerationBuildOptions {
+                max_record_bytes: NonZeroU64::new(bytes).unwrap(),
+                max_logical_document_bytes: NonZeroU64::new(bytes).unwrap(),
+                ..Default::default()
+            };
+            let mut writer =
+                SearchOutOfCoreGenerationWriter::create(&root, options.clone()).unwrap();
+            writer.push(document.clone()).unwrap();
+            let report = writer.finish().unwrap();
+            assert_eq!(report.logical_document_bytes, bytes, "case {case}");
+
+            let mut rejected_options = options;
+            match case % 3 {
+                0 => rejected_options.max_record_bytes = NonZeroU64::new(bytes - 1).unwrap(),
+                1 => {
+                    rejected_options.max_logical_document_bytes =
+                        NonZeroU64::new(bytes - 1).unwrap()
+                }
+                _ => {
+                    rejected_options.max_spool_bytes =
+                        NonZeroU64::new(report.spool_bytes - 1).unwrap()
+                }
+            }
+            let mut rejected =
+                SearchOutOfCoreGenerationWriter::create(&root, rejected_options).unwrap();
+            assert!(rejected.push(document.clone()).is_err(), "case {case}");
+            assert!(rejected
+                .finish()
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned"));
+            let reader = SearchOutOfCoreReader::open(&root).unwrap();
+            assert_eq!(reader.generation(), report.generation, "case {case}");
+            assert_eq!(
+                reader
+                    .hydrate_documents(std::slice::from_ref(&document.id))
+                    .unwrap()
+                    .documents,
+                vec![document]
+            );
+            assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".search-generation.")));
+        }
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
     fn row_page_compaction_oracle_is_replayable_and_exclusive() {
         let options = Options::parse(
             ["--row-page-compaction", "--seed", "7", "--case-index", "3"].map(str::to_string),

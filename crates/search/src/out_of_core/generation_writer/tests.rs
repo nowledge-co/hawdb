@@ -12,6 +12,192 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn segment_admission_sizes_documents_without_encoding_them() {
+    use crate::document_encoding::ENCODING_ATTEMPTS;
+
+    let root = test_dir("segment_preallocation_admission");
+    fs::create_dir(&root).unwrap();
+    let fields = required_descriptor_fields();
+    let options = SearchOutOfCoreGenerationBuildOptions::default();
+    let mut builder = SegmentArtifactBuilder::new(&root, 1, &fields, &options).unwrap();
+    let attempts = ENCODING_ATTEMPTS.get();
+    builder.push(document(0)).unwrap();
+    assert_eq!(ENCODING_ATTEMPTS.get(), attempts);
+    drop(builder);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn record_admission_counts_reused_metadata_fields_once() {
+    let root = test_dir("record_metadata_reuse");
+    let mut fields = required_descriptor_fields();
+    fields.extend(document(0).metadata.into_keys());
+    let field_bytes = fields.iter().map(|field| field.len() as u64).sum();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &root,
+        SearchOutOfCoreGenerationBuildOptions {
+            max_metadata_fields: NonZeroUsize::new(fields.len()).unwrap(),
+            max_metadata_field_bytes: NonZeroU64::new(field_bytes).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    writer.push(document(0)).unwrap();
+    writer.push(document(1)).unwrap();
+    assert_eq!(writer.document_count, 2);
+    assert_eq!(writer.metadata_fields, fields);
+    assert_eq!(writer.metadata_field_bytes, field_bytes);
+    drop(writer);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn large_record_is_rejected_without_materializing_its_hex_copy() {
+    use crate::document_encoding::ENCODING_ATTEMPTS;
+
+    let root = test_dir("large_record_preallocation");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    let mut source = document(0);
+    source.content = " ".repeat(8 * 1024 * 1024);
+    let attempts = ENCODING_ATTEMPTS.get();
+    assert!(writer
+        .push(source)
+        .unwrap_err()
+        .to_string()
+        .contains("encoded bytes"));
+    assert_eq!(ENCODING_ATTEMPTS.get(), attempts);
+    assert_eq!(writer.spool_bytes, SPOOL_HEADER.len() as u64);
+    drop(writer);
+    assert_eq!(stage_directories(&root), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn record_admission_checks_all_byte_limits_before_encoding() {
+    use crate::document_encoding::ENCODING_ATTEMPTS;
+
+    let source = document(0);
+    let record = crate::encode_search_document_line(&source);
+    let bytes = record.len() as u64;
+    for (limit, expected_error) in [
+        (0, "encoded bytes"),
+        (1, "logical bytes"),
+        (2, "spool requires"),
+        (3, "metadata fields require"),
+        (4, "metadata fields require"),
+    ] {
+        let root = test_dir("record_preallocation_admission");
+        let mut options = SearchOutOfCoreGenerationBuildOptions::default();
+        match limit {
+            0 => options.max_record_bytes = NonZeroU64::new(bytes - 1).unwrap(),
+            1 => options.max_logical_document_bytes = NonZeroU64::new(bytes - 1).unwrap(),
+            2 => {
+                options.max_spool_bytes = NonZeroU64::new(
+                    SPOOL_HEADER.len() as u64 + SPOOL_FRAME_HEADER_BYTES + bytes - 1,
+                )
+                .unwrap()
+            }
+            3 => {
+                options.max_metadata_fields =
+                    NonZeroUsize::new(required_descriptor_fields().len()).unwrap()
+            }
+            4 => {
+                options.max_metadata_field_bytes = NonZeroU64::new(
+                    required_descriptor_fields()
+                        .iter()
+                        .map(|field| field.len() as u64)
+                        .sum(),
+                )
+                .unwrap()
+            }
+            _ => unreachable!(),
+        }
+        let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
+        let attempts = ENCODING_ATTEMPTS.get();
+        assert!(writer
+            .push(source.clone())
+            .unwrap_err()
+            .to_string()
+            .contains(expected_error));
+        assert_eq!(
+            ENCODING_ATTEMPTS.get(),
+            attempts,
+            "limit {limit} encoded a rejected record"
+        );
+        assert_eq!(writer.document_count, 0);
+        assert_eq!(writer.logical_document_bytes, 0);
+        writer.spool.as_mut().unwrap().flush().unwrap();
+        assert_eq!(fs::read(&writer.spool_path).unwrap(), SPOOL_HEADER);
+        assert!(writer
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned"));
+        assert!(!root.join(OUT_OF_CORE_MANIFEST_FILE).exists());
+        assert_eq!(stage_directories(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn record_admission_accepts_exact_limits_and_rejects_cumulative_overflow() {
+    use crate::document_encoding::ENCODING_ATTEMPTS;
+
+    let source = document(0);
+    let record = crate::encode_search_document_line(&source);
+    let bytes = record.len() as u64;
+    let mut fields = required_descriptor_fields();
+    fields.extend(source.metadata.keys().cloned());
+    for limited_spool in [false, true] {
+        let root = test_dir("record_exact_admission");
+        let mut options = SearchOutOfCoreGenerationBuildOptions {
+            max_record_bytes: NonZeroU64::new(bytes).unwrap(),
+            max_metadata_fields: NonZeroUsize::new(fields.len()).unwrap(),
+            max_metadata_field_bytes: NonZeroU64::new(
+                fields.iter().map(|field| field.len() as u64).sum(),
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        if limited_spool {
+            options.max_spool_bytes =
+                NonZeroU64::new(SPOOL_HEADER.len() as u64 + SPOOL_FRAME_HEADER_BYTES + bytes)
+                    .unwrap();
+        } else {
+            options.max_logical_document_bytes = NonZeroU64::new(bytes).unwrap();
+        }
+        let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
+        let attempts = ENCODING_ATTEMPTS.get();
+        writer.push(source.clone()).unwrap();
+        assert_eq!(ENCODING_ATTEMPTS.get(), attempts + 1);
+        assert_eq!(writer.metadata_fields, fields);
+        writer.spool.as_mut().unwrap().flush().unwrap();
+        let mut expected_spool = SPOOL_HEADER.to_vec();
+        expected_spool.extend(bytes.to_le_bytes());
+        expected_spool.extend(checksum_bytes(record.as_bytes()).to_le_bytes());
+        expected_spool.extend(record.as_bytes());
+        assert_eq!(fs::read(&writer.spool_path).unwrap(), expected_spool);
+        let mut next = source.clone();
+        next.id.push('z');
+        // Keep the second record within its per-record limit.
+        next.content.truncate(next.content.len() - 1);
+        let error = writer.push(next).unwrap_err().to_string();
+        assert!(error.contains(if limited_spool {
+            "spool requires"
+        } else {
+            "logical bytes"
+        }));
+        assert_eq!(ENCODING_ATTEMPTS.get(), attempts + 1);
+        assert_eq!(writer.document_count, 1);
+        writer.spool.as_mut().unwrap().flush().unwrap();
+        assert_eq!(fs::read(&writer.spool_path).unwrap(), expected_spool);
+        drop(writer);
+        assert_eq!(stage_directories(&root), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn fused_generation_reads_source_spool_once() {
     let root = test_dir("fused_generation_read_once");
     let mut writer = SearchOutOfCoreGenerationWriter::create(

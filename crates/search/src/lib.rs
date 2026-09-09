@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
 mod cjk_tokenizer;
+mod document_encoding;
 mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
@@ -48,6 +49,8 @@ mod range_io;
 mod recall_validation;
 mod snapshot_writer;
 mod vector_execution;
+
+use document_encoding::encode_search_document_line;
 
 mod error {
     pub use skein_core::{Result, SkeinError};
@@ -6835,17 +6838,6 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
         metadata.insert(decode_string(key)?, decode_string(value)?);
     }
     Ok(metadata)
-}
-
-fn encode_search_document_line(document: &SearchDocument) -> String {
-    format!(
-        "doc\t{}\t{}\t{}\t{}\t{}\n",
-        encode_string(&document.id),
-        encode_string(&document.title),
-        encode_string(&document.content),
-        encode_embedding(document.embedding.as_deref()),
-        encode_metadata(&document.metadata),
-    )
 }
 
 fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
