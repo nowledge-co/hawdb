@@ -686,18 +686,32 @@ fn send_async_query_batch(
     batch: &mut Vec<Row>,
     task_context: &RuntimeTaskContext,
 ) -> Result<(), SkeinError> {
+    send_async_query_batch_with_retry(
+        sender,
+        batch,
+        || task_context.checkpoint(),
+        || std::thread::sleep(std::time::Duration::from_millis(1)),
+    )
+}
+
+fn send_async_query_batch_with_retry(
+    sender: &skein_runtime_tokio::TokioBoundedSender<TokioQueryStreamEvent>,
+    batch: &mut Vec<Row>,
+    mut checkpoint: impl FnMut() -> Result<(), skein_core::RuntimeCancellationReason>,
+    mut retry_wait: impl FnMut(),
+) -> Result<(), SkeinError> {
     let capacity = batch.capacity();
     let ready = std::mem::replace(batch, Vec::with_capacity(capacity));
     let mut event = TokioQueryStreamEvent::Batch(ready);
     loop {
-        task_context.checkpoint().map_err(|reason| {
+        checkpoint().map_err(|reason| {
             SkeinError::Execution(format!("asynchronous row producer stopped: {reason}"))
         })?;
         match sender.try_send(event) {
             Ok(()) => return Ok(()),
             Err(TokioBoundedTrySendError::Full(returned)) => {
                 event = returned;
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                retry_wait();
             }
             Err(TokioBoundedTrySendError::Closed(_)) => {
                 return Err(SkeinError::Execution(
@@ -1284,7 +1298,95 @@ mod tests {
     }
 
     #[test]
-    fn async_row_stream_deadline_interrupts_a_backpressured_producer() {
+    fn async_row_batch_retry_observes_deadlines_and_cancellation() {
+        use skein_core::RuntimeCancellationReason;
+        use std::cell::Cell;
+
+        let runtime = skein_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
+            .build()
+            .unwrap();
+        for reason in [
+            RuntimeCancellationReason::DeadlineExceeded,
+            RuntimeCancellationReason::Cancelled,
+        ] {
+            for retry_limit in [1, 2, 16, 64] {
+                let (sender, mut receiver) = tokio_bounded_channel(NonZeroUsize::MIN);
+                let buffered = vec![Row::from([("value".to_string(), Value::Int(1))])];
+                sender
+                    .try_send(TokioQueryStreamEvent::Batch(buffered.clone()))
+                    .unwrap();
+                let mut pending = vec![Row::from([("value".to_string(), Value::Int(2))])];
+                let retries = Cell::new(0);
+                let checks = Cell::new(0);
+
+                // Expire only after observing a full channel. No scheduler or
+                // wall-clock assumption is needed to exercise the retry path.
+                let error = send_async_query_batch_with_retry(
+                    &sender,
+                    &mut pending,
+                    || {
+                        checks.set(checks.get() + 1);
+                        if retries.get() == retry_limit {
+                            Err(reason)
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    || {
+                        assert!(retries.get() < retry_limit, "retry ignored its stop check");
+                        retries.set(retries.get() + 1);
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(retries.get(), retry_limit);
+                assert_eq!(checks.get(), retry_limit + 1);
+                assert!(matches!(error, SkeinError::Execution(message)
+                    if message == format!("asynchronous row producer stopped: {reason}")));
+                assert!(pending.is_empty());
+                drop(sender);
+                assert!(matches!(runtime.block_on(receiver.recv()),
+                    Some(TokioQueryStreamEvent::Batch(batch)) if batch == buffered));
+                assert!(runtime.block_on(receiver.recv()).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn async_row_batch_retry_delivers_after_backpressure_is_released() {
+        let runtime = skein_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
+            .build()
+            .unwrap();
+        let (sender, mut receiver) = tokio_bounded_channel(NonZeroUsize::MIN);
+        let buffered = vec![Row::from([("value".to_string(), Value::Int(1))])];
+        let expected = vec![Row::from([("value".to_string(), Value::Int(2))])];
+        sender
+            .try_send(TokioQueryStreamEvent::Batch(buffered.clone()))
+            .unwrap();
+        let mut pending = expected.clone();
+        let mut retries = 0;
+        let context = RuntimeTaskContext::default();
+        send_async_query_batch_with_retry(
+            &sender,
+            &mut pending,
+            || context.checkpoint(),
+            || {
+                retries += 1;
+                assert_eq!(retries, 1);
+                assert!(matches!(runtime.block_on(receiver.recv()),
+                    Some(TokioQueryStreamEvent::Batch(batch)) if batch == buffered));
+            },
+        )
+        .unwrap();
+        assert_eq!(retries, 1);
+        assert!(pending.is_empty());
+        drop(sender);
+        assert!(matches!(runtime.block_on(receiver.recv()),
+            Some(TokioQueryStreamEvent::Batch(batch)) if batch == expected));
+        assert!(runtime.block_on(receiver.recv()).is_none());
+    }
+
+    #[test]
+    fn async_row_stream_deadline_surfaces_terminal_error_and_releases_resources() {
         let path = unique_test_path("deadline-row-stream");
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
@@ -1302,40 +1404,66 @@ mod tests {
             }
         });
 
-        let mut stream = embedded
-            .runtime()
-            .block_on(embedded.query_stream_with_options(
-                "MATCH (p:Probe) RETURN p.value AS value",
-                TokioQueryStreamOptions {
-                    channel_capacity: NonZeroUsize::new(1).unwrap(),
-                },
-                RuntimeTaskContext::with_timeout(std::time::Duration::from_millis(10)),
-            ))
-            .unwrap()
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        assert!(
-            embedded
+        for (index, timeout_ms) in [0, 10].into_iter().enumerate() {
+            let result = embedded
                 .runtime()
-                .block_on(stream.next_batch())
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .len()
-                <= 1
-        );
-        let error = embedded
-            .runtime()
-            .block_on(stream.next_batch())
-            .unwrap()
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
-                skein_core::RuntimeCancellationReason::DeadlineExceeded
-            ))
-        ));
-        assert_eq!(embedded.runtime_snapshot().deadline_exceeded, 1);
+                .block_on(embedded.query_stream_with_options(
+                    "MATCH (p:Probe) RETURN p.value AS value",
+                    TokioQueryStreamOptions {
+                        channel_capacity: NonZeroUsize::MIN,
+                    },
+                    RuntimeTaskContext::with_timeout(std::time::Duration::from_millis(timeout_ms)),
+                ))
+                .unwrap();
+            let error = match result {
+                Err(error) => error,
+                Ok(mut stream) => {
+                    // Do not drain until the producer has stopped: freeing a
+                    // slot could let a send already past its checkpoint finish.
+                    let watchdog = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while embedded.runtime_snapshot().deadline_exceeded != index as u64 + 1 {
+                        assert!(
+                            std::time::Instant::now() < watchdog,
+                            "producer did not stop"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    let mut batches = 0;
+                    let error = loop {
+                        match embedded.runtime().block_on(stream.next_batch()).unwrap() {
+                            Ok(Some(batch)) => {
+                                batches += 1;
+                                assert_eq!(batch.len(), 1);
+                                assert!(batches <= 1, "only one batch fits before the deadline");
+                            }
+                            Ok(None) => panic!("the deadline must not produce a success report"),
+                            Err(error) => break error,
+                        }
+                    };
+                    assert!(stream.report().is_none());
+                    assert!(embedded
+                        .runtime()
+                        .block_on(stream.next_batch())
+                        .unwrap()
+                        .unwrap()
+                        .is_none());
+                    error
+                }
+            };
+            assert!(matches!(
+                error,
+                SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
+                    skein_core::RuntimeCancellationReason::DeadlineExceeded
+                ))
+            ));
+            let snapshot = embedded.runtime_snapshot();
+            assert_eq!(snapshot.deadline_exceeded, index as u64 + 1);
+            assert_eq!(snapshot.active_blocking_tasks, 0);
+            assert_eq!(snapshot.admitted_memory_bytes, 0);
+            assert_eq!(snapshot.active_cpu_slots, 0);
+            assert_eq!(snapshot.active_foreground_tasks, 0);
+            assert_eq!(snapshot.cancellations, 0);
+        }
     }
 
     #[test]
