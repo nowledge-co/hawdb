@@ -3,6 +3,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+test_suite(
+    name = "presubmit_tests",
+)
+
 _SEARCH_DEFAULT_FEATURES = [
     "background-maintenance",
     "full-text-search",
