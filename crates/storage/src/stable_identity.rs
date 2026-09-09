@@ -1736,6 +1736,8 @@ fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> StableIde
 
 #[cfg(test)]
 mod tests {
+    mod sharded_cache_benchmark;
+
     use super::*;
     use std::collections::BTreeMap;
     use std::fs;

@@ -1,7 +1,8 @@
 use skein_integrity::checksum_u64;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{hash_map::RandomState, BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::hash::BuildHasher;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -183,21 +184,32 @@ impl Deref for SegmentCacheLease {
 
 #[derive(Debug)]
 pub struct SegmentCache {
-    inner: Mutex<SegmentCacheInner>,
+    // Admission precedes any shard lock. Hits take only their own shard;
+    // snapshots lock all shards in index order while holding admission.
+    admission: Mutex<SegmentCacheAdmission>,
+    shards: [Mutex<SegmentCacheShard>; CACHE_SHARD_COUNT],
+    shard_hasher: RandomState,
 }
 
+const CACHE_SHARD_COUNT: usize = 16;
+
 #[derive(Debug)]
-struct SegmentCacheInner {
+struct SegmentCacheAdmission {
     capacity_bytes: u64,
     resident_bytes: u64,
-    entries: BTreeMap<SegmentCacheIdentity, SegmentCacheEntry>,
-    clock: VecDeque<SegmentCacheIdentity>,
-    hit_count: u64,
-    miss_count: u64,
+    eviction_cursor: usize,
     insertion_count: u64,
     eviction_count: u64,
     digest_mismatch_count: u64,
     admission_rejection_count: u64,
+}
+
+#[derive(Debug, Default)]
+struct SegmentCacheShard {
+    entries: BTreeMap<SegmentCacheIdentity, SegmentCacheEntry>,
+    clock: VecDeque<SegmentCacheIdentity>,
+    hit_count: u64,
+    miss_count: u64,
 }
 
 #[derive(Debug)]
@@ -221,23 +233,22 @@ impl SegmentCacheEntry {
 impl SegmentCache {
     pub fn new(capacity_bytes: u64) -> Self {
         Self {
-            inner: Mutex::new(SegmentCacheInner {
+            admission: Mutex::new(SegmentCacheAdmission {
                 capacity_bytes,
                 resident_bytes: 0,
-                entries: BTreeMap::new(),
-                clock: VecDeque::new(),
-                hit_count: 0,
-                miss_count: 0,
+                eviction_cursor: 0,
                 insertion_count: 0,
                 eviction_count: 0,
                 digest_mismatch_count: 0,
                 admission_rejection_count: 0,
             }),
+            shards: std::array::from_fn(|_| Mutex::new(SegmentCacheShard::default())),
+            shard_hasher: RandomState::new(),
         }
     }
 
     pub fn get(&self, key: &SegmentCacheKey) -> Option<SegmentCacheLease> {
-        let mut inner = self.lock();
+        let mut inner = self.lock_shard(&key.identity());
         let lease = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
@@ -267,7 +278,7 @@ impl SegmentCache {
         key: &SegmentCacheKey,
         verification_tag: [u8; 32],
     ) -> Option<SegmentCacheLease> {
-        let mut inner = self.lock();
+        let mut inner = self.lock_shard(&key.identity());
         let lease = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
@@ -291,7 +302,7 @@ impl SegmentCache {
         &self,
         identity: &SegmentCacheIdentity,
     ) -> Option<SegmentCacheLease> {
-        let mut inner = self.lock();
+        let mut inner = self.lock_shard(identity);
         let lease = match inner.entries.get_mut(identity) {
             Some(entry) if entry.verification_tag.is_none() => {
                 entry.referenced = true;
@@ -333,8 +344,7 @@ impl SegmentCache {
     ) -> Result<SegmentCacheLease, SegmentCacheError> {
         let actual_digest = content_digest(&bytes);
         if actual_digest != key.content_digest {
-            let mut inner = self.lock();
-            inner.digest_mismatch_count = inner.digest_mismatch_count.saturating_add(1);
+            self.record_digest_mismatch();
             return Err(SegmentCacheError::DigestMismatch {
                 expected: key.content_digest,
                 actual: actual_digest,
@@ -361,15 +371,16 @@ impl SegmentCache {
         verification_tag: Option<[u8; 32]>,
         page_integrity_verified: bool,
     ) -> Result<SegmentCacheLease, SegmentCacheError> {
-        let mut inner = self.lock();
+        let mut admission = self.lock_admission();
         let identity = key.identity();
+        let mut inner = self.lock_shard(&identity);
         if let Some(resident_digest) = inner
             .entries
             .get(&identity)
             .map(|entry| entry.key.content_digest)
         {
             if resident_digest != key.content_digest {
-                inner.digest_mismatch_count = inner.digest_mismatch_count.saturating_add(1);
+                admission.digest_mismatch_count = admission.digest_mismatch_count.saturating_add(1);
                 return Err(SegmentCacheError::IdentityCollision {
                     requested_key: key,
                     resident_digest,
@@ -378,7 +389,7 @@ impl SegmentCache {
             if inner.entries.get(&identity).is_some_and(|entry| {
                 entry.verification_tag != verification_tag || entry.bytes.as_ref() != bytes.as_ref()
             }) {
-                inner.digest_mismatch_count = inner.digest_mismatch_count.saturating_add(1);
+                admission.digest_mismatch_count = admission.digest_mismatch_count.saturating_add(1);
                 return Err(SegmentCacheError::DigestCollision { key });
             }
             let entry = inner
@@ -395,25 +406,35 @@ impl SegmentCache {
         }
 
         let entry_bytes = bytes.len() as u64;
-        if entry_bytes > inner.capacity_bytes {
-            inner.admission_rejection_count = inner.admission_rejection_count.saturating_add(1);
+        if entry_bytes > admission.capacity_bytes {
+            admission.admission_rejection_count =
+                admission.admission_rejection_count.saturating_add(1);
             return Err(SegmentCacheError::EntryTooLarge {
                 entry_bytes,
-                capacity_bytes: inner.capacity_bytes,
+                capacity_bytes: admission.capacity_bytes,
             });
         }
-        if !inner.evict_for(entry_bytes) {
-            inner.admission_rejection_count = inner.admission_rejection_count.saturating_add(1);
+        // Eviction can visit this shard too. Admission keeps identities stable
+        // while the shard lock is released, without blocking unrelated hits.
+        drop(inner);
+        if !self.evict_for(&mut admission, entry_bytes) {
+            admission.admission_rejection_count =
+                admission.admission_rejection_count.saturating_add(1);
             return Err(SegmentCacheError::PinnedCapacity {
                 requested_bytes: entry_bytes,
-                resident_bytes: inner.resident_bytes,
-                pinned_bytes: inner.pinned_bytes(),
-                capacity_bytes: inner.capacity_bytes,
+                resident_bytes: admission.resident_bytes,
+                pinned_bytes: self
+                    .lock_shards()
+                    .iter()
+                    .map(|shard| shard.pinned_bytes())
+                    .fold(0, u64::saturating_add),
+                capacity_bytes: admission.capacity_bytes,
             });
         }
 
-        inner.resident_bytes = inner.resident_bytes.saturating_add(entry_bytes);
-        inner.insertion_count = inner.insertion_count.saturating_add(1);
+        let mut inner = self.lock_shard(&identity);
+        admission.resident_bytes = admission.resident_bytes.saturating_add(entry_bytes);
+        admission.insertion_count = admission.insertion_count.saturating_add(1);
         inner.clock.push_back(identity);
         inner.entries.insert(
             identity,
@@ -432,16 +453,28 @@ impl SegmentCache {
     }
 
     pub fn snapshot(&self) -> SegmentCacheSnapshot {
-        let inner = self.lock();
-        let pinned_bytes = inner.pinned_bytes();
+        let inner = self.lock_admission();
+        let shards = self.lock_shards();
+        // Raw exported/shared Arcs do not notify the cache on their last drop.
+        // Retain the exact scan until the public ownership contract changes.
+        let pinned_bytes = shards
+            .iter()
+            .map(|shard| shard.pinned_bytes())
+            .fold(0, u64::saturating_add);
         SegmentCacheSnapshot {
             capacity_bytes: inner.capacity_bytes,
             resident_bytes: inner.resident_bytes,
             pinned_bytes,
             reclaimable_bytes: inner.resident_bytes.saturating_sub(pinned_bytes),
-            entry_count: inner.entries.len(),
-            hit_count: inner.hit_count,
-            miss_count: inner.miss_count,
+            entry_count: shards.iter().map(|shard| shard.entries.len()).sum(),
+            hit_count: shards
+                .iter()
+                .map(|shard| shard.hit_count)
+                .fold(0, u64::saturating_add),
+            miss_count: shards
+                .iter()
+                .map(|shard| shard.miss_count)
+                .fold(0, u64::saturating_add),
             insertion_count: inner.insertion_count,
             eviction_count: inner.eviction_count,
             digest_mismatch_count: inner.digest_mismatch_count,
@@ -450,18 +483,51 @@ impl SegmentCache {
     }
 
     pub(crate) fn record_digest_mismatch(&self) {
-        let mut inner = self.lock();
+        let mut inner = self.lock_admission();
         inner.digest_mismatch_count = inner.digest_mismatch_count.saturating_add(1);
     }
 
-    fn lock(&self) -> MutexGuard<'_, SegmentCacheInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn lock_admission(&self) -> MutexGuard<'_, SegmentCacheAdmission> {
+        lock_unpoisoned(&self.admission)
+    }
+
+    fn shard_index(&self, identity: &SegmentCacheIdentity) -> usize {
+        // Different requested digests for one immutable identity must collide
+        // in the same shard so the existing entry cannot be bypassed.
+        self.shard_hasher.hash_one(identity) as usize % CACHE_SHARD_COUNT
+    }
+
+    fn lock_shard(&self, identity: &SegmentCacheIdentity) -> MutexGuard<'_, SegmentCacheShard> {
+        lock_unpoisoned(&self.shards[self.shard_index(identity)])
+    }
+
+    fn lock_shards(&self) -> [MutexGuard<'_, SegmentCacheShard>; CACHE_SHARD_COUNT] {
+        self.shards.each_ref().map(lock_unpoisoned)
+    }
+
+    fn evict_for(&self, admission: &mut SegmentCacheAdmission, requested_bytes: u64) -> bool {
+        let allowed_resident = admission.capacity_bytes - requested_bytes;
+        let start = admission.eviction_cursor;
+        for offset in 0..CACHE_SHARD_COUNT {
+            if admission.resident_bytes <= allowed_resident {
+                return true;
+            }
+            let index = (start + offset) % CACHE_SHARD_COUNT;
+            let mut shard = lock_unpoisoned(&self.shards[index]);
+            shard.evict_bytes(admission.resident_bytes - allowed_resident, admission);
+            admission.eviction_cursor = (index + 1) % CACHE_SHARD_COUNT;
+        }
+        admission.resident_bytes <= allowed_resident
     }
 }
 
-impl SegmentCacheInner {
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl SegmentCacheShard {
     fn pinned_bytes(&self) -> u64 {
         self.entries
             .values()
@@ -470,14 +536,14 @@ impl SegmentCacheInner {
             .fold(0, u64::saturating_add)
     }
 
-    fn evict_for(&mut self, requested_bytes: u64) -> bool {
-        if self.resident_bytes.saturating_add(requested_bytes) <= self.capacity_bytes {
-            return true;
-        }
+    fn evict_bytes(&mut self, requested_bytes: u64, admission: &mut SegmentCacheAdmission) {
+        let mut reclaimed_bytes = 0u64;
+        // Both CLOCK passes stay under this shard lock: concurrent hits cannot
+        // continually re-arm the reference bits and cause a false rejection.
         let max_scans = self.clock.len().saturating_mul(2).saturating_add(1);
         for _ in 0..max_scans {
-            if self.resident_bytes.saturating_add(requested_bytes) <= self.capacity_bytes {
-                return true;
+            if reclaimed_bytes >= requested_bytes {
+                return;
             }
             let Some(key) = self.clock.pop_front() else {
                 break;
@@ -498,16 +564,21 @@ impl SegmentCacheInner {
                 .entries
                 .remove(&key)
                 .expect("clock key remains resident");
-            self.resident_bytes = self.resident_bytes.saturating_sub(entry.bytes.len() as u64);
-            self.eviction_count = self.eviction_count.saturating_add(1);
+            reclaimed_bytes = reclaimed_bytes.saturating_add(entry.bytes.len() as u64);
+            admission.resident_bytes = admission
+                .resident_bytes
+                .saturating_sub(entry.bytes.len() as u64);
+            admission.eviction_count = admission.eviction_count.saturating_add(1);
         }
-        self.resident_bytes.saturating_add(requested_bytes) <= self.capacity_bytes
     }
 }
 
 pub fn content_digest(bytes: &[u8]) -> ContentDigest {
     ContentDigest(checksum_u64(bytes))
 }
+
+#[cfg(test)]
+mod shard_tests;
 
 #[cfg(test)]
 mod tests {

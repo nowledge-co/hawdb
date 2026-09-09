@@ -46,7 +46,8 @@ not part of default or dedicated CI jobs.
 The benchmark compares identical warm stable-identity lookups using public raw
 cache admission (full verification per hit) and reader-verified admission at
 1/2/4/8 threads. It is a same-code control for digest work, not a historical
-checkout benchmark or proof of near-linear cache scaling. The global mutex and
-exact pinned-byte entry scan are unchanged. Issue #196 remains open until
-sharding, the ownership decision for O(1) pin accounting, and the complete
-multi-threaded scaling acceptance criteria are independently satisfied.
+checkout benchmark or proof of near-linear cache scaling. Cache sharding and
+its separate scaling benchmark are described in [Sharded page cache](SHARDED_PAGE_CACHE.md).
+The exact pinned-byte entry scan remains. Issue #196 stays open for the ownership
+decision for O(1) pin accounting and the complete multi-threaded scaling
+acceptance criteria.
