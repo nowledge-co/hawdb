@@ -65,6 +65,22 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+rust_test(
+    name = "skein_search_lexical_spill_fuzz_tests",
+    args = [
+        "lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign",
+        "--exact",
+        "--ignored",
+    ],
+    tags = ["manual"],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 # Keep the seeded analyzer campaign on the explicit local fuzz surface.
 rust_test(
     name = "skein_search_document_analysis_fuzz_tests",
