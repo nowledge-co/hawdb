@@ -5,9 +5,9 @@ use crate::cypher::RelationshipDirection;
 use crate::error::{Result, SkeinError};
 use crate::optimizer::PhysicalPlan;
 use crate::planner::{
-    Aggregation, GraphAlgorithmKind, PhysicalPlanClass, PlanChildren, Predicate, Projection,
-    ProjectionExpression, RelationshipCountLeg, RelationshipOnCreateValue,
-    SetNodePropertiesReturnMode, SetValue, SortItem,
+    Aggregation, GraphAlgorithmKind, PlanChildren, Predicate, Projection, ProjectionExpression,
+    RelationshipCountLeg, RelationshipOnCreateValue, SetNodePropertiesReturnMode, SetValue,
+    SortItem,
 };
 use crate::schema::Catalog;
 use crate::store::{

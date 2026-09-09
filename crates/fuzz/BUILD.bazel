@@ -84,6 +84,7 @@ test_suite(
         ":skein_append_fuzz_cli_tests",
         ":skein_parser_fuzz_cli_tests",
         ":skein_storage_fuzz_tests",
+        "//:skein_batch_dispatch_fuzz_tests",
         "//:skein_scan_callback_fuzz_tests",
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",

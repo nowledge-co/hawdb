@@ -214,6 +214,23 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+rust_test(
+    name = "skein_batch_dispatch_fuzz_tests",
+    args = [
+        "executor::batch::dispatch_tests::batch_dispatch_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 test_suite(
     name = "skein_unit_tests",
     tests = [

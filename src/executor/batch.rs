@@ -5,6 +5,12 @@ use skein_executor::observer::ExecutionObserver;
 use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
 use std::cell::Cell;
 
+mod dispatch;
+use dispatch::{unsupported_batch_operator, BatchDispatch, BatchExecution, BatchSupport};
+
+#[cfg(test)]
+mod dispatch_tests;
+
 fn charge_graph_algorithm_memory(
     algorithm: &'static str,
     phase: &'static str,
@@ -216,14 +222,7 @@ pub(super) struct BatchPlanRef<'a>(&'a PhysicalPlan);
 
 impl<'a> BatchPlanRef<'a> {
     pub(super) fn try_new(plan: &'a PhysicalPlan) -> Option<Self> {
-        let locally_supported = match plan.class() {
-            PhysicalPlanClass::Access
-            | PhysicalPlanClass::Traversal
-            | PhysicalPlanClass::Relational => true,
-            PhysicalPlanClass::Procedure => !matches!(plan, PhysicalPlan::ProjectGraph { .. }),
-            PhysicalPlanClass::Schema | PhysicalPlanClass::Mutation => false,
-        };
-        if !locally_supported {
+        if !dispatch_batch_operator(plan, BatchSupport) {
             return None;
         }
         match plan.children() {
@@ -302,12 +301,9 @@ pub(super) fn execute_binding_batches(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     let prepared = PreparedPhysicalPlan::prepare(plan, context.store, context.memory);
-    let plan = prepared.batch().ok_or_else(|| {
-        SkeinError::Execution(format!(
-            "physical operator '{}' does not support batch execution",
-            prepared.plan().kind().as_str()
-        ))
-    })?;
+    let plan = prepared
+        .batch()
+        .ok_or_else(|| unsupported_batch_operator(prepared.plan()))?;
     execute_prepared_binding_batches(plan, context, execution_limit, emit)
 }
 
@@ -411,17 +407,27 @@ fn execute_binding_batches_inner(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     runtime_checkpoint(context.task_context)?;
-    let plan = plan.plan();
-    let BatchReadContext {
-        catalog,
-        store,
-        memory,
-        ..
-    } = context;
+    dispatch_batch_operator(
+        plan.plan(),
+        BatchExecution {
+            context,
+            execution_limit,
+            emit,
+        },
+    )
+}
+
+fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -> D::Output {
     match plan {
-        PhysicalPlan::EmptyExec => Ok(BatchControl::Continue),
+        PhysicalPlan::EmptyExec => {
+            dispatch.supported(|_context, _execution_limit, _emit| {
+                Ok(BatchControl::Continue)
+            })
+        }
         PhysicalPlan::SeqNodeScan { variable, label } => {
-            stream_node_scan_batches(variable, label, None, context, execution_limit, emit)
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_node_scan_batches(variable, label, None, context, execution_limit, emit)
+            })
         }
         PhysicalPlan::NodeProjectionScanExec {
             variable,
@@ -431,90 +437,108 @@ fn execute_binding_batches_inner(
             predicate,
             items,
         } => {
-            if !items.is_empty()
-                && access.is_label_scan()
-                && let Some(result) = try_stream_columnar_node_projection_batches(
-                    variable,
-                    label,
-                    predicate.as_ref(),
-                    items,
+            dispatch.supported(|context, execution_limit, emit| {
+                if !items.is_empty()
+                    && access.is_label_scan()
+                    && let Some(result) = try_stream_columnar_node_projection_batches(
+                        variable,
+                        label,
+                        predicate.as_ref(),
+                        items,
+                        context,
+                        execution_limit,
+                        emit,
+                    )
+                {
+                    return result;
+                }
+                stream_node_projection_scan_batches(
+                    NodeProjectionScanSpec {
+                        variable,
+                        label,
+                        access,
+                        required_properties,
+                        predicate: predicate.as_ref(),
+                        items,
+                    },
                     context,
                     execution_limit,
                     emit,
                 )
-            {
-                return result;
-            }
-            stream_node_projection_scan_batches(
-                NodeProjectionScanSpec {
-                    variable,
-                    label,
-                    access,
-                    required_properties,
-                    predicate: predicate.as_ref(),
-                    items,
-                },
-                context,
-                execution_limit,
-                emit,
-            )
+            })
         }
         PhysicalPlan::SourceSegmentScan {
             variable,
             predicate,
         } => {
-            stream_source_segment_scan_batches(variable, predicate, context, execution_limit, emit)
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_source_segment_scan_batches(variable, predicate, context, execution_limit, emit)
+            })
         }
         PhysicalPlan::IndexNodeSeek {
             variable,
             label,
             property,
             value,
-        } => stream_index_node_seek_batches(
-            variable,
-            label,
-            property,
-            std::slice::from_ref(value),
-            context,
-            execution_limit,
-            emit,
-        ),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_index_node_seek_batches(
+                    variable,
+                    label,
+                    property,
+                    std::slice::from_ref(value),
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::IndexNodeMultiSeek {
             variable,
             label,
             property,
             values,
-        } => stream_index_node_seek_batches(
-            variable,
-            label,
-            property,
-            values,
-            context,
-            execution_limit,
-            emit,
-        ),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_index_node_seek_batches(
+                    variable,
+                    label,
+                    property,
+                    values,
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::IndexNodeUnionSeek {
             variable,
             label,
             branches,
-        } => stream_index_node_union_seek_batches(
-            variable,
-            label,
-            branches,
-            context,
-            execution_limit,
-            emit,
-        ),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_index_node_union_seek_batches(
+                    variable,
+                    label,
+                    branches,
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::IndexNodeCompositeSeek {
             variable,
             label,
             predicates,
         } => {
-            let Some(label_id) = catalog.label_id(label) else {
-                return Ok(BatchControl::Continue);
-            };
-            stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-                store.visit_nodes_by_composite_property_owned(label_id, predicates, consumer)
+            dispatch.supported(|context, execution_limit, emit| {
+                let Some(label_id) = context.catalog.label_id(label) else {
+                    return Ok(BatchControl::Continue);
+                };
+                stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
+                    context.store.visit_nodes_by_composite_property_owned(label_id, predicates, consumer)
+                })
             })
         }
         PhysicalPlan::IndexNodeCompositeRangeSeek {
@@ -522,11 +546,13 @@ fn execute_binding_batches_inner(
             label,
             seek,
         } => {
-            let Some(label_id) = catalog.label_id(label) else {
-                return Ok(BatchControl::Continue);
-            };
-            stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-                store.visit_nodes_by_composite_range_owned(label_id, seek, consumer)
+            dispatch.supported(|context, execution_limit, emit| {
+                let Some(label_id) = context.catalog.label_id(label) else {
+                    return Ok(BatchControl::Continue);
+                };
+                stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
+                    context.store.visit_nodes_by_composite_range_owned(label_id, seek, consumer)
+                })
             })
         }
         PhysicalPlan::IndexNodeRangeSeek {
@@ -536,17 +562,19 @@ fn execute_binding_batches_inner(
             lower,
             upper,
         } => {
-            let Some(label_id) = catalog.label_id(label) else {
-                return Ok(BatchControl::Continue);
-            };
-            stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-                store.visit_nodes_by_property_range_owned(
-                    label_id,
-                    property,
-                    lower.as_ref(),
-                    upper.as_ref(),
-                    consumer,
-                )
+            dispatch.supported(|context, execution_limit, emit| {
+                let Some(label_id) = context.catalog.label_id(label) else {
+                    return Ok(BatchControl::Continue);
+                };
+                stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
+                    context.store.visit_nodes_by_property_range_owned(
+                        label_id,
+                        property,
+                        lower.as_ref(),
+                        upper.as_ref(),
+                        consumer,
+                    )
+                })
             })
         }
         PhysicalPlan::IndexNodeTextSeek {
@@ -555,11 +583,13 @@ fn execute_binding_batches_inner(
             property,
             query,
         } => {
-            let Some(label_id) = catalog.label_id(label) else {
-                return Ok(BatchControl::Continue);
-            };
-            stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-                store.visit_nodes_by_full_text_property_owned(label_id, property, query, consumer)
+            dispatch.supported(|context, execution_limit, emit| {
+                let Some(label_id) = context.catalog.label_id(label) else {
+                    return Ok(BatchControl::Continue);
+                };
+                stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
+                    context.store.visit_nodes_by_full_text_property_owned(label_id, property, query, consumer)
+                })
             })
         }
         PhysicalPlan::ShortestPathExec {
@@ -576,40 +606,42 @@ fn execute_binding_batches_inner(
             returns,
             ..
         } => {
-            let source_visibility_filter = source_visibility_predicate
-                .as_ref()
-                .map(property_filter_from_predicate)
-                .transpose()?;
-            let target_visibility_filter = target_visibility_predicate
-                .as_ref()
-                .map(property_filter_from_predicate)
-                .transpose()?;
-            let bindings = execute_shortest_path(
-                catalog,
-                store,
-                ShortestPathExecInput {
-                    source_label,
-                    source_id,
-                    source_visibility_filter: source_visibility_filter.as_ref(),
-                    path_node_visibility_filter: source_visibility_filter.as_ref(),
-                    rel_type,
-                    direction: *direction,
-                    target_label,
-                    target_id,
-                    target_visibility_filter: target_visibility_filter.as_ref(),
-                    min_hops: *min_hops,
-                    max_hops: *max_hops,
-                    returns,
-                },
-                execution_limit,
-                TraversalExecutionContext {
-                    memory: context.memory,
-                    memory_ledger: context.memory_ledger,
-                    task_context: context.task_context,
-                    observer: context.observer,
-                },
-            )?;
-            bindings.emit_batches(memory.batch_rows.get(), emit)
+            dispatch.supported(|context, execution_limit, emit| {
+                let source_visibility_filter = source_visibility_predicate
+                    .as_ref()
+                    .map(property_filter_from_predicate)
+                    .transpose()?;
+                let target_visibility_filter = target_visibility_predicate
+                    .as_ref()
+                    .map(property_filter_from_predicate)
+                    .transpose()?;
+                let bindings = execute_shortest_path(
+                    context.catalog,
+                    context.store,
+                    ShortestPathExecInput {
+                        source_label,
+                        source_id,
+                        source_visibility_filter: source_visibility_filter.as_ref(),
+                        path_node_visibility_filter: source_visibility_filter.as_ref(),
+                        rel_type,
+                        direction: *direction,
+                        target_label,
+                        target_id,
+                        target_visibility_filter: target_visibility_filter.as_ref(),
+                        min_hops: *min_hops,
+                        max_hops: *max_hops,
+                        returns,
+                    },
+                    execution_limit,
+                    TraversalExecutionContext {
+                        memory: context.memory,
+                        memory_ledger: context.memory_ledger,
+                        task_context: context.task_context,
+                        observer: context.observer,
+                    },
+                )?;
+                bindings.emit_batches(context.memory.batch_rows.get(), emit)
+            })
         }
         PhysicalPlan::ThreadRepairStatsExec {
             label,
@@ -621,23 +653,25 @@ fn execute_binding_batches_inner(
             memory_rel_type,
             memory_label,
         } => {
-            let bindings = thread_repair_stats_rows(
-                catalog,
-                store,
-                label,
-                identity_label,
-                identity_ref_property,
-                thread_id_property,
-                message_rel_type,
-                message_label,
-                memory_rel_type,
-                memory_label,
-                memory.blocking_operator_bytes,
-                context.memory_ledger,
-                context.observer,
-                context.task_context,
-            )?;
-            bindings.emit_batches(memory.batch_rows.get(), emit)
+            dispatch.supported(|context, _execution_limit, emit| {
+                let bindings = thread_repair_stats_rows(
+                    context.catalog,
+                    context.store,
+                    label,
+                    identity_label,
+                    identity_ref_property,
+                    thread_id_property,
+                    message_rel_type,
+                    message_label,
+                    memory_rel_type,
+                    memory_label,
+                    context.memory.blocking_operator_bytes,
+                    context.memory_ledger,
+                    context.observer,
+                    context.task_context,
+                )?;
+                bindings.emit_batches(context.memory.batch_rows.get(), emit)
+            })
         }
         PhysicalPlan::GraphAlgorithm {
             algorithm,
@@ -646,170 +680,172 @@ fn execute_binding_batches_inner(
             score_column,
             node_visibility_predicate,
         } => {
-            let Some(definition) = store.projected_graph_definition(graph_name) else {
-                return Err(SkeinError::Execution(format!(
-                    "projected graph '{graph_name}' does not exist"
-                )));
-            };
-            let node_visibility_filter = node_visibility_predicate
-                .as_ref()
-                .map(property_filter_from_predicate)
-                .transpose()?;
-            let layout = match algorithm {
-                GraphAlgorithmKind::PageRank => ProjectionLayout::Outgoing,
-                GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
-            };
-            let budget = ProjectionMemoryBudget::new(memory.blocking_operator_bytes);
-            let graph = if let Some(filter) = node_visibility_filter.as_ref() {
-                try_projected_graph_with_node_filter(
-                    catalog,
-                    store,
-                    &definition.node_labels,
-                    &definition.rel_types,
-                    |node| node_matches_property_filter(node, filter),
-                    layout,
-                    budget,
-                )
-            } else {
-                try_projected_graph_with_node_filter(
-                    catalog,
-                    store,
-                    &definition.node_labels,
-                    &definition.rel_types,
-                    |_| true,
-                    layout,
-                    budget,
-                )
-            }?;
-            runtime_checkpoint(context.task_context)?;
-            let mut tracker = OperatorMemoryTracker::with_account(
-                memory.blocking_operator_bytes,
-                context.memory_ledger.account(
-                    QueryMemoryClass::BlockingState,
-                    "GraphAlgorithm",
-                    memory.blocking_operator_bytes,
-                ),
-            );
-            let projection_bytes = graph.memory_estimate().estimated_bytes;
-            charge_graph_algorithm_memory(
-                match algorithm {
-                    GraphAlgorithmKind::PageRank => "PageRank",
-                    GraphAlgorithmKind::Louvain => "Louvain",
-                },
-                "projection",
-                &mut tracker,
-                projection_bytes,
-            )?;
-            let input_rows = graph.node_count();
-            let output_limit = execution_limit.output_rows.unwrap_or(usize::MAX);
-            let execution_result: Result<Vec<Binding>> = (|| {
-                let mut bindings = Vec::new();
-                match algorithm {
-                    GraphAlgorithmKind::PageRank => {
-                        let options = PageRankOptions {
-                            iterations: options
-                                .max_iterations
-                                .unwrap_or_else(|| PageRankOptions::default().iterations),
-                            damping: options
-                                .damping
-                                .unwrap_or_else(|| PageRankOptions::default().damping),
-                        };
-                        let estimate = graph.page_rank_memory_estimate();
-                        charge_graph_algorithm_memory(
-                            "PageRank",
-                            "scratch and result state",
-                            &mut tracker,
-                            estimate.algorithm_peak_bytes,
-                        )?;
-                        let scores = graph.page_rank_with_context(options, context.task_context)?;
-                        tracker.release(estimate.algorithm_peak_bytes);
-                        let result_bytes = estimated_vec_memory_bytes::<
-                            crate::analytics::PageRankScore,
-                        >(scores.len());
-                        charge_graph_algorithm_memory(
-                            "PageRank",
-                            "materialized result",
-                            &mut tracker,
-                            result_bytes,
-                        )?;
-                        for score in scores.into_iter().take(output_limit) {
-                            push_bounded_operator_binding(
-                                "GraphAlgorithm",
-                                &mut bindings,
-                                Binding {
-                                    values: BTreeMap::from([
-                                        ("node".to_string(), Value::Int(score.node.0 as i64)),
-                                        (score_column.clone(), Value::Float(score.score)),
-                                    ]),
-                                    nodes: BTreeMap::new(),
-                                    relationships: BTreeMap::new(),
-                                },
+            dispatch.supported(|context, execution_limit, emit| {
+                let Some(definition) = context.store.projected_graph_definition(graph_name) else {
+                    return Err(SkeinError::Execution(format!(
+                        "projected graph '{graph_name}' does not exist"
+                    )));
+                };
+                let node_visibility_filter = node_visibility_predicate
+                    .as_ref()
+                    .map(property_filter_from_predicate)
+                    .transpose()?;
+                let layout = match algorithm {
+                    GraphAlgorithmKind::PageRank => ProjectionLayout::Outgoing,
+                    GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
+                };
+                let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
+                let graph = if let Some(filter) = node_visibility_filter.as_ref() {
+                    try_projected_graph_with_node_filter(
+                        context.catalog,
+                        context.store,
+                        &definition.node_labels,
+                        &definition.rel_types,
+                        |node| node_matches_property_filter(node, filter),
+                        layout,
+                        budget,
+                    )
+                } else {
+                    try_projected_graph_with_node_filter(
+                        context.catalog,
+                        context.store,
+                        &definition.node_labels,
+                        &definition.rel_types,
+                        |_| true,
+                        layout,
+                        budget,
+                    )
+                }?;
+                runtime_checkpoint(context.task_context)?;
+                let mut tracker = OperatorMemoryTracker::with_account(
+                    context.memory.blocking_operator_bytes,
+                    context.memory_ledger.account(
+                        QueryMemoryClass::BlockingState,
+                        "GraphAlgorithm",
+                        context.memory.blocking_operator_bytes,
+                    ),
+                );
+                let projection_bytes = graph.memory_estimate().estimated_bytes;
+                charge_graph_algorithm_memory(
+                    match algorithm {
+                        GraphAlgorithmKind::PageRank => "PageRank",
+                        GraphAlgorithmKind::Louvain => "Louvain",
+                    },
+                    "projection",
+                    &mut tracker,
+                    projection_bytes,
+                )?;
+                let input_rows = graph.node_count();
+                let output_limit = execution_limit.output_rows.unwrap_or(usize::MAX);
+                let execution_result: Result<Vec<Binding>> = (|| {
+                    let mut bindings = Vec::new();
+                    match algorithm {
+                        GraphAlgorithmKind::PageRank => {
+                            let options = PageRankOptions {
+                                iterations: options
+                                    .max_iterations
+                                    .unwrap_or_else(|| PageRankOptions::default().iterations),
+                                damping: options
+                                    .damping
+                                    .unwrap_or_else(|| PageRankOptions::default().damping),
+                            };
+                            let estimate = graph.page_rank_memory_estimate();
+                            charge_graph_algorithm_memory(
+                                "PageRank",
+                                "scratch and result state",
                                 &mut tracker,
+                                estimate.algorithm_peak_bytes,
                             )?;
-                        }
-                        tracker.release(result_bytes);
-                    }
-                    GraphAlgorithmKind::Louvain => {
-                        let options = LouvainOptions {
-                            max_iterations: options
-                                .max_iterations
-                                .unwrap_or_else(|| LouvainOptions::default().max_iterations),
-                            max_levels: options
-                                .max_levels
-                                .unwrap_or_else(|| LouvainOptions::default().max_levels),
-                        };
-                        let estimate = graph.louvain_memory_estimate(options);
-                        charge_graph_algorithm_memory(
-                            "Louvain",
-                            "scratch and result state",
-                            &mut tracker,
-                            estimate.algorithm_peak_bytes,
-                        )?;
-                        let assignments = graph.hierarchical_louvain_communities_with_context(
-                            options,
-                            context.task_context,
-                        )?;
-                        tracker.release(estimate.algorithm_peak_bytes);
-                        let result_bytes = estimated_vec_memory_bytes::<
-                            crate::analytics::HierarchicalCommunityAssignment,
-                        >(assignments.len());
-                        charge_graph_algorithm_memory(
-                            "Louvain",
-                            "materialized result",
-                            &mut tracker,
-                            result_bytes,
-                        )?;
-                        for assignment in assignments.into_iter().take(output_limit) {
-                            push_bounded_operator_binding(
-                                "GraphAlgorithm",
-                                &mut bindings,
-                                Binding {
-                                    values: BTreeMap::from([
-                                        ("node".to_string(), Value::Int(assignment.node.0 as i64)),
-                                        ("level".to_string(), Value::Int(assignment.level as i64)),
-                                        (
-                                            "louvain_id".to_string(),
-                                            Value::Int(assignment.community.0 as i64),
-                                        ),
-                                    ]),
-                                    nodes: BTreeMap::new(),
-                                    relationships: BTreeMap::new(),
-                                },
+                            let scores = graph.page_rank_with_context(options, context.task_context)?;
+                            tracker.release(estimate.algorithm_peak_bytes);
+                            let result_bytes = estimated_vec_memory_bytes::<
+                                crate::analytics::PageRankScore,
+                            >(scores.len());
+                            charge_graph_algorithm_memory(
+                                "PageRank",
+                                "materialized result",
                                 &mut tracker,
+                                result_bytes,
                             )?;
+                            for score in scores.into_iter().take(output_limit) {
+                                push_bounded_operator_binding(
+                                    "GraphAlgorithm",
+                                    &mut bindings,
+                                    Binding {
+                                        values: BTreeMap::from([
+                                            ("node".to_string(), Value::Int(score.node.0 as i64)),
+                                            (score_column.clone(), Value::Float(score.score)),
+                                        ]),
+                                        nodes: BTreeMap::new(),
+                                        relationships: BTreeMap::new(),
+                                    },
+                                    &mut tracker,
+                                )?;
+                            }
+                            tracker.release(result_bytes);
                         }
-                        tracker.release(result_bytes);
+                        GraphAlgorithmKind::Louvain => {
+                            let options = LouvainOptions {
+                                max_iterations: options
+                                    .max_iterations
+                                    .unwrap_or_else(|| LouvainOptions::default().max_iterations),
+                                max_levels: options
+                                    .max_levels
+                                    .unwrap_or_else(|| LouvainOptions::default().max_levels),
+                            };
+                            let estimate = graph.louvain_memory_estimate(options);
+                            charge_graph_algorithm_memory(
+                                "Louvain",
+                                "scratch and result state",
+                                &mut tracker,
+                                estimate.algorithm_peak_bytes,
+                            )?;
+                            let assignments = graph.hierarchical_louvain_communities_with_context(
+                                options,
+                                context.task_context,
+                            )?;
+                            tracker.release(estimate.algorithm_peak_bytes);
+                            let result_bytes = estimated_vec_memory_bytes::<
+                                crate::analytics::HierarchicalCommunityAssignment,
+                            >(assignments.len());
+                            charge_graph_algorithm_memory(
+                                "Louvain",
+                                "materialized result",
+                                &mut tracker,
+                                result_bytes,
+                            )?;
+                            for assignment in assignments.into_iter().take(output_limit) {
+                                push_bounded_operator_binding(
+                                    "GraphAlgorithm",
+                                    &mut bindings,
+                                    Binding {
+                                        values: BTreeMap::from([
+                                            ("node".to_string(), Value::Int(assignment.node.0 as i64)),
+                                            ("level".to_string(), Value::Int(assignment.level as i64)),
+                                            (
+                                                "louvain_id".to_string(),
+                                                Value::Int(assignment.community.0 as i64),
+                                            ),
+                                        ]),
+                                        nodes: BTreeMap::new(),
+                                        relationships: BTreeMap::new(),
+                                    },
+                                    &mut tracker,
+                                )?;
+                            }
+                            tracker.release(result_bytes);
+                        }
                     }
-                }
-                Ok(bindings)
-            })();
-            context
-                .observer
-                .record_blocking_memory_report(graph_algorithm_memory_report(
-                    &tracker, input_rows, memory,
-                ));
-            let bindings = execution_result?;
-            emit_owned_binding_batches(bindings, memory.batch_rows.get(), emit)
+                    Ok(bindings)
+                })();
+                context
+                    .observer
+                    .record_blocking_memory_report(graph_algorithm_memory_report(
+                        &tracker, input_rows, context.memory,
+                    ));
+                let bindings = execution_result?;
+                emit_owned_binding_batches(bindings, context.memory.batch_rows.get(), emit)
+            })
         }
         PhysicalPlan::VectorSeedScan {
             embedding_parameter,
@@ -818,80 +854,82 @@ fn execute_binding_batches_inner(
             resource_profile,
             vector_plan,
         } => {
-            let max_rows = vector_plan_top_k(vector_plan)
-                .ok_or_else(|| {
-                    SkeinError::Execution("vector seed physical plan is missing TopK".to_string())
-                })?
-                .min(execution_limit.output_rows.unwrap_or(usize::MAX));
-            if max_rows == 0 {
-                return emit_owned_binding_batches(Vec::new(), memory.batch_rows.get(), emit);
-            }
-            let embedding =
-                vector_embedding_parameter(context.parameters, embedding_parameter, vector_plan)?;
-            let external_memory = external_read_memory_budget(*resource_profile, memory);
-            let admitted_parallelism = context
-                .task_context
-                .map_or(1, |task_context| task_context.admitted_parallelism().get());
-            let resources = ExternalReadResourceContract {
-                priority: resource_profile.priority,
-                max_parallelism: NonZeroUsize::new(
-                    resource_profile
-                        .max_parallelism
-                        .max(1)
-                        .min(admitted_parallelism),
-                )
-                .expect("resolved external read parallelism is non-zero"),
-                max_working_memory_bytes: external_memory.max_working_bytes,
-                result: ExternalReadResultBudget {
-                    max_rows,
-                    max_memory_bytes: external_memory.max_result_bytes,
-                },
-                task_context: context.task_context,
-            };
-            let external_account = context.memory_ledger.account(
-                QueryMemoryClass::ExternalRead,
-                "VectorSeedScan external read",
-                NonZeroUsize::new(resources.reserved_memory_bytes())
-                    .expect("external read reservation is non-zero"),
-            );
-            let _external_lease = external_account.reserve(resources.reserved_memory_bytes())?;
-            resources.checkpoint()?;
-            let output = context
-                .external
-                .execute_vector_seed(VectorSeedExecutionRequest {
-                    embedding: &embedding,
-                    metadata_filters,
-                    vector_plan,
-                    resources,
-                })?;
-            resources.checkpoint()?;
-            output.validate_result_budget(resources.result)?;
-            context.observer.record_vector_execution(output.report);
-            let mut bindings = collect_bounded_operator_bindings_with_account(
-                "VectorSeedScan",
-                output.rows.into_iter().map(|row| {
-                    let mut values = BTreeMap::from([
-                        ("id".to_string(), Value::String(row.id)),
-                        ("score".to_string(), Value::Float(row.score)),
-                    ]);
-                    if *output_external_id && let Some(external_id) = row.external_id {
-                        values.insert("external_id".to_string(), Value::String(external_id));
-                    }
-                    Binding {
-                        values,
-                        nodes: BTreeMap::new(),
-                        relationships: BTreeMap::new(),
-                    }
-                }),
-                memory.blocking_operator_bytes,
-                context.memory_ledger.account(
-                    QueryMemoryClass::BlockingState,
+            dispatch.supported(|context, execution_limit, emit| {
+                let max_rows = vector_plan_top_k(vector_plan)
+                    .ok_or_else(|| {
+                        SkeinError::Execution("vector seed physical plan is missing TopK".to_string())
+                    })?
+                    .min(execution_limit.output_rows.unwrap_or(usize::MAX));
+                if max_rows == 0 {
+                    return emit_owned_binding_batches(Vec::new(), context.memory.batch_rows.get(), emit);
+                }
+                let embedding =
+                    vector_embedding_parameter(context.parameters, embedding_parameter, vector_plan)?;
+                let external_memory = external_read_memory_budget(*resource_profile, context.memory);
+                let admitted_parallelism = context
+                    .task_context
+                    .map_or(1, |task_context| task_context.admitted_parallelism().get());
+                let resources = ExternalReadResourceContract {
+                    priority: resource_profile.priority,
+                    max_parallelism: NonZeroUsize::new(
+                        resource_profile
+                            .max_parallelism
+                            .max(1)
+                            .min(admitted_parallelism),
+                    )
+                    .expect("resolved external read parallelism is non-zero"),
+                    max_working_memory_bytes: external_memory.max_working_bytes,
+                    result: ExternalReadResultBudget {
+                        max_rows,
+                        max_memory_bytes: external_memory.max_result_bytes,
+                    },
+                    task_context: context.task_context,
+                };
+                let external_account = context.memory_ledger.account(
+                    QueryMemoryClass::ExternalRead,
+                    "VectorSeedScan external read",
+                    NonZeroUsize::new(resources.reserved_memory_bytes())
+                        .expect("external read reservation is non-zero"),
+                );
+                let _external_lease = external_account.reserve(resources.reserved_memory_bytes())?;
+                resources.checkpoint()?;
+                let output = context
+                    .external
+                    .execute_vector_seed(VectorSeedExecutionRequest {
+                        embedding: &embedding,
+                        metadata_filters,
+                        vector_plan,
+                        resources,
+                    })?;
+                resources.checkpoint()?;
+                output.validate_result_budget(resources.result)?;
+                context.observer.record_vector_execution(output.report);
+                let mut bindings = collect_bounded_operator_bindings_with_account(
                     "VectorSeedScan",
-                    memory.blocking_operator_bytes,
-                ),
-            )?;
-            bindings.truncate(execution_limit.output_rows.unwrap_or(usize::MAX));
-            emit_owned_binding_batches(bindings, memory.batch_rows.get(), emit)
+                    output.rows.into_iter().map(|row| {
+                        let mut values = BTreeMap::from([
+                            ("id".to_string(), Value::String(row.id)),
+                            ("score".to_string(), Value::Float(row.score)),
+                        ]);
+                        if *output_external_id && let Some(external_id) = row.external_id {
+                            values.insert("external_id".to_string(), Value::String(external_id));
+                        }
+                        Binding {
+                            values,
+                            nodes: BTreeMap::new(),
+                            relationships: BTreeMap::new(),
+                        }
+                    }),
+                    context.memory.blocking_operator_bytes,
+                    context.memory_ledger.account(
+                        QueryMemoryClass::BlockingState,
+                        "VectorSeedScan",
+                        context.memory.blocking_operator_bytes,
+                    ),
+                )?;
+                bindings.truncate(execution_limit.output_rows.unwrap_or(usize::MAX));
+                emit_owned_binding_batches(bindings, context.memory.batch_rows.get(), emit)
+            })
         }
         PhysicalPlan::NodeColumnLookupExec {
             variable,
@@ -900,19 +938,23 @@ fn execute_binding_batches_inner(
             column,
             optional,
             input,
-        } => stream_node_column_lookup_batches(
-            NodeColumnLookupSpec {
-                variable,
-                label,
-                property,
-                column,
-                optional: *optional,
-            },
-            input,
-            context,
-            execution_limit,
-            emit,
-        ),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_node_column_lookup_batches(
+                    NodeColumnLookupSpec {
+                        variable,
+                        label,
+                        property,
+                        column,
+                        optional: *optional,
+                    },
+                    input,
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::OptionalDegreeExec {
             source_variable,
             rel_type,
@@ -922,17 +964,21 @@ fn execute_binding_batches_inner(
             target_properties,
             alias,
             input,
-        } => OptionalDegreeSpec {
-            source_variable,
-            rel_type,
-            rel_properties,
-            direction: *direction,
-            target_label,
-            target_properties,
-            alias,
-            input,
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                OptionalDegreeSpec {
+                    source_variable,
+                    rel_type,
+                    rel_properties,
+                    direction: *direction,
+                    target_label,
+                    target_properties,
+                    alias,
+                    input,
+                }
+                .stream(context, execution_limit, emit)
+            })
         }
-        .stream(context, execution_limit, emit),
         PhysicalPlan::OptionalRelationshipCountSumExec {
             label,
             properties,
@@ -940,391 +986,423 @@ fn execute_binding_batches_inner(
             output,
             ..
         } => {
-            let label_ids = label_ids_for_pattern(catalog, label);
-            let count_account = context.memory_ledger.account(
-                QueryMemoryClass::BlockingState,
-                "OptionalRelationshipCountSumExec",
-                context.memory.blocking_operator_bytes,
-            );
-            let mut total = 0usize;
-            let mut nodes_since_checkpoint = 0usize;
-            store.visit_nodes_owned(None, &mut |node| {
-                nodes_since_checkpoint += 1;
-                if nodes_since_checkpoint == context.memory.batch_rows.get() {
-                    nodes_since_checkpoint = 0;
-                    runtime_checkpoint(context.task_context)?;
-                }
-                if !node_matches_label_pattern(&node, label_ids.as_deref())
-                    || !node_properties_match(&node, properties)
-                {
-                    return Ok(ScanControl::Continue);
-                }
-                for leg in legs {
-                    let count = relationship_count_sum_leg(
-                        catalog,
-                        store,
-                        node.id,
-                        leg,
-                        skein_executor::store::AdjacencyReadMemory {
-                            budget_bytes: context.memory.blocking_operator_bytes.get(),
-                            account: Some(&count_account),
-                        },
-                        context.observer,
-                        context.task_context,
-                    )?;
-                    total = total.saturating_add(count);
-                }
-                Ok(ScanControl::Continue)
-            })?;
-            emit(vec![Binding {
-                values: BTreeMap::from([(output.clone(), Value::Int(total as i64))]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
-            }])
-        }
-        PhysicalPlan::NodeCountExec { label, output } => {
-            let label_id = (!label.is_empty())
-                .then(|| catalog.label_id(label))
-                .flatten();
-            let count = if label.is_empty() {
-                store.node_count_for_label(None)
-            } else if let Some(label_id) = label_id {
-                store.node_count_for_label(Some(label_id))
-            } else {
-                0
-            };
-            context
-                .observer
-                .record_scan_pruning_report(ScanPruningReport {
-                    target_kind: ScanPruningTargetKind::Node,
-                    label_id,
-                    rel_type_id: None,
-                    strategy: ScanPruningStrategy::ExactCount,
-                    pruned: true,
-                    exact_empty: count == 0,
-                    candidate_count_before_pruning: count,
-                    pruned_candidate_count: count,
-                    candidate_count_before_filter: 0,
-                    output_count: 1,
-                    filtered_out_count: 0,
-                });
-            let count = i64::try_from(count).map_err(|_| {
-                SkeinError::Execution(format!(
-                    "node count for label '{label}' exceeds the supported i64 result range"
-                ))
-            })?;
-            emit(vec![Binding {
-                values: BTreeMap::from([(output.clone(), Value::Int(count))]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
-            }])
-        }
-        PhysicalPlan::RelationshipCountExec { rel_type, output } => {
-            let rel_type_id = (!rel_type.is_empty())
-                .then(|| catalog.rel_type_id(rel_type))
-                .flatten();
-            let count = if rel_type.is_empty() {
-                store.relationship_count_for_type(None)
-            } else if let Some(rel_type_id) = rel_type_id {
-                store.relationship_count_for_type(Some(rel_type_id))
-            } else {
-                0
-            };
-            context
-                .observer
-                .record_scan_pruning_report(ScanPruningReport {
-                    target_kind: ScanPruningTargetKind::Relationship,
-                    label_id: None,
-                    rel_type_id,
-                    strategy: ScanPruningStrategy::ExactCount,
-                    pruned: true,
-                    exact_empty: count == 0,
-                    candidate_count_before_pruning: count,
-                    pruned_candidate_count: count,
-                    candidate_count_before_filter: 0,
-                    output_count: 1,
-                    filtered_out_count: 0,
-                });
-            let count = i64::try_from(count).map_err(|_| {
-                SkeinError::Execution(format!(
-                    "relationship count for type '{rel_type}' exceeds the supported i64 result range"
-                ))
-            })?;
-            emit(vec![Binding {
-                values: BTreeMap::from([(output.clone(), Value::Int(count))]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
-            }])
-        }
-        PhysicalPlan::AdjacencyExpandExec { input, .. } => stream_adjacency_expand_batches(
-            plan,
-            input,
-            context,
-            execution_limit,
-            AdjacencyExpandFilters::default(),
-            emit,
-        ),
-        PhysicalPlan::AdjacencyExistsExec { input, .. } => {
-            stream_adjacency_exists_batches(plan, input, context, execution_limit, emit)
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            stream_cartesian_product_batches(left, right, context, execution_limit, emit)
-        }
-        PhysicalPlan::FilterExec { predicate, input } => {
-            if let PhysicalPlan::SeqNodeScan { variable, label } = input.as_ref()
-                && let Ok(filter) = property_filter_from_predicate(predicate)
-            {
-                return stream_node_scan_batches(
-                    variable,
-                    label,
-                    Some((predicate, &filter)),
-                    context,
-                    execution_limit,
-                    emit,
+            dispatch.supported(|context, _execution_limit, emit| {
+                let label_ids = label_ids_for_pattern(context.catalog, label);
+                let count_account = context.memory_ledger.account(
+                    QueryMemoryClass::BlockingState,
+                    "OptionalRelationshipCountSumExec",
+                    context.memory.blocking_operator_bytes,
                 );
-            }
-            if let PhysicalPlan::AdjacencyExpandExec {
-                rel_variable: Some(rel_variable),
-                input: expand_input,
-                ..
-            } = input.as_ref()
-                && let Some(filter) =
-                    exact_relationship_scan_filter_from_predicate(predicate, rel_variable)
-            {
-                return stream_filtered_adjacency_expand_batches(
-                    input,
-                    expand_input,
-                    predicate,
-                    context,
-                    execution_limit,
-                    AdjacencyExpandFilters {
-                        relationship_scan_filter: Some(&filter),
-                        target_scan_filter: None,
-                    },
-                    emit,
-                );
-            }
-            if let PhysicalPlan::AdjacencyExpandExec {
-                target_variable,
-                input: expand_input,
-                ..
-            } = input.as_ref()
-                && predicate_references_only_variable(predicate, target_variable)
-                && let Ok(filter) = property_filter_from_predicate(predicate)
-            {
-                return stream_filtered_adjacency_expand_batches(
-                    input,
-                    expand_input,
-                    predicate,
-                    context,
-                    execution_limit,
-                    AdjacencyExpandFilters {
-                        relationship_scan_filter: None,
-                        target_scan_filter: Some(&filter),
-                    },
-                    emit,
-                );
-            }
-            let predicate_account = context.memory_ledger.account(
-                QueryMemoryClass::BlockingState,
-                "FilterExec relationship predicate",
-                context.memory.blocking_operator_bytes,
-            );
-            let emitted = Cell::new(0usize);
-            execute_prepared_binding_batches(
-                BatchPlanRef::descendant(input),
-                context,
-                ExecutionLimit::unlimited(),
-                &mut |batch| {
-                    let remaining = execution_limit
-                        .output_rows
-                        .unwrap_or(usize::MAX)
-                        .saturating_sub(emitted.get());
-                    if remaining == 0 {
-                        return Ok(BatchControl::Stop);
+                let mut total = 0usize;
+                let mut nodes_since_checkpoint = 0usize;
+                context.store.visit_nodes_owned(None, &mut |node| {
+                    nodes_since_checkpoint += 1;
+                    if nodes_since_checkpoint == context.memory.batch_rows.get() {
+                        nodes_since_checkpoint = 0;
+                        runtime_checkpoint(context.task_context)?;
                     }
-                    let mut filtered = TransformBatchBuilder::new(
-                        "FilterExec",
-                        context.memory.batch_rows.get(),
-                        context.memory.batch_payload_bytes,
-                        context.memory_ledger,
-                    )?;
-                    let mut emit_filtered = |output: BindingBatch| {
-                        emitted.set(emitted.get().saturating_add(output.len()));
-                        emit(output)
-                    };
-                    for binding in batch {
-                        if evaluate_predicate_observed(
-                            predicate,
-                            catalog,
-                            store,
-                            &binding,
-                            context.observer,
+                    if !node_matches_label_pattern(&node, label_ids.as_deref())
+                        || !node_properties_match(&node, properties)
+                    {
+                        return Ok(ScanControl::Continue);
+                    }
+                    for leg in legs {
+                        let count = relationship_count_sum_leg(
+                            context.catalog,
+                            context.store,
+                            node.id,
+                            leg,
                             skein_executor::store::AdjacencyReadMemory {
                                 budget_bytes: context.memory.blocking_operator_bytes.get(),
-                                account: Some(&predicate_account),
+                                account: Some(&count_account),
                             },
-                        )? {
-                            filtered.reserve_before_allocation()?;
-                            filtered.push(binding);
-                            if filtered.is_full()
-                                && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
+                            context.observer,
+                            context.task_context,
+                        )?;
+                        total = total.saturating_add(count);
+                    }
+                    Ok(ScanControl::Continue)
+                })?;
+                emit(vec![Binding {
+                    values: BTreeMap::from([(output.clone(), Value::Int(total as i64))]),
+                    nodes: BTreeMap::new(),
+                    relationships: BTreeMap::new(),
+                }])
+            })
+        }
+        PhysicalPlan::NodeCountExec { label, output } => {
+            dispatch.supported(|context, _execution_limit, emit| {
+                let label_id = (!label.is_empty())
+                    .then(|| context.catalog.label_id(label))
+                    .flatten();
+                let count = if label.is_empty() {
+                    context.store.node_count_for_label(None)
+                } else if let Some(label_id) = label_id {
+                    context.store.node_count_for_label(Some(label_id))
+                } else {
+                    0
+                };
+                context
+                    .observer
+                    .record_scan_pruning_report(ScanPruningReport {
+                        target_kind: ScanPruningTargetKind::Node,
+                        label_id,
+                        rel_type_id: None,
+                        strategy: ScanPruningStrategy::ExactCount,
+                        pruned: true,
+                        exact_empty: count == 0,
+                        candidate_count_before_pruning: count,
+                        pruned_candidate_count: count,
+                        candidate_count_before_filter: 0,
+                        output_count: 1,
+                        filtered_out_count: 0,
+                    });
+                let count = i64::try_from(count).map_err(|_| {
+                    SkeinError::Execution(format!(
+                        "node count for label '{label}' exceeds the supported i64 result range"
+                    ))
+                })?;
+                emit(vec![Binding {
+                    values: BTreeMap::from([(output.clone(), Value::Int(count))]),
+                    nodes: BTreeMap::new(),
+                    relationships: BTreeMap::new(),
+                }])
+            })
+        }
+        PhysicalPlan::RelationshipCountExec { rel_type, output } => {
+            dispatch.supported(|context, _execution_limit, emit| {
+                let rel_type_id = (!rel_type.is_empty())
+                    .then(|| context.catalog.rel_type_id(rel_type))
+                    .flatten();
+                let count = if rel_type.is_empty() {
+                    context.store.relationship_count_for_type(None)
+                } else if let Some(rel_type_id) = rel_type_id {
+                    context.store.relationship_count_for_type(Some(rel_type_id))
+                } else {
+                    0
+                };
+                context
+                    .observer
+                    .record_scan_pruning_report(ScanPruningReport {
+                        target_kind: ScanPruningTargetKind::Relationship,
+                        label_id: None,
+                        rel_type_id,
+                        strategy: ScanPruningStrategy::ExactCount,
+                        pruned: true,
+                        exact_empty: count == 0,
+                        candidate_count_before_pruning: count,
+                        pruned_candidate_count: count,
+                        candidate_count_before_filter: 0,
+                        output_count: 1,
+                        filtered_out_count: 0,
+                    });
+                let count = i64::try_from(count).map_err(|_| {
+                    SkeinError::Execution(format!(
+                        "relationship count for type '{rel_type}' exceeds the supported i64 result range"
+                    ))
+                })?;
+                emit(vec![Binding {
+                    values: BTreeMap::from([(output.clone(), Value::Int(count))]),
+                    nodes: BTreeMap::new(),
+                    relationships: BTreeMap::new(),
+                }])
+            })
+        }
+        PhysicalPlan::AdjacencyExpandExec { input, .. } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_adjacency_expand_batches(
+                    plan,
+                    input,
+                    context,
+                    execution_limit,
+                    AdjacencyExpandFilters::default(),
+                    emit,
+                )
+            })
+        }
+        PhysicalPlan::AdjacencyExistsExec { input, .. } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_adjacency_exists_batches(plan, input, context, execution_limit, emit)
+            })
+        }
+        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_cartesian_product_batches(left, right, context, execution_limit, emit)
+            })
+        }
+        PhysicalPlan::FilterExec { predicate, input } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                if let PhysicalPlan::SeqNodeScan { variable, label } = input.as_ref()
+                    && let Ok(filter) = property_filter_from_predicate(predicate)
+                {
+                    return stream_node_scan_batches(
+                        variable,
+                        label,
+                        Some((predicate, &filter)),
+                        context,
+                        execution_limit,
+                        emit,
+                    );
+                }
+                if let PhysicalPlan::AdjacencyExpandExec {
+                    rel_variable: Some(rel_variable),
+                    input: expand_input,
+                    ..
+                } = input.as_ref()
+                    && let Some(filter) =
+                        exact_relationship_scan_filter_from_predicate(predicate, rel_variable)
+                {
+                    return stream_filtered_adjacency_expand_batches(
+                        input,
+                        expand_input,
+                        predicate,
+                        context,
+                        execution_limit,
+                        AdjacencyExpandFilters {
+                            relationship_scan_filter: Some(&filter),
+                            target_scan_filter: None,
+                        },
+                        emit,
+                    );
+                }
+                if let PhysicalPlan::AdjacencyExpandExec {
+                    target_variable,
+                    input: expand_input,
+                    ..
+                } = input.as_ref()
+                    && predicate_references_only_variable(predicate, target_variable)
+                    && let Ok(filter) = property_filter_from_predicate(predicate)
+                {
+                    return stream_filtered_adjacency_expand_batches(
+                        input,
+                        expand_input,
+                        predicate,
+                        context,
+                        execution_limit,
+                        AdjacencyExpandFilters {
+                            relationship_scan_filter: None,
+                            target_scan_filter: Some(&filter),
+                        },
+                        emit,
+                    );
+                }
+                let predicate_account = context.memory_ledger.account(
+                    QueryMemoryClass::BlockingState,
+                    "FilterExec relationship predicate",
+                    context.memory.blocking_operator_bytes,
+                );
+                let emitted = Cell::new(0usize);
+                execute_prepared_binding_batches(
+                    BatchPlanRef::descendant(input),
+                    context,
+                    ExecutionLimit::unlimited(),
+                    &mut |batch| {
+                        let remaining = execution_limit
+                            .output_rows
+                            .unwrap_or(usize::MAX)
+                            .saturating_sub(emitted.get());
+                        if remaining == 0 {
+                            return Ok(BatchControl::Stop);
+                        }
+                        let mut filtered = TransformBatchBuilder::new(
+                            "FilterExec",
+                            context.memory.batch_rows.get(),
+                            context.memory.batch_payload_bytes,
+                            context.memory_ledger,
+                        )?;
+                        let mut emit_filtered = |output: BindingBatch| {
+                            emitted.set(emitted.get().saturating_add(output.len()));
+                            emit(output)
+                        };
+                        for binding in batch {
+                            if evaluate_predicate_observed(
+                                predicate,
+                                context.catalog,
+                                context.store,
+                                &binding,
+                                context.observer,
+                                skein_executor::store::AdjacencyReadMemory {
+                                    budget_bytes: context.memory.blocking_operator_bytes.get(),
+                                    account: Some(&predicate_account),
+                                },
+                            )? {
+                                filtered.reserve_before_allocation()?;
+                                filtered.push(binding);
+                                if filtered.is_full()
+                                    && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
+                                {
+                                    return Ok(BatchControl::Stop);
+                                }
+                                if execution_limit
+                                    .is_reached(emitted.get().saturating_add(filtered.len()))
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        if !filtered.is_empty()
+                            && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
+                        {
+                            return Ok(BatchControl::Stop);
+                        }
+                        Ok(if execution_limit.is_reached(emitted.get()) {
+                            BatchControl::Stop
+                        } else {
+                            BatchControl::Continue
+                        })
+                    },
+                )
+            })
+        }
+        PhysicalPlan::ProjectExec { items, input } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                if let Some(result) =
+                    try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
+                {
+                    return result;
+                }
+                let emitted = Cell::new(0usize);
+                execute_prepared_binding_batches(
+                    BatchPlanRef::descendant(input),
+                    context,
+                    execution_limit,
+                    &mut |batch| {
+                        let mut projected = TransformBatchBuilder::new(
+                            "ProjectExec",
+                            context.memory.batch_rows.get(),
+                            context.memory.batch_payload_bytes,
+                            context.memory_ledger,
+                        )?;
+                        let mut emit_projected = |output: BindingBatch| {
+                            emitted.set(emitted.get().saturating_add(output.len()));
+                            emit(output)
+                        };
+                        for binding in batch {
+                            projected.reserve_before_allocation()?;
+                            let mut values = BTreeMap::new();
+                            for item in items {
+                                let value = project_value(item, context.catalog, &binding)?;
+                                insert_projected_value(&mut values, &item.name, value);
+                            }
+                            projected.push(Binding {
+                                values,
+                                nodes: binding.nodes,
+                                relationships: binding.relationships,
+                            });
+                            if projected.is_full()
+                                && projected.emit(&mut emit_projected)? == BatchControl::Stop
                             {
                                 return Ok(BatchControl::Stop);
                             }
-                            if execution_limit
-                                .is_reached(emitted.get().saturating_add(filtered.len()))
-                            {
-                                break;
-                            }
                         }
-                    }
-                    if !filtered.is_empty()
-                        && filtered.emit(&mut emit_filtered)? == BatchControl::Stop
-                    {
-                        return Ok(BatchControl::Stop);
-                    }
-                    Ok(if execution_limit.is_reached(emitted.get()) {
-                        BatchControl::Stop
-                    } else {
-                        BatchControl::Continue
-                    })
-                },
-            )
-        }
-        PhysicalPlan::ProjectExec { items, input } => {
-            if let Some(result) =
-                try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
-            {
-                return result;
-            }
-            let emitted = Cell::new(0usize);
-            execute_prepared_binding_batches(
-                BatchPlanRef::descendant(input),
-                context,
-                execution_limit,
-                &mut |batch| {
-                    let mut projected = TransformBatchBuilder::new(
-                        "ProjectExec",
-                        context.memory.batch_rows.get(),
-                        context.memory.batch_payload_bytes,
-                        context.memory_ledger,
-                    )?;
-                    let mut emit_projected = |output: BindingBatch| {
-                        emitted.set(emitted.get().saturating_add(output.len()));
-                        emit(output)
-                    };
-                    for binding in batch {
-                        projected.reserve_before_allocation()?;
-                        let mut values = BTreeMap::new();
-                        for item in items {
-                            let value = project_value(item, catalog, &binding)?;
-                            insert_projected_value(&mut values, &item.name, value);
-                        }
-                        projected.push(Binding {
-                            values,
-                            nodes: binding.nodes,
-                            relationships: binding.relationships,
-                        });
-                        if projected.is_full()
+                        if !projected.is_empty()
                             && projected.emit(&mut emit_projected)? == BatchControl::Stop
                         {
                             return Ok(BatchControl::Stop);
                         }
-                    }
-                    if !projected.is_empty()
-                        && projected.emit(&mut emit_projected)? == BatchControl::Stop
-                    {
-                        return Ok(BatchControl::Stop);
-                    }
-                    Ok(if execution_limit.is_reached(emitted.get()) {
-                        BatchControl::Stop
-                    } else {
-                        BatchControl::Continue
-                    })
-                },
-            )
+                        Ok(if execution_limit.is_reached(emitted.get()) {
+                            BatchControl::Stop
+                        } else {
+                            BatchControl::Continue
+                        })
+                    },
+                )
+            })
         }
         PhysicalPlan::LimitExec {
             offset,
             limit,
             input,
         } => {
-            let skipped = Cell::new(0usize);
-            let emitted = Cell::new(0usize);
-            let output_cap = match (limit, execution_limit.output_rows) {
-                (Some(limit), Some(parent)) => (*limit).min(parent),
-                (Some(limit), None) => *limit,
-                (None, Some(parent)) => parent,
-                (None, None) => usize::MAX,
-            };
-            execute_prepared_binding_batches(
-                BatchPlanRef::descendant(input),
-                context,
-                ExecutionLimit {
-                    output_rows: Some(offset.saturating_add(output_cap)),
-                },
-                &mut |batch| {
-                    let mut output = TransformBatchBuilder::new(
-                        "LimitExec",
-                        context.memory.batch_rows.get(),
-                        context.memory.batch_payload_bytes,
-                        context.memory_ledger,
-                    )?;
-                    let mut emit_output = |batch: BindingBatch| {
-                        emitted.set(emitted.get().saturating_add(batch.len()));
-                        emit(batch)
-                    };
-                    for binding in batch {
-                        if skipped.get() < *offset {
-                            skipped.set(skipped.get().saturating_add(1));
-                            continue;
+            dispatch.supported(|context, execution_limit, emit| {
+                let skipped = Cell::new(0usize);
+                let emitted = Cell::new(0usize);
+                let output_cap = match (limit, execution_limit.output_rows) {
+                    (Some(limit), Some(parent)) => (*limit).min(parent),
+                    (Some(limit), None) => *limit,
+                    (None, Some(parent)) => parent,
+                    (None, None) => usize::MAX,
+                };
+                execute_prepared_binding_batches(
+                    BatchPlanRef::descendant(input),
+                    context,
+                    ExecutionLimit {
+                        output_rows: Some(offset.saturating_add(output_cap)),
+                    },
+                    &mut |batch| {
+                        let mut output = TransformBatchBuilder::new(
+                            "LimitExec",
+                            context.memory.batch_rows.get(),
+                            context.memory.batch_payload_bytes,
+                            context.memory_ledger,
+                        )?;
+                        let mut emit_output = |batch: BindingBatch| {
+                            emitted.set(emitted.get().saturating_add(batch.len()));
+                            emit(batch)
+                        };
+                        for binding in batch {
+                            if skipped.get() < *offset {
+                                skipped.set(skipped.get().saturating_add(1));
+                                continue;
+                            }
+                            if emitted.get() == output_cap {
+                                break;
+                            }
+                            output.reserve_before_allocation()?;
+                            output.push(binding);
+                            if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop
+                            {
+                                return Ok(BatchControl::Stop);
+                            }
                         }
-                        if emitted.get() == output_cap {
-                            break;
-                        }
-                        output.reserve_before_allocation()?;
-                        output.push(binding);
-                        if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop
-                        {
+                        if !output.is_empty() && output.emit(&mut emit_output)? == BatchControl::Stop {
                             return Ok(BatchControl::Stop);
                         }
-                    }
-                    if !output.is_empty() && output.emit(&mut emit_output)? == BatchControl::Stop {
-                        return Ok(BatchControl::Stop);
-                    }
-                    Ok(if emitted.get() == output_cap {
-                        BatchControl::Stop
-                    } else {
-                        BatchControl::Continue
-                    })
-                },
-            )
+                        Ok(if emitted.get() == output_cap {
+                            BatchControl::Stop
+                        } else {
+                            BatchControl::Continue
+                        })
+                    },
+                )
+            })
         }
         PhysicalPlan::TopNExec {
             items,
             offset,
             limit,
             input,
-        } => stream_top_n_batches(
-            input,
-            items,
-            *offset,
-            *limit,
-            context,
-            execution_limit,
-            emit,
-        ),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_top_n_batches(
+                    input,
+                    items,
+                    *offset,
+                    *limit,
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::SortExec { items, input } => {
-            stream_sort_batches(input, items, context, execution_limit, emit)
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_sort_batches(input, items, context, execution_limit, emit)
+            })
         }
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
             input,
-        } => stream_aggregate_batches(input, group_keys, items, context, execution_limit, emit),
+        } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_aggregate_batches(input, group_keys, items, context, execution_limit, emit)
+            })
+        }
         PhysicalPlan::DistinctExec { input } => {
-            stream_distinct_batches(input, context, execution_limit, emit)
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_distinct_batches(input, context, execution_limit, emit)
+            })
         }
         PhysicalPlan::CreateNodeLabel { .. }
         | PhysicalPlan::CreateRelationshipType { .. }
@@ -1358,9 +1436,7 @@ fn execute_binding_batches_inner(
         | PhysicalPlan::DeleteNode { .. }
         | PhysicalPlan::DeleteRelationship { .. }
         | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
-        | PhysicalPlan::CreateRelationship { .. } => {
-            unreachable!("BatchPlanRef rejected this physical operator")
-        }
+        | PhysicalPlan::CreateRelationship { .. } => dispatch.unsupported(plan),
     }
 }
 
