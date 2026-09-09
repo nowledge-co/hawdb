@@ -18,6 +18,9 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+#[cfg(test)]
+mod document_frequency;
+
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
 const RUN_HEADER: &[u8; 8] = b"SKNLEXR1";
