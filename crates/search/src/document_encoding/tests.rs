@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 // Keep the previous encoder as an independent wire-format oracle.
-fn legacy_encode(document: &SearchDocument) -> String {
+pub(crate) fn legacy_encode(document: &SearchDocument) -> String {
     fn hex(value: &str) -> String {
         value.bytes().map(|byte| format!("{byte:02x}")).collect()
     }
@@ -37,6 +37,9 @@ fn check_encoding(document: &SearchDocument) {
     let expected = legacy_encode(document);
     let encoding = DocumentEncoding::new(document).unwrap();
     assert_eq!(encoding.len(), expected.len());
+    let mut streamed = Vec::new();
+    encoding.write_to(&mut streamed).unwrap();
+    assert_eq!(streamed, expected.as_bytes());
     assert_eq!(encoding.encode().unwrap(), expected);
     assert_eq!(encode_search_document_line(document), expected);
 }
