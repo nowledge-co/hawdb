@@ -34,7 +34,11 @@ fn public_generation_spools_without_record_materialization_and_reopens() {
         writer.spool.as_mut().unwrap().flush().unwrap();
         assert_eq!(fs::read(&writer.spool_path).unwrap(), expected);
     }
+    spool::read_evidence::take_max_request();
     let report = writer.finish().unwrap();
+    let largest_read = spool::read_evidence::take_max_request();
+    assert!(largest_read > 0);
+    assert!(largest_read <= 8192, "unbounded spool read: {largest_read}");
     assert_eq!(report.documents_digest, digest.finish());
     assert_eq!(report.spool_bytes, expected.len() as u64);
     assert_eq!(report.document_count, documents.len());

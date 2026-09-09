@@ -100,6 +100,23 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Exercise streamed frame parsing independently of the ordinary search matrix.
+rust_test(
+    name = "skein_search_spool_decoding_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "out_of_core::generation_writer::spool::decoding::tests::spool_decoding_differential_campaign",
+        "--exact",
+        "--ignored",
+    ],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 # Keep optional-capability contracts executable without enabling every feature.
 [
     rust_test(

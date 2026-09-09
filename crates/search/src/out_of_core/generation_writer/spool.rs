@@ -1,6 +1,8 @@
+#[cfg(test)]
+use crate::checksum_bytes;
 use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
-use crate::{checksum_bytes, decode_search_document_line, SearchDocument};
+use crate::SearchDocument;
 use skein_integrity::Crc32cHasher;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
@@ -53,6 +55,8 @@ pub(super) fn write_frame(
 #[cfg(test)]
 mod write_tests;
 
+mod decoding;
+
 pub(super) struct SpoolSource {
     pub(super) path: PathBuf,
     pub(super) document_count: usize,
@@ -100,25 +104,8 @@ impl SpoolSource {
                     "search generation spool record {ordinal} length exceeds usize"
                 ))
             })?;
-            let mut record = vec![0u8; length];
-            reader.read_exact(&mut record).map_err(|error| {
-                SkeinError::Storage(format!(
-                    "search generation spool record {ordinal} is truncated: {error}"
-                ))
-            })?;
             let expected_checksum = u64::from_le_bytes(raw_checksum);
-            let actual_checksum = checksum_bytes(&record);
-            if actual_checksum != expected_checksum {
-                return Err(SkeinError::Storage(format!(
-                    "search generation spool record {ordinal} checksum mismatch"
-                )));
-            }
-            let line = std::str::from_utf8(&record).map_err(|error| {
-                SkeinError::Storage(format!(
-                    "search generation spool record {ordinal} is not UTF-8: {error}"
-                ))
-            })?;
-            let document = decode_search_document_line(line)?;
+            let document = decoding::read_frame(&mut reader, length, expected_checksum, ordinal)?;
             if previous_id
                 .as_ref()
                 .is_some_and(|previous| previous >= &document.id)
@@ -178,6 +165,7 @@ pub(super) mod read_evidence {
 
     thread_local! {
         static READS: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
+        static MAX_REQUEST: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(super) struct TrackedFile(File);
@@ -194,8 +182,13 @@ pub(super) mod read_evidence {
         READS.with(|reads| reads.replace((0, 0)))
     }
 
+    pub(in super::super) fn take_max_request() -> usize {
+        MAX_REQUEST.replace(0)
+    }
+
     impl Read for TrackedFile {
         fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            MAX_REQUEST.set(MAX_REQUEST.get().max(output.len()));
             let count = self.0.read(output)?;
             READS.with(|reads| {
                 let (opens, bytes) = reads.get();

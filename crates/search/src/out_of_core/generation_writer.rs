@@ -142,7 +142,7 @@ pub struct SearchOutOfCoreGenerationBuildReport {
 ///
 /// Documents must be pushed in strictly increasing UTF-8 ID order. The writer
 /// encodes spool records with fixed-size scratch while retaining the owned input.
-/// Spool decoding still materializes one encoded record and its decoded document;
+/// Spool decoding uses fixed-size input scratch and retains one decoded document;
 /// artifact production retains at most one descriptor segment. The descriptor itself
 /// remains bounded by `max_descriptor_working_bytes` because the serving reader
 /// must retain that range index.

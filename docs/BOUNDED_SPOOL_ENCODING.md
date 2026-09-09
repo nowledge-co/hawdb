@@ -30,6 +30,39 @@ seek, platform-specific I/O or io_uring is introduced.
 
 ## Verification
 
+### Read-side decoding
+
+Spool scanning decodes admitted frames with a fixed 8192-byte input buffer and
+incremental CRC32C. Hex fields are decoded directly into their owned output;
+embedding values are parsed one token at a time. Reads never consume bytes past
+the admitted logical frame, even when the outer buffered file reader prefetches.
+Length admission, full-frame checksum validation and strict document ordering
+precede each consumer callback. A syntax error still drains/checks the admitted
+frame, so it cannot hide a checksum mismatch or a later truncated/failed read.
+Invalid hex/UTF-8 returns a storage error, not a byte-offset string-slicing panic.
+
+Valid records retain the materializing decoder's semantics: exact field count,
+optional single final newline, lowercase/uppercase hex and the old two-byte
+radix parser's leading-plus forms, empty embedding as None, f32 parsing, empty
+metadata keys/values and duplicate-key last-wins behavior. No new token limit is
+imposed on noncanonical numeric spellings. A single long numeric token remains
+a resident temporary, bounded by existing frame admission. Decoded field/vector
+capacity and metadata map overhead also remain resident; the fixed input buffer
+does not represent total decoder memory.
+
+The old materializing decoder remains an independent valid-input oracle.
+Read-side regressions cover every short-record split/truncation, interrupted and
+short reads, all small-record I/O failure boundaries, malformed fields with valid
+checksums, admission at exact/one-short sizes, oversized length headers, no
+next-frame consumption, no invalid-row callback, and active-generation retention.
+The explicit 512-case local decoding campaign adds Unicode and buffer-boundary
+inputs, f32 bit patterns, ASCII grammar mutations, invalid UTF-8 and injected
+I/O errors. Whole-generation tests retain complete artifact, update/delete,
+reopen and hydration coverage. Bounded read requests are observed on the real
+spool reader; they are not a whole-process allocation measurement.
+
+### Write-side encoding
+
 The pre-existing independent legacy encoder remains the byte oracle, including
 its 1024 seeded cases, Unicode, separators, metadata and floating-point edges.
 New checks cover bounded output chunks, materialization-attempt counters,
@@ -55,14 +88,15 @@ bazel test --nocache_test_results \
 
 ## Remaining #392 scope
 
-This change removes the spool writer's full encoded String; it does not remove
-the owned `SearchDocument`, reader-side encoded/decoded buffers, other artifact
-encoders, analyzer scratch, mini-delta state or host-owned memory. The scratch
+Spool writes and reads no longer retain a complete encoded record. This does not
+remove the owned `SearchDocument`, decoded fields and collection capacity,
+single-number parser scratch, other artifact encoders/decoders, analyzer
+scratch, mini-delta state or host-owned memory. The scratch
 and attempt checks are not a whole-process allocator/RSS proof. The existing
 `peak_record_bytes` report still means the largest logical encoded record, not
 resident memory. Public API and persisted format contracts are unchanged.
 
 The 4 MiB source default remains until replacement safeguards cover the complete
 declared lifecycle. Shared resource governance, adaptive profiles, streaming
-source/decoder work and cancellation remain tracked by #392/#186. #325's
+source and other decoder work and cancellation remain tracked by #392/#186. #325's
 long-token policy and #206's complete-corpus qualification remain independent.
