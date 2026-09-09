@@ -13,6 +13,9 @@ use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::Instant;
 
+#[path = "relational_index_access/persisted.rs"]
+mod persisted;
+
 const DATASET_ROWS: [usize; 4] = [1_000, 10_000, 50_000, 100_000];
 const SAMPLES: usize = 31;
 const KEYSET_PAGE_ROWS: usize = 25;
@@ -21,12 +24,14 @@ const TARGET_THREAD: &str = "thread-target";
 const DISTRACTOR_THREAD: &str = "thread-distractor";
 
 fn main() {
+    let persisted = persisted::measure();
     let results = DATASET_ROWS.into_iter().map(measure).collect::<Vec<_>>();
     println!(
         "relational_index_access {}",
         json!({
             "samples": SAMPLES,
             "results": results,
+            "persisted": persisted,
         })
     );
 }

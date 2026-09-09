@@ -724,9 +724,17 @@ one target equality prefix, plus an equally sized distractor prefix. It reports
 P50/P95/P99 latency and visited-row counts for bounded 25-row forward and
 backward pages at first, middle, and deep exclusive cursors. The output includes
 target, total, matched, and one-column-prefix cardinalities, selected index,
-selected equality-prefix length, speedup, and process RSS delta. This is an
-in-memory access-path microbenchmark; it does not qualify file-backed cache,
-page-fault, concurrent writer, or end-to-end SQL behavior.
+selected equality-prefix length, speedup, and process RSS delta. These legacy
+results are an in-memory access-path microbenchmark; they do not qualify
+file-backed cache, page-fault, concurrent writer, or end-to-end SQL behavior.
+
+The benchmark's separate `persisted` result compares complete, equal-result SQL
+scans and point/prefix reads after checkpoint/reopen, across payload widths and
+clustered/dispersed membership. It records first-handle and warm-query timings
+with actual row/index page and cache profiles. The OS page cache is uncontrolled;
+this is not cold-disk or production qualification. See
+[`RELATIONAL_ACCESS_COST_BENCHMARK.md`](../RELATIONAL_ACCESS_COST_BENCHMARK.md)
+for the fixture, assertions, and interpretation limits.
 
 Production qualification still requires the differential SQLite oracle,
 50,000-message and large-source workloads, shadow traffic, and retained green
