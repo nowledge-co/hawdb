@@ -1,5 +1,8 @@
 use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
-use super::{document_tokens, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
+use super::{
+    document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument,
+    TokenOccurrence, BM25_B, BM25_K1,
+};
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_integrity::Crc32cHasher as Digest;
@@ -11,6 +14,9 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[cfg(test)]
+mod analysis_tests;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
@@ -490,45 +496,114 @@ fn analyze_delta_document(
             document.id, config.max_document_source_bytes
         )));
     }
-    let tokens = document_tokens(document, analyzer);
-    if tokens.len() > config.max_document_tokens.get() {
-        return Err(SkeinError::Storage(format!(
-            "lexical document {} produced {} tokens, exceeding {}",
-            document.id,
-            tokens.len(),
-            config.max_document_tokens
-        )));
+    let mut accumulator = DocumentAnalysis::new(&document.id, config)?;
+    for (field, (text, weight)) in document_token_fields(document).enumerate() {
+        let field = u8::try_from(field).expect("document analysis has at most six fields");
+        visit_token_list(text, analyzer, |term, occurrence| {
+            accumulator.push(term, occurrence, field, weight)
+        })?;
     }
-    let document_len = u32::try_from(tokens.len())
-        .map_err(|_| SkeinError::Storage("lexical document length exceeds u32".to_string()))?;
-    let mut frequencies = BTreeMap::<String, u32>::new();
-    let mut resident_bytes = document.id.len() as u64 + 64;
-    for term in tokens {
-        if term.len() as u64 > config.max_term_bytes.get() {
+    Ok(accumulator.finish())
+}
+
+struct AnalyzedTerm {
+    frequency: u32,
+    last_field: u8,
+}
+
+struct DocumentAnalysis<'a> {
+    document_id: &'a str,
+    config: LexicalProjectionConfig,
+    document_len: u32,
+    frequencies: BTreeMap<String, AnalyzedTerm>,
+    resident_bytes: u64,
+}
+
+impl<'a> DocumentAnalysis<'a> {
+    fn new(document_id: &'a str, config: LexicalProjectionConfig) -> Result<Self> {
+        let analysis = Self {
+            document_id,
+            config,
+            document_len: 0,
+            frequencies: BTreeMap::new(),
+            resident_bytes: document_id.len() as u64 + 64,
+        };
+        analysis.admit_map_bytes(analysis.resident_bytes, 0)?;
+        Ok(analysis)
+    }
+
+    fn push(
+        &mut self,
+        term: String,
+        occurrence: TokenOccurrence,
+        field: u8,
+        weight: usize,
+    ) -> Result<()> {
+        if term.len() as u64 > self.config.max_term_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical term uses {} bytes, exceeding {}",
                 term.len(),
-                config.max_term_bytes
+                self.config.max_term_bytes
             )));
         }
-        if !frequencies.contains_key(&term) {
-            resident_bytes = resident_bytes.saturating_add(term.len() as u64 + 32);
-            if resident_bytes > config.build_memory_bytes.get() {
-                return Err(SkeinError::Storage(format!(
-                    "lexical document {} requires more than {} analyzer bytes",
-                    document.id, config.build_memory_bytes
-                )));
-            }
+        let previous = self.frequencies.get(&term);
+        if occurrence == TokenOccurrence::UniqueInField
+            && previous.is_some_and(|entry| entry.last_field == field)
+        {
+            return Ok(());
         }
-        let frequency = frequencies.entry(term).or_default();
-        *frequency = frequency.saturating_add(1);
+        let required_tokens = u64::from(self.document_len).saturating_add(weight as u64);
+        if required_tokens > self.config.max_document_tokens.get() as u64 {
+            return Err(SkeinError::Storage(format!(
+                "lexical document {} produced at least {required_tokens} tokens, exceeding {}",
+                self.document_id, self.config.max_document_tokens,
+            )));
+        }
+        let document_len = u32::try_from(required_tokens)
+            .map_err(|_| SkeinError::Storage("lexical document length exceeds u32".to_string()))?;
+        if previous.is_none() {
+            let required_bytes = self.resident_bytes.saturating_add(term.len() as u64 + 32);
+            self.admit_map_bytes(required_bytes, self.frequencies.len() + 1)?;
+            self.resident_bytes = required_bytes;
+        }
+        // One field marker per distinct term preserves phrase uniqueness without
+        // retaining a separate document-wide token sequence or seen-term set.
+        let entry = self.frequencies.entry(term).or_insert(AnalyzedTerm {
+            frequency: 0,
+            last_field: field,
+        });
+        entry.frequency = entry.frequency.saturating_add(weight as u32);
+        entry.last_field = field;
+        self.document_len = document_len;
+        Ok(())
     }
-    Ok(DeltaDocument {
-        document_len,
-        frequencies,
-        resident_bytes,
-        base: None,
-    })
+
+    fn admit_map_bytes(&self, resident_bytes: u64, terms: usize) -> Result<()> {
+        let marker_bytes =
+            (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
+        let required_bytes =
+            resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes));
+        if required_bytes > self.config.build_memory_bytes.get() {
+            return Err(SkeinError::Storage(format!(
+                "lexical document {} requires more than {} analyzer bytes",
+                self.document_id, self.config.build_memory_bytes,
+            )));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> DeltaDocument {
+        DeltaDocument {
+            document_len: self.document_len,
+            frequencies: self
+                .frequencies
+                .into_iter()
+                .map(|(term, entry)| (term, entry.frequency))
+                .collect(),
+            resident_bytes: self.resident_bytes,
+            base: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

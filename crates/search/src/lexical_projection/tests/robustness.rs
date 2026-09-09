@@ -232,7 +232,21 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
     let manifest = fs::read(fixture.root.join(MANIFEST_FILE)).unwrap();
     let artifact = fs::read(fixture.root.join(artifact_file(1))).unwrap();
     let base = LexicalProjectionConfig::default();
+    // Keep the 144-byte admission limit and force multiple posting runs without
+    // failing earlier on the newly accounted per-term field markers.
+    let spill_documents = ["a", "b", "c"]
+        .into_iter()
+        .map(|id| (id.to_string(), document(id, "red", "blue")))
+        .collect::<BTreeMap<_, _>>();
     let limits = [
+        (
+            LexicalProjectionConfig {
+                build_memory_bytes: NonZeroU64::new(144).unwrap(),
+                ..base
+            },
+            "analyzer bytes",
+            &fixture.documents,
+        ),
         (
             LexicalProjectionConfig {
                 build_memory_bytes: NonZeroU64::new(144).unwrap(),
@@ -240,6 +254,7 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
                 ..base
             },
             "spill runs",
+            &spill_documents,
         ),
         (
             LexicalProjectionConfig {
@@ -247,6 +262,7 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
                 ..base
             },
             "spill bytes",
+            &fixture.documents,
         ),
         (
             LexicalProjectionConfig {
@@ -254,6 +270,7 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
                 ..base
             },
             "fan-in",
+            &fixture.documents,
         ),
         (
             LexicalProjectionConfig {
@@ -261,9 +278,10 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
                 ..base
             },
             "byte block",
+            &fixture.documents,
         ),
     ];
-    for (config, expected_error) in limits {
+    for (config, expected_error, documents) in limits {
         let error = LexicalProjectionWriter::new(config)
             .write(
                 &fixture.root,
@@ -271,7 +289,7 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
                 Some(7),
                 11,
                 13,
-                fixture.documents.values(),
+                documents.values(),
                 &fixture.analyzer,
             )
             .unwrap_err();
