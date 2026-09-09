@@ -1,20 +1,12 @@
-//! Connected-prefix enumeration for relational left-deep inner joins.
+//! Relational inner-join graph contracts and validation.
 
 use crate::{
-    relational_join_cost::{
-        estimate_relational_access_cost, estimate_relational_probe_join_cost,
-        RelationalJoinCardinality,
-    },
-    Distribution, GroupId, Memo, MemoryBudgetClass, PhysicalProperties, PlanCost,
-    PlanCostBreakdown, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RequiredProperties, ScanPruningSupport,
+    Distribution, MemoryBudgetClass, PhysicalProperties, PlanCost, PlanCostBreakdown,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind, RequiredProperties,
+    ScanPruningSupport,
 };
 use skein_expression::{BindingId, BindingSet};
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    fmt,
-};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelationalJoinPredicateId(u32);
@@ -182,22 +174,6 @@ impl RelationalJoinPlan {
             .chain(self.steps.iter().map(|step| step.binding))
             .collect()
     }
-
-    fn stable_key(&self) -> String {
-        let mut key = format!(
-            "{}:{}",
-            self.base_binding.get(),
-            self.base_access_path.descriptor.name
-        );
-        for step in &self.steps {
-            key.push_str(&format!(
-                "/{}:{}",
-                step.binding.get(),
-                step.access_path.descriptor.name
-            ));
-        }
-        key
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,94 +295,13 @@ impl fmt::Display for RelationalJoinEnumerationError {
 
 impl Error for RelationalJoinEnumerationError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RelationalJoinExpression {
-    Relation(BindingId),
-    InnerJoin {
-        left: GroupId,
-        right: BindingId,
-        activated_predicates: Vec<RelationalJoinPredicateId>,
-    },
-}
-
-struct RelationalJoinMemo {
-    memo: Memo<RelationalJoinExpression>,
-    groups: BTreeMap<BindingSet, GroupId>,
-    group_bindings: BTreeMap<GroupId, BindingSet>,
-    expression_count: usize,
-}
-
-impl RelationalJoinMemo {
-    fn new() -> Self {
-        Self {
-            memo: Memo::default(),
-            groups: BTreeMap::new(),
-            group_bindings: BTreeMap::new(),
-            expression_count: 0,
-        }
-    }
-
-    fn add(
-        &mut self,
-        bindings: BindingSet,
-        expression: RelationalJoinExpression,
-        config: RelationalJoinEnumerationConfig,
-    ) -> Result<Option<GroupId>, RelationalJoinEnumerationError> {
-        let required_expressions = self.expression_count.saturating_add(1);
-        if required_expressions > config.max_expressions {
-            return Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
-                required_expressions,
-                max_expressions: config.max_expressions,
-            });
-        }
-        let inserted = if let Some(group) = self.groups.get(&bindings).copied() {
-            self.memo
-                .group_mut(group)
-                .expect("join memo group should exist")
-                .push(expression);
-            None
-        } else {
-            let required_groups = self.memo.group_count().saturating_add(1);
-            if required_groups > config.max_groups {
-                return Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
-                    required_groups,
-                    max_groups: config.max_groups,
-                });
-            }
-            let group = self.memo.insert_group(expression);
-            self.groups.insert(bindings.clone(), group);
-            self.group_bindings.insert(group, bindings);
-            Some(group)
-        };
-        self.expression_count = required_expressions;
-        Ok(inserted)
-    }
-}
-
 pub fn enumerate_relational_inner_joins(
     graph: &RelationalJoinGraph,
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<RelationalInnerJoinEnumeration, RelationalJoinEnumerationError> {
     validate_graph(graph)?;
-    let memo = build_join_memo(graph, config)?;
-    let all_bindings: BindingSet = graph
-        .relations
-        .iter()
-        .map(|relation| relation.binding)
-        .collect();
-    let root = *memo
-        .groups
-        .get(&all_bindings)
-        .ok_or(RelationalJoinEnumerationError::Disconnected)?;
-    let mut best_plans = HashMap::new();
-    let plan = best_plan(graph, &memo, root, required_properties, &mut best_plans)
-        .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
-    Ok(RelationalInnerJoinEnumeration {
-        plan,
-        memo_groups: memo.memo.group_count(),
-        memo_expressions: memo.expression_count,
-    })
+    crate::relational_join_hypergraph::enumerate_inner_graph(graph, required_properties, config)
 }
 
 fn validate_graph(graph: &RelationalJoinGraph) -> Result<(), RelationalJoinEnumerationError> {
@@ -506,222 +401,6 @@ fn validate_graph(graph: &RelationalJoinGraph) -> Result<(), RelationalJoinEnume
     Ok(())
 }
 
-fn build_join_memo(
-    graph: &RelationalJoinGraph,
-    config: RelationalJoinEnumerationConfig,
-) -> Result<RelationalJoinMemo, RelationalJoinEnumerationError> {
-    let mut memo = RelationalJoinMemo::new();
-    let mut bindings = graph
-        .relations
-        .iter()
-        .map(|relation| relation.binding)
-        .collect::<Vec<_>>();
-    bindings.sort_unstable();
-    let mut frontier = Vec::new();
-    for binding in &bindings {
-        if let Some(group) = memo.add(
-            (*binding).into(),
-            RelationalJoinExpression::Relation(*binding),
-            config,
-        )? {
-            frontier.push(group);
-        }
-    }
-
-    // A left-deep join has a connected prefix and a singleton complement.
-    // Generate only complements that activate a predicate, rather than all
-    // binding subsets. For a hyperedge, every other binding must already be
-    // available; merely intersecting the prefix would admit a Cartesian step.
-    while !frontier.is_empty() {
-        let mut next_frontier = Vec::new();
-        for left in frontier {
-            let left_bindings = memo.group_bindings[&left].clone();
-            let mut complements: BTreeMap<BindingId, Vec<RelationalJoinPredicateId>> =
-                BTreeMap::new();
-            for predicate in &graph.predicates {
-                let mut missing = predicate
-                    .bindings
-                    .iter()
-                    .filter(|binding| !left_bindings.contains(*binding));
-                if let Some(right) = missing.next()
-                    && missing.next().is_none()
-                {
-                    complements.entry(right).or_default().push(predicate.id);
-                }
-            }
-            for (right, activated_predicates) in complements {
-                let mut subset = left_bindings.clone();
-                subset.insert(right);
-                if let Some(group) = memo.add(
-                    subset,
-                    RelationalJoinExpression::InnerJoin {
-                        left,
-                        right,
-                        activated_predicates,
-                    },
-                    config,
-                )? {
-                    // A group is expanded once; its alternative expressions
-                    // share exactly the same available bindings.
-                    next_frontier.push(group);
-                }
-            }
-        }
-        frontier = next_frontier;
-    }
-    Ok(memo)
-}
-
-fn best_plan(
-    graph: &RelationalJoinGraph,
-    memo: &RelationalJoinMemo,
-    group: GroupId,
-    required_properties: &RequiredProperties,
-    cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalJoinPlan>>,
-) -> Option<RelationalJoinPlan> {
-    let key = (group, required_properties.clone());
-    if let Some(plan) = cache.get(&key) {
-        return plan.clone();
-    }
-    let expressions = memo
-        .memo
-        .group(group)
-        .expect("join memo group should exist")
-        .expressions();
-    let mut selected = None;
-    for expression in expressions {
-        let candidate = match expression {
-            RelationalJoinExpression::Relation(binding) => {
-                best_base_plan(relation(graph, *binding), required_properties)
-            }
-            RelationalJoinExpression::InnerJoin {
-                left,
-                right,
-                activated_predicates,
-            } => best_join_plan(
-                graph,
-                memo,
-                *left,
-                *right,
-                activated_predicates,
-                required_properties,
-                cache,
-            ),
-        };
-        if let Some(candidate) = candidate
-            && selected
-                .as_ref()
-                .is_none_or(|current| plan_is_better(&candidate, current))
-        {
-            selected = Some(candidate);
-        }
-    }
-    cache.insert(key, selected.clone());
-    selected
-}
-
-fn best_base_plan(
-    relation: &RelationalJoinRelation,
-    required_properties: &RequiredProperties,
-) -> Option<RelationalJoinPlan> {
-    relation
-        .access_paths
-        .iter()
-        .filter(|access| access.supports_base())
-        .filter(|access| access.properties.satisfies(required_properties))
-        .map(|access| RelationalJoinPlan {
-            base_binding: relation.binding,
-            base_access_path: access.clone(),
-            steps: Vec::new(),
-            cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
-            properties: access.properties.clone(),
-        })
-        .min_by(compare_plans)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn best_join_plan(
-    graph: &RelationalJoinGraph,
-    memo: &RelationalJoinMemo,
-    left: GroupId,
-    right: BindingId,
-    activated_predicates: &[RelationalJoinPredicateId],
-    required_properties: &RequiredProperties,
-    cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalJoinPlan>>,
-) -> Option<RelationalJoinPlan> {
-    let mut left_plan = best_plan(graph, memo, left, required_properties, cache)?;
-    let left_bindings = memo
-        .group_bindings
-        .get(&left)
-        .expect("join memo tracks bindings for every group");
-    let right_relation = relation(graph, right);
-    let access = right_relation
-        .access_paths
-        .iter()
-        .filter(|access| {
-            access.supports_probe() && access.required_bindings.is_subset(left_bindings)
-        })
-        .min_by(|left, right| compare_access_paths(left, right))?
-        .clone();
-    left_plan.cost_breakdown = estimate_relational_probe_join_cost(
-        left_plan.cost_breakdown,
-        access.descriptor.estimated_rows,
-        RelationalJoinCardinality::Inner,
-    );
-    left_plan.steps.push(RelationalJoinStep {
-        binding: right,
-        access_path: access,
-        activated_predicates: activated_predicates.to_vec(),
-    });
-    Some(left_plan)
-}
-
-fn relation(graph: &RelationalJoinGraph, binding: BindingId) -> &RelationalJoinRelation {
-    graph
-        .relations
-        .iter()
-        .find(|relation| relation.binding == binding)
-        .expect("validated join graph contains every memo binding")
-}
-
-fn plan_is_better(candidate: &RelationalJoinPlan, current: &RelationalJoinPlan) -> bool {
-    compare_plans(candidate, current).is_lt()
-}
-
-fn compare_plans(left: &RelationalJoinPlan, right: &RelationalJoinPlan) -> std::cmp::Ordering {
-    left.cost_breakdown
-        .cost
-        .cmp(&right.cost_breakdown.cost)
-        .then_with(|| {
-            left.cost_breakdown
-                .estimated_rows
-                .cmp(&right.cost_breakdown.estimated_rows)
-        })
-        .then_with(|| left.stable_key().cmp(&right.stable_key()))
-}
-
-fn compare_access_paths(
-    left: &RelationalJoinAccessPath,
-    right: &RelationalJoinAccessPath,
-) -> std::cmp::Ordering {
-    left.descriptor
-        .estimated_rows
-        .cmp(&right.descriptor.estimated_rows)
-        .then_with(|| {
-            right
-                .descriptor
-                .unique_point
-                .cmp(&left.descriptor.unique_point)
-        })
-        .then_with(|| {
-            right
-                .descriptor
-                .equality_prefix_len
-                .cmp(&left.descriptor.equality_prefix_len)
-        })
-        .then_with(|| left.descriptor.name.cmp(&right.descriptor.name))
-}
-
 fn access_path_properties(descriptor: &RelationalAccessPathDescriptor) -> PhysicalProperties {
     let ordering_start = descriptor.equality_prefix_len;
     let ordering_end = ordering_start
@@ -745,9 +424,6 @@ fn access_path_properties(descriptor: &RelationalAccessPathDescriptor) -> Physic
         ..PhysicalProperties::default()
     }
 }
-
-#[cfg(test)]
-mod connected_tests;
 
 #[cfg(test)]
 mod tests {

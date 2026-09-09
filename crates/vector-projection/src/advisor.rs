@@ -10,6 +10,9 @@
 //! shadow-build-and-rollback safety net this crate does not implement yet;
 //! wiring one up is expected to be a separate, later change once this
 //! skeleton's recommendations have been observed against real workloads.
+//! The exports are retained as experiments under the
+//! [experimental API roadmap](crate#experimental-apis); they do not certify
+//! artifact identity, recall, resource admission, or production readiness.
 //!
 //! `WorkloadSample` is a plain, dependency-free summary a caller
 //! populates from whatever signals it already has -- a `DeltaBuffer`'s
@@ -20,6 +23,7 @@
 
 /// Aggregated signals about how a projection has actually been queried,
 /// fed to `IndexAdvisor::recommend`.
+/// See the [experimental API roadmap](crate#experimental-apis).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorkloadSample {
     /// Total document count across base and any un-indexed delta.
@@ -61,6 +65,7 @@ impl WorkloadSample {
     }
 }
 
+/// An [experimental recommendation](crate#experimental-apis), not a work request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexAction {
     /// Current index shape already matches the observed workload.
@@ -74,6 +79,7 @@ pub enum IndexAction {
     ConsiderBuildingHnsw,
 }
 
+/// Advice and heuristic confidence; see the [roadmap](crate#experimental-apis).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexRecommendation {
     pub action: IndexAction,
@@ -86,6 +92,8 @@ pub struct IndexRecommendation {
 
 /// Offline/explain: given one workload sample, decide what -- if anything
 /// -- about the index shape should change, and why.
+/// See the [experimental API roadmap](crate#experimental-apis); fixture agreement
+/// is not evidence that the advice improves an embedded workload.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexAdvisor {
     /// Delta fraction at or above which folding is recommended. Defaults
@@ -181,6 +189,7 @@ impl Default for IndexAdvisor {
 /// future auto-apply phase would gate on `is_eligible` returning true
 /// *and* a shadow-build-and-rollback step this skeleton does not
 /// implement.
+/// See the [experimental API roadmap](crate#experimental-apis).
 #[derive(Debug, Clone, Copy)]
 pub struct AutoIndexPolicy {
     min_confidence: f32,
@@ -205,12 +214,16 @@ impl Default for AutoIndexPolicy {
 
 /// Query-time path selection among indexes the caller says already exist.
 /// Never builds or rebuilds anything.
+/// See the [experimental API roadmap](crate#experimental-apis). `ExactScan`
+/// names exhaustive candidate scanning, not a guarantee of raw-vector scores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryPath {
     ExactScan,
     Hnsw,
 }
 
+/// An experimental availability selector, not the embedded query planner.
+/// See the [roadmap](crate#experimental-apis) for integration prerequisites.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexPlanner;
 

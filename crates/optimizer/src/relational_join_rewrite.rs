@@ -1,17 +1,13 @@
 //! CD-C legality analysis and memo-backed join rewrite enumeration.
 
 use crate::{
-    relational_join_cost::{
-        estimate_relational_access_cost, estimate_relational_probe_join_cost,
-        RelationalJoinCardinality,
-    },
-    GroupId, Memo, PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
+    PhysicalProperties, PlanCost, PlanCostBreakdown, RelationalJoinAccessPath,
     RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinPredicateId,
     RelationalJoinRelation, RequiredProperties,
 };
 use skein_expression::{prove_null_rejecting, BindingId, BindingSet, BoundPredicate};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
 };
@@ -168,23 +164,6 @@ impl RelationalJoinRewritePlan {
         std::iter::once(self.base_binding)
             .chain(self.steps.iter().map(|step| step.binding))
             .collect()
-    }
-
-    fn stable_key(&self) -> String {
-        let mut key = format!(
-            "{}:{}",
-            self.base_binding.get(),
-            self.base_access_path.descriptor.name
-        );
-        for step in &self.steps {
-            key.push_str(&format!(
-                "/{}:{}:{}",
-                step.operator_id.get(),
-                step.binding.get(),
-                step.access_path.descriptor.name
-            ));
-        }
-        key
     }
 }
 
@@ -516,78 +495,6 @@ const fn is_right_asscom(
         && matches!(upper, RelationalJoinOperatorKind::Inner)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct RelationalJoinSemanticKey {
-    bindings: BindingSet,
-    applied_operators: BTreeSet<RelationalJoinOperatorId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RewriteExpression {
-    Relation(BindingId),
-    Join {
-        left: GroupId,
-        right: BindingId,
-        operator_id: RelationalJoinOperatorId,
-        operator_kind: RelationalJoinOperatorKind,
-        predicate_ids: Vec<RelationalJoinPredicateId>,
-    },
-}
-
-struct RewriteMemo {
-    memo: Memo<RewriteExpression>,
-    groups: BTreeMap<RelationalJoinSemanticKey, GroupId>,
-    keys: BTreeMap<GroupId, RelationalJoinSemanticKey>,
-    expression_count: usize,
-}
-
-impl RewriteMemo {
-    fn new() -> Self {
-        Self {
-            memo: Memo::default(),
-            groups: BTreeMap::new(),
-            keys: BTreeMap::new(),
-            expression_count: 0,
-        }
-    }
-
-    fn add(
-        &mut self,
-        key: RelationalJoinSemanticKey,
-        expression: RewriteExpression,
-        config: RelationalJoinEnumerationConfig,
-    ) -> Result<(), RelationalJoinRewriteError> {
-        let required_expressions = self.expression_count.saturating_add(1);
-        if required_expressions > config.max_expressions {
-            return Err(RelationalJoinEnumerationError::ExpressionBudgetExceeded {
-                required_expressions,
-                max_expressions: config.max_expressions,
-            }
-            .into());
-        }
-        if let Some(group) = self.groups.get(&key).copied() {
-            self.memo
-                .group_mut(group)
-                .expect("rewrite memo group should exist")
-                .push(expression);
-        } else {
-            let required_groups = self.memo.group_count().saturating_add(1);
-            if required_groups > config.max_groups {
-                return Err(RelationalJoinEnumerationError::GroupBudgetExceeded {
-                    required_groups,
-                    max_groups: config.max_groups,
-                }
-                .into());
-            }
-            let group = self.memo.insert_group(expression);
-            self.groups.insert(key.clone(), group);
-            self.keys.insert(group, key);
-        }
-        self.expression_count = required_expressions;
-        Ok(())
-    }
-}
-
 pub fn enumerate_relational_join_rewrites(
     problem: &RelationalJoinRewriteProblem,
     required_properties: &RequiredProperties,
@@ -598,25 +505,12 @@ pub fn enumerate_relational_join_rewrites(
         problem.post_join_filter.as_ref(),
     )?;
     validate_problem_relations(problem, &analysis)?;
-    let memo = build_rewrite_memo(problem, &analysis, config)?;
-    let root_key = RelationalJoinSemanticKey {
-        bindings: analysis.root_bindings.clone(),
-        applied_operators: analysis.descriptors.keys().copied().collect(),
-    };
-    let root = memo
-        .groups
-        .get(&root_key)
-        .copied()
-        .ok_or(RelationalJoinRewriteError::NoLegalRewrite)?;
-    let mut cache = HashMap::new();
-    let plan = best_rewrite_plan(problem, &memo, root, required_properties, &mut cache)
-        .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
-    Ok(RelationalJoinRewriteEnumeration {
-        plan,
-        conflict_analysis: analysis,
-        memo_groups: memo.memo.group_count(),
-        memo_expressions: memo.expression_count,
-    })
+    crate::relational_join_hypergraph::enumerate_left_deep_rewrites(
+        problem,
+        analysis,
+        required_properties,
+        config,
+    )
 }
 
 pub(crate) fn validate_problem_relations(
@@ -696,247 +590,6 @@ pub(crate) fn validate_problem_relations(
         }
     }
     Ok(())
-}
-
-fn build_rewrite_memo(
-    problem: &RelationalJoinRewriteProblem,
-    analysis: &RelationalJoinConflictAnalysis,
-    config: RelationalJoinEnumerationConfig,
-) -> Result<RewriteMemo, RelationalJoinRewriteError> {
-    let mut memo = RewriteMemo::new();
-    let mut bindings = problem
-        .relations
-        .iter()
-        .map(|relation| relation.binding)
-        .collect::<Vec<_>>();
-    bindings.sort_unstable();
-    for binding in &bindings {
-        memo.add(
-            RelationalJoinSemanticKey {
-                bindings: (*binding).into(),
-                applied_operators: BTreeSet::new(),
-            },
-            RewriteExpression::Relation(*binding),
-            config,
-        )?;
-    }
-
-    for size in 2..=bindings.len() {
-        let prior_groups = memo
-            .keys
-            .iter()
-            .filter(|(_, key)| key.bindings.len() == size - 1)
-            .map(|(group, key)| (*group, key.clone()))
-            .collect::<Vec<_>>();
-        for (left_group, left_key) in prior_groups {
-            for right in bindings
-                .iter()
-                .copied()
-                .filter(|binding| !left_key.bindings.contains(*binding))
-            {
-                let right_bindings: BindingSet = right.into();
-                for descriptor in analysis.descriptors.values().filter(|descriptor| {
-                    !left_key.applied_operators.contains(&descriptor.operator_id)
-                }) {
-                    let forward = descriptor.is_applicable(&left_key.bindings, &right_bindings);
-                    let commuted = descriptor.effective_kind.is_commutative()
-                        && descriptor.is_applicable(&right_bindings, &left_key.bindings);
-                    if !forward && !commuted {
-                        continue;
-                    }
-                    let mut applied_operators = left_key.applied_operators.clone();
-                    applied_operators.insert(descriptor.operator_id);
-                    memo.add(
-                        RelationalJoinSemanticKey {
-                            bindings: binding_union(&left_key.bindings, &right_bindings),
-                            applied_operators,
-                        },
-                        RewriteExpression::Join {
-                            left: left_group,
-                            right,
-                            operator_id: descriptor.operator_id,
-                            operator_kind: descriptor.effective_kind,
-                            predicate_ids: descriptor.predicate_ids.clone(),
-                        },
-                        config,
-                    )?;
-                }
-            }
-        }
-    }
-    Ok(memo)
-}
-
-fn best_rewrite_plan(
-    problem: &RelationalJoinRewriteProblem,
-    memo: &RewriteMemo,
-    group: GroupId,
-    required_properties: &RequiredProperties,
-    cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalJoinRewritePlan>>,
-) -> Option<RelationalJoinRewritePlan> {
-    let key = (group, required_properties.clone());
-    if let Some(plan) = cache.get(&key) {
-        return plan.clone();
-    }
-    let mut selected = None;
-    for expression in memo
-        .memo
-        .group(group)
-        .expect("rewrite memo group should exist")
-        .expressions()
-    {
-        let candidate = match expression {
-            RewriteExpression::Relation(binding) => {
-                best_rewrite_base_plan(rewrite_relation(problem, *binding), required_properties)
-            }
-            RewriteExpression::Join {
-                left,
-                right,
-                operator_id,
-                operator_kind,
-                predicate_ids,
-            } => best_rewrite_join_plan(
-                problem,
-                memo,
-                *left,
-                *right,
-                *operator_id,
-                *operator_kind,
-                predicate_ids,
-                required_properties,
-                cache,
-            ),
-        };
-        if let Some(candidate) = candidate
-            && selected
-                .as_ref()
-                .is_none_or(|current| rewrite_plan_is_better(&candidate, current))
-        {
-            selected = Some(candidate);
-        }
-    }
-    cache.insert(key, selected.clone());
-    selected
-}
-
-fn best_rewrite_base_plan(
-    relation: &RelationalJoinRelation,
-    required_properties: &RequiredProperties,
-) -> Option<RelationalJoinRewritePlan> {
-    relation
-        .access_paths
-        .iter()
-        .filter(|access| access.supports_base())
-        .filter(|access| access.properties.satisfies(required_properties))
-        .map(|access| RelationalJoinRewritePlan {
-            base_binding: relation.binding,
-            base_access_path: access.clone(),
-            steps: Vec::new(),
-            cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
-            properties: access.properties.clone(),
-        })
-        .min_by(compare_rewrite_plans)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn best_rewrite_join_plan(
-    problem: &RelationalJoinRewriteProblem,
-    memo: &RewriteMemo,
-    left: GroupId,
-    right: BindingId,
-    operator_id: RelationalJoinOperatorId,
-    operator_kind: RelationalJoinOperatorKind,
-    predicate_ids: &[RelationalJoinPredicateId],
-    required_properties: &RequiredProperties,
-    cache: &mut HashMap<(GroupId, RequiredProperties), Option<RelationalJoinRewritePlan>>,
-) -> Option<RelationalJoinRewritePlan> {
-    let mut left_plan = best_rewrite_plan(problem, memo, left, required_properties, cache)?;
-    let left_bindings = &memo
-        .keys
-        .get(&left)
-        .expect("rewrite memo tracks every group key")
-        .bindings;
-    let right_relation = rewrite_relation(problem, right);
-    let access = right_relation
-        .access_paths
-        .iter()
-        .filter(|access| {
-            access.supports_probe() && access.required_bindings.is_subset(left_bindings)
-        })
-        .min_by(|left, right| compare_rewrite_access_paths(left, right))?
-        .clone();
-    let cardinality = match operator_kind {
-        RelationalJoinOperatorKind::Inner => RelationalJoinCardinality::Inner,
-        RelationalJoinOperatorKind::LeftOuter => RelationalJoinCardinality::PreserveLeft,
-    };
-    left_plan.cost_breakdown = estimate_relational_probe_join_cost(
-        left_plan.cost_breakdown,
-        access.descriptor.estimated_rows,
-        cardinality,
-    );
-    left_plan.steps.push(RelationalJoinRewriteStep {
-        operator_id,
-        operator_kind,
-        binding: right,
-        access_path: access,
-        predicate_ids: predicate_ids.to_vec(),
-    });
-    Some(left_plan)
-}
-
-fn rewrite_relation(
-    problem: &RelationalJoinRewriteProblem,
-    binding: BindingId,
-) -> &RelationalJoinRelation {
-    problem
-        .relations
-        .iter()
-        .find(|relation| relation.binding == binding)
-        .expect("validated rewrite problem contains memo binding")
-}
-
-fn rewrite_plan_is_better(
-    candidate: &RelationalJoinRewritePlan,
-    current: &RelationalJoinRewritePlan,
-) -> bool {
-    compare_rewrite_plans(candidate, current).is_lt()
-}
-
-fn compare_rewrite_plans(
-    left: &RelationalJoinRewritePlan,
-    right: &RelationalJoinRewritePlan,
-) -> std::cmp::Ordering {
-    left.cost_breakdown
-        .cost
-        .cmp(&right.cost_breakdown.cost)
-        .then_with(|| {
-            left.cost_breakdown
-                .estimated_rows
-                .cmp(&right.cost_breakdown.estimated_rows)
-        })
-        .then_with(|| left.stable_key().cmp(&right.stable_key()))
-}
-
-fn compare_rewrite_access_paths(
-    left: &RelationalJoinAccessPath,
-    right: &RelationalJoinAccessPath,
-) -> std::cmp::Ordering {
-    left.descriptor
-        .estimated_rows
-        .cmp(&right.descriptor.estimated_rows)
-        .then_with(|| {
-            right
-                .descriptor
-                .unique_point
-                .cmp(&left.descriptor.unique_point)
-        })
-        .then_with(|| {
-            right
-                .descriptor
-                .equality_prefix_len
-                .cmp(&left.descriptor.equality_prefix_len)
-        })
-        .then_with(|| left.descriptor.name.cmp(&right.descriptor.name))
 }
 
 fn binding_union(left: &BindingSet, right: &BindingSet) -> BindingSet {
@@ -1192,20 +845,5 @@ mod tests {
             .unwrap();
         assert_eq!(outer.initial_right_bindings, BindingSet::from([B, C]));
         assert!(outer.was_null_rejection_simplified());
-    }
-
-    #[test]
-    fn memo_identity_includes_applied_operator_set() {
-        let bindings = BindingSet::from([A, B]);
-        let first = RelationalJoinSemanticKey {
-            bindings: bindings.clone(),
-            applied_operators: BTreeSet::from([RelationalJoinOperatorId::new(1)]),
-        };
-        let second = RelationalJoinSemanticKey {
-            bindings,
-            applied_operators: BTreeSet::from([RelationalJoinOperatorId::new(2)]),
-        };
-
-        assert_ne!(first, second);
     }
 }

@@ -15,6 +15,11 @@ kernels. The embedded `skein` crate remains the supported application facade.
 Raw embeddings remain canonical search data; a RaBitQ artifact is a
 derived candidate projection and MUST NOT become the source of truth.
 
+The exported HNSW, upsert-only delta, and index-advisor primitives are standalone
+experiments, not part of this serving contract. Their explicit retention and
+integration gates are in the [vector experiment roadmap](../VECTOR_EXPERIMENT_ROADMAP.md).
+Keeping these APIs does not authorize ANN dispatch or automatic maintenance.
+
 ## Encoding
 
 The `rabitq` algorithm descriptor currently means all of the following:

@@ -188,17 +188,10 @@ fn execute_node_mutation_with_limits(
     let label_ids = label_ids_for_pattern(catalog, label);
     let mut ids = Vec::with_capacity(limits.max_affected_rows.get().min(1024));
     let mut visited = 0usize;
-    let mut callback_error = None;
     store.visit_nodes_owned(None, &mut |node| {
-        if callback_error.is_some() {
-            return Ok(ScanControl::Stop);
-        }
         visited = visited.saturating_add(1);
-        if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS)
-            && let Err(error) = runtime_checkpoint(task_context)
-        {
-            callback_error = Some(error);
-            return Ok(ScanControl::Stop);
+        if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS) {
+            runtime_checkpoint(task_context)?;
         }
         if !node_matches_label_pattern(&node, label_ids.as_deref()) {
             return Ok(ScanControl::Continue);
@@ -208,29 +201,20 @@ fn execute_node_mutation_with_limits(
             nodes: BTreeMap::from([(variable.to_string(), node)]),
             relationships: BTreeMap::new(),
         };
-        if let Some(predicate) = predicate {
-            match evaluate_predicate(predicate, catalog, store, &binding) {
-                Ok(true) => {}
-                Ok(false) => return Ok(ScanControl::Continue),
-                Err(error) => {
-                    callback_error = Some(error);
-                    return Ok(ScanControl::Stop);
-                }
-            }
+        if let Some(predicate) = predicate
+            && !evaluate_predicate(predicate, catalog, store, &binding)?
+        {
+            return Ok(ScanControl::Continue);
         }
         if ids.len() == limits.max_affected_rows.get() {
-            callback_error = Some(SkeinError::Execution(format!(
+            return Err(SkeinError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
-            return Ok(ScanControl::Stop);
         }
         ids.push(binding.nodes[variable].id);
         Ok(ScanControl::Continue)
     })?;
-    if let Some(error) = callback_error {
-        return Err(error);
-    }
     if ids.len() > limits.max_result_rows.get() {
         return Err(SkeinError::Execution(format!(
             "mutation would exceed max_mutation_result_rows {}",
@@ -287,17 +271,10 @@ fn execute_set_node_properties_return_with_limits(
     let mut projected_rows = Vec::new();
     let mut projected_payload_bytes = 0usize;
     let mut visited = 0usize;
-    let mut callback_error = None;
     store.visit_nodes_owned(None, &mut |node| {
-        if callback_error.is_some() {
-            return Ok(ScanControl::Stop);
-        }
         visited = visited.saturating_add(1);
-        if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS)
-            && let Err(error) = runtime_checkpoint(task_context)
-        {
-            callback_error = Some(error);
-            return Ok(ScanControl::Stop);
+        if visited.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS) {
+            runtime_checkpoint(task_context)?;
         }
         if !node_matches_label_pattern(&node, label_ids.as_deref()) {
             return Ok(ScanControl::Continue);
@@ -307,45 +284,30 @@ fn execute_set_node_properties_return_with_limits(
             nodes: BTreeMap::from([(variable.to_string(), node.clone())]),
             relationships: BTreeMap::new(),
         };
-        if let Some(predicate) = predicate {
-            match evaluate_predicate(predicate, catalog, store, &original_binding) {
-                Ok(true) => {}
-                Ok(false) => return Ok(ScanControl::Continue),
-                Err(error) => {
-                    callback_error = Some(error);
-                    return Ok(ScanControl::Stop);
-                }
-            }
+        if let Some(predicate) = predicate
+            && !evaluate_predicate(predicate, catalog, store, &original_binding)?
+        {
+            return Ok(ScanControl::Continue);
         }
         if ids.len() == limits.max_affected_rows.get() {
-            callback_error = Some(SkeinError::Execution(format!(
+            return Err(SkeinError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
-            return Ok(ScanControl::Stop);
         }
         let id = node.id;
         ids.push(id);
         if let SetNodePropertiesReturnMode::Project(returns) = returns {
             if projected_rows.len() == limits.max_result_rows.get() {
-                callback_error = Some(SkeinError::Execution(format!(
+                return Err(SkeinError::Execution(format!(
                     "mutation would exceed max_mutation_result_rows {}",
                     limits.max_result_rows
                 )));
-                return Ok(ScanControl::Stop);
             }
             let mut projected_node = node;
             for assignment in &assignments {
-                let value = match crate::store::evaluate_node_set_value(
-                    &projected_node.properties,
-                    assignment,
-                ) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return Ok(ScanControl::Stop);
-                    }
-                };
+                let value =
+                    crate::store::evaluate_node_set_value(&projected_node.properties, assignment)?;
                 projected_node
                     .properties
                     .insert(assignment.property.clone(), value);
@@ -355,35 +317,24 @@ fn execute_set_node_properties_return_with_limits(
                 nodes: BTreeMap::from([(variable.to_string(), projected_node)]),
                 relationships: BTreeMap::new(),
             };
-            let values = match returns
+            let values = returns
                 .iter()
                 .map(|item| {
                     project_value(item, catalog, &binding).map(|value| (item.name.clone(), value))
                 })
-                .collect::<Result<BTreeMap<_, _>>>()
-            {
-                Ok(values) => values,
-                Err(error) => {
-                    callback_error = Some(error);
-                    return Ok(ScanControl::Stop);
-                }
-            };
+                .collect::<Result<BTreeMap<_, _>>>()?;
             let next_payload = projected_payload_bytes.saturating_add(map_payload_bytes(&values));
             if next_payload > limits.max_result_payload_bytes.get() {
-                callback_error = Some(SkeinError::Execution(format!(
+                return Err(SkeinError::Execution(format!(
                     "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                     limits.max_result_payload_bytes
                 )));
-                return Ok(ScanControl::Stop);
             }
             projected_payload_bytes = next_payload;
             projected_rows.push(values);
         }
         Ok(ScanControl::Continue)
     })?;
-    if let Some(error) = callback_error {
-        return Err(error);
-    }
 
     let output = match returns {
         SetNodePropertiesReturnMode::Project(_) => projected_rows,

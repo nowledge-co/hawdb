@@ -1,23 +1,17 @@
-//! A base-only HNSW candidate index, built once over a fixed vector set.
+//! An experimental base-only HNSW candidate index over a fixed vector set.
 //!
-//! `InMemoryProjection`/`FileProjection` score every candidate by exact
-//! scan (bounded by allowlist/mask pruning); `HnswIndex` sits alongside
-//! them as an optional, independently rebuildable approximate index for
-//! workloads where scanning every document is too slow. It follows the
-//! "isolated derived index" shape called out for HNSW in this crate's
-//! design notes: an `HnswIndex` is immutable once built, never mutated in
-//! place, and disableable -- a caller who does not build one simply keeps
-//! using the exact scan that already exists. There is no incremental
-//! insert in this module; growing the indexed set means building a new
-//! `HnswIndex` from the full vector set, the same way
-//! `ProjectionBuilder`/`ProjectionWriter` work for the quantized base.
+//! `InMemoryProjection`/`FileProjection` exhaustively scan eligible quantized
+//! candidates; their RaBitQ scores are approximate, not exact raw-vector scores.
+//! `HnswIndex` is an independent in-memory benchmark alternative. It is not
+//! selected by embedded search, has no persistence or generation binding, and
+//! accepts no candidate filter. Growing its fixed set requires a full rebuild.
+//! See the [experimental API roadmap](crate#experimental-apis) before integration.
 //!
-//! Unlike the quantized base, `HnswIndex` keeps full-precision vectors:
-//! RaBitQ's 4-bit codes are too lossy to support the repeated,
-//! high-precision distance comparisons HNSW's graph search relies on, so
-//! this index trades memory for an independent, more accurate
-//! approximation -- a caller who cannot afford that memory should keep
-//! using the quantized base's exact scan instead.
+//! This implementation keeps full-precision vectors for graph traversal. RaBitQ
+//! defaults to 1-bit codes; 4-bit is an explicit build option. Keeping raw vectors
+//! is this implementation's choice, not evidence that quantized graph traversal
+//! is impossible or that HNSW has better recall for every workload. Its memory,
+//! latency, and recall trade-offs need separate representative measurements.
 //!
 //! This implements the standard multi-layer HNSW algorithm (Malkov &
 //! Yashunin, 2016): layer assignment by a truncated exponential
@@ -45,6 +39,7 @@ const DEFAULT_HNSW_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 /// budget on the payload count alone.
 const HNSW_NODE_FIXED_BYTES: usize = 64;
 
+/// Build settings for the [experimental HNSW index](crate#experimental-apis).
 #[derive(Debug, Clone, Copy)]
 pub struct HnswBuildConfig {
     /// Max neighbors per node at layers above 0.
@@ -110,6 +105,8 @@ struct Node {
 }
 
 /// An immutable, base-only HNSW graph over a fixed vector set.
+///
+/// Experimental and in-memory only; see the [roadmap](crate#experimental-apis).
 #[derive(Debug, Clone)]
 pub struct HnswIndex {
     dimension: usize,

@@ -75,8 +75,8 @@ impl RuntimeResourceDetector {
     pub(crate) fn detect(&mut self) -> RuntimeResourceSnapshot {
         let host_parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
         self.system.refresh_memory();
-        let host_total_bytes = non_zero_memory(self.system.total_memory());
-        let host_available_bytes = non_zero_memory(self.system.available_memory());
+        let (host_total_bytes, host_available_bytes) =
+            host_memory_values(self.system.total_memory(), self.system.available_memory());
 
         #[cfg(target_os = "linux")]
         {
@@ -144,8 +144,8 @@ impl RuntimeMemorySnapshot {
     pub fn detect() -> Self {
         let mut system = System::new();
         system.refresh_memory();
-        let host_total_bytes = non_zero_memory(system.total_memory());
-        let host_available_bytes = non_zero_memory(system.available_memory());
+        let (host_total_bytes, host_available_bytes) =
+            host_memory_values(system.total_memory(), system.available_memory());
 
         #[cfg(target_os = "linux")]
         let (cgroup_limit_bytes, cgroup_high_bytes, cgroup_current_bytes) =
@@ -366,8 +366,13 @@ fn admitted_memory_current(value: LinuxCgroupValue<u64>) -> Option<u64> {
     }
 }
 
-fn non_zero_memory(bytes: u64) -> Option<u64> {
-    (bytes > 0).then_some(bytes)
+fn host_memory_values(total_bytes: u64, available_bytes: u64) -> (Option<u64>, Option<u64>) {
+    // A detected total makes zero availability meaningful. Only two zero
+    // readings retain sysinfo's unavailable/unsupported fallback.
+    (
+        (total_bytes > 0).then_some(total_bytes),
+        (total_bytes > 0 || available_bytes > 0).then_some(available_bytes),
+    )
 }
 
 fn memory_pressure(
@@ -397,6 +402,217 @@ fn memory_pressure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        RuntimeAdmissionCode, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkPriority,
+        RuntimeWorkRequest,
+    };
+
+    #[test]
+    fn host_memory_values_distinguish_exhausted_from_unknown() {
+        for (total, available, expected) in [
+            (0, 0, (None, None)),
+            (0, 1, (None, Some(1))),
+            (1, 0, (Some(1), Some(0))),
+            (1, 1, (Some(1), Some(1))),
+            (u64::MAX, 0, (Some(u64::MAX), Some(0))),
+            (u64::MAX, u64::MAX, (Some(u64::MAX), Some(u64::MAX))),
+        ] {
+            assert_eq!(host_memory_values(total, available), expected);
+        }
+    }
+
+    fn sampled_host_resources(total: u64, available: u64) -> RuntimeResourceSnapshot {
+        let (total, available) = host_memory_values(total, available);
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(8).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(total, available, None, None, None),
+        )
+    }
+
+    #[test]
+    fn zero_host_headroom_gates_real_governor_admission() {
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            sampled_host_resources(8 << 30, 0),
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let error = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert_eq!(error.available, 0);
+        assert!(error.is_retryable());
+        let snapshot = governor.snapshot();
+        assert_eq!(
+            snapshot.resources.memory.pressure,
+            RuntimeMemoryPressure::Critical
+        );
+        assert_eq!(snapshot.resources.memory.effective_available_bytes, Some(0));
+        assert_eq!(snapshot.limits.memory_capacity_bytes, 2 << 30);
+        assert_eq!(snapshot.limits.memory_budget_bytes, 0);
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+    }
+
+    #[test]
+    fn host_headroom_and_cgroup_limits_compose_at_admission() {
+        let cgroup = LinuxCgroupSnapshot {
+            version: LinuxCgroupVersion::V2,
+            memory_limit_bytes: LinuxCgroupValue::Value(4 << 30),
+            memory_high_bytes: LinuxCgroupValue::Value(3 << 30),
+            memory_current_bytes: LinuxCgroupValue::Value(2 << 30),
+            ..LinuxCgroupSnapshot::host()
+        };
+        let cases = [
+            (LinuxCgroupSnapshot::host(), None, 2 << 30),
+            (
+                LinuxCgroupSnapshot::fail_closed(LinuxCgroupVersion::V1Unsupported),
+                None,
+                2 << 30,
+            ),
+            (cgroup, Some(1 << 30), 768 << 20),
+            (
+                LinuxCgroupSnapshot {
+                    memory_current_bytes: LinuxCgroupValue::Value(3 << 30),
+                    ..cgroup
+                },
+                Some(0),
+                768 << 20,
+            ),
+            (
+                LinuxCgroupSnapshot {
+                    memory_limit_bytes: LinuxCgroupValue::Unlimited,
+                    memory_high_bytes: LinuxCgroupValue::Unlimited,
+                    ..cgroup
+                },
+                None,
+                2 << 30,
+            ),
+            (
+                LinuxCgroupSnapshot::fail_closed(LinuxCgroupVersion::Unknown),
+                Some(0),
+                0,
+            ),
+            (
+                LinuxCgroupSnapshot {
+                    memory_current_bytes: LinuxCgroupValue::Invalid,
+                    ..cgroup
+                },
+                Some(0),
+                768 << 20,
+            ),
+        ];
+        for (cgroup, cgroup_available, capacity) in cases {
+            for available in [0, 4, 4 << 30] {
+                let (host_total, host_available) = host_memory_values(8 << 30, available);
+                let resources = resource_snapshot_from_cgroup(
+                    NonZeroUsize::new(8).unwrap(),
+                    host_total,
+                    host_available,
+                    &cgroup,
+                );
+                let expected_available = available.min(cgroup_available.unwrap_or(available));
+                let budget = expected_available / 4;
+                assert_eq!(
+                    resources.memory.effective_available_bytes,
+                    Some(expected_available)
+                );
+                let governor = RuntimeGovernor::new(
+                    RuntimeGovernorConfig::shared_host(),
+                    resources,
+                    IoConcurrencyBudget::new(4, 1),
+                );
+                assert_eq!(governor.snapshot().limits.memory_capacity_bytes, capacity);
+                assert_eq!(governor.snapshot().limits.memory_budget_bytes, budget);
+                if budget > 0 {
+                    let permit = governor
+                        .try_admit(RuntimeWorkRequest::blocking_cpu(
+                            RuntimeWorkPriority::Foreground,
+                            budget,
+                        ))
+                        .unwrap();
+                    drop(permit);
+                } else {
+                    assert_eq!(resources.memory.pressure, RuntimeMemoryPressure::Critical);
+                    let error = governor
+                        .try_admit(RuntimeWorkRequest::blocking_cpu(
+                            RuntimeWorkPriority::Background,
+                            0,
+                        ))
+                        .unwrap_err();
+                    assert_eq!(error.code, RuntimeAdmissionCode::MemoryPressure);
+                    assert!(error.is_retryable());
+                }
+                for requested in [budget + 1, capacity + 1] {
+                    let error = governor
+                        .try_admit(RuntimeWorkRequest::blocking_cpu(
+                            RuntimeWorkPriority::Foreground,
+                            requested,
+                        ))
+                        .unwrap_err();
+                    assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+                    assert_eq!(error.is_retryable(), requested <= capacity);
+                }
+                assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_host_readings_retain_the_fallback_budget() {
+        let config = RuntimeGovernorConfig::shared_host();
+        let resources = sampled_host_resources(0, 0);
+        assert_eq!(resources.memory, RuntimeMemorySnapshot::default());
+        let governor = RuntimeGovernor::new(config, resources, IoConcurrencyBudget::new(4, 1));
+        assert_eq!(
+            governor.snapshot().limits.memory_budget_bytes,
+            config.fallback_memory_budget_bytes
+        );
+        let permit = governor
+            .try_admit(RuntimeWorkRequest::blocking_cpu(
+                RuntimeWorkPriority::Foreground,
+                1,
+            ))
+            .unwrap();
+        drop(permit);
+    }
+
+    #[test]
+    fn host_headroom_refresh_preserves_permits_and_recovers_admission() {
+        let healthy = sampled_host_resources(8 << 30, 4 << 30);
+        let exhausted = sampled_host_resources(8 << 30, 0);
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            healthy,
+            IoConcurrencyBudget::new(4, 1),
+        );
+        let request = RuntimeWorkRequest::blocking_cpu(RuntimeWorkPriority::Foreground, 128 << 20);
+        let permit = governor.try_admit(request).unwrap();
+        assert!(governor.update_resources(exhausted));
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.admitted_memory_bytes, request.memory_bytes);
+        assert_eq!(snapshot.limits.memory_budget_bytes, request.memory_bytes);
+        assert_eq!(snapshot.limits.memory_capacity_bytes, 2 << 30);
+        assert_eq!(snapshot.active_foreground_tasks, 1);
+        let error = governor.try_admit(request).unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(error.is_retryable());
+
+        drop(permit);
+        assert!(governor.update_resources(exhausted));
+        assert!(!governor.update_resources(exhausted));
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        assert_eq!(governor.snapshot().limits.memory_budget_bytes, 0);
+        assert!(governor.try_admit(request).unwrap_err().is_retryable());
+
+        assert!(governor.update_resources(healthy));
+        assert_eq!(governor.snapshot().limits.memory_budget_bytes, 1 << 30);
+        let permit = governor.try_admit(request).unwrap();
+        drop(permit);
+        assert_eq!(governor.snapshot().active_foreground_tasks, 0);
+    }
 
     #[test]
     fn effective_budget_uses_the_smallest_cpu_limit() {

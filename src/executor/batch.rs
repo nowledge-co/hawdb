@@ -947,16 +947,12 @@ fn execute_binding_batches_inner(
                 context.memory.blocking_operator_bytes,
             );
             let mut total = 0usize;
-            let mut callback_error = None;
             let mut nodes_since_checkpoint = 0usize;
             store.visit_nodes_owned(None, &mut |node| {
                 nodes_since_checkpoint += 1;
                 if nodes_since_checkpoint == context.memory.batch_rows.get() {
                     nodes_since_checkpoint = 0;
-                    if let Err(error) = runtime_checkpoint(context.task_context) {
-                        callback_error = Some(error);
-                        return Ok(ScanControl::Stop);
-                    }
+                    runtime_checkpoint(context.task_context)?;
                 }
                 if !node_matches_label_pattern(&node, label_ids.as_deref())
                     || !node_properties_match(&node, properties)
@@ -964,7 +960,7 @@ fn execute_binding_batches_inner(
                     return Ok(ScanControl::Continue);
                 }
                 for leg in legs {
-                    match relationship_count_sum_leg(
+                    let count = relationship_count_sum_leg(
                         catalog,
                         store,
                         node.id,
@@ -975,19 +971,11 @@ fn execute_binding_batches_inner(
                         },
                         context.observer,
                         context.task_context,
-                    ) {
-                        Ok(count) => total = total.saturating_add(count),
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return Ok(ScanControl::Stop);
-                        }
-                    }
+                    )?;
+                    total = total.saturating_add(count);
                 }
                 Ok(ScanControl::Continue)
             })?;
-            if let Some(error) = callback_error {
-                return Err(error);
-            }
             emit(vec![Binding {
                 values: BTreeMap::from([(output.clone(), Value::Int(total as i64))]),
                 nodes: BTreeMap::new(),
