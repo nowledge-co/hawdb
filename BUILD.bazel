@@ -398,7 +398,7 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
         ("fuzz", "enormous", []),
         ("optimizer_summary", "medium", ["exclusive"]),
         ("optimizer_group_1", "large", ["exclusive"]),
-        ("optimizer_group_2", "medium", ["exclusive"]),
+        ("optimizer_group_2", "large", ["exclusive"]),
         ("optimizer_group_3", "medium", ["exclusive"]),
         ("relational_row_page_lending", "medium", ["exclusive"]),
         ("wal_group_commit", "medium", ["exclusive"]),
