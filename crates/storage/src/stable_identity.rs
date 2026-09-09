@@ -707,7 +707,7 @@ impl StableIdentityMappingReader {
             && let Some(slot) = cache.get_by_identity(&identity)
         {
             report.cache_hits = report.cache_hits.saturating_add(1);
-            return consumer(decode_page_slot(
+            return consumer(decode_cached_page_slot(
                 &slot,
                 self.header.generation,
                 page_id,
@@ -752,7 +752,7 @@ impl StableIdentityMappingReader {
                 content_digest: content_digest(&bytes),
                 representation: identity.representation,
             };
-            match cache.insert(key, Arc::clone(&bytes)) {
+            match cache.insert_page_verified(key, Arc::clone(&bytes)) {
                 Ok(_) => {}
                 Err(SegmentCacheError::EntryTooLarge { .. })
                 | Err(SegmentCacheError::PinnedCapacity { .. }) => {
@@ -1538,6 +1538,31 @@ fn decode_page_slot(
     expected_page_id: u64,
     config: StableIdentityMappingConfig,
 ) -> Result<StableIdentityPageView<'_>, StableIdentityMappingError> {
+    decode_page_slot_inner(slot, expected_generation, expected_page_id, config, false)
+}
+
+fn decode_cached_page_slot(
+    slot: &crate::SegmentCacheLease,
+    expected_generation: u64,
+    expected_page_id: u64,
+    config: StableIdentityMappingConfig,
+) -> Result<StableIdentityPageView<'_>, StableIdentityMappingError> {
+    decode_page_slot_inner(
+        slot,
+        expected_generation,
+        expected_page_id,
+        config,
+        slot.page_integrity_verified(),
+    )
+}
+
+fn decode_page_slot_inner(
+    slot: &[u8],
+    expected_generation: u64,
+    expected_page_id: u64,
+    config: StableIdentityMappingConfig,
+    page_integrity_verified: bool,
+) -> Result<StableIdentityPageView<'_>, StableIdentityMappingError> {
     if slot.len() != config.page_bytes.get() || &slot[..8] != PAGE_MAGIC {
         return Err(StableIdentityMappingError::Corrupt(
             "invalid stable identity page header".to_string(),
@@ -1575,16 +1600,20 @@ fn decode_page_slot(
         ));
     }
     let payload = &slot[PAGE_HEADER_BYTES..payload_end];
-    let mut hasher = IntegrityHasher::new();
-    hasher.update(&slot[..56]);
-    hasher.update(payload);
-    let digest = hasher.finish();
-    if digest.crc32c.get() != read_u32(&slot[56..60])
-        || digest.sha256.as_bytes() != &slot[60..60 + SHA256_BYTES]
-    {
-        return Err(StableIdentityMappingError::Corrupt(
-            "stable identity page checksum mismatch".to_string(),
-        ));
+    if !page_integrity_verified {
+        #[cfg(test)]
+        crate::cache::record_page_integrity_check();
+        let mut hasher = IntegrityHasher::new();
+        hasher.update(&slot[..56]);
+        hasher.update(payload);
+        let digest = hasher.finish();
+        if digest.crc32c.get() != read_u32(&slot[56..60])
+            || digest.sha256.as_bytes() != &slot[60..60 + SHA256_BYTES]
+        {
+            return Err(StableIdentityMappingError::Corrupt(
+                "stable identity page checksum mismatch".to_string(),
+            ));
+        }
     }
     let first_key = decode_key(&slot[36..45])?;
     let last_key = decode_key(&slot[45..54])?;
@@ -1811,6 +1840,19 @@ mod tests {
         assert!(report.storage_bytes_read <= DEFAULT_STABLE_IDENTITY_LOOKUP_BYTES);
         assert!(cache.snapshot().resident_bytes > 0);
 
+        let cold_checks = crate::cache::PAGE_INTEGRITY_CHECKS.get();
+        assert!(cold_checks > 0);
+        let (warm_value, warm_report) = reader
+            .lookup(
+                StableIdentityKey::relationship(321),
+                StableIdentityReadLimits::default(),
+            )
+            .expect("repeat stable identity lookup from verified cache");
+        assert_eq!(warm_value, value);
+        assert_eq!(warm_report.cache_hits, warm_report.visited_pages);
+        assert_eq!(warm_report.storage_bytes_read, 0);
+        assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), cold_checks);
+
         drop(reader);
         remove_mapping_fixture(&path, &[output.header.generation]);
     }
@@ -1847,6 +1889,215 @@ mod tests {
         let generation = reader.header().generation;
         drop(reader);
         remove_mapping_fixture(&path, &[generation]);
+    }
+
+    #[test]
+    fn raw_cached_pages_still_require_both_integrity_checks() {
+        let path = test_path("raw-cache-integrity");
+        let config = StableIdentityMappingConfig {
+            page_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_value_bytes: NonZeroUsize::new(512).unwrap(),
+            ..StableIdentityMappingConfig::default()
+        };
+        StableIdentityMappingWriter::publish(&path, 1, entries(&mapping(1)), config).unwrap();
+        let artifact = fs::read(artifact_path(&path, 1)).unwrap();
+        let slot = &artifact[FILE_HEADER_BYTES..FILE_HEADER_BYTES + config.page_bytes.get()];
+        for corrupt_offset in [56, 60] {
+            let mut corrupt = slot.to_vec();
+            corrupt[corrupt_offset] ^= 1;
+            let cache = Arc::new(SegmentCache::new(1024));
+            let key = SegmentCacheKey {
+                store_id: StoreId(9),
+                manifest_generation: ManifestGeneration(1),
+                segment_id: 1,
+                content_digest: content_digest(&corrupt),
+                representation: RepresentationKind::StableIdentityPageSlot,
+            };
+            drop(cache.insert(key, corrupt).unwrap());
+            let reader = StableIdentityMappingReader::open_with_cache(
+                &path,
+                config,
+                Arc::clone(&cache),
+                StoreId(9),
+            )
+            .unwrap();
+            let checks = crate::cache::PAGE_INTEGRITY_CHECKS.get();
+            assert!(matches!(
+                reader.lookup(StableIdentityKey::node(0), StableIdentityReadLimits::default()),
+                Err(StableIdentityMappingError::Corrupt(message))
+                    if message.contains("checksum mismatch")
+            ));
+            assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), checks + 1);
+            assert!(reader.is_poisoned());
+            assert_eq!(cache.snapshot().pinned_bytes, 0);
+        }
+        remove_mapping_fixture(&path, &[1]);
+    }
+
+    #[test]
+    fn verified_cache_retains_reader_limits_and_uncached_deep_scrub() {
+        let path = test_path("verified-cache-scrub");
+        let config = StableIdentityMappingConfig {
+            page_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_value_bytes: NonZeroUsize::new(512).unwrap(),
+            ..StableIdentityMappingConfig::default()
+        };
+        StableIdentityMappingWriter::publish(&path, 1, entries(&mapping(1)), config).unwrap();
+        let cache = Arc::new(SegmentCache::new(1024));
+        let reader = StableIdentityMappingReader::open_with_cache(
+            &path,
+            config,
+            Arc::clone(&cache),
+            StoreId(9),
+        )
+        .unwrap();
+        let (expected, _) = reader
+            .lookup(
+                StableIdentityKey::node(0),
+                StableIdentityReadLimits::default(),
+            )
+            .unwrap();
+        let checks = crate::cache::PAGE_INTEGRITY_CHECKS.get();
+        let restricted = StableIdentityMappingReader::open_with_cache(
+            &path,
+            StableIdentityMappingConfig {
+                max_value_bytes: NonZeroUsize::new(1).unwrap(),
+                ..config
+            },
+            Arc::clone(&cache),
+            StoreId(9),
+        )
+        .unwrap();
+        assert!(matches!(
+            restricted.lookup(StableIdentityKey::node(0), StableIdentityReadLimits::default()),
+            Err(StableIdentityMappingError::Corrupt(message)) if message.contains("exceeding limit")
+        ));
+        assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), checks);
+        drop(restricted);
+
+        let artifact = artifact_path(&path, 1);
+        let mut file = OpenOptions::new().write(true).open(&artifact).unwrap();
+        file.seek(SeekFrom::Start((FILE_HEADER_BYTES + 60) as u64))
+            .unwrap();
+        file.write_all(&[0; SHA256_BYTES]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let (warm, report) = reader
+            .lookup(
+                StableIdentityKey::node(0),
+                StableIdentityReadLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(warm, expected);
+        assert_eq!(report.storage_bytes_read, 0);
+        assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), checks);
+        assert!(matches!(
+            reader.deep_scrub(),
+            Err(StableIdentityMappingError::Corrupt(_))
+        ));
+        assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), checks + 1);
+        assert!(reader.is_poisoned());
+        assert_eq!(cache.snapshot().pinned_bytes, 0);
+        drop(reader);
+        remove_mapping_fixture(&path, &[1]);
+    }
+
+    #[test]
+    #[ignore = "local release-mode cached reader throughput comparison"]
+    fn verified_page_cache_read_benchmark() {
+        let path = test_path("verified-cache-benchmark");
+        let config = StableIdentityMappingConfig {
+            page_bytes: NonZeroUsize::new(16 * 1024).unwrap(),
+            max_value_bytes: NonZeroUsize::new(512).unwrap(),
+            ..StableIdentityMappingConfig::default()
+        };
+        let output =
+            StableIdentityMappingWriter::publish(&path, 1, entries(&mapping(32)), config).unwrap();
+        assert_eq!(output.header.page_count, 1);
+        let cache = Arc::new(SegmentCache::new(16 * 1024));
+        let reader = StableIdentityMappingReader::open_with_cache(
+            &path,
+            config,
+            Arc::clone(&cache),
+            StoreId(9),
+        )
+        .unwrap();
+        reader
+            .lookup(
+                StableIdentityKey::node(17),
+                StableIdentityReadLimits::default(),
+            )
+            .unwrap();
+        let identity = SegmentCacheIdentity {
+            store_id: StoreId(9),
+            manifest_generation: ManifestGeneration(1),
+            segment_id: 1,
+            representation: RepresentationKind::StableIdentityPageSlot,
+        };
+        let bytes = cache.get_by_identity(&identity).unwrap().into_arc();
+        let raw_cache = Arc::new(SegmentCache::new(16 * 1024));
+        drop(
+            raw_cache
+                .insert(
+                    SegmentCacheKey {
+                        store_id: identity.store_id,
+                        manifest_generation: identity.manifest_generation,
+                        segment_id: identity.segment_id,
+                        representation: identity.representation,
+                        content_digest: content_digest(&bytes),
+                    },
+                    bytes,
+                )
+                .unwrap(),
+        );
+        let raw_reader =
+            StableIdentityMappingReader::open_with_cache(&path, config, raw_cache, StoreId(9))
+                .unwrap();
+        const READS_PER_THREAD: usize = 20_000;
+        for threads in [1, 2, 4, 8] {
+            for (verified, selected) in [(false, &raw_reader), (true, &reader)] {
+                let barrier = std::sync::Barrier::new(threads + 1);
+                let elapsed = std::thread::scope(|scope| {
+                    let barrier = &barrier;
+                    let handles = (0..threads)
+                        .map(|_| {
+                            scope.spawn(move || {
+                                let before = crate::cache::PAGE_INTEGRITY_CHECKS.get();
+                                barrier.wait();
+                                for _ in 0..READS_PER_THREAD {
+                                    let (value, report) = selected
+                                        .lookup(
+                                            StableIdentityKey::node(17),
+                                            StableIdentityReadLimits::default(),
+                                        )
+                                        .unwrap();
+                                    assert_eq!(report.storage_bytes_read, 0);
+                                    assert_eq!(report.cache_hits, 1);
+                                    std::hint::black_box(value);
+                                }
+                                let expected_checks = if verified { 0 } else { READS_PER_THREAD };
+                                assert_eq!(
+                                    crate::cache::PAGE_INTEGRITY_CHECKS.get() - before,
+                                    expected_checks
+                                );
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let started = std::time::Instant::now();
+                    barrier.wait();
+                    for handle in handles {
+                        handle.join().unwrap();
+                    }
+                    started.elapsed()
+                });
+                eprintln!("verified-cache-benchmark threads={threads} verified={verified} reads={} elapsed_ms={:.3} reads_per_second={:.0}",
+                    threads * READS_PER_THREAD, elapsed.as_secs_f64() * 1000.0,
+                    (threads * READS_PER_THREAD) as f64 / elapsed.as_secs_f64());
+            }
+        }
+        drop(raw_reader);
+        drop(reader);
+        remove_mapping_fixture(&path, &[1]);
     }
 
     #[test]

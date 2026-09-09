@@ -3,6 +3,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+test_suite(
+    name = "presubmit_tests",
+)
+
 rust_library(
     name = "skein_optimizer",
     crate_name = "skein_optimizer",

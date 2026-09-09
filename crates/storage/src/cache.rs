@@ -5,6 +5,16 @@ use std::fmt::{self, Display, Formatter};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PAGE_INTEGRITY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_page_integrity_check() {
+    PAGE_INTEGRITY_CHECKS.set(PAGE_INTEGRITY_CHECKS.get() + 1);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoreId(pub u128);
 
@@ -150,11 +160,16 @@ impl Error for SegmentCacheError {}
 #[derive(Debug, Clone)]
 pub struct SegmentCacheLease {
     bytes: Arc<[u8]>,
+    page_integrity_verified: bool,
 }
 
 impl SegmentCacheLease {
     pub fn into_arc(self) -> Arc<[u8]> {
         self.bytes
+    }
+
+    pub(crate) const fn page_integrity_verified(&self) -> bool {
+        self.page_integrity_verified
     }
 }
 
@@ -190,7 +205,17 @@ struct SegmentCacheEntry {
     key: SegmentCacheKey,
     bytes: Arc<[u8]>,
     verification_tag: Option<[u8; 32]>,
+    page_integrity_verified: bool,
     referenced: bool,
+}
+
+impl SegmentCacheEntry {
+    fn lease(&self) -> SegmentCacheLease {
+        SegmentCacheLease {
+            bytes: Arc::clone(&self.bytes),
+            page_integrity_verified: self.page_integrity_verified,
+        }
+    }
 }
 
 impl SegmentCache {
@@ -213,13 +238,13 @@ impl SegmentCache {
 
     pub fn get(&self, key: &SegmentCacheKey) -> Option<SegmentCacheLease> {
         let mut inner = self.lock();
-        let bytes = match inner.entries.get_mut(&key.identity()) {
+        let lease = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
                     && entry.verification_tag.is_none() =>
             {
                 entry.referenced = true;
-                Arc::clone(&entry.bytes)
+                entry.lease()
             }
             Some(_) | None => {
                 inner.miss_count = inner.miss_count.saturating_add(1);
@@ -227,7 +252,7 @@ impl SegmentCache {
             }
         };
         inner.hit_count = inner.hit_count.saturating_add(1);
-        Some(SegmentCacheLease { bytes })
+        Some(lease)
     }
 
     /// Looks up an immutable representation that was fully validated before
@@ -243,13 +268,13 @@ impl SegmentCache {
         verification_tag: [u8; 32],
     ) -> Option<SegmentCacheLease> {
         let mut inner = self.lock();
-        let bytes = match inner.entries.get_mut(&key.identity()) {
+        let lease = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
                     && entry.verification_tag == Some(verification_tag) =>
             {
                 entry.referenced = true;
-                Arc::clone(&entry.bytes)
+                entry.lease()
             }
             Some(_) | None => {
                 inner.miss_count = inner.miss_count.saturating_add(1);
@@ -257,7 +282,7 @@ impl SegmentCache {
             }
         };
         inner.hit_count = inner.hit_count.saturating_add(1);
-        Some(SegmentCacheLease { bytes })
+        Some(lease)
     }
 
     /// Looks up bytes by their immutable physical identity after a prior
@@ -267,10 +292,10 @@ impl SegmentCache {
         identity: &SegmentCacheIdentity,
     ) -> Option<SegmentCacheLease> {
         let mut inner = self.lock();
-        let bytes = match inner.entries.get_mut(identity) {
+        let lease = match inner.entries.get_mut(identity) {
             Some(entry) if entry.verification_tag.is_none() => {
                 entry.referenced = true;
-                Arc::clone(&entry.bytes)
+                entry.lease()
             }
             Some(_) | None => {
                 inner.miss_count = inner.miss_count.saturating_add(1);
@@ -278,7 +303,7 @@ impl SegmentCache {
             }
         };
         inner.hit_count = inner.hit_count.saturating_add(1);
-        Some(SegmentCacheLease { bytes })
+        Some(lease)
     }
 
     pub fn insert(
@@ -286,7 +311,26 @@ impl SegmentCache {
         key: SegmentCacheKey,
         bytes: impl Into<Arc<[u8]>>,
     ) -> Result<SegmentCacheLease, SegmentCacheError> {
-        let bytes = bytes.into();
+        self.insert_checked(key, bytes.into(), false)
+    }
+
+    /// Admits an immutable physical page slot after its codec has verified both
+    /// CRC32C and SHA-256. Raw public insertion never establishes this proof.
+    /// Readers must still enforce their own identity, structure, and read limits.
+    pub(crate) fn insert_page_verified(
+        &self,
+        key: SegmentCacheKey,
+        bytes: Arc<[u8]>,
+    ) -> Result<SegmentCacheLease, SegmentCacheError> {
+        self.insert_checked(key, bytes, true)
+    }
+
+    fn insert_checked(
+        &self,
+        key: SegmentCacheKey,
+        bytes: Arc<[u8]>,
+        page_integrity_verified: bool,
+    ) -> Result<SegmentCacheLease, SegmentCacheError> {
         let actual_digest = content_digest(&bytes);
         if actual_digest != key.content_digest {
             let mut inner = self.lock();
@@ -296,7 +340,7 @@ impl SegmentCache {
                 actual: actual_digest,
             });
         }
-        self.insert_inner(key, bytes, None)
+        self.insert_inner(key, bytes, None, page_integrity_verified)
     }
 
     /// Admits compact bytes after the caller has validated their immutable
@@ -307,7 +351,7 @@ impl SegmentCache {
         verification_tag: [u8; 32],
         bytes: impl Into<Arc<[u8]>>,
     ) -> Result<SegmentCacheLease, SegmentCacheError> {
-        self.insert_inner(key, bytes.into(), Some(verification_tag))
+        self.insert_inner(key, bytes.into(), Some(verification_tag), false)
     }
 
     fn insert_inner(
@@ -315,6 +359,7 @@ impl SegmentCache {
         key: SegmentCacheKey,
         bytes: Arc<[u8]>,
         verification_tag: Option<[u8; 32]>,
+        page_integrity_verified: bool,
     ) -> Result<SegmentCacheLease, SegmentCacheError> {
         let mut inner = self.lock();
         let identity = key.identity();
@@ -341,9 +386,12 @@ impl SegmentCache {
                 .get_mut(&identity)
                 .expect("cache identity remains resident");
             entry.referenced = true;
-            let bytes = Arc::clone(&entry.bytes);
+            // Promotion is safe only after the exact resident bytes matched.
+            // Re-inserting raw bytes must not downgrade an existing proof.
+            entry.page_integrity_verified |= page_integrity_verified;
+            let lease = entry.lease();
             inner.hit_count = inner.hit_count.saturating_add(1);
-            return Ok(SegmentCacheLease { bytes });
+            return Ok(lease);
         }
 
         let entry_bytes = bytes.len() as u64;
@@ -373,10 +421,14 @@ impl SegmentCache {
                 key,
                 bytes: Arc::clone(&bytes),
                 verification_tag,
+                page_integrity_verified,
                 referenced: true,
             },
         );
-        Ok(SegmentCacheLease { bytes })
+        Ok(SegmentCacheLease {
+            bytes,
+            page_integrity_verified,
+        })
     }
 
     pub fn snapshot(&self) -> SegmentCacheSnapshot {
@@ -579,9 +631,77 @@ mod tests {
             .expect("matching verified page remains cached");
 
         assert_eq!(&*lease, b"page");
+        assert!(!lease.page_integrity_verified());
         let snapshot = cache.snapshot();
         assert_eq!(snapshot.resident_bytes, 4);
         assert_eq!(snapshot.hit_count, 1);
         assert_eq!(snapshot.miss_count, 2);
+    }
+
+    #[test]
+    fn page_verification_promotes_only_identical_resident_bytes() {
+        let cache = SegmentCache::new(16);
+        let cache_key = key(1, b"page");
+        let raw = cache.insert(cache_key, &b"page"[..]).unwrap();
+        assert!(!raw.page_integrity_verified());
+        let verified = cache
+            .insert_page_verified(cache_key, Arc::from(&b"page"[..]))
+            .unwrap();
+        assert!(verified.page_integrity_verified());
+        assert!(verified.clone().page_integrity_verified());
+        assert!(!raw.page_integrity_verified());
+        assert!(cache
+            .insert(cache_key, &b"page"[..])
+            .unwrap()
+            .page_integrity_verified());
+        assert!(cache.get(&cache_key).unwrap().page_integrity_verified());
+        assert!(cache
+            .get_by_identity(&cache_key.identity())
+            .unwrap()
+            .page_integrity_verified());
+
+        assert!(matches!(
+            cache.insert_page_verified(cache_key, Arc::from(&b"different"[..])),
+            Err(SegmentCacheError::DigestMismatch { .. })
+        ));
+        assert!(matches!(
+            cache.insert_inner(cache_key, Arc::from(&b"collision"[..]), None, true),
+            Err(SegmentCacheError::DigestCollision { .. })
+        ));
+        let mut exported = verified.into_arc();
+        Arc::make_mut(&mut exported)[0] = b'P';
+        assert_eq!(&*cache.get(&cache_key).unwrap(), b"page");
+        let other_cache = SegmentCache::new(16);
+        assert!(!other_cache
+            .insert(key(1, &exported), exported)
+            .unwrap()
+            .page_integrity_verified());
+    }
+
+    #[test]
+    fn verified_page_pins_and_eviction_preserve_raw_arc_ownership() {
+        let cache = SegmentCache::new(4);
+        let shared: Arc<[u8]> = Arc::from(&b"page"[..]);
+        let first = key(1, &shared);
+        let lease = cache
+            .insert_page_verified(first, Arc::clone(&shared))
+            .unwrap();
+        let exported = lease.into_arc();
+        assert_eq!(cache.snapshot().pinned_bytes, 4);
+        drop(exported);
+        assert_eq!(cache.snapshot().pinned_bytes, 4);
+        assert!(matches!(
+            cache.insert(key(2, b"next"), &b"next"[..]),
+            Err(SegmentCacheError::PinnedCapacity { .. })
+        ));
+        drop(shared);
+        assert_eq!(cache.snapshot().pinned_bytes, 0);
+        drop(cache.insert(key(2, b"next"), &b"next"[..]).unwrap());
+        assert!(cache.get(&first).is_none());
+        assert!(!cache
+            .insert(first, &b"page"[..])
+            .unwrap()
+            .page_integrity_verified());
+        assert_eq!(cache.snapshot().eviction_count, 2);
     }
 }

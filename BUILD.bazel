@@ -34,6 +34,21 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/vector-projection",
 ]
 
+# Fuzz remains an explicit local-only campaign until the repository policy
+# assigns it an automated execution lane.
+_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {
+    "crates/fuzz": ("local-only", "//crates/fuzz:skein_fuzz_tests"),
+}
+
+test_suite(
+    name = "skein_presubmit_crate_tests",
+    tests = [
+        "//%s:presubmit_tests" % package
+        for package in _CARGO_WORKSPACE_PACKAGES
+        if package not in _SKEIN_PRESUBMIT_CRATE_EXCLUSIONS
+    ],
+)
+
 sh_test(
     name = "cargo_bazel_package_parity_test",
     size = "small",

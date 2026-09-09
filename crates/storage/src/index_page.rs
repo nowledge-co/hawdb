@@ -5,6 +5,9 @@ use std::num::{NonZeroU64, NonZeroUsize};
 const PAGE_MAGIC: &[u8; 8] = b"SKINIDX1";
 const PAGE_VERSION: u16 = 1;
 const PAGE_HEADER_BYTES: usize = 84;
+
+#[cfg(test)]
+mod verified_cache_tests;
 const FIELD_HEADER_BYTES: usize = 6;
 
 const ROOT_IDENTITY_FIELD: u16 = 1;
@@ -233,6 +236,14 @@ impl ImmutableIndexPage {
         encoded: &[u8],
         limits: ImmutableIndexPageLimits,
     ) -> Result<Self, ImmutableIndexPageError> {
+        Self::decode_inner(encoded, limits, false)
+    }
+
+    fn decode_inner(
+        encoded: &[u8],
+        limits: ImmutableIndexPageLimits,
+        page_integrity_verified: bool,
+    ) -> Result<Self, ImmutableIndexPageError> {
         if encoded.len() > limits.max_page_bytes.get() {
             return Err(ImmutableIndexPageError::Admission(format!(
                 "encoded page contains {} bytes, exceeding limit {}",
@@ -276,17 +287,21 @@ impl ImmutableIndexPage {
             )));
         }
         let payload = &encoded[PAGE_HEADER_BYTES..];
-        let mut hasher = IntegrityHasher::new();
-        hasher.update(&encoded[..48]);
-        hasher.update(payload);
-        let digest = hasher.finish();
-        let expected_crc = read_u32(&encoded[48..52]);
-        if digest.crc32c.get() != expected_crc
-            || digest.sha256.as_bytes() != &encoded[52..52 + SHA256_BYTES]
-        {
-            return Err(ImmutableIndexPageError::Corrupt(
-                "page payload checksum mismatch".to_string(),
-            ));
+        if !page_integrity_verified {
+            #[cfg(test)]
+            crate::cache::record_page_integrity_check();
+            let mut hasher = IntegrityHasher::new();
+            hasher.update(&encoded[..48]);
+            hasher.update(payload);
+            let digest = hasher.finish();
+            let expected_crc = read_u32(&encoded[48..52]);
+            if digest.crc32c.get() != expected_crc
+                || digest.sha256.as_bytes() != &encoded[52..52 + SHA256_BYTES]
+            {
+                return Err(ImmutableIndexPageError::Corrupt(
+                    "page payload checksum mismatch".to_string(),
+                ));
+            }
         }
         let body = decode_body(kind, entry_count, payload, limits)?;
         let page = Self {
@@ -302,6 +317,21 @@ impl ImmutableIndexPage {
     pub fn decode_slot(
         slot: &[u8],
         limits: ImmutableIndexPageLimits,
+    ) -> Result<Self, ImmutableIndexPageError> {
+        Self::decode_slot_inner(slot, limits, false)
+    }
+
+    pub(crate) fn decode_cached_slot(
+        slot: &crate::SegmentCacheLease,
+        limits: ImmutableIndexPageLimits,
+    ) -> Result<Self, ImmutableIndexPageError> {
+        Self::decode_slot_inner(slot, limits, slot.page_integrity_verified())
+    }
+
+    fn decode_slot_inner(
+        slot: &[u8],
+        limits: ImmutableIndexPageLimits,
+        page_integrity_verified: bool,
     ) -> Result<Self, ImmutableIndexPageError> {
         if slot.len() != limits.max_page_bytes.get() {
             return Err(ImmutableIndexPageError::Corrupt(format!(
@@ -331,7 +361,7 @@ impl ImmutableIndexPage {
                 "index page slot contains non-zero trailing bytes".to_string(),
             ));
         }
-        Self::decode(&slot[..encoded_len], limits)
+        Self::decode_inner(&slot[..encoded_len], limits, page_integrity_verified)
     }
 }
 

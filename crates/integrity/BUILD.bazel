@@ -3,6 +3,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+test_suite(
+    name = "presubmit_tests",
+)
+
 rust_library(
     name = "skein_integrity",
     crate_name = "skein_integrity",
@@ -22,4 +26,3 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
-

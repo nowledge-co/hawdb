@@ -38,6 +38,29 @@ if [[ -z "${workspace_members}" ]]; then
   exit 1
 fi
 
+has_named_test_suite() {
+  local build_file="$1"
+  local suite_name="$2"
+  awk -v suite_name="${suite_name}" '
+    /^[[:space:]]*test_suite\(/ {
+      in_suite = 1
+      found_name = 0
+      next
+    }
+    in_suite && $0 ~ "^[[:space:]]*name[[:space:]]*=[[:space:]]*\"" suite_name "\"" {
+      found_name = 1
+    }
+    in_suite && /^[[:space:]]*\)/ {
+      if (found_name) {
+        found = 1
+        exit
+      }
+      in_suite = 0
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${build_file}"
+}
+
 printf '.\n%s\n' "${workspace_members}" | while IFS= read -r package_dir; do
   if [[ ! -f "${package_dir}/BUILD.bazel" ]]; then
     echo "missing BUILD.bazel for Cargo workspace package: ${package_dir}" >&2
@@ -45,6 +68,39 @@ printf '.\n%s\n' "${workspace_members}" | while IFS= read -r package_dir; do
   fi
   if ! grep -Eq '^[[:space:]]*rust_test\(' "${package_dir}/BUILD.bazel"; then
     echo "missing rust_test target for Cargo workspace package: ${package_dir}" >&2
+    exit 1
+  fi
+done
+
+if ! has_named_test_suite BUILD.bazel skein_presubmit_crate_tests; then
+  echo "missing canonical crate presubmit suite: //:skein_presubmit_crate_tests" >&2
+  exit 1
+fi
+
+printf '%s\n' "${workspace_members}" | while IFS= read -r package_dir; do
+  if ! grep -Fqx "    \"${package_dir}\"," BUILD.bazel; then
+    echo "Cargo workspace package is missing from _CARGO_WORKSPACE_PACKAGES: ${package_dir}" >&2
+    exit 1
+  fi
+
+  exclusion_line="$(
+    grep -E "^[[:space:]]*\"${package_dir}\":[[:space:]]*\(\"(local-only|manual|periodic)\",[[:space:]]*\"//${package_dir}:[^\"]+\"\),[[:space:]]*$" BUILD.bazel || true
+  )"
+  if [[ -n "${exclusion_line}" ]]; then
+    if [[ "$(printf '%s\n' "${exclusion_line}" | wc -l | tr -d ' ')" != "1" ]]; then
+      echo "duplicate crate presubmit exclusions: ${package_dir}" >&2
+      exit 1
+    fi
+    alternate_target="$(printf '%s\n' "${exclusion_line}" | sed -E 's#^.*"//[^:]+:([^\"]+)"\),[[:space:]]*$#\1#')"
+    if ! grep -Eq "^[[:space:]]*name[[:space:]]*=[[:space:]]*\"${alternate_target}\"" "${package_dir}/BUILD.bazel"; then
+      echo "crate presubmit exclusion target does not exist: //${package_dir}:${alternate_target}" >&2
+      exit 1
+    fi
+    continue
+  fi
+
+  if ! has_named_test_suite "${package_dir}/BUILD.bazel" presubmit_tests; then
+    echo "missing crate presubmit suite: //${package_dir}:presubmit_tests" >&2
     exit 1
   fi
 done
