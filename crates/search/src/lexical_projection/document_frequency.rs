@@ -31,10 +31,11 @@ impl PartialFieldFrequency {
             .repeated_weight
             .checked_add(incoming.repeated_weight)
             .ok_or_else(|| SkeinError::Storage("document term frequency overflow".into()))?;
-        if let Some(first) = incoming.first_event {
-            if self.first_event.is_none_or(|current| first.0 < current.0) {
-                self.first_event = Some(first);
-            }
+        if let Some(first) = incoming
+            .first_event
+            .filter(|first| self.first_event.is_none_or(|current| first.0 < current.0))
+        {
+            self.first_event = Some(first);
         }
         self.repeated_weight = repeated_weight;
         Ok(())
@@ -256,4 +257,112 @@ fn summary_overflow_is_checked_and_rejected_merge_is_atomic() {
     assert_eq!(summary.frequency().unwrap(), u64::MAX);
     summary.push(0, TokenOccurrence::UniqueInField, 1).unwrap();
     assert!(summary.frequency().is_err());
+}
+
+fn resolved_prefix_run(events: &[Event]) -> PartialRun {
+    let mut analysis = DocumentAnalysis::new("spill-prefix", Default::default()).unwrap();
+    for event in events {
+        analysis
+            .push(
+                event.term.clone(),
+                event.occurrence,
+                event.field,
+                event.weight,
+            )
+            .unwrap();
+    }
+    analysis
+        .frequencies
+        .into_iter()
+        .map(|(term, entry)| {
+            // Earlier fields are already resolved. Carry their full count in
+            // the last seen field, whose marker suppresses later phrase aliases.
+            // No later token may revisit an earlier field in this contract.
+            (
+                (term, entry.last_field),
+                PartialFieldFrequency {
+                    repeated_weight: u64::from(entry.frequency),
+                    first_event: Some((0, 0)),
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn switching_an_existing_accumulator_to_spill_preserves_every_prefix() {
+    for length in 1..=6usize {
+        for pattern in 0..4usize.pow(length as u32) {
+            for boundary in 0..=length {
+                let events = (0..length)
+                    .map(|position| {
+                        let symbol = (pattern >> (position * 2)) & 3;
+                        Event {
+                            term: if symbol & 1 == 0 { "alpha" } else { "beta" }.into(),
+                            occurrence: if symbol & 2 == 0 {
+                                TokenOccurrence::Repeated
+                            } else {
+                                TokenOccurrence::UniqueInField
+                            },
+                            field: u8::from(position >= boundary),
+                            weight: if position < boundary { 2 } else { 1 },
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let expected = reference(&events);
+                for prefix in 1..=length {
+                    let mut runs = vec![resolved_prefix_run(&events[..prefix])];
+                    for (offset, event) in events[prefix..].iter().enumerate() {
+                        let mut summary = PartialFieldFrequency::default();
+                        summary
+                            .push(
+                                (prefix + offset) as u64,
+                                event.occurrence,
+                                event.weight as u64,
+                            )
+                            .unwrap();
+                        runs.push(BTreeMap::from([(
+                            (event.term.clone(), event.field),
+                            summary,
+                        )]));
+                    }
+                    for reverse in [false, true] {
+                        assert_eq!(
+                            reduce(runs.clone(), reverse),
+                            expected,
+                            "length={length}, pattern={pattern}, boundary={boundary}, prefix={prefix}, reverse={reverse}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn forgetting_the_prefix_field_marker_is_not_an_exact_transition() {
+    let events =
+        [TokenOccurrence::Repeated, TokenOccurrence::UniqueInField].map(|occurrence| Event {
+            term: "graph".into(),
+            occurrence,
+            field: 0,
+            weight: 2,
+        });
+    let expected = reference(&events);
+    let mut tail = PartialFieldFrequency::default();
+    tail.push(1, events[1].occurrence, 2).unwrap();
+    let tail = BTreeMap::from([(("graph".into(), 0), tail)]);
+    let correct_prefix = resolved_prefix_run(&events[..1]);
+    assert_eq!(
+        reduce(vec![correct_prefix.clone(), tail.clone()], false),
+        expected
+    );
+    let mut broken_prefix = correct_prefix;
+    for summary in broken_prefix.values_mut() {
+        summary.first_event = None;
+    }
+    let incorrect = reduce(vec![broken_prefix, tail], false);
+    assert_eq!(expected.1, 2);
+    assert_eq!(incorrect.1, 4);
+    assert_ne!(incorrect, expected);
 }
