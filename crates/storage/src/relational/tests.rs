@@ -4417,6 +4417,8 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     assert_eq!(cold_report.file_bytes_read, cold_report.bytes_read);
     assert_eq!(page_cache.snapshot().pinned_bytes, 0);
 
+    let cold_checks = crate::cache::PAGE_INTEGRITY_CHECKS.get();
+    assert!(cold_checks > 0);
     let mut warm = Vec::new();
     let warm_report = cached_reader
         .visit_exact_postings(
@@ -4436,6 +4438,21 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     assert_eq!(warm_report.file_pages_read, 0);
     assert_eq!(warm_report.file_bytes_read, 0);
     assert_eq!(page_cache.snapshot().pinned_bytes, 0);
+    assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), cold_checks);
+
+    for limits in [low_page_limit, low_byte_limit, low_row_limit] {
+        assert!(matches!(
+            cached_reader.visit_exact_postings(
+                "documents",
+                "documents_owner_idx",
+                &owner,
+                limits,
+                |_| true,
+            ),
+            Err(RelationalIndexShadowError::Admission(_))
+        ));
+        assert!(!cached_reader.is_poisoned());
+    }
 
     let mut cache_only = Vec::new();
     let cache_only_report = cached_reader
@@ -4529,6 +4546,47 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
         .manifest()
         .root("documents", "documents_owner_idx")
         .expect("owner root descriptor");
+    let identity = crate::cache::SegmentCacheIdentity {
+        store_id: crate::StoreId(41),
+        manifest_generation: crate::ManifestGeneration(1),
+        segment_id: root_descriptor.root_page_id.get(),
+        representation: crate::RepresentationKind::RelationalIndexPageSlot,
+    };
+    let verified = page_cache.get_by_identity(&identity).unwrap();
+    assert!(verified.page_integrity_verified());
+    for corrupt_offset in [48, 52] {
+        let mut corrupt = verified.to_vec();
+        corrupt[corrupt_offset] ^= 1;
+        let raw_cache = std::sync::Arc::new(crate::SegmentCache::new(16 * 1024));
+        drop(
+            raw_cache
+                .insert(
+                    crate::SegmentCacheKey {
+                        store_id: identity.store_id,
+                        manifest_generation: identity.manifest_generation,
+                        segment_id: identity.segment_id,
+                        representation: identity.representation,
+                        content_digest: crate::content_digest(&corrupt),
+                    },
+                    corrupt,
+                )
+                .unwrap(),
+        );
+        let raw_reader = RelationalIndexShadowReader::open_latest_with_cache(
+            &directory,
+            config,
+            std::sync::Arc::clone(&raw_cache),
+            identity.store_id,
+        )
+        .unwrap();
+        assert!(matches!(
+            raw_reader.read_root(root_descriptor),
+            Err(RelationalIndexShadowError::Corrupt(message)) if message.contains("checksum mismatch")
+        ));
+        assert!(raw_reader.is_poisoned());
+        assert_eq!(raw_cache.snapshot().pinned_bytes, 0);
+    }
+    drop(verified);
     let root = reader
         .read_root(root_descriptor)
         .expect("read owner root before semantic corruption");

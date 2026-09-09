@@ -1224,7 +1224,10 @@ impl RelationalIndexShadowReader {
         if let Some(cache) = &self.page_cache
             && let Some(slot) = cache.get_by_identity(&cache_identity)
         {
-            let page = self.decode_selected_page(&slot, page_id)?;
+            let page = self.validate_selected_page(
+                ImmutableIndexPage::decode_cached_slot(&slot, self.config.page_limits)?,
+                page_id,
+            )?;
             return Ok(RelationalIndexPageRead {
                 page,
                 cache_hit: true,
@@ -1248,7 +1251,10 @@ impl RelationalIndexShadowReader {
         read_exact_at(self.artifact()?, &mut slot, offset)
             .map_err(durability("read shadow page"))?;
         let slot: Arc<[u8]> = slot.into();
-        let page = self.decode_selected_page(&slot, page_id)?;
+        let page = self.validate_selected_page(
+            ImmutableIndexPage::decode_slot(&slot, self.config.page_limits)?,
+            page_id,
+        )?;
         let mut cache_admission_rejected = false;
         if let Some(cache) = &self.page_cache {
             let key = SegmentCacheKey {
@@ -1258,7 +1264,7 @@ impl RelationalIndexShadowReader {
                 content_digest: content_digest(&slot),
                 representation: cache_identity.representation,
             };
-            match cache.insert(key, Arc::clone(&slot)) {
+            match cache.insert_page_verified(key, Arc::clone(&slot)) {
                 Ok(_) => {}
                 Err(SegmentCacheError::EntryTooLarge { .. })
                 | Err(SegmentCacheError::PinnedCapacity { .. }) => {
@@ -1279,12 +1285,11 @@ impl RelationalIndexShadowReader {
         })
     }
 
-    fn decode_selected_page(
+    fn validate_selected_page(
         &self,
-        slot: &[u8],
+        page: ImmutableIndexPage,
         page_id: IndexPageId,
     ) -> Result<ImmutableIndexPage, RelationalIndexShadowError> {
-        let page = ImmutableIndexPage::decode_slot(slot, self.config.page_limits)?;
         if page.generation != self.manifest.generation
             || page.source_commit_epoch != self.manifest.source_commit_epoch
             || page.page_id != page_id
