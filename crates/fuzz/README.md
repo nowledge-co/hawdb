@@ -3,6 +3,11 @@
 `skein-fuzz` is a development-only correctness harness over Skein's public embedded API. The
 production `skein` crate does not depend on it.
 
+The [DST scoping recommendation](../../docs/DST_SCOPING.md) explains the existing
+I/O and scheduling seams, the limits of seeded replay, and the decision gates for
+a possible storage-only simulator. It does not authorize simulator implementation
+or replace these campaigns.
+
 The generator first creates a deterministic graph state, then chooses query shapes and typed
 predicate and query AST nodes that are validated against the generated schema before rendering. A
 campaign runs nine complementary oracles:

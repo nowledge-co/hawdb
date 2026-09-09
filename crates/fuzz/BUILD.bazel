@@ -93,6 +93,7 @@ test_suite(
         "//crates/optimizer:skein_optimizer_ddl_command_fuzz_tests",
         "//crates/optimizer:skein_optimizer_full_text_cost_fuzz_tests",
         "//crates/optimizer:skein_optimizer_trace_cost_fuzz_tests",
+        "//crates/plan:skein_plan_explain_fuzz_tests",
         "//crates/sql-syntax:skein_sql_alias_boundary_fuzz_tests",
         "//crates/storage:skein_storage_file_lock_fuzz_tests",
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
