@@ -10,26 +10,26 @@ use sqlparser::ast::{
 };
 
 pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<SqlStatement> {
-    if insert.optimizer_hint.is_some()
-        || insert.or.is_some()
-        || insert.ignore
-        || !insert.into
-        || insert.table_alias.is_some()
-        || insert.overwrite
-        || !insert.assignments.is_empty()
-        || insert.partitioned.is_some()
-        || !insert.after_columns.is_empty()
-        || insert.has_table_keyword
-        || insert.replace_into
-        || insert.priority.is_some()
-        || insert.insert_alias.is_some()
-        || insert.settings.is_some()
-        || insert.format_clause.is_some()
-    {
-        return Err(SkeinError::Semantic(
-            "unsupported PostgreSQL INSERT clause".to_string(),
-        ));
-    }
+    super::reject_unsupported_clauses(
+        "INSERT",
+        &[
+            ("optimizer hint", insert.optimizer_hint.is_some()),
+            ("OR conflict action", insert.or.is_some()),
+            ("IGNORE", insert.ignore),
+            ("missing INTO", !insert.into),
+            ("table alias", insert.table_alias.is_some()),
+            ("OVERWRITE", insert.overwrite),
+            ("SET assignments", !insert.assignments.is_empty()),
+            ("PARTITION", insert.partitioned.is_some()),
+            ("columns after PARTITION", !insert.after_columns.is_empty()),
+            ("TABLE keyword", insert.has_table_keyword),
+            ("REPLACE INTO", insert.replace_into),
+            ("priority", insert.priority.is_some()),
+            ("row alias", insert.insert_alias.is_some()),
+            ("SETTINGS", insert.settings.is_some()),
+            ("FORMAT", insert.format_clause.is_some()),
+        ],
+    )?;
     let TableObject::TableName(table) = &insert.table else {
         return Err(SkeinError::Semantic(
             "INSERT table functions are not supported".to_string(),

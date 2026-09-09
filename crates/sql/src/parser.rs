@@ -12,6 +12,21 @@ use sqlparser::parser::Parser;
 mod mutation;
 mod schema;
 
+#[cfg(test)]
+mod clause_tests;
+
+fn reject_unsupported_clauses(
+    statement: &'static str,
+    clauses: &[(&'static str, bool)],
+) -> Result<()> {
+    if let Some((clause, _)) = clauses.iter().find(|(_, present)| *present) {
+        return Err(SkeinError::Semantic(format!(
+            "unsupported PostgreSQL {statement} clause: {clause}"
+        )));
+    }
+    Ok(())
+}
+
 use mutation::{lower_delete_statement, lower_insert_statement, lower_update_statement};
 use schema::{
     lower_alter_table_statement, lower_create_index_statement, lower_create_table_statement,

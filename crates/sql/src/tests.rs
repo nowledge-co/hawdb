@@ -6,6 +6,8 @@ use super::{
 };
 use skein_core::Value;
 
+mod clause_diagnostics;
+
 #[test]
 fn exposes_owned_postgres_sql_pgq_syntax() {
     let statement = super::syntax::parse_pgq_statement(
