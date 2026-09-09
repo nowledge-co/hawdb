@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
+mod analyzer_stream;
 mod cjk_tokenizer;
 mod document_encoding;
 mod generation_cleanup;
@@ -122,6 +123,7 @@ mod compiled_capabilities {
     }
 }
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
+use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 use cjk_tokenizer::{chinese_search_tokens, is_cjk_search_char};
 pub use generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
@@ -6419,25 +6421,15 @@ fn document_tokens(
     document: &SearchDocument,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) -> Vec<String> {
-    let title_tokens = tokenize_list(&document.title, analyzer_lexicon);
     let mut tokens = Vec::new();
-    for _ in 0..TITLE_TERM_FREQUENCY_WEIGHT {
-        tokens.extend(title_tokens.iter().cloned());
+    for (text, weight) in document_token_fields(document) {
+        let field_tokens = tokenize_list(text, analyzer_lexicon);
+        for _ in 1..weight {
+            tokens.extend(field_tokens.iter().cloned());
+        }
+        tokens.extend(field_tokens);
     }
-    tokens.extend(tokenize_list(&document.content, analyzer_lexicon));
-    tokens.extend(searchable_metadata_tokens(document, analyzer_lexicon));
     tokens
-}
-
-fn searchable_metadata_tokens(
-    document: &SearchDocument,
-    analyzer_lexicon: &SearchAnalyzerLexicon,
-) -> Vec<String> {
-    ["kind", "external_id", "source_id", "space_id"]
-        .into_iter()
-        .filter_map(|key| document.metadata.get(key))
-        .flat_map(|value| tokenize_list(value, analyzer_lexicon))
-        .collect()
 }
 
 fn token_frequencies(tokens: impl Iterator<Item = String>) -> BTreeMap<String, usize> {
@@ -6454,17 +6446,14 @@ fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<St
 
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
     let mut tokens = TokenSequence::default();
-    let mut previous_part = None::<String>;
-    for raw in text.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
-        let parts = identifier_parts(raw);
-        if let (Some(previous), Some(first)) = (previous_part.as_ref(), parts.first()) {
-            push_analyzed_token(&mut tokens, format!("{previous}_{first}"), analyzer_lexicon);
+    visit_token_list(text, analyzer_lexicon, |token, occurrence| {
+        match occurrence {
+            TokenOccurrence::UniqueInField => tokens.push_unique(token),
+            TokenOccurrence::Repeated => tokens.push(token),
         }
-        tokens.extend(identifier_tokens(raw, analyzer_lexicon));
-        if let Some(last) = parts.last() {
-            previous_part = Some(last.clone());
-        }
-    }
+        Ok(())
+    })
+    .expect("token collection has no fallible admission");
     tokens.into_vec()
 }
 
@@ -6615,6 +6604,7 @@ impl TokenSequence {
         self.order.push(token_id);
     }
 
+    #[cfg(test)]
     fn extend(&mut self, tokens: impl IntoIterator<Item = String>) {
         for token in tokens {
             self.push(token);

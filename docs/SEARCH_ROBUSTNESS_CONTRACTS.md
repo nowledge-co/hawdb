@@ -1,5 +1,9 @@
 # Search robustness contracts
 
+Lexical build and mini-delta token emission, unchanged analyzer semantics,
+early admission, and remaining whole-run working units are documented in
+[`INCREMENTAL_DOCUMENT_ANALYSIS.md`](INCREMENTAL_DOCUMENT_ANALYSIS.md).
+
 This document records the disposition of all seven items in issue #230 and the
 generation record admission prerequisite for #392. The changes preserve the
 v1 persisted codecs and public Rust option/report fields.
