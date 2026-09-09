@@ -76,7 +76,8 @@ rust_test(
     crate = ":skein_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
-    deps = [":skein_search"] + _SEARCH_LOCAL_DEPS + all_crate_deps(normal = True, normal_dev = True),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
