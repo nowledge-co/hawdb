@@ -3,6 +3,7 @@ use crate::planner::{ComparisonOp, PhysicalPlanKind, SortDirection, SortKey};
 use std::collections::BTreeSet;
 
 mod fixtures;
+mod handlers;
 
 fn wrap(plan: PhysicalPlan, shape: usize) -> PhysicalPlan {
     match shape {

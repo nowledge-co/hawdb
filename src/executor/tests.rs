@@ -1403,7 +1403,7 @@ fn sort_rejects_spill_bytes_over_budget_and_removes_partial_run() {
     std::fs::remove_dir(memory.spill_directory).unwrap();
 }
 
-fn graph_algorithm_fixture() -> (Catalog, GraphStore) {
+pub(super) fn graph_algorithm_fixture() -> (Catalog, GraphStore) {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();
     let source = store
@@ -1427,7 +1427,7 @@ fn graph_algorithm_fixture() -> (Catalog, GraphStore) {
     (catalog, store)
 }
 
-fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
+pub(super) fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
     PhysicalPlan::GraphAlgorithm {
         algorithm,
         graph_name: "MemoryGraph".to_string(),
