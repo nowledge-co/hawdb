@@ -3,6 +3,7 @@ use super::{
     document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument,
     TokenOccurrence, BM25_B, BM25_K1,
 };
+use crate::bounded_file::read_bounded_file;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_integrity::Crc32cHasher as Digest;
@@ -35,13 +36,8 @@ pub(super) fn artifact_file(generation: u64) -> String {
 }
 
 pub(super) fn manifest_generation(path: &Path) -> Result<u64> {
-    let length = fs::metadata(path)?.len();
-    if length > MAX_MANIFEST_BYTES {
-        return Err(SkeinError::Storage(format!(
-            "lexical projection manifest requires {length} bytes, exceeding {MAX_MANIFEST_BYTES}"
-        )));
-    }
-    Ok(ManifestBody::decode(&fs::read(path)?)?.generation)
+    let bytes = read_bounded_file(path, MAX_MANIFEST_BYTES)?;
+    Ok(ManifestBody::decode(&bytes)?.generation)
 }
 
 pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
@@ -653,7 +649,7 @@ impl LexicalProjectionReader {
         )
     }
 
-    pub(super) fn load_named(
+    fn load_named(
         root: &Path,
         manifest_file: &str,
         expected_source_epoch: Option<u64>,
@@ -674,12 +670,31 @@ impl LexicalProjectionReader {
         if !manifest_path.exists() {
             return Ok(None);
         }
-        if fs::metadata(&manifest_path)?.len() > MAX_MANIFEST_BYTES {
+        let bytes = read_bounded_file(&manifest_path, MAX_MANIFEST_BYTES)?;
+        Self::load_manifest_bytes(
+            root,
+            &bytes,
+            expected_source_epoch,
+            expected_analyzer_digest,
+            expected_documents_digest,
+            config,
+        )
+    }
+
+    pub(super) fn load_manifest_bytes(
+        root: &Path,
+        bytes: &[u8],
+        expected_source_epoch: Option<u64>,
+        expected_analyzer_digest: u64,
+        expected_documents_digest: u64,
+        config: LexicalProjectionConfig,
+    ) -> Result<Option<Arc<Self>>> {
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
             return Err(SkeinError::Storage(
                 "lexical projection manifest exceeds its read budget".to_string(),
             ));
         }
-        let manifest = ManifestBody::decode(&fs::read(&manifest_path)?)?;
+        let manifest = ManifestBody::decode(bytes)?;
         if manifest.source_graph_commit_epoch != expected_source_epoch
             || manifest.analyzer_digest != expected_analyzer_digest
             || manifest.documents_digest != expected_documents_digest

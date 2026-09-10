@@ -21,6 +21,7 @@ use super::{
     FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
+use crate::bounded_file::read_bounded_file;
 use crate::error::{Result, SkeinError};
 use crate::{RuntimeCapabilities, RuntimeCapability};
 use serde::{Deserialize, Serialize};
@@ -596,14 +597,13 @@ impl SearchOutOfCoreReader {
             config.max_lexical_manifest_bytes.get(),
             "search lexical manifest",
         )?;
-        drop(lexical_manifest_bytes);
         let lexical_config = LexicalProjectionConfig {
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
-        let lexical_projection = LexicalProjectionReader::load_named(
+        let lexical_projection = LexicalProjectionReader::load_manifest_bytes(
             &root,
-            &manifest.lexical_manifest_file,
+            &lexical_manifest_bytes,
             manifest.source_graph_commit_epoch,
             lexical_analyzer_digest(&analyzer_lexicon),
             manifest.documents_digest,
@@ -615,6 +615,7 @@ impl SearchOutOfCoreReader {
                     .to_string(),
             )
         })?;
+        drop(lexical_manifest_bytes);
 
         #[cfg(feature = "vector-search")]
         let rabitq_projection = open_rabitq_projection(
@@ -2849,17 +2850,6 @@ fn matched_span_bytes_for(span: &super::SearchMatchedSpan) -> u64 {
         .saturating_add(span.text.len() as u64)
         .saturating_add(span.term.len() as u64)
         .saturating_add(std::mem::size_of::<super::SearchMatchedSpan>() as u64)
-}
-
-fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
-    let length = fs::metadata(path)?.len();
-    if length > max_bytes {
-        return Err(SkeinError::Storage(format!(
-            "search artifact {} requires {length} bytes, exceeding {max_bytes}",
-            path.display()
-        )));
-    }
-    fs::read(path).map_err(Into::into)
 }
 
 fn read_bound_artifact(
