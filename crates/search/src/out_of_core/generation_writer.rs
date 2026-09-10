@@ -9,7 +9,7 @@ use crate::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionWriter, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
-    checksum_bytes, SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest,
+    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest,
     NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
     SEARCH_DOCUMENT_ID_FIELD,
 };
@@ -141,8 +141,9 @@ pub struct SearchOutOfCoreGenerationBuildReport {
 /// Builds an immutable search generation without retaining the full document corpus.
 ///
 /// Documents must be pushed in strictly increasing UTF-8 ID order. The writer
-/// keeps only one encoded input record while spooling and at most one descriptor
-/// segment while producing document and sidecar payloads. The descriptor itself
+/// encodes spool records with fixed-size scratch while retaining the owned input.
+/// Spool decoding still materializes one encoded record and its decoded document;
+/// artifact production retains at most one descriptor segment. The descriptor itself
 /// remains bounded by `max_descriptor_working_bytes` because the serving reader
 /// must retain that range index.
 pub struct SearchOutOfCoreGenerationWriter {
@@ -514,12 +515,7 @@ impl SearchOutOfCoreGenerationWriter {
         let spool = self.spool.as_mut().ok_or_else(|| {
             SkeinError::Storage("search generation spool is already closed".to_string())
         })?;
-        let record = encoding.encode()?;
-        spool.write_all(&record_bytes.to_le_bytes())?;
-        spool.write_all(&checksum_bytes(record.as_bytes()).to_le_bytes())?;
-        spool.write_all(record.as_bytes())?;
-
-        self.documents_digest.update(record.as_bytes());
+        spool::write_frame(spool, &encoding, &mut self.documents_digest)?;
         self.last_document_id = Some(document.id);
         self.document_count = self.document_count.saturating_add(1);
         if document.embedding.is_some() {

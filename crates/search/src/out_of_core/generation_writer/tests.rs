@@ -1,5 +1,6 @@
 use super::super::OUT_OF_CORE_MANIFEST_FILE;
 use super::*;
+use crate::checksum_bytes;
 #[cfg(feature = "vector-search")]
 use crate::{CompressedVectorSearchMode, SearchMode, SearchQueryOptions};
 use crate::{
@@ -10,6 +11,8 @@ use crate::{
 use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod spool_encoding;
 
 #[test]
 fn segment_admission_sizes_documents_without_encoding_them() {
@@ -74,7 +77,7 @@ fn large_record_is_rejected_without_materializing_its_hex_copy() {
 
 #[test]
 fn record_admission_checks_all_byte_limits_before_encoding() {
-    use crate::document_encoding::ENCODING_ATTEMPTS;
+    use crate::document_encoding::{ENCODING_ATTEMPTS, STREAMING_ATTEMPTS};
 
     let source = document(0);
     let record = crate::encode_search_document_line(&source);
@@ -114,6 +117,7 @@ fn record_admission_checks_all_byte_limits_before_encoding() {
         }
         let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
         let attempts = ENCODING_ATTEMPTS.get();
+        let streamed = STREAMING_ATTEMPTS.get();
         assert!(writer
             .push(source.clone())
             .unwrap_err()
@@ -124,6 +128,7 @@ fn record_admission_checks_all_byte_limits_before_encoding() {
             attempts,
             "limit {limit} encoded a rejected record"
         );
+        assert_eq!(STREAMING_ATTEMPTS.get(), streamed);
         assert_eq!(writer.document_count, 0);
         assert_eq!(writer.logical_document_bytes, 0);
         writer.spool.as_mut().unwrap().flush().unwrap();
@@ -141,7 +146,7 @@ fn record_admission_checks_all_byte_limits_before_encoding() {
 
 #[test]
 fn record_admission_accepts_exact_limits_and_rejects_cumulative_overflow() {
-    use crate::document_encoding::ENCODING_ATTEMPTS;
+    use crate::document_encoding::{ENCODING_ATTEMPTS, STREAMING_ATTEMPTS};
 
     let source = document(0);
     let record = crate::encode_search_document_line(&source);
@@ -168,8 +173,10 @@ fn record_admission_accepts_exact_limits_and_rejects_cumulative_overflow() {
         }
         let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
         let attempts = ENCODING_ATTEMPTS.get();
+        let streamed = STREAMING_ATTEMPTS.get();
         writer.push(source.clone()).unwrap();
-        assert_eq!(ENCODING_ATTEMPTS.get(), attempts + 1);
+        assert_eq!(ENCODING_ATTEMPTS.get(), attempts);
+        assert_eq!(STREAMING_ATTEMPTS.get(), streamed + 2);
         assert_eq!(writer.metadata_fields, fields);
         writer.spool.as_mut().unwrap().flush().unwrap();
         let mut expected_spool = SPOOL_HEADER.to_vec();
@@ -187,7 +194,8 @@ fn record_admission_accepts_exact_limits_and_rejects_cumulative_overflow() {
         } else {
             "logical bytes"
         }));
-        assert_eq!(ENCODING_ATTEMPTS.get(), attempts + 1);
+        assert_eq!(ENCODING_ATTEMPTS.get(), attempts);
+        assert_eq!(STREAMING_ATTEMPTS.get(), streamed + 2);
         assert_eq!(writer.document_count, 1);
         writer.spool.as_mut().unwrap().flush().unwrap();
         assert_eq!(fs::read(&writer.spool_path).unwrap(), expected_spool);
