@@ -39,6 +39,10 @@ use std::sync::{Arc, Mutex};
 mod analyzer_lexicon;
 mod analyzer_stream;
 mod cjk_tokenizer;
+#[cfg(test)]
+mod compression_tests;
+#[cfg(test)]
+mod document_decoding_tests;
 mod document_encoding;
 mod generation_cleanup;
 mod lexical_projection;
@@ -7328,8 +7332,10 @@ fn decode_string(input: &str) -> Result<String> {
     }
     let mut bytes = Vec::with_capacity(input.len() / 2);
     for offset in (0..input.len()).step_by(2) {
-        let byte = u8::from_str_radix(&input[offset..offset + 2], 16)
-            .map_err(|_| SkeinError::Storage(format!("invalid hex string: {input}")))?;
+        let byte = input
+            .get(offset..offset + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .ok_or_else(|| SkeinError::Storage(format!("invalid hex string at byte {offset}")))?;
         bytes.push(byte);
     }
     String::from_utf8(bytes).map_err(|error| SkeinError::Storage(error.to_string()))
@@ -7470,14 +7476,18 @@ fn decode_search_snapshot_text_bounded(
         ))
     })?;
     let mut decoded = Vec::with_capacity(expected_uncompressed_len.min(1024 * 1024));
+    // The declaration has already passed reader admission. Probe one byte past
+    // it to reject understated lengths without inflating up to the reader limit.
     decoder
-        .take(max_uncompressed_bytes.saturating_add(1))
+        .take((expected_uncompressed_len as u64).saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
             SkeinError::Storage(format!(
                 "search projection zstd decompression failed: {error}"
             ))
         })?;
+    #[cfg(test)]
+    compression_tests::record_decoded_bytes(decoded.len());
     if decoded.len() as u64 > max_uncompressed_bytes {
         return Err(SkeinError::Storage(format!(
             "search projection decompressed payload exceeded {max_uncompressed_bytes} bytes"

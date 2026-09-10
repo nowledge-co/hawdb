@@ -2,7 +2,8 @@
 
 Issue: [#302](https://github.com/nowledge-co/skein/issues/302)
 
-Status: experimental; not active in the query data path.
+Status: experimental adapter delivered in [#304](https://github.com/nowledge-co/skein/pull/304);
+not active in the query data path.
 
 ## Decision
 
@@ -48,6 +49,19 @@ The async boundary is the wave executor: callers must be able to await a wave.
 Wrapping this executor in `block_on`, or calling it from the existing
 `execute_blocking` query closure, is forbidden because a saturated blocking
 lane could deadlock on its own nested work.
+
+### Storage Injection Boundary
+
+An injected `Arc<R>` is one reader implementation, not a database-level registry
+of storage systems. `FileSegmentRangeReader::register` registers local file
+artifacts; its `StoreId` separates cache identity. Neither establishes routing
+between multiple providers or a provider lifecycle/recovery contract.
+
+Multi-storage injection remains follow-up work under #302. It needs an explicit
+library contract for store/artifact/generation identity, routing, shared resource
+budgets, live-handle ownership and read-only versus durable capabilities. The
+existing local-file store remains the default. An async scheduling adapter alone
+does not provide this contract for reads, writes, WAL and checkpoints.
 
 ## Admission and Cancellation
 
@@ -149,8 +163,29 @@ Payload byte counts and checksums matched for every sample. The async path used
 one fewer workload thread and slightly less peak RSS at every depth. At depth
 16 it used about 36% less process CPU, but wall time was 30% to 44% slower
 across the tested depths. This does not justify replacing the current query
-path. A Linux cold-cache run remains necessary before drawing an out-of-core
-I/O conclusion.
+path. These macOS results alone do not establish an out-of-core I/O benefit;
+the later Linux baseline is recorded below.
+
+### Historical Linux Evidence
+
+The [Linux baseline workflow](https://github.com/nowledge-co/skein/actions/runs/33928122832)
+completed for `3cce649162daa370bfe7382f2131f40794c69a10` during #304. Its
+[measurement receipt](https://github.com/nowledge-co/skein/pull/304#issuecomment-5547435118)
+records the same 640 MiB fixture, 8,192 non-coalescing 4 KiB ranges, depths 1/4/16
+and three isolated samples per backend/depth. All 18 samples reported
+`cold_cache_requested=true` and matching payload checksums. This reports the
+eviction request, not a guarantee that every physical read missed every cache.
+
+The async path used one fewer workload thread at each depth. Depth 4 wall time
+was about 0.5% lower; depth 16 CPU was about 5.4% lower with wall time about 4.4%
+higher. Depth 1 was materially slower and peak RSS was effectively unchanged.
+These mixed results do not justify switching the synchronous query path.
+
+This baseline predates the later cancellation-lifetime and main-integration
+follow-ups in #304. It is historical adapter evidence, not performance
+qualification for the current head or a future async query integration. The
+query-integration gates below still require evidence for the implementation
+being considered for activation.
 
 ## Query Integration Gate
 
