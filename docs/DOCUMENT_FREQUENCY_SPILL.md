@@ -58,6 +58,35 @@ claim that a host deadline currently interrupts every analyzer/merge operation.
 Generation rebuild/update uses the new path; the independently bounded in-memory
 mini-delta representation is unchanged.
 
+## Artifact block encoding
+
+Document-map and posting blocks retain their v1 wire grammar and existing
+target-block boundaries. Before writing a block, the encoder follows that grammar
+through a counting sink: checked string/count representation, exact encoded
+length, the local block limit and the next offset/identity must all fit. This
+pass does not copy or hash the field bytes.
+
+The admitted block then streams directly through the existing buffered artifact
+writer. Individual writes are at most 8192 bytes; CRC32C covers only bytes
+actually accepted by the writer, including short/interrupted-write handling.
+No complete encoded block vector, per-block seek, flush or fsync is needed.
+Descriptors, offsets and completed posting counts advance only after the full
+block write succeeds. Partial-write errors retain the existing staging cleanup
+and publication ownership; they do not publish a descriptor for the prefix.
+
+This removes one encoded-block-sized temporary allocation, not the pending
+document/posting vectors, owned keys, dictionary/descriptor state, whole-artifact
+digest buffer, or the input/analyzer working sets. The extra sizing traversal
+and per-field checksum updates are explicit CPU tradeoffs, not a throughput
+improvement claim. Shared allocator/RSS governance remains separate work.
+
+An independent legacy-wire oracle and a 512-case local campaign cover both block
+kinds, exact/one-short admission, Unicode and long fields, bounded writes,
+short/zero/interrupted writes and fault prefixes. Integration checks cover block
+boundaries, term statistics, rejected public generation publication, old-reader
+hydration and a subsequent successful generation. The campaign is a manual target
+in the existing local fuzz suite; no fuzz CI job is added.
+
 ## Verification
 
 Tests compare against the frozen materialized analyzer traversal, including all

@@ -18,6 +18,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+mod block_encoding;
 mod document_frequency;
 
 #[cfg(test)]
@@ -1303,21 +1304,15 @@ impl ArtifactBuilder {
         if self.document_pending.is_empty() {
             return Ok(());
         }
-        let mut payload = Vec::with_capacity(self.document_pending_bytes as usize + 29);
-        encode_block_header(
-            &mut payload,
+        let descriptor = block_encoding::write_block(
+            &mut self.writer,
             self.generation,
             self.next_block_id,
-            BlockKind::Documents,
-            self.document_pending.len(),
+            self.offset,
+            self.config.max_block_bytes.get(),
+            block_encoding::Entries::Documents(&self.document_pending),
         )?;
-        for (id, length) in &self.document_pending {
-            write_string(&mut payload, id)?;
-            payload.extend_from_slice(&length.to_le_bytes());
-        }
-        let min_key = self.document_pending.first().unwrap().0.clone();
-        let max_key = self.document_pending.last().unwrap().0.clone();
-        self.write_block(BlockKind::Documents, min_key, max_key, payload)?;
+        self.commit_block(descriptor);
         self.document_pending.clear();
         self.document_pending_bytes = 0;
         Ok(())
@@ -1385,58 +1380,28 @@ impl ArtifactBuilder {
         if self.posting_pending.is_empty() {
             return Ok(());
         }
-        let mut payload = Vec::with_capacity(self.posting_pending_bytes as usize + 29);
-        encode_block_header(
-            &mut payload,
+        let descriptor = block_encoding::write_block(
+            &mut self.writer,
             self.generation,
             self.next_block_id,
-            BlockKind::Postings,
-            self.posting_pending.len(),
+            self.offset,
+            self.config.max_block_bytes.get(),
+            block_encoding::Entries::Postings(&self.posting_pending),
         )?;
-        for posting in &self.posting_pending {
-            encode_posting(&mut payload, posting)?;
-        }
-        let min_key = self.posting_pending.first().unwrap().term.clone();
-        let max_key = self.posting_pending.last().unwrap().term.clone();
         self.posting_count = self
             .posting_count
             .saturating_add(self.posting_pending.len() as u64);
-        self.write_block(BlockKind::Postings, min_key, max_key, payload)?;
+        self.commit_block(descriptor);
         self.posting_pending.clear();
         self.posting_pending_bytes = 0;
         Ok(())
     }
 
-    fn write_block(
-        &mut self,
-        kind: BlockKind,
-        min_key: String,
-        max_key: String,
-        payload: Vec<u8>,
-    ) -> Result<()> {
-        if payload.len() as u64 > self.config.max_block_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "lexical build produced a {} byte block, exceeding {}",
-                payload.len(),
-                self.config.max_block_bytes
-            )));
-        }
-        let entry_count = u32::from_le_bytes(payload[25..29].try_into().unwrap());
-        let descriptor = BlockDescriptor {
-            block_id: self.next_block_id,
-            kind,
-            min_key,
-            max_key,
-            offset: self.offset,
-            length: payload.len() as u64,
-            checksum: checksum(&payload),
-            entry_count,
-        };
-        self.writer.write_all(&payload)?;
-        self.offset = self.offset.saturating_add(payload.len() as u64);
-        self.next_block_id = self.next_block_id.saturating_add(1);
+    fn commit_block(&mut self, descriptor: BlockDescriptor) {
+        // Encoding checked both additions before writing the block.
+        self.offset += descriptor.length;
+        self.next_block_id += 1;
         self.blocks.push(descriptor);
-        Ok(())
     }
 
     fn finish(mut self) -> Result<ArtifactSummary> {
@@ -1702,24 +1667,22 @@ fn merge_runs(
 }
 
 fn encode_block_header(
-    output: &mut Vec<u8>,
+    output: &mut impl Write,
     generation: u64,
     block_id: u64,
     kind: BlockKind,
     count: usize,
 ) -> Result<()> {
-    output.extend_from_slice(BLOCK_HEADER);
-    output.extend_from_slice(&generation.to_le_bytes());
-    output.extend_from_slice(&block_id.to_le_bytes());
-    output.push(match kind {
+    let count = u32::try_from(count)
+        .map_err(|_| SkeinError::Storage("lexical block count exceeds u32".to_string()))?;
+    output.write_all(BLOCK_HEADER)?;
+    output.write_all(&generation.to_le_bytes())?;
+    output.write_all(&block_id.to_le_bytes())?;
+    output.write_all(&[match kind {
         BlockKind::Documents => 1,
         BlockKind::Postings => 2,
-    });
-    output.extend_from_slice(
-        &u32::try_from(count)
-            .map_err(|_| SkeinError::Storage("lexical block count exceeds u32".to_string()))?
-            .to_le_bytes(),
-    );
+    }])?;
+    output.write_all(&count.to_le_bytes())?;
     Ok(())
 }
 
