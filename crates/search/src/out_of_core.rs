@@ -1540,6 +1540,7 @@ impl SearchOutOfCoreReader {
                         "search hydration references unknown segment {segment_id}"
                     ))
                 })?;
+            // The per-document check below keeps prior output within the limit.
             for document in self.read_selected_hydration_segment(
                 segment,
                 &ids,
