@@ -18,12 +18,15 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+mod document_frequency;
+
 #[cfg(test)]
 mod spill_tests;
 
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
 const RUN_HEADER: &[u8; 8] = b"SKNLEXR1";
+const SPILL_IO_BUFFER_BYTES: usize = 8192;
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const MANIFEST_FILE: &str = "search_lexical.manifest.skein";
 
@@ -282,10 +285,10 @@ struct Posting {
 }
 
 impl Posting {
-    fn resident_bytes(&self) -> u64 {
+    fn resident_bytes(term: &str, document_id: &str) -> u64 {
         32u64
-            .saturating_add(self.term.len() as u64)
-            .saturating_add(self.document_id.len() as u64)
+            .saturating_add(term.len() as u64)
+            .saturating_add(document_id.len() as u64)
     }
 
     fn encoded_len(&self) -> u64 {
@@ -481,6 +484,18 @@ fn analyze_delta_document(
     analyzer: &SearchAnalyzerLexicon,
     config: LexicalProjectionConfig,
 ) -> Result<DeltaDocument> {
+    admit_document_source(document, config)?;
+    let mut accumulator = DocumentAnalysis::new(&document.id, config)?;
+    for (field, (text, weight)) in document_token_fields(document).enumerate() {
+        let field = u8::try_from(field).expect("document analysis has at most six fields");
+        visit_token_list(text, analyzer, |term, occurrence| {
+            accumulator.push(term, occurrence, field, weight)
+        })?;
+    }
+    Ok(accumulator.finish())
+}
+
+fn admit_document_source(document: &SearchDocument, config: LexicalProjectionConfig) -> Result<()> {
     let source_bytes = document
         .title
         .len()
@@ -499,14 +514,7 @@ fn analyze_delta_document(
             document.id, config.max_document_source_bytes
         )));
     }
-    let mut accumulator = DocumentAnalysis::new(&document.id, config)?;
-    for (field, (text, weight)) in document_token_fields(document).enumerate() {
-        let field = u8::try_from(field).expect("document analysis has at most six fields");
-        visit_token_list(text, analyzer, |term, occurrence| {
-            accumulator.push(term, occurrence, field, weight)
-        })?;
-    }
-    Ok(accumulator.finish())
+    Ok(())
 }
 
 struct AnalyzedTerm {
@@ -582,10 +590,7 @@ impl<'a> DocumentAnalysis<'a> {
     }
 
     fn admit_map_bytes(&self, resident_bytes: u64, terms: usize) -> Result<()> {
-        let marker_bytes =
-            (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
-        let required_bytes =
-            resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes));
+        let required_bytes = self.required_map_bytes(resident_bytes, terms);
         if required_bytes > self.config.build_memory_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical document {} requires more than {} analyzer bytes",
@@ -593,6 +598,12 @@ impl<'a> DocumentAnalysis<'a> {
             )));
         }
         Ok(())
+    }
+
+    fn required_map_bytes(&self, resident_bytes: u64, terms: usize) -> u64 {
+        let marker_bytes =
+            (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
+        resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes))
     }
 
     fn finish(self) -> DeltaDocument {
@@ -1112,33 +1123,41 @@ impl LexicalProjectionWriter {
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut consume = |document: &SearchDocument| -> Result<()> {
-            let analyzed = analyze_delta_document(document, analyzer, self.config)?;
+            let analyzed = document_frequency::analyze(
+                document,
+                analyzer,
+                &mut runs,
+                &mut chunk,
+                &mut chunk_bytes,
+            )?;
+            let document_len = analyzed.document_len();
             document_count = document_count.saturating_add(1);
-            total_document_len =
-                total_document_len.saturating_add(u64::from(analyzed.document_len));
-            artifact.push_document(document.id.clone(), analyzed.document_len)?;
-            for (term, term_frequency) in analyzed.frequencies {
-                let posting = Posting {
-                    term,
-                    document_id: document.id.clone(),
-                    term_frequency,
-                    document_len: analyzed.document_len,
-                };
-                let bytes = posting.resident_bytes();
-                if bytes > self.config.build_memory_bytes.get() {
+            total_document_len = total_document_len.saturating_add(u64::from(document_len));
+            artifact.push_document(document.id.clone(), document_len)?;
+            analyzed.visit(self.config, |term, term_frequency, retained| {
+                let bytes = Posting::resident_bytes(&term, &document.id);
+                let posting_limit = self
+                    .config
+                    .build_memory_bytes
+                    .get()
+                    .saturating_sub(retained);
+                if bytes > posting_limit {
                     return Err(SkeinError::Storage(
                         "one lexical posting exceeds the build memory budget".to_string(),
                     ));
                 }
-                if !chunk.is_empty()
-                    && chunk_bytes.saturating_add(bytes) > self.config.build_memory_bytes.get()
-                {
-                    runs.spill(&mut chunk)?;
-                    chunk_bytes = 0;
+                if !chunk.is_empty() && chunk_bytes.saturating_add(bytes) > posting_limit {
+                    document_frequency::flush_pending(&mut runs, &mut chunk, &mut chunk_bytes)?;
                 }
                 chunk_bytes = chunk_bytes.saturating_add(bytes);
-                chunk.push(posting);
-            }
+                chunk.push(Posting {
+                    term,
+                    document_id: document.id.clone(),
+                    term_frequency,
+                    document_len,
+                });
+                Ok(())
+            })?;
             Ok(())
         };
         scan(&mut consume)?;
@@ -1456,7 +1475,10 @@ impl SpillIo for FileSpillIo {
     type Writer = BufWriter<File>;
 
     fn create(&mut self, path: &Path) -> Result<Self::Writer> {
-        Ok(BufWriter::new(File::create(path)?))
+        Ok(BufWriter::with_capacity(
+            SPILL_IO_BUFFER_BYTES,
+            File::create(path)?,
+        ))
     }
 
     fn remove(&mut self, path: &Path) -> Result<()> {
