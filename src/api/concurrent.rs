@@ -1,5 +1,7 @@
 mod coordinator;
 mod group_commit;
+#[cfg(test)]
+mod key_range_tests;
 
 use self::coordinator::{CommitSequencer, LockManager, TransactionIdAllocator};
 pub use self::group_commit::{
@@ -1418,17 +1420,23 @@ fn single_key_ranges(
 ) -> Option<Vec<(Bound<RelationalKey>, Bound<RelationalKey>)>> {
     match predicate {
         SqlPredicate::And(left, right) => {
-            let left = single_key_ranges(left, primary_key, table, alias, parameters)?;
-            let right = single_key_ranges(right, primary_key, table, alias, parameters)?;
-            Some(
-                left.into_iter()
-                    .flat_map(|left| {
-                        right
-                            .iter()
-                            .filter_map(move |right| intersect_ranges(&left, right))
-                    })
-                    .collect(),
-            )
+            let left = single_key_ranges(left, primary_key, table, alias, parameters);
+            let right = single_key_ranges(right, primary_key, table, alias, parameters);
+            match (left, right) {
+                (Some(left), Some(right)) => Some(
+                    left.into_iter()
+                        .flat_map(|left| {
+                            right
+                                .iter()
+                                .filter_map(move |right| intersect_ranges(&left, right))
+                        })
+                        .collect(),
+                ),
+                // A conjunct can only narrow its sibling's key set. Retain that
+                // conservative bound even when the residual has no key range.
+                (Some(ranges), None) | (None, Some(ranges)) => Some(ranges),
+                (None, None) => None,
+            }
         }
         SqlPredicate::Or(left, right) => {
             let mut ranges = single_key_ranges(left, primary_key, table, alias, parameters)?;
