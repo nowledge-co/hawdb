@@ -2888,8 +2888,12 @@ fn open_exact_length_artifact(path: &Path, expected_len: u64, name: &str) -> Res
 }
 
 fn read_marker_lines_bounded(path: &Path, max_bytes: u64) -> Result<Vec<String>> {
-    if !path.exists() {
-        return Ok(Vec::new());
+    // Only a missing entry means no marker. Do not hide lookup errors or
+    // treat an existing but unreadable symlink as proof of freshness.
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
     }
     let bytes = read_bounded_file(path, max_bytes)?;
     let content = std::str::from_utf8(&bytes)

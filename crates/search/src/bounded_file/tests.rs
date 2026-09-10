@@ -370,6 +370,72 @@ fn marker_errors_fail_closed_without_changing_valid_or_missing_markers() {
 }
 
 #[test]
+fn marker_parent_lookup_errors_cannot_report_a_fresh_projection() {
+    let directory = Directory::new();
+    let root = directory.0.join("projection");
+    create_generation(&root);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    fs::rename(&root, directory.0.join("retained")).unwrap();
+    fs::write(&root, b"not a directory").unwrap();
+
+    for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
+        let error = fs::symlink_metadata(root.join(name)).unwrap_err();
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        let (needed, reasons) = marker_status(&reader, name);
+        assert!(needed, "a marker lookup error was treated as absence");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains(&format!("failed to read marker {name}")));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn marker_broken_symlinks_cannot_report_a_fresh_projection() {
+    use std::os::unix::fs::symlink;
+
+    for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
+        let directory = Directory::new();
+        create_generation(&directory.0);
+        let reader = crate::SearchOutOfCoreReader::open(&directory.0).unwrap();
+        let path = directory.0.join(name);
+        let target = directory.0.join("marker-target");
+        fs::write(&target, b"rebuild required").unwrap();
+        symlink(&target, &path).unwrap();
+        assert_eq!(
+            marker_status(&reader, name),
+            (true, vec!["rebuild required".into()])
+        );
+        fs::write(&target, []).unwrap();
+        assert_eq!(marker_status(&reader, name), (false, Vec::new()));
+        fs::remove_file(&target).unwrap();
+        assert!(fs::symlink_metadata(&path).unwrap().is_symlink());
+        let (needed, reasons) = marker_status(&reader, name);
+        assert!(needed, "a dangling marker symlink was treated as absence");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains(&format!("failed to read marker {name}")));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn marker_symlink_loops_cannot_report_a_fresh_projection() {
+    use std::os::unix::fs::symlink;
+
+    for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
+        let directory = Directory::new();
+        create_generation(&directory.0);
+        let reader = crate::SearchOutOfCoreReader::open(&directory.0).unwrap();
+        let path = directory.0.join(name);
+        symlink(name, &path).unwrap();
+        assert!(fs::metadata(&path).is_err());
+        let (needed, reasons) = marker_status(&reader, name);
+        assert!(needed, "a marker symlink loop was treated as absence");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains(&format!("failed to read marker {name}")));
+    }
+}
+
+#[test]
 fn public_open_keeps_lexical_budget_and_checksum_admission() {
     use crate::{SearchOutOfCoreConfig, SearchOutOfCoreReader};
     let directory = Directory::new();
