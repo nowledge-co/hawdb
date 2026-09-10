@@ -7380,21 +7380,14 @@ fn decode_search_snapshot_text(bytes: &[u8]) -> Result<String> {
     decode_search_snapshot_text_bounded(bytes, u64::MAX)
 }
 
-fn decode_search_snapshot_text_bounded(
-    bytes: &[u8],
-    max_uncompressed_bytes: u64,
-) -> Result<String> {
-    let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
-        return Err(SkeinError::Storage(
-            "search projection compressed envelope missing header terminator".to_string(),
-        ));
-    };
-    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        SkeinError::Storage(format!(
-            "search projection compressed envelope header is invalid: {error}"
-        ))
-    })?;
-    let payload = &bytes[header_end + 2..];
+struct SnapshotHeader {
+    compressed_len: Option<usize>,
+    compressed_checksum: Option<u64>,
+    uncompressed_len: Option<usize>,
+    uncompressed_checksum: Option<u64>,
+}
+
+fn parse_snapshot_header(header: &str) -> Result<SnapshotHeader> {
     let mut codec = None;
     let mut compressed_checksum = None;
     let mut uncompressed_checksum = None;
@@ -7438,6 +7431,35 @@ fn decode_search_snapshot_text_bounded(
             "search projection compressed envelope uses unsupported codec".to_string(),
         ));
     }
+    Ok(SnapshotHeader {
+        compressed_len,
+        compressed_checksum,
+        uncompressed_len,
+        uncompressed_checksum,
+    })
+}
+
+fn decode_search_snapshot_text_bounded(
+    bytes: &[u8],
+    max_uncompressed_bytes: u64,
+) -> Result<String> {
+    let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
+        return Err(SkeinError::Storage(
+            "search projection compressed envelope missing header terminator".to_string(),
+        ));
+    };
+    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
+        SkeinError::Storage(format!(
+            "search projection compressed envelope header is invalid: {error}"
+        ))
+    })?;
+    let payload = &bytes[header_end + 2..];
+    let SnapshotHeader {
+        compressed_len,
+        compressed_checksum,
+        uncompressed_len,
+        uncompressed_checksum,
+    } = parse_snapshot_header(header)?;
     let expected_compressed_len = compressed_len.ok_or_else(|| {
         SkeinError::Storage(
             "search projection compressed envelope missing compressed_len".to_string(),
