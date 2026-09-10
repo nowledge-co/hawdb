@@ -66,6 +66,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_search_compression_fuzz_tests",
+    args = [
+        "compression_tests::compressed_envelope_differential_campaign",
+        "--exact",
+        "--ignored",
+    ],
+    tags = ["manual"],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_search_lexical_spill_fuzz_tests",
     args = [
         "lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign",

@@ -39,6 +39,8 @@ use std::sync::{Arc, Mutex};
 mod analyzer_lexicon;
 mod analyzer_stream;
 mod cjk_tokenizer;
+#[cfg(test)]
+mod compression_tests;
 mod document_encoding;
 mod generation_cleanup;
 mod lexical_projection;
@@ -7470,14 +7472,18 @@ fn decode_search_snapshot_text_bounded(
         ))
     })?;
     let mut decoded = Vec::with_capacity(expected_uncompressed_len.min(1024 * 1024));
+    // The declaration has already passed reader admission. Probe one byte past
+    // it to reject understated lengths without inflating up to the reader limit.
     decoder
-        .take(max_uncompressed_bytes.saturating_add(1))
+        .take((expected_uncompressed_len as u64).saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
             SkeinError::Storage(format!(
                 "search projection zstd decompression failed: {error}"
             ))
         })?;
+    #[cfg(test)]
+    compression_tests::record_decoded_bytes(decoded.len());
     if decoded.len() as u64 > max_uncompressed_bytes {
         return Err(SkeinError::Storage(format!(
             "search projection decompressed payload exceeded {max_uncompressed_bytes} bytes"
