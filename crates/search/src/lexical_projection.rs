@@ -18,6 +18,9 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+#[cfg(test)]
+mod positioned_read_tests;
+
 mod document_frequency;
 
 #[cfg(test)]
@@ -871,10 +874,16 @@ impl LexicalProjectionReader {
                 block.block_id
             )));
         }
-        let mut file = self.file.try_clone()?;
-        file.seek(SeekFrom::Start(block.offset))?;
-        let mut bytes = vec![0u8; block.length as usize];
-        file.read_exact(&mut bytes)?;
+        let length = usize::try_from(block.length).map_err(|_| {
+            SkeinError::Storage(format!(
+                "lexical block {} length exceeds the platform address space",
+                block.block_id
+            ))
+        })?;
+        let mut bytes = vec![0u8; length];
+        // File clones can share a cursor. Each read must carry its own offset
+        // so concurrent posting streams cannot redirect one another's I/O.
+        skein_storage::io::read_exact_at(&self.file, &mut bytes, block.offset)?;
         if checksum(&bytes) != block.checksum {
             return Err(SkeinError::Storage(format!(
                 "lexical block {} checksum mismatch",
