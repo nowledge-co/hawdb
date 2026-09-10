@@ -5943,7 +5943,9 @@ pub(crate) fn decode_value(input: &str) -> Result<Value> {
     if input.is_empty() {
         return Err(SkeinError::Storage("empty encoded value".to_string()));
     }
-    let (kind, rest) = input.split_at(1);
+    let (kind, rest) = input
+        .split_at_checked(1)
+        .ok_or_else(|| SkeinError::Storage("invalid encoded value tag".to_string()))?;
     match kind {
         "n" if rest.is_empty() => Ok(Value::Null),
         "b" => match rest {
@@ -5963,7 +5965,7 @@ pub(crate) fn decode_value(input: &str) -> Result<Value> {
         "l" => decode_list_value(rest),
         "m" => decode_map_value(rest),
         _ => Err(SkeinError::Storage(format!(
-            "invalid encoded value: {input}"
+            "invalid encoded value tag or payload: {kind:?}"
         ))),
     }
 }
@@ -6168,8 +6170,12 @@ fn decode_bytes(input: &str) -> Result<Vec<u8>> {
     }
     let mut bytes = Vec::with_capacity(input.len() / 2);
     for offset in (0..input.len()).step_by(2) {
-        let byte = u8::from_str_radix(&input[offset..offset + 2], 16)
-            .map_err(|_| SkeinError::Storage(format!("invalid hex string: {input}")))?;
+        let byte = input
+            .get(offset..offset + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .ok_or_else(|| {
+                SkeinError::Storage(format!("invalid hex string at byte offset {offset}"))
+            })?;
         bytes.push(byte);
     }
     Ok(bytes)
@@ -6365,6 +6371,8 @@ fn estimated_value_bytes(value: &Value) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    mod hex_recovery_tests;
+
     use super::{
         canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,
         checksum_bytes, compute_statistics, encode_durable_text, estimated_properties_bytes,
