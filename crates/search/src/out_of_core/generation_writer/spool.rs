@@ -1,13 +1,57 @@
+use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
 use crate::{checksum_bytes, decode_search_document_line, SearchDocument};
+use skein_integrity::Crc32cHasher;
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const SPOOL_HEADER: &[u8; 8] = b"SKNSPOL1";
 pub(super) const SPOOL_FRAME_HEADER_BYTES: u64 = 16;
 static GENERATION_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct FrameDigests {
+    record: Crc32cHasher,
+    documents: Crc32cHasher,
+}
+
+impl Write for FrameDigests {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.record.update(bytes);
+        self.documents.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Append an already admitted frame without retaining its encoded payload.
+pub(super) fn write_frame(
+    output: &mut impl Write,
+    encoding: &DocumentEncoding<'_>,
+    documents_digest: &mut Crc32cHasher,
+) -> Result<()> {
+    // The existing format places the checksum before the payload. A bounded
+    // prepass keeps writes sequential without per-document seek/flush. The
+    // borrowed source cannot change between the two encoding passes.
+    let mut digests = FrameDigests {
+        record: Crc32cHasher::new(),
+        documents: *documents_digest,
+    };
+    encoding.write_to(&mut digests)?;
+    output.write_all(&(encoding.len() as u64).to_le_bytes())?;
+    output.write_all(&digests.record.finish().to_le_bytes())?;
+    encoding.write_to(output)?;
+    // Failed or partial writes must not commit a new logical stream identity.
+    *documents_digest = digests.documents;
+    Ok(())
+}
+
+#[cfg(test)]
+mod write_tests;
 
 pub(super) struct SpoolSource {
     pub(super) path: PathBuf,

@@ -1,8 +1,56 @@
 use crate::{Result, SearchDocument, SkeinError};
 use std::fmt::{self, Write};
+use std::io;
 
-// Counting and materializing share the wire grammar. Hex fields can be sized
-// without scanning their bytes or allocating an intermediate encoded string.
+const HEX_BUFFER_BYTES: usize = 8192;
+
+struct IoSink<'a, W> {
+    writer: &'a mut W,
+    error: Option<io::Error>,
+    remaining: usize,
+}
+
+impl<W: io::Write> IoSink<'_, W> {
+    fn bytes(&mut self, bytes: &[u8]) -> fmt::Result {
+        if bytes.len() > self.remaining {
+            self.error = Some(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "search document encoding exceeded its admitted length",
+            ));
+            return Err(fmt::Error);
+        }
+        self.writer.write_all(bytes).map_err(|error| {
+            self.error = Some(error);
+            fmt::Error
+        })?;
+        self.remaining -= bytes.len();
+        Ok(())
+    }
+}
+
+impl<W: io::Write> Write for IoSink<'_, W> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.bytes(value.as_bytes())
+    }
+}
+
+impl<W: io::Write> DocumentSink for IoSink<'_, W> {
+    fn write_hex(&mut self, value: &str) -> fmt::Result {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut buffer = [0u8; HEX_BUFFER_BYTES];
+        for input in value.as_bytes().chunks(HEX_BUFFER_BYTES / 2) {
+            for (byte, output) in input.iter().zip(buffer.chunks_exact_mut(2)) {
+                output[0] = HEX[usize::from(byte >> 4)];
+                output[1] = HEX[usize::from(byte & 15)];
+            }
+            self.bytes(&buffer[..input.len() * 2])?;
+        }
+        Ok(())
+    }
+}
+
+// Counting, streaming and materializing share the wire grammar. Hex fields can
+// be sized without scanning their bytes or allocating an encoded string.
 trait DocumentSink: Write {
     fn write_hex(&mut self, value: &str) -> fmt::Result;
 }
@@ -83,8 +131,33 @@ impl<'a> DocumentEncoding<'a> {
         self.bytes
     }
 
-    pub(super) fn encode(self) -> Result<String> {
+    pub(super) fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
         #[cfg(test)]
+        STREAMING_ATTEMPTS.set(STREAMING_ATTEMPTS.get() + 1);
+        let mut sink = IoSink {
+            writer,
+            error: None,
+            remaining: self.bytes,
+        };
+        write_document(&mut sink, self.document).map_err(|_| {
+            sink.error.take().unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "search document formatting failed",
+                )
+            })
+        })?;
+        if sink.remaining != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "search document encoding did not fill its admitted length",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn encode(self) -> Result<String> {
         ENCODING_ATTEMPTS.set(ENCODING_ATTEMPTS.get() + 1);
         let mut record = String::new();
         record.try_reserve_exact(self.bytes).map_err(|error| {
@@ -107,7 +180,14 @@ pub(super) fn encode_search_document_line(document: &SearchDocument) -> String {
 #[cfg(test)]
 thread_local! {
     pub(super) static ENCODING_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static STREAMING_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::legacy_encode;
+
+#[cfg(test)]
+mod io_tests;
