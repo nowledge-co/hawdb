@@ -102,8 +102,10 @@ test_suite(
         "//crates/search:skein_search_spool_encoding_fuzz_tests",
         "//crates/sql:skein_sql_clause_diagnostics_fuzz_tests",
         "//crates/sql-syntax:skein_sql_alias_boundary_fuzz_tests",
+        "//crates/storage:skein_storage_backup_hex_fuzz_tests",
         "//crates/storage:skein_storage_file_lock_fuzz_tests",
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
+        "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
     ],
 )

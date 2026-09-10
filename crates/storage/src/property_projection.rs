@@ -2999,11 +2999,14 @@ fn decode_hex(value: &str, name: &str) -> Result<Vec<u8>, PersistentPropertyProj
     (0..value.len())
         .step_by(2)
         .map(|offset| {
-            u8::from_str_radix(&value[offset..offset + 2], 16).map_err(|_| {
-                PersistentPropertyProjectionError::Corrupt(format!(
-                    "property projection {name} has invalid hexadecimal data"
-                ))
-            })
+            value
+                .get(offset..offset + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or_else(|| {
+                    PersistentPropertyProjectionError::Corrupt(format!(
+                        "property projection {name} has invalid hexadecimal data"
+                    ))
+                })
         })
         .collect()
 }
@@ -3136,6 +3139,9 @@ fn write_double_hashed(
     block_digest.update(bytes);
     Ok(())
 }
+
+#[cfg(test)]
+mod hex_tests;
 
 #[cfg(test)]
 mod tests {

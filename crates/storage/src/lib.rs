@@ -41,6 +41,8 @@ pub mod wire;
 
 #[cfg(test)]
 mod file_lock_tests;
+#[cfg(test)]
+mod hex_test_support;
 
 pub use adjacency::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,

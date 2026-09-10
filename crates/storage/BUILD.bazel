@@ -46,6 +46,25 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Keep persisted-field differential campaigns on the explicit local surface.
+[
+    rust_test(
+        name = "skein_storage_%s_hex_fuzz_tests" % decoder,
+        args = [
+            "%s::hex_tests::persisted_hex_differential_campaign" % decoder,
+            "--exact",
+            "--ignored",
+        ],
+        crate = ":skein_storage",
+        edition = "2024",
+        tags = ["manual"],
+        aliases = aliases(normal_dev = True, proc_macro_dev = True),
+        deps = all_crate_deps(normal_dev = True),
+        proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    )
+    for decoder in ["backup", "property_projection"]
+]
+
 rust_test(
     name = "skein_storage_file_lock_fuzz_tests",
     args = [

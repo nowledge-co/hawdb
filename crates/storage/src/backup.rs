@@ -249,8 +249,12 @@ fn decode_string(input: &str) -> Result<String> {
     }
     let mut bytes = Vec::with_capacity(input.len() / 2);
     for offset in (0..input.len()).step_by(2) {
-        let byte = u8::from_str_radix(&input[offset..offset + 2], 16)
-            .map_err(|_| SkeinError::Storage(format!("invalid hex string: {input}")))?;
+        let byte = input
+            .get(offset..offset + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .ok_or_else(|| {
+                SkeinError::Storage(format!("invalid hex string at byte offset {offset}"))
+            })?;
         bytes.push(byte);
     }
     String::from_utf8(bytes).map_err(|error| SkeinError::Storage(error.to_string()))
@@ -283,6 +287,9 @@ pub struct StorageScrubReport {
     pub wal_record_count: usize,
     pub wal_bytes: u64,
 }
+
+#[cfg(test)]
+mod hex_tests;
 
 #[cfg(test)]
 mod tests {
