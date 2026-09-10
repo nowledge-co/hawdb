@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod generation_writer;
+mod hydration;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
@@ -1539,10 +1540,12 @@ impl SearchOutOfCoreReader {
                         "search hydration references unknown segment {segment_id}"
                     ))
                 })?;
-            for document in self.read_hydration_segment(segment, metrics)? {
-                if !ids.contains(&document.id) {
-                    continue;
-                }
+            for document in self.read_selected_hydration_segment(
+                segment,
+                &ids,
+                self.config.max_hydrated_bytes.get() - hydrated_bytes,
+                metrics,
+            )? {
                 hydrated_bytes = hydrated_bytes
                     .checked_add(search_document_bytes(&document))
                     .ok_or_else(|| {
