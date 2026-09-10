@@ -298,11 +298,26 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
     builder.flush_postings().unwrap();
     let summary = builder.finish().unwrap();
     let actual = fs::read(&path).unwrap();
+    assert_eq!(
+        summary
+            .blocks
+            .iter()
+            .map(|block| (block.kind, block.entry_count))
+            .collect::<Vec<_>>(),
+        vec![
+            (BlockKind::Documents, 2),
+            (BlockKind::Documents, 1),
+            (BlockKind::Postings, 1),
+            (BlockKind::Postings, 1),
+            (BlockKind::Postings, 1),
+        ]
+    );
     let mut expected = ARTIFACT_HEADER.to_vec();
     expected.extend_from_slice(&11u64.to_le_bytes());
     let mut document_index = 0;
     let mut posting_index = 0;
-    for block in &summary.blocks {
+    for (block_id, block) in summary.blocks.iter().enumerate() {
+        assert_eq!(block.block_id, block_id as u64);
         let count = block.entry_count as usize;
         let entries = match block.kind {
             BlockKind::Documents => {
@@ -324,6 +339,8 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
         expected.extend_from_slice(&encoded);
     }
     assert_eq!(actual, expected);
+    assert_eq!(summary.len, actual.len() as u64);
+    assert_eq!(summary.checksum, checksum(&actual));
     assert_eq!(document_index, documents.len());
     assert_eq!(posting_index, postings.len());
     assert_eq!(summary.posting_count, 3);
