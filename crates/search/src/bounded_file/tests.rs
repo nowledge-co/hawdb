@@ -298,6 +298,77 @@ fn lexical_manifest(root: &Path) -> PathBuf {
         .unwrap()
 }
 
+fn marker_status(reader: &crate::SearchOutOfCoreReader, name: &str) -> (bool, Vec<String>) {
+    let freshness = reader.projection_freshness();
+    match name {
+        crate::FULL_REINDEX_MARKER => (
+            freshness.full_reindex_needed,
+            freshness.full_reindex_reasons,
+        ),
+        crate::METADATA_REPAIR_MARKER => (
+            freshness.metadata_repair_needed,
+            freshness.metadata_repair_reasons,
+        ),
+        _ => panic!("unexpected marker"),
+    }
+}
+
+#[test]
+fn marker_growth_errors_cannot_report_a_fresh_projection() {
+    for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
+        let directory = Directory::new();
+        create_generation(&directory.0);
+        let reader = crate::SearchOutOfCoreReader::open(&directory.0).unwrap();
+        let path = directory.0.join(name);
+        fs::write(&path, b"reason").unwrap();
+        ADMISSION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |path| {
+                assert_eq!(path.file_name().unwrap(), name);
+                OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .unwrap()
+                    .write_all(b" changed")
+                    .unwrap();
+            }));
+        });
+        let (needed, reasons) = marker_status(&reader, name);
+        assert!(needed, "an unreadable marker was treated as absent");
+        assert!(reasons.iter().any(|reason| reason.contains("grew beyond")));
+        assert!(ADMISSION_HOOK.with(|hook| hook.borrow().is_none()));
+    }
+}
+
+#[test]
+fn marker_errors_fail_closed_without_changing_valid_or_missing_markers() {
+    for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
+        let directory = Directory::new();
+        create_generation(&directory.0);
+        let reader = crate::SearchOutOfCoreReader::open(&directory.0).unwrap();
+        let path = directory.0.join(name);
+        assert_eq!(marker_status(&reader, name), (false, Vec::new()));
+        fs::write(&path, b"first\nsecond").unwrap();
+        assert_eq!(
+            marker_status(&reader, name),
+            (true, vec!["first".into(), "second".into()])
+        );
+        for bytes in [vec![0xff], vec![b'x'; 64 * 1024 + 1]] {
+            fs::write(&path, bytes).unwrap();
+            let (needed, reasons) = marker_status(&reader, name);
+            assert!(needed);
+            assert_eq!(reasons.len(), 1);
+            assert!(reasons[0].contains("failed to read marker"));
+        }
+        fs::write(&path, []).unwrap();
+        assert_eq!(marker_status(&reader, name), (false, Vec::new()));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let (needed, reasons) = marker_status(&reader, name);
+        assert!(needed);
+        assert!(reasons[0].contains("failed to read marker"));
+    }
+}
+
 #[test]
 fn public_open_keeps_lexical_budget_and_checksum_admission() {
     use crate::{SearchOutOfCoreConfig, SearchOutOfCoreReader};

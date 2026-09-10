@@ -781,12 +781,12 @@ impl SearchOutOfCoreReader {
     }
 
     pub fn projection_freshness(&self) -> SearchProjectionFreshness {
-        let full_reindex_reasons =
-            read_marker_lines_bounded(&self.root.join(FULL_REINDEX_MARKER), MAX_MARKER_BYTES)
-                .unwrap_or_default();
-        let metadata_repair_reasons =
-            read_marker_lines_bounded(&self.root.join(METADATA_REPAIR_MARKER), MAX_MARKER_BYTES)
-                .unwrap_or_default();
+        let read_marker = |name| {
+            read_marker_lines_bounded(&self.root.join(name), MAX_MARKER_BYTES)
+                .unwrap_or_else(|error| vec![format!("failed to read marker {name}: {error}")])
+        };
+        let full_reindex_reasons = read_marker(FULL_REINDEX_MARKER);
+        let metadata_repair_reasons = read_marker(METADATA_REPAIR_MARKER);
         SearchProjectionFreshness {
             document_count: self.manifest.document_count,
             import_source_graph_commit_epoch: self.manifest.import_source_graph_commit_epoch,
