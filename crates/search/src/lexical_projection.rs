@@ -18,6 +18,9 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+#[cfg(test)]
+mod spill_tests;
+
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
 const RUN_HEADER: &[u8; 8] = b"SKNLEXR1";
@@ -1440,6 +1443,75 @@ struct SpillRuns {
     sequence: usize,
 }
 
+trait SpillIo {
+    type Writer: Write;
+
+    fn create(&mut self, path: &Path) -> Result<Self::Writer>;
+    fn remove(&mut self, path: &Path) -> Result<()>;
+}
+
+struct FileSpillIo;
+
+impl SpillIo for FileSpillIo {
+    type Writer = BufWriter<File>;
+
+    fn create(&mut self, path: &Path) -> Result<Self::Writer> {
+        Ok(BufWriter::new(File::create(path)?))
+    }
+
+    fn remove(&mut self, path: &Path) -> Result<()> {
+        Ok(fs::remove_file(path)?)
+    }
+}
+
+fn checked_spill_bytes(current: u64, additional: u64, limit: NonZeroU64) -> Result<u64> {
+    let required = current
+        .checked_add(additional)
+        .ok_or_else(|| SkeinError::Storage("lexical spill bytes overflow".to_string()))?;
+    if required > limit.get() {
+        return Err(SkeinError::Storage(format!(
+            "lexical build requires {required} spill bytes, exceeding {limit}"
+        )));
+    }
+    Ok(required)
+}
+
+struct SpillRunWriter<W> {
+    writer: W,
+    total_bytes: u64,
+    limit: NonZeroU64,
+}
+
+impl<W: Write> SpillRunWriter<W> {
+    fn create(
+        path: &Path,
+        previous_bytes: u64,
+        limit: NonZeroU64,
+        io: &mut impl SpillIo<Writer = W>,
+    ) -> Result<Self> {
+        let total_bytes = checked_spill_bytes(previous_bytes, RUN_HEADER.len() as u64, limit)?;
+        let mut writer = io.create(path)?;
+        writer.write_all(RUN_HEADER)?;
+        Ok(Self {
+            writer,
+            total_bytes,
+            limit,
+        })
+    }
+
+    fn push(&mut self, posting: &Posting) -> Result<()> {
+        let total_bytes = checked_spill_bytes(self.total_bytes, posting.encoded_len(), self.limit)?;
+        encode_posting(&mut self.writer, posting)?;
+        self.total_bytes = total_bytes;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<u64> {
+        self.writer.flush()?;
+        Ok(self.total_bytes)
+    }
+}
+
 impl SpillRuns {
     fn new(root: &Path, generation: u64, config: LexicalProjectionConfig) -> Self {
         Self {
@@ -1453,27 +1525,39 @@ impl SpillRuns {
     }
 
     fn spill(&mut self, postings: &mut Vec<Posting>) -> Result<()> {
+        self.spill_with_io(postings, &mut FileSpillIo)
+    }
+
+    fn spill_with_io(&mut self, postings: &mut Vec<Posting>, io: &mut impl SpillIo) -> Result<()> {
         postings.sort_unstable();
         postings.dedup();
+        let limit = self.config.max_spill_bytes;
+        // Unlike a merge, this run is already materialized: reject the entire
+        // output before creating a file or consuming a run sequence number.
+        postings.iter().try_fold(
+            checked_spill_bytes(self.bytes, RUN_HEADER.len() as u64, limit)?,
+            |bytes, posting| checked_spill_bytes(bytes, posting.encoded_len(), limit),
+        )?;
         let path = self.next_path()?;
-        let mut writer = BufWriter::new(File::create(&path)?);
-        writer.write_all(RUN_HEADER)?;
-        let mut bytes = RUN_HEADER.len() as u64;
+        // Declare cleanup before the writer so the handle closes first on
+        // error or unwind, including on platforms that forbid open-file unlink.
+        let mut guard = RemoveOnDrop::new(path.clone());
+        let mut writer = SpillRunWriter::create(&path, self.bytes, limit, io)?;
         for posting in postings.iter() {
-            encode_posting(&mut writer, posting)?;
-            bytes = bytes.saturating_add(posting.encoded_len());
+            writer.push(posting)?;
         }
-        writer.flush()?;
-        if let Err(error) = self.admit_spill(bytes) {
-            let _ = fs::remove_file(&path);
-            return Err(error);
-        }
+        self.bytes = writer.finish()?;
         self.paths.push(path);
+        guard.disarm();
         postings.clear();
         Ok(())
     }
 
     fn compact(&mut self) -> Result<()> {
+        self.compact_with_io(&mut FileSpillIo)
+    }
+
+    fn compact_with_io(&mut self, io: &mut impl SpillIo) -> Result<()> {
         let fan_in = self.config.max_merge_fan_in.get();
         if fan_in < 2 {
             return Err(SkeinError::Storage(
@@ -1481,53 +1565,30 @@ impl SpillRuns {
             ));
         }
         while self.paths.len() > fan_in {
-            let old = std::mem::take(&mut self.paths);
-            let mut merged = Vec::new();
-            for group in old.chunks(fan_in) {
-                let path = match self.next_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        remove_paths(old.iter().chain(merged.iter()));
-                        return Err(error);
-                    }
-                };
-                let bytes = match merge_runs(group, &path, self.config) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        let _ = fs::remove_file(&path);
-                        remove_paths(old.iter().chain(merged.iter()));
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = self.admit_spill(bytes) {
-                    let _ = fs::remove_file(&path);
-                    remove_paths(old.iter().chain(merged.iter()));
-                    return Err(error);
-                }
-                merged.push(path);
-                for source in group {
-                    fs::remove_file(source)?;
+            // Keep sources and completed destinations owned until the entire
+            // level succeeds, including if a source unlink fails or unwinds.
+            let old_len = self.paths.len();
+            for start in (0..old_len).step_by(fan_in) {
+                let end = start.saturating_add(fan_in).min(old_len);
+                let group = self.paths[start..end].to_vec();
+                let path = self.next_path()?;
+                let mut guard = RemoveOnDrop::new(path.clone());
+                self.bytes = merge_runs(&group, &path, self.config, self.bytes, io)?;
+                self.paths.push(path);
+                guard.disarm();
+                for source in &group {
+                    io.remove(source)?;
                 }
             }
-            self.paths = merged;
+            self.paths.drain(..old_len);
         }
-        Ok(())
-    }
-
-    fn admit_spill(&mut self, bytes: u64) -> Result<()> {
-        let required = self.bytes.saturating_add(bytes);
-        if required > self.config.max_spill_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "lexical build requires {required} spill bytes, exceeding {}",
-                self.config.max_spill_bytes
-            )));
-        }
-        self.bytes = required;
         Ok(())
     }
 
     fn next_path(&mut self) -> Result<PathBuf> {
-        let required = self.sequence.saturating_add(1);
+        let required = self.sequence.checked_add(1).ok_or_else(|| {
+            SkeinError::Storage("lexical spill run sequence overflow".to_string())
+        })?;
         if required > self.config.max_spill_runs.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical build requires {required} spill runs, exceeding {}",
@@ -1540,12 +1601,6 @@ impl SpillRuns {
         ));
         self.sequence = required;
         Ok(path)
-    }
-}
-
-fn remove_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>) {
-    for path in paths {
-        let _ = fs::remove_file(path);
     }
 }
 
@@ -1596,6 +1651,8 @@ fn merge_runs(
     paths: &[PathBuf],
     destination: &Path,
     config: LexicalProjectionConfig,
+    previous_bytes: u64,
+    io: &mut impl SpillIo,
 ) -> Result<u64> {
     let mut readers = paths
         .iter()
@@ -1607,22 +1664,19 @@ fn merge_runs(
             heap.push(Reverse((posting, index)));
         }
     }
-    let mut writer = BufWriter::new(File::create(destination)?);
-    writer.write_all(RUN_HEADER)?;
-    let mut bytes = RUN_HEADER.len() as u64;
+    let mut writer =
+        SpillRunWriter::create(destination, previous_bytes, config.max_spill_bytes, io)?;
     let mut previous = None;
     while let Some(Reverse((posting, index))) = heap.pop() {
         if previous.as_ref() != Some(&posting) {
-            encode_posting(&mut writer, &posting)?;
-            bytes = bytes.saturating_add(posting.encoded_len());
+            writer.push(&posting)?;
             previous = Some(posting);
         }
         if let Some(next) = readers[index].next()? {
             heap.push(Reverse((next, index)));
         }
     }
-    writer.flush()?;
-    Ok(bytes)
+    writer.finish()
 }
 
 fn encode_block_header(
