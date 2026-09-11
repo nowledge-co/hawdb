@@ -283,3 +283,25 @@ fn query_observer_event_differential_smoke() {
 fn query_observer_event_differential_campaign() {
     run_event_campaign(256);
 }
+
+#[test]
+#[ignore = "run by the dedicated assertions-disabled Bazel target"]
+#[allow(
+    clippy::assertions_on_constants,
+    reason = "The dedicated target intentionally checks its compile-time test mode."
+)]
+fn query_observer_registration_without_debug_assertions() {
+    assert!(
+        !cfg!(debug_assertions),
+        "this regression must disable debug assertions"
+    );
+    operator_profiles_distinguish_zero_rows_from_not_executed();
+    let plan = PhysicalPlan::EmptyExec;
+    let observer = QueryExecutionObserver::new(&plan);
+    observer.record_operator_output(&plan, 7);
+    observer.record_operator_output(&plan, 5);
+    assert_eq!(
+        observer.into_reports().operator_cardinality[0].actual_rows,
+        Some(12)
+    );
+}

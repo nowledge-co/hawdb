@@ -58,7 +58,23 @@ test_suite(
     tests = [
         ":skein_executor_unit_tests",
         ":skein_morsel_oracle_tests",
+        ":skein_query_observer_release_tests",
     ],
+)
+
+rust_test(
+    name = "skein_query_observer_release_tests",
+    args = [
+        "observer::query::tests::query_observer_registration_without_debug_assertions",
+        "--exact",
+        "--ignored",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    rustc_flags = ["-Cdebug-assertions=no"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
 rust_test(
