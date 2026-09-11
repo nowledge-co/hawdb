@@ -62,11 +62,11 @@ use skein_executor::kernel::{
     collect_bounded_operator_bindings_with_account, push_bounded_operator_binding,
     OperatorMemoryTracker,
 };
+use skein_executor::memory::SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES;
 pub(crate) use skein_executor::memory::{
     estimated_execution_memory, estimated_mutation_memory_bytes, external_read_memory_budget,
     max_external_read_parallelism, ExecutionMemoryEstimate,
 };
-use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
     emit_owned_binding_batches, runtime_checkpoint, AccountedBindingBatch, BatchControl,
     BindingBatch, TransformBatchBuilder,

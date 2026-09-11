@@ -131,12 +131,19 @@ kernels do not depend on the concrete store.
 
 Storage-neutral mutation command lowering belongs to the internal
 `skein-executor::mutation` module. It translates physical plans and SET values
-into storage commands using the canonical `skein-ddl` conversions; it does not
-own preflight, transaction admission, commit, or recovery. The root retains
-executable-predicate scan fallback, SET RETURN preflight/projection, concrete
-store integration tests, and the existing public executor function paths.
+into storage commands using the canonical `skein-ddl` conversions. It also owns
+executable-predicate scan fallback, bounded SET RETURN preflight, and staged
+RETURN projection through `GraphExecutionRead/Write`. Transaction admission,
+atomic commit, recovery, concrete store integration tests, and public executor
+function paths remain in the root.
 Translation errors remain distinct from non-mutation plans so fallback and
 failure behavior are unchanged.
+
+SET value evaluation and ordered application to staging property maps belong
+to `skein-storage::mutation::evaluate`. Executor preflight and root mutation
+commit paths share those semantics; the helper itself neither publishes a
+mutation nor rolls back a caller-owned staging map on a later assignment error.
+The embedding store remains responsible for atomic visibility and durability.
 
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking

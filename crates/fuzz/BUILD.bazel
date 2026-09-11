@@ -91,6 +91,7 @@ test_suite(
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_mutation_lowering_fuzz_tests",
+        "//crates/executor:skein_mutation_preflight_fuzz_tests",
         "//crates/executor:skein_query_observer_fuzz_tests",
         "//crates/executor:skein_sort_merge_account_fuzz_tests",
         "//crates/executor:skein_spill_compaction_fuzz_tests",
@@ -119,6 +120,7 @@ test_suite(
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
+        "//crates/storage:skein_storage_set_value_fuzz_tests",
     ],
 )
 
