@@ -3,6 +3,12 @@
 use crate::BlockingOperatorMemoryReport;
 use skein_storage::ScanPruningReport;
 
+mod query;
+
+// Internal collection remains separate from the embedded host's public reports.
+#[doc(hidden)]
+pub use query::{blocking_operator_kinds, QueryExecutionObserver, QueryExecutionReports};
+
 pub trait ExecutionObserver {
     fn record_scan_pruning_report(&self, _report: ScanPruningReport) {}
 

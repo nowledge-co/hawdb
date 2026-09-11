@@ -129,6 +129,15 @@ operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
+Query-observer collection also belongs to `skein-executor`: operator identity,
+cardinality, pipeline/morsel counters, typed execution reports, and blocking
+operator inventory require only plan, executor, and storage report types.
+`src/executor/observer.rs` retains crate-private compatibility imports. The root
+entrypoint still attaches final output metrics, the query-memory ledger snapshot,
+and process-memory samples; extraction does not move host lifecycle ownership or
+expose a new embedded execution API. Observers must record operator events against
+the same address-stable physical plan used at construction.
+
 `skein-relational` is intentionally narrower than the complete relational
 runtime. It owns shared scalar/column binding plus strict-append statement and
 access-plan compilation over `skein-sql` IR and `skein-storage` state. The

@@ -62,6 +62,22 @@ test_suite(
 )
 
 rust_test(
+    name = "skein_query_observer_fuzz_tests",
+    args = [
+        "observer::query::tests::query_observer_event_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_sort_merge_account_fuzz_tests",
     args = [
         "blocking::sort::tests::sort_merge_account_differential_campaign",
