@@ -120,6 +120,7 @@ test_suite(
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
+        "//crates/storage:skein_storage_transaction_compaction_fuzz_tests",
     ],
 )
 
