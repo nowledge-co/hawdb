@@ -24,40 +24,7 @@ use std::cmp::Ordering;
 use std::collections::{hash_map::RandomState, BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
-pub trait BindingBatchSource {
-    fn execute(
-        &mut self,
-        input: &PhysicalPlan,
-        execution_limit: ExecutionLimit,
-        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-    ) -> Result<BatchControl>;
-}
-
-#[derive(Clone, Copy)]
-pub struct BlockingExecutionContext<'a> {
-    pub catalog: &'a Catalog,
-    pub memory: &'a ExecutionMemoryConfig,
-    pub memory_ledger: &'a QueryMemoryLedger,
-    pub task_context: Option<&'a RuntimeTaskContext>,
-    pub observer: &'a dyn ExecutionObserver,
-}
-
-impl BlockingExecutionContext<'_> {
-    pub fn operator_account(&self, operator: &'static str) -> QueryMemoryAccount {
-        self.memory_ledger.account(
-            QueryMemoryClass::BlockingState,
-            operator,
-            self.memory.blocking_operator_bytes,
-        )
-    }
-
-    pub fn operator_tracker(&self, operator: &'static str) -> OperatorMemoryTracker {
-        OperatorMemoryTracker::with_account(
-            self.memory.blocking_operator_bytes,
-            self.operator_account(operator),
-        )
-    }
-}
+pub use crate::pipeline::{BatchExecutionContext as BlockingExecutionContext, BindingBatchSource};
 
 pub fn in_memory_report(
     operator: &'static str,
