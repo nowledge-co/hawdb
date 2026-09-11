@@ -133,6 +133,14 @@ belong to `skein-search`. Search document identity is a storage protocol and is
 therefore owned by `skein-storage`, preventing storage mutation code from
 depending back on the search crate.
 
+`skein-evidence::inventory` owns the storage-recovery, background-maintenance,
+and query-family evidence health models and JSON validators. The original
+`skein::nowledge_inventory` and crate-root paths re-export the same types and
+functions. Database probes, inventory scans, report generation, and cutover
+assembly stay in the facade. This boundary does not change optional-evidence
+policy, nested-field precedence, raw replay checks, or ordered blocker output,
+and does not authorize production activation.
+
 `skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
 scan, index seek, traversal, projected-graph lookup, and checkpoint-published
 Source sidecar reads. `GraphExecutionWrite` contains only the bounded mutation
