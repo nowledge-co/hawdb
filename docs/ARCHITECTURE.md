@@ -178,6 +178,15 @@ one protocol implementation without depending on the root database runtime.
 Blocker-code calculation stays inside that contract instead of becoming a
 second public readiness implementation in the facade.
 
+Graph route catalog metadata and ownership readiness belong to the existing
+`skein-route-ownership::graph` module, beside search route ownership. The catalog
+owns required routes, execution/evidence roles, query-family requirements, and
+its ordered v1 digest. Ownership checks consume a typed readiness summary; they
+do not open a database, execute probes, publish ownership, or activate cutover.
+The root `route_ownership` and `nowledge_mem` paths retain re-exports of the same
+types and functions. Database-running readiness, full verification, and cutover
+integration tests remain at the root boundary.
+
 The next extraction boundaries and their verification gates are tracked in
 [`CRATE_EXTRACTION_PLAN.md`](CRATE_EXTRACTION_PLAN.md). Physical source movement
 must preserve facade paths, feature forwarding, behavior, and test coverage;
