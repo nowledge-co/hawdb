@@ -85,7 +85,7 @@ validation, and the storage-neutral `SearchProjectionSource` boundary.
 crates/
   core/                errors, values, ids, catalog names, schema descriptors
   analytics/           immutable CSR/CSC projections and graph algorithms
-  evidence/            release identity and crash-recovery evidence contracts
+  evidence/            release identity, recovery, redacted diagnostic evidence
   plan/                logical/physical IR, phase roots, explain, fingerprints
   qos/                 work classes, local admission, background ranking
   optimizer/           Cascades memo/rules/search plus graph cost and lowering
@@ -98,7 +98,6 @@ crates/
   executor/            physical operators and query execution
   fuzz/                development-only differential oracles and replay bundles
   qualification/       synthetic revision-bound CI qualification workloads
-  api/                 stable embedded API facade
 ```
 
 The public facade should stay in the root `skein` crate. Internal crates should
@@ -136,12 +135,18 @@ row/index query runtime remains in the root until its transaction-private
 `GraphStore` read views have a storage-neutral contract; moving that composite
 module earlier would only recreate the root dependency fan-out in a new crate.
 
-`src/production_evidence.rs` and `src/crash_recovery_evidence.rs` remain public
-compatibility facades over `skein-evidence`. The evidence crate depends only on
-`skein-core` plus serialization, so qualification and recovery tools can share
-one fail-closed protocol model without depending on the root database runtime.
+`src/production_evidence.rs`, `src/crash_recovery_evidence.rs`, and
+`src/blackbox.rs` remain public compatibility facades over `skein-evidence`.
+The evidence crate depends only on `skein-core`, `skein-integrity`, and
+serialization, so qualification, recovery, and redacted diagnostic tools share
+one protocol implementation without depending on the root database runtime.
 Blocker-code calculation stays inside that contract instead of becoming a
 second public readiness implementation in the facade.
+
+The next extraction boundaries and their verification gates are tracked in
+[`CRATE_EXTRACTION_PLAN.md`](CRATE_EXTRACTION_PLAN.md). Physical source movement
+must preserve facade paths, feature forwarding, behavior, and test coverage;
+it must not create a second host-facing integration API.
 
 `src/qos.rs` is also a compatibility re-export facade over `skein-qos`. The
 QoS crate owns local foreground/background work classes, admission decisions,
