@@ -149,6 +149,15 @@ store integration tests, and the existing public executor function paths.
 Translation errors remain distinct from non-mutation plans so fallback and
 failure behavior are unchanged.
 
+Numeric columnar execution belongs to `skein-executor::numeric`, including
+eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
+estimation, and output/report accounting. `src/executor/columnar.rs` adapts the
+root read context to borrowed storage and query resources; it does not implement
+a second numeric execution path. The root still owns query admission and final
+output validation, and its persisted-GraphStore error/cancellation regressions
+remain at that integration boundary. Low-level prepared scan contracts stay
+internal to the embedded implementation rather than becoming host APIs.
+
 `skein-executor::pipeline` owns the recursive `BindingBatchSource` contract and
 shared `BatchExecutionContext`; the original blocking paths remain re-exports
 of the same types. Streaming filter, projection, and limit loops live in

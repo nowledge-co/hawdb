@@ -20,6 +20,8 @@ pub mod morsel;
 #[doc(hidden)]
 pub mod mutation;
 #[doc(hidden)]
+pub mod numeric;
+#[doc(hidden)]
 pub mod observer;
 #[doc(hidden)]
 pub mod pipeline;
