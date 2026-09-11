@@ -73,7 +73,10 @@ permission to raise a host limit; per-record posting decoder checks remain activ
 in addition to manifest admission.
 
 Query terms are admitted as the analyzer emits them, with byte, distinct-count,
-and retained-memory checks. Query stream admission includes retained term copies.
+and retained-memory checks. Query stream admission uses actual validated block
+extents and includes old/new decoded-vector capacity during block transitions,
+retained term copies, and block-reference vector growth;
+the default 32-term count boundary remains usable without increasing its budget.
 Spill merges share one variable-size head budget, including their deduplication
 head, checked before allocating strings. Merge fan-in adapts downward using the
 largest actual spilled posting, while the configured fan-in remains its ceiling.

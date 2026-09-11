@@ -777,6 +777,14 @@ impl LexicalProjectionReader {
         admit_term_bytes(self.required_term_bytes, max_term_bytes)
     }
 
+    fn posting_blocks<'a>(&'a self, term: &'a str) -> impl Iterator<Item = &'a BlockDescriptor> {
+        self.manifest.blocks.iter().filter(move |block| {
+            block.kind == BlockKind::Postings
+                && block.min_key.as_str() <= term
+                && term <= block.max_key.as_str()
+        })
+    }
+
     pub(super) fn tokenize_query(
         &self,
         text: &str,
@@ -852,15 +860,33 @@ impl LexicalProjectionReader {
         if query_terms.is_empty() {
             return Ok(LexicalQueryReport::default());
         }
-        let admitted_stream_bytes = (query_terms.len() as u64)
-            .saturating_mul(self.config.max_block_bytes.get())
-            .saturating_mul(2)
-            .saturating_add(query_terms.iter().fold(0u64, |bytes, term| {
-                // Retain the input key, frequency-map key, and stream head term.
-                bytes
-                    .saturating_add((term.len() as u64).saturating_mul(3))
-                    .saturating_add(32)
-            }));
+        let admitted_stream_bytes = query_terms.iter().fold(0u64, |bytes, term| {
+            let (max_block, max_entries, references) = self.posting_blocks(term).fold(
+                (0u64, 0u64, 0u64),
+                |(max, entries, count), block| {
+                    (
+                        max.max(block.length),
+                        entries.max(u64::from(block.entry_count)),
+                        count.saturating_add(1),
+                    )
+                },
+            );
+            // Reserve the actual validated block extent, not the reader's
+            // ceiling: otherwise charging keys makes the default 32-term
+            // boundary fail even for tiny blocks. Reserve old/new decoded Vec
+            // capacity during block transitions, encoded/decoded strings and
+            // heap keys, pointer-vector growth, and retained query term copies.
+            bytes
+                .saturating_add(max_block.saturating_mul(4))
+                .saturating_add(
+                    max_entries.saturating_mul(4 * std::mem::size_of::<Posting>() as u64),
+                )
+                .saturating_add(
+                    references.saturating_mul(2 * std::mem::size_of::<&BlockDescriptor>() as u64),
+                )
+                .saturating_add((term.len() as u64).saturating_mul(3))
+                .saturating_add(32)
+        });
         if admitted_stream_bytes > self.config.query_memory_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
@@ -1019,16 +1045,7 @@ impl<'a> TermPostingStream<'a> {
         term: &'a str,
         max_term_bytes: NonZeroU64,
     ) -> Self {
-        let blocks = projection
-            .manifest
-            .blocks
-            .iter()
-            .filter(|block| {
-                block.kind == BlockKind::Postings
-                    && block.min_key.as_str() <= term
-                    && term <= block.max_key.as_str()
-            })
-            .collect();
+        let blocks = projection.posting_blocks(term).collect();
         Self {
             projection,
             term,

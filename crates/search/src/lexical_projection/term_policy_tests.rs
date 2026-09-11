@@ -56,11 +56,66 @@ fn build(root: &Path, config: LexicalProjectionConfig) -> Result<Arc<LexicalProj
 }
 
 #[test]
+fn term_policy_default_query_count_boundary_remains_usable() {
+    let fixture = Fixture::new();
+    let source = SearchDocument {
+        content: "short".into(),
+        ..document()
+    };
+    let reader = LexicalProjectionWriter::new(Default::default())
+        .write(
+            &fixture.0,
+            1,
+            None,
+            11,
+            13,
+            [&source].into_iter(),
+            &Default::default(),
+        )
+        .unwrap();
+    let mut query = (0..31)
+        .map(|index| format!("query{index:02}"))
+        .collect::<BTreeSet<_>>();
+    query.insert("short".into());
+    assert_eq!(query.len(), reader.config.max_query_terms.get());
+    assert_eq!(
+        reader
+            .score(&query, &Default::default(), None, |_| Ok(true))
+            .unwrap()
+            .scores
+            .len(),
+        1
+    );
+    query.insert("overflow".into());
+    assert!(reader
+        .score(&query, &Default::default(), None, |_| Ok(true))
+        .unwrap_err()
+        .to_string()
+        .contains("33 terms"));
+}
+
+#[test]
 fn term_policy_query_and_delta_exact_memory_boundaries() {
     let fixture = Fixture::new();
     let mut reader = build(&fixture.0, config()).unwrap();
     let query = BTreeSet::from([document().content]);
-    let query_bytes = config().max_block_bytes.get() * 2 + 5202 * 3 + 32;
+    let blocks = reader
+        .manifest
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Postings)
+        .collect::<Vec<_>>();
+    let query_bytes = blocks.iter().map(|block| block.length).max().unwrap() * 4
+        + blocks
+            .iter()
+            .map(|block| u64::from(block.entry_count))
+            .max()
+            .unwrap()
+            * 4
+            * std::mem::size_of::<Posting>() as u64
+        + blocks.len() as u64 * 2 * std::mem::size_of::<&BlockDescriptor>() as u64
+        + 5202 * 3
+        + 32;
     Arc::get_mut(&mut reader).unwrap().config.query_memory_bytes =
         NonZeroU64::new(query_bytes).unwrap();
     assert_eq!(
