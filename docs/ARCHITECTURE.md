@@ -149,6 +149,15 @@ existing memory account. Sources honor row caps and cancellation, consumers
 validate output, and kernels reserve/release transform batches and propagate
 stop/error. This internal seam does not add a production integration API.
 
+Vector seed execution belongs to the internal `skein-executor::external::seed`
+module: embedding conversion, physical-plan bounds, external resource reservation,
+result validation, report collection, and binding batches share the existing
+external-read, query-ledger, and observer contracts. Root dispatch supplies a
+borrowed context without a catalog or concrete store. The host still owns the
+search projection, task admission, and final query-result validation. This move
+preserves validation order and reservation lifetime; it does not introduce a
+second host API or alter vector search policy.
+
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
 operator inventory require only plan, executor, and storage report types.
