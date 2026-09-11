@@ -392,17 +392,17 @@ pub use search::{
     SearchCandidateSetReport, SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument,
     SearchEmbeddingManifest, SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights,
     SearchHit, SearchIndex, SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
-    SearchLexicalProductionQualificationReport, SearchMode, SearchOutOfCoreConfig,
-    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
-    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
-    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreOutput,
-    SearchOutOfCoreReader, SearchPredicateFieldPruningReport, SearchPredicatePushdownReport,
-    SearchProjectionCleanupOptions, SearchProjectionCleanupReport, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchProjectionKind,
-    SearchProjectionProbeOptions, SearchProjectionQualificationIdentity, SearchProjectionRow,
-    SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions, SearchRebuildSummary,
-    SearchResultSet, SearchRetrieverCandidateSetReport, SearchTopKScoreParity,
-    SearchTruncationReasonCode, VectorProjectionQualificationIdentity,
+    SearchLexicalProductionQualificationReport, SearchLexicalTermPolicy, SearchMode,
+    SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
+    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
+    SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchPredicateFieldPruningReport,
+    SearchPredicatePushdownReport, SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
+    SearchProjectionDelta, SearchProjectionDeltaReport, SearchProjectionFreshness,
+    SearchProjectionKind, SearchProjectionProbeOptions, SearchProjectionQualificationIdentity,
+    SearchProjectionRow, SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions,
+    SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
+    SearchTopKScoreParity, SearchTruncationReasonCode, VectorProjectionQualificationIdentity,
     VectorProjectionResourceEvidence, VectorRecallProductionQualificationReport,
     VectorRecallValidationBlocker, VectorRecallValidationOptions, VectorRecallValidationReport,
     VectorSearchExecutionOptions, VectorSearchKernelPreference,
@@ -551,6 +551,9 @@ pub use workload_fixtures::{
     NowledgeGraphRouteWorkloadRouteReport, NowledgeSearchMetadataWorkloadReport,
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
 };
+
+#[cfg(test)]
+mod lexical_term_policy_tests;
 
 #[cfg(test)]
 mod tests {

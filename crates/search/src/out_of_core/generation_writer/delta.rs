@@ -65,7 +65,13 @@ impl SearchOutOfCoreGenerationUpdate {
         let upserted_documents = upserts.len();
         let mut upserts = VecDeque::from(upserts);
         let mut deletes = VecDeque::from(deletes);
-        let mut writer = SearchOutOfCoreGenerationWriter::create(&reader.root, options)?;
+        // A prepared update retains this snapshot even if the reader is later
+        // reconfigured before the staged generation is finalized.
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_term_policy(
+            &reader.root,
+            options,
+            reader.lexical_term_policy(),
+        )?;
         writer.expected_active_generation = Some(reader.generation());
         let mut deleted_documents = 0usize;
         let source_read_metrics = reader.visit_documents_in_order(&mut |document| {

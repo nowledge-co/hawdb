@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod spool_decoding;
 mod spool_encoding;
+mod term_policy;
 
 #[test]
 fn segment_admission_sizes_documents_without_encoding_them() {

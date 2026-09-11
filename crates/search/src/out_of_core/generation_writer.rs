@@ -9,7 +9,7 @@ use crate::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionWriter, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
-    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest,
+    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
     NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
     SEARCH_DOCUMENT_ID_FIELD,
 };
@@ -152,6 +152,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool_path: PathBuf,
     spool: Option<BufWriter<File>>,
     options: SearchOutOfCoreGenerationBuildOptions,
+    lexical_term_policy: SearchLexicalTermPolicy,
     last_document_id: Option<String>,
     document_count: usize,
     vector_document_count: usize,
@@ -189,6 +190,15 @@ impl SearchOutOfCoreGenerationWriter {
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
+        Self::create_with_term_policy(root, options, SearchLexicalTermPolicy::default())
+    }
+
+    /// Creates a writer with an explicit host-selected lexical term bound.
+    pub fn create_with_term_policy(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        lexical_term_policy: SearchLexicalTermPolicy,
+    ) -> Result<Self> {
         validate_options(&options)?;
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
@@ -221,6 +231,7 @@ impl SearchOutOfCoreGenerationWriter {
             spool_path,
             spool: Some(spool),
             options,
+            lexical_term_policy,
             last_document_id: None,
             document_count: 0,
             vector_document_count: 0,
@@ -236,6 +247,19 @@ impl SearchOutOfCoreGenerationWriter {
         })
     }
 
+    pub fn lexical_term_policy(&self) -> SearchLexicalTermPolicy {
+        self.lexical_term_policy
+    }
+
+    /// Changes the policy used by `finish` to analyze the complete staged corpus.
+    ///
+    /// `push` only spools documents. Lowering this bound can make `finish` fail;
+    /// failure discards the stage without publishing a partial generation.
+    /// Exclusive access prevents a policy change during finalization.
+    pub fn set_lexical_term_policy(&mut self, policy: SearchLexicalTermPolicy) {
+        self.lexical_term_policy = policy;
+    }
+
     pub fn push(&mut self, document: SearchDocument) -> Result<()> {
         if self.poisoned {
             return Err(SkeinError::Storage(
@@ -249,6 +273,9 @@ impl SearchOutOfCoreGenerationWriter {
         result
     }
 
+    /// Prepares an update with a snapshot of the reader's lexical term policy.
+    /// Configure the reader before calling this method; later reader changes do
+    /// not alter the already prepared generation.
     pub fn prepare_delta(
         reader: &super::SearchOutOfCoreReader,
         delta: crate::SearchProjectionDelta,
@@ -392,6 +419,7 @@ impl SearchOutOfCoreGenerationWriter {
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
         let lexical_config = LexicalProjectionConfig {
+            max_term_bytes: self.lexical_term_policy.max_term_bytes(),
             build_memory_bytes: self.options.lexical_build_memory_bytes,
             max_spill_bytes: self.options.lexical_max_spill_bytes,
             max_spill_runs: self.options.lexical_max_spill_runs,

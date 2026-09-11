@@ -28,6 +28,9 @@ mod positioned_read_tests;
 #[cfg(test)]
 mod spill_tests;
 
+#[cfg(test)]
+mod term_policy_tests;
+
 const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
 const RUN_HEADER: &[u8; 8] = b"SKNLEXR1";
@@ -100,7 +103,7 @@ impl Default for LexicalProjectionConfig {
             max_merge_fan_in: NonZeroUsize::new(32).unwrap(),
             target_block_bytes: NonZeroU64::new(1024 * 1024).unwrap(),
             max_block_bytes: NonZeroU64::new(2 * 1024 * 1024).unwrap(),
-            max_term_bytes: NonZeroU64::new(4 * 1024).unwrap(),
+            max_term_bytes: crate::SearchLexicalTermPolicy::default().max_term_bytes(),
             max_document_tokens: NonZeroUsize::new(1_000_000).unwrap(),
             max_document_source_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
             max_query_terms: NonZeroUsize::new(32).unwrap(),
@@ -164,6 +167,20 @@ struct ManifestEnvelope {
 }
 
 impl ManifestBody {
+    fn required_term_bytes(&self) -> u64 {
+        self.term_statistics
+            .iter()
+            .map(|statistics| statistics.term.len())
+            .chain(
+                self.blocks
+                    .iter()
+                    .filter(|block| block.kind == BlockKind::Postings)
+                    .flat_map(|block| [block.min_key.len(), block.max_key.len()]),
+            )
+            .max()
+            .unwrap_or(0) as u64
+    }
+
     fn validate(&self) -> Result<()> {
         if self.format != "SKEIN_LEXICAL_MANIFEST_V1"
             || self.artifact_file != artifact_file(self.generation)
@@ -522,6 +539,15 @@ struct AnalyzedTerm {
     last_field: u8,
 }
 
+fn admit_term_bytes(bytes: u64, max_term_bytes: NonZeroU64) -> Result<()> {
+    if bytes > max_term_bytes.get() {
+        return Err(SkeinError::Storage(format!(
+            "lexical term uses {bytes} bytes, exceeding {max_term_bytes}"
+        )));
+    }
+    Ok(())
+}
+
 struct DocumentAnalysis<'a> {
     document_id: &'a str,
     config: LexicalProjectionConfig,
@@ -550,13 +576,7 @@ impl<'a> DocumentAnalysis<'a> {
         field: u8,
         weight: usize,
     ) -> Result<()> {
-        if term.len() as u64 > self.config.max_term_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "lexical term uses {} bytes, exceeding {}",
-                term.len(),
-                self.config.max_term_bytes
-            )));
-        }
+        admit_term_bytes(term.len() as u64, self.config.max_term_bytes)?;
         let previous = self.frequencies.get(&term);
         if occurrence == TokenOccurrence::UniqueInField
             && previous.is_some_and(|entry| entry.last_field == field)
@@ -633,6 +653,7 @@ pub(super) struct LexicalProjectionReader {
     manifest: ManifestBody,
     file: Arc<File>,
     config: LexicalProjectionConfig,
+    required_term_bytes: u64,
 }
 
 impl LexicalProjectionReader {
@@ -705,6 +726,8 @@ impl LexicalProjectionReader {
         {
             return Ok(None);
         }
+        let required_term_bytes = manifest.required_term_bytes();
+        admit_term_bytes(required_term_bytes, config.max_term_bytes)?;
         if manifest
             .blocks
             .iter()
@@ -742,6 +765,7 @@ impl LexicalProjectionReader {
             manifest,
             file: Arc::new(file),
             config,
+            required_term_bytes,
         })))
     }
 
@@ -749,13 +773,75 @@ impl LexicalProjectionReader {
         self.manifest.generation
     }
 
+    pub(super) fn validate_term_limit(&self, max_term_bytes: NonZeroU64) -> Result<()> {
+        admit_term_bytes(self.required_term_bytes, max_term_bytes)
+    }
+
+    pub(super) fn tokenize_query(
+        &self,
+        text: &str,
+        analyzer: &SearchAnalyzerLexicon,
+        max_term_bytes: NonZeroU64,
+    ) -> Result<BTreeSet<String>> {
+        if text.len() as u64 > self.config.query_memory_bytes.get() {
+            return Err(SkeinError::Storage(
+                "lexical query source exceeds its memory budget".into(),
+            ));
+        }
+        let mut terms = BTreeSet::new();
+        let mut retained_bytes = 0u64;
+        visit_token_list(text, analyzer, |term, _| {
+            admit_term_bytes(term.len() as u64, max_term_bytes)?;
+            if !terms.contains(&term) {
+                if terms.len() >= self.config.max_query_terms.get() {
+                    return Err(SkeinError::Storage(format!(
+                        "lexical query produced more than {} terms",
+                        self.config.max_query_terms
+                    )));
+                }
+                retained_bytes = retained_bytes
+                    .saturating_add(term.len() as u64)
+                    .saturating_add(32);
+                if retained_bytes > self.config.query_memory_bytes.get() {
+                    return Err(SkeinError::Storage(
+                        "lexical query terms exceed their memory budget".into(),
+                    ));
+                }
+                terms.insert(term);
+            }
+            Ok(())
+        })?;
+        Ok(terms)
+    }
+
     pub(super) fn score(
         &self,
         query_terms: &BTreeSet<String>,
         delta: &LexicalMiniDelta,
         retained_score_limit: Option<usize>,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<LexicalQueryReport> {
+        self.score_with_term_limit(
+            query_terms,
+            delta,
+            self.config.max_term_bytes,
+            retained_score_limit,
+            allowed,
+        )
+    }
+
+    pub(super) fn score_with_term_limit(
+        &self,
+        query_terms: &BTreeSet<String>,
+        delta: &LexicalMiniDelta,
+        max_term_bytes: NonZeroU64,
+        retained_score_limit: Option<usize>,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
+        self.validate_term_limit(max_term_bytes)?;
+        for term in query_terms {
+            admit_term_bytes(term.len() as u64, max_term_bytes)?;
+        }
         if query_terms.len() > self.config.max_query_terms.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical query produced {} terms, exceeding {}",
@@ -768,7 +854,13 @@ impl LexicalProjectionReader {
         }
         let admitted_stream_bytes = (query_terms.len() as u64)
             .saturating_mul(self.config.max_block_bytes.get())
-            .saturating_mul(2);
+            .saturating_mul(2)
+            .saturating_add(query_terms.iter().fold(0u64, |bytes, term| {
+                // Retain the input key, frequency-map key, and stream head term.
+                bytes
+                    .saturating_add((term.len() as u64).saturating_mul(3))
+                    .saturating_add(32)
+            }));
         if admitted_stream_bytes > self.config.query_memory_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
@@ -801,7 +893,7 @@ impl LexicalProjectionReader {
         for term in query_terms {
             let df = document_frequency.get(term).copied().unwrap_or(0);
             if df > 0 {
-                streams.push(TermPostingStream::new(self, term));
+                streams.push(TermPostingStream::new(self, term, max_term_bytes));
                 stream_idf.push(idf(document_count, df));
             }
         }
@@ -918,10 +1010,15 @@ struct TermPostingStream<'a> {
     current: std::vec::IntoIter<Posting>,
     postings_visited: u64,
     bytes_read: u64,
+    max_term_bytes: NonZeroU64,
 }
 
 impl<'a> TermPostingStream<'a> {
-    fn new(projection: &'a LexicalProjectionReader, term: &'a str) -> Self {
+    fn new(
+        projection: &'a LexicalProjectionReader,
+        term: &'a str,
+        max_term_bytes: NonZeroU64,
+    ) -> Self {
         let blocks = projection
             .manifest
             .blocks
@@ -940,6 +1037,7 @@ impl<'a> TermPostingStream<'a> {
             current: Vec::new().into_iter(),
             postings_visited: 0,
             bytes_read: 0,
+            max_term_bytes,
         }
     }
 
@@ -959,7 +1057,7 @@ impl<'a> TermPostingStream<'a> {
                 &bytes,
                 self.projection.manifest.generation,
                 block,
-                self.projection.config.max_term_bytes.get(),
+                self.max_term_bytes.get(),
                 |posting| {
                     self.postings_visited = self.postings_visited.saturating_add(1);
                     if posting.term == self.term {
@@ -1343,26 +1441,7 @@ impl ArtifactBuilder {
     }
 
     fn merge_postings(&mut self, paths: &[PathBuf], config: LexicalProjectionConfig) -> Result<()> {
-        let mut readers = paths
-            .iter()
-            .map(|path| RunReader::open(path, config))
-            .collect::<Result<Vec<_>>>()?;
-        let mut heap = BinaryHeap::new();
-        for (index, reader) in readers.iter_mut().enumerate() {
-            if let Some(posting) = reader.next()? {
-                heap.push(Reverse((posting, index)));
-            }
-        }
-        let mut previous = None;
-        while let Some(Reverse((posting, index))) = heap.pop() {
-            if previous.as_ref() != Some(&posting) {
-                self.push_posting(posting.clone())?;
-                previous = Some(posting);
-            }
-            if let Some(next) = readers[index].next()? {
-                heap.push(Reverse((next, index)));
-            }
-        }
+        visit_merged_postings(paths, config, |posting| self.push_posting(posting.clone()))?;
         self.flush_postings()
     }
 
@@ -1449,6 +1528,7 @@ struct SpillRuns {
     paths: Vec<PathBuf>,
     bytes: u64,
     sequence: usize,
+    max_posting_bytes: u64,
 }
 
 trait SpillIo {
@@ -1532,6 +1612,7 @@ impl SpillRuns {
             paths: Vec::new(),
             bytes: 0,
             sequence: 0,
+            max_posting_bytes: 0,
         }
     }
 
@@ -1558,6 +1639,13 @@ impl SpillRuns {
             writer.push(posting)?;
         }
         self.bytes = writer.finish()?;
+        self.max_posting_bytes = self.max_posting_bytes.max(
+            postings
+                .iter()
+                .map(|posting| Posting::resident_bytes(&posting.term, &posting.document_id))
+                .max()
+                .unwrap_or(0),
+        );
         self.paths.push(path);
         guard.disarm();
         postings.clear();
@@ -1569,12 +1657,24 @@ impl SpillRuns {
     }
 
     fn compact_with_io(&mut self, io: &mut impl SpillIo) -> Result<()> {
-        let fan_in = self.config.max_merge_fan_in.get();
-        if fan_in < 2 {
+        let configured_fan_in = self.config.max_merge_fan_in.get();
+        if configured_fan_in < 2 {
             return Err(SkeinError::Storage(
                 "lexical merge fan-in must be at least two".to_string(),
             ));
         }
+        // The configured fan-in is a ceiling, not a mandate to retain that many
+        // heads. Reserve a deduplication head too, using actual spilled records
+        // rather than the caller's potentially generous term-length policy.
+        let memory_fan_in = self
+            .config
+            .build_memory_bytes
+            .get()
+            .checked_div(self.max_posting_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_sub(1);
+        let fan_in =
+            configured_fan_in.min(usize::try_from(memory_fan_in).unwrap_or(usize::MAX).max(2));
         while self.paths.len() > fan_in {
             // Keep sources and completed destinations owned until the entire
             // level succeeds, including if a source unlink fails or unwinds.
@@ -1630,7 +1730,7 @@ struct RunReader {
 
 impl RunReader {
     fn open(path: &Path, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut reader = BufReader::new(File::open(path)?);
+        let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, File::open(path)?);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
         if &header != RUN_HEADER {
@@ -1641,12 +1741,26 @@ impl RunReader {
         Ok(Self { reader, config })
     }
 
-    fn next(&mut self) -> Result<Option<Posting>> {
-        let Some(term) = read_optional_string(&mut self.reader, self.config.max_term_bytes.get())?
+    fn next(&mut self, available_bytes: u64) -> Result<Option<Posting>> {
+        // Charge variable-size merge heads before allocating either string.
+        // Fixed I/O buffers remain independently bounded by the merge fan-in.
+        let available_strings = available_bytes.saturating_sub(32);
+        let Some(term) = read_optional_string(
+            &mut self.reader,
+            self.config.max_term_bytes.get().min(available_strings),
+        )?
         else {
             return Ok(None);
         };
-        let document_id = read_string(&mut self.reader, 1024 * 1024)?;
+        if available_bytes < 32 {
+            return Err(SkeinError::Storage(
+                "lexical merge head exceeds the build memory budget".into(),
+            ));
+        }
+        let document_id = read_string(
+            &mut self.reader,
+            (1024 * 1024).min(available_strings.saturating_sub(term.len() as u64)),
+        )?;
         let term_frequency = read_u32(&mut self.reader)?;
         let document_len = read_u32(&mut self.reader)?;
         Ok(Some(Posting {
@@ -1665,29 +1779,56 @@ fn merge_runs(
     previous_bytes: u64,
     io: &mut impl SpillIo,
 ) -> Result<u64> {
+    let mut writer =
+        SpillRunWriter::create(destination, previous_bytes, config.max_spill_bytes, io)?;
+    visit_merged_postings(paths, config, |posting| writer.push(posting))?;
+    writer.finish()
+}
+
+fn visit_merged_postings(
+    paths: &[PathBuf],
+    config: LexicalProjectionConfig,
+    mut consume: impl FnMut(&Posting) -> Result<()>,
+) -> Result<()> {
     let mut readers = paths
         .iter()
         .map(|path| RunReader::open(path, config))
         .collect::<Result<Vec<_>>>()?;
     let mut heap = BinaryHeap::new();
+    let mut resident_bytes = 0u64;
     for (index, reader) in readers.iter_mut().enumerate() {
-        if let Some(posting) = reader.next()? {
+        if let Some(posting) = reader.next(
+            config
+                .build_memory_bytes
+                .get()
+                .saturating_sub(resident_bytes),
+        )? {
+            resident_bytes += Posting::resident_bytes(&posting.term, &posting.document_id);
             heap.push(Reverse((posting, index)));
         }
     }
-    let mut writer =
-        SpillRunWriter::create(destination, previous_bytes, config.max_spill_bytes, io)?;
-    let mut previous = None;
+    let mut previous: Option<Posting> = None;
     while let Some(Reverse((posting, index))) = heap.pop() {
         if previous.as_ref() != Some(&posting) {
-            writer.push(&posting)?;
+            consume(&posting)?;
+            if let Some(previous) = previous.take() {
+                resident_bytes -= Posting::resident_bytes(&previous.term, &previous.document_id);
+            }
             previous = Some(posting);
+        } else {
+            resident_bytes -= Posting::resident_bytes(&posting.term, &posting.document_id);
         }
-        if let Some(next) = readers[index].next()? {
+        if let Some(next) = readers[index].next(
+            config
+                .build_memory_bytes
+                .get()
+                .saturating_sub(resident_bytes),
+        )? {
+            resident_bytes += Posting::resident_bytes(&next.term, &next.document_id);
             heap.push(Reverse((next, index)));
         }
     }
-    writer.finish()
+    Ok(())
 }
 
 fn encode_block_header(

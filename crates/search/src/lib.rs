@@ -48,6 +48,7 @@ mod document_encoding;
 mod generation_cleanup;
 mod lexical_projection;
 mod lexical_readiness;
+mod lexical_term_policy;
 mod out_of_core;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
@@ -145,6 +146,7 @@ pub use lexical_readiness::{
     SearchTopKScoreParity, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL,
     SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION,
 };
+pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
     SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,

@@ -205,7 +205,10 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
         let observed = (|| {
             let mut reader = RunReader::open(&path, LexicalProjectionConfig::default())?;
             let mut count = 0;
-            while reader.next()?.is_some() {
+            while reader
+                .next(LexicalProjectionConfig::default().build_memory_bytes.get())?
+                .is_some()
+            {
                 count += 1;
             }
             Ok::<_, SkeinError>(count)
@@ -221,7 +224,7 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
     fs::write(&path, oversized).unwrap();
     let error = RunReader::open(&path, LexicalProjectionConfig::default())
         .unwrap()
-        .next()
+        .next(LexicalProjectionConfig::default().build_memory_bytes.get())
         .unwrap_err();
     assert!(error.to_string().contains("admitted length"), "{error}");
 }

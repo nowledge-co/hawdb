@@ -10,7 +10,7 @@ use super::{
     matched_query_spans_bounded, matched_query_terms, ranked_scores,
     read_search_segment_descriptor, retriever_candidate_set_report, rrf_child_score,
     search_document_matches_predicates, search_empty_reason_codes, search_empty_reasons,
-    search_metadata_predicate_pushdown, tokenize, top_ranked_candidates, top_ranked_ids,
+    search_metadata_predicate_pushdown, top_ranked_candidates, top_ranked_ids,
     validate_search_segment_documents, weighted_rrf_score, window_ranks,
     CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
     SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
@@ -23,7 +23,7 @@ use super::{
 };
 use crate::bounded_file::read_bounded_file;
 use crate::error::{Result, SkeinError};
-use crate::{RuntimeCapabilities, RuntimeCapability};
+use crate::{RuntimeCapabilities, RuntimeCapability, SearchLexicalTermPolicy};
 use serde::{Deserialize, Serialize};
 use skein_storage::durable_replace_file;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
@@ -140,6 +140,7 @@ pub struct SearchOutOfCoreReader {
     vector_payload: Arc<File>,
     layout: SearchOutOfCoreLayoutBody,
     lexical_projection: Arc<LexicalProjectionReader>,
+    lexical_term_policy: SearchLexicalTermPolicy,
     #[cfg(feature = "vector-search")]
     rabitq_projection: Option<Arc<skein_vector_projection::FileProjection>>,
     runtime_capabilities: RuntimeCapabilities,
@@ -500,6 +501,24 @@ impl SearchOutOfCoreReader {
         config: SearchOutOfCoreConfig,
         analyzer_lexicon: SearchAnalyzerLexicon,
     ) -> Result<Self> {
+        Self::open_with_term_policy(
+            path,
+            config,
+            analyzer_lexicon,
+            SearchLexicalTermPolicy::default(),
+        )
+    }
+
+    /// Opens a generation under host-selected resource and lexical term limits.
+    ///
+    /// An insufficient term policy fails before returning a usable reader. The
+    /// actual dictionary requirements are checked, not a writer-declared cap.
+    pub fn open_with_term_policy(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        lexical_term_policy: SearchLexicalTermPolicy,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
@@ -599,6 +618,7 @@ impl SearchOutOfCoreReader {
             "search lexical manifest",
         )?;
         let lexical_config = LexicalProjectionConfig {
+            max_term_bytes: lexical_term_policy.max_term_bytes(),
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
@@ -638,10 +658,27 @@ impl SearchOutOfCoreReader {
             vector_payload: Arc::new(vector_payload),
             layout,
             lexical_projection,
+            lexical_term_policy,
             #[cfg(feature = "vector-search")]
             rabitq_projection,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
+    }
+
+    pub fn lexical_term_policy(&self) -> SearchLexicalTermPolicy {
+        self.lexical_term_policy
+    }
+
+    /// Changes admission for subsequent queries and prepared updates.
+    ///
+    /// Lowering below the open generation's actual term requirement fails and
+    /// leaves the previous policy intact. Exclusive access prevents changes
+    /// during a query; already prepared updates keep their own snapshot.
+    pub fn set_lexical_term_policy(&mut self, policy: SearchLexicalTermPolicy) -> Result<()> {
+        self.lexical_projection
+            .validate_term_limit(policy.max_term_bytes())?;
+        self.lexical_term_policy = policy;
+        Ok(())
     }
 
     pub fn document_count(&self) -> usize {
@@ -1022,6 +1059,11 @@ impl SearchOutOfCoreReader {
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
+        let query_terms = self.lexical_projection.tokenize_query(
+            query_text,
+            &self.analyzer_lexicon,
+            self.lexical_term_policy.max_term_bytes(),
+        )?;
         let mut predicate_pushdown = search_metadata_predicate_pushdown(&metadata_filters);
         let mut metrics = SearchOutOfCoreMetrics::default();
         let candidate_set = self.build_candidate_set(
@@ -1045,7 +1087,6 @@ impl SearchOutOfCoreReader {
             metadata_predicate_pushdown: predicate_pushdown.report,
         };
 
-        let query_terms = tokenize(query_text, &self.analyzer_lexicon);
         let text_available = !query_terms.is_empty();
         let (text_fallback_reason_codes, text_fallback_reasons) =
             if !text_available && mode != SearchMode::Vector {
@@ -1091,9 +1132,10 @@ impl SearchOutOfCoreReader {
             SearchMode::Vector => Some(0),
         };
         let lexical_report = if text_available && mode != SearchMode::Vector {
-            Some(self.lexical_projection.score(
+            Some(self.lexical_projection.score_with_term_limit(
                 &query_terms,
                 &LexicalMiniDelta::default(),
+                self.lexical_term_policy.max_term_bytes(),
                 retained_text_limit,
                 |id| candidate_set.contains(id, &mut metrics),
             )?)
