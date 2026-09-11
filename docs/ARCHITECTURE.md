@@ -70,8 +70,8 @@ crate split includes `skein-core` for common graph primitives,
 local resource classes, background admission, and expected-value ranking,
 `skein-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
 SQL/PGQ syntax AST, `skein-sql` for semantic relational/SQL/PGQ lowering,
-`skein-relational` for storage-neutral relational statement compilation and
-strict-append access planning,
+`skein-relational` for storage-neutral RowPage DDL/DML compilation,
+strict-append statement/access planning, and shared scalar binding,
 `skein-plan` for Cypher logical/physical IR, typed phase roots, deterministic
 fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
@@ -92,7 +92,7 @@ crates/
   cypher/              token cursor, parser, AST, parameter model
   sql-syntax/           PostgreSQL tokens, spans, errors, SQL/PGQ syntax AST
   sql/                  relational and SQL/PGQ semantic lowering
-  relational/           relational compilation and strict-append planning
+  relational/           RowPage/strict-append compilation and scalar binding
   search/               lexical/vector indexing and search generations
   storage/             storage protocols, durable primitives, MVCC, indexes
   executor/            physical operators and query execution
@@ -130,11 +130,16 @@ entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
 `skein-relational` is intentionally narrower than the complete relational
-runtime. It owns shared scalar/column binding plus strict-append statement and
-access-plan compilation over `skein-sql` IR and `skein-storage` state. The
-row/index query runtime remains in the root until its transaction-private
-`GraphStore` read views have a storage-neutral contract; moving that composite
-module earlier would only recreate the root dependency fan-out in a new crate.
+runtime. It owns shared scalar/column binding, RowPage DDL/DML transaction
+compilation, and strict-append statement/access-plan compilation over `skein-sql`
+IR and `skein-storage` state. The RowPage compiler returns transaction commands
+and optional RETURNING projection metadata; it does not execute transactions,
+publish WAL, or materialize RETURNING rows. Root statement call sites retain
+crate-private compatibility imports, and application schema-registry protection
+stays in the root. The row/index query runtime remains there until its
+transaction-private `GraphStore` read views have a storage-neutral contract;
+moving that composite module earlier would only recreate the root dependency
+fan-out in a new crate.
 
 `src/production_evidence.rs` and `src/crash_recovery_evidence.rs` remain public
 compatibility facades over `skein-evidence`. The evidence crate depends only on
