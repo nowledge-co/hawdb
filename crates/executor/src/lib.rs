@@ -18,6 +18,8 @@ pub mod memory;
 pub mod memory_ledger;
 pub mod morsel;
 #[doc(hidden)]
+pub mod mutation;
+#[doc(hidden)]
 pub mod observer;
 #[doc(hidden)]
 pub mod pipeline;

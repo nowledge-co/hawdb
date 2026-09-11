@@ -129,6 +129,15 @@ operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
+Storage-neutral mutation command lowering belongs to the internal
+`skein-executor::mutation` module. It translates physical plans and SET values
+into storage commands using the canonical `skein-ddl` conversions; it does not
+own preflight, transaction admission, commit, or recovery. The root retains
+executable-predicate scan fallback, SET RETURN preflight/projection, concrete
+store integration tests, and the existing public executor function paths.
+Translation errors remain distinct from non-mutation plans so fallback and
+failure behavior are unchanged.
+
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
 operator inventory require only plan, executor, and storage report types.
