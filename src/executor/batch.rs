@@ -2,8 +2,8 @@
 
 use super::*;
 use skein_executor::observer::ExecutionObserver;
+use skein_executor::pipeline::BatchExecutionContext;
 use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
-use std::cell::Cell;
 
 mod dispatch;
 mod graph_algorithm;
@@ -183,6 +183,18 @@ pub(super) struct BatchReadContext<'a> {
     pub(super) memory_ledger: &'a QueryMemoryLedger,
     pub(super) task_context: Option<&'a RuntimeTaskContext>,
     pub(super) observer: &'a QueryExecutionObserver,
+}
+
+impl<'a> BatchReadContext<'a> {
+    pub(super) fn kernel_context(self) -> BatchExecutionContext<'a> {
+        BatchExecutionContext {
+            catalog: self.catalog,
+            memory: self.memory,
+            memory_ledger: self.memory_ledger,
+            task_context: self.task_context,
+            observer: self.observer,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

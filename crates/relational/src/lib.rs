@@ -1,10 +1,18 @@
 //! Storage-neutral relational statement compilation and execution contracts.
 
 mod append;
+mod statement;
 
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
     format_append_explain, project_append_rows, AppendExplainPlan, AppendSelectPlan,
+};
+
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use statement::{
+    compile_relational_statement_sql, compile_relational_statement_sql_with_result,
+    CompiledRelationalStatement, RelationalReturningProjection,
 };
 
 use skein_core::{Result, SkeinError, Value};
@@ -92,7 +100,8 @@ fn compile_schema_value(
     .and_then(|value| coerce_relational_value(value, scalar_type))
 }
 
-fn coerce_relational_value(
+#[doc(hidden)]
+pub fn coerce_relational_value(
     value: RelationalValue,
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {

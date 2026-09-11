@@ -1,5 +1,6 @@
 use super::*;
 use crate::planner::{ComparisonOp, PhysicalPlanKind, SortDirection, SortKey};
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 mod fixtures;
@@ -396,6 +397,101 @@ fn batch_dispatch_preserves_cancellation_and_byte_budget_errors() {
     })
     .unwrap_err();
     assert!(error.to_string().contains("batch_payload_bytes"), "{error}");
+}
+
+#[test]
+fn generic_transform_adapters_preserve_graph_bindings_and_consumer_control() {
+    // The intermediate projection prevents scan/columnar filter fusion, so
+    // every transform must cross the recursive owner-kernel adapter.
+    let input = PhysicalPlan::ProjectExec {
+        items: vec![Projection {
+            name: "score".into(),
+            expression: ProjectionExpression::Property {
+                variable: "n".into(),
+                property: "score".into(),
+            },
+        }],
+        input: Box::new(PhysicalPlan::SeqNodeScan {
+            variable: "n".into(),
+            label: "Item".into(),
+        }),
+    };
+    let input = PhysicalPlan::FilterExec {
+        predicate: Predicate::PropertyCompare {
+            variable: "n".into(),
+            property: "score".into(),
+            op: ComparisonOp::Gte,
+            value: Value::Int(0),
+        },
+        input: Box::new(input),
+    };
+    let plan = PhysicalPlan::LimitExec {
+        offset: 1,
+        limit: Some(2),
+        input: Box::new(PhysicalPlan::ProjectExec {
+            items: vec![Projection {
+                name: "result".into(),
+                expression: ProjectionExpression::Column("score".into()),
+            }],
+            input: Box::new(input),
+        }),
+    };
+    for batch_rows in [1, 3, 8] {
+        for output_rows in [None, Some(0), Some(1), Some(8)] {
+            for exit in [Exit::Complete, Exit::Stop, Exit::Error] {
+                let expected: Vec<_> = [Value::Int(2), Value::Int(3)]
+                    .into_iter()
+                    .take(output_rows.unwrap_or(usize::MAX))
+                    .collect();
+                let mut actual = Vec::new();
+                let mut calls = 0;
+                let result = with_context(
+                    &[-1, 0, -2, 2, 3, 4],
+                    batch_rows,
+                    64 * 1024,
+                    None,
+                    |context| {
+                        execute_binding_batches(
+                            &plan,
+                            context,
+                            ExecutionLimit { output_rows },
+                            &mut |batch| {
+                                calls += 1;
+                                for binding in batch {
+                                    assert!(binding.nodes.contains_key("n"));
+                                    assert_eq!(binding.values.len(), 1);
+                                    actual.push(binding.values["result"].clone());
+                                }
+                                match exit {
+                                    Exit::Complete => Ok(BatchControl::Continue),
+                                    Exit::Stop => Ok(BatchControl::Stop),
+                                    Exit::Error => Err(SkeinError::Execution(
+                                        "transform consumer failure".into(),
+                                    )),
+                                }
+                            },
+                        )
+                    },
+                );
+                if matches!(exit, Exit::Complete) {
+                    result.unwrap();
+                    assert_eq!(actual, expected);
+                } else {
+                    assert!(calls <= 1);
+                    assert_eq!(actual, expected[..actual.len()]);
+                    assert_eq!(calls == 0, expected.is_empty());
+                    if calls == 1 && matches!(exit, Exit::Error) {
+                        assert!(result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("transform consumer failure"));
+                    } else {
+                        result.unwrap();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
