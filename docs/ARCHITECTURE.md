@@ -129,6 +129,15 @@ operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
+Numeric columnar execution belongs to `skein-executor::numeric`, including
+eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
+estimation, and output/report accounting. `src/executor/columnar.rs` adapts the
+root read context to borrowed storage and query resources; it does not implement
+a second numeric execution path. The root still owns query admission and final
+output validation, and its persisted-GraphStore error/cancellation regressions
+remain at that integration boundary. Low-level prepared scan contracts stay
+internal to the embedded implementation rather than becoming host APIs.
+
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
 operator inventory require only plan, executor, and storage report types.
