@@ -2,8 +2,13 @@
 
 use crate::binding::{binding_memory_bytes, Binding};
 use crate::kernel::OperatorMemoryTracker;
-use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
-use skein_core::{Result, RuntimeTaskContext, SkeinError};
+use crate::observer::ExecutionObserver;
+use crate::{
+    ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease,
+    QueryMemoryLedger,
+};
+use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError};
+use skein_plan::PhysicalPlan;
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +18,43 @@ pub enum BatchControl {
 }
 
 pub type BindingBatch = Vec<Binding>;
+
+/// Recursively executes an input while honoring the requested row cap and
+/// propagating consumer stop/error without emitting subsequent batches.
+pub trait BindingBatchSource {
+    fn execute(
+        &mut self,
+        input: &PhysicalPlan,
+        execution_limit: ExecutionLimit,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl>;
+}
+
+#[derive(Clone, Copy)]
+pub struct BatchExecutionContext<'a> {
+    pub catalog: &'a Catalog,
+    pub memory: &'a ExecutionMemoryConfig,
+    pub memory_ledger: &'a QueryMemoryLedger,
+    pub task_context: Option<&'a RuntimeTaskContext>,
+    pub observer: &'a dyn ExecutionObserver,
+}
+
+impl BatchExecutionContext<'_> {
+    pub fn operator_account(&self, operator: &'static str) -> QueryMemoryAccount {
+        self.memory_ledger.account(
+            QueryMemoryClass::BlockingState,
+            operator,
+            self.memory.blocking_operator_bytes,
+        )
+    }
+
+    pub fn operator_tracker(&self, operator: &'static str) -> OperatorMemoryTracker {
+        OperatorMemoryTracker::with_account(
+            self.memory.blocking_operator_bytes,
+            self.operator_account(operator),
+        )
+    }
+}
 
 pub struct AccountedBindingBatch {
     operator: &'static str,

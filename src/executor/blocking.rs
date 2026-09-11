@@ -1,24 +1,10 @@
 //! Root facade wiring for storage-independent blocking operators.
 
 use super::*;
-use skein_executor::blocking::{
-    self as executor_blocking, BindingBatchSource, BlockingExecutionContext,
-};
+use skein_executor::blocking::{self as executor_blocking, BindingBatchSource};
 
 struct RootBindingBatchSource<'a> {
     context: BatchReadContext<'a>,
-}
-
-impl<'a> BatchReadContext<'a> {
-    fn blocking_context(self) -> BlockingExecutionContext<'a> {
-        BlockingExecutionContext {
-            catalog: self.catalog,
-            memory: self.memory,
-            memory_ledger: self.memory_ledger,
-            task_context: self.task_context,
-            observer: self.observer,
-        }
-    }
 }
 
 impl BindingBatchSource for RootBindingBatchSource<'_> {
@@ -42,7 +28,7 @@ pub(super) fn stream_distinct_batches(
     executor_blocking::stream_distinct_batches(
         input,
         &mut source,
-        context.blocking_context(),
+        context.kernel_context(),
         execution_limit,
         emit,
     )
@@ -60,7 +46,7 @@ pub(super) fn stream_sort_batches(
         input,
         items,
         &mut source,
-        context.blocking_context(),
+        context.kernel_context(),
         execution_limit,
         emit,
     )
@@ -83,7 +69,7 @@ pub(super) fn stream_top_n_batches(
         offset,
         limit,
         &mut source,
-        context.blocking_context(),
+        context.kernel_context(),
         execution_limit,
         emit,
     )
@@ -103,7 +89,7 @@ pub(super) fn stream_aggregate_batches(
         group_keys,
         items,
         &mut source,
-        context.blocking_context(),
+        context.kernel_context(),
         execution_limit,
         emit,
     )
@@ -121,7 +107,7 @@ pub(super) fn stream_cartesian_product_batches(
         left,
         right,
         &mut source,
-        context.blocking_context(),
+        context.kernel_context(),
         execution_limit,
         emit,
     )
