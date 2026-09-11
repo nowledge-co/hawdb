@@ -38,9 +38,8 @@ impl QueryExecutionObserver {
         let mut reports = QueryExecutionReports::default();
         let mut operator_ids = BTreeMap::new();
         visit_plan_with_ids(plan, &mut |operator_id, operator| {
-            debug_assert!(operator_ids
-                .insert(plan_address(operator), operator_id)
-                .is_none());
+            let previous = operator_ids.insert(plan_address(operator), operator_id);
+            debug_assert!(previous.is_none());
             reports
                 .operator_cardinality
                 .push(crate::OperatorCardinalityProfile {
