@@ -13,6 +13,8 @@ pub mod config;
 pub mod cow;
 pub mod doctor;
 pub mod durability;
+#[doc(hidden)]
+pub mod graph_constraints;
 pub mod graph_descriptor_page;
 pub mod graph_descriptor_tree;
 #[doc(hidden)]

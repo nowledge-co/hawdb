@@ -172,6 +172,15 @@ those dependencies have stable inward-facing contracts. This avoids presenting
 the root facade or the internal storage crate as an accidental second
 production API.
 
+`skein-storage::graph_constraints` owns the internal record, snapshot, and
+scalar-value validation kernels for property types, nullability, existence,
+and uniqueness. Mutation and recovery use the same kernels through private
+root imports. Validation retains catalog visibility rules, exact `Value`
+identity, and deterministic error ordering. Concrete schema-change scans,
+incremental uniqueness checks, resource admission, and the WAL/publication
+boundary stay with the root `GraphStore`; this extraction adds no public
+host API or persisted-format change.
+
 Cypher exposes lightweight runtime resource intent through session-scoped
 system variables instead of query-shape-specific typed APIs.
 The release-facing application API follows the same rule: business reads and
