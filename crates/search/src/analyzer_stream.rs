@@ -2,8 +2,8 @@
 //! working unit; this is not an arbitrary byte-chunk or bounded-RSS tokenizer.
 
 use super::{
-    identifier_parts, identifier_tokens, push_analyzed_token, Result, SearchAnalyzerLexicon,
-    SearchDocument, TokenSequence, TITLE_TERM_FREQUENCY_WEIGHT,
+    identifier_parts, identifier_tokens_with_parts, push_analyzed_token, Result,
+    SearchAnalyzerLexicon, SearchDocument, TokenSequence, TITLE_TERM_FREQUENCY_WEIGHT,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub(super) fn visit_token_list(
                 emit(token, TokenOccurrence::UniqueInField)?;
             }
         }
-        for token in identifier_tokens(raw, analyzer) {
+        for token in identifier_tokens_with_parts(raw, Some(&parts), analyzer) {
             emit(token, TokenOccurrence::Repeated)?;
         }
         if let Some(last) = parts.last() {

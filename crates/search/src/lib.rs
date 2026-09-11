@@ -46,6 +46,7 @@ mod compression_tests;
 mod document_decoding_tests;
 mod document_encoding;
 mod generation_cleanup;
+mod identifier;
 mod lexical_projection;
 mod lexical_readiness;
 mod lexical_term_policy;
@@ -58,6 +59,7 @@ mod snapshot_writer;
 mod vector_execution;
 
 use document_encoding::encode_search_document_line;
+use identifier::identifier_parts;
 
 mod error {
     pub use skein_core::{Result, SkeinError};
@@ -6477,14 +6479,26 @@ fn identifier_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec
     if raw.is_empty() {
         return Vec::new();
     }
+    identifier_tokens_with_parts(raw, None, analyzer_lexicon)
+}
+
+fn identifier_tokens_with_parts(
+    raw: &str,
+    parts: Option<&[String]>,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+) -> Vec<String> {
     let mut tokens = TokenSequence::default();
     push_unique_token(&mut tokens, raw.to_lowercase(), analyzer_lexicon);
     for token in chinese_search_tokens(raw) {
         push_analyzed_token(&mut tokens, token, analyzer_lexicon);
     }
     push_cjk_ngram_tokens(&mut tokens, raw, analyzer_lexicon);
-    let parts = identifier_parts(raw);
-    for part in &parts {
+    // Field traversal already needs these parts for cross-word phrases. Other
+    // callers retain the original late split, after opaque CJK scratch is freed.
+    let parts = parts
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Owned(identifier_parts(raw)));
+    for part in parts.iter() {
         push_analyzed_token(&mut tokens, part.clone(), analyzer_lexicon);
     }
     for pair in parts.windows(2) {
@@ -6522,47 +6536,6 @@ fn push_cjk_ngram_run_tokens(
         for window in run.windows(width) {
             push_unique_token(tokens, window.iter().collect(), analyzer_lexicon);
         }
-    }
-}
-
-fn identifier_parts(raw: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut previous_kind = IdentifierCharKind::Other;
-    let chars = raw.chars().collect::<Vec<_>>();
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if ch == '_' {
-            push_identifier_part(&mut parts, &mut current);
-            previous_kind = IdentifierCharKind::Other;
-            continue;
-        }
-        let kind = IdentifierCharKind::from_char(ch);
-        let next_kind = chars
-            .get(index + 1)
-            .copied()
-            .map(IdentifierCharKind::from_char);
-        if !current.is_empty()
-            && ((previous_kind == IdentifierCharKind::Lower && kind == IdentifierCharKind::Upper)
-                || (previous_kind == IdentifierCharKind::Upper
-                    && kind == IdentifierCharKind::Upper
-                    && next_kind == Some(IdentifierCharKind::Lower))
-                || (previous_kind != IdentifierCharKind::Digit
-                    && kind == IdentifierCharKind::Digit)
-                || (previous_kind == IdentifierCharKind::Digit
-                    && kind != IdentifierCharKind::Digit))
-        {
-            push_identifier_part(&mut parts, &mut current);
-        }
-        current.extend(ch.to_lowercase());
-        previous_kind = kind;
-    }
-    push_identifier_part(&mut parts, &mut current);
-    parts
-}
-
-fn push_identifier_part(parts: &mut Vec<String>, current: &mut String) {
-    if !current.is_empty() {
-        parts.push(std::mem::take(current));
     }
 }
 
@@ -6731,28 +6704,6 @@ fn trim_doubled_suffix_consonant(stem: &str) -> &str {
 
 fn is_ascii_consonant(ch: char) -> bool {
     ch.is_ascii_alphabetic() && !matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u')
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IdentifierCharKind {
-    Lower,
-    Upper,
-    Digit,
-    Other,
-}
-
-impl IdentifierCharKind {
-    fn from_char(ch: char) -> Self {
-        if ch.is_ascii_lowercase() {
-            Self::Lower
-        } else if ch.is_ascii_uppercase() {
-            Self::Upper
-        } else if ch.is_ascii_digit() {
-            Self::Digit
-        } else {
-            Self::Other
-        }
-    }
 }
 
 // Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ

@@ -1,8 +1,11 @@
 use super::*;
-use crate::{identifier_parts, identifier_tokens, push_analyzed_token, TokenSequence};
+use crate::{
+    cjk_tokenizer::chinese_search_tokens, identifier::reference::identifier_parts,
+    push_analyzed_token, push_cjk_ngram_tokens, push_unique_token, TokenSequence,
+};
 
-// Frozen pre-streaming traversal: keep this independent of the production
-// visitor and accumulator. The unchanged identifier analyzer is shared.
+// Freeze both traversal and identifier decomposition. Only the unchanged CJK
+// and term-expansion helpers are shared with production.
 fn reference_tokens(text: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String> {
     let mut tokens = TokenSequence::default();
     let mut previous_part = None::<String>;
@@ -11,12 +14,46 @@ fn reference_tokens(text: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String>
         if let (Some(previous), Some(first)) = (previous_part.as_ref(), parts.first()) {
             push_analyzed_token(&mut tokens, format!("{previous}_{first}"), analyzer);
         }
-        tokens.extend(identifier_tokens(raw, analyzer));
+        tokens.extend(reference_identifier_tokens(raw, analyzer));
         if let Some(last) = parts.last() {
             previous_part = Some(last.clone());
         }
     }
     tokens.into_vec()
+}
+
+fn reference_identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut tokens = TokenSequence::default();
+    push_unique_token(&mut tokens, raw.to_lowercase(), analyzer);
+    for token in chinese_search_tokens(raw) {
+        push_analyzed_token(&mut tokens, token, analyzer);
+    }
+    push_cjk_ngram_tokens(&mut tokens, raw, analyzer);
+    let parts = identifier_parts(raw);
+    for part in &parts {
+        push_analyzed_token(&mut tokens, part.clone(), analyzer);
+    }
+    for pair in parts.windows(2) {
+        push_analyzed_token(&mut tokens, pair.join("_"), analyzer);
+    }
+    tokens.into_vec()
+}
+
+#[test]
+fn visitor_splits_each_identifier_once_and_reuses_parts_for_phrases() {
+    let analyzer = SearchAnalyzerLexicon::empty();
+    let text = "HTTPServer42 Graph __ aBCd ... \u{130}Index";
+    let expected = reference_tokens(text, &analyzer);
+    crate::identifier::SPLIT_VISITS.with(|visits| visits.set(0));
+    assert_eq!(crate::tokenize_list(text, &analyzer), expected);
+    assert_eq!(
+        crate::identifier::SPLIT_VISITS.with(|visits| visits.get()),
+        5
+    );
 }
 
 pub(super) fn reference_document_tokens(
@@ -190,6 +227,7 @@ fn token_admission_stops_before_analyzing_the_document_tail() {
 #[test]
 fn visitor_propagates_callback_failure_without_visiting_later_identifiers() {
     crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.set(0));
+    crate::identifier::SPLIT_VISITS.with(|visits| visits.set(0));
     let mut callbacks = 0;
     let error = visit_token_list(
         "first second third",
@@ -205,6 +243,10 @@ fn visitor_propagates_callback_failure_without_visiting_later_identifiers() {
         SkeinError::Execution("stop analysis".to_string()).to_string()
     );
     assert_eq!(callbacks, 1);
+    assert_eq!(
+        crate::identifier::SPLIT_VISITS.with(|visits| visits.get()),
+        1
+    );
     assert_eq!(
         crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.get()),
         1

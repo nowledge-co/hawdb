@@ -34,10 +34,25 @@ re-analyzing a duplicated title token sequence in the lexical accumulator.
 The collecting wrapper retains the original emitted sequence for callers
 that still request a vector of tokens.
 
-Identifier splitting, Unicode lowercasing, Jieba, CJK n-grams, stopwords,
+Identifier splitting semantics, Unicode lowercasing, Jieba, CJK n-grams, stopwords,
 aliases, field selection, analyzer fingerprint and persisted artifact format
 are unchanged. Physical chunks are not introduced as separate documents or
 as independent analyzer scopes.
+
+## Identifier working memory
+
+Field traversal decomposes each raw identifier once, reusing the same parts for
+cross-word phrases, individual part tokens, and adjacent-part pairs. The private
+splitter uses one-character lookahead instead of collecting the entire input as
+`Vec<char>`. ASCII case/digit boundaries, acronym lookahead, underscores, Unicode
+lowercase expansion, and the exact token order are preserved. Matched-span
+callers still defer their split until the CJK helpers have released their scratch.
+
+This removes a source-sized character buffer and a duplicate parts collection,
+not the parts/output working set itself. The splitter's lookahead is constant
+space; its returned `Vec<String>`, whole-run token sequence, CJK buffers and Jieba
+allocations remain input-dependent. This is neither a new allocation-admission
+boundary nor a whole-process memory guarantee.
 
 ## Admission and failure behavior
 
@@ -87,9 +102,10 @@ large-document lifecycle qualification before removing the fixed source cap.
 
 ## Verification
 
-The tests retain the pre-streaming field/document traversal as an independent
-reference. It shares unchanged identifier-analysis primitives, not the new
-visitor or accumulator. Ordinary cases and a seeded 768-case local campaign
+The tests retain the pre-streaming field/document traversal and the original
+character-vector splitter as independent references. Only unchanged CJK and
+term-expansion helpers are shared, not identifier decomposition, the new visitor,
+or the accumulator. Ordinary cases and a seeded 768-case local campaign
 compare complete token sequences, frequencies, lengths and retained estimates
 across empty/default/application lexicons, repeated identifiers, mixed scripts,
 aliases, stopwords, punctuation and all selected metadata fields.
@@ -102,6 +118,22 @@ successful query results are identical. Corpus tests compare every reference
 term's exact matching count and BM25 score through publication, update/delete,
 failed replacement, checkpoint/reopen and failed publication. Existing spill,
 ACL, corruption and recovery tests remain required.
+
+The identifier boundary test exhausts all sequences of up to four characters
+from a mixed-script eight-character alphabet. A separate allocation-test binary
+includes the production splitter and wraps the system allocator only within
+that binary. It compares exact output and cumulative requested allocation bytes
+(including reallocations) against the frozen splitter on long ASCII,
+camel-case/digit, and expanding-Unicode inputs. Inputs are created outside the
+measurement window. The assertion requires savings of at least one complete
+character buffer, without a timing threshold or a claim about RSS/live peaks.
+An actual split-call counter also rejects duplicate decomposition in the field
+visitor, including its early-error path.
+
+```sh
+cargo test --locked -p skein-search --test identifier_allocation -- --nocapture
+bazel test //crates/search:skein_search_identifier_allocation_tests
+```
 
 The seeded campaign is ignored by ordinary Cargo tests, tagged manual in
 Bazel, and included in the existing explicit local fuzz suite. No CI fuzz job

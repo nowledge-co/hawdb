@@ -66,6 +66,17 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_search_identifier_allocation_tests",
+    crate_root = "tests/identifier_allocation.rs",
+    srcs = [
+        "src/identifier.rs",
+        "src/identifier/reference.rs",
+        "tests/identifier_allocation.rs",
+    ],
+    edition = "2024",
+)
+
+rust_test(
     name = "skein_search_term_policy_fuzz_tests",
     args = [
         "out_of_core::generation_writer::tests::term_policy::term_policy_lifecycle_differential_campaign",
