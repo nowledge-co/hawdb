@@ -51,6 +51,8 @@ mod lexical_projection;
 mod lexical_readiness;
 mod lexical_term_policy;
 mod out_of_core;
+#[doc(hidden)]
+pub mod projection_evidence;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;

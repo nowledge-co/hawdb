@@ -111,6 +111,7 @@ test_suite(
         "//crates/search:skein_search_hex_decoding_fuzz_tests",
         "//crates/search:skein_search_hydration_fuzz_tests",
         "//crates/search:skein_search_lexical_spill_fuzz_tests",
+        "//crates/search:skein_search_projection_evidence_fuzz_tests",
         "//crates/search:skein_search_spool_encoding_fuzz_tests",
         "//crates/search:skein_search_spool_decoding_fuzz_tests",
         "//crates/sql:skein_sql_clause_diagnostics_fuzz_tests",

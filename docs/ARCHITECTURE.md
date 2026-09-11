@@ -80,6 +80,12 @@ kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
 owns release identity validation and storage crash-recovery evidence contracts.
 `skein-search` owns lexical/vector search, generation publication, recall
 validation, and the storage-neutral `SearchProjectionSource` boundary.
+Its internal `projection_evidence` module owns the pure probe contract,
+typed evidence report, and primary/shadow qualification reducers alongside
+the search-owned scan-filter field contract. Root `search_projection_evidence`
+re-exports the same types and functions while retaining file/CLI wrappers and
+real index checkpoint/reopen integration tests. This adds no separate host
+integration API or dependency from evidence back to search.
 
 ```text
 crates/
