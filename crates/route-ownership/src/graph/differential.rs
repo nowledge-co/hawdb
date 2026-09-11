@@ -199,7 +199,7 @@ fn catalog_preserves_routes_roles_families_and_digest() {
         "/unknown",
         "/graph/overview/",
         "/GRAPH/overview",
-        "/日本語",
+        "/\u{65e5}\u{672c}\u{8a9e}",
         "/graph/overview\0",
     ] {
         assert!(nowledge_mem_graph_read_route_spec(route).is_none());
@@ -238,7 +238,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
             NowledgeMemRouteReadEngine::Legacy,
         )),
         7 => routes.push(NowledgeMemRouteOwnership::new(
-            "/日本語",
+            "/\u{65e5}\u{672c}\u{8a9e}",
             NowledgeMemRouteReadEngine::Skein,
         )),
         8 => routes.clear(),
