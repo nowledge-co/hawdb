@@ -103,6 +103,18 @@ crates/
 
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
+
+Graph checkpoint/spill text value, property, and hex codecs belong to the
+internal `skein-storage::text` module. Root storage keeps crate-private
+compatibility imports, so existing checkpoint, statistics-spill, and recovery
+callers share the same encoding rather than depend on a root implementation.
+The binary WAL codec remains a separate format; ownership migration does not
+normalize legacy text decoding tolerance or change any encoded bytes.
+Pure codec tests and their unchanged differential campaign live with storage.
+The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
+a manual test suite to that campaign, while public database reopen/no-write
+corruption tests stay at the root integration boundary.
+
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
 re-export facades over their owning crates. `skein-plan` depends only on
 `skein-core`, `skein-cypher`, and `skein-ddl`; `skein-optimizer` depends inward
