@@ -1,7 +1,7 @@
 //! Storage-neutral translation from physical plans to graph mutation commands.
 //!
-//! The embedding layer retains preflight, transaction admission, commit, and
-//! recovery ownership. A translation error may select its existing scan fallback.
+//! Preflight uses the existing storage-neutral execution contracts; the embedding
+//! layer retains transaction admission, atomic commit, and recovery ownership.
 
 use skein_core::{Result, SkeinError};
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
@@ -17,6 +17,9 @@ use crate::expression::{
     property_filter_from_predicate, relationship_filter_from_properties_and_predicate,
 };
 use crate::predicate::property_filter_from_properties;
+
+mod preflight;
+pub use preflight::{execute_mutation_with_store, project_staged_mutation_return_rows};
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {

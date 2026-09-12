@@ -109,6 +109,16 @@ crates/
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
 
+Graph route evidence validation belongs to the internal
+`skein-readiness::graph_route` module. It consumes the existing route-ownership
+catalog and evidence-owned query-report protocol/family inventory without a
+database dependency. Root `graph_route_readiness` retains the public compatibility
+paths and developer file/CLI adapters; database probes, report assembly, and
+activation remain in the embedded facade. Original reducer tests move with the
+owner, while file-error redaction and public entrypoint checks remain at the
+root. A local-only generated campaign checks coverage and contradictory readiness
+evidence without relaxing any v1 readiness gate.
+
 Logical transaction lock metadata belongs to the internal
 `skein-storage::transaction_locks` module: lock targets and acquisition order,
 compatibility and coverage, budgeted lock residency and escalation, savepoint
@@ -218,12 +228,19 @@ adding a host-facing API.
 
 Storage-neutral mutation command lowering belongs to the internal
 `skein-executor::mutation` module. It translates physical plans and SET values
-into storage commands using the canonical `skein-ddl` conversions; it does not
-own preflight, transaction admission, commit, or recovery. The root retains
-executable-predicate scan fallback, SET RETURN preflight/projection, concrete
-store integration tests, and the existing public executor function paths.
+into storage commands using the canonical `skein-ddl` conversions. It also owns
+executable-predicate scan fallback, bounded SET RETURN preflight, and staged
+RETURN projection through `GraphExecutionRead/Write`. Transaction admission,
+atomic commit, recovery, concrete store integration tests, and public executor
+function paths remain in the root.
 Translation errors remain distinct from non-mutation plans so fallback and
 failure behavior are unchanged.
+
+SET value evaluation and ordered application to staging property maps belong
+to `skein-storage::mutation::evaluate`. Executor preflight and root mutation
+commit paths share those semantics; the helper itself neither publishes a
+mutation nor rolls back a caller-owned staging map on a later assignment error.
+The embedding store remains responsible for atomic visibility and durability.
 
 Numeric columnar execution belongs to `skein-executor::numeric`, including
 eligibility, lending/owned batch preparation, ordered morsel scheduling, memory

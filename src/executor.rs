@@ -60,11 +60,11 @@ use skein_executor::binding::{binding_memory_bytes, Binding};
 pub(crate) use skein_executor::external::NoExternalReadOperator;
 use skein_executor::graph::GraphExpansionExecutionState;
 use skein_executor::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
+use skein_executor::memory::SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES;
 pub(crate) use skein_executor::memory::{
     estimated_execution_memory, estimated_mutation_memory_bytes, max_external_read_parallelism,
     ExecutionMemoryEstimate,
 };
-use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
     runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch, TransformBatchBuilder,
 };

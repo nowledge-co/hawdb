@@ -1059,6 +1059,9 @@ name = "skein-readiness"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "skein-core",
+ "skein-evidence",
+ "skein-route-ownership",
 ]
 
 [[package]]

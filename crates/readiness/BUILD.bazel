@@ -14,7 +14,11 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/core:skein_core",
+        "//crates/evidence:skein_evidence",
+        "//crates/route-ownership:skein_route_ownership",
+    ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
@@ -36,6 +40,22 @@ rust_test(
 
 rust_test(
     name = "skein_readiness_tests",
+    crate = ":skein_readiness",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_graph_route_readiness_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "graph_route::differential::graph_route_readiness_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
     crate = ":skein_readiness",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
