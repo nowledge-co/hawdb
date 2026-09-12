@@ -173,6 +173,13 @@ belong to `skein-search`. Search document identity is a storage protocol and is
 therefore owned by `skein-storage`, preventing storage mutation code from
 depending back on the search crate.
 
+`skein-storage::mutation` owns compaction of the staged graph transaction journal:
+SETs fold into creates from the same transaction, and deleting those creates
+elides their staged operations. It does not flatten nested batches or interpret
+non-graph WAL operations. The root still owns admission, snapshots, lock
+footprints, ID allocation, commit epochs, WAL publication, and recovery.
+Compaction is an internal ownership seam, not a new host transaction API.
+
 `skein-evidence::inventory` owns the storage-recovery, background-maintenance,
 and query-family evidence health models and JSON validators. The original
 `skein::nowledge_inventory` and crate-root paths re-export the same types and

@@ -2,6 +2,10 @@ use skein_core::{PropertyType, SchemaObjectState, TableKind, ValidatedRegex, Val
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
+mod compact;
+#[doc(hidden)]
+pub use compact::compact_transaction_graph_ops;
+
 pub const DEFAULT_MAX_MUTATION_AFFECTED_ROWS: usize = 100_000;
 pub const DEFAULT_MAX_MUTATION_OPERATIONS: usize = 100_000;
 pub const DEFAULT_MAX_MUTATION_RESULT_ROWS: usize = 100_000;

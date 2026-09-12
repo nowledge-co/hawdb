@@ -196,6 +196,7 @@ mod thread_compaction_reads;
 mod thread_distillation_reads;
 mod thread_message_reads;
 mod thread_metadata_reads;
+mod transaction_compaction;
 mod transaction_control;
 mod transaction_merge;
 
