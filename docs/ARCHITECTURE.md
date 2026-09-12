@@ -140,12 +140,29 @@ non-graph WAL operations. The root still owns admission, snapshots, lock
 footprints, ID allocation, commit epochs, WAL publication, and recovery.
 Compaction is an internal ownership seam, not a new host transaction API.
 
+`skein-evidence::inventory` owns the storage-recovery, background-maintenance,
+and query-family evidence health models and JSON validators. The original
+`skein::nowledge_inventory` and crate-root paths re-export the same types and
+functions. Database probes, inventory scans, report generation, and cutover
+assembly stay in the facade. This boundary does not change optional-evidence
+policy, nested-field precedence, raw replay checks, or ordered blocker output,
+and does not authorize production activation.
+
 `skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
 scan, index seek, traversal, projected-graph lookup, and checkpoint-published
 Source sidecar reads. `GraphExecutionWrite` contains only the bounded mutation
 operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
+
+Numeric columnar execution belongs to `skein-executor::numeric`, including
+eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
+estimation, and output/report accounting. `src/executor/columnar.rs` adapts the
+root read context to borrowed storage and query resources; it does not implement
+a second numeric execution path. The root still owns query admission and final
+output validation, and its persisted-GraphStore error/cancellation regressions
+remain at that integration boundary. Low-level prepared scan contracts stay
+internal to the embedded implementation rather than becoming host APIs.
 
 `skein-executor::pipeline` owns the recursive `BindingBatchSource` contract and
 shared `BatchExecutionContext`; the original blocking paths remain re-exports
@@ -155,6 +172,15 @@ scan/adjacency and columnar fast paths, and graph predicate evaluation with its
 existing memory account. Sources honor row caps and cancellation, consumers
 validate output, and kernels reserve/release transform batches and propagate
 stop/error. This internal seam does not add a production integration API.
+
+Vector seed execution belongs to the internal `skein-executor::external::seed`
+module: embedding conversion, physical-plan bounds, external resource reservation,
+result validation, report collection, and binding batches share the existing
+external-read, query-ledger, and observer contracts. Root dispatch supplies a
+borrowed context without a catalog or concrete store. The host still owns the
+search projection, task admission, and final query-result validation. This move
+preserves validation order and reservation lifetime; it does not introduce a
+second host API or alter vector search policy.
 
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
@@ -185,6 +211,15 @@ one protocol implementation without depending on the root database runtime.
 Blocker-code calculation stays inside that contract instead of becoming a
 second public readiness implementation in the facade.
 
+Graph route catalog metadata and ownership readiness belong to the existing
+`skein-route-ownership::graph` module, beside search route ownership. The catalog
+owns required routes, execution/evidence roles, query-family requirements, and
+its ordered v1 digest. Ownership checks consume a typed readiness summary; they
+do not open a database, execute probes, publish ownership, or activate cutover.
+The root `route_ownership` and `nowledge_mem` paths retain re-exports of the same
+types and functions. Database-running readiness, full verification, and cutover
+integration tests remain at the root boundary.
+
 The next extraction boundaries and their verification gates are tracked in
 [`CRATE_EXTRACTION_PLAN.md`](CRATE_EXTRACTION_PLAN.md). Physical source movement
 must preserve facade paths, feature forwarding, behavior, and test coverage;
@@ -209,6 +244,15 @@ and graph-statistics orchestration. The concrete adapter should move only after
 those dependencies have stable inward-facing contracts. This avoids presenting
 the root facade or the internal storage crate as an accidental second
 production API.
+
+`skein-storage::graph_constraints` owns the internal record, snapshot, and
+scalar-value validation kernels for property types, nullability, existence,
+and uniqueness. Mutation and recovery use the same kernels through private
+root imports. Validation retains catalog visibility rules, exact `Value`
+identity, and deterministic error ordering. Concrete schema-change scans,
+incremental uniqueness checks, resource admission, and the WAL/publication
+boundary stay with the root `GraphStore`; this extraction adds no public
+host API or persisted-format change.
 
 Cypher exposes lightweight runtime resource intent through session-scoped
 system variables instead of query-shape-specific typed APIs.

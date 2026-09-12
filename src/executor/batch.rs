@@ -620,7 +620,18 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 resource_profile,
                 vector_plan,
             }
-            .stream(context, execution_limit, emit)
+            .stream(
+                VectorSeedContext {
+                    parameters: context.parameters,
+                    external: context.external,
+                    memory: context.memory,
+                    memory_ledger: context.memory_ledger,
+                    task_context: context.task_context,
+                    observer: context.observer,
+                },
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::NodeColumnLookupExec {
             variable,

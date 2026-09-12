@@ -1,5 +1,7 @@
 use super::*;
-use crate::planner::{ComparisonOp, PhysicalPlanKind, SortDirection, SortKey};
+use crate::planner::{
+    ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey,
+};
 use std::cell::Cell;
 use std::collections::BTreeSet;
 

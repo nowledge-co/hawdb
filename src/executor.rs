@@ -5,9 +5,8 @@ use crate::cypher::RelationshipDirection;
 use crate::error::{Result, SkeinError};
 use crate::optimizer::PhysicalPlan;
 use crate::planner::{
-    Aggregation, GraphAlgorithmKind, PlanChildren, Predicate, Projection, ProjectionExpression,
-    RelationshipCountLeg, RelationshipOnCreateValue, SetNodePropertiesReturnMode, SetValue,
-    SortItem,
+    Aggregation, GraphAlgorithmKind, PlanChildren, Predicate, Projection, RelationshipCountLeg,
+    RelationshipOnCreateValue, SetNodePropertiesReturnMode, SetValue, SortItem,
 };
 use crate::schema::Catalog;
 use crate::store::{
@@ -60,13 +59,10 @@ pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::{binding_memory_bytes, Binding};
 pub(crate) use skein_executor::external::NoExternalReadOperator;
 use skein_executor::graph::GraphExpansionExecutionState;
-use skein_executor::kernel::{
-    collect_bounded_operator_bindings_with_account, push_bounded_operator_binding,
-    OperatorMemoryTracker,
-};
+use skein_executor::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 pub(crate) use skein_executor::memory::{
-    estimated_execution_memory, estimated_mutation_memory_bytes, external_read_memory_budget,
-    max_external_read_parallelism, ExecutionMemoryEstimate,
+    estimated_execution_memory, estimated_mutation_memory_bytes, max_external_read_parallelism,
+    ExecutionMemoryEstimate,
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
@@ -103,7 +99,7 @@ pub type QuerySchema = skein_executor::QuerySchema;
 pub type ReadExecutionProfile = skein_executor::ReadExecutionProfile<ScanPruningReport>;
 pub type ProfiledQueryRows = skein_executor::ProfiledQueryRows<ScanPruningReport>;
 pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningReport>;
-pub(crate) const MAX_MORSEL_PARALLELISM: usize = 16;
+pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
 const DEFAULT_MORSEL_CPU_SHARE_DIVISOR: usize = 4;
 const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
 pub(crate) const SOURCE_SEGMENT_SCAN_IO_DEPTH: usize = 2;

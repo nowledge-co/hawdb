@@ -2,6 +2,8 @@
 
 pub mod blackbox;
 mod crash_recovery;
+#[doc(hidden)]
+pub mod inventory;
 mod production;
 
 pub use crash_recovery::{
