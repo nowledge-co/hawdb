@@ -165,6 +165,7 @@ mod optional_match;
 mod pagerank;
 mod predicates;
 mod projected_graph_artifacts;
+mod projected_graph_execution;
 mod projection_generations;
 mod query_execution;
 mod query_first_support;

@@ -20,6 +20,8 @@ pub mod morsel;
 #[doc(hidden)]
 pub mod mutation;
 #[doc(hidden)]
+pub mod numeric;
+#[doc(hidden)]
 pub mod observer;
 #[doc(hidden)]
 pub mod pipeline;
@@ -32,6 +34,8 @@ pub mod scan;
 pub mod spill;
 #[doc(hidden)]
 pub mod store;
+#[doc(hidden)]
+pub mod transform;
 #[doc(hidden)]
 pub mod traversal;
 pub mod vector;

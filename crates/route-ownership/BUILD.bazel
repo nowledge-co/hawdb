@@ -19,6 +19,22 @@ rust_library(
 )
 
 rust_test(
+    name = "skein_graph_route_ownership_fuzz_tests",
+    args = [
+        "graph::differential::graph_route_ownership_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_route_ownership",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_route_ownership_tests",
     crate = ":skein_route_ownership",
     edition = "2024",

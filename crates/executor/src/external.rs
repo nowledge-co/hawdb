@@ -1,5 +1,8 @@
 //! Host-provided physical read operators.
 
+#[doc(hidden)]
+pub mod seed;
+
 use crate::VectorExecutionReport;
 use skein_core::{Result, RuntimeTaskContext, SkeinError};
 use skein_plan::VectorPhysicalPlan;
@@ -120,7 +123,7 @@ mod tests {
     use skein_core::RuntimeCancellationToken;
     use skein_plan::VectorCandidateSource;
 
-    fn empty_report() -> VectorExecutionReport {
+    pub(super) fn empty_report() -> VectorExecutionReport {
         VectorExecutionReport {
             backend: VectorExecutionBackend::ScalarFlat,
             compression_mode: VectorCompressionMode::Disabled,

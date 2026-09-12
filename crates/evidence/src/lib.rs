@@ -1,6 +1,9 @@
-//! Stable production qualification and crash-recovery evidence contracts.
+//! Production qualification, recovery, and redacted diagnostic evidence.
 
+pub mod blackbox;
 mod crash_recovery;
+#[doc(hidden)]
+pub mod inventory;
 mod production;
 
 pub use crash_recovery::{

@@ -2,8 +2,8 @@
 
 use super::*;
 use skein_executor::observer::ExecutionObserver;
+use skein_executor::pipeline::BatchExecutionContext;
 use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
-use std::cell::Cell;
 
 mod dispatch;
 mod graph_algorithm;
@@ -183,6 +183,18 @@ pub(super) struct BatchReadContext<'a> {
     pub(super) memory_ledger: &'a QueryMemoryLedger,
     pub(super) task_context: Option<&'a RuntimeTaskContext>,
     pub(super) observer: &'a QueryExecutionObserver,
+}
+
+impl<'a> BatchReadContext<'a> {
+    pub(super) fn kernel_context(self) -> BatchExecutionContext<'a> {
+        BatchExecutionContext {
+            catalog: self.catalog,
+            memory: self.memory,
+            memory_ledger: self.memory_ledger,
+            task_context: self.task_context,
+            observer: self.observer,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -608,7 +620,18 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 resource_profile,
                 vector_plan,
             }
-            .stream(context, execution_limit, emit)
+            .stream(
+                VectorSeedContext {
+                    parameters: context.parameters,
+                    external: context.external,
+                    memory: context.memory,
+                    memory_ledger: context.memory_ledger,
+                    task_context: context.task_context,
+                    observer: context.observer,
+                },
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::NodeColumnLookupExec {
             variable,

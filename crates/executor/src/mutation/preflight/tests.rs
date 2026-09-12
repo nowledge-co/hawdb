@@ -82,6 +82,14 @@ impl GraphExecutionRead for RecordingStore {
         unreachable!("unexpected read in mutation preflight")
     }
 
+    fn visit_relationships_owned(
+        &self,
+        _: Option<RelTypeId>,
+        _: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        unreachable!("unexpected read in mutation preflight")
+    }
+
     fn visit_adjacent_relationships_owned(
         &self,
         _: NodeId,

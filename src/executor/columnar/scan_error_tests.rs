@@ -1,7 +1,12 @@
 use super::*;
-use crate::planner::{ComparisonOp, SetAssignment};
+use crate::planner::{ComparisonOp, ProjectionExpression, SetAssignment};
 use crate::schema::PropertyType;
 use crate::store::{DurabilityPolicy, StorageResidencyMode, WalReplayConfig};
+use skein_executor::columnar::{NumericLiteral, NumericPredicate};
+use skein_executor::numeric::{
+    stream_owned_numeric_nodes, stream_owned_typed_numeric_nodes, LendingNumericScan,
+    NumericFragment,
+};
 use skein_storage::artifact_files::canonical_adjacency_artifact_generation_file;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -211,14 +216,21 @@ fn scan(
                 consumer,
             )
         }),
-        Path::Owned => stream_owned_numeric_nodes(fragment, &items, label, context, limit, emit)
-            .map(|(_, stopped)| {
-                if stopped {
-                    BatchControl::Stop
-                } else {
-                    BatchControl::Continue
-                }
-            }),
+        Path::Owned => stream_owned_numeric_nodes(
+            fragment,
+            &items,
+            label,
+            context.numeric_context(),
+            limit,
+            emit,
+        )
+        .map(|(_, stopped)| {
+            if stopped {
+                BatchControl::Stop
+            } else {
+                BatchControl::Continue
+            }
+        }),
         Path::Typed => stream_owned_typed_numeric_nodes(
             fragment,
             &items,
@@ -227,7 +239,7 @@ fn scan(
                 batch_rows: context.memory.batch_rows.get(),
                 needs_node_ids: false,
             },
-            context,
+            context.numeric_context(),
             limit,
             emit,
         )

@@ -158,8 +158,19 @@ use skein_storage::artifact_files::{
     relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
     wal_generation_file,
 };
+use skein_storage::graph_constraints::{
+    encode_property_type, validate_node_property_exists, validate_node_property_exists_constraints,
+    validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
+    validate_relationship_property_exists, validate_relationship_property_exists_constraints,
+    validate_relationship_record_constraints, validate_relationship_unique_constraints,
+    validate_unique_constraints, validate_unique_property, validate_unique_relationship_property,
+};
 pub(crate) use skein_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
+};
+pub(crate) use skein_storage::text::{
+    decode_bytes, decode_properties, decode_string, decode_value, encode_bytes, encode_properties,
+    encode_string, encode_value, parse_i64, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -3352,154 +3363,6 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
     }
 }
 
-fn validate_property_schemas(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.state != SchemaObjectState::Public {
-            continue;
-        }
-        match table.kind {
-            TableKind::Node => {
-                let Some(label_id) = catalog.label_id(&table.name) else {
-                    continue;
-                };
-                for node in nodes.values() {
-                    if node.labels.contains(&label_id) {
-                        validate_property_schema_value(
-                            &table.name,
-                            &property.name,
-                            property.value_type,
-                            property.nullable,
-                            node.properties.get(&property.name),
-                            &format!("node {}", node.id.0),
-                        )?;
-                    }
-                }
-            }
-            TableKind::Relationship => {
-                let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
-                    continue;
-                };
-                for relationship in relationships.values() {
-                    if relationship.rel_type == rel_type_id {
-                        validate_property_schema_value(
-                            &table.name,
-                            &property.name,
-                            property.value_type,
-                            property.nullable,
-                            relationship.properties.get(&property.name),
-                            &format!("relationship {}", relationship.id.0),
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_node_record_constraints(catalog: &Catalog, node: &NodeRecord) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.kind != TableKind::Node || table.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(label_id) = catalog.label_id(&table.name) else {
-            continue;
-        };
-        if node.labels.contains(&label_id) {
-            validate_property_schema_value(
-                &table.name,
-                &property.name,
-                property.value_type,
-                property.nullable,
-                node.properties.get(&property.name),
-                &format!("node {}", node.id.0),
-            )?;
-        }
-    }
-    for constraint in catalog.node_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        if node.labels.contains(&label_id)
-            && !node
-                .properties
-                .get(&constraint.property)
-                .is_some_and(|value| value != &Value::Null)
-        {
-            let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "node property exists constraint violation on :{label}({}) for node {}",
-                constraint.property, node.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_relationship_record_constraints(
-    catalog: &Catalog,
-    relationship: &RelRecord,
-) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.kind != TableKind::Relationship || table.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
-            continue;
-        };
-        if relationship.rel_type == rel_type_id {
-            validate_property_schema_value(
-                &table.name,
-                &property.name,
-                property.value_type,
-                property.nullable,
-                relationship.properties.get(&property.name),
-                &format!("relationship {}", relationship.id.0),
-            )?;
-        }
-    }
-    for constraint in catalog.relationship_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        if relationship.rel_type == rel_type_id
-            && !relationship
-                .properties
-                .get(&constraint.property)
-                .is_some_and(|value| value != &Value::Null)
-        {
-            let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "relationship property exists constraint violation on :{rel_type}({}) for relationship {}",
-                constraint.property, relationship.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_changed_node_uniqueness(
     store: &GraphStore,
     catalog: &Catalog,
@@ -3606,202 +3469,6 @@ fn validate_changed_relationship_uniqueness(
     Ok(())
 }
 
-fn validate_property_schema_value(
-    table: &str,
-    property: &str,
-    value_type: PropertyType,
-    nullable: bool,
-    value: Option<&Value>,
-    record: &str,
-) -> Result<()> {
-    let Some(value) = value else {
-        if nullable {
-            return Ok(());
-        }
-        return Err(property_schema_error(
-            table,
-            property,
-            record,
-            "property is not nullable",
-        ));
-    };
-    if value == &Value::Null {
-        if nullable {
-            return Ok(());
-        }
-        return Err(property_schema_error(
-            table,
-            property,
-            record,
-            "property is not nullable",
-        ));
-    }
-    let matches = matches!(
-        (value_type, value),
-        (PropertyType::Any, _)
-            | (PropertyType::Bool, Value::Bool(_))
-            | (PropertyType::Int, Value::Int(_))
-            | (PropertyType::Float, Value::Float(_))
-            | (PropertyType::String, Value::String(_))
-            | (PropertyType::Text, Value::String(_))
-            | (PropertyType::List, Value::List(_))
-    );
-    if matches {
-        Ok(())
-    } else {
-        Err(property_schema_error(
-            table,
-            property,
-            record,
-            &format!("expected {}", encode_property_type(value_type)),
-        ))
-    }
-}
-
-fn property_schema_error(table: &str, property: &str, record: &str, reason: &str) -> SkeinError {
-    SkeinError::Storage(format!(
-        "property schema violation on {record} in {table}({property}): {reason}"
-    ))
-}
-
-fn validate_unique_constraints(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-) -> Result<()> {
-    for constraint in catalog.unique_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        validate_unique_property(catalog, nodes, label_id, &constraint.property)?;
-    }
-    Ok(())
-}
-
-fn validate_relationship_unique_constraints(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for constraint in catalog.relationship_unique_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        validate_unique_relationship_property(
-            catalog,
-            relationships,
-            rel_type_id,
-            &constraint.property,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_node_property_exists_constraints(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-) -> Result<()> {
-    for constraint in catalog.node_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        validate_node_property_exists(catalog, nodes, label_id, &constraint.property)?;
-    }
-    Ok(())
-}
-
-fn validate_relationship_property_exists_constraints(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for constraint in catalog.relationship_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        validate_relationship_property_exists(
-            catalog,
-            relationships,
-            rel_type_id,
-            &constraint.property,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_node_property_exists(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    label_id: LabelId,
-    property: &str,
-) -> Result<()> {
-    for node in nodes.values() {
-        if !node.labels.contains(&label_id) {
-            continue;
-        }
-        match node.properties.get(property) {
-            Some(value) if value != &Value::Null => {}
-            _ => {
-                let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
-                    "node property exists constraint violation on :{label}({property}) for node {}",
-                    node.id.0
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_relationship_property_exists(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    rel_type_id: RelTypeId,
-    property: &str,
-) -> Result<()> {
-    for relationship in relationships.values() {
-        if relationship.rel_type != rel_type_id {
-            continue;
-        }
-        match relationship.properties.get(property) {
-            Some(value) if value != &Value::Null => {}
-            _ => {
-                let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
-                    "relationship property exists constraint violation on :{rel_type}({property}) for relationship {}",
-                    relationship.id.0
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_unique_property(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    label_id: LabelId,
-    property: &str,
-) -> Result<()> {
-    let mut seen = BTreeMap::<Value, NodeId>::new();
-    for node in nodes.values() {
-        if !node.labels.contains(&label_id) {
-            continue;
-        }
-        let Some(value) = node.properties.get(property) else {
-            continue;
-        };
-        if value == &Value::Null {
-            continue;
-        }
-        if let Some(previous) = seen.insert(value.clone(), node.id) {
-            let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "unique constraint violation on :{label}({property}) for nodes {} and {}",
-                previous.0, node.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_unique_property_streaming(
     store: &GraphStore,
     catalog: &Catalog,
@@ -3843,34 +3510,6 @@ fn validate_unique_property_streaming(
         }
     })?;
     validation_error.map_or(Ok(()), Err)
-}
-
-fn validate_unique_relationship_property(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    rel_type_id: RelTypeId,
-    property: &str,
-) -> Result<()> {
-    let mut seen = BTreeMap::<Value, RelId>::new();
-    for relationship in relationships.values() {
-        if relationship.rel_type != rel_type_id {
-            continue;
-        }
-        let Some(value) = relationship.properties.get(property) else {
-            continue;
-        };
-        if value == &Value::Null {
-            continue;
-        }
-        if let Some(previous) = seen.insert(value.clone(), relationship.id) {
-            let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
-                previous.0, relationship.id.0
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_unique_relationship_property_streaming(
@@ -5802,160 +5441,6 @@ fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
         .collect()
 }
 
-pub(crate) fn encode_properties(properties: &BTreeMap<String, Value>) -> String {
-    properties
-        .iter()
-        .map(|(key, value)| format!("{}={}", encode_string(key), encode_value(value)))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-pub(crate) fn decode_properties(input: &str) -> Result<BTreeMap<String, Value>> {
-    let mut properties = BTreeMap::new();
-    if input.is_empty() {
-        return Ok(properties);
-    }
-    for pair in input.split(';') {
-        let Some((key, value)) = pair.split_once('=') else {
-            return Err(SkeinError::Storage(format!(
-                "invalid property pair: {pair}"
-            )));
-        };
-        properties.insert(decode_string(key)?, decode_value(value)?);
-    }
-    Ok(properties)
-}
-
-pub(crate) fn encode_value(value: &Value) -> String {
-    match value {
-        Value::Null => "n".to_string(),
-        Value::Bool(false) => "b0".to_string(),
-        Value::Bool(true) => "b1".to_string(),
-        Value::Int(value) => format!("i{value}"),
-        Value::Float(value) => format!("f{}", value.to_bits()),
-        Value::String(value) => format!("s{}", encode_string(value)),
-        Value::Uuid(value) => format!("u{value}"),
-        Value::Binary(value) => format!(
-            "x{}",
-            value
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ),
-        Value::List(values) => format!(
-            "l{}",
-            values
-                .iter()
-                .map(|value| encode_string(&encode_value(value)))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Value::Map(values) => format!(
-            "m{}",
-            values
-                .iter()
-                .map(|(key, value)| format!(
-                    "{}={}",
-                    encode_string(key),
-                    encode_string(&encode_value(value))
-                ))
-                .collect::<Vec<_>>()
-                .join(";")
-        ),
-    }
-}
-
-pub(crate) fn decode_value(input: &str) -> Result<Value> {
-    if input.is_empty() {
-        return Err(SkeinError::Storage("empty encoded value".to_string()));
-    }
-    let (kind, rest) = input
-        .split_at_checked(1)
-        .ok_or_else(|| SkeinError::Storage("invalid encoded value tag".to_string()))?;
-    match kind {
-        "n" if rest.is_empty() => Ok(Value::Null),
-        "b" => match rest {
-            "0" => Ok(Value::Bool(false)),
-            "1" => Ok(Value::Bool(true)),
-            _ => Err(SkeinError::Storage(format!("invalid bool value: {input}"))),
-        },
-        "i" => parse_i64(rest, "integer value").map(Value::Int),
-        "f" => parse_u64(rest, "float value")
-            .map(f64::from_bits)
-            .map(Value::Float),
-        "s" => decode_string(rest).map(Value::String),
-        "u" => skein_core::Uuid::parse_str(rest)
-            .map(Value::Uuid)
-            .map_err(|error| SkeinError::Storage(format!("invalid UUID value: {error}"))),
-        "x" => decode_hex_value(rest),
-        "l" => decode_list_value(rest),
-        "m" => decode_map_value(rest),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid encoded value tag or payload: {kind:?}"
-        ))),
-    }
-}
-
-fn decode_hex_value(input: &str) -> Result<Value> {
-    if !input.len().is_multiple_of(2) {
-        return Err(SkeinError::Storage(
-            "binary value has an odd number of hex digits".to_string(),
-        ));
-    }
-    input
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|digits| {
-            let high = decode_hex_digit(digits[0])?;
-            let low = decode_hex_digit(digits[1])?;
-            Ok((high << 4) | low)
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(Value::Binary)
-}
-
-fn decode_hex_digit(digit: u8) -> Result<u8> {
-    match digit {
-        b'0'..=b'9' => Ok(digit - b'0'),
-        b'a'..=b'f' => Ok(digit - b'a' + 10),
-        b'A'..=b'F' => Ok(digit - b'A' + 10),
-        _ => Err(SkeinError::Storage(format!(
-            "binary value contains invalid hex digit {:?}",
-            char::from(digit)
-        ))),
-    }
-}
-
-fn decode_list_value(input: &str) -> Result<Value> {
-    if input.is_empty() {
-        return Ok(Value::List(Vec::new()));
-    }
-    input
-        .split(',')
-        .map(|item| decode_string(item).and_then(|value| decode_value(&value)))
-        .collect::<Result<Vec<_>>>()
-        .map(Value::List)
-}
-
-fn decode_map_value(input: &str) -> Result<Value> {
-    let mut values = BTreeMap::new();
-    if input.is_empty() {
-        return Ok(Value::Map(values));
-    }
-    for item in input.split(';') {
-        let Some((key, value)) = item.split_once('=') else {
-            return Err(SkeinError::Storage(format!(
-                "invalid encoded map item: {item}"
-            )));
-        };
-        values.insert(
-            decode_string(key)?,
-            decode_string(value).and_then(|value| decode_value(&value))?,
-        );
-    }
-    Ok(Value::Map(values))
-}
-
 fn encode_table_kind(kind: TableKind) -> &'static str {
     match kind {
         TableKind::Node => "node",
@@ -5968,18 +5453,6 @@ fn decode_table_kind(input: &str) -> Result<TableKind> {
         "node" => Ok(TableKind::Node),
         "relationship" => Ok(TableKind::Relationship),
         _ => Err(SkeinError::Storage(format!("invalid table kind: {input}"))),
-    }
-}
-
-fn encode_property_type(value_type: PropertyType) -> &'static str {
-    match value_type {
-        PropertyType::Any => "any",
-        PropertyType::Bool => "bool",
-        PropertyType::Int => "int",
-        PropertyType::Float => "float",
-        PropertyType::String => "string",
-        PropertyType::Text => "text",
-        PropertyType::List => "list",
     }
 }
 
@@ -6074,39 +5547,6 @@ fn decode_schema_object_state(input: &str) -> Result<SchemaObjectState> {
     }
 }
 
-pub(crate) fn encode_string(input: &str) -> String {
-    encode_bytes(input.as_bytes())
-}
-
-fn encode_bytes(input: &[u8]) -> String {
-    input.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-pub(crate) fn decode_string(input: &str) -> Result<String> {
-    let bytes = decode_bytes(input)?;
-    String::from_utf8(bytes).map_err(|error| SkeinError::Storage(error.to_string()))
-}
-
-fn decode_bytes(input: &str) -> Result<Vec<u8>> {
-    if !input.len().is_multiple_of(2) {
-        return Err(SkeinError::Storage(format!(
-            "invalid hex string length: {}",
-            input.len()
-        )));
-    }
-    let mut bytes = Vec::with_capacity(input.len() / 2);
-    for offset in (0..input.len()).step_by(2) {
-        let byte = input
-            .get(offset..offset + 2)
-            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            .ok_or_else(|| {
-                SkeinError::Storage(format!("invalid hex string at byte offset {offset}"))
-            })?;
-        bytes.push(byte);
-    }
-    Ok(bytes)
-}
-
 pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
@@ -6170,12 +5610,6 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
-pub(crate) fn parse_u64(input: &str, name: &str) -> Result<u64> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
-}
-
 fn parse_u32(input: &str, name: &str) -> Result<u32> {
     input
         .parse()
@@ -6213,12 +5647,6 @@ fn parse_statistics_bounded_path_key(
         target,
         parse_usize(hops, "statistics bounded path hop count")?,
     ))
-}
-
-pub(crate) fn parse_i64(input: &str, name: &str) -> Result<i64> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
 }
 
 fn encode_optional_u64(value: Option<u64>) -> String {

@@ -13,6 +13,8 @@ pub mod config;
 pub mod cow;
 pub mod doctor;
 pub mod durability;
+#[doc(hidden)]
+pub mod graph_constraints;
 pub mod graph_descriptor_page;
 pub mod graph_descriptor_tree;
 #[doc(hidden)]
@@ -35,6 +37,8 @@ pub mod scan;
 pub mod snapshot;
 pub mod stable_identity;
 pub mod telemetry;
+#[doc(hidden)]
+pub mod text;
 #[doc(hidden)]
 pub mod wal;
 pub mod wire;

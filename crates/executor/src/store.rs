@@ -89,6 +89,15 @@ pub trait GraphExecutionRead {
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
+    /// Visits every live relationship, including persisted base records and
+    /// uncheckpointed changes, in either residency mode. Stop and callback
+    /// errors terminate the scan without further consumer calls.
+    fn visit_relationships_owned(
+        &self,
+        rel_type: Option<RelTypeId>,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl>;
+
     fn visit_projected_nodes_owned(
         &self,
         label_id: Option<LabelId>,

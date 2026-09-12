@@ -1,7 +1,7 @@
 use super::{schema_value_mismatch, NumericFragment};
-use crate::error::Result;
+use crate::columnar::{ValidityBuilder, ValidityView};
+use skein_core::Result;
 use skein_core::Value;
-use skein_executor::columnar::{ValidityBuilder, ValidityView};
 use skein_storage::NodeRecord;
 
 pub(super) fn admitted_numeric_batch_rows(
@@ -75,10 +75,10 @@ enum NumericValueBuffer {
 }
 
 impl NumericValueBuffer {
-    fn with_capacity(property_type: crate::schema::PropertyType, rows: usize) -> Self {
+    fn with_capacity(property_type: skein_core::PropertyType, rows: usize) -> Self {
         match property_type {
-            crate::schema::PropertyType::Int => Self::Int(Vec::with_capacity(rows)),
-            crate::schema::PropertyType::Float => Self::Float(Vec::with_capacity(rows)),
+            skein_core::PropertyType::Int => Self::Int(Vec::with_capacity(rows)),
+            skein_core::PropertyType::Float => Self::Float(Vec::with_capacity(rows)),
             _ => unreachable!("numeric fragment eligibility checks the property type"),
         }
     }
@@ -300,9 +300,9 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: crate::schema::PropertyType::Int,
+            property_type: skein_core::PropertyType::Int,
             predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
-            expected: skein_executor::columnar::NumericLiteral::Int(0),
+            expected: crate::columnar::NumericLiteral::Int(0),
             fused_operators: None,
         };
         let mut cursor = NumericNodeBatchCursor::new(nodes.iter(), fragment, 2, true);
@@ -351,9 +351,9 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: crate::schema::PropertyType::Float,
+            property_type: skein_core::PropertyType::Float,
             predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gt),
-            expected: skein_executor::columnar::NumericLiteral::Float(1.0),
+            expected: crate::columnar::NumericLiteral::Float(1.0),
             fused_operators: None,
         };
         let mut cursor = NumericNodeBatchCursor::new(nodes.iter(), fragment, 8, false);
@@ -372,9 +372,9 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: crate::schema::PropertyType::Int,
+            property_type: skein_core::PropertyType::Int,
             predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
-            expected: skein_executor::columnar::NumericLiteral::Int(2),
+            expected: crate::columnar::NumericLiteral::Int(2),
             fused_operators: None,
         };
         let mut buffer = OwnedNumericBatchBuffer::new(fragment, 3, true);

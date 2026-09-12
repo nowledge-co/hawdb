@@ -70,8 +70,8 @@ crate split includes `skein-core` for common graph primitives,
 local resource classes, background admission, and expected-value ranking,
 `skein-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
 SQL/PGQ syntax AST, `skein-sql` for semantic relational/SQL/PGQ lowering,
-`skein-relational` for storage-neutral relational statement compilation and
-strict-append access planning,
+`skein-relational` for storage-neutral RowPage DDL/DML compilation,
+strict-append statement/access planning, and shared scalar binding,
 `skein-plan` for Cypher logical/physical IR, typed phase roots, deterministic
 fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
@@ -80,29 +80,46 @@ kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
 owns release identity validation and storage crash-recovery evidence contracts.
 `skein-search` owns lexical/vector search, generation publication, recall
 validation, and the storage-neutral `SearchProjectionSource` boundary.
+Its internal `projection_evidence` module owns the pure probe contract,
+typed evidence report, and primary/shadow qualification reducers alongside
+the search-owned scan-filter field contract. Root `search_projection_evidence`
+re-exports the same types and functions while retaining file/CLI wrappers and
+real index checkpoint/reopen integration tests. This adds no separate host
+integration API or dependency from evidence back to search.
 
 ```text
 crates/
   core/                errors, values, ids, catalog names, schema descriptors
   analytics/           immutable CSR/CSC projections and graph algorithms
-  evidence/            release identity and crash-recovery evidence contracts
+  evidence/            release identity, recovery, redacted diagnostic evidence
   plan/                logical/physical IR, phase roots, explain, fingerprints
   qos/                 work classes, local admission, background ranking
   optimizer/           Cascades memo/rules/search plus graph cost and lowering
   cypher/              token cursor, parser, AST, parameter model
   sql-syntax/           PostgreSQL tokens, spans, errors, SQL/PGQ syntax AST
   sql/                  relational and SQL/PGQ semantic lowering
-  relational/           relational compilation and strict-append planning
+  relational/           RowPage/strict-append compilation and scalar binding
   search/               lexical/vector indexing and search generations
   storage/             storage protocols, durable primitives, MVCC, indexes
   executor/            physical operators and query execution
   fuzz/                development-only differential oracles and replay bundles
   qualification/       synthetic revision-bound CI qualification workloads
-  api/                 stable embedded API facade
 ```
 
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
+
+Graph checkpoint/spill text value, property, and hex codecs belong to the
+internal `skein-storage::text` module. Root storage keeps crate-private
+compatibility imports, so existing checkpoint, statistics-spill, and recovery
+callers share the same encoding rather than depend on a root implementation.
+The binary WAL codec remains a separate format; ownership migration does not
+normalize legacy text decoding tolerance or change any encoded bytes.
+Pure codec tests and their unchanged differential campaign live with storage.
+The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
+a manual test suite to that campaign, while public database reopen/no-write
+corruption tests stay at the root integration boundary.
+
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
 re-export facades over their owning crates. `skein-plan` depends only on
 `skein-core`, `skein-cypher`, and `skein-ddl`; `skein-optimizer` depends inward
@@ -121,6 +138,14 @@ state, generation cleanup/publication, query execution, and recall validation
 belong to `skein-search`. Search document identity is a storage protocol and is
 therefore owned by `skein-storage`, preventing storage mutation code from
 depending back on the search crate.
+
+`skein-evidence::inventory` owns the storage-recovery, background-maintenance,
+and query-family evidence health models and JSON validators. The original
+`skein::nowledge_inventory` and crate-root paths re-export the same types and
+functions. Database probes, inventory scans, report generation, and cutover
+assembly stay in the facade. This boundary does not change optional-evidence
+policy, nested-field precedence, raw replay checks, or ordered blocker output,
+and does not authorize production activation.
 
 `skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
 scan, index seek, traversal, projected-graph lookup, and checkpoint-published
@@ -145,6 +170,33 @@ commit paths share those semantics; the helper itself neither publishes a
 mutation nor rolls back a caller-owned staging map on a later assignment error.
 The embedding store remains responsible for atomic visibility and durability.
 
+Numeric columnar execution belongs to `skein-executor::numeric`, including
+eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
+estimation, and output/report accounting. `src/executor/columnar.rs` adapts the
+root read context to borrowed storage and query resources; it does not implement
+a second numeric execution path. The root still owns query admission and final
+output validation, and its persisted-GraphStore error/cancellation regressions
+remain at that integration boundary. Low-level prepared scan contracts stay
+internal to the embedded implementation rather than becoming host APIs.
+
+`skein-executor::pipeline` owns the recursive `BindingBatchSource` contract and
+shared `BatchExecutionContext`; the original blocking paths remain re-exports
+of the same types. Streaming filter, projection, and limit loops live in
+`skein-executor::transform`. Root adapters retain prepared recursive dispatch,
+scan/adjacency and columnar fast paths, and graph predicate evaluation with its
+existing memory account. Sources honor row caps and cancellation, consumers
+validate output, and kernels reserve/release transform batches and propagate
+stop/error. This internal seam does not add a production integration API.
+
+Vector seed execution belongs to the internal `skein-executor::external::seed`
+module: embedding conversion, physical-plan bounds, external resource reservation,
+result validation, report collection, and binding batches share the existing
+external-read, query-ledger, and observer contracts. Root dispatch supplies a
+borrowed context without a catalog or concrete store. The host still owns the
+search projection, task admission, and final query-result validation. This move
+preserves validation order and reservation lifetime; it does not introduce a
+second host API or alter vector search policy.
+
 Query-observer collection also belongs to `skein-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
 operator inventory require only plan, executor, and storage report types.
@@ -155,18 +207,38 @@ expose a new embedded execution API. Observers must record operator events again
 the same address-stable physical plan used at construction.
 
 `skein-relational` is intentionally narrower than the complete relational
-runtime. It owns shared scalar/column binding plus strict-append statement and
-access-plan compilation over `skein-sql` IR and `skein-storage` state. The
-row/index query runtime remains in the root until its transaction-private
-`GraphStore` read views have a storage-neutral contract; moving that composite
-module earlier would only recreate the root dependency fan-out in a new crate.
+runtime. It owns shared scalar/column binding, RowPage DDL/DML transaction
+compilation, and strict-append statement/access-plan compilation over `skein-sql`
+IR and `skein-storage` state. The RowPage compiler returns transaction commands
+and optional RETURNING projection metadata; it does not execute transactions,
+publish WAL, or materialize RETURNING rows. Root statement call sites retain
+crate-private compatibility imports, and application schema-registry protection
+stays in the root. The row/index query runtime remains there until its
+transaction-private `GraphStore` read views have a storage-neutral contract;
+moving that composite module earlier would only recreate the root dependency
+fan-out in a new crate.
 
-`src/production_evidence.rs` and `src/crash_recovery_evidence.rs` remain public
-compatibility facades over `skein-evidence`. The evidence crate depends only on
-`skein-core` plus serialization, so qualification and recovery tools can share
-one fail-closed protocol model without depending on the root database runtime.
+`src/production_evidence.rs`, `src/crash_recovery_evidence.rs`, and
+`src/blackbox.rs` remain public compatibility facades over `skein-evidence`.
+The evidence crate depends only on `skein-core`, `skein-integrity`, and
+serialization, so qualification, recovery, and redacted diagnostic tools share
+one protocol implementation without depending on the root database runtime.
 Blocker-code calculation stays inside that contract instead of becoming a
 second public readiness implementation in the facade.
+
+Graph route catalog metadata and ownership readiness belong to the existing
+`skein-route-ownership::graph` module, beside search route ownership. The catalog
+owns required routes, execution/evidence roles, query-family requirements, and
+its ordered v1 digest. Ownership checks consume a typed readiness summary; they
+do not open a database, execute probes, publish ownership, or activate cutover.
+The root `route_ownership` and `nowledge_mem` paths retain re-exports of the same
+types and functions. Database-running readiness, full verification, and cutover
+integration tests remain at the root boundary.
+
+The next extraction boundaries and their verification gates are tracked in
+[`CRATE_EXTRACTION_PLAN.md`](CRATE_EXTRACTION_PLAN.md). Physical source movement
+must preserve facade paths, feature forwarding, behavior, and test coverage;
+it must not create a second host-facing integration API.
 
 `src/qos.rs` is also a compatibility re-export facade over `skein-qos`. The
 QoS crate owns local foreground/background work classes, admission decisions,
@@ -187,6 +259,15 @@ and graph-statistics orchestration. The concrete adapter should move only after
 those dependencies have stable inward-facing contracts. This avoids presenting
 the root facade or the internal storage crate as an accidental second
 production API.
+
+`skein-storage::graph_constraints` owns the internal record, snapshot, and
+scalar-value validation kernels for property types, nullability, existence,
+and uniqueness. Mutation and recovery use the same kernels through private
+root imports. Validation retains catalog visibility rules, exact `Value`
+identity, and deterministic error ordering. Concrete schema-change scans,
+incremental uniqueness checks, resource admission, and the WAL/publication
+boundary stay with the root `GraphStore`; this extraction adds no public
+host API or persisted-format change.
 
 Cypher exposes lightweight runtime resource intent through session-scoped
 system variables instead of query-shape-specific typed APIs.

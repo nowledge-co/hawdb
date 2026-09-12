@@ -410,6 +410,17 @@ impl GraphExecutionRead for GraphStore {
         emit_ordered_adjacency_entries(self, entries, consumer).map(|control| (control, report))
     }
 
+    fn visit_relationships_owned(
+        &self,
+        rel_type: Option<RelTypeId>,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::try_visit_relationships_owned(self, rel_type, |relationship| {
+            consumer(relationship).map(to_store_control)
+        })
+        .map(to_execution_control)
+    }
+
     fn scan_relationships_with_filter_pruning<'a>(
         &'a self,
         rel_type: Option<RelTypeId>,
