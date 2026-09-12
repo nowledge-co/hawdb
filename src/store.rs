@@ -8,7 +8,7 @@ use crate::schema::{
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
 use skein_core::RuntimeTaskContext;
-use skein_integrity::{checksum_u64, integrity_digest, Sha256Digest};
+use skein_integrity::{checksum_u64, Sha256Digest};
 use skein_storage::mutation::compact_transaction_graph_ops;
 use skein_storage::projection_document_id_for_node as search_projection_document_id_for_node;
 
@@ -5434,34 +5434,7 @@ pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
 
-fn verify_integrity(
-    bytes: &[u8],
-    expected_len: u64,
-    expected_checksum: u64,
-    expected_sha256: Sha256Digest,
-    artifact: &str,
-) -> Result<()> {
-    let actual_len = bytes.len() as u64;
-    if actual_len != expected_len {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} encoded length mismatch: expected {expected_len}, got {actual_len}"
-        )));
-    }
-    let actual = integrity_digest(bytes);
-    if actual.crc32c.as_u64() != expected_checksum {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} CRC32C mismatch: expected {expected_checksum}, got {}",
-            actual.crc32c
-        )));
-    }
-    if actual.sha256 != expected_sha256 {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} SHA-256 mismatch: expected {expected_sha256}, got {}",
-            actual.sha256
-        )));
-    }
-    Ok(())
-}
+use skein_storage::artifact_binding::verify_integrity;
 
 fn verify_file_integrity(
     path: &Path,

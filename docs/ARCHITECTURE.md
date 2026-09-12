@@ -204,6 +204,14 @@ query results. Unknown requested labels/types retain empty-selection semantics;
 the migration preserves error order, cancellation, and resource limits without
 adding a host-facing API.
 
+`skein-storage::artifact_binding` owns aggregate graph manifest admission,
+bound file reads, artifact metadata, and length/CRC32C/SHA-256 validation.
+Root storage retains private compatibility imports and owns database open,
+checkpoint selection, and recovery. Format admission still precedes aggregate
+admission and I/O; admitted bytes remain charged after later read failures.
+This ownership move preserves the existing limits, bounded read, validation
+order, and error messages without adding a host-facing API.
+
 Storage-neutral mutation command lowering belongs to the internal
 `skein-executor::mutation` module. It translates physical plans and SET values
 into storage commands using the canonical `skein-ddl` conversions; it does not

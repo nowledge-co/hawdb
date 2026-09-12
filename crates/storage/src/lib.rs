@@ -1,6 +1,8 @@
 pub mod adjacency;
 pub mod append_table;
 #[doc(hidden)]
+pub mod artifact_binding;
+#[doc(hidden)]
 pub mod artifact_files;
 pub mod background;
 pub mod backup;

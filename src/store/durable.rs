@@ -32,7 +32,7 @@ use super::{
 };
 use crate::error::{Result, SkeinError};
 use crate::schema::{Catalog, GraphStatistics};
-use skein_integrity::{integrity_digest, Sha256Digest};
+use skein_integrity::Sha256Digest;
 use skein_storage::{
     AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyConfig,
     CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader, CanonicalSegmentReader,
@@ -192,55 +192,9 @@ struct DurableStoreOpenOptions {
     automatic_tail_repair: Option<WalReplayConfig>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct GraphManifestOpenBudget {
-    max_encoded_bytes: u64,
-    admitted_encoded_bytes: u64,
-}
-
-impl GraphManifestOpenBudget {
-    pub(super) const fn new(max_encoded_bytes: u64) -> Self {
-        Self {
-            max_encoded_bytes,
-            admitted_encoded_bytes: 0,
-        }
-    }
-
-    fn admit(&mut self, encoded_bytes: u64, artifact: &str) -> Result<()> {
-        let required = self
-            .admitted_encoded_bytes
-            .checked_add(encoded_bytes)
-            .ok_or_else(|| {
-                SkeinError::Storage("aggregate graph manifest open bytes overflow u64".to_string())
-            })?;
-        if required > self.max_encoded_bytes {
-            return Err(SkeinError::Storage(format!(
-                "{artifact} requires {required} aggregate encoded graph manifest bytes during open, exceeding configured limit {}",
-                self.max_encoded_bytes
-            )));
-        }
-        self.admitted_encoded_bytes = required;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DurableArtifactMetadata {
-    pub(super) encoded_len: u64,
-    pub(super) encoded_checksum: u64,
-    pub(super) encoded_sha256: Sha256Digest,
-}
-
-impl DurableArtifactMetadata {
-    fn for_bytes(bytes: &[u8]) -> Self {
-        let digest = integrity_digest(bytes);
-        Self {
-            encoded_len: bytes.len() as u64,
-            encoded_checksum: digest.crc32c.as_u64(),
-            encoded_sha256: digest.sha256,
-        }
-    }
-}
+pub(super) use skein_storage::artifact_binding::{
+    DurableArtifactMetadata, GraphManifestOpenBudget,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CanonicalAdjacencyCheckpointArtifacts {

@@ -11,11 +11,10 @@ use crate::store::{
     encode_durable_text, property_projection_artifact_generation_file,
     property_projection_manifest_generation_file, property_spill_artifact_generation_file,
     property_spill_manifest_generation_file, read_durable_text, remove_source_scan_artifacts,
-    source_scan, split_projected_graph_artifact_checksum, sync_parent_dir, verify_integrity,
-    ProjectedGraphArtifact, CANONICAL_MANIFEST_MAX_BYTES, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
+    source_scan, split_projected_graph_artifact_checksum, sync_parent_dir, ProjectedGraphArtifact,
+    CANONICAL_MANIFEST_MAX_BYTES, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES,
 };
-use skein_integrity::Sha256Digest;
 use skein_storage::{
     durable_replace_file, CanonicalAdjacencyConfig, CanonicalAdjacencyReader,
     CanonicalAdjacencyWriter, CanonicalSegmentConfig, CanonicalSegmentError,
@@ -33,7 +32,7 @@ use skein_storage::{
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
@@ -454,58 +453,8 @@ impl DurableStore {
     }
 }
 
-pub(super) fn admit_graph_manifest_binding(
-    expected_len: u64,
-    format_max_bytes: u64,
-    artifact: &str,
-    open_budget: &mut GraphManifestOpenBudget,
-) -> Result<()> {
-    if expected_len > format_max_bytes {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} exceeds format limit {format_max_bytes} bytes"
-        )));
-    }
-    open_budget.admit(expected_len, artifact)
-}
-
-fn read_bound_graph_manifest(
-    path: &Path,
-    expected_len: u64,
-    expected_checksum: u64,
-    expected_sha256: Sha256Digest,
-    format_max_bytes: u64,
-    artifact: &str,
-    open_budget: &mut GraphManifestOpenBudget,
-) -> Result<Vec<u8>> {
-    admit_graph_manifest_binding(expected_len, format_max_bytes, artifact, open_budget)?;
-    let read_limit = expected_len
-        .checked_add(1)
-        .ok_or_else(|| SkeinError::Storage(format!("{artifact} read limit overflows u64")))?;
-    let file = File::open(path)?;
-    let actual_len = file.metadata()?.len();
-    if actual_len > expected_len {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} contains {actual_len} bytes, exceeding its admitted bound {expected_len}"
-        )));
-    }
-    let capacity = usize::try_from(actual_len)
-        .map_err(|_| SkeinError::Storage(format!("{artifact} length does not fit usize")))?;
-    let mut encoded = Vec::with_capacity(capacity);
-    file.take(read_limit).read_to_end(&mut encoded)?;
-    if encoded.len() as u64 > expected_len {
-        return Err(SkeinError::Storage(format!(
-            "{artifact} grew beyond its admitted bound {expected_len} during open"
-        )));
-    }
-    verify_integrity(
-        &encoded,
-        expected_len,
-        expected_checksum,
-        expected_sha256,
-        artifact,
-    )?;
-    Ok(encoded)
-}
+pub(super) use skein_storage::artifact_binding::admit_graph_manifest_binding;
+use skein_storage::artifact_binding::read_bound_graph_manifest;
 
 pub(super) fn load_published_canonical_segments(
     root: &Path,
