@@ -109,6 +109,17 @@ crates/
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
 
+Logical transaction lock metadata belongs to the internal
+`skein-storage::transaction_locks` module: lock targets and acquisition order,
+compatibility and coverage, budgeted lock residency and escalation, savepoint
+restoration, and the wait-for graph. `src/api/transaction_locks.rs` retains
+crate-private re-exports with the same concrete types. The root concurrent
+coordinator still owns synchronization, conflict admission, bounded waiting,
+wakeups, transaction abort, and commit/recovery orchestration. This move does
+not create a standalone transaction manager or a new host API. Unit tests and
+the explicit local state-machine campaign live with storage; real concurrent
+transaction and key-range integration tests remain at the root boundary.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
