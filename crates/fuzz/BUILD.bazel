@@ -89,6 +89,7 @@ test_suite(
         "//:skein_recovery_text_fuzz_tests",
         "//:skein_scan_callback_fuzz_tests",
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
+        "//crates/executor:skein_graph_algorithm_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_query_observer_fuzz_tests",
         "//crates/executor:skein_sort_merge_account_fuzz_tests",

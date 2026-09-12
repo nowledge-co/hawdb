@@ -140,6 +140,16 @@ operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
+The internal `skein-executor::analytics` module owns graph algorithm dispatch,
+projection name/visibility selection, the `GraphExecutionRead` projection-source
+adapter, and query-owned projection/scratch/result accounting. It depends inward
+on `skein-analytics`, whose algorithm and immutable-projection implementations
+remain independent of executor. Root execution still registers projected graph
+definitions, owns prepared dispatch and task admission, and validates final
+query results. Unknown requested labels/types retain empty-selection semantics;
+the migration preserves error order, cancellation, and resource limits without
+adding a host-facing API.
+
 `skein-executor::pipeline` owns the recursive `BindingBatchSource` contract and
 shared `BatchExecutionContext`; the original blocking paths remain re-exports
 of the same types. Streaming filter, projection, and limit loops live in
