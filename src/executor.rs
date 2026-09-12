@@ -66,8 +66,7 @@ pub(crate) use skein_executor::memory::{
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
-    emit_owned_binding_batches, runtime_checkpoint, AccountedBindingBatch, BatchControl,
-    BindingBatch, TransformBatchBuilder,
+    runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch, TransformBatchBuilder,
 };
 use skein_executor::predicate::{
     label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
