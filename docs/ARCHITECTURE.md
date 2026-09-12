@@ -120,6 +120,16 @@ not create a standalone transaction manager or a new host API. Unit tests and
 the explicit local state-machine campaign live with storage; real concurrent
 transaction and key-range integration tests remain at the root boundary.
 
+Source mutation dual-write evidence models and readiness evaluation belong to
+`skein-readiness::source_mutation`. The owner retains the eight-family inventory,
+independent ACK/watermark and replay checks, projection-payload requirements,
+stable evidence ordering, and v1 report serialization. Root `nowledge_mem`
+re-exports the same concrete types and functions; replacement-summary and host
+integration remain at the facade. This evaluates supplied evidence, not actual
+dual-write execution or bootstrap verification, and cannot authorize activation
+by itself. Owner tests include full-report bit-matrix and mixed-inventory oracles;
+the exhaustive campaign remains explicit local fuzz rather than a CI job.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
@@ -195,14 +205,31 @@ operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
+The internal `skein-executor::analytics` module owns graph algorithm dispatch,
+projection name/visibility selection, the `GraphExecutionRead` projection-source
+adapter, and query-owned projection/scratch/result accounting. It depends inward
+on `skein-analytics`, whose algorithm and immutable-projection implementations
+remain independent of executor. Root execution still registers projected graph
+definitions, owns prepared dispatch and task admission, and validates final
+query results. Unknown requested labels/types retain empty-selection semantics;
+the migration preserves error order, cancellation, and resource limits without
+adding a host-facing API.
+
 Storage-neutral mutation command lowering belongs to the internal
 `skein-executor::mutation` module. It translates physical plans and SET values
-into storage commands using the canonical `skein-ddl` conversions; it does not
-own preflight, transaction admission, commit, or recovery. The root retains
-executable-predicate scan fallback, SET RETURN preflight/projection, concrete
-store integration tests, and the existing public executor function paths.
+into storage commands using the canonical `skein-ddl` conversions. It also owns
+executable-predicate scan fallback, bounded SET RETURN preflight, and staged
+RETURN projection through `GraphExecutionRead/Write`. Transaction admission,
+atomic commit, recovery, concrete store integration tests, and public executor
+function paths remain in the root.
 Translation errors remain distinct from non-mutation plans so fallback and
 failure behavior are unchanged.
+
+SET value evaluation and ordered application to staging property maps belong
+to `skein-storage::mutation::evaluate`. Executor preflight and root mutation
+commit paths share those semantics; the helper itself neither publishes a
+mutation nor rolls back a caller-owned staging map on a later assignment error.
+The embedding store remains responsible for atomic visibility and durability.
 
 Numeric columnar execution belongs to `skein-executor::numeric`, including
 eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
