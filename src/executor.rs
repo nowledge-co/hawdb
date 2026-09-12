@@ -6,17 +6,16 @@ use crate::error::{Result, SkeinError};
 use crate::optimizer::PhysicalPlan;
 use crate::planner::{
     Aggregation, GraphAlgorithmKind, PlanChildren, Predicate, Projection, RelationshipCountLeg,
-    RelationshipOnCreateValue, SetNodePropertiesReturnMode, SetValue, SortItem,
+    SetNodePropertiesReturnMode, SetValue, SortItem,
 };
 use crate::schema::Catalog;
 use crate::store::{
-    ConnectedNodesCreate, GraphMutation, GraphScanControl, GraphStore,
-    MatchedRelationshipCopyMerge, MatchedRelationshipCreate, MatchedRelationshipMerge,
-    MatchedRelationshipRetargetMerge, MatchedRelationshipSourceRetargetMerge, MutationLimits,
-    NodeId, NodeRecord, NodeSetAssignment, NodeSetValue, ProjectedGraphDefinition, PropertyFilter,
-    RelationshipDeleteRequest, RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
-    RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPruningReport,
+    ConnectedNodesCreate, GraphScanControl, GraphStore, MatchedRelationshipCopyMerge,
+    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
+    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeId, NodeRecord, NodeSetAssignment,
+    NodeSetValue, ProjectedGraphDefinition, PropertyFilter, RelationshipDeleteRequest,
+    RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
+    RelationshipTargetNodeDelete, ScanPruningReport,
 };
 use crate::value::Value;
 use skein_analytics::ProjectedGraphExecution;

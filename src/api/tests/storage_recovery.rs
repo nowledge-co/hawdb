@@ -1259,6 +1259,66 @@ fn external_optimizer_statistics_refresh_fails_before_publication_on_work_budget
 }
 
 #[test]
+fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
+    let path = unique_test_dir("external_optimizer_statistics_spill_limits");
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    for id in 0..96 {
+        db.query_with_params(
+            "CREATE (:Item {score: $score, other: $other})",
+            &BTreeMap::from([
+                ("score".into(), Value::Int(id % 8)),
+                ("other".into(), Value::Int(id % 4)),
+            ]),
+        )
+        .unwrap();
+    }
+    db.checkpoint().unwrap();
+    let before = db.statistics();
+    let generation = db.storage_residency_report().canonical_generation;
+    let manifest = std::fs::read(path.join("manifest.skein")).unwrap();
+    let wal = read_test_wal(&path).unwrap();
+    let spill_root = path.join("statistics-spill");
+    for (max_spill_bytes, max_spill_runs, expected) in [
+        (1, 128, "max_spill_bytes 1"),
+        (1024 * 1024, 1, "max_spill_runs 1"),
+    ] {
+        let error = db
+            .refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
+                memory_budget_bytes: 4096,
+                max_spill_bytes,
+                max_spill_runs,
+                max_input_records: 100_000,
+                max_generated_facts: 100_000,
+                max_path_expansions: 100_000,
+                spill_directory: spill_root.clone(),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(db.statistics(), before);
+        assert_eq!(
+            db.storage_residency_report().canonical_generation,
+            generation
+        );
+        assert_eq!(
+            std::fs::read(path.join("manifest.skein")).unwrap(),
+            manifest
+        );
+        assert_eq!(read_test_wal(&path).unwrap(), wal);
+        assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
+    }
+    drop(db);
+    let db = Database::open_with_config(&path, config).unwrap();
+    assert_eq!(db.statistics(), before);
+    assert_eq!(db.basic_statistics().node_count, 96);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn out_of_core_delta_budget_rejects_before_wal_append() {
     let path = unique_test_dir("out_of_core_delta_budget");
     let config = DatabaseConfig {

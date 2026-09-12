@@ -962,6 +962,7 @@ dependencies = [
  "fs2",
  "rayon",
  "skein-core",
+ "skein-ddl",
  "skein-plan",
  "skein-storage",
 ]

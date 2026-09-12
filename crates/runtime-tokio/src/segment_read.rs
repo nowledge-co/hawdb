@@ -353,6 +353,8 @@ mod tests {
         started: mpsc::Sender<u64>,
         completed: mpsc::Sender<u64>,
         releases: Vec<Mutex<mpsc::Receiver<()>>>,
+        active: AtomicUsize,
+        peak: AtomicUsize,
         reads: AtomicUsize,
     }
 
@@ -377,6 +379,8 @@ mod tests {
                     started: started_tx,
                     completed: completed_tx,
                     releases: releases_rx,
+                    active: AtomicUsize::new(0),
+                    peak: AtomicUsize::new(0),
                     reads: AtomicUsize::new(0),
                 }),
                 ReadGates {
@@ -390,12 +394,15 @@ mod tests {
 
     impl SegmentRangeReader for GatedReader {
         fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+            let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            self.peak.fetch_max(active, Ordering::AcqRel);
             self.reads.fetch_add(1, Ordering::AcqRel);
             let _ = self.started.send(range.artifact_id);
             if let Some(release) = self.releases.get(range.artifact_id as usize) {
                 // Disconnecting the sender also releases readers during a test panic.
                 let _ = release.lock().unwrap().recv();
             }
+            self.active.fetch_sub(1, Ordering::AcqRel);
             let _ = self.completed.send(range.artifact_id);
             Ok(Arc::from(vec![0; range.length.get() as usize]))
         }
@@ -404,7 +411,11 @@ mod tests {
     impl ReadGates {
         fn wait_until_started(&self) {
             let mut started = (0..2)
-                .map(|_| self.started.recv_timeout(Duration::from_secs(5)).unwrap())
+                .map(|_| {
+                    self.started
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("both reads must start before either is released")
+                })
                 .collect::<Vec<_>>();
             started.sort_unstable();
             assert_eq!(started, vec![0, 1]);
@@ -637,55 +648,76 @@ mod tests {
 
     #[test]
     fn reads_each_wave_concurrently_and_preserves_schedule_order() {
-        let runtime = runtime();
-        let executor = TokioSegmentReadExecutor::new(runtime.clone(), NonZeroU64::new(8).unwrap());
-        let reader = Arc::new(TrackingReader {
-            active: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            reads: AtomicUsize::new(0),
-        });
-        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
-            .schedule([
-                SegmentReadRange::new(2, 2, 1, NonZeroU64::MIN),
-                SegmentReadRange::new(1, 1, 0, NonZeroU64::MIN),
-            ]);
-        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = Arc::clone(&observed);
-        let tracked_reader = Arc::clone(&reader);
-        let result = runtime
-            .block_on(
-                runtime.execute_async(
-                    RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0)
-                        .with_cpu_slots(2)
-                        .with_io_wave_slots(2),
-                    RuntimeTaskContext::default(),
-                    move |context| async move {
-                        executor
-                            .execute(tracked_reader, &schedule, &context, |payload| {
-                                captured
-                                    .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                    .push(payload.range.artifact_id);
-                                Ok::<(), Infallible>(())
-                            })
-                            .await
-                    },
-                ),
-            )
-            .unwrap()
-            .unwrap();
+        for completion_order in [[0, 1], [1, 0]] {
+            let runtime = runtime();
+            let executor =
+                TokioSegmentReadExecutor::new(runtime.clone(), NonZeroU64::new(8).unwrap());
+            let (reader, mut gates) = GatedReader::new();
+            let schedule =
+                SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN).schedule(
+                    [
+                        SegmentReadRange::new(1, 1, 1, NonZeroU64::MIN),
+                        SegmentReadRange::new(0, 0, 0, NonZeroU64::MIN),
+                    ],
+                );
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&observed);
+            let tracked_reader = Arc::clone(&reader);
+            let executing_runtime = runtime.clone();
+            let task = runtime.handle.spawn(async move {
+                executing_runtime
+                    .execute_async(
+                        RuntimeWorkRequest::io(RuntimeWorkPriority::Foreground, 2, 0)
+                            .with_cpu_slots(2)
+                            .with_io_wave_slots(2),
+                        RuntimeTaskContext::default(),
+                        move |context| async move {
+                            executor
+                                .execute(tracked_reader, &schedule, &context, |payload| {
+                                    captured
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                        .push(payload.range.artifact_id);
+                                    Ok::<(), Infallible>(())
+                                })
+                                .await
+                        },
+                    )
+                    .await
+            });
 
-        assert_eq!(result.wave_count, 1);
-        assert_eq!(result.range_count, 2);
-        assert_eq!(reader.peak.load(Ordering::Acquire), 2);
-        assert_eq!(reader.reads.load(Ordering::Acquire), 2);
-        assert_eq!(
-            *observed
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            vec![1, 2]
-        );
-        assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 0);
+            // Hold both reads open until their entry is observed. Sleeping in a
+            // reader cannot guarantee overlap when blocking threads start late.
+            gates.wait_until_started();
+            assert_eq!(reader.active.load(Ordering::Acquire), 2);
+            assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 2);
+            for artifact_id in completion_order {
+                drop(gates.releases[artifact_id].take());
+                assert_eq!(
+                    gates
+                        .completed
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("the released read must finish"),
+                    artifact_id as u64,
+                );
+            }
+            let result = runtime.block_on(task).unwrap().unwrap().unwrap();
+
+            assert_eq!(result.wave_count, 1);
+            assert_eq!(result.range_count, 2);
+            assert_eq!(result.bytes_read, 2);
+            assert_eq!(result.max_wave_bytes_read, 2);
+            assert_eq!(reader.peak.load(Ordering::Acquire), 2);
+            assert_eq!(reader.active.load(Ordering::Acquire), 0);
+            assert_eq!(reader.reads.load(Ordering::Acquire), 2);
+            assert_eq!(
+                *observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                vec![0, 1],
+            );
+            assert_eq!(runtime.governor_snapshot().active_foreground_io_slots, 0);
+        }
     }
 
     #[test]
