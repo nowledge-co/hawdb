@@ -120,6 +120,18 @@ The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
 a manual test suite to that campaign, while public database reopen/no-write
 corruption tests stay at the root integration boundary.
 
+`skein-storage::statistics_refresh` owns the transient statistics record codec,
+bounded run sorting and merge, property exclusion, index sampling, histogram
+accumulation, and spill-directory lifetime. Shared eligibility and histogram
+helpers serve both materialized and external refresh paths from that owner.
+Root `src/store/statistics_refresh.rs` retains public options/report types,
+user-option validation, concrete graph scans and path expansion, source-epoch
+checks, and publication. It copies the existing four sort/output limits into
+an internal `StatsRunOptions`; no limit or format is changed by this boundary.
+Owner differential tests compare complete output against a bag/set oracle
+across run layouts. Database checkpoint/reopen and failure-before-publication
+tests remain at the root integration boundary.
+
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
 re-export facades over their owning crates. `skein-plan` depends only on
 `skein-core`, `skein-cypher`, and `skein-ddl`; `skein-optimizer` depends inward

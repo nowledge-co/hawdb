@@ -36,6 +36,8 @@ pub mod relational;
 pub mod scan;
 pub mod snapshot;
 pub mod stable_identity;
+#[doc(hidden)]
+pub mod statistics_refresh;
 pub mod telemetry;
 #[doc(hidden)]
 pub mod text;
