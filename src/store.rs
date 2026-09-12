@@ -257,13 +257,14 @@ use wal_codec::{
     WalOpenOutcome, WalRecordCursor,
 };
 
-const STORAGE_VERSION: &str = "skein-storage-v1";
+use skein_storage::durable_manifest::{
+    safe_reclaim_commit_epoch, validate_storage_version, STORAGE_VERSION,
+};
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
 const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
-const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
@@ -2782,15 +2783,6 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn safe_reclaim_commit_epoch(
-    checkpoint_commit_epoch: u64,
-    oldest_reader_commit_epoch: Option<u64>,
-) -> u64 {
-    oldest_reader_commit_epoch
-        .map(|epoch| epoch.saturating_sub(1))
-        .unwrap_or(checkpoint_commit_epoch)
-}
-
 fn composite_property_index_key(
     node: &NodeRecord,
     properties: &[String],
@@ -4924,16 +4916,6 @@ fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifactMe
     }))
 }
 
-fn split_manifest_checksum(text: &str) -> Result<(&str, u64)> {
-    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
-            "manifest missing checksum footer".to_string(),
-        ));
-    };
-    let checksum = parse_u64(footer.trim(), "manifest checksum")?;
-    Ok((body, checksum))
-}
-
 fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
         return Err(SkeinError::Storage(
@@ -5630,46 +5612,6 @@ fn parse_statistics_bounded_path_key(
         target,
         parse_usize(hops, "statistics bounded path hop count")?,
     ))
-}
-
-fn encode_optional_u64(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn encode_optional_sha256(value: Option<Sha256Digest>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn parse_optional_u64(input: &str, name: &str) -> Result<Option<u64>> {
-    if input == "none" {
-        Ok(None)
-    } else {
-        parse_u64(input, name).map(Some)
-    }
-}
-
-fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>> {
-    if input == "none" {
-        Ok(None)
-    } else {
-        input
-            .parse()
-            .map(Some)
-            .map_err(|error| SkeinError::Storage(format!("invalid {name}: {error}")))
-    }
-}
-
-fn validate_storage_version(version: &str) -> Result<()> {
-    if version == STORAGE_VERSION {
-        return Ok(());
-    }
-    Err(SkeinError::Storage(format!(
-        "unsupported storage version: {version}; expected {STORAGE_VERSION}"
-    )))
 }
 
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
@@ -9814,6 +9756,46 @@ mod tests {
             .to_string()
             .contains("manifest is missing required field: checkpoint_generation"));
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn storage_owned_manifest_preserves_checkpoint_binding_and_no_write_rejection() {
+        let path = unique_test_dir("storage_owned_manifest");
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        let manifest_path = path.join("manifest.skein");
+        let manifest: super::DurableManifest =
+            skein_storage::durable_manifest::DurableManifest::load(&manifest_path).unwrap();
+        let manifest: skein_storage::durable_manifest::DurableManifest = manifest;
+        assert_eq!(manifest.checkpoint_generation, Some(1));
+        assert!(manifest.relational_row_generation_artifacts.is_some());
+        assert!(manifest.relational_overflow_generation_artifacts.is_some());
+        assert_eq!(manifest.wal_path(&path), path.join("wal.1.skein"));
+        rewrite_checksummed_file(
+            &manifest_path,
+            "wal_generation\t1\n",
+            "wal_generation\t1\nwal_generation\t1\n",
+            "manifest",
+        );
+        let before = fs::read(&manifest_path).unwrap();
+        let expected = super::DurableManifest::load(&manifest_path)
+            .unwrap_err()
+            .to_string();
+        let mut catalog = Catalog::default();
+        let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+        assert!(matches!(&error, SkeinError::Storage(_)));
+        assert!(error
+            .to_string()
+            .contains("duplicate field: wal_generation"));
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(fs::read(&manifest_path).unwrap(), before);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
