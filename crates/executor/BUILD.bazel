@@ -128,6 +128,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_mutation_preflight_fuzz_tests",
+    args = [
+        "mutation::preflight::tests::mutation_preflight_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_sort_merge_account_fuzz_tests",
     args = [
         "blocking::sort::tests::sort_merge_account_differential_campaign",
