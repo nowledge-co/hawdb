@@ -2371,7 +2371,8 @@ impl SearchIndex {
     }
 
     fn write_lexical_projection(&self, path: &Path) -> Result<()> {
-        let generation = out_of_core::next_generation(path)?;
+        let generation =
+            out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
         let projection = LexicalProjectionWriter::new(self.lexical_config).write(
             path,
             generation,

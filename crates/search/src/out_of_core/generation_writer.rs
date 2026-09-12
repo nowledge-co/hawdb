@@ -6,7 +6,8 @@ use crate::generation_cleanup::{
 };
 use crate::lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, artifact_file as lexical_artifact_file,
-    LexicalProjectionConfig, LexicalProjectionWriter, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
+    LexicalProjectionConfig, LexicalProjectionWriter, DEFAULT_MAX_MANIFEST_BYTES,
+    MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
     SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
@@ -153,6 +154,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool: Option<BufWriter<File>>,
     options: SearchOutOfCoreGenerationBuildOptions,
     lexical_term_policy: SearchLexicalTermPolicy,
+    max_lexical_manifest_bytes: NonZeroU64,
     last_document_id: Option<String>,
     document_count: usize,
     vector_document_count: usize,
@@ -232,6 +234,7 @@ impl SearchOutOfCoreGenerationWriter {
             spool: Some(spool),
             options,
             lexical_term_policy,
+            max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             last_document_id: None,
             document_count: 0,
             vector_document_count: 0,
@@ -260,6 +263,27 @@ impl SearchOutOfCoreGenerationWriter {
         self.lexical_term_policy = policy;
     }
 
+    /// Returns the encoded lexical manifest byte budget, initially 256 MiB.
+    pub fn max_lexical_manifest_bytes(&self) -> NonZeroU64 {
+        self.max_lexical_manifest_bytes
+    }
+
+    /// Selects the encoded manifest budget used when finalizing the complete stage.
+    ///
+    /// This can change before or after `push`. An insufficient final budget
+    /// rejects publication and discards the stage. Values above `isize::MAX`
+    /// are rejected without changing the previous budget. The budget does not
+    /// include decoded dictionary, analyzer, or other process memory.
+    pub fn set_max_lexical_manifest_bytes(&mut self, max_bytes: NonZeroU64) -> Result<()> {
+        if max_bytes.get() > isize::MAX as u64 {
+            return Err(SkeinError::Storage(
+                "lexical manifest byte budget exceeds isize::MAX".into(),
+            ));
+        }
+        self.max_lexical_manifest_bytes = max_bytes;
+        Ok(())
+    }
+
     pub fn push(&mut self, document: SearchDocument) -> Result<()> {
         if self.poisoned {
             return Err(SkeinError::Storage(
@@ -273,7 +297,7 @@ impl SearchOutOfCoreGenerationWriter {
         result
     }
 
-    /// Prepares an update with a snapshot of the reader's lexical term policy.
+    /// Prepares an update with the reader's lexical term policy and manifest budget.
     /// Configure the reader before calling this method; later reader changes do
     /// not alter the already prepared generation.
     pub fn prepare_delta(
@@ -326,7 +350,7 @@ impl SearchOutOfCoreGenerationWriter {
             document_count: self.document_count,
             max_record_bytes: self.options.max_record_bytes.get(),
         };
-        let generation = next_generation(&self.root)?;
+        let generation = next_generation(&self.root, self.max_lexical_manifest_bytes.get())?;
         let lexical_generation = generation;
         let GenerationArtifacts {
             segment: segment_output,
@@ -419,6 +443,7 @@ impl SearchOutOfCoreGenerationWriter {
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
         let lexical_config = LexicalProjectionConfig {
+            max_manifest_bytes: self.max_lexical_manifest_bytes,
             max_term_bytes: self.lexical_term_policy.max_term_bytes(),
             build_memory_bytes: self.options.lexical_build_memory_bytes,
             max_spill_bytes: self.options.lexical_max_spill_bytes,

@@ -27,8 +27,10 @@ still needs input bytes plus the deserialized body. Counting and checksumming
 visit the complete body; they do not provide a CPU or cancellation budget.
 Allocator overhead and the existing owned body are outside the encoded-byte cap.
 
-The public API, reader admission behavior, 256 MiB default manifest cap, term
-policy, and document source limit are unchanged. This is a private prerequisite
+The encoder uses the caller's admitted cap. The 256 MiB default, term policy,
+and document source limit are unchanged; the separately approved public budget
+contract is documented in [Lexical manifest byte admission](LEXICAL_MANIFEST_BUDGET.md).
+This encoder is a private prerequisite
 for [#392](https://github.com/nowledge-co/skein/issues/392) and
 [#206](https://github.com/nowledge-co/skein/issues/206). It neither admits the
 previously rejected complete-corpus manifest nor establishes the posting

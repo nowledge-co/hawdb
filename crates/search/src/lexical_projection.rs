@@ -36,16 +36,20 @@ const ARTIFACT_HEADER: &[u8; 16] = b"SKEINLEXICAL0001";
 const BLOCK_HEADER: &[u8; 8] = b"SKNLEX01";
 const RUN_HEADER: &[u8; 8] = b"SKNLEXR1";
 const SPILL_IO_BUFFER_BYTES: usize = 8192;
-const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const DEFAULT_MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const MANIFEST_FILE: &str = "search_lexical.manifest.skein";
 
 pub(super) fn artifact_file(generation: u64) -> String {
     format!("search_lexical.{generation}.skein")
 }
 
-pub(super) fn manifest_generation(path: &Path) -> Result<u64> {
-    let bytes = read_bounded_file(path, MAX_MANIFEST_BYTES)?;
-    Ok(ManifestBody::decode(&bytes)?.generation)
+pub(super) fn manifest_generation(path: &Path, max_bytes: u64) -> Result<Option<u64>> {
+    // Invalid candidates remain skippable. Admission or I/O failures must not
+    // hide existing generations and allow their identities to be reused.
+    let bytes = read_bounded_file(path, max_bytes)?;
+    Ok(ManifestBody::decode(&bytes)
+        .ok()
+        .map(|body| body.generation))
 }
 
 pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
@@ -80,6 +84,7 @@ pub(super) fn documents_digest(documents: &BTreeMap<String, SearchDocument>) -> 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LexicalProjectionConfig {
+    pub max_manifest_bytes: NonZeroU64,
     pub build_memory_bytes: NonZeroU64,
     pub max_spill_bytes: NonZeroU64,
     pub max_spill_runs: NonZeroUsize,
@@ -98,6 +103,7 @@ pub(super) struct LexicalProjectionConfig {
 impl Default for LexicalProjectionConfig {
     fn default() -> Self {
         Self {
+            max_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             build_memory_bytes: NonZeroU64::new(32 * 1024 * 1024).unwrap(),
             max_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024 * 1024).unwrap(),
             max_spill_runs: NonZeroUsize::new(4_096).unwrap(),
@@ -261,9 +267,9 @@ impl ManifestBody {
         Ok(())
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    fn encode(&self, max_bytes: u64) -> Result<Vec<u8>> {
         self.validate()?;
-        manifest_encoding::encode(self, MAX_MANIFEST_BYTES)
+        manifest_encoding::encode(self, max_bytes)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
@@ -688,7 +694,7 @@ impl LexicalProjectionReader {
         if !manifest_path.exists() {
             return Ok(None);
         }
-        let bytes = read_bounded_file(&manifest_path, MAX_MANIFEST_BYTES)?;
+        let bytes = read_bounded_file(&manifest_path, config.max_manifest_bytes.get())?;
         Self::load_manifest_bytes(
             root,
             &bytes,
@@ -707,7 +713,7 @@ impl LexicalProjectionReader {
         expected_documents_digest: u64,
         config: LexicalProjectionConfig,
     ) -> Result<Option<Arc<Self>>> {
-        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        if bytes.len() as u64 > config.max_manifest_bytes.get() {
             return Err(SkeinError::Storage(
                 "lexical projection manifest exceeds its read budget".to_string(),
             ));
@@ -1316,7 +1322,7 @@ impl LexicalProjectionWriter {
             term_statistics: artifact.term_statistics,
             blocks: artifact.blocks,
         };
-        let manifest_bytes = manifest.encode()?;
+        let manifest_bytes = manifest.encode(self.config.max_manifest_bytes.get())?;
         drop(manifest);
         durable_replace_file(&tmp_path, &artifact_path)?;
         artifact_guard.disarm();
@@ -2099,6 +2105,31 @@ mod tests {
             })
             .map(|block| block.length)
             .sum()
+    }
+
+    #[test]
+    fn internal_reopen_preserves_the_manifest_budget() {
+        let root = projection_root("manifest-budget-reopen");
+        fs::create_dir_all(&root).unwrap();
+        let documents = [document("a", "Graph", "storage")];
+        let config = LexicalProjectionConfig {
+            max_manifest_bytes: NonZeroU64::new(4096).unwrap(),
+            ..Default::default()
+        };
+        let reader = LexicalProjectionWriter::new(config)
+            .write(
+                &root,
+                1,
+                None,
+                11,
+                13,
+                documents.iter(),
+                &Default::default(),
+            )
+            .unwrap();
+        assert_eq!(reader.config.max_manifest_bytes, config.max_manifest_bytes);
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

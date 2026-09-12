@@ -556,6 +556,9 @@ pub use workload_fixtures::{
 mod lexical_term_policy_tests;
 
 #[cfg(test)]
+mod lexical_manifest_budget_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         Database, IoConcurrencyBudget, NowledgeGraphAdapter, NowledgeGraphStatement,

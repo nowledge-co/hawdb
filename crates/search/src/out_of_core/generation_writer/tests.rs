@@ -12,6 +12,7 @@ use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod manifest_budget;
 mod spool_decoding;
 mod spool_encoding;
 mod term_policy;

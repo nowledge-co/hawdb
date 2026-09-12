@@ -205,7 +205,7 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
     }
     let error = LexicalProjectionReader::load_manifest_bytes(
         &fixture.0,
-        &dictionary.encode().unwrap(),
+        &dictionary.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
         None,
         11,
         13,
@@ -217,7 +217,7 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
     bounds.term_statistics[0].term = "x".into();
     let error = LexicalProjectionReader::load_manifest_bytes(
         &fixture.0,
-        &bounds.encode().unwrap(),
+        &bounds.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
         None,
         11,
         13,

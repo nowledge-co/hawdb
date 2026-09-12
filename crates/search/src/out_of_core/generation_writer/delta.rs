@@ -72,6 +72,7 @@ impl SearchOutOfCoreGenerationUpdate {
             options,
             reader.lexical_term_policy(),
         )?;
+        writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
         writer.expected_active_generation = Some(reader.generation());
         let mut deleted_documents = 0usize;
         let source_read_metrics = reader.visit_documents_in_order(&mut |document| {

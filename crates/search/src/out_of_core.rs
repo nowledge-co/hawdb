@@ -1,6 +1,6 @@
 use super::lexical_projection::{
     manifest_generation as lexical_manifest_generation, LexicalMiniDelta, LexicalProjectionConfig,
-    LexicalProjectionReader, MANIFEST_FILE,
+    LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
     checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
@@ -61,6 +61,8 @@ pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
     pub max_uncompressed_segment_bytes: NonZeroU64,
     pub max_descriptor_bytes: NonZeroU64,
+    /// Caller-selected encoded lexical manifest limit, including private decoding.
+    /// Prepared generation updates inherit this limit and require it to fit `isize`.
     pub max_lexical_manifest_bytes: NonZeroU64,
     pub max_candidate_spill_bytes: NonZeroU64,
     pub max_candidate_block_bytes: NonZeroU64,
@@ -81,7 +83,7 @@ impl Default for SearchOutOfCoreConfig {
             max_compressed_segment_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_uncompressed_segment_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_descriptor_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
-            max_lexical_manifest_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
             max_score_entries: NonZeroUsize::new(1_000_000).unwrap(),
@@ -618,6 +620,7 @@ impl SearchOutOfCoreReader {
             "search lexical manifest",
         )?;
         let lexical_config = LexicalProjectionConfig {
+            max_manifest_bytes: config.max_lexical_manifest_bytes,
             max_term_bytes: lexical_term_policy.max_term_bytes(),
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
@@ -2000,7 +2003,7 @@ pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -
             "search segment descriptor does not match checkpoint documents".to_string(),
         ));
     }
-    let generation = next_generation(root)?;
+    let generation = next_generation(root, DEFAULT_MAX_MANIFEST_BYTES)?;
     let descriptor_file = format!("search_projection_segments.{generation}.skein");
     let payload_file = format!("search_projection_segment_payloads.{generation}.skein");
     let metadata_payload_file = format!("search_projection_metadata_payloads.{generation}.skein");
@@ -2957,7 +2960,7 @@ fn unique_candidate_path(directory: &Path) -> PathBuf {
     ))
 }
 
-pub(super) fn next_generation(root: &Path) -> Result<u64> {
+pub(super) fn next_generation(root: &Path, max_lexical_manifest_bytes: u64) -> Result<u64> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !manifest_path.exists() {
         return Ok(1);
@@ -2967,14 +2970,14 @@ pub(super) fn next_generation(root: &Path) -> Result<u64> {
         .map(|manifest| manifest.generation)
     {
         Ok(generation) => generation,
-        Err(_) => latest_recoverable_lexical_generation(root)?,
+        Err(_) => latest_recoverable_lexical_generation(root, max_lexical_manifest_bytes)?,
     };
     active_generation
         .checked_add(1)
         .ok_or_else(|| SkeinError::Storage("search out-of-core generation overflow".to_string()))
 }
 
-fn latest_recoverable_lexical_generation(root: &Path) -> Result<u64> {
+fn latest_recoverable_lexical_generation(root: &Path, max_manifest_bytes: u64) -> Result<u64> {
     let mut latest = 0u64;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
@@ -2988,7 +2991,7 @@ fn latest_recoverable_lexical_generation(root: &Path) -> Result<u64> {
         else {
             continue;
         };
-        if lexical_manifest_generation(&entry.path()).ok() == Some(generation) {
+        if lexical_manifest_generation(&entry.path(), max_manifest_bytes)? == Some(generation) {
             latest = latest.max(generation);
         }
     }

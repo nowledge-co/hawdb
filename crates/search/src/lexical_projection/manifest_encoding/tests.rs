@@ -1,7 +1,7 @@
 use super::*;
 use crate::lexical_projection::{
     artifact_file, BlockDescriptor, BlockKind, ManifestBody, ManifestEnvelope, TermStatistics,
-    ARTIFACT_HEADER,
+    ARTIFACT_HEADER, DEFAULT_MAX_MANIFEST_BYTES,
 };
 use serde::ser::Error as _;
 use std::cell::Cell;
@@ -76,7 +76,7 @@ fn assert_wire_and_admission(body: &ManifestBody) {
     let exact = expected.len() as u64;
     let actual = encode(body, exact).unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(body.encode().unwrap(), expected);
+    assert_eq!(body.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(), expected);
     assert_eq!(ManifestBody::decode(&actual).unwrap(), *body);
     for limit in [0, exact - 1] {
         assert_eq!(
@@ -110,7 +110,7 @@ fn manifest_wire_and_size_admission_match_the_legacy_envelope() {
 #[test]
 fn decode_preserves_checksum_and_schema_rejection() {
     let body = manifest(vec!["term".into()]);
-    let encoded = body.encode().unwrap();
+    let encoded = body.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
     value["checksum"] = serde_json::json!(u64::MAX);
     let error = ManifestBody::decode(&serde_json::to_vec(&value).unwrap()).unwrap_err();
@@ -124,7 +124,7 @@ fn decode_preserves_checksum_and_schema_rejection() {
     let mut invalid = body;
     invalid.posting_count += 1;
     assert!(invalid
-        .encode()
+        .encode(DEFAULT_MAX_MANIFEST_BYTES)
         .unwrap_err()
         .to_string()
         .contains("counts are inconsistent"));

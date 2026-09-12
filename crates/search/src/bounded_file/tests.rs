@@ -494,7 +494,14 @@ fn standalone_lexical_loaders_share_bounded_file_admission_and_identity_checks()
     let canonical = directory.0.join(MANIFEST_FILE);
     fs::write(&canonical, &bytes).unwrap();
     assert_eq!(load().unwrap().unwrap().generation(), generation);
-    assert_eq!(manifest_generation(&canonical).unwrap(), generation);
+    assert_eq!(
+        manifest_generation(
+            &canonical,
+            crate::lexical_projection::DEFAULT_MAX_MANIFEST_BYTES
+        )
+        .unwrap(),
+        Some(generation)
+    );
     for (epoch, analyzer, documents) in [
         (Some(1), analyzer, documents),
         (None, analyzer ^ 1, documents),
@@ -551,10 +558,12 @@ fn standalone_lexical_loaders_share_bounded_file_admission_and_identity_checks()
         .unwrap_err()
         .to_string()
         .contains("manifest checksum mismatch"));
-    assert!(manifest_generation(&canonical)
-        .unwrap_err()
-        .to_string()
-        .contains("manifest checksum mismatch"));
+    assert!(manifest_generation(
+        &canonical,
+        crate::lexical_projection::DEFAULT_MAX_MANIFEST_BYTES
+    )
+    .unwrap()
+    .is_none());
 
     // A sparse over-limit manifest must fail before any content is admitted.
     OpenOptions::new()
@@ -569,10 +578,13 @@ fn standalone_lexical_loaders_share_bounded_file_admission_and_identity_checks()
         }))
     });
     assert!(load().unwrap_err().to_string().contains("exceeding"));
-    assert!(manifest_generation(&canonical)
-        .unwrap_err()
-        .to_string()
-        .contains("exceeding"));
+    assert!(manifest_generation(
+        &canonical,
+        crate::lexical_projection::DEFAULT_MAX_MANIFEST_BYTES
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("exceeding"));
     assert!(ADMISSION_HOOK.with(|hook| hook.borrow_mut().take().is_some()));
 }
 
