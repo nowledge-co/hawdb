@@ -1013,15 +1013,17 @@ impl skein_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
         &self,
         visitor: &mut dyn FnMut(RelRecord) -> skein_analytics::ProjectionScanControl,
     ) -> std::result::Result<skein_analytics::ProjectionScanControl, String> {
-        let scan = self
-            .0
-            .scan_relationships_with_filter_pruning(None, None)
-            .map_err(|error| error.to_string())?;
-        for relationship in scan.relationships {
-            if visitor(relationship) == skein_analytics::ProjectionScanControl::Stop {
-                return Ok(skein_analytics::ProjectionScanControl::Stop);
-            }
-        }
-        Ok(skein_analytics::ProjectionScanControl::Continue)
+        self.0
+            .visit_relationships_owned(None, &mut |relationship| {
+                Ok(match visitor(relationship) {
+                    skein_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
+                    skein_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
+                })
+            })
+            .map(|control| match control {
+                ScanControl::Continue => skein_analytics::ProjectionScanControl::Continue,
+                ScanControl::Stop => skein_analytics::ProjectionScanControl::Stop,
+            })
+            .map_err(|error| error.to_string())
     }
 }

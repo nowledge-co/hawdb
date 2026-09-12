@@ -142,6 +142,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_vector_seed_fuzz_tests",
+    args = [
+        "external::seed::tests::differential::vector_seed_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_spill_compaction_fuzz_tests",
     args = [
         "spill::compaction::tests::compaction_differential_campaign",
