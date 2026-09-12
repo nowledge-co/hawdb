@@ -152,6 +152,18 @@ dual-write execution or bootstrap verification, and cannot authorize activation
 by itself. Owner tests include full-report bit-matrix and mixed-inventory oracles;
 the exhaustive campaign remains explicit local fuzz rather than a CI job.
 
+The existing v1 projected graph artifact text codec belongs to the internal
+`skein-storage::projection::artifact` module, alongside the storage-owned
+artifact data and definition types. It consumes one constructed projection at a
+time, preserves the input order and byte format, and validates both adjacency
+views through the existing storage constructor. Shared string and ID list
+codecs live in `skein-storage::text`. The embedded facade retains graph
+construction, file publication, checksum verification, epoch/reuse admission,
+and recovery fallback: invalid derived artifacts are discarded by writable
+opens and left untouched by read-only opens. Frozen format tests and an
+independent edge-bag differential campaign live with storage; checksum-valid
+structural corruption, reopen, and rebuild tests remain at the facade.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery

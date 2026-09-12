@@ -169,14 +169,18 @@ use skein_storage::graph_constraints::{
 pub(crate) use skein_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
 };
+use skein_storage::projection::artifact::{
+    decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
+};
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
 pub(crate) use skein_storage::text::{
-    decode_bytes, decode_properties, decode_string, decode_value, encode_bytes, encode_properties,
-    encode_string, encode_value, parse_i64, parse_u64,
+    decode_bytes, decode_properties, decode_string, decode_string_vec, decode_u64_vec,
+    decode_value, encode_bytes, encode_properties, encode_string, encode_string_vec,
+    encode_u64_vec, encode_value, parse_i64, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -265,7 +269,6 @@ const STORAGE_VERSION: &str = "skein-storage-v1";
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
 const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
 const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
@@ -2874,53 +2877,22 @@ fn encode_projected_graph_artifacts(
     store: &GraphStore,
     projection_epoch: u64,
 ) -> String {
-    let mut body = String::new();
-    body.push_str("SKEIN_PROJECTED_GRAPHS_V1\n");
-    body.push_str(&format!(
-        "artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"
-    ));
-    body.push_str(&format!("projection_epoch\t{projection_epoch}\n"));
-    body.push_str(&format!("commit_epoch\t{}\n", store.commit_epoch));
-    for (name, definition) in store.projected_graphs.iter() {
-        let graph = projected_graph_from_definition(catalog, store, definition);
-        let data = ProjectedGraphArtifactData::new(
-            graph.nodes().to_vec(),
-            graph.csr_offsets().to_vec(),
-            graph.csr_targets().to_vec(),
-            graph.csc_offsets().to_vec(),
-            graph.csc_sources().to_vec(),
-        )
-        .expect("fresh analytics projection is structurally valid");
-        body.push_str(&format!(
-            "graph\t{}\t{}\t{}\t{}\t{}\n",
-            encode_string(name),
-            encode_string_vec(&definition.node_labels),
-            encode_string_vec(&definition.rel_types),
-            data.node_count(),
-            data.edge_count()
-        ));
-        body.push_str(&format!(
-            "nodes\t{}\n",
-            encode_u64_vec(data.nodes.iter().map(|node| node.0))
-        ));
-        body.push_str(&format!(
-            "csr_offsets\t{}\n",
-            encode_usize_vec(data.csr_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csr_targets\t{}\n",
-            encode_usize_vec(data.csr_targets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_offsets\t{}\n",
-            encode_usize_vec(data.csc_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_sources\t{}\n",
-            encode_usize_vec(data.csc_sources.iter().copied())
-        ));
-    }
-    body
+    skein_storage::projection::artifact::encode_projected_graph_artifacts(
+        projection_epoch,
+        store.commit_epoch,
+        store.projected_graphs.iter().map(|(name, definition)| {
+            let graph = projected_graph_from_definition(catalog, store, definition);
+            let data = ProjectedGraphArtifactData::new(
+                graph.nodes().to_vec(),
+                graph.csr_offsets().to_vec(),
+                graph.csr_targets().to_vec(),
+                graph.csc_offsets().to_vec(),
+                graph.csc_sources().to_vec(),
+            )
+            .expect("fresh analytics projection is structurally valid");
+            (name.as_str(), definition, data)
+        }),
+    )
 }
 
 fn projected_graph_from_definition(
@@ -2951,148 +2923,6 @@ fn projected_graph_from_definition(
         return ProjectedGraph::from_store_labels_without_edges(store, &label_ids);
     }
     ProjectedGraph::from_store_labels_and_rel_types(store, &label_ids, &rel_type_ids)
-}
-
-fn decode_projected_graph_artifacts(
-    body: &str,
-) -> Result<(u64, BTreeMap<String, ProjectedGraphArtifact>)> {
-    let mut lines = body.lines();
-    match lines.next() {
-        Some("SKEIN_PROJECTED_GRAPHS_V1") => {}
-        _ => {
-            return Err(SkeinError::Storage(
-                "invalid projected graph artifact header".to_string(),
-            ));
-        }
-    }
-    let artifact_version = decode_projected_graph_u64_header(
-        lines.next(),
-        "artifact_version",
-        "projected graph artifact version",
-    )?;
-    if artifact_version != PROJECTED_GRAPH_ARTIFACT_VERSION {
-        return Err(SkeinError::Storage(format!(
-            "unsupported projected graph artifact version: {artifact_version}"
-        )));
-    }
-    let projection_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "projection_epoch",
-        "projected graph artifact projection epoch",
-    )?;
-    let commit_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "commit_epoch",
-        "projected graph artifact commit epoch",
-    )?;
-
-    let mut artifacts = BTreeMap::new();
-    while let Some(line) = lines.next() {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["graph", raw_name, raw_node_labels, raw_rel_types, raw_node_count, raw_edge_count] => {
-                let name = decode_string(raw_name)?;
-                let definition = ProjectedGraphDefinition {
-                    node_labels: decode_string_vec(raw_node_labels)?,
-                    rel_types: decode_string_vec(raw_rel_types)?,
-                };
-                let node_count = parse_u64(raw_node_count, "projected graph artifact node count")?;
-                let edge_count = parse_u64(raw_edge_count, "projected graph artifact edge count")?;
-                let nodes = decode_projected_graph_nodes_line(lines.next())?;
-                let csr_offsets = decode_projected_graph_usize_line(lines.next(), "csr_offsets")?;
-                let csr_targets = decode_projected_graph_usize_line(lines.next(), "csr_targets")?;
-                let csc_offsets = decode_projected_graph_usize_line(lines.next(), "csc_offsets")?;
-                let csc_sources = decode_projected_graph_usize_line(lines.next(), "csc_sources")?;
-                if nodes.len() as u64 != node_count {
-                    return Err(SkeinError::Storage(format!(
-                        "projected graph artifact node count mismatch for {name}"
-                    )));
-                }
-                if csr_targets.len() as u64 != edge_count || csc_sources.len() as u64 != edge_count
-                {
-                    return Err(SkeinError::Storage(format!(
-                        "projected graph artifact edge count mismatch for {name}"
-                    )));
-                }
-                let data = ProjectedGraphArtifactData::new(
-                    nodes,
-                    csr_offsets,
-                    csr_targets,
-                    csc_offsets,
-                    csc_sources,
-                )
-                .map_err(SkeinError::Storage)?;
-                artifacts.insert(
-                    name,
-                    ProjectedGraphArtifact {
-                        projection_epoch,
-                        commit_epoch,
-                        definition,
-                        data,
-                    },
-                );
-            }
-            [""] => {}
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "invalid projected graph artifact line: {line}"
-                )));
-            }
-        }
-    }
-    Ok((commit_epoch, artifacts))
-}
-
-fn decode_projected_graph_u64_header(
-    line: Option<&str>,
-    expected: &str,
-    name: &str,
-) -> Result<u64> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
-            "missing projected graph artifact {expected}"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [field, raw] if *field == expected => parse_u64(raw, name),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(
-            "missing projected graph artifact nodes line".to_string(),
-        ));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        ["nodes", raw_values] => decode_u64_vec(raw_values, "projected graph artifact node id")
-            .map(|nodes| nodes.into_iter().map(NodeId).collect()),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Result<Vec<usize>> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
-            "missing projected graph artifact {expected} line"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [name, raw_values] if *name == expected => {
-            decode_usize_vec(raw_values, "projected graph artifact index")
-        }
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
 }
 
 fn validate_changed_node_uniqueness(
@@ -4591,16 +4421,6 @@ fn split_manifest_checksum(text: &str) -> Result<(&str, u64)> {
     Ok((body, checksum))
 }
 
-fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
-    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
-            "projected graph artifact missing checksum footer".to_string(),
-        ));
-    };
-    let checksum = parse_u64(footer.trim(), "projected graph artifact checksum")?;
-    Ok((body, checksum))
-}
-
 pub(crate) fn encode_durable_text(text: &str, compression: DurableCompression) -> Result<Vec<u8>> {
     match compression {
         DurableCompression::Zstd => encode_zstd_durable_text(text),
@@ -4788,21 +4608,6 @@ fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
         .collect()
 }
 
-fn encode_string_vec(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| encode_string(value))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn decode_string_vec(input: &str) -> Result<Vec<String>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input.split(':').map(decode_string).collect()
-}
-
 fn encode_search_projection_relational_primary_key_changes(
     capture: &skein_storage::RelationalPrimaryKeyChangeCapture,
 ) -> Result<(String, String)> {
@@ -4972,24 +4777,6 @@ fn decode_value_vec(input: &str) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn encode_u64_vec(values: impl IntoIterator<Item = u64>) -> String {
-    values
-        .into_iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn decode_u64_vec(input: &str, name: &str) -> Result<Vec<u64>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(',')
-        .map(|value| parse_u64(value, name))
-        .collect()
-}
-
 fn validate_search_projection_checkpoint_changes(
     start_epoch: u64,
     checkpoint_commit_epoch: u64,
@@ -5057,28 +4844,6 @@ fn validate_search_projection_checkpoint_changes(
         previous_epoch = change.commit_epoch;
     }
     Ok(())
-}
-
-fn encode_usize_vec(values: impl IntoIterator<Item = usize>) -> String {
-    values
-        .into_iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(',')
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| SkeinError::Storage(format!("invalid {name}: {value}")))
-        })
-        .collect()
 }
 
 fn encode_table_kind(kind: TableKind) -> &'static str {
