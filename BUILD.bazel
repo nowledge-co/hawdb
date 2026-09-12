@@ -232,6 +232,23 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_graph_projection_residency_fuzz_tests",
+    args = [
+        "api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_concurrent_key_range_fuzz_tests",
     args = [
         "api::concurrent::key_range_tests::key_range_differential_campaign",
