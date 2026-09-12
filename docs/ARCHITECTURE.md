@@ -109,6 +109,17 @@ crates/
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
 
+Logical transaction lock metadata belongs to the internal
+`skein-storage::transaction_locks` module: lock targets and acquisition order,
+compatibility and coverage, budgeted lock residency and escalation, savepoint
+restoration, and the wait-for graph. `src/api/transaction_locks.rs` retains
+crate-private re-exports with the same concrete types. The root concurrent
+coordinator still owns synchronization, conflict admission, bounded waiting,
+wakeups, transaction abort, and commit/recovery orchestration. This move does
+not create a standalone transaction manager or a new host API. Unit tests and
+the explicit local state-machine campaign live with storage; real concurrent
+transaction and key-range integration tests remain at the root boundary.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
@@ -150,6 +161,13 @@ state, generation cleanup/publication, query execution, and recall validation
 belong to `skein-search`. Search document identity is a storage protocol and is
 therefore owned by `skein-storage`, preventing storage mutation code from
 depending back on the search crate.
+
+`skein-storage::mutation` owns compaction of the staged graph transaction journal:
+SETs fold into creates from the same transaction, and deleting those creates
+elides their staged operations. It does not flatten nested batches or interpret
+non-graph WAL operations. The root still owns admission, snapshots, lock
+footprints, ID allocation, commit epochs, WAL publication, and recovery.
+Compaction is an internal ownership seam, not a new host transaction API.
 
 `skein-evidence::inventory` owns the storage-recovery, background-maintenance,
 and query-family evidence health models and JSON validators. The original

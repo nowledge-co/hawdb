@@ -42,6 +42,8 @@ pub mod telemetry;
 #[doc(hidden)]
 pub mod text;
 #[doc(hidden)]
+pub mod transaction_locks;
+#[doc(hidden)]
 pub mod wal;
 pub mod wire;
 
