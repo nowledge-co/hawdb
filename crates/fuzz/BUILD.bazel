@@ -97,6 +97,7 @@ test_suite(
         "//crates/executor:skein_mutation_preflight_fuzz_tests",
         "//crates/executor:skein_numeric_execution_fuzz_tests",
         "//crates/executor:skein_query_observer_fuzz_tests",
+        "//crates/executor:skein_result_delivery_fuzz_tests",
         "//crates/executor:skein_sort_merge_account_fuzz_tests",
         "//crates/executor:skein_spill_compaction_fuzz_tests",
         "//crates/executor:skein_transform_fuzz_tests",
