@@ -9,6 +9,10 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "wal_group_commit/recovery.rs"]
+mod recovery;
+use recovery::{verify_recovery, ExpectedRecovery};
+
 const WORKERS: usize = 8;
 const COMMITS_PER_WORKER: usize = 32;
 const CONCURRENT_COMMIT_COUNT: usize = WORKERS * COMMITS_PER_WORKER;
@@ -355,12 +359,15 @@ fn measure(
     warm_fsync_baseline: bool,
     execute: impl FnOnce(&ConcurrentDatabase) -> Vec<u64>,
 ) -> Measurement {
+    let mut progress = MeasurementProgress::new(label);
     let path = benchmark_path(label);
     let mut database = Database::open(&path).expect("benchmark database must open");
+    progress.start("setup-schema");
     database
         .query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .expect("benchmark schema must be created");
     let database = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+    progress.start("warmup");
     let warmup_commit_count = if warm_fsync_baseline {
         warm_group_commit_baseline(&database);
         ADAPTIVE_WARMUP_COMMIT_COUNT
@@ -370,9 +377,11 @@ fn measure(
     let group_commit_before = database
         .wal_group_commit_snapshot()
         .expect("group commit metrics must be readable before measurement");
+    progress.start("measurement");
     let started = Instant::now();
     let mut commit_latencies = execute(&database);
     let elapsed_micros = elapsed_micros(started);
+    progress.start("observation");
     commit_latencies.sort_unstable();
     let group_commit_after = database
         .wal_group_commit_snapshot()
@@ -381,20 +390,29 @@ fn measure(
     let final_epoch = database
         .commit_epoch()
         .expect("benchmark commit epoch must be readable");
+    eprintln!(
+        "wal_group_commit counters measurement={label} elapsed_micros={elapsed_micros} submitted={} completed={} syncs={} fsync_micros={}",
+        group_commit.submitted_commits,
+        group_commit.completed_commits,
+        group_commit.shared_sync_count,
+        group_commit.total_fsync_micros,
+    );
+    progress.start("database-close");
     drop(database);
 
-    let wal_order_verified = verify_wal_order(&path, final_epoch);
-    let strict_recovery_verified = Database::open(&path)
-        .and_then(|mut reopened| {
-            reopened
-                .query_sql("SELECT id FROM public.messages ORDER BY id")
-                .map(|rows| {
-                    rows.rows.len() == commit_count + warmup_commit_count
-                        && reopened.commit_epoch() == final_epoch
-                })
-        })
-        .unwrap_or(false);
+    let verification = verify_recovery(
+        &path,
+        ExpectedRecovery {
+            final_epoch,
+            commit_count,
+            warmup_start_id: CONCURRENT_COMMIT_COUNT,
+            warmup_commit_count,
+        },
+        |phase| progress.start(phase),
+    );
+    progress.start("cleanup");
     std::fs::remove_dir_all(&path).expect("benchmark database must be removable");
+    progress.finish();
     Measurement {
         commit_count,
         elapsed_micros,
@@ -402,8 +420,8 @@ fn measure(
         p95_commit_micros: percentile(&commit_latencies, 95),
         p99_commit_micros: percentile(&commit_latencies, 99),
         group_commit,
-        strict_recovery_verified,
-        wal_order_verified,
+        strict_recovery_verified: verification.strict_recovery_verified,
+        wal_order_verified: verification.wal_order_verified,
     }
 }
 
@@ -464,18 +482,40 @@ fn group_commit_delta(
     }
 }
 
-fn verify_wal_order(path: &std::path::Path, final_epoch: u64) -> bool {
-    // Format-agnostic WAL order proof: strict recovery enforces LSN
-    // contiguity while replaying, so a clean reopen that replayed exactly
-    // `final_epoch` records from LSN 1 verifies the order for both the V1
-    // text and the binary fragment-framed WAL.
-    Database::open(path).is_ok_and(|db| {
-        let report = db.storage_recovery_report();
-        report.wal_replay_start_lsn == Some(1)
-            && report.next_lsn_after_replay == Some(final_epoch + 1)
-            && report.replayed_wal_entries as u64 == final_epoch
-            && report.torn_tail_reason.is_none()
-    })
+struct MeasurementProgress<'a> {
+    label: &'a str,
+    phase: &'static str,
+    started: Instant,
+}
+
+impl<'a> MeasurementProgress<'a> {
+    fn new(label: &'a str) -> Self {
+        eprintln!("wal_group_commit progress measurement={label} phase=setup-open state=started");
+        Self {
+            label,
+            phase: "setup-open",
+            started: Instant::now(),
+        }
+    }
+
+    fn start(&mut self, phase: &'static str) {
+        self.finish();
+        eprintln!(
+            "wal_group_commit progress measurement={} phase={phase} state=started",
+            self.label,
+        );
+        self.phase = phase;
+        self.started = Instant::now();
+    }
+
+    fn finish(&self) {
+        eprintln!(
+            "wal_group_commit progress measurement={} phase={} state=completed elapsed_micros={}",
+            self.label,
+            self.phase,
+            elapsed_micros(self.started),
+        );
+    }
 }
 
 fn percentile(values: &[u64], percentile: usize) -> u64 {
