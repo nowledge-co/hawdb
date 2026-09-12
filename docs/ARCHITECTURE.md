@@ -120,6 +120,16 @@ not create a standalone transaction manager or a new host API. Unit tests and
 the explicit local state-machine campaign live with storage; real concurrent
 transaction and key-range integration tests remain at the root boundary.
 
+Source mutation dual-write evidence models and readiness evaluation belong to
+`skein-readiness::source_mutation`. The owner retains the eight-family inventory,
+independent ACK/watermark and replay checks, projection-payload requirements,
+stable evidence ordering, and v1 report serialization. Root `nowledge_mem`
+re-exports the same concrete types and functions; replacement-summary and host
+integration remain at the facade. This evaluates supplied evidence, not actual
+dual-write execution or bootstrap verification, and cannot authorize activation
+by itself. Owner tests include full-report bit-matrix and mixed-inventory oracles;
+the exhaustive campaign remains explicit local fuzz rather than a CI job.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
