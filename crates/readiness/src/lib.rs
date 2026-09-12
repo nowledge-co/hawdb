@@ -1,3 +1,6 @@
+#[doc(hidden)]
+pub mod graph_route;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemReadinessAreaMap {
     pub graph: NowledgeMemReadinessAreaSummary,

@@ -109,6 +109,16 @@ crates/
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
 
+Graph route evidence validation belongs to the internal
+`skein-readiness::graph_route` module. It consumes the existing route-ownership
+catalog and evidence-owned query-report protocol/family inventory without a
+database dependency. Root `graph_route_readiness` retains the public compatibility
+paths and developer file/CLI adapters; database probes, report assembly, and
+activation remain in the embedded facade. Original reducer tests move with the
+owner, while file-error redaction and public entrypoint checks remain at the
+root. A local-only generated campaign checks coverage and contradictory readiness
+evidence without relaxing any v1 readiness gate.
+
 Logical transaction lock metadata belongs to the internal
 `skein-storage::transaction_locks` module: lock targets and acquisition order,
 compatibility and coverage, budgeted lock residency and escalation, savepoint

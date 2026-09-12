@@ -1229,7 +1229,7 @@ pub const NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL: &str =
     "skein-nowledge-mem-source-mutation-dual-write-readiness-v1";
 pub const NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL: &str =
     "skein-nowledge-mem-operations-readiness-v1";
-pub const NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-query-report-v1";
+pub use skein_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
 pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "skein-nowledge-mem-read-report";
 pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
 pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL: &str =
