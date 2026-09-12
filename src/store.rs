@@ -188,13 +188,13 @@ use skein_storage::{
     encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
     sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
     AppendMutationLimits, AppendPublicationConfig, AppendPublicationState, AppendPublisher,
-    AppendState, CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalRelationshipIterator,
-    CanonicalSegmentError, PersistentPropertyProjectionDefinitionAdmission,
-    PersistentPropertyProjectionRecord, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
-    RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
-    RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
-    RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState, RelationalTransaction,
+    AppendState, CanonicalEndpointDirection, CanonicalSegmentError,
+    PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
+    RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
+    RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
+    RelationalRecoverySourceBuilder, RelationalRowPageGenerationRequest,
+    RelationalRowPagePublicationConfig, RelationalRowPagePublisher, RelationalSparseLiveStage,
+    RelationalState, RelationalTransaction,
 };
 pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
@@ -1407,176 +1407,7 @@ impl RelationalIndexStorageResidencyReport {
     }
 }
 
-pub struct GraphNodeIterator {
-    base: Option<std::iter::Peekable<CanonicalNodeIterator>>,
-    delta: std::iter::Peekable<std::vec::IntoIter<NodeRecord>>,
-    tombstones: CowSegment<BTreeSet<NodeId>>,
-}
-
-impl Iterator for GraphNodeIterator {
-    type Item = Result<NodeRecord>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
-                Some(Ok(node)) => Some(node.id),
-                Some(Err(_)) => {
-                    return self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .map(|record| record.map_err(canonical_segment_error));
-                }
-                None => None,
-            };
-            let delta_id = self.delta.peek().map(|node| node.id);
-            match (base_id, delta_id) {
-                (None, None) => return None,
-                (Some(_), None) => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(node) if self.tombstones.contains(&node.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (None, Some(_)) => {
-                    let node = self.delta.next().expect("peeked delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-                (Some(base_id), Some(delta_id)) if base_id < delta_id => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(node) if self.tombstones.contains(&node.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (Some(base_id), Some(delta_id)) if base_id == delta_id => {
-                    if let Err(error) = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error)
-                    {
-                        return Some(Err(error));
-                    }
-                    let node = self.delta.next().expect("matching delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-                (Some(_), Some(_)) => {
-                    let node = self.delta.next().expect("peeked delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-            }
-        }
-    }
-}
-
-pub struct GraphRelationshipIterator {
-    base: Option<std::iter::Peekable<CanonicalRelationshipIterator>>,
-    delta: std::iter::Peekable<std::vec::IntoIter<RelRecord>>,
-    tombstones: CowSegment<BTreeSet<RelId>>,
-}
-
-impl Iterator for GraphRelationshipIterator {
-    type Item = Result<RelRecord>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
-                Some(Ok(relationship)) => Some(relationship.id),
-                Some(Err(_)) => {
-                    return self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .map(|record| record.map_err(canonical_segment_error));
-                }
-                None => None,
-            };
-            let delta_id = self.delta.peek().map(|relationship| relationship.id);
-            match (base_id, delta_id) {
-                (None, None) => return None,
-                (Some(_), None) => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(relationship) if self.tombstones.contains(&relationship.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (None, Some(_)) => {
-                    let relationship = self.delta.next().expect("peeked delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-                (Some(base_id), Some(delta_id)) if base_id < delta_id => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(relationship) if self.tombstones.contains(&relationship.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (Some(base_id), Some(delta_id)) if base_id == delta_id => {
-                    if let Err(error) = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error)
-                    {
-                        return Some(Err(error));
-                    }
-                    let relationship = self
-                        .delta
-                        .next()
-                        .expect("matching delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-                (Some(_), Some(_)) => {
-                    let relationship = self.delta.next().expect("peeked delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-            }
-        }
-    }
-}
+pub use skein_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
 fn canonical_segment_error(error: CanonicalSegmentError) -> SkeinError {
     SkeinError::StorageIntegrity(error.to_string())
@@ -5541,6 +5372,147 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn owned_graph_overlay_preserves_snapshot_checkpoint_and_reopen() {
+        let path = unique_test_dir("owned_graph_overlay");
+        let open = |catalog: &mut Catalog| {
+            GraphStore::open_with_durability_and_replay_config(
+                &path,
+                catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = open(&mut catalog);
+        let mut ids = Vec::new();
+        for id in 0..3 {
+            ids.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+        }
+        let first_rel = store
+            .create_relationship(&mut catalog, ids[0], ids[1], "LINKS", BTreeMap::new())
+            .unwrap();
+        store
+            .create_relationship(&mut catalog, ids[0], ids[2], "LINKS", BTreeMap::new())
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert!(store.nodes.is_empty());
+        assert!(store.relationships.is_empty());
+
+        store
+            .set_node_property(&mut catalog, "Memory", None, "revision", Value::Int(2))
+            .unwrap();
+        store
+            .commit_mutations(
+                &mut catalog,
+                vec![GraphMutation::SetRelationshipProperty {
+                    source_label: "Memory".to_string(),
+                    filter: None,
+                    rel_type: "LINKS".to_string(),
+                    target_label: "Memory".to_string(),
+                    target_filter: None,
+                    rel_filter: None,
+                    property: "revision".to_string(),
+                    value: Value::Int(2),
+                }],
+            )
+            .unwrap();
+        let filter = |id| PropertyFilter::Eq {
+            property: "id".to_string(),
+            value: Value::Int(id),
+        };
+        store
+            .delete_nodes(&mut catalog, "Memory", Some(&filter(2)), true)
+            .unwrap();
+        let added = store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let added_rel = store
+            .create_relationship(&mut catalog, ids[0], added, "LINKS", BTreeMap::new())
+            .unwrap();
+        let expected_nodes = [ids[0], ids[1], added]
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let expected_rels = [first_rel, added_rel]
+            .into_iter()
+            .map(|id| store.relationship_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let nodes: super::GraphNodeIterator = store.node_records_owned();
+        let nodes: skein_storage::graph_overlay::GraphNodeIterator = nodes;
+        let relationships: super::GraphRelationshipIterator = store.relationship_records_owned();
+        let relationships: skein_storage::graph_overlay::GraphRelationshipIterator = relationships;
+
+        store
+            .set_node_property(
+                &mut catalog,
+                "Memory",
+                Some(&filter(0)),
+                "revision",
+                Value::Int(3),
+            )
+            .unwrap();
+        store
+            .delete_nodes(&mut catalog, "Memory", Some(&filter(1)), true)
+            .unwrap();
+        assert_eq!(
+            nodes.collect::<crate::Result<Vec<_>>>().unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            relationships.collect::<crate::Result<Vec<_>>>().unwrap(),
+            expected_rels
+        );
+
+        let expected_nodes = [ids[0], added]
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let expected_rels = vec![store.relationship_owned(added_rel).unwrap().unwrap()];
+        assert_eq!(
+            store
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            store
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_rels
+        );
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let reopened = open(&mut catalog);
+        assert_eq!(
+            reopened
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            reopened
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_rels
+        );
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn background_storage_permit_retains_governor_resources_until_drop_and_unwind() {

@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
+skein-core = { path = "../core" }
+skein-evidence = { path = "../evidence" }
+skein-route-ownership = { path = "../route-ownership" }
