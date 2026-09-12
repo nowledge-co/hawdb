@@ -56,6 +56,26 @@ impl GraphExecutionRead for Fixture {
         }
         Ok(ScanControl::Continue)
     }
+    fn visit_relationships_owned(
+        &self,
+        rel_type: Option<RelTypeId>,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        assert!(rel_type.is_none());
+        self.rel_scans.set(self.rel_scans.get() + 1);
+        if self.fail_rel_scan == Some(self.rel_scans.get()) {
+            return Err(SkeinError::StorageIntegrity(
+                "relationship scan sentinel".into(),
+            ));
+        }
+        for relationship in &self.relationships {
+            self.rel_visits.set(self.rel_visits.get() + 1);
+            if consumer(relationship.clone())? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
     fn visit_projected_nodes_by_access_owned(
         &self,
         _: LabelId,
@@ -134,32 +154,10 @@ impl GraphExecutionRead for Fixture {
     }
     fn scan_relationships_with_filter_pruning<'a>(
         &'a self,
-        rel_type: Option<RelTypeId>,
-        filter: Option<&PropertyFilter>,
+        _: Option<RelTypeId>,
+        _: Option<&PropertyFilter>,
     ) -> Result<PrunedRelationshipScan<'a>> {
-        assert!(rel_type.is_none() && filter.is_none());
-        self.rel_scans.set(self.rel_scans.get() + 1);
-        if self.fail_rel_scan == Some(self.rel_scans.get()) {
-            return Err(SkeinError::StorageIntegrity(
-                "relationship scan sentinel".into(),
-            ));
-        }
-        Ok(PrunedRelationshipScan {
-            relationships: Box::new(self.relationships.iter().cloned()),
-            report: ScanPruningReport {
-                target_kind: skein_storage::ScanPruningTargetKind::Relationship,
-                label_id: None,
-                rel_type_id: None,
-                strategy: skein_storage::ScanPruningStrategy::FullLabelScan,
-                pruned: false,
-                exact_empty: self.relationships.is_empty(),
-                candidate_count_before_pruning: self.relationships.len(),
-                pruned_candidate_count: 0,
-                candidate_count_before_filter: self.relationships.len(),
-                output_count: self.relationships.len(),
-                filtered_out_count: 0,
-            },
-        })
+        panic!("projection must use the residency-neutral owned relationship visitor")
     }
     fn scan_nodes_with_filter_pruning<'a>(
         &'a self,

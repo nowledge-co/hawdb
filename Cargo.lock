@@ -963,6 +963,7 @@ dependencies = [
  "rayon",
  "skein-analytics",
  "skein-core",
+ "skein-ddl",
  "skein-plan",
  "skein-storage",
 ]

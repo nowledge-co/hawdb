@@ -158,6 +158,18 @@ use skein_storage::artifact_files::{
     relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
     wal_generation_file,
 };
+use skein_storage::graph_constraints::{
+    encode_property_type, validate_node_property_exists, validate_node_property_exists_constraints,
+    validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
+    validate_relationship_property_exists, validate_relationship_property_exists_constraints,
+    validate_relationship_record_constraints, validate_relationship_unique_constraints,
+    validate_unique_constraints, validate_unique_property, validate_unique_relationship_property,
+};
+use skein_storage::statistics_refresh::{
+    adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
+    relationship_property_supports_optimizer_statistics, sample_histogram_values,
+    MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
+};
 pub(crate) use skein_storage::text::{
     decode_bytes, decode_properties, decode_string, decode_value, encode_bytes, encode_properties,
     encode_string, encode_value, parse_i64, parse_u64,
@@ -228,8 +240,10 @@ pub use source_scan::SourceScanRow;
 pub(crate) use statistics_refresh::OptimizerStatisticsRefreshWork;
 pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Cursor, Read, Write};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
+use std::io::{Cursor, Read, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -256,12 +270,6 @@ const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
 const PROPERTY_PROJECTION_MANIFEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER: u64 = 4;
 const MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES: u64 = 64 * 1024;
-const MIN_PROPERTY_HISTOGRAM_VALUES: usize = 128;
-const MID_PROPERTY_HISTOGRAM_VALUES: usize = 256;
-const MAX_PROPERTY_HISTOGRAM_VALUES: usize = 512;
-const MID_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 1_024;
-const MAX_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 4_096;
-const MAX_BOUNDED_PATH_STAT_HOPS: usize = 3;
 const DURABLE_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const DEFAULT_COMPRESSION_LEVEL: i32 = 3;
 pub const DENSE_ADJACENCY_DEGREE_THRESHOLD: usize = 64;
@@ -3353,154 +3361,6 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
     }
 }
 
-fn validate_property_schemas(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.state != SchemaObjectState::Public {
-            continue;
-        }
-        match table.kind {
-            TableKind::Node => {
-                let Some(label_id) = catalog.label_id(&table.name) else {
-                    continue;
-                };
-                for node in nodes.values() {
-                    if node.labels.contains(&label_id) {
-                        validate_property_schema_value(
-                            &table.name,
-                            &property.name,
-                            property.value_type,
-                            property.nullable,
-                            node.properties.get(&property.name),
-                            &format!("node {}", node.id.0),
-                        )?;
-                    }
-                }
-            }
-            TableKind::Relationship => {
-                let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
-                    continue;
-                };
-                for relationship in relationships.values() {
-                    if relationship.rel_type == rel_type_id {
-                        validate_property_schema_value(
-                            &table.name,
-                            &property.name,
-                            property.value_type,
-                            property.nullable,
-                            relationship.properties.get(&property.name),
-                            &format!("relationship {}", relationship.id.0),
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_node_record_constraints(catalog: &Catalog, node: &NodeRecord) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.kind != TableKind::Node || table.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(label_id) = catalog.label_id(&table.name) else {
-            continue;
-        };
-        if node.labels.contains(&label_id) {
-            validate_property_schema_value(
-                &table.name,
-                &property.name,
-                property.value_type,
-                property.nullable,
-                node.properties.get(&property.name),
-                &format!("node {}", node.id.0),
-            )?;
-        }
-    }
-    for constraint in catalog.node_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        if node.labels.contains(&label_id)
-            && !node
-                .properties
-                .get(&constraint.property)
-                .is_some_and(|value| value != &Value::Null)
-        {
-            let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "node property exists constraint violation on :{label}({}) for node {}",
-                constraint.property, node.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_relationship_record_constraints(
-    catalog: &Catalog,
-    relationship: &RelRecord,
-) -> Result<()> {
-    for property in catalog.property_descriptors() {
-        if property.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(table) = catalog.table_descriptor(property.table_id) else {
-            continue;
-        };
-        if table.kind != TableKind::Relationship || table.state != SchemaObjectState::Public {
-            continue;
-        }
-        let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
-            continue;
-        };
-        if relationship.rel_type == rel_type_id {
-            validate_property_schema_value(
-                &table.name,
-                &property.name,
-                property.value_type,
-                property.nullable,
-                relationship.properties.get(&property.name),
-                &format!("relationship {}", relationship.id.0),
-            )?;
-        }
-    }
-    for constraint in catalog.relationship_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        if relationship.rel_type == rel_type_id
-            && !relationship
-                .properties
-                .get(&constraint.property)
-                .is_some_and(|value| value != &Value::Null)
-        {
-            let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "relationship property exists constraint violation on :{rel_type}({}) for relationship {}",
-                constraint.property, relationship.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_changed_node_uniqueness(
     store: &GraphStore,
     catalog: &Catalog,
@@ -3607,202 +3467,6 @@ fn validate_changed_relationship_uniqueness(
     Ok(())
 }
 
-fn validate_property_schema_value(
-    table: &str,
-    property: &str,
-    value_type: PropertyType,
-    nullable: bool,
-    value: Option<&Value>,
-    record: &str,
-) -> Result<()> {
-    let Some(value) = value else {
-        if nullable {
-            return Ok(());
-        }
-        return Err(property_schema_error(
-            table,
-            property,
-            record,
-            "property is not nullable",
-        ));
-    };
-    if value == &Value::Null {
-        if nullable {
-            return Ok(());
-        }
-        return Err(property_schema_error(
-            table,
-            property,
-            record,
-            "property is not nullable",
-        ));
-    }
-    let matches = matches!(
-        (value_type, value),
-        (PropertyType::Any, _)
-            | (PropertyType::Bool, Value::Bool(_))
-            | (PropertyType::Int, Value::Int(_))
-            | (PropertyType::Float, Value::Float(_))
-            | (PropertyType::String, Value::String(_))
-            | (PropertyType::Text, Value::String(_))
-            | (PropertyType::List, Value::List(_))
-    );
-    if matches {
-        Ok(())
-    } else {
-        Err(property_schema_error(
-            table,
-            property,
-            record,
-            &format!("expected {}", encode_property_type(value_type)),
-        ))
-    }
-}
-
-fn property_schema_error(table: &str, property: &str, record: &str, reason: &str) -> SkeinError {
-    SkeinError::Storage(format!(
-        "property schema violation on {record} in {table}({property}): {reason}"
-    ))
-}
-
-fn validate_unique_constraints(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-) -> Result<()> {
-    for constraint in catalog.unique_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        validate_unique_property(catalog, nodes, label_id, &constraint.property)?;
-    }
-    Ok(())
-}
-
-fn validate_relationship_unique_constraints(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for constraint in catalog.relationship_unique_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        validate_unique_relationship_property(
-            catalog,
-            relationships,
-            rel_type_id,
-            &constraint.property,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_node_property_exists_constraints(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-) -> Result<()> {
-    for constraint in catalog.node_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Node(label_id) = constraint.subject else {
-            continue;
-        };
-        validate_node_property_exists(catalog, nodes, label_id, &constraint.property)?;
-    }
-    Ok(())
-}
-
-fn validate_relationship_property_exists_constraints(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> Result<()> {
-    for constraint in catalog.relationship_property_exists_constraints() {
-        let crate::schema::ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
-            continue;
-        };
-        validate_relationship_property_exists(
-            catalog,
-            relationships,
-            rel_type_id,
-            &constraint.property,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_node_property_exists(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    label_id: LabelId,
-    property: &str,
-) -> Result<()> {
-    for node in nodes.values() {
-        if !node.labels.contains(&label_id) {
-            continue;
-        }
-        match node.properties.get(property) {
-            Some(value) if value != &Value::Null => {}
-            _ => {
-                let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
-                    "node property exists constraint violation on :{label}({property}) for node {}",
-                    node.id.0
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_relationship_property_exists(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    rel_type_id: RelTypeId,
-    property: &str,
-) -> Result<()> {
-    for relationship in relationships.values() {
-        if relationship.rel_type != rel_type_id {
-            continue;
-        }
-        match relationship.properties.get(property) {
-            Some(value) if value != &Value::Null => {}
-            _ => {
-                let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
-                    "relationship property exists constraint violation on :{rel_type}({property}) for relationship {}",
-                    relationship.id.0
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_unique_property(
-    catalog: &Catalog,
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    label_id: LabelId,
-    property: &str,
-) -> Result<()> {
-    let mut seen = BTreeMap::<Value, NodeId>::new();
-    for node in nodes.values() {
-        if !node.labels.contains(&label_id) {
-            continue;
-        }
-        let Some(value) = node.properties.get(property) else {
-            continue;
-        };
-        if value == &Value::Null {
-            continue;
-        }
-        if let Some(previous) = seen.insert(value.clone(), node.id) {
-            let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "unique constraint violation on :{label}({property}) for nodes {} and {}",
-                previous.0, node.id.0
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_unique_property_streaming(
     store: &GraphStore,
     catalog: &Catalog,
@@ -3844,34 +3508,6 @@ fn validate_unique_property_streaming(
         }
     })?;
     validation_error.map_or(Ok(()), Err)
-}
-
-fn validate_unique_relationship_property(
-    catalog: &Catalog,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    rel_type_id: RelTypeId,
-    property: &str,
-) -> Result<()> {
-    let mut seen = BTreeMap::<Value, RelId>::new();
-    for relationship in relationships.values() {
-        if relationship.rel_type != rel_type_id {
-            continue;
-        }
-        let Some(value) = relationship.properties.get(property) else {
-            continue;
-        };
-        if value == &Value::Null {
-            continue;
-        }
-        if let Some(previous) = seen.insert(value.clone(), relationship.id) {
-            let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(SkeinError::Storage(format!(
-                "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
-                previous.0, relationship.id.0
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_unique_relationship_property_streaming(
@@ -4090,73 +3726,6 @@ fn compute_statistics_with_basic(
     statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
     statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
     statistics
-}
-
-fn property_value_supports_optimizer_statistics(value: &Value) -> bool {
-    match value {
-        Value::Null
-        | Value::Bool(_)
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::String(_)
-        | Value::Uuid(_) => true,
-        Value::Binary(_) | Value::List(_) | Value::Map(_) => false,
-    }
-}
-
-fn property_type_supports_optimizer_statistics(value_type: PropertyType) -> bool {
-    !matches!(value_type, PropertyType::Text | PropertyType::List)
-}
-
-fn node_property_supports_optimizer_statistics(
-    catalog: Option<&Catalog>,
-    label_id: LabelId,
-    property: &str,
-    value: &Value,
-) -> bool {
-    property_supports_optimizer_statistics(
-        catalog.and_then(|catalog| {
-            let label = catalog.label_name(label_id)?;
-            declared_property_type(catalog, TableKind::Node, label, property)
-        }),
-        value,
-    )
-}
-
-fn relationship_property_supports_optimizer_statistics(
-    catalog: Option<&Catalog>,
-    rel_type_id: RelTypeId,
-    property: &str,
-    value: &Value,
-) -> bool {
-    property_supports_optimizer_statistics(
-        catalog.and_then(|catalog| {
-            let rel_type = catalog.rel_type_name(rel_type_id)?;
-            declared_property_type(catalog, TableKind::Relationship, rel_type, property)
-        }),
-        value,
-    )
-}
-
-fn declared_property_type(
-    catalog: &Catalog,
-    table_kind: TableKind,
-    table: &str,
-    property: &str,
-) -> Option<PropertyType> {
-    let table_id = catalog.table_id(table_kind, table)?;
-    let property_id = catalog.property_descriptor_id(table_id, property)?;
-    catalog
-        .property_descriptor(property_id)
-        .map(|descriptor| descriptor.value_type)
-}
-
-fn property_supports_optimizer_statistics(
-    declared_type: Option<PropertyType>,
-    value: &Value,
-) -> bool {
-    declared_type.is_none_or(property_type_supports_optimizer_statistics)
-        && property_value_supports_optimizer_statistics(value)
 }
 
 fn collect_property_statistic_value<K: Ord>(
@@ -4538,31 +4107,6 @@ impl BoundedPathStatContext<'_> {
             );
         }
     }
-}
-
-fn adaptive_histogram_sample_limit(distinct_count: usize) -> usize {
-    if distinct_count <= MID_PROPERTY_HISTOGRAM_DISTINCT_VALUES {
-        MIN_PROPERTY_HISTOGRAM_VALUES
-    } else if distinct_count <= MAX_PROPERTY_HISTOGRAM_DISTINCT_VALUES {
-        MID_PROPERTY_HISTOGRAM_VALUES
-    } else {
-        MAX_PROPERTY_HISTOGRAM_VALUES
-    }
-}
-
-fn sample_histogram_values(values: BTreeSet<Value>) -> Vec<Value> {
-    let len = values.len();
-    let sample_limit = adaptive_histogram_sample_limit(len);
-    if len <= sample_limit {
-        return values.into_iter().collect();
-    }
-    let sorted = values.into_iter().collect::<Vec<_>>();
-    (0..sample_limit)
-        .map(|sample_index| {
-            let value_index = sample_index * (len - 1) / (sample_limit - 1);
-            sorted[value_index].clone()
-        })
-        .collect()
 }
 
 fn property_filter_matches(
@@ -5892,18 +5436,6 @@ fn decode_table_kind(input: &str) -> Result<TableKind> {
         "node" => Ok(TableKind::Node),
         "relationship" => Ok(TableKind::Relationship),
         _ => Err(SkeinError::Storage(format!("invalid table kind: {input}"))),
-    }
-}
-
-fn encode_property_type(value_type: PropertyType) -> &'static str {
-    match value_type {
-        PropertyType::Any => "any",
-        PropertyType::Bool => "bool",
-        PropertyType::Int => "int",
-        PropertyType::Float => "float",
-        PropertyType::String => "string",
-        PropertyType::Text => "text",
-        PropertyType::List => "list",
     }
 }
 

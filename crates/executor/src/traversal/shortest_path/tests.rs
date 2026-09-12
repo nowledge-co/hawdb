@@ -153,6 +153,14 @@ impl GraphExecutionRead for ChainStore {
     ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
         unreachable!()
     }
+    fn visit_relationships_owned(
+        &self,
+        _: Option<RelTypeId>,
+        _: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        unreachable!()
+    }
+
     fn scan_relationships_with_filter_pruning<'a>(
         &'a self,
         _: Option<RelTypeId>,

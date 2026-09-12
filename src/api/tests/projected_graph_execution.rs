@@ -1,6 +1,8 @@
 use super::*;
 use crate::StorageResidencyMode;
 
+mod differential;
+
 #[test]
 fn projected_graph_queries_preserve_residency_reopen_and_read_only_wal_boundaries() {
     let mut reference = None;

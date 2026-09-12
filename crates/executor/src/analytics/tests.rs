@@ -24,6 +24,7 @@ struct Fixture {
     node_scans: Cell<usize>,
     node_visits: Cell<usize>,
     rel_scans: Cell<usize>,
+    rel_visits: Cell<usize>,
     fail_node_at: Option<usize>,
     fail_rel_scan: Option<usize>,
     cancel_after_nodes: Option<RuntimeCancellationToken>,
@@ -74,6 +75,7 @@ impl Fixture {
             node_scans: Cell::new(0),
             node_visits: Cell::new(0),
             rel_scans: Cell::new(0),
+            rel_visits: Cell::new(0),
             fail_node_at: None,
             fail_rel_scan: None,
             cancel_after_nodes: None,
@@ -84,6 +86,7 @@ impl Fixture {
         self.node_scans.set(0);
         self.node_visits.set(0);
         self.rel_scans.set(0);
+        self.rel_visits.set(0);
     }
 }
 
@@ -403,6 +406,7 @@ fn storage_scan_failure_and_early_stop_preserve_adapter_control() {
         ProjectionScanControl::Stop
     );
     assert_eq!(rel_visits, 1);
+    assert_eq!(fixture.rel_visits.get(), 1);
     for fail_node in [true, false] {
         for pass in [1, 2] {
             fixture.reset_visits();

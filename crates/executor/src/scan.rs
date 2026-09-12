@@ -1332,6 +1332,14 @@ mod tests {
                 .map(|control| (control, None))
         }
 
+        fn visit_relationships_owned(
+            &self,
+            _rel_type: Option<RelTypeId>,
+            _consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            panic!("global relationship scans are not used by adjacency expansion tests")
+        }
+
         fn scan_relationships_with_filter_pruning<'a>(
             &'a self,
             _rel_type: Option<RelTypeId>,

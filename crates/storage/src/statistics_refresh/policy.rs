@@ -1,0 +1,101 @@
+use skein_core::{Catalog, LabelId, PropertyType, RelTypeId, TableKind, Value};
+use std::collections::BTreeSet;
+
+const MIN_PROPERTY_HISTOGRAM_VALUES: usize = 128;
+const MID_PROPERTY_HISTOGRAM_VALUES: usize = 256;
+pub const MAX_PROPERTY_HISTOGRAM_VALUES: usize = 512;
+const MID_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 1_024;
+const MAX_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 4_096;
+pub const MAX_BOUNDED_PATH_STAT_HOPS: usize = 3;
+
+fn property_value_supports_optimizer_statistics(value: &Value) -> bool {
+    match value {
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Uuid(_) => true,
+        Value::Binary(_) | Value::List(_) | Value::Map(_) => false,
+    }
+}
+
+fn property_type_supports_optimizer_statistics(value_type: PropertyType) -> bool {
+    !matches!(value_type, PropertyType::Text | PropertyType::List)
+}
+
+pub fn node_property_supports_optimizer_statistics(
+    catalog: Option<&Catalog>,
+    label_id: LabelId,
+    property: &str,
+    value: &Value,
+) -> bool {
+    property_supports_optimizer_statistics(
+        catalog.and_then(|catalog| {
+            let label = catalog.label_name(label_id)?;
+            declared_property_type(catalog, TableKind::Node, label, property)
+        }),
+        value,
+    )
+}
+
+pub fn relationship_property_supports_optimizer_statistics(
+    catalog: Option<&Catalog>,
+    rel_type_id: RelTypeId,
+    property: &str,
+    value: &Value,
+) -> bool {
+    property_supports_optimizer_statistics(
+        catalog.and_then(|catalog| {
+            let rel_type = catalog.rel_type_name(rel_type_id)?;
+            declared_property_type(catalog, TableKind::Relationship, rel_type, property)
+        }),
+        value,
+    )
+}
+
+fn declared_property_type(
+    catalog: &Catalog,
+    table_kind: TableKind,
+    table: &str,
+    property: &str,
+) -> Option<PropertyType> {
+    let table_id = catalog.table_id(table_kind, table)?;
+    let property_id = catalog.property_descriptor_id(table_id, property)?;
+    catalog
+        .property_descriptor(property_id)
+        .map(|descriptor| descriptor.value_type)
+}
+
+fn property_supports_optimizer_statistics(
+    declared_type: Option<PropertyType>,
+    value: &Value,
+) -> bool {
+    declared_type.is_none_or(property_type_supports_optimizer_statistics)
+        && property_value_supports_optimizer_statistics(value)
+}
+
+pub fn adaptive_histogram_sample_limit(distinct_count: usize) -> usize {
+    if distinct_count <= MID_PROPERTY_HISTOGRAM_DISTINCT_VALUES {
+        MIN_PROPERTY_HISTOGRAM_VALUES
+    } else if distinct_count <= MAX_PROPERTY_HISTOGRAM_DISTINCT_VALUES {
+        MID_PROPERTY_HISTOGRAM_VALUES
+    } else {
+        MAX_PROPERTY_HISTOGRAM_VALUES
+    }
+}
+
+pub fn sample_histogram_values(values: BTreeSet<Value>) -> Vec<Value> {
+    let len = values.len();
+    let sample_limit = adaptive_histogram_sample_limit(len);
+    if len <= sample_limit {
+        return values.into_iter().collect();
+    }
+    let sorted = values.into_iter().collect::<Vec<_>>();
+    (0..sample_limit)
+        .map(|sample_index| {
+            let value_index = sample_index * (len - 1) / (sample_limit - 1);
+            sorted[value_index].clone()
+        })
+        .collect()
+}

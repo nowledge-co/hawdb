@@ -1,3 +1,6 @@
+#[doc(hidden)]
+pub mod graph;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL: &str =

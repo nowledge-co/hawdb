@@ -10,5 +10,6 @@ fs2 = "0.4.3"
 rayon = "1.11"
 skein-analytics = { path = "../analytics" }
 skein-core = { path = "../core" }
+skein-ddl = { path = "../ddl" }
 skein-plan = { path = "../plan" }
 skein-storage = { path = "../storage" }
