@@ -3,6 +3,9 @@
 //! These are storage-owned implementation details, not a new host protocol.
 //! Keep byte encodings, legacy decoding tolerance, and error messages stable.
 
+#[doc(hidden)]
+pub mod envelope;
+
 use skein_core::{Result, SkeinError, Value};
 use std::collections::BTreeMap;
 

@@ -174,6 +174,11 @@ use skein_storage::statistics_refresh::{
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
+#[cfg(test)]
+use skein_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
+pub(crate) use skein_storage::text::envelope::{
+    encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
+};
 pub(crate) use skein_storage::text::{
     decode_bytes, decode_properties, decode_string, decode_value, encode_bytes, encode_properties,
     encode_string, encode_value, parse_i64, parse_u64,
@@ -247,7 +252,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::fs::OpenOptions;
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::io::Write;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -274,8 +279,6 @@ const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
 const PROPERTY_PROJECTION_MANIFEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER: u64 = 4;
 const MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES: u64 = 64 * 1024;
-const DURABLE_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
-const DEFAULT_COMPRESSION_LEVEL: i32 = 3;
 pub const DENSE_ADJACENCY_DEGREE_THRESHOLD: usize = 64;
 const MAX_ADJACENCY_CONSISTENCY_SAMPLES: usize = 32;
 
@@ -4770,181 +4773,9 @@ fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
     Ok((body, checksum))
 }
 
-pub(crate) fn encode_durable_text(text: &str, compression: DurableCompression) -> Result<Vec<u8>> {
-    match compression {
-        DurableCompression::Zstd => encode_zstd_durable_text(text),
-    }
-}
-
-fn encode_zstd_durable_text(text: &str) -> Result<Vec<u8>> {
-    let compressed = zstd::stream::encode_all(text.as_bytes(), DEFAULT_COMPRESSION_LEVEL)
-        .map_err(|error| SkeinError::Storage(format!("zstd compression failed: {error}")))?;
-    let compressed_checksum = checksum_bytes(&compressed);
-    let uncompressed_checksum = checksum_bytes(text.as_bytes());
-    let header = format!(
-        "{DURABLE_COMPRESSION_HEADER}\ncodec\tzstd\nuncompressed_checksum\t{uncompressed_checksum}\ncompressed_checksum\t{compressed_checksum}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
-        text.len(),
-        compressed.len()
-    );
-    let mut encoded = header.into_bytes();
-    encoded.extend_from_slice(&compressed);
-    Ok(encoded)
-}
-
 fn read_durable_text(path: &Path, name: &str) -> Result<String> {
     let bytes = fs::read(path)?;
     read_durable_text_bytes(&bytes, name)
-}
-
-pub(crate) fn read_durable_text_bytes(bytes: &[u8], name: &str) -> Result<String> {
-    read_durable_text_bytes_with_limit(bytes, name, None)
-}
-
-fn read_durable_text_bytes_with_limit(
-    bytes: &[u8],
-    name: &str,
-    max_decoded_bytes: Option<u64>,
-) -> Result<String> {
-    if !bytes.starts_with(DURABLE_COMPRESSION_HEADER.as_bytes()) {
-        return Err(SkeinError::Storage(format!(
-            "{name} is missing the V1 compressed envelope"
-        )));
-    }
-    decode_compressed_durable_text(bytes, name, max_decoded_bytes)
-}
-
-fn decode_compressed_durable_text(
-    bytes: &[u8],
-    name: &str,
-    max_decoded_bytes: Option<u64>,
-) -> Result<String> {
-    let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
-        return Err(SkeinError::Storage(format!(
-            "{name} compressed envelope missing header terminator"
-        )));
-    };
-    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        SkeinError::Storage(format!(
-            "{name} compressed envelope header is invalid: {error}"
-        ))
-    })?;
-    let payload = &bytes[header_end + 2..];
-    let mut codec = None;
-    let mut compressed_checksum = None;
-    let mut uncompressed_checksum = None;
-    let mut compressed_len = None;
-    let mut uncompressed_len = None;
-    let mut seen_fields = BTreeSet::new();
-    for line in header.lines() {
-        if line == DURABLE_COMPRESSION_HEADER {
-            continue;
-        }
-        let fields = line.split('\t').collect::<Vec<_>>();
-        if !seen_fields.insert(fields[0]) {
-            return Err(SkeinError::Storage(format!(
-                "{name} compressed envelope has duplicate field: {}",
-                fields[0]
-            )));
-        }
-        match fields.as_slice() {
-            ["codec", value] => codec = Some(*value),
-            ["compressed_checksum", value] => {
-                compressed_checksum = Some(parse_u64(value, "compressed checksum")?);
-            }
-            ["uncompressed_checksum", value] => {
-                uncompressed_checksum = Some(parse_u64(value, "uncompressed checksum")?);
-            }
-            ["compressed_len", value] => {
-                compressed_len = Some(parse_usize(value, "compressed length")?);
-            }
-            ["uncompressed_len", value] => {
-                uncompressed_len = Some(parse_usize(value, "uncompressed length")?);
-            }
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "{name} compressed envelope has invalid header line: {line}"
-                )));
-            }
-        }
-    }
-    if codec != Some("zstd") {
-        return Err(SkeinError::Storage(format!(
-            "{name} compressed envelope uses unsupported codec"
-        )));
-    }
-    let expected_compressed_len = compressed_len.ok_or_else(|| {
-        SkeinError::Storage(format!("{name} compressed envelope missing compressed_len"))
-    })?;
-    if payload.len() != expected_compressed_len {
-        return Err(SkeinError::Storage(format!(
-            "{name} compressed length mismatch: expected {expected_compressed_len}, got {}",
-            payload.len()
-        )));
-    }
-    let expected_compressed_checksum = compressed_checksum.ok_or_else(|| {
-        SkeinError::Storage(format!(
-            "{name} compressed envelope missing compressed_checksum"
-        ))
-    })?;
-    let actual_compressed_checksum = checksum_bytes(payload);
-    if actual_compressed_checksum != expected_compressed_checksum {
-        return Err(SkeinError::Storage(format!(
-            "{name} compressed checksum mismatch: expected {expected_compressed_checksum}, got {actual_compressed_checksum}"
-        )));
-    }
-    let expected_uncompressed_len = uncompressed_len.ok_or_else(|| {
-        SkeinError::Storage(format!(
-            "{name} compressed envelope missing uncompressed_len"
-        ))
-    })?;
-    if max_decoded_bytes.is_some_and(|limit| expected_uncompressed_len as u64 > limit) {
-        return Err(SkeinError::Storage(format!(
-            "{name} decoded byte limit exceeded: max_decoded_bytes={}",
-            max_decoded_bytes.unwrap_or_default()
-        )));
-    }
-    let decode_limit = max_decoded_bytes
-        .unwrap_or(expected_uncompressed_len as u64)
-        .min(usize::MAX as u64);
-    let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        SkeinError::Storage(format!("{name} zstd decompression failed: {error}"))
-    })?;
-    let initial_capacity = expected_uncompressed_len.min(8 * 1024 * 1024);
-    let mut decoded = Vec::with_capacity(initial_capacity);
-    decoder
-        .by_ref()
-        .take(decode_limit.saturating_add(1))
-        .read_to_end(&mut decoded)
-        .map_err(|error| {
-            SkeinError::Storage(format!("{name} zstd decompression failed: {error}"))
-        })?;
-    if decoded.len() as u64 > decode_limit {
-        return Err(SkeinError::Storage(format!(
-            "{name} decoded byte limit exceeded: max_decoded_bytes={decode_limit}"
-        )));
-    }
-    if decoded.len() != expected_uncompressed_len {
-        return Err(SkeinError::Storage(format!(
-            "{name} uncompressed length mismatch: expected {expected_uncompressed_len}, got {}",
-            decoded.len()
-        )));
-    }
-    let expected_uncompressed_checksum = uncompressed_checksum.ok_or_else(|| {
-        SkeinError::Storage(format!(
-            "{name} compressed envelope missing uncompressed_checksum"
-        ))
-    })?;
-    let actual_uncompressed_checksum = checksum_bytes(&decoded);
-    if actual_uncompressed_checksum != expected_uncompressed_checksum {
-        return Err(SkeinError::Storage(format!(
-            "{name} uncompressed checksum mismatch: expected {expected_uncompressed_checksum}, got {actual_uncompressed_checksum}"
-        )));
-    }
-    String::from_utf8(decoded).map_err(|error| {
-        SkeinError::Storage(format!(
-            "{name} decompressed payload is not valid UTF-8: {error}"
-        ))
-    })
 }
 
 fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
@@ -5534,6 +5365,7 @@ fn estimated_value_bytes(value: &Value) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    mod envelope_recovery_tests;
     mod hex_recovery_tests;
 
     use super::{
