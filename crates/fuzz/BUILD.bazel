@@ -125,6 +125,7 @@ test_suite(
         "//crates/storage:skein_storage_backup_hex_fuzz_tests",
         "//crates/storage:skein_storage_file_lock_fuzz_tests",
         "//crates/storage:skein_storage_graph_constraints_fuzz_tests",
+        "//crates/storage:skein_storage_graph_overlay_fuzz_tests",
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",

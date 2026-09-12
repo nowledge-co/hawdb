@@ -22,39 +22,23 @@ impl GraphStore {
     }
 
     pub fn node_records_owned(&self) -> GraphNodeIterator {
-        GraphNodeIterator {
-            base: self
-                .canonical_base
+        skein_storage::graph_overlay::node_records(
+            self.canonical_base
                 .as_ref()
-                .map(CanonicalSegmentReader::node_records)
-                .map(Iterator::peekable),
-            delta: self
-                .nodes
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .peekable(),
-            tombstones: self.node_tombstones.clone(),
-        }
+                .map(CanonicalSegmentReader::node_records),
+            self.nodes.values().cloned().collect::<Vec<_>>(),
+            self.node_tombstones.clone(),
+        )
     }
 
     pub fn relationship_records_owned(&self) -> GraphRelationshipIterator {
-        GraphRelationshipIterator {
-            base: self
-                .canonical_base
+        skein_storage::graph_overlay::relationship_records(
+            self.canonical_base
                 .as_ref()
-                .map(CanonicalSegmentReader::relationship_records)
-                .map(Iterator::peekable),
-            delta: self
-                .relationships
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .peekable(),
-            tombstones: self.relationship_tombstones.clone(),
-        }
+                .map(CanonicalSegmentReader::relationship_records),
+            self.relationships.values().cloned().collect::<Vec<_>>(),
+            self.relationship_tombstones.clone(),
+        )
     }
 
     pub fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {

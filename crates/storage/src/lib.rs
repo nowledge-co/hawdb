@@ -19,6 +19,8 @@ pub mod graph_descriptor_page;
 pub mod graph_descriptor_tree;
 #[doc(hidden)]
 pub mod graph_index_metrics;
+#[doc(hidden)]
+pub mod graph_overlay;
 pub mod ids;
 pub mod index_page;
 #[doc(hidden)]
