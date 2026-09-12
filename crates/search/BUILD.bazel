@@ -66,6 +66,23 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_search_projection_evidence_fuzz_tests",
+    args = [
+        "projection_evidence::differential::search_projection_evidence_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_search_identifier_allocation_tests",
     crate_root = "tests/identifier_allocation.rs",
     srcs = [

@@ -80,6 +80,12 @@ kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
 owns release identity validation and storage crash-recovery evidence contracts.
 `skein-search` owns lexical/vector search, generation publication, recall
 validation, and the storage-neutral `SearchProjectionSource` boundary.
+Its internal `projection_evidence` module owns the pure probe contract,
+typed evidence report, and primary/shadow qualification reducers alongside
+the search-owned scan-filter field contract. Root `search_projection_evidence`
+re-exports the same types and functions while retaining file/CLI wrappers and
+real index checkpoint/reopen integration tests. This adds no separate host
+integration API or dependency from evidence back to search.
 
 ```text
 crates/
@@ -125,6 +131,18 @@ The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
 a manual test suite to that campaign, while public database reopen/no-write
 corruption tests stay at the root integration boundary.
 
+`skein-storage::statistics_refresh` owns the transient statistics record codec,
+bounded run sorting and merge, property exclusion, index sampling, histogram
+accumulation, and spill-directory lifetime. Shared eligibility and histogram
+helpers serve both materialized and external refresh paths from that owner.
+Root `src/store/statistics_refresh.rs` retains public options/report types,
+user-option validation, concrete graph scans and path expansion, source-epoch
+checks, and publication. It copies the existing four sort/output limits into
+an internal `StatsRunOptions`; no limit or format is changed by this boundary.
+Owner differential tests compare complete output against a bag/set oracle
+across run layouts. Database checkpoint/reopen and failure-before-publication
+tests remain at the root integration boundary.
+
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
 re-export facades over their owning crates. `skein-plan` depends only on
 `skein-core`, `skein-cypher`, and `skein-ddl`; `skein-optimizer` depends inward
@@ -158,6 +176,15 @@ Source sidecar reads. `GraphExecutionWrite` contains only the bounded mutation
 operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
+
+Storage-neutral mutation command lowering belongs to the internal
+`skein-executor::mutation` module. It translates physical plans and SET values
+into storage commands using the canonical `skein-ddl` conversions; it does not
+own preflight, transaction admission, commit, or recovery. The root retains
+executable-predicate scan fallback, SET RETURN preflight/projection, concrete
+store integration tests, and the existing public executor function paths.
+Translation errors remain distinct from non-mutation plans so fallback and
+failure behavior are unchanged.
 
 Numeric columnar execution belongs to `skein-executor::numeric`, including
 eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
