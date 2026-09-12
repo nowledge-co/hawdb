@@ -1,11 +1,13 @@
-use crate::analytics::{
-    LouvainOptions, PageRankOptions, ProjectedGraph, ProjectionLayout, ProjectionMemoryBudget,
-};
+#[cfg(test)]
+use crate::analytics::{LouvainOptions, PageRankOptions};
+use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
 use crate::cypher::RelationshipDirection;
 use crate::error::{Result, SkeinError};
 use crate::optimizer::PhysicalPlan;
+#[cfg(test)]
+use crate::planner::GraphAlgorithmKind;
 use crate::planner::{
-    Aggregation, GraphAlgorithmKind, PlanChildren, Predicate, Projection, RelationshipCountLeg,
+    Aggregation, PlanChildren, Predicate, Projection, RelationshipCountLeg,
     SetNodePropertiesReturnMode, SetValue, SortItem,
 };
 use crate::schema::Catalog;
@@ -18,6 +20,7 @@ use crate::store::{
     RelationshipTargetNodeDelete, ScanPruningReport,
 };
 use crate::value::Value;
+#[cfg(test)]
 use skein_analytics::ProjectedGraphExecution;
 use skein_core::RuntimeTaskContext;
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
@@ -46,13 +49,11 @@ use entrypoint::*;
 use expression::*;
 pub(crate) use mutation::project_staged_mutation_return_rows;
 pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_command};
-use mutation::{
-    node_set_assignment, relationship_on_create_property_value,
-    try_projected_graph_with_node_filter,
-};
+use mutation::{node_set_assignment, relationship_on_create_property_value};
 use observer::*;
 use read::*;
 use scan::*;
+use skein_executor::analytics::try_projected_graph_with_node_filter;
 pub(crate) use skein_executor::binding::map_memory_bytes;
 pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::{binding_memory_bytes, Binding};
@@ -65,8 +66,7 @@ pub(crate) use skein_executor::memory::{
 };
 use skein_executor::memory::{DEFAULT_EXECUTION_BATCH_ROWS, SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES};
 use skein_executor::pipeline::{
-    emit_owned_binding_batches, runtime_checkpoint, AccountedBindingBatch, BatchControl,
-    BindingBatch, TransformBatchBuilder,
+    runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch, TransformBatchBuilder,
 };
 use skein_executor::predicate::{
     label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,

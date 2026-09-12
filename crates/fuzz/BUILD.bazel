@@ -91,6 +91,7 @@ test_suite(
         "//:skein_scan_callback_fuzz_tests",
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
         "//crates/evidence:skein_inventory_health_fuzz_tests",
+        "//crates/executor:skein_graph_algorithm_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_mutation_lowering_fuzz_tests",
         "//crates/executor:skein_numeric_execution_fuzz_tests",
@@ -106,6 +107,7 @@ test_suite(
         "//crates/optimizer:skein_optimizer_full_text_cost_fuzz_tests",
         "//crates/optimizer:skein_optimizer_trace_cost_fuzz_tests",
         "//crates/plan:skein_plan_explain_fuzz_tests",
+        "//crates/readiness:skein_source_mutation_readiness_fuzz_tests",
         "//crates/relational:skein_relational_statement_fuzz_tests",
         "//crates/route-ownership:skein_graph_route_ownership_fuzz_tests",
         "//crates/search:skein_search_block_encoding_fuzz_tests",
@@ -130,6 +132,7 @@ test_suite(
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
         "//crates/storage:skein_storage_statistics_refresh_fuzz_tests",
+        "//crates/storage:skein_storage_transaction_compaction_fuzz_tests",
         "//crates/storage:skein_storage_transaction_locks_fuzz_tests",
     ],
 )

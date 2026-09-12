@@ -15,6 +15,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
+        "//crates/analytics:skein_analytics",
         "//crates/core:skein_core",
         "//crates/ddl:skein_ddl",
         "//crates/plan:skein_plan",
@@ -146,6 +147,22 @@ rust_test(
     name = "skein_transform_fuzz_tests",
     args = [
         "transform::tests::transform_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_graph_algorithm_fuzz_tests",
+    args = [
+        "analytics::tests::differential::graph_algorithm_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",

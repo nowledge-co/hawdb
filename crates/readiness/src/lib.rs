@@ -83,6 +83,9 @@ impl NowledgeMemReadinessAreaSummary {
     }
 }
 
+#[doc(hidden)]
+pub mod source_mutation;
+
 #[cfg(test)]
 mod tests {
     use super::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};

@@ -604,7 +604,18 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 score_column,
                 node_visibility_predicate,
             }
-            .stream(context, execution_limit, emit)
+            .stream(
+                GraphAlgorithmContext {
+                    catalog: context.catalog,
+                    store: context.store,
+                    memory: context.memory,
+                    memory_ledger: context.memory_ledger,
+                    task_context: context.task_context,
+                    observer: context.observer,
+                },
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::VectorSeedScan {
             embedding_parameter,

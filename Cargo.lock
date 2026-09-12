@@ -961,6 +961,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "rayon",
+ "skein-analytics",
  "skein-core",
  "skein-ddl",
  "skein-plan",
