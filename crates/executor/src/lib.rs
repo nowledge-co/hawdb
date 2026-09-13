@@ -31,6 +31,8 @@ pub mod pipeline;
 pub mod predicate;
 pub mod profile;
 #[doc(hidden)]
+pub mod result_delivery;
+#[doc(hidden)]
 pub mod scan;
 #[doc(hidden)]
 pub mod spill;

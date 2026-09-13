@@ -21,6 +21,7 @@ mod analysis_tests;
 
 mod block_encoding;
 mod document_frequency;
+mod manifest_encoding;
 
 #[cfg(test)]
 mod positioned_read_tests;
@@ -262,21 +263,13 @@ impl ManifestBody {
 
     fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let body =
-            serde_json::to_vec(self).map_err(|error| SkeinError::Storage(error.to_string()))?;
-        serde_json::to_vec(&ManifestEnvelope {
-            body: self.clone(),
-            checksum: checksum(&body),
-        })
-        .map_err(|error| SkeinError::Storage(error.to_string()))
+        manifest_encoding::encode(self, MAX_MANIFEST_BYTES)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
             .map_err(|error| SkeinError::Storage(format!("invalid lexical manifest: {error}")))?;
-        let body = serde_json::to_vec(&envelope.body)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
-        if checksum(&body) != envelope.checksum {
+        if manifest_encoding::checksum(&envelope.body)? != envelope.checksum {
             return Err(SkeinError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
             ));
@@ -1324,12 +1317,7 @@ impl LexicalProjectionWriter {
             blocks: artifact.blocks,
         };
         let manifest_bytes = manifest.encode()?;
-        if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
-            return Err(SkeinError::Storage(format!(
-                "lexical projection manifest requires {} bytes, exceeding {MAX_MANIFEST_BYTES}",
-                manifest_bytes.len()
-            )));
-        }
+        drop(manifest);
         durable_replace_file(&tmp_path, &artifact_path)?;
         artifact_guard.disarm();
         let manifest_path = root.join(MANIFEST_FILE);
@@ -1340,6 +1328,7 @@ impl LexicalProjectionWriter {
             file.write_all(&manifest_bytes)?;
             file.sync_all()?;
         }
+        drop(manifest_bytes);
         durable_replace_file(&manifest_tmp, &manifest_path)?;
         manifest_guard.disarm();
         LexicalProjectionReader::load(

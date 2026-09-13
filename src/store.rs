@@ -169,6 +169,9 @@ use skein_storage::graph_constraints::{
 pub(crate) use skein_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
 };
+use skein_storage::projection::artifact::{
+    decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
+};
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
@@ -180,8 +183,9 @@ pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
 pub(crate) use skein_storage::text::{
-    decode_bytes, decode_properties, decode_string, decode_value, encode_bytes, encode_properties,
-    encode_string, encode_value, parse_i64, parse_u64,
+    decode_bytes, decode_properties, decode_string, decode_string_vec, decode_u64_vec,
+    decode_value, encode_bytes, encode_properties, encode_string, encode_string_vec,
+    encode_u64_vec, encode_value, parse_i64, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -193,13 +197,13 @@ use skein_storage::{
     encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
     sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
     AppendMutationLimits, AppendPublicationConfig, AppendPublicationState, AppendPublisher,
-    AppendState, CanonicalEndpointDirection, CanonicalNodeIterator, CanonicalRelationshipIterator,
-    CanonicalSegmentError, PersistentPropertyProjectionDefinitionAdmission,
-    PersistentPropertyProjectionRecord, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
-    RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
-    RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
-    RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState, RelationalTransaction,
+    AppendState, CanonicalEndpointDirection, CanonicalSegmentError,
+    PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
+    RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
+    RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
+    RelationalRecoverySourceBuilder, RelationalRowPageGenerationRequest,
+    RelationalRowPagePublicationConfig, RelationalRowPagePublisher, RelationalSparseLiveStage,
+    RelationalState, RelationalTransaction,
 };
 pub use skein_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
@@ -266,13 +270,13 @@ use wal_codec::{
     WalOpenOutcome, WalRecordCursor,
 };
 
-const STORAGE_VERSION: &str = "skein-storage-v1";
+use skein_storage::durable_manifest::{
+    safe_reclaim_commit_epoch, validate_storage_version, STORAGE_VERSION,
+};
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
 const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
-const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
@@ -1410,176 +1414,7 @@ impl RelationalIndexStorageResidencyReport {
     }
 }
 
-pub struct GraphNodeIterator {
-    base: Option<std::iter::Peekable<CanonicalNodeIterator>>,
-    delta: std::iter::Peekable<std::vec::IntoIter<NodeRecord>>,
-    tombstones: CowSegment<BTreeSet<NodeId>>,
-}
-
-impl Iterator for GraphNodeIterator {
-    type Item = Result<NodeRecord>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
-                Some(Ok(node)) => Some(node.id),
-                Some(Err(_)) => {
-                    return self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .map(|record| record.map_err(canonical_segment_error));
-                }
-                None => None,
-            };
-            let delta_id = self.delta.peek().map(|node| node.id);
-            match (base_id, delta_id) {
-                (None, None) => return None,
-                (Some(_), None) => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(node) if self.tombstones.contains(&node.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (None, Some(_)) => {
-                    let node = self.delta.next().expect("peeked delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-                (Some(base_id), Some(delta_id)) if base_id < delta_id => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(node) if self.tombstones.contains(&node.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (Some(base_id), Some(delta_id)) if base_id == delta_id => {
-                    if let Err(error) = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base node exists")
-                        .map_err(canonical_segment_error)
-                    {
-                        return Some(Err(error));
-                    }
-                    let node = self.delta.next().expect("matching delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-                (Some(_), Some(_)) => {
-                    let node = self.delta.next().expect("peeked delta node exists");
-                    if self.tombstones.contains(&node.id) {
-                        continue;
-                    }
-                    return Some(Ok(node));
-                }
-            }
-        }
-    }
-}
-
-pub struct GraphRelationshipIterator {
-    base: Option<std::iter::Peekable<CanonicalRelationshipIterator>>,
-    delta: std::iter::Peekable<std::vec::IntoIter<RelRecord>>,
-    tombstones: CowSegment<BTreeSet<RelId>>,
-}
-
-impl Iterator for GraphRelationshipIterator {
-    type Item = Result<RelRecord>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
-                Some(Ok(relationship)) => Some(relationship.id),
-                Some(Err(_)) => {
-                    return self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .map(|record| record.map_err(canonical_segment_error));
-                }
-                None => None,
-            };
-            let delta_id = self.delta.peek().map(|relationship| relationship.id);
-            match (base_id, delta_id) {
-                (None, None) => return None,
-                (Some(_), None) => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(relationship) if self.tombstones.contains(&relationship.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (None, Some(_)) => {
-                    let relationship = self.delta.next().expect("peeked delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-                (Some(base_id), Some(delta_id)) if base_id < delta_id => {
-                    let record = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error);
-                    match record {
-                        Ok(relationship) if self.tombstones.contains(&relationship.id) => continue,
-                        other => return Some(other),
-                    }
-                }
-                (Some(base_id), Some(delta_id)) if base_id == delta_id => {
-                    if let Err(error) = self
-                        .base
-                        .as_mut()
-                        .and_then(Iterator::next)
-                        .expect("peeked base relationship exists")
-                        .map_err(canonical_segment_error)
-                    {
-                        return Some(Err(error));
-                    }
-                    let relationship = self
-                        .delta
-                        .next()
-                        .expect("matching delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-                (Some(_), Some(_)) => {
-                    let relationship = self.delta.next().expect("peeked delta relationship exists");
-                    if self.tombstones.contains(&relationship.id) {
-                        continue;
-                    }
-                    return Some(Ok(relationship));
-                }
-            }
-        }
-    }
-}
+pub use skein_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
 fn canonical_segment_error(error: CanonicalSegmentError) -> SkeinError {
     SkeinError::StorageIntegrity(error.to_string())
@@ -2688,15 +2523,6 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn safe_reclaim_commit_epoch(
-    checkpoint_commit_epoch: u64,
-    oldest_reader_commit_epoch: Option<u64>,
-) -> u64 {
-    oldest_reader_commit_epoch
-        .map(|epoch| epoch.saturating_sub(1))
-        .unwrap_or(checkpoint_commit_epoch)
-}
-
 fn composite_property_index_key(
     node: &NodeRecord,
     properties: &[String],
@@ -3046,53 +2872,22 @@ fn encode_projected_graph_artifacts(
     store: &GraphStore,
     projection_epoch: u64,
 ) -> String {
-    let mut body = String::new();
-    body.push_str("SKEIN_PROJECTED_GRAPHS_V1\n");
-    body.push_str(&format!(
-        "artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"
-    ));
-    body.push_str(&format!("projection_epoch\t{projection_epoch}\n"));
-    body.push_str(&format!("commit_epoch\t{}\n", store.commit_epoch));
-    for (name, definition) in store.projected_graphs.iter() {
-        let graph = projected_graph_from_definition(catalog, store, definition);
-        let data = ProjectedGraphArtifactData::new(
-            graph.nodes().to_vec(),
-            graph.csr_offsets().to_vec(),
-            graph.csr_targets().to_vec(),
-            graph.csc_offsets().to_vec(),
-            graph.csc_sources().to_vec(),
-        )
-        .expect("fresh analytics projection is structurally valid");
-        body.push_str(&format!(
-            "graph\t{}\t{}\t{}\t{}\t{}\n",
-            encode_string(name),
-            encode_string_vec(&definition.node_labels),
-            encode_string_vec(&definition.rel_types),
-            data.node_count(),
-            data.edge_count()
-        ));
-        body.push_str(&format!(
-            "nodes\t{}\n",
-            encode_u64_vec(data.nodes.iter().map(|node| node.0))
-        ));
-        body.push_str(&format!(
-            "csr_offsets\t{}\n",
-            encode_usize_vec(data.csr_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csr_targets\t{}\n",
-            encode_usize_vec(data.csr_targets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_offsets\t{}\n",
-            encode_usize_vec(data.csc_offsets.iter().copied())
-        ));
-        body.push_str(&format!(
-            "csc_sources\t{}\n",
-            encode_usize_vec(data.csc_sources.iter().copied())
-        ));
-    }
-    body
+    skein_storage::projection::artifact::encode_projected_graph_artifacts(
+        projection_epoch,
+        store.commit_epoch,
+        store.projected_graphs.iter().map(|(name, definition)| {
+            let graph = projected_graph_from_definition(catalog, store, definition);
+            let data = ProjectedGraphArtifactData::new(
+                graph.nodes().to_vec(),
+                graph.csr_offsets().to_vec(),
+                graph.csr_targets().to_vec(),
+                graph.csc_offsets().to_vec(),
+                graph.csc_sources().to_vec(),
+            )
+            .expect("fresh analytics projection is structurally valid");
+            (name.as_str(), definition, data)
+        }),
+    )
 }
 
 fn projected_graph_from_definition(
@@ -3123,148 +2918,6 @@ fn projected_graph_from_definition(
         return ProjectedGraph::from_store_labels_without_edges(store, &label_ids);
     }
     ProjectedGraph::from_store_labels_and_rel_types(store, &label_ids, &rel_type_ids)
-}
-
-fn decode_projected_graph_artifacts(
-    body: &str,
-) -> Result<(u64, BTreeMap<String, ProjectedGraphArtifact>)> {
-    let mut lines = body.lines();
-    match lines.next() {
-        Some("SKEIN_PROJECTED_GRAPHS_V1") => {}
-        _ => {
-            return Err(SkeinError::Storage(
-                "invalid projected graph artifact header".to_string(),
-            ));
-        }
-    }
-    let artifact_version = decode_projected_graph_u64_header(
-        lines.next(),
-        "artifact_version",
-        "projected graph artifact version",
-    )?;
-    if artifact_version != PROJECTED_GRAPH_ARTIFACT_VERSION {
-        return Err(SkeinError::Storage(format!(
-            "unsupported projected graph artifact version: {artifact_version}"
-        )));
-    }
-    let projection_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "projection_epoch",
-        "projected graph artifact projection epoch",
-    )?;
-    let commit_epoch = decode_projected_graph_u64_header(
-        lines.next(),
-        "commit_epoch",
-        "projected graph artifact commit epoch",
-    )?;
-
-    let mut artifacts = BTreeMap::new();
-    while let Some(line) = lines.next() {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["graph", raw_name, raw_node_labels, raw_rel_types, raw_node_count, raw_edge_count] => {
-                let name = decode_string(raw_name)?;
-                let definition = ProjectedGraphDefinition {
-                    node_labels: decode_string_vec(raw_node_labels)?,
-                    rel_types: decode_string_vec(raw_rel_types)?,
-                };
-                let node_count = parse_u64(raw_node_count, "projected graph artifact node count")?;
-                let edge_count = parse_u64(raw_edge_count, "projected graph artifact edge count")?;
-                let nodes = decode_projected_graph_nodes_line(lines.next())?;
-                let csr_offsets = decode_projected_graph_usize_line(lines.next(), "csr_offsets")?;
-                let csr_targets = decode_projected_graph_usize_line(lines.next(), "csr_targets")?;
-                let csc_offsets = decode_projected_graph_usize_line(lines.next(), "csc_offsets")?;
-                let csc_sources = decode_projected_graph_usize_line(lines.next(), "csc_sources")?;
-                if nodes.len() as u64 != node_count {
-                    return Err(SkeinError::Storage(format!(
-                        "projected graph artifact node count mismatch for {name}"
-                    )));
-                }
-                if csr_targets.len() as u64 != edge_count || csc_sources.len() as u64 != edge_count
-                {
-                    return Err(SkeinError::Storage(format!(
-                        "projected graph artifact edge count mismatch for {name}"
-                    )));
-                }
-                let data = ProjectedGraphArtifactData::new(
-                    nodes,
-                    csr_offsets,
-                    csr_targets,
-                    csc_offsets,
-                    csc_sources,
-                )
-                .map_err(SkeinError::Storage)?;
-                artifacts.insert(
-                    name,
-                    ProjectedGraphArtifact {
-                        projection_epoch,
-                        commit_epoch,
-                        definition,
-                        data,
-                    },
-                );
-            }
-            [""] => {}
-            _ => {
-                return Err(SkeinError::Storage(format!(
-                    "invalid projected graph artifact line: {line}"
-                )));
-            }
-        }
-    }
-    Ok((commit_epoch, artifacts))
-}
-
-fn decode_projected_graph_u64_header(
-    line: Option<&str>,
-    expected: &str,
-    name: &str,
-) -> Result<u64> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
-            "missing projected graph artifact {expected}"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [field, raw] if *field == expected => parse_u64(raw, name),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(
-            "missing projected graph artifact nodes line".to_string(),
-        ));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        ["nodes", raw_values] => decode_u64_vec(raw_values, "projected graph artifact node id")
-            .map(|nodes| nodes.into_iter().map(NodeId).collect()),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
-}
-
-fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Result<Vec<usize>> {
-    let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
-            "missing projected graph artifact {expected} line"
-        )));
-    };
-    let fields = line.split('\t').collect::<Vec<_>>();
-    match fields.as_slice() {
-        [name, raw_values] if *name == expected => {
-            decode_usize_vec(raw_values, "projected graph artifact index")
-        }
-        _ => Err(SkeinError::Storage(format!(
-            "invalid projected graph artifact line: {line}"
-        ))),
-    }
 }
 
 fn validate_changed_node_uniqueness(
@@ -4753,26 +4406,6 @@ fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifactMe
     }))
 }
 
-fn split_manifest_checksum(text: &str) -> Result<(&str, u64)> {
-    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
-            "manifest missing checksum footer".to_string(),
-        ));
-    };
-    let checksum = parse_u64(footer.trim(), "manifest checksum")?;
-    Ok((body, checksum))
-}
-
-fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
-    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
-            "projected graph artifact missing checksum footer".to_string(),
-        ));
-    };
-    let checksum = parse_u64(footer.trim(), "projected graph artifact checksum")?;
-    Ok((body, checksum))
-}
-
 fn read_durable_text(path: &Path, name: &str) -> Result<String> {
     let bytes = fs::read(path)?;
     read_durable_text_bytes(&bytes, name)
@@ -4786,21 +4419,6 @@ fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
         .split(',')
         .map(|raw| parse_u32(raw, "label id").map(LabelId))
         .collect()
-}
-
-fn encode_string_vec(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| encode_string(value))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn decode_string_vec(input: &str) -> Result<Vec<String>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input.split(':').map(decode_string).collect()
 }
 
 fn encode_search_projection_relational_primary_key_changes(
@@ -4972,24 +4590,6 @@ fn decode_value_vec(input: &str) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn encode_u64_vec(values: impl IntoIterator<Item = u64>) -> String {
-    values
-        .into_iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn decode_u64_vec(input: &str, name: &str) -> Result<Vec<u64>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(',')
-        .map(|value| parse_u64(value, name))
-        .collect()
-}
-
 fn validate_search_projection_checkpoint_changes(
     start_epoch: u64,
     checkpoint_commit_epoch: u64,
@@ -5057,28 +4657,6 @@ fn validate_search_projection_checkpoint_changes(
         previous_epoch = change.commit_epoch;
     }
     Ok(())
-}
-
-fn encode_usize_vec(values: impl IntoIterator<Item = usize>) -> String {
-    values
-        .into_iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(',')
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| SkeinError::Storage(format!("invalid {name}: {value}")))
-        })
-        .collect()
 }
 
 fn encode_table_kind(kind: TableKind) -> &'static str {
@@ -5289,46 +4867,6 @@ fn parse_statistics_bounded_path_key(
     ))
 }
 
-fn encode_optional_u64(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn encode_optional_sha256(value: Option<Sha256Digest>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn parse_optional_u64(input: &str, name: &str) -> Result<Option<u64>> {
-    if input == "none" {
-        Ok(None)
-    } else {
-        parse_u64(input, name).map(Some)
-    }
-}
-
-fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>> {
-    if input == "none" {
-        Ok(None)
-    } else {
-        input
-            .parse()
-            .map(Some)
-            .map_err(|error| SkeinError::Storage(format!("invalid {name}: {error}")))
-    }
-}
-
-fn validate_storage_version(version: &str) -> Result<()> {
-    if version == STORAGE_VERSION {
-        return Ok(());
-    }
-    Err(SkeinError::Storage(format!(
-        "unsupported storage version: {version}; expected {STORAGE_VERSION}"
-    )))
-}
-
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
     32u64
         .saturating_add((node.labels.len() as u64).saturating_mul(4))
@@ -5400,6 +4938,147 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn owned_graph_overlay_preserves_snapshot_checkpoint_and_reopen() {
+        let path = unique_test_dir("owned_graph_overlay");
+        let open = |catalog: &mut Catalog| {
+            GraphStore::open_with_durability_and_replay_config(
+                &path,
+                catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = open(&mut catalog);
+        let mut ids = Vec::new();
+        for id in 0..3 {
+            ids.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+        }
+        let first_rel = store
+            .create_relationship(&mut catalog, ids[0], ids[1], "LINKS", BTreeMap::new())
+            .unwrap();
+        store
+            .create_relationship(&mut catalog, ids[0], ids[2], "LINKS", BTreeMap::new())
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert!(store.nodes.is_empty());
+        assert!(store.relationships.is_empty());
+
+        store
+            .set_node_property(&mut catalog, "Memory", None, "revision", Value::Int(2))
+            .unwrap();
+        store
+            .commit_mutations(
+                &mut catalog,
+                vec![GraphMutation::SetRelationshipProperty {
+                    source_label: "Memory".to_string(),
+                    filter: None,
+                    rel_type: "LINKS".to_string(),
+                    target_label: "Memory".to_string(),
+                    target_filter: None,
+                    rel_filter: None,
+                    property: "revision".to_string(),
+                    value: Value::Int(2),
+                }],
+            )
+            .unwrap();
+        let filter = |id| PropertyFilter::Eq {
+            property: "id".to_string(),
+            value: Value::Int(id),
+        };
+        store
+            .delete_nodes(&mut catalog, "Memory", Some(&filter(2)), true)
+            .unwrap();
+        let added = store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let added_rel = store
+            .create_relationship(&mut catalog, ids[0], added, "LINKS", BTreeMap::new())
+            .unwrap();
+        let expected_nodes = [ids[0], ids[1], added]
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let expected_rels = [first_rel, added_rel]
+            .into_iter()
+            .map(|id| store.relationship_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let nodes: super::GraphNodeIterator = store.node_records_owned();
+        let nodes: skein_storage::graph_overlay::GraphNodeIterator = nodes;
+        let relationships: super::GraphRelationshipIterator = store.relationship_records_owned();
+        let relationships: skein_storage::graph_overlay::GraphRelationshipIterator = relationships;
+
+        store
+            .set_node_property(
+                &mut catalog,
+                "Memory",
+                Some(&filter(0)),
+                "revision",
+                Value::Int(3),
+            )
+            .unwrap();
+        store
+            .delete_nodes(&mut catalog, "Memory", Some(&filter(1)), true)
+            .unwrap();
+        assert_eq!(
+            nodes.collect::<crate::Result<Vec<_>>>().unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            relationships.collect::<crate::Result<Vec<_>>>().unwrap(),
+            expected_rels
+        );
+
+        let expected_nodes = [ids[0], added]
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let expected_rels = vec![store.relationship_owned(added_rel).unwrap().unwrap()];
+        assert_eq!(
+            store
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            store
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_rels
+        );
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        let mut catalog = Catalog::default();
+        let reopened = open(&mut catalog);
+        assert_eq!(
+            reopened
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            reopened
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_rels
+        );
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn background_storage_permit_retains_governor_resources_until_drop_and_unwind() {
@@ -9472,6 +9151,46 @@ mod tests {
             .to_string()
             .contains("manifest is missing required field: checkpoint_generation"));
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn storage_owned_manifest_preserves_checkpoint_binding_and_no_write_rejection() {
+        let path = unique_test_dir("storage_owned_manifest");
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        let manifest_path = path.join("manifest.skein");
+        let manifest: super::DurableManifest =
+            skein_storage::durable_manifest::DurableManifest::load(&manifest_path).unwrap();
+        let manifest: skein_storage::durable_manifest::DurableManifest = manifest;
+        assert_eq!(manifest.checkpoint_generation, Some(1));
+        assert!(manifest.relational_row_generation_artifacts.is_some());
+        assert!(manifest.relational_overflow_generation_artifacts.is_some());
+        assert_eq!(manifest.wal_path(&path), path.join("wal.1.skein"));
+        rewrite_checksummed_file(
+            &manifest_path,
+            "wal_generation\t1\n",
+            "wal_generation\t1\nwal_generation\t1\n",
+            "manifest",
+        );
+        let before = fs::read(&manifest_path).unwrap();
+        let expected = super::DurableManifest::load(&manifest_path)
+            .unwrap_err()
+            .to_string();
+        let mut catalog = Catalog::default();
+        let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+        assert!(matches!(&error, SkeinError::Storage(_)));
+        assert!(error
+            .to_string()
+            .contains("duplicate field: wal_generation"));
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(fs::read(&manifest_path).unwrap(), before);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

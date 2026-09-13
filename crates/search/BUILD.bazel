@@ -110,6 +110,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_search_manifest_encoding_fuzz_tests",
+    args = [
+        "lexical_projection::manifest_encoding::tests::manifest_encoding_differential_campaign",
+        "--exact",
+        "--ignored",
+    ],
+    tags = ["manual"],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_search_block_encoding_fuzz_tests",
     args = [
         "lexical_projection::block_encoding::tests::block_encoding_differential_campaign",

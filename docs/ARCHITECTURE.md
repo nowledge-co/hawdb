@@ -130,6 +130,18 @@ not create a standalone transaction manager or a new host API. Unit tests and
 the explicit local state-machine campaign live with storage; real concurrent
 transaction and key-range integration tests remain at the root boundary.
 
+Owned graph iterators belong to `skein-storage::graph_overlay`. Node and
+relationship wrappers share a private ordered merge kernel over lazy canonical
+records, an already captured ID-ordered delta, and copy-on-write tombstones.
+`GraphStore` still selects the checkpoint reader and captures snapshot state;
+its existing iterator type paths are re-exports of the same owner types. Delta
+records override matching base IDs, tombstones suppress both sources, and a
+physical base error is surfaced before any further delta output. Callers that
+explicitly continue after the error retain the previous remaining-delta behavior.
+This is a read-state ownership seam, not a new transaction manager, persistent
+format, or host API. Map-overlay differential tests and real canonical corruption
+tests live with storage; checkpoint/reopen snapshot coverage stays at the facade.
+
 Source mutation dual-write evidence models and readiness evaluation belong to
 `skein-readiness::source_mutation`. The owner retains the eight-family inventory,
 independent ACK/watermark and replay checks, projection-payload requirements,
@@ -139,6 +151,18 @@ integration remain at the facade. This evaluates supplied evidence, not actual
 dual-write execution or bootstrap verification, and cannot authorize activation
 by itself. Owner tests include full-report bit-matrix and mixed-inventory oracles;
 the exhaustive campaign remains explicit local fuzz rather than a CI job.
+
+The existing v1 projected graph artifact text codec belongs to the internal
+`skein-storage::projection::artifact` module, alongside the storage-owned
+artifact data and definition types. It consumes one constructed projection at a
+time, preserves the input order and byte format, and validates both adjacency
+views through the existing storage constructor. Shared string and ID list
+codecs live in `skein-storage::text`. The embedded facade retains graph
+construction, file publication, checksum verification, epoch/reuse admission,
+and recovery fallback: invalid derived artifacts are discarded by writable
+opens and left untouched by read-only opens. Frozen format tests and an
+independent edge-bag differential campaign live with storage; checksum-valid
+structural corruption, reopen, and rebuild tests remain at the facade.
 
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
@@ -160,6 +184,17 @@ and bounded decoding; an envelope cannot raise a caller's decoded-byte limit.
 Frozen wire fixtures and an independently framed local mutation campaign live
 with storage, while actual checkpoint/reopen and rejection-without-write tests
 remain at the facade. No format, resource default, or host API changes here.
+
+The v1 durable manifest codec, artifact-binding validation and atomic manifest
+file replacement belong to `skein-storage::durable_manifest`. Root durable-store
+code retains checkpoint preparation, generation selection, directory ownership,
+publication ordering and recovery orchestration, using a crate-private type
+re-export. Field names/order, optional binding groups, checksum and SHA-256
+parsing, exact generation/epoch checks, reclaim defaults and failure ordering
+remain unchanged. Private encode/decode seams allow frozen-byte fixtures and
+checksum-valid corruption campaigns without per-case filesystem writes. Real
+file publication failures and database checkpoint/reopen rejection are tested
+separately; the full mutation campaign remains explicit local fuzz.
 
 `skein-storage::statistics_refresh` owns the transient statistics record codec,
 bounded run sorting and merge, property exclusion, index sampling, histogram
