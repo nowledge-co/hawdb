@@ -1392,29 +1392,7 @@ impl RelationalRowStorageResidencyReport {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RelationalIndexStorageResidencyReport {
-    pub serving: bool,
-    pub base_generation: Option<u64>,
-    pub recovery_delta_generation: Option<u64>,
-    pub base_commit_epoch: Option<u64>,
-    pub visible_commit_epoch: Option<u64>,
-    pub root_count: usize,
-    pub base_page_count: u64,
-    pub base_artifact_bytes: u64,
-    pub recovery_delta_pages: usize,
-    pub recovery_delta_entries: usize,
-    pub recovery_delta_artifact_bytes: u64,
-    pub live_batches: usize,
-    pub live_entries: usize,
-    pub live_encoded_bytes: usize,
-}
-
-impl RelationalIndexStorageResidencyReport {
-    pub fn canonical_artifact_bytes(&self) -> u64 {
-        self.base_artifact_bytes
-    }
-}
+pub use skein_storage::relational_index_view::RelationalIndexStorageResidencyReport;
 
 pub use skein_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
