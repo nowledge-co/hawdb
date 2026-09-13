@@ -170,6 +170,42 @@ pub(super) fn summary(segment_id: u64, rows: &[SourceScanRow]) -> SegmentSummary
     }
 }
 
+pub(super) fn validate_signed_zero_ties(
+    expected: &mut SegmentSummary,
+    actual: &SegmentSummary,
+    rows: &[SourceScanRow],
+) {
+    assert_eq!(actual, expected);
+    for (name, field) in &mut expected.fields {
+        let Some(bounds) = &mut field.numeric_min_max else {
+            continue;
+        };
+        let actual_bounds = actual.fields[name].numeric_min_max.unwrap();
+        for (bound, actual) in [
+            (&mut bounds.min, actual_bounds.min),
+            (&mut bounds.max, actual_bounds.max),
+        ] {
+            if bound.to_bits() == actual.to_bits() {
+                continue;
+            }
+            // Rust min/max may return either input for equal signed zeros.
+            // Accept only a zero sign present in this field's source values;
+            // all other summary fields and numeric bounds remain exact.
+            assert_eq!(*bound, 0.0);
+            assert_eq!(actual, 0.0);
+            assert!(
+                rows.iter().any(|row| match row.properties.get(name) {
+                    Some(Value::Float(value)) => value.to_bits() == actual.to_bits(),
+                    Some(Value::Int(0)) => actual.to_bits() == 0,
+                    _ => false,
+                }),
+                "numeric zero sign must occur in source field {name}"
+            );
+            *bound = actual;
+        }
+    }
+}
+
 fn scalar_text(value: &ScanScalar) -> String {
     match value {
         ScanScalar::Bool(v) => self::value(&Value::Bool(*v)),

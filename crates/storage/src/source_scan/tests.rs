@@ -214,7 +214,7 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
     let mut projection = build(epoch, label, nodes.iter());
     assert_eq!(projection.graph_epoch, epoch);
     assert_eq!(projection.segments.len(), expected.len().div_ceil(128));
-    let summaries = expected
+    let mut summaries = expected
         .chunks(128)
         .enumerate()
         .map(|(id, rows)| reference::summary(id as u64, rows))
@@ -225,7 +225,11 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
     for (index, segment) in projection.segments.iter_mut().enumerate() {
         let expected_rows = &expected[index * 128..expected.len().min((index + 1) * 128)];
         assert_eq!(segment.rows, expected_rows);
-        assert_eq!(segment.summary, summaries[index], "segment={index}");
+        reference::validate_signed_zero_ties(
+            &mut summaries[index],
+            &segment.summary,
+            expected_rows,
+        );
         let raw = reference::payload(expected_rows);
         let payload = encode_segment_payload(expected_rows).unwrap();
         assert_eq!(unpack(&payload), raw);
@@ -250,6 +254,7 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
     let (file, checksum) = reference::descriptor_file(&body);
     let decoded = decode_descriptor(&file, checksum).unwrap();
     assert_eq!(decoded.graph_epoch, epoch);
+    assert_eq!(encode_descriptor(&decoded).unwrap(), body);
     for (segment, expected) in decoded.segments.iter().zip(&projection.segments) {
         assert_eq!(segment.summary, expected.summary);
         assert_eq!(segment.payload_range, expected.payload_range);
@@ -294,6 +299,109 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
             .path()
             .join("source_scan_segment_payloads.skein.tmp")
             .exists());
+    }
+}
+
+#[test]
+fn signed_zero_bounds_preserve_supported_encodings_and_wire_bits() {
+    let range = SegmentPayloadRange {
+        artifact_id: 1,
+        offset: 0,
+        length: NonZeroU64::new(1).unwrap(),
+        checksum: 0,
+    };
+    for values in [
+        vec![Value::Float(0.0), Value::Float(-0.0)],
+        vec![Value::Float(-0.0), Value::Int(0)],
+        vec![Value::Float(-0.0), Value::Float(0.0), Value::Float(-0.0)],
+        vec![Value::Float(-1.0), Value::Float(0.0), Value::Float(-0.0)],
+        vec![Value::Float(-0.0), Value::Float(0.0), Value::Float(1.0)],
+    ] {
+        let nodes = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| NodeRecord {
+                id: NodeId(index as u64),
+                labels: BTreeSet::from([LabelId(7)]),
+                properties: BTreeMap::from([("id".into(), value.clone())]),
+            })
+            .collect::<Vec<_>>();
+        check_projection(&nodes, Some(LabelId(7)), 42, true);
+        let rows = rows(&nodes, Some(LabelId(7)));
+        for min in [-0.0_f64, 0.0] {
+            for max in [-0.0_f64, 0.0] {
+                let mut expected = reference::summary(0, &rows);
+                let mut actual = expected.clone();
+                let mut bounds = actual.fields["id"].numeric_min_max.unwrap();
+                if bounds.min == 0.0 {
+                    bounds.min = min;
+                }
+                if bounds.max == 0.0 {
+                    bounds.max = max;
+                }
+                actual.fields.get_mut("id").unwrap().numeric_min_max = Some(bounds);
+                reference::validate_signed_zero_ties(&mut expected, &actual, &rows);
+                let body = reference::descriptor(42, &[expected], &[range]);
+                let (file, checksum) = reference::descriptor_file(&body);
+                let decoded = decode_descriptor(&file, checksum).unwrap();
+                assert_eq!(encode_descriptor(&decoded).unwrap(), body);
+                let decoded_bounds = decoded.segments[0].summary.fields["id"]
+                    .numeric_min_max
+                    .unwrap();
+                assert_eq!(decoded_bounds.min.to_bits(), bounds.min.to_bits());
+                assert_eq!(decoded_bounds.max.to_bits(), bounds.max.to_bits());
+            }
+        }
+    }
+}
+
+#[test]
+fn signed_zero_oracle_rejects_unobserved_signs_and_wrong_bounds() {
+    for (values, wrong) in [
+        (vec![Value::Float(0.0)], -0.0),
+        (vec![Value::Int(0)], -0.0),
+        (vec![Value::Float(-0.0)], 0.0),
+        (
+            vec![Value::Float(0.0), Value::Float(-0.0)],
+            f64::from_bits(1),
+        ),
+        (vec![Value::Float(0.0), Value::Float(-0.0)], f64::INFINITY),
+        (vec![Value::Float(0.0), Value::Float(-0.0)], f64::NAN),
+        (vec![Value::Float(-1.0), Value::Float(1.0)], 0.0),
+    ] {
+        let rows = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| SourceScanRow {
+                node_id: index as u64,
+                properties: BTreeMap::from([("id".into(), value)]),
+            })
+            .collect::<Vec<_>>();
+        for change_min in [false, true] {
+            let expected = reference::summary(0, &rows);
+            let mut actual = expected.clone();
+            let bounds = actual
+                .fields
+                .get_mut("id")
+                .unwrap()
+                .numeric_min_max
+                .as_mut()
+                .unwrap();
+            if change_min {
+                bounds.min = wrong;
+            } else {
+                bounds.max = wrong;
+            }
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let mut expected = expected.clone();
+                    reference::validate_signed_zero_ties(&mut expected, &actual, &rows);
+                })
+                .is_err(),
+                "oracle accepted wrong numeric bits {}",
+                wrong.to_bits()
+            );
+        }
     }
 }
 
