@@ -423,6 +423,17 @@ rust_binary(
 
 skein_benchmark_binaries(_SKEIN_DEFAULT_FEATURES)
 
+rust_test(
+    name = "skein_wal_group_commit_recovery_tests",
+    crate_root = "tests/wal_group_commit_recovery.rs",
+    srcs = [
+        "benches/wal_group_commit/recovery.rs",
+        "tests/wal_group_commit_recovery.rs",
+    ],
+    edition = "2024",
+    deps = [":skein"],
+)
+
 # This exploratory benchmark is intentionally separate from the routine Linux
 # smoke list. It creates an out-of-core fixture and must be run explicitly.
 rust_binary(
@@ -548,7 +559,7 @@ test_suite(
 # from the default CI smoke suite.
 test_suite(
     name = "skein_linux_ci_smoke_tests",
-    tests = [
+    tests = [":skein_wal_group_commit_recovery_tests"] + [
         ":skein_linux_ci_%s_smoke_test" % smoke
         for smoke in [
             "optimizer_summary",

@@ -666,6 +666,144 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
 }
 
 #[test]
+fn executor_owned_result_delivery_preserves_read_transaction_boundaries() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_read_result_rows: None,
+        max_read_result_payload_bytes: None,
+        execution_memory: crate::executor::ExecutionMemoryConfig {
+            batch_rows: std::num::NonZeroUsize::new(1).unwrap(),
+            ..crate::executor::ExecutionMemoryConfig::default()
+        },
+        ..DatabaseConfig::default()
+    });
+    for title in ["alpha", "beta", "gamma"] {
+        db.query(&format!("CREATE (:Memory {{title: '{title}'}})"))
+            .unwrap();
+    }
+    const QUERY: &str = "MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC";
+    let parameters = BTreeMap::new();
+    let expected = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|title| BTreeMap::from([("title".to_string(), Value::String(title.to_string()))]))
+        .collect::<Vec<_>>();
+    // Three column names plus their UTF-8 string payloads, independently counted.
+    let total_payload = 3 * "title".len() + "alpha".len() + "beta".len() + "gamma".len();
+
+    let mut tx = db.begin_read_transaction();
+    let retained = tx
+        .query_with_params_bounded_profile(QUERY, &parameters, Some(3))
+        .unwrap();
+    assert_eq!(retained.output.rows, expected);
+    assert!(
+        retained
+            .execution_profile
+            .pipeline_memory_report
+            .query_memory_completion_bytes
+            > 0
+    );
+
+    for options in [
+        QueryStreamOptions {
+            max_rows: None,
+            max_payload_bytes: None,
+        },
+        QueryStreamOptions {
+            max_rows: Some(3),
+            max_payload_bytes: Some(total_payload),
+        },
+    ] {
+        let mut delivered = Vec::new();
+        let report = tx
+            .query_streaming(QUERY, options, |row| {
+                delivered.push(row);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(delivered, expected);
+        assert_eq!(report.output_rows, 3);
+        assert_eq!(report.output_payload_bytes, total_payload);
+        assert_eq!(
+            report
+                .execution_profile
+                .pipeline_memory_report
+                .query_memory_completion_bytes,
+            0
+        );
+        assert!(
+            report
+                .execution_profile
+                .pipeline_memory_report
+                .query_memory_peak_bytes
+                > 0
+        );
+    }
+
+    for (options, error_field) in [
+        (
+            QueryStreamOptions {
+                max_rows: Some(2),
+                max_payload_bytes: Some(total_payload),
+            },
+            "max_read_result_rows 2",
+        ),
+        (
+            QueryStreamOptions {
+                max_rows: Some(3),
+                max_payload_bytes: Some(total_payload - 1),
+            },
+            "max_read_result_payload_bytes",
+        ),
+    ] {
+        let mut delivered = Vec::new();
+        let error = tx
+            .query_streaming(QUERY, options, |row| {
+                delivered.push(row);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(error_field), "{error}");
+        assert!(delivered.is_empty());
+    }
+
+    for cancel in [false, true] {
+        let context = skein_core::RuntimeTaskContext::default();
+        let mut delivered = Vec::new();
+        let error = tx
+            .query_with_params_streaming_context(
+                QUERY,
+                &parameters,
+                QueryStreamOptions {
+                    max_rows: Some(3),
+                    max_payload_bytes: Some(total_payload),
+                },
+                &context,
+                |row| {
+                    delivered.push(row);
+                    if cancel {
+                        context.cancellation().cancel();
+                        Ok(())
+                    } else {
+                        Err(crate::SkeinError::Execution(
+                            "host consumer failed".to_string(),
+                        ))
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(delivered, expected[..1]);
+        assert!(
+            error.to_string().contains(if cancel {
+                "cancelled"
+            } else {
+                "host consumer failed"
+            }),
+            "{error}"
+        );
+        assert_eq!(tx.query(QUERY).unwrap().rows, expected);
+    }
+}
+
+#[test]
 fn read_transaction_exposes_borrowed_rows_to_immediate_consumers() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 7, title: 'borrowed payload'})")

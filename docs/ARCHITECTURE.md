@@ -152,6 +152,18 @@ dual-write execution or bootstrap verification, and cannot authorize activation
 by itself. Owner tests include full-report bit-matrix and mixed-inventory oracles;
 the exhaustive campaign remains explicit local fuzz rather than a CI job.
 
+The existing v1 projected graph artifact text codec belongs to the internal
+`skein-storage::projection::artifact` module, alongside the storage-owned
+artifact data and definition types. It consumes one constructed projection at a
+time, preserves the input order and byte format, and validates both adjacency
+views through the existing storage constructor. Shared string and ID list
+codecs live in `skein-storage::text`. The embedded facade retains graph
+construction, file publication, checksum verification, epoch/reuse admission,
+and recovery fallback: invalid derived artifacts are discarded by writable
+opens and left untouched by read-only opens. Frozen format tests and an
+independent edge-bag differential campaign live with storage; checksum-valid
+structural corruption, reopen, and rebuild tests remain at the facade.
+
 Graph checkpoint/spill text value, property, and hex codecs belong to the
 internal `skein-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
@@ -162,6 +174,17 @@ Pure codec tests and their unchanged differential campaign live with storage.
 The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
 a manual test suite to that campaign, while public database reopen/no-write
 corruption tests stay at the root integration boundary.
+
+The v1 durable manifest codec, artifact-binding validation and atomic manifest
+file replacement belong to `skein-storage::durable_manifest`. Root durable-store
+code retains checkpoint preparation, generation selection, directory ownership,
+publication ordering and recovery orchestration, using a crate-private type
+re-export. Field names/order, optional binding groups, checksum and SHA-256
+parsing, exact generation/epoch checks, reclaim defaults and failure ordering
+remain unchanged. Private encode/decode seams allow frozen-byte fixtures and
+checksum-valid corruption campaigns without per-case filesystem writes. Real
+file publication failures and database checkpoint/reopen rejection are tested
+separately; the full mutation campaign remains explicit local fuzz.
 
 `skein-storage::statistics_refresh` owns the transient statistics record codec,
 bounded run sorting and merge, property exclusion, index sampling, histogram

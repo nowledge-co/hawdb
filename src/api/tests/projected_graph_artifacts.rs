@@ -1,6 +1,164 @@
 use super::*;
 
 #[test]
+fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
+    fn files(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+        fn visit(
+            root: &std::path::Path,
+            path: &std::path::Path,
+            output: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+        ) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, output);
+                } else {
+                    output.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut output = BTreeMap::new();
+        visit(root, root, &mut output);
+        output
+    }
+
+    let path = unique_test_dir("storage_owned_projected_artifact");
+    let baseline_rows;
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 1})-[:LINKS]->(:Entity {id: 2})")
+            .unwrap();
+        db.query("CALL project_graph('G', ['Memory', 'Entity'], ['LINKS'])")
+            .unwrap();
+        db.checkpoint().unwrap();
+        baseline_rows = db
+            .query("CALL page_rank('G') RETURN node, pagerank_score")
+            .unwrap()
+            .rows;
+        assert!(db.projected_graph_statuses()[0].reusable);
+    }
+    let artifact_path = path.join("projected_graphs.skein");
+    let original = std::fs::read(&artifact_path).unwrap();
+    let text = read_test_durable_text(&artifact_path).unwrap();
+    let (body, _) =
+        skein_storage::projection::artifact::split_projected_graph_artifact_checksum(&text)
+            .unwrap();
+    let (_, artifacts) =
+        skein_storage::projection::artifact::decode_projected_graph_artifacts(body).unwrap();
+    assert_eq!(artifacts["G"].data.nodes, vec![NodeId(0), NodeId(1)]);
+    assert_eq!(artifacts["G"].data.csr_targets, vec![1]);
+
+    // Repair the inner checksum and the compressed envelope so every mutation
+    // reaches the storage-owned structural decoder rather than an outer gate.
+    for (from, to) in [
+        ("SKEIN_PROJECTED_GRAPHS_V1", "SKEIN_PROJECTED_GRAPHS_V0"),
+        ("artifact_version\t1", "artifact_version\t2"),
+        ("\t2\t1\n", "\t3\t1\n"),
+        ("csr_offsets\t0,1,1", "csr_offsets\t1,1,1"),
+        ("csc_sources\t0\n", "csc_sources\t2\n"),
+        ("graph\t47\t", "graph\t0g\t"),
+    ] {
+        assert!(body.contains(from), "missing mutation {from}");
+        let damaged_body = body.replacen(from, to, 1);
+        let checksum = skein_integrity::checksum_u64(damaged_body.as_bytes());
+        let damaged_text = format!("{damaged_body}checksum\t{checksum}\n");
+        let encoded = crate::store::encode_durable_text(
+            &damaged_text,
+            skein_storage::DurableCompression::default(),
+        )
+        .unwrap();
+        std::fs::write(&artifact_path, &encoded).unwrap();
+        assert_eq!(
+            read_test_durable_text(&artifact_path).unwrap(),
+            damaged_text
+        );
+        assert!(
+            skein_storage::projection::artifact::decode_projected_graph_artifacts(&damaged_body)
+                .is_err()
+        );
+
+        let before = files(&path);
+        {
+            let mut db = Database::open_with_config(
+                &path,
+                DatabaseConfig {
+                    read_only: true,
+                    ..DatabaseConfig::default()
+                },
+            )
+            .unwrap();
+            assert!(!db.projected_graph_statuses()[0].reusable);
+            assert_eq!(
+                db.query("CALL page_rank('G') RETURN node, pagerank_score")
+                    .unwrap()
+                    .rows,
+                baseline_rows
+            );
+        }
+        assert_eq!(
+            files(&path),
+            before,
+            "read-only open wrote files for {from}"
+        );
+
+        {
+            let mut db = Database::open(&path).unwrap();
+            assert!(!db.projected_graph_statuses()[0].reusable);
+            assert_eq!(
+                db.query("CALL page_rank('G') RETURN node, pagerank_score")
+                    .unwrap()
+                    .rows,
+                baseline_rows
+            );
+            assert!(
+                !artifact_path.exists(),
+                "writable open retained invalid artifact for {from}"
+            );
+        }
+        let mut expected = before;
+        expected.remove(std::path::Path::new("projected_graphs.skein"));
+        assert_eq!(
+            files(&path),
+            expected,
+            "fallback changed canonical files for {from}"
+        );
+        std::fs::write(&artifact_path, &original).unwrap();
+        {
+            let db = Database::open(&path).unwrap();
+            assert!(db.projected_graph_statuses()[0].reusable);
+        }
+    }
+
+    std::fs::write(&artifact_path, b"invalid derived artifact").unwrap();
+    {
+        let mut db = Database::open(&path).unwrap();
+        assert!(!db.projected_graph_statuses()[0].reusable);
+        db.rebuild_projected_graph_artifacts().unwrap();
+        assert!(db.projected_graph_statuses()[0].reusable);
+        assert_eq!(
+            db.query("CALL page_rank('G') RETURN node, pagerank_score")
+                .unwrap()
+                .rows,
+            baseline_rows
+        );
+    }
+    {
+        let mut db = Database::open(&path).unwrap();
+        assert!(db.projected_graph_statuses()[0].reusable);
+        assert_eq!(
+            db.query("CALL page_rank('G') RETURN node, pagerank_score")
+                .unwrap()
+                .rows,
+            baseline_rows
+        );
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn projects_graph_for_page_rank() {
     let mut db = Database::new();
     db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
