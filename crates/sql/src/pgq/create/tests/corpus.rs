@@ -141,6 +141,9 @@ fn check_fixture(fixture: &Value) -> std::result::Result<(), String> {
     let extra = fixture["additional_cases"]
         .as_array()
         .ok_or("missing additional binding cases")?;
+    if extra.len() != 20 {
+        return Err("missing or unreviewed additional binding case".into());
+    }
     let mut families = BTreeSet::new();
     for case in extra {
         let id = case["id"].as_str().ok_or("missing additional id")?;
@@ -190,7 +193,7 @@ fn all_existing_creation_corpus_cases_have_bound_outcomes() {
 #[test]
 fn creation_corpus_rejects_coverage_provenance_profile_and_schema_drift() {
     let original: Value = serde_json::from_str(BINDINGS).unwrap();
-    for mutation in 0..7 {
+    for mutation in 0..8 {
         let mut fixture = original.clone();
         match mutation {
             0 => {
@@ -211,8 +214,11 @@ fn creation_corpus_rejects_coverage_provenance_profile_and_schema_drift() {
             5 => {
                 fixture["bindings"][1] = fixture["bindings"][0].clone();
             }
-            _ => {
+            6 => {
                 fixture["additional_cases"] = json!([]);
+            }
+            _ => {
+                fixture["additional_cases"].as_array_mut().unwrap().pop();
             }
         }
         assert!(check_fixture(&fixture).is_err(), "mutation {mutation}");
