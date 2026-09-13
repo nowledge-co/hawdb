@@ -7,6 +7,8 @@ pub mod inventory;
 mod production;
 #[doc(hidden)]
 pub mod query_inventory;
+#[doc(hidden)]
+pub mod replacement_contract;
 
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
