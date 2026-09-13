@@ -1,0 +1,242 @@
+{
+  "blocker_codes": [],
+  "covered_route_count": 26,
+  "covered_routes": [
+    "/communities",
+    "/communities/{community_id}",
+    "/graph/overview",
+    "/graph/sample",
+    "/graph/search",
+    "/graph/explore",
+    "/graph/expand/{node_id}",
+    "/graph/live-preview",
+    "/graph/live-preview/{node_id}",
+    "/graph/community-members/{community_id}",
+    "/library/community/{community_id}/subgraph",
+    "/library/community/{community_id}/recent-memories",
+    "/library/community/{community_id}/related",
+    "/graph/analysis",
+    "/graph/augmentation/state",
+    "/graph/augmentation/pagerank/plan",
+    "/graph/node-details/{node_id}",
+    "/graph/orphans",
+    "/graph/shortest-path",
+    "/sources/{source_id}",
+    "/stats/entity-relations",
+    "/stats/sources",
+    "/stats/top-communities",
+    "/entities",
+    "/entities/{entity_id}/relationships",
+    "/agent/evolves"
+  ],
+  "duplicate_routes": [],
+  "evidence_protocol": "nmem-graph-route-evidence-v1",
+  "evidence_ready": true,
+  "evidence_route_coverage_matches": true,
+  "evidence_route_coverage_present": true,
+  "missing_required_routes": [],
+  "missing_route_catalog_metadata_routes": [],
+  "present": true,
+  "primary_ready_route_count": 26,
+  "protocol": "nmem-graph-route-readiness-v1",
+  "ready": true,
+  "relationship_property_pruning_report_count": 0,
+  "relationship_property_pruning_required_count": 0,
+  "required_covered_routes": [
+    "/communities",
+    "/communities/{community_id}",
+    "/graph/overview",
+    "/graph/sample",
+    "/graph/search",
+    "/graph/explore",
+    "/graph/expand/{node_id}",
+    "/graph/live-preview",
+    "/graph/live-preview/{node_id}",
+    "/graph/community-members/{community_id}",
+    "/library/community/{community_id}/subgraph",
+    "/library/community/{community_id}/recent-memories",
+    "/library/community/{community_id}/related",
+    "/graph/analysis",
+    "/graph/augmentation/state",
+    "/graph/augmentation/pagerank/plan",
+    "/graph/node-details/{node_id}",
+    "/graph/orphans",
+    "/graph/shortest-path",
+    "/sources/{source_id}",
+    "/stats/entity-relations",
+    "/stats/sources",
+    "/stats/top-communities",
+    "/entities",
+    "/entities/{entity_id}/relationships",
+    "/agent/evolves"
+  ],
+  "required_route_count": 26,
+  "route_catalog": [
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/communities",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/communities/{community_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/overview",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/sample",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "search_runtime",
+      "required_evidence_kind": "search_candidate_shadow",
+      "route": "/graph/search",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/explore",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/expand/{node_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/live-preview",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/live-preview/{node_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/community-members/{community_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/library/community/{community_id}/subgraph",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/library/community/{community_id}/recent-memories",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/library/community/{community_id}/related",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/analysis",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/augmentation/state",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/augmentation/pagerank/plan",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/node-details/{node_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/orphans",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "graph_runtime",
+      "required_evidence_kind": "graph_route_execution",
+      "route": "/graph/shortest-path",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/sources/{source_id}",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/stats/entity-relations",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/stats/sources",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/stats/top-communities",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/entities",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/entities/{entity_id}/relationships",
+      "stale_on_catalog_change": true
+    },
+    {
+      "owner": "read_batch_runtime",
+      "required_evidence_kind": "read_batch_runtime",
+      "route": "/agent/evolves",
+      "stale_on_catalog_change": true
+    }
+  ],
+  "route_catalog_metadata_mismatch_routes": [],
+  "route_catalog_metadata_ready": true,
+  "route_coverage_ready": true,
+  "route_primary_ready": true,
+  "route_query_api_behavior_evidence_ready": true,
+  "route_query_plan_evidence_ready": true,
+  "route_query_profile_evidence_ready": true,
+  "route_query_runtime_ready": true,
+  "route_relationship_property_pruning_evidence_ready": true,
+  "unknown_routes": []
+}

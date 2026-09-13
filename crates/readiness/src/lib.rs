@@ -1,4 +1,13 @@
 #[doc(hidden)]
+pub mod evidence_json;
+
+#[doc(hidden)]
+pub mod graph_summary;
+
+#[doc(hidden)]
+pub mod integration_bundle;
+
+#[doc(hidden)]
 pub mod graph_route;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

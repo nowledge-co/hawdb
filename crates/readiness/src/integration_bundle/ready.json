@@ -1,0 +1,2536 @@
+{
+  "active_search_route_ownership": {
+    "blocker_codes": [],
+    "duplicate_routes": [],
+    "explicit_route_count": 8,
+    "invalid_projection_routes": [],
+    "lancedb_route_count": 0,
+    "lancedb_routes": [],
+    "missing_required_routes": [],
+    "production_cutover_ready": true,
+    "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+    "ready": true,
+    "require_all_skein": true,
+    "required_route_count": 8,
+    "skein_route_count": 8,
+    "skein_routes": [
+      "community_discovery",
+      "deep_search_graph_expansion",
+      "entity_discovery",
+      "fs_recall",
+      "mcp_search",
+      "source_chunk_recall",
+      "source_recall",
+      "thread_message_fts"
+    ],
+    "unknown_routes": []
+  },
+  "active_search_route_readiness": {
+    "blocker_codes": [],
+    "candidate_identity_not_ready_routes": [],
+    "candidate_not_ready_routes": [],
+    "cjk_tokenization_not_ready_routes": [],
+    "duplicate_routes": [],
+    "embedding_identity_not_ready_routes": [],
+    "evidence_route_count": 8,
+    "fail_soft_not_ready_routes": [],
+    "fail_soft_reason_codes_not_ready_routes": [],
+    "invalid_projection_routes": [],
+    "lancedb_handle_required_route_count": 0,
+    "lancedb_handle_required_routes": [],
+    "metadata_pushdown_not_ready_routes": [],
+    "missing_required_routes": [],
+    "non_skein_routes": [],
+    "production_cutover_ready": true,
+    "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+    "ranking_not_ready_routes": [],
+    "ranking_window_not_ready_routes": [],
+    "ready": true,
+    "ready_route_count": 8,
+    "ready_routes": [
+      "community_discovery",
+      "deep_search_graph_expansion",
+      "entity_discovery",
+      "fs_recall",
+      "mcp_search",
+      "source_chunk_recall",
+      "source_recall",
+      "thread_message_fts"
+    ],
+    "repair_rebuild_markers_not_ready_routes": [],
+    "require_all_skein": true,
+    "required_route_count": 8,
+    "requirements": [
+      {
+        "projection_route": "message",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": true,
+        "requires_embedding_identity": false,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": false,
+        "requires_zero_vector_semantics": false,
+        "route": "thread_message_fts"
+      },
+      {
+        "projection_route": "entity",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": false,
+        "requires_embedding_identity": false,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": false,
+        "requires_zero_vector_semantics": false,
+        "route": "entity_discovery"
+      },
+      {
+        "projection_route": "community",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": false,
+        "requires_embedding_identity": false,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": false,
+        "requires_zero_vector_semantics": false,
+        "route": "community_discovery"
+      },
+      {
+        "projection_route": "source",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": true,
+        "requires_embedding_identity": true,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": true,
+        "requires_zero_vector_semantics": true,
+        "route": "source_recall"
+      },
+      {
+        "projection_route": "source_chunk",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": true,
+        "requires_embedding_identity": true,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": true,
+        "requires_zero_vector_semantics": true,
+        "route": "source_chunk_recall"
+      },
+      {
+        "projection_route": "source_chunk",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": true,
+        "requires_embedding_identity": true,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": true,
+        "requires_zero_vector_semantics": true,
+        "route": "fs_recall"
+      },
+      {
+        "projection_route": "memory",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": true,
+        "requires_embedding_identity": true,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": true,
+        "requires_zero_vector_semantics": true,
+        "route": "mcp_search"
+      },
+      {
+        "projection_route": "memory",
+        "requires_candidate_identity": true,
+        "requires_cjk_tokenization": false,
+        "requires_embedding_identity": true,
+        "requires_fail_soft_reason_codes": true,
+        "requires_metadata_pushdown": true,
+        "requires_ranking_window": true,
+        "requires_repair_rebuild_markers": true,
+        "requires_text_candidates": true,
+        "requires_vector_candidates": true,
+        "requires_zero_vector_semantics": true,
+        "route": "deep_search_graph_expansion"
+      }
+    ],
+    "skein_route_count": 8,
+    "unknown_routes": [],
+    "zero_vector_semantics_not_ready_routes": []
+  },
+  "blackbox_manifest": {
+    "fixture": "blackbox_manifest",
+    "ready": true
+  },
+  "bounded_read_evidence": {
+    "blocker_codes": [],
+    "blocking_operator_count": 0,
+    "blocking_operator_memory_reports_complete": true,
+    "blocking_operator_memory_within_budget": true,
+    "covered_routes": [
+      "/communities",
+      "/communities/{community_id}",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/explore",
+      "/graph/expand/{node_id}",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/community-members/{community_id}",
+      "/library/community/{community_id}/subgraph",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/graph/analysis",
+      "/graph/augmentation/state",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/shortest-path",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/agent/evolves"
+    ],
+    "estimated_payload_bytes": 128,
+    "execution_row_cap": 513,
+    "max_estimated_payload_bytes": 4194304,
+    "max_rows": 512,
+    "missing_covered_routes": [],
+    "mode": "shadow_read_only",
+    "operator_row_cap_enabled": true,
+    "payload_budget_exceeded": false,
+    "present": true,
+    "primary_ready_routes": [
+      "/communities",
+      "/communities/{community_id}",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/explore",
+      "/graph/expand/{node_id}",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/community-members/{community_id}",
+      "/library/community/{community_id}/subgraph",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/graph/analysis",
+      "/graph/augmentation/state",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/shortest-path",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/agent/evolves"
+    ],
+    "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+    "ready": true,
+    "relationship_property_pruning_report_count": 0,
+    "relationship_property_pruning_required_count": 0,
+    "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+    "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+    "route_primary_ready": true,
+    "route_query_plan_evidence_ready": true,
+    "route_query_profile_evidence_ready": true,
+    "route_relationship_property_pruning_evidence_ready": true,
+    "row_limit_enforced_before_output": true,
+    "spill_within_budget": true,
+    "streaming": false
+  },
+  "coexistence": {
+    "blocker_codes": [],
+    "mode": "shadow",
+    "old_database_deleted": false,
+    "old_database_retained": true
+  },
+  "content_store": {
+    "blocker_codes": [],
+    "engine": "sqlite",
+    "messages_available": true,
+    "present": true,
+    "source_chunks_available": true
+  },
+  "cutover_controls": {
+    "fixture": "cutover_controls",
+    "ready": true
+  },
+  "graph_route_parity_alignment": {
+    "blocker_codes": [],
+    "blocker_routes": [],
+    "missing_routes": [],
+    "not_ready_routes": [],
+    "observed_blocker_codes": [],
+    "protocol_mismatch_routes": [],
+    "ready": true,
+    "ready_route_count": 26,
+    "ready_routes": [
+      "/agent/evolves",
+      "/communities",
+      "/communities/{community_id}",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/graph/analysis",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/augmentation/state",
+      "/graph/community-members/{community_id}",
+      "/graph/expand/{node_id}",
+      "/graph/explore",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/shortest-path",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/library/community/{community_id}/subgraph",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities"
+    ],
+    "required_route_count": 26,
+    "route_mismatch_routes": []
+  },
+  "graph_route_readiness": {
+    "covered_route_count": 26,
+    "covered_routes": [
+      "/communities",
+      "/communities/{community_id}",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/explore",
+      "/graph/expand/{node_id}",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/community-members/{community_id}",
+      "/library/community/{community_id}/subgraph",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/graph/analysis",
+      "/graph/augmentation/state",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/shortest-path",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/agent/evolves"
+    ],
+    "duplicate_routes": [],
+    "evidence_protocol": "nmem-graph-route-evidence-v1",
+    "evidence_ready": true,
+    "evidence_route_coverage_blocker_codes": [],
+    "evidence_route_coverage_matches": true,
+    "evidence_route_coverage_present": true,
+    "missing_query_runtime_routes": [],
+    "missing_required_routes": [],
+    "primary_ready_route_count": 26,
+    "protocol": "nmem-graph-route-readiness-v1",
+    "query_runtime_api_behavior_report_count": 26,
+    "query_runtime_failed_query_count": 0,
+    "query_runtime_missing_plan_evidence_count": 0,
+    "query_runtime_missing_profile_evidence_count": 0,
+    "query_runtime_plan_report_count": 26,
+    "query_runtime_profile_report_count": 26,
+    "query_runtime_report_count": 26,
+    "query_runtime_route_count": 26,
+    "relationship_property_pruning_report_count": 0,
+    "relationship_property_pruning_required_count": 0,
+    "required_route_count": 26,
+    "required_routes_covered": true,
+    "route_catalog": [
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/communities",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/communities/{community_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/overview",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/sample",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "search_runtime",
+        "required_evidence_kind": "search_candidate_shadow",
+        "route": "/graph/search",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/explore",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/expand/{node_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/live-preview",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/live-preview/{node_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/community-members/{community_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/subgraph",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/recent-memories",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/related",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/analysis",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/augmentation/state",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/augmentation/pagerank/plan",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/node-details/{node_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/orphans",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/shortest-path",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/sources/{source_id}",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/entity-relations",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/sources",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/top-communities",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/entities",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/entities/{entity_id}/relationships",
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/agent/evolves",
+        "stale_on_catalog_change": true
+      }
+    ],
+    "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+    "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+    "route_count": 26,
+    "route_coverage_blocker_codes": [],
+    "route_coverage_ready": true,
+    "route_primary_blocker_codes": [],
+    "route_primary_ready": true,
+    "route_query_api_behavior_evidence_ready": true,
+    "route_query_plan_evidence_ready": true,
+    "route_query_profile_evidence_ready": true,
+    "route_query_runtime_ready": true,
+    "route_relationship_property_pruning_evidence_ready": true,
+    "routes": [
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/communities",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/communities/{community_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/overview",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/sample",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "search_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "search_candidate_shadow",
+        "route": "/graph/search",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/explore",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/expand/{node_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/live-preview",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/live-preview/{node_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/community-members/{community_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/subgraph",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/recent-memories",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/library/community/{community_id}/related",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/analysis",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/augmentation/state",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/augmentation/pagerank/plan",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/node-details/{node_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/orphans",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "graph_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "graph_route_execution",
+        "route": "/graph/shortest-path",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/sources/{source_id}",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/entity-relations",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/sources",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/stats/top-communities",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/entities",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/entities/{entity_id}/relationships",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      },
+      {
+        "owner": "read_batch_runtime",
+        "primary_ready": true,
+        "required_evidence_kind": "read_batch_runtime",
+        "route": "/agent/evolves",
+        "shadow_compare": {
+          "blocker_codes": [],
+          "computed_blocker_codes": [],
+          "matched_per_million": 1000000,
+          "primary_engine": "kuzu",
+          "ready": true,
+          "shadow_engine": "skein",
+          "source": "route_parity_evidence"
+        },
+        "shadow_compare_evidence_source": "route_parity_evidence",
+        "shadow_compare_ready": true,
+        "stale_on_catalog_change": true
+      }
+    ],
+    "unknown_routes": []
+  },
+  "library_readiness": {
+    "fixture": "library_readiness",
+    "ready": true
+  },
+  "operations_readiness": {
+    "fixture": "operations_readiness",
+    "ready": true
+  },
+  "previous_wrapper_preflight": {
+    "fixture": "previous_wrapper_preflight",
+    "ready": true
+  },
+  "protocol": "nowledge-mem-skein-integration-bundle",
+  "query_runtime_preflight": {
+    "blocker_codes": [],
+    "covered_route_count": 26,
+    "covered_routes": [
+      "/communities",
+      "/communities/{community_id}",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/explore",
+      "/graph/expand/{node_id}",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/community-members/{community_id}",
+      "/library/community/{community_id}/subgraph",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/graph/analysis",
+      "/graph/augmentation/state",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/shortest-path",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/agent/evolves"
+    ],
+    "database_opened": true,
+    "duplicate_routes": [],
+    "failed_probe_count": 0,
+    "missing_required_routes": [],
+    "passed_probe_count": 26,
+    "probe_count": 26,
+    "probes": [
+      {
+        "route": "/communities"
+      },
+      {
+        "route": "/communities/{community_id}"
+      },
+      {
+        "route": "/graph/overview"
+      },
+      {
+        "route": "/graph/sample"
+      },
+      {
+        "route": "/graph/search"
+      },
+      {
+        "route": "/graph/explore"
+      },
+      {
+        "route": "/graph/expand/{node_id}"
+      },
+      {
+        "route": "/graph/live-preview"
+      },
+      {
+        "route": "/graph/live-preview/{node_id}"
+      },
+      {
+        "route": "/graph/community-members/{community_id}"
+      },
+      {
+        "route": "/library/community/{community_id}/subgraph"
+      },
+      {
+        "route": "/library/community/{community_id}/recent-memories"
+      },
+      {
+        "route": "/library/community/{community_id}/related"
+      },
+      {
+        "route": "/graph/analysis"
+      },
+      {
+        "route": "/graph/augmentation/state"
+      },
+      {
+        "route": "/graph/augmentation/pagerank/plan"
+      },
+      {
+        "route": "/graph/node-details/{node_id}"
+      },
+      {
+        "route": "/graph/orphans"
+      },
+      {
+        "route": "/graph/shortest-path"
+      },
+      {
+        "route": "/sources/{source_id}"
+      },
+      {
+        "route": "/stats/entity-relations"
+      },
+      {
+        "route": "/stats/sources"
+      },
+      {
+        "route": "/stats/top-communities"
+      },
+      {
+        "route": "/entities"
+      },
+      {
+        "route": "/entities/{entity_id}/relationships"
+      },
+      {
+        "route": "/agent/evolves"
+      }
+    ],
+    "protocol": "skein-nowledge-query-runtime-preflight-v1",
+    "ready": true,
+    "redaction": {
+      "local_paths_copied": false,
+      "parameters_copied": false,
+      "raw_errors_copied": false,
+      "ready": true,
+      "rows_copied": false
+    },
+    "required_route_count": 26,
+    "required_routes_covered": true,
+    "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+    "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+    "route_coverage_blocker_codes": [],
+    "route_coverage_ready": true,
+    "unknown_routes": []
+  },
+  "replacement_summary": {
+    "active_search_route_ownership": {
+      "blocker_codes": [],
+      "duplicate_routes": [],
+      "explicit_route_count": 8,
+      "invalid_projection_routes": [],
+      "lancedb_route_count": 0,
+      "lancedb_routes": [],
+      "missing_required_routes": [],
+      "production_cutover_ready": true,
+      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "ready": true,
+      "require_all_skein": true,
+      "required_route_count": 8,
+      "skein_route_count": 8,
+      "skein_routes": [
+        "community_discovery",
+        "deep_search_graph_expansion",
+        "entity_discovery",
+        "fs_recall",
+        "mcp_search",
+        "source_chunk_recall",
+        "source_recall",
+        "thread_message_fts"
+      ],
+      "unknown_routes": []
+    },
+    "active_search_route_readiness": {
+      "blocker_codes": [],
+      "candidate_identity_not_ready_routes": [],
+      "candidate_not_ready_routes": [],
+      "cjk_tokenization_not_ready_routes": [],
+      "duplicate_routes": [],
+      "embedding_identity_not_ready_routes": [],
+      "evidence_route_count": 8,
+      "fail_soft_not_ready_routes": [],
+      "fail_soft_reason_codes_not_ready_routes": [],
+      "invalid_projection_routes": [],
+      "lancedb_handle_required_route_count": 0,
+      "lancedb_handle_required_routes": [],
+      "metadata_pushdown_not_ready_routes": [],
+      "missing_required_routes": [],
+      "non_skein_routes": [],
+      "production_cutover_ready": true,
+      "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+      "ranking_not_ready_routes": [],
+      "ranking_window_not_ready_routes": [],
+      "ready": true,
+      "ready_route_count": 8,
+      "ready_routes": [
+        "community_discovery",
+        "deep_search_graph_expansion",
+        "entity_discovery",
+        "fs_recall",
+        "mcp_search",
+        "source_chunk_recall",
+        "source_recall",
+        "thread_message_fts"
+      ],
+      "repair_rebuild_markers_not_ready_routes": [],
+      "require_all_skein": true,
+      "required_route_count": 8,
+      "requirements": [
+        {
+          "projection_route": "message",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": true,
+          "requires_embedding_identity": false,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": false,
+          "requires_zero_vector_semantics": false,
+          "route": "thread_message_fts"
+        },
+        {
+          "projection_route": "entity",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": false,
+          "requires_embedding_identity": false,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": false,
+          "requires_zero_vector_semantics": false,
+          "route": "entity_discovery"
+        },
+        {
+          "projection_route": "community",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": false,
+          "requires_embedding_identity": false,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": false,
+          "requires_zero_vector_semantics": false,
+          "route": "community_discovery"
+        },
+        {
+          "projection_route": "source",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": true,
+          "requires_embedding_identity": true,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": true,
+          "requires_zero_vector_semantics": true,
+          "route": "source_recall"
+        },
+        {
+          "projection_route": "source_chunk",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": true,
+          "requires_embedding_identity": true,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": true,
+          "requires_zero_vector_semantics": true,
+          "route": "source_chunk_recall"
+        },
+        {
+          "projection_route": "source_chunk",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": true,
+          "requires_embedding_identity": true,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": true,
+          "requires_zero_vector_semantics": true,
+          "route": "fs_recall"
+        },
+        {
+          "projection_route": "memory",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": true,
+          "requires_embedding_identity": true,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": true,
+          "requires_zero_vector_semantics": true,
+          "route": "mcp_search"
+        },
+        {
+          "projection_route": "memory",
+          "requires_candidate_identity": true,
+          "requires_cjk_tokenization": false,
+          "requires_embedding_identity": true,
+          "requires_fail_soft_reason_codes": true,
+          "requires_metadata_pushdown": true,
+          "requires_ranking_window": true,
+          "requires_repair_rebuild_markers": true,
+          "requires_text_candidates": true,
+          "requires_vector_candidates": true,
+          "requires_zero_vector_semantics": true,
+          "route": "deep_search_graph_expansion"
+        }
+      ],
+      "skein_route_count": 8,
+      "unknown_routes": [],
+      "zero_vector_semantics_not_ready_routes": []
+    },
+    "bounded_read_evidence": {
+      "blocker_codes": [],
+      "blocking_operator_count": 0,
+      "blocking_operator_memory_reports_complete": true,
+      "blocking_operator_memory_within_budget": true,
+      "covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "estimated_payload_bytes": 128,
+      "execution_row_cap": 513,
+      "max_estimated_payload_bytes": 4194304,
+      "max_rows": 512,
+      "missing_covered_routes": [],
+      "mode": "shadow_read_only",
+      "operator_row_cap_enabled": true,
+      "payload_budget_exceeded": false,
+      "present": true,
+      "primary_ready_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+      "ready": true,
+      "relationship_property_pruning_report_count": 0,
+      "relationship_property_pruning_required_count": 0,
+      "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+      "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+      "route_primary_ready": true,
+      "route_query_plan_evidence_ready": true,
+      "route_query_profile_evidence_ready": true,
+      "route_relationship_property_pruning_evidence_ready": true,
+      "row_limit_enforced_before_output": true,
+      "spill_within_budget": true,
+      "streaming": false
+    },
+    "graph_route_readiness": {
+      "covered_route_count": 26,
+      "covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "duplicate_routes": [],
+      "evidence_protocol": "nmem-graph-route-evidence-v1",
+      "evidence_ready": true,
+      "evidence_route_coverage_blocker_codes": [],
+      "evidence_route_coverage_matches": true,
+      "evidence_route_coverage_present": true,
+      "missing_query_runtime_routes": [],
+      "missing_required_routes": [],
+      "primary_ready_route_count": 26,
+      "protocol": "nmem-graph-route-readiness-v1",
+      "query_runtime_api_behavior_report_count": 26,
+      "query_runtime_failed_query_count": 0,
+      "query_runtime_missing_plan_evidence_count": 0,
+      "query_runtime_missing_profile_evidence_count": 0,
+      "query_runtime_plan_report_count": 26,
+      "query_runtime_profile_report_count": 26,
+      "query_runtime_report_count": 26,
+      "query_runtime_route_count": 26,
+      "relationship_property_pruning_report_count": 0,
+      "relationship_property_pruning_required_count": 0,
+      "required_route_count": 26,
+      "required_routes_covered": true,
+      "route_catalog": [
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities/{community_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/overview",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/sample",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "search_runtime",
+          "required_evidence_kind": "search_candidate_shadow",
+          "route": "/graph/search",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/explore",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/expand/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/community-members/{community_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/subgraph",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/recent-memories",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/related",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/analysis",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/state",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/pagerank/plan",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/node-details/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/orphans",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/shortest-path",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/sources/{source_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/entity-relations",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/sources",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/top-communities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities/{entity_id}/relationships",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/agent/evolves",
+          "stale_on_catalog_change": true
+        }
+      ],
+      "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+      "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+      "route_count": 26,
+      "route_coverage_blocker_codes": [],
+      "route_coverage_ready": true,
+      "route_primary_blocker_codes": [],
+      "route_primary_ready": true,
+      "route_query_api_behavior_evidence_ready": true,
+      "route_query_plan_evidence_ready": true,
+      "route_query_profile_evidence_ready": true,
+      "route_query_runtime_ready": true,
+      "route_relationship_property_pruning_evidence_ready": true,
+      "routes": [
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities/{community_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/overview",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/sample",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "search_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "search_candidate_shadow",
+          "route": "/graph/search",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/explore",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/expand/{node_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview/{node_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/community-members/{community_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/subgraph",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/recent-memories",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/related",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/analysis",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/state",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/pagerank/plan",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/node-details/{node_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/orphans",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/shortest-path",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/sources/{source_id}",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/entity-relations",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/sources",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/top-communities",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities/{entity_id}/relationships",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "primary_ready": true,
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/agent/evolves",
+          "shadow_compare": {
+            "blocker_codes": [],
+            "computed_blocker_codes": [],
+            "matched_per_million": 1000000,
+            "primary_engine": "kuzu",
+            "ready": true,
+            "shadow_engine": "skein",
+            "source": "route_parity_evidence"
+          },
+          "shadow_compare_evidence_source": "route_parity_evidence",
+          "shadow_compare_ready": true,
+          "stale_on_catalog_change": true
+        }
+      ],
+      "unknown_routes": []
+    },
+    "query_runtime_preflight": {
+      "blocker_codes": [],
+      "covered_route_count": 26,
+      "covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "database_opened": true,
+      "duplicate_routes": [],
+      "failed_probe_count": 0,
+      "missing_required_routes": [],
+      "passed_probe_count": 26,
+      "present": true,
+      "probe_count": 26,
+      "probe_details_ready": true,
+      "protocol": "skein-nowledge-query-runtime-preflight-v1",
+      "ready": true,
+      "required_covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "required_route_count": 26,
+      "required_routes_covered": true,
+      "route_catalog_digest": "fnv1a64:80816a4f519d9693",
+      "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
+      "route_coverage_blocker_codes": [],
+      "route_coverage_ready": true,
+      "unknown_routes": []
+    },
+    "search_route_ownership": {
+      "blocker_codes": [],
+      "conflicting_routes": [],
+      "duplicate_routes": [],
+      "explicit_route_count": 6,
+      "lancedb_route_count": 0,
+      "lancedb_routes": [],
+      "missing_required_routes": [],
+      "production_cutover_ready": true,
+      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "ready": true,
+      "require_all_skein": true,
+      "required_route_count": 6,
+      "skein_route_count": 6,
+      "skein_routes": [
+        "community",
+        "entity",
+        "memory",
+        "message",
+        "source",
+        "source_chunk"
+      ],
+      "unknown_routes": []
+    }
+  },
+  "replacement_summary_active_search_route_ownership_alignment": {
+    "blocker_codes": [],
+    "blocker_codes_match": true,
+    "evidence_lancedb_routes": [],
+    "evidence_present": true,
+    "explicit_route_count_matches": true,
+    "lancedb_route_count_matches": true,
+    "lancedb_routes_matches": true,
+    "missing_required_routes_matches": true,
+    "production_cutover_ready_matches": true,
+    "protocol_matches": true,
+    "ready": true,
+    "ready_matches": true,
+    "require_all_skein_matches": true,
+    "required_route_count_matches": true,
+    "skein_route_count_matches": true,
+    "summary_lancedb_routes": [],
+    "summary_present": true
+  },
+  "replacement_summary_active_search_route_readiness_alignment": {
+    "blocker_codes": [],
+    "blocker_codes_match": true,
+    "candidate_identity_not_ready_routes_matches": true,
+    "candidate_not_ready_routes_matches": true,
+    "cjk_tokenization_not_ready_routes_matches": true,
+    "embedding_identity_not_ready_routes_matches": true,
+    "evidence_lancedb_handle_required_routes": [],
+    "evidence_present": true,
+    "evidence_route_count_matches": true,
+    "fail_soft_not_ready_routes_matches": true,
+    "fail_soft_reason_codes_not_ready_routes_matches": true,
+    "lancedb_handle_count_matches": true,
+    "lancedb_handle_routes_matches": true,
+    "metadata_pushdown_not_ready_routes_matches": true,
+    "missing_required_routes_matches": true,
+    "non_skein_routes_matches": true,
+    "production_cutover_ready_matches": true,
+    "protocol_matches": true,
+    "ranking_not_ready_routes_matches": true,
+    "ranking_window_not_ready_routes_matches": true,
+    "ready": true,
+    "ready_matches": true,
+    "ready_route_count_matches": true,
+    "repair_rebuild_markers_not_ready_routes_matches": true,
+    "require_all_skein_matches": true,
+    "required_route_count_matches": true,
+    "skein_route_count_matches": true,
+    "summary_lancedb_handle_required_routes": [],
+    "summary_present": true,
+    "zero_vector_semantics_not_ready_routes_matches": true
+  },
+  "replacement_summary_bounded_read_alignment": {
+    "blocker_codes": [],
+    "covered_routes_matches": true,
+    "estimated_payload_bytes_matches": true,
+    "evidence_present": true,
+    "evidence_ready": true,
+    "evidence_route_catalog_digest_ready": true,
+    "evidence_route_catalog_version_ready": true,
+    "max_estimated_payload_bytes_matches": true,
+    "max_rows_matches": true,
+    "mode_matches": true,
+    "payload_budget_exceeded_matches": true,
+    "protocol_matches": true,
+    "readiness_matches": true,
+    "ready": true,
+    "route_catalog_digest_matches": true,
+    "route_catalog_version_matches": true,
+    "streaming_matches": true,
+    "summary_present": true,
+    "summary_ready": true,
+    "summary_route_catalog_digest_ready": true,
+    "summary_route_catalog_version_ready": true
+  },
+  "replacement_summary_graph_route_alignment": {
+    "blocker_codes": [],
+    "evidence_present": true,
+    "evidence_primary_ready_routes": [
+      "/agent/evolves",
+      "/communities",
+      "/communities/{community_id}",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/graph/analysis",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/augmentation/state",
+      "/graph/community-members/{community_id}",
+      "/graph/expand/{node_id}",
+      "/graph/explore",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/shortest-path",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/library/community/{community_id}/subgraph",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities"
+    ],
+    "evidence_protocol_matches": true,
+    "evidence_ready": true,
+    "evidence_relationship_property_pruning_report_count": 0,
+    "evidence_relationship_property_pruning_required_count": 0,
+    "evidence_required_routes_covered": true,
+    "evidence_route_catalog_digest_ready": true,
+    "evidence_route_catalog_metadata_ready": true,
+    "evidence_route_catalog_version_ready": true,
+    "evidence_route_primary_ready": true,
+    "evidence_route_query_api_behavior_evidence_ready": true,
+    "evidence_route_query_plan_evidence_ready": true,
+    "evidence_route_query_profile_evidence_ready": true,
+    "evidence_route_relationship_property_pruning_evidence_ready": true,
+    "primary_ready_routes_match": true,
+    "ready": true,
+    "relationship_property_pruning_report_count_matches": true,
+    "relationship_property_pruning_required_count_matches": true,
+    "route_catalog_digest_matches": true,
+    "route_catalog_metadata_ready_matches": true,
+    "route_catalog_version_matches": true,
+    "route_primary_ready_matches": true,
+    "route_query_api_behavior_evidence_ready_matches": true,
+    "route_query_plan_evidence_ready_matches": true,
+    "route_query_profile_evidence_ready_matches": true,
+    "route_relationship_property_pruning_evidence_ready_matches": true,
+    "summary_present": true,
+    "summary_primary_ready_routes": [
+      "/agent/evolves",
+      "/communities",
+      "/communities/{community_id}",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/graph/analysis",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/augmentation/state",
+      "/graph/community-members/{community_id}",
+      "/graph/expand/{node_id}",
+      "/graph/explore",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/shortest-path",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/library/community/{community_id}/subgraph",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities"
+    ],
+    "summary_relationship_property_pruning_report_count": 0,
+    "summary_relationship_property_pruning_required_count": 0,
+    "summary_required_routes_covered": true,
+    "summary_route_catalog_digest_ready": true,
+    "summary_route_catalog_metadata_ready": true,
+    "summary_route_catalog_version_ready": true,
+    "summary_route_primary_ready": true,
+    "summary_route_query_api_behavior_evidence_ready": true,
+    "summary_route_query_plan_evidence_ready": true,
+    "summary_route_query_profile_evidence_ready": true,
+    "summary_route_relationship_property_pruning_evidence_ready": true
+  },
+  "replacement_summary_query_runtime_alignment": {
+    "blocker_codes": [],
+    "covered_route_count_matches": true,
+    "covered_routes_matches": true,
+    "database_opened_matches": true,
+    "evidence_covered_routes": [
+      "/agent/evolves",
+      "/communities",
+      "/communities/{community_id}",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/graph/analysis",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/augmentation/state",
+      "/graph/community-members/{community_id}",
+      "/graph/expand/{node_id}",
+      "/graph/explore",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/shortest-path",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/library/community/{community_id}/subgraph",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities"
+    ],
+    "evidence_present": true,
+    "evidence_ready": true,
+    "evidence_route_catalog_digest_ready": true,
+    "evidence_route_catalog_version_ready": true,
+    "failed_probe_count_matches": true,
+    "passed_probe_count_matches": true,
+    "probe_count_matches": true,
+    "protocol_matches": true,
+    "readiness_matches": true,
+    "ready": true,
+    "required_route_count_matches": true,
+    "required_routes_covered_matches": true,
+    "route_catalog_digest_matches": true,
+    "route_catalog_version_matches": true,
+    "route_coverage_ready_matches": true,
+    "summary_covered_routes": [
+      "/agent/evolves",
+      "/communities",
+      "/communities/{community_id}",
+      "/entities",
+      "/entities/{entity_id}/relationships",
+      "/graph/analysis",
+      "/graph/augmentation/pagerank/plan",
+      "/graph/augmentation/state",
+      "/graph/community-members/{community_id}",
+      "/graph/expand/{node_id}",
+      "/graph/explore",
+      "/graph/live-preview",
+      "/graph/live-preview/{node_id}",
+      "/graph/node-details/{node_id}",
+      "/graph/orphans",
+      "/graph/overview",
+      "/graph/sample",
+      "/graph/search",
+      "/graph/shortest-path",
+      "/library/community/{community_id}/recent-memories",
+      "/library/community/{community_id}/related",
+      "/library/community/{community_id}/subgraph",
+      "/sources/{source_id}",
+      "/stats/entity-relations",
+      "/stats/sources",
+      "/stats/top-communities"
+    ],
+    "summary_present": true,
+    "summary_ready": true,
+    "summary_route_catalog_digest_ready": true,
+    "summary_route_catalog_version_ready": true
+  },
+  "replacement_summary_search_route_ownership_alignment": {
+    "blocker_codes": [],
+    "blocker_codes_match": true,
+    "evidence_lancedb_routes": [],
+    "evidence_present": true,
+    "explicit_route_count_matches": true,
+    "lancedb_route_count_matches": true,
+    "lancedb_routes_matches": true,
+    "missing_required_routes_matches": true,
+    "production_cutover_ready_matches": true,
+    "protocol_matches": true,
+    "ready": true,
+    "ready_matches": true,
+    "require_all_skein_matches": true,
+    "required_route_count_matches": true,
+    "skein_route_count_matches": true,
+    "summary_lancedb_routes": [],
+    "summary_present": true
+  },
+  "route_ownership": {
+    "fixture": "route_ownership",
+    "ready": true
+  },
+  "search_candidate_shadow_evidence": {
+    "fixture": "search_candidate_shadow_evidence",
+    "ready": true
+  },
+  "search_route_ownership": {
+    "blocker_codes": [],
+    "conflicting_routes": [],
+    "duplicate_routes": [],
+    "explicit_route_count": 6,
+    "lancedb_route_count": 0,
+    "lancedb_routes": [],
+    "missing_required_routes": [],
+    "production_cutover_ready": true,
+    "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+    "ready": true,
+    "require_all_skein": true,
+    "required_route_count": 6,
+    "skein_route_count": 6,
+    "skein_routes": [
+      "community",
+      "entity",
+      "memory",
+      "message",
+      "source",
+      "source_chunk"
+    ],
+    "unknown_routes": []
+  },
+  "submodule": {
+    "blocker_codes": [],
+    "commit": "abc1234",
+    "path": "skein",
+    "present": true
+  }
+}
