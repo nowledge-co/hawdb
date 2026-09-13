@@ -10,3 +10,6 @@ skein-core = { path = "../core" }
 skein-cypher = { path = "../cypher" }
 skein-ddl = { path = "../ddl" }
 skein-expression = { path = "../expression" }
+
+[dev-dependencies]
+serde_json = "1"
