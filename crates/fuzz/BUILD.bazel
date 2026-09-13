@@ -91,6 +91,7 @@ test_suite(
         "//:skein_scan_callback_fuzz_tests",
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
         "//crates/evidence:skein_inventory_health_fuzz_tests",
+        "//crates/evidence:skein_source_inventory_fuzz_tests",
         "//crates/executor:skein_graph_algorithm_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_mutation_lowering_fuzz_tests",

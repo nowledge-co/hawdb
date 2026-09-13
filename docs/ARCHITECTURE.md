@@ -77,7 +77,8 @@ fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
 lowering logic. `skein-analytics` owns the storage-neutral immutable CSR/CSC
 kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
-owns release identity validation and storage crash-recovery evidence contracts.
+owns release identity validation, storage crash-recovery evidence contracts,
+and source-derived query inventory scanning and artifact models.
 `skein-search` owns lexical/vector search, generation publication, recall
 validation, and the storage-neutral `SearchProjectionSource` boundary.
 Its internal `projection_evidence` module owns the pure probe contract,
@@ -237,10 +238,18 @@ Compaction is an internal ownership seam, not a new host transaction API.
 `skein-evidence::inventory` owns the storage-recovery, background-maintenance,
 and query-family evidence health models and JSON validators. The original
 `skein::nowledge_inventory` and crate-root paths re-export the same types and
-functions. Database probes, inventory scans, report generation, and cutover
+functions. Database probes, coverage report generation, and cutover
 assembly stay in the facade. This boundary does not change optional-evidence
 policy, nested-field precedence, raw replay checks, or ordered blocker output,
 and does not authorize production activation.
+
+The internal `skein-evidence::query_inventory` module owns query inventory
+models, artifact import/export, Rust source scanning, literal extraction, and
+query classification. The original `skein::compat`, `skein::nowledge_inventory`,
+and crate-root paths preserve the same types and functions. Scanner ordering,
+line-based identity, source exclusions, artifact validation, and redacted I/O
+errors stay unchanged. Fixture coverage assessment and shadow/cutover execution
+remain root responsibilities; the evidence crate has no database dependency.
 
 `skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
 scan, index seek, traversal, projected-graph lookup, and checkpoint-published

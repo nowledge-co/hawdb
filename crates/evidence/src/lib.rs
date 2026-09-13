@@ -5,6 +5,8 @@ mod crash_recovery;
 #[doc(hidden)]
 pub mod inventory;
 mod production;
+#[doc(hidden)]
+pub mod query_inventory;
 
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
