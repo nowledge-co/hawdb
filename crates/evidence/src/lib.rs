@@ -9,8 +9,6 @@ pub mod json_access;
 mod production;
 #[doc(hidden)]
 pub mod query_inventory;
-#[doc(hidden)]
-pub mod resource_profile;
 
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
@@ -20,6 +18,9 @@ pub use production::{
     ProductionEvidenceBinding, ProductionQualificationIdentity,
     PRODUCTION_QUALIFICATION_POLICY_VERSION,
 };
+
+#[doc(hidden)]
+pub mod resource_profile;
 
 /// Returns stable blocker codes without exposing the embedded facade's
 /// qualification implementation details.
