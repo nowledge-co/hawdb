@@ -41,6 +41,8 @@ pub mod read_view;
 pub mod relational;
 pub mod scan;
 pub mod snapshot;
+#[doc(hidden)]
+pub mod source_scan;
 pub mod stable_identity;
 #[doc(hidden)]
 pub mod statistics_refresh;

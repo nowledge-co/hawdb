@@ -178,14 +178,16 @@ use skein_storage::statistics_refresh::{
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
 #[cfg(test)]
+use skein_storage::text::encode_properties;
+#[cfg(test)]
 use skein_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
 pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
 pub(crate) use skein_storage::text::{
     decode_bytes, decode_properties, decode_string, decode_string_vec, decode_u64_vec,
-    decode_value, encode_bytes, encode_properties, encode_string, encode_string_vec,
-    encode_u64_vec, encode_value, parse_i64, parse_u64,
+    decode_value, encode_bytes, encode_string, encode_string_vec, encode_u64_vec, encode_value,
+    parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
