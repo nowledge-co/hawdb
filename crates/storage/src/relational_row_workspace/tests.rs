@@ -181,8 +181,7 @@ fn options(fast_path: bool) -> RelationalSparseLiveHydrationOptions {
     }
 }
 
-fn run_sequence(seed: u64, fast_path: bool, foreign_keys: bool) {
-    let fixture = Fixture::with_foreign_keys(seed, foreign_keys);
+fn run_sequence(fixture: &Fixture, seed: u64, fast_path: bool, foreign_keys: bool) {
     let mut reference = fixture.materialized.clone();
     let mut metadata = fixture.metadata.clone();
     let policy = options(fast_path);
@@ -288,14 +287,21 @@ fn run_sequence(seed: u64, fast_path: bool, foreign_keys: bool) {
     }
 }
 
+fn run_seed(seed: u64) {
+    for foreign_keys in [false, true] {
+        // Both policies start from the same immutable files. Each sequence
+        // independently forks its metadata, row view, oracle and metrics.
+        let fixture = Fixture::with_foreign_keys(seed, foreign_keys);
+        for fast_path in [false, true] {
+            run_sequence(&fixture, seed, fast_path, foreign_keys);
+        }
+    }
+}
+
 #[test]
 fn row_workspace_differential_smoke() {
     for seed in [0, 7, 127] {
-        for fast_path in [false, true] {
-            for foreign_keys in [false, true] {
-                run_sequence(seed, fast_path, foreign_keys);
-            }
-        }
+        run_seed(seed);
     }
 }
 
@@ -303,10 +309,9 @@ fn row_workspace_differential_smoke() {
 #[ignore = "complete local differential campaign"]
 fn row_workspace_differential_campaign() {
     for seed in 0..128 {
-        for fast_path in [false, true] {
-            for foreign_keys in [false, true] {
-                run_sequence(seed, fast_path, foreign_keys);
-            }
+        run_seed(seed);
+        if (seed + 1) % 32 == 0 {
+            eprintln!("row workspace campaign: {} / 128 seeds complete", seed + 1);
         }
     }
 }
