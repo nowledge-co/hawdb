@@ -11,6 +11,7 @@ mod clause_diagnostics;
 mod cross_join;
 mod expression_migration;
 mod frontend_corpus;
+mod having_from;
 
 #[test]
 fn exposes_owned_postgres_sql_pgq_syntax() {

@@ -1,5 +1,8 @@
 # Explicit SQL CROSS JOIN
 
+This document records the first slice. The current combined implementation is
+described in [SQL SELECT support](SQL_SELECT_SUPPORT.md).
+
 This is the first execution slice of [#157](https://github.com/nowledge-co/skein/issues/157),
 built on the shared expression IR from [#156](https://github.com/nowledge-co/skein/issues/156).
 It adds explicit `CROSS JOIN` between supported base tables through the existing
@@ -44,11 +47,9 @@ cases.
 Use the normal owning-crate and embedded-query presubmits, with all three required
 local fuzz targets. No CI configuration, workload or timeout changes are needed.
 
-## Remaining issue scope
+## Follow-up scope
 
-This slice does not complete #157. Multiple comma-separated FROM items still need
-their binding scopes retained through name resolution: JOIN binds more tightly
-than comma. HAVING still needs aggregate-aware binding, hidden aggregate state,
-group validation, post-aggregation filtering before output limits, and complete
-parameter/template safety. These are subsequent stages, not parser-only claims
-of support.
+The continuation implements comma-FROM scopes and HAVING through the existing
+embedded SQL entrypoints. See [SQL SELECT support](SQL_SELECT_SUPPORT.md) for its
+execution contract and [the result-column audit](SQL_RESULT_COLUMNS_CONTRACT_AUDIT.md)
+for the remaining duplicate-name acceptance requirement in #157.

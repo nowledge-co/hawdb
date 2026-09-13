@@ -552,6 +552,11 @@ fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
 }
 
 fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
+    if select.having.is_some() {
+        return Err(SkeinError::Semantic(
+            "system SQL does not support HAVING".into(),
+        ));
+    }
     if select.distinct
         || select.from_alias.is_some()
         || !select.joins.is_empty()

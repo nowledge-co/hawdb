@@ -114,6 +114,10 @@ const SOURCE_FILES: &[(&str, &[u8])] = &[
         include_bytes!("cross_join.rs"),
     ),
     (
+        "crates/sql/src/tests/having_from.rs",
+        include_bytes!("having_from.rs"),
+    ),
+    (
         "crates/sql/src/tests/clause_diagnostics.rs",
         include_bytes!("clause_diagnostics.rs"),
     ),

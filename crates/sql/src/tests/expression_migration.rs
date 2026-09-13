@@ -114,8 +114,6 @@ fn uniform_representation_preserves_frontend_expression_boundaries() {
         "SELECT id FROM items WHERE TRUE",
         "SELECT id FROM items ORDER BY $1",
         "SELECT id FROM items ORDER BY COALESCE(id, 1)",
-        "SELECT id FROM items HAVING id = 1",
-        "SELECT id FROM items, owners",
     ] {
         assert!(
             prepare_postgres_sql(sql).is_err(),
@@ -126,6 +124,8 @@ fn uniform_representation_preserves_frontend_expression_boundaries() {
         "SELECT id FROM items WHERE id = other",
         "SELECT COALESCE(id, $1) FROM items WHERE NOT (id IS NULL)",
         "SELECT COUNT(*) FILTER (WHERE active = $1) FROM items",
+        "SELECT id FROM items HAVING id = 1",
+        "SELECT id FROM items, owners",
     ] {
         assert!(
             prepare_postgres_sql(sql).is_ok(),

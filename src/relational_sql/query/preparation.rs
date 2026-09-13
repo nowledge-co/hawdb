@@ -12,7 +12,7 @@ use super::{
 };
 
 pub(super) fn prepare_relational_select(
-    select: SelectStatement,
+    mut select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
     read_modes: RelationalQueryReadModes<'_>,
@@ -39,6 +39,8 @@ pub(super) fn prepare_relational_select(
                 )));
             }
         }
+        join_order::bind_from_scopes(&mut select, state)?;
+        super::having::validate_having(&select, parameters, state)?;
         validate_non_aggregate_coalesce_projections(&select, parameters, state)?;
         for item in &select.order_by {
             resolve_relational_order_target(&select, item)?;
@@ -98,7 +100,8 @@ pub(super) fn prepare_syntax_access_plan(
         .from_alias
         .clone()
         .unwrap_or_else(|| select.from.name.clone());
-    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+    let has_aggregate =
+        select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
     let prefer_ordered_access =
         select.joins.is_empty() && !select.distinct && !has_aggregate && select.group_by.is_empty();
     let access_order_by = resolved_access_order_by(select)?;
@@ -203,7 +206,8 @@ pub(super) fn plan_relational_field_plan(
     select: &SelectStatement,
     state: &RelationalState,
 ) -> Result<RelationalFieldPlan> {
-    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+    let has_aggregate =
+        select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
     let output_fields = plan_requested_fields(select, state)?;
     let projects_before_order = order_by_uses_expression_alias(select)?;
     let scan_fields = if (!select.order_by.is_empty()

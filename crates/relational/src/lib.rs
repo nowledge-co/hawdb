@@ -178,6 +178,10 @@ mod tests {
 
         assert_eq!(plan.table, "events");
         assert_eq!(plan.max_rows, 10);
+        assert!(compile_append_select_sql(
+            "SELECT tenant, sequence FROM events WHERE tenant = 'a' HAVING FALSE ORDER BY sequence LIMIT 10",
+            &[], &state, 100,
+        ).is_err());
     }
 }
 
