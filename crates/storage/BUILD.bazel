@@ -31,6 +31,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_storage_relational_index_view_fuzz_tests",
+    args = [
+        "relational_index_view::tests::relational_index_view_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_storage",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_storage_source_scan_fuzz_tests",
     args = [
         "source_scan::tests::source_scan_differential_campaign",
