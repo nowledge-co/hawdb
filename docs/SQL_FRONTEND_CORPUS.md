@@ -2,25 +2,28 @@
 
 The ordinary `skein-sql` tests run the same complete SQL text through
 `prepare_postgres_sql` and `skein_sql_syntax::parse_postgres_statement`.
-This is the corpus prerequisite for [#159](https://github.com/nowledge-co/skein/issues/159).
-It records the current migration gaps; it does not complete the issue's
-CREATE PROPERTY GRAPH binder requirement or authorize production routing.
+This originated as the corpus prerequisite for [#159](https://github.com/nowledge-co/skein/issues/159).
+It records frontend migration gaps; production routing remains unchanged.
+Creation-binder outcomes are maintained separately in `frontend_create_bindings_v1.json`.
 
 ## Inventory
 
-`crates/sql/fixtures/frontend_corpus_v1.jsonl` contains 981 concrete cases.
+`crates/sql/fixtures/frontend_corpus_v1.jsonl` contains 994 concrete cases.
 Each has a stable ID, statement family, source path/symbol, adaptation, expected
 outcome for each frontend, and an optional named divergence waiver.
 `frontend_corpus_manifest_v1.json` pins source hashes, case membership, family
 coverage and waiver scope. `frontend_source_inventory_v1.json` classifies all
-161 SQL-prefixed Rust string literals found in the eight audited source files.
+174 SQL-prefixed Rust string literals found in the nine audited source files.
 
-The audit starts at `1977888050c405adc873ebcccfec77c3352f4659`. The hash for
+The audit starts at `1977888050c405adc873ebcccfec77c3352f4659`.
+The #157 CROSS JOIN slice adds 13 cases while retaining every original case ID,
+SQL text, outcome and waiver. Existing source line changes only track registration. The hash for
 `crates/sql/src/tests.rs` includes this delivery's test-module registration.
 
 | Source | Concrete cases |
 | --- | ---: |
 | `crates/sql/src/tests.rs` | 31 |
+| `crates/sql/src/tests/cross_join.rs` | 13 |
 | `crates/sql/src/tests/clause_diagnostics.rs` | 7 |
 | `crates/sql/src/parser/clause_tests.rs` | 291 |
 | `crates/sql-syntax/tests/postgres_pgq.rs` | 38 |
@@ -73,13 +76,13 @@ All three owned statement families (`select`, `select_graph_table`, and
 Any accept/reject disagreement requires a waiver with the matching family and
 direction, a reason, and an issue link. Unexpected outcomes, missing waivers,
 waivers on converged cases, unknown waivers and unreferenced waivers fail.
-The initial matrix has 33 cases accepted by both frontends and 324 rejected by
-both. The remaining 624 cases use these ten explicit waivers:
+The current matrix has 34 cases accepted by both frontends and 331 rejected by
+both. The remaining 629 cases use these eleven explicit waivers:
 
 | Waiver | Cases | Recorded gap |
 | --- | ---: | --- |
 | `production-pgq` | 275 | Owned SQL/PGQ syntax is not routed through production preparation. |
-| `production-expressions` | 114 | Production expression/predicate representation remains limited; see #156. |
+| `production-expressions` | 116 | Production expression/predicate representation remains limited; see #156. |
 | `production-column-alias-list` | 112 | Production lowering rejects table column alias lists. |
 | `owned-ddl-dml` | 104 | Owned statement routing supports SELECT and CREATE PROPERTY GRAPH only. |
 | `owned-alias-boundary` | 14 | Explicit keyword aliases have different acceptance contracts. |
@@ -87,12 +90,14 @@ both. The remaining 624 cases use these ten explicit waivers:
 | `owned-like` | 1 | Owned LIKE/ILIKE/ESCAPE shape is missing. |
 | `owned-explain` | 1 | Owned EXPLAIN routing is missing. |
 | `owned-empty-projection` | 1 | Production accepts the empty SELECT target list; owned syntax rejects it. |
-| `prepare-dense-parameters` | 1 | Only production preparation validates dense parameter positions. |
+| `prepare-dense-parameters` | 2 | Only production preparation validates dense parameter positions. |
+| `production-from-having` | 2 | Comma FROM scopes and HAVING remain #157 work after explicit CROSS JOIN. |
 
 These are observed contracts, not a claim of PostgreSQL semantic equivalence.
 PGQ binding, result types, graph keys/nullability/endpoints, execution, and
-catalog publication are outside this test's evidence. The real read-only
-creation binder and its source-schema API remain #159's explicit next gate.
+catalog publication are outside this test's evidence. The read-only
+creation binder has its own source-schema and bound-outcome verification; the
+frontend acceptance counts do not substitute for that evidence.
 
 ## Maintaining the corpus
 

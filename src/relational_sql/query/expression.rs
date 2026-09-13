@@ -290,6 +290,7 @@ pub(super) fn predicate_truth(
     parameters: &[Value],
 ) -> Result<Option<bool>> {
     match &predicate.kind {
+        ExprKind::Value(SqlValue::Literal(Value::Bool(value))) => Ok(Some(*value)),
         ExprKind::And(left, right) => match predicate_truth(left, row, parameters)? {
             Some(false) => Ok(Some(false)),
             Some(true) => predicate_truth(right, row, parameters),

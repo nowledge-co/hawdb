@@ -8,6 +8,7 @@ use crate::{Expr, ExprKind};
 use skein_core::Value;
 
 mod clause_diagnostics;
+mod cross_join;
 mod expression_migration;
 mod frontend_corpus;
 

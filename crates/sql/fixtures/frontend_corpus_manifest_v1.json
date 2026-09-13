@@ -1,7 +1,7 @@
 {
   "protocol": "skein-sql-frontend-corpus-v1",
   "audited_base_revision": "1977888050c405adc873ebcccfec77c3352f4659",
-  "case_count": 981,
+  "case_count": 994,
   "owned_families": [
     "select",
     "select_graph_table",
@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "4f621befd885d9697f7f298e63c82e200c1181ba1a328629a7a91d40f230c0c3",
+      "sha256": "dc2da8802479fbeb19bd4de24462e03a4f1dcc5f15f1118988f74f0a67505203",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -1044,6 +1044,25 @@
         "case-0976",
         "case-0977"
       ]
+    },
+    {
+      "path": "crates/sql/src/tests/cross_join.rs",
+      "sha256": "ad428deab0275a0e7102d5358d9de8387dd5fe4d3d3523cd4e76d27dad83ee1b",
+      "case_ids": [
+        "case-0982",
+        "case-0983",
+        "case-0984",
+        "case-0985",
+        "case-0986",
+        "case-0987",
+        "case-0988",
+        "case-0989",
+        "case-0990",
+        "case-0991",
+        "case-0992",
+        "case-0993",
+        "case-0994"
+      ]
     }
   ],
   "waivers": [
@@ -1142,6 +1161,15 @@
       "direction": "owned_accepts",
       "issue": "https://github.com/nowledge-co/skein/issues/159",
       "reason": "Production preparation validates dense parameter positions after parsing. The owned entry point is syntax-only and does not perform that preparation check."
+    },
+    {
+      "id": "production-from-having",
+      "families": [
+        "select"
+      ],
+      "direction": "owned_accepts",
+      "issue": "https://github.com/nowledge-co/skein/issues/157",
+      "reason": "Explicit CROSS JOIN executes in this slice; comma FROM binding scopes and aggregate-aware HAVING remain unsupported production features. Owned syntax acceptance does not qualify their binding or execution."
     }
   ],
   "local_case_ids": [
@@ -1150,5 +1178,5 @@
     "case-0980",
     "case-0981"
   ],
-  "literal_count": 161
+  "literal_count": 174
 }

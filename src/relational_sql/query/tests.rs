@@ -9,6 +9,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 mod connected_enumeration;
 mod costed_algorithms;
+mod cross_join;
 
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {

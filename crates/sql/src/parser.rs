@@ -464,6 +464,17 @@ fn lower_table_alias(alias: Option<&TableAlias>) -> Result<Option<String>> {
 
 fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
     let (table, alias) = lower_table_factor(&join.relation)?;
+    if matches!(
+        join.join_operator,
+        JoinOperator::CrossJoin(JoinConstraint::None)
+    ) {
+        return Ok(SqlJoin {
+            kind: SqlJoinKind::Inner,
+            table,
+            alias,
+            on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
+        });
+    }
     let (kind, constraint) = match &join.join_operator {
         JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
             (SqlJoinKind::Inner, constraint)
