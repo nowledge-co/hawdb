@@ -239,6 +239,10 @@ name = "relational_oltp_mix"
 harness = false
 
 [[bench]]
+name = "concurrent_snapshot_reads"
+harness = false
+
+[[bench]]
 name = "relational_monotonic_append"
 harness = false
 

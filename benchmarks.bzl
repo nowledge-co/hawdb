@@ -32,6 +32,9 @@ SKEIN_BENCHMARK_TARGETS = [
     for benchmark in SKEIN_BENCHMARKS
 ]
 
+# Local qualification only; these are outside the existing CI smoke dispatch.
+SKEIN_MANUAL_BENCHMARKS = ["concurrent_snapshot_reads"]
+
 def skein_benchmark_binaries(crate_features):
     benchmark_deps = all_crate_deps(normal = True, normal_dev = True) + [
         ":skein",
@@ -43,7 +46,7 @@ def skein_benchmark_binaries(crate_features):
         "//crates/storage:skein_storage",
         "//crates/vector-projection:skein_vector_projection",
     ]
-    for benchmark in SKEIN_BENCHMARKS:
+    for benchmark in SKEIN_BENCHMARKS + SKEIN_MANUAL_BENCHMARKS:
         rust_binary(
             name = "skein_bench_%s" % benchmark,
             crate_root = "benches/%s.rs" % benchmark,
@@ -52,6 +55,7 @@ def skein_benchmark_binaries(crate_features):
                 "benches/%s/**/*.rs" % benchmark,
             ], allow_empty = True),
             edition = "2024",
+            tags = ["manual"] if benchmark in SKEIN_MANUAL_BENCHMARKS else [],
             aliases = aliases(
                 normal = True,
                 normal_dev = True,
