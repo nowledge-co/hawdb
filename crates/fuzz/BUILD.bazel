@@ -127,6 +127,7 @@ test_suite(
         "//crates/sql:skein_sql_clause_diagnostics_fuzz_tests",
         "//crates/sql-syntax:skein_sql_alias_boundary_fuzz_tests",
         "//crates/storage:skein_storage_backup_hex_fuzz_tests",
+        "//crates/storage:skein_storage_durable_manifest_fuzz_tests",
         "//crates/storage:skein_storage_file_lock_fuzz_tests",
         "//crates/storage:skein_storage_graph_constraints_fuzz_tests",
         "//crates/storage:skein_storage_graph_overlay_fuzz_tests",
