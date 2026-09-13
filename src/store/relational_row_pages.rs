@@ -1,31 +1,36 @@
 //! Shadow recovery state for canonical relational row-page roots.
 
+pub(crate) use skein_storage::relational_row_workspace::RelationalTransactionRowView;
+use skein_storage::relational_row_workspace::{
+    hydrate_sparse_relational_workspace, nonzero_min, RelationalMonotonicAppendMetrics,
+    RelationalSparseLiveHydrationOptions, RelationalSparseLiveHydrationReport,
+};
+pub(super) use skein_storage::relational_row_workspace::{
+    RelationalProvenAbsenceConstraintIndex, RelationalSparseLiveWorkspace,
+};
+
 use super::{GraphStore, RelationalOverflowCompactionConfig, RelationalRowStorageResidencyReport};
 use skein_storage::{
     RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
-    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
-    RelationalMonotonicAppendHydration, RelationalMutationOutcome, RelationalOverflowReferenceSet,
-    RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortReport,
-    RelationalOverflowRootReader, RelationalProjectedRow, RelationalRecoveryFence,
+    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalMutationOutcome,
+    RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
+    RelationalOverflowReferenceSortReport, RelationalOverflowRootReader, RelationalRecoveryFence,
     RelationalRecoverySourceIdentity, RelationalReplayAccess, RelationalReplayAccessSet,
     RelationalRow, RelationalRowChangeCapture, RelationalRowChangeCaptureLimits,
     RelationalRowDeltaBuilder, RelationalRowDeltaConfig, RelationalRowDeltaError,
-    RelationalRowDeltaReader, RelationalRowDeltaReport, RelationalRowPageDemandReadError,
-    RelationalRowPageLiveError, RelationalRowPageMutationPlanner, RelationalRowPageProjectedRange,
+    RelationalRowDeltaReader, RelationalRowDeltaReport, RelationalRowPageLiveError,
+    RelationalRowPageMutationPlanner, RelationalRowPageProjectedRange,
     RelationalRowPagePublicationConfig, RelationalRowPageReadView,
     RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
-    RelationalRowPageRootReader, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
+    RelationalRowPageRootReader, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, RelationalRowPageTableDelta, RelationalSparseIndexProbe,
-    RelationalSparseLivePreparationStage, RelationalSparseLiveStage, RelationalSparseRecoveryRow,
-    RelationalSparseWorkspaceBuilder, RelationalState, RelationalTransaction, RelationalValue,
-    SegmentCache, StorageResidencyMode, StoreId, RELATIONAL_PRIMARY_INDEX_NAME,
+    RelationalRowPageTableDelta, RelationalSparseLiveStage, RelationalSparseRecoveryRow,
+    RelationalState, RelationalTransaction, RelationalValue, SegmentCache, StorageResidencyMode,
+    StoreId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Bound;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -92,38 +97,6 @@ pub(super) struct RelationalRowPageState {
     monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
 }
 
-#[derive(Debug, Default)]
-struct RelationalMonotonicAppendMetrics {
-    attempts: AtomicU64,
-    hits: AtomicU64,
-    fallbacks: AtomicU64,
-    proven_absent_primary_keys: AtomicU64,
-}
-
-impl RelationalMonotonicAppendMetrics {
-    fn record_hit(&self, proven_absent_primary_keys: usize) {
-        saturating_add_atomic(&self.attempts, 1);
-        saturating_add_atomic(&self.hits, 1);
-        saturating_add_atomic(
-            &self.proven_absent_primary_keys,
-            u64::try_from(proven_absent_primary_keys).unwrap_or(u64::MAX),
-        );
-    }
-
-    fn record_fallback(&self) {
-        saturating_add_atomic(&self.attempts, 1);
-        saturating_add_atomic(&self.fallbacks, 1);
-    }
-}
-
-fn saturating_add_atomic(counter: &AtomicU64, value: u64) {
-    let _ = counter.fetch_update(
-        AtomicOrdering::Relaxed,
-        AtomicOrdering::Relaxed,
-        |current| Some(current.saturating_add(value)),
-    );
-}
-
 #[derive(Debug)]
 struct RelationalRowPageServingResources {
     base_overflow: Arc<RelationalOverflowRootReader>,
@@ -137,63 +110,6 @@ pub(super) struct RelationalRowPageCheckpointPlan {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct RelationalSparseLiveHydrationReport {
-    point_reads: usize,
-    range_reads: usize,
-    monotonic_append_attempts: usize,
-    monotonic_append_hits: usize,
-    monotonic_append_fallbacks: usize,
-    pages_read: usize,
-    rows_decoded: usize,
-    bytes_read: usize,
-}
-
-pub(super) struct RelationalSparseLiveWorkspace {
-    pub rows: Vec<RelationalSparseRecoveryRow>,
-    pub proven_absent_primary_keys: BTreeSet<RelationalReplayAccess>,
-}
-
-pub(super) struct RelationalProvenAbsenceConstraintIndex<'a> {
-    inner: &'a dyn RelationalConstraintIndex,
-    proven_absent_primary_keys: &'a BTreeSet<RelationalReplayAccess>,
-}
-
-impl<'a> RelationalProvenAbsenceConstraintIndex<'a> {
-    pub(super) fn new(
-        inner: &'a dyn RelationalConstraintIndex,
-        proven_absent_primary_keys: &'a BTreeSet<RelationalReplayAccess>,
-    ) -> Self {
-        Self {
-            inner,
-            proven_absent_primary_keys,
-        }
-    }
-}
-
-impl RelationalConstraintIndex for RelationalProvenAbsenceConstraintIndex<'_> {
-    fn visit_exact_primary_keys(
-        &self,
-        table: &str,
-        index: &str,
-        key: &skein_storage::RelationalKey,
-        visit: &mut dyn FnMut(&skein_storage::RelationalKey) -> bool,
-    ) -> Result<(), RelationalError> {
-        if index == RELATIONAL_PRIMARY_INDEX_NAME
-            && self
-                .proven_absent_primary_keys
-                .contains(&RelationalReplayAccess {
-                    table: table.to_string(),
-                    primary_key: key.clone(),
-                })
-        {
-            return Ok(());
-        }
-        self.inner
-            .visit_exact_primary_keys(table, index, key, visit)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RelationalOverflowClosureScanReport {
     pub tables_scanned: usize,
     pub rows_scanned: usize,
@@ -203,605 +119,6 @@ pub(super) struct RelationalOverflowClosureScanReport {
     pub overlay_entries: usize,
     pub overlay_bytes: usize,
     pub sort: RelationalOverflowReferenceSortReport,
-}
-
-/// A bounded transaction-private row overlay pinned to the committed row view.
-///
-/// Successful statements append immutable row-change batches. Failed
-/// statements stage a replacement view first and therefore leave this view
-/// unchanged. The private visible epoch is only an ordering token; it is never
-/// published as a database commit epoch.
-#[derive(Debug)]
-pub(crate) struct RelationalTransactionRowView {
-    view: Arc<RelationalRowPageReadView>,
-    limits: RelationalRowChangeCaptureLimits,
-}
-
-impl RelationalTransactionRowView {
-    pub(crate) fn stage_advance(
-        &self,
-        capture: RelationalRowChangeCapture,
-    ) -> Result<Self, RelationalError> {
-        let next_epoch = self
-            .view
-            .identity()
-            .visible_commit_epoch
-            .checked_add(1)
-            .ok_or_else(|| {
-                RelationalError::Admission(
-                    "transaction-private row overlay epoch overflow".to_string(),
-                )
-            })?;
-        let view = self
-            .view
-            .advance(next_epoch, Some(capture), self.limits)
-            .map_err(map_transaction_row_live_error)?;
-        Ok(Self {
-            view: Arc::new(view),
-            limits: self.limits,
-        })
-    }
-}
-
-struct RelationalSparseLiveHydrator<'a> {
-    state: &'a RelationalState,
-    reader: RelationalRowPageSnapshotReader,
-    workspace: RelationalSparseWorkspaceBuilder,
-    requested_fields: BTreeMap<String, Arc<[usize]>>,
-    resolved_probes: BTreeSet<RelationalSparseIndexProbe>,
-    hydration: RelationalHydrationBudget,
-    task: skein_core::RuntimeTaskContext,
-    limits: RelationalRowPageSnapshotReadLimits,
-    pages_read: usize,
-    rows_decoded: usize,
-    bytes_read: usize,
-    overlay_entries: usize,
-    overlay_resident_bytes: usize,
-    point_reads: usize,
-    range_reads: usize,
-    monotonic_append_attempts: usize,
-    monotonic_append_hits: usize,
-    monotonic_append_fallbacks: usize,
-    proven_absent_primary_keys: BTreeSet<RelationalReplayAccess>,
-    monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
-}
-
-impl<'a> RelationalSparseLiveHydrator<'a> {
-    fn new(
-        state: &'a RelationalState,
-        reader: RelationalRowPageSnapshotReader,
-        workspace_limits: RelationalRowChangeCaptureLimits,
-        monotonic_append_metrics: Arc<RelationalMonotonicAppendMetrics>,
-    ) -> Self {
-        let mut limits = RelationalRowPageSnapshotReadLimits::default();
-        limits.demand.max_rows = nonzero_min(limits.demand.max_rows, workspace_limits.max_entries);
-        limits.demand.max_bytes = nonzero_min(limits.demand.max_bytes, workspace_limits.max_bytes);
-        limits.max_overlay_entries =
-            nonzero_min(limits.max_overlay_entries, workspace_limits.max_entries);
-        limits.max_overlay_bytes =
-            nonzero_min(limits.max_overlay_bytes, workspace_limits.max_bytes);
-        let max_rows = limits.demand.max_rows.get();
-        let max_bytes = limits.demand.max_bytes.get();
-        Self {
-            state,
-            reader,
-            workspace: RelationalSparseWorkspaceBuilder::new(workspace_limits),
-            requested_fields: BTreeMap::new(),
-            resolved_probes: BTreeSet::new(),
-            hydration: RelationalHydrationBudget {
-                max_rows,
-                max_compressed_bytes: max_bytes,
-                max_decompressed_bytes: max_bytes,
-                max_memory_bytes: max_bytes,
-                ..RelationalHydrationBudget::default()
-            },
-            task: skein_core::RuntimeTaskContext::default(),
-            limits,
-            pages_read: 0,
-            rows_decoded: 0,
-            bytes_read: 0,
-            overlay_entries: 0,
-            overlay_resident_bytes: 0,
-            point_reads: 0,
-            range_reads: 0,
-            monotonic_append_attempts: 0,
-            monotonic_append_hits: 0,
-            monotonic_append_fallbacks: 0,
-            proven_absent_primary_keys: BTreeSet::new(),
-            monotonic_append_metrics,
-        }
-    }
-
-    fn workspace_snapshot(&self) -> Vec<RelationalSparseRecoveryRow> {
-        self.workspace.snapshot()
-    }
-
-    fn fields(&mut self, table: &str) -> Result<Arc<[usize]>, RelationalError> {
-        if let Some(fields) = self.requested_fields.get(table) {
-            return Ok(Arc::clone(fields));
-        }
-        let schema = self.state.table_schema(table).ok_or_else(|| {
-            RelationalError::Corruption(format!(
-                "sparse relational live hydration references unknown table {table}"
-            ))
-        })?;
-        let fields = Arc::<[usize]>::from((0..schema.columns.len()).collect::<Vec<_>>());
-        self.requested_fields
-            .insert(table.to_string(), Arc::clone(&fields));
-        Ok(fields)
-    }
-
-    fn hydrate_point(&mut self, access: &RelationalReplayAccess) -> Result<bool, RelationalError> {
-        if self.workspace.contains(access) {
-            return Ok(false);
-        }
-        self.point_reads = self.point_reads.checked_add(1).ok_or_else(|| {
-            RelationalError::Admission(
-                "sparse relational live point-read counter overflow".to_string(),
-            )
-        })?;
-        let fields = self.fields(&access.table)?;
-        let limits = self.remaining_limits()?;
-        let (mut projected, report) = self
-            .reader
-            .point_projected(
-                &access.table,
-                &access.primary_key,
-                &fields,
-                limits,
-                &mut self.hydration,
-                &self.task,
-            )
-            .map_err(map_sparse_live_snapshot_error)?;
-        if projected
-            .as_ref()
-            .is_some_and(|row| row.primary_key != access.primary_key)
-        {
-            return Err(RelationalError::Corruption(format!(
-                "sparse relational live point read returned the wrong primary key for table {}",
-                access.table
-            )));
-        }
-        if let Some(row) = &mut projected {
-            self.state.hydrate_projected_row_with_context(
-                &access.table,
-                row,
-                &mut self.hydration,
-                Some(&self.task),
-            )?;
-        }
-        self.record_point(&report)?;
-        let row = projected
-            .map(|row| complete_sparse_projected_row(&access.table, &fields, row))
-            .transpose()?;
-        self.workspace.insert(RelationalSparseRecoveryRow {
-            table: access.table.clone(),
-            primary_key: access.primary_key.clone(),
-            row,
-        })
-    }
-
-    fn hydrate_table(&mut self, table: &str) -> Result<(), RelationalError> {
-        self.range_reads = self.range_reads.checked_add(1).ok_or_else(|| {
-            RelationalError::Admission(
-                "sparse relational live range-read counter overflow".to_string(),
-            )
-        })?;
-        let fields = self.fields(table)?;
-        let limits = self.remaining_limits()?;
-        let state = self.state;
-        let task = &self.task;
-        let workspace = &mut self.workspace;
-        let mut callback_error = None;
-        let read_result = self.reader.visit_projected_range_resolving(
-            RelationalRowPageProjectedRange {
-                table,
-                lower: Bound::Unbounded,
-                upper: Bound::Unbounded,
-                requested_fields: &fields,
-            },
-            limits,
-            &mut self.hydration,
-            task,
-            |row, budget, task| {
-                state
-                    .hydrate_projected_row_with_context(table, row, budget, Some(task))
-                    .map_err(map_sparse_live_state_to_demand_error)
-            },
-            |row, _| {
-                let primary_key = row.primary_key.clone();
-                match complete_sparse_projected_row(table, &fields, row).and_then(|row| {
-                    workspace.insert(RelationalSparseRecoveryRow {
-                        table: table.to_string(),
-                        primary_key,
-                        row: Some(row),
-                    })
-                }) {
-                    Ok(_) => true,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        false
-                    }
-                }
-            },
-        );
-        let report = read_result.map_err(map_sparse_live_snapshot_error)?;
-        self.record_range(&report)?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
-        if report.demand.stopped_early {
-            return Err(RelationalError::Corruption(format!(
-                "sparse relational live hydration stopped while scanning table {table}"
-            )));
-        }
-        Ok(())
-    }
-
-    fn hydrate_monotonic_append(
-        &mut self,
-        append: &RelationalMonotonicAppendHydration,
-    ) -> Result<(), RelationalError> {
-        self.monotonic_append_attempts =
-            self.monotonic_append_attempts
-                .checked_add(1)
-                .ok_or_else(|| {
-                    RelationalError::Admission(
-                        "sparse relational monotonic-append counter overflow".to_string(),
-                    )
-                })?;
-        let Some(first_key) = append.primary_keys.first() else {
-            return Err(RelationalError::Corruption(
-                "monotonic append hydration contains no primary keys".to_string(),
-            ));
-        };
-        let proven_absent = self
-            .reader
-            .prove_partition_absent_at_or_after(
-                &append.table,
-                &append.partition_prefix,
-                first_key,
-                &self.task,
-            )
-            .map_err(map_sparse_live_snapshot_error)?;
-        if !proven_absent {
-            self.monotonic_append_fallbacks = self
-                .monotonic_append_fallbacks
-                .checked_add(1)
-                .ok_or_else(|| {
-                    RelationalError::Admission(
-                        "sparse relational monotonic-append fallback counter overflow".to_string(),
-                    )
-                })?;
-            self.monotonic_append_metrics.record_fallback();
-            return self.hydrate_append_points(append);
-        }
-
-        self.monotonic_append_hits =
-            self.monotonic_append_hits.checked_add(1).ok_or_else(|| {
-                RelationalError::Admission(
-                    "sparse relational monotonic-append hit counter overflow".to_string(),
-                )
-            })?;
-        self.monotonic_append_metrics
-            .record_hit(append.primary_keys.len());
-        for primary_key in &append.primary_keys {
-            self.proven_absent_primary_keys
-                .insert(RelationalReplayAccess {
-                    table: append.table.clone(),
-                    primary_key: primary_key.clone(),
-                });
-            self.workspace.insert(RelationalSparseRecoveryRow {
-                table: append.table.clone(),
-                primary_key: primary_key.clone(),
-                row: None,
-            })?;
-        }
-        Ok(())
-    }
-
-    fn hydrate_append_points(
-        &mut self,
-        append: &RelationalMonotonicAppendHydration,
-    ) -> Result<(), RelationalError> {
-        for primary_key in &append.primary_keys {
-            self.hydrate_point(&RelationalReplayAccess {
-                table: append.table.clone(),
-                primary_key: primary_key.clone(),
-            })?;
-        }
-        Ok(())
-    }
-
-    fn report(&self) -> RelationalSparseLiveHydrationReport {
-        RelationalSparseLiveHydrationReport {
-            point_reads: self.point_reads,
-            range_reads: self.range_reads,
-            monotonic_append_attempts: self.monotonic_append_attempts,
-            monotonic_append_hits: self.monotonic_append_hits,
-            monotonic_append_fallbacks: self.monotonic_append_fallbacks,
-            pages_read: self.pages_read,
-            rows_decoded: self.rows_decoded,
-            bytes_read: self.bytes_read,
-        }
-    }
-
-    fn proven_absent_primary_keys(&self) -> BTreeSet<RelationalReplayAccess> {
-        self.proven_absent_primary_keys.clone()
-    }
-
-    fn resolve_probe(
-        &mut self,
-        probe: &RelationalSparseIndexProbe,
-        index: &dyn RelationalConstraintIndex,
-    ) -> Result<(), RelationalError> {
-        if self.resolved_probes.contains(probe) {
-            return Ok(());
-        }
-        if probe.index == RELATIONAL_PRIMARY_INDEX_NAME
-            && self
-                .proven_absent_primary_keys
-                .contains(&RelationalReplayAccess {
-                    table: probe.table.clone(),
-                    primary_key: probe.index_key.clone(),
-                })
-        {
-            self.resolved_probes.insert(probe.clone());
-            return Ok(());
-        }
-        let mut missing = Vec::new();
-        let mut stopped_for_budget = false;
-        let remaining_entries = self.workspace.remaining_entries();
-        index.visit_exact_primary_keys(
-            &probe.table,
-            &probe.index,
-            &probe.index_key,
-            &mut |primary_key| {
-                let access = RelationalReplayAccess {
-                    table: probe.table.clone(),
-                    primary_key: primary_key.clone(),
-                };
-                if self.workspace.contains(&access) {
-                    return true;
-                }
-                if missing.len() >= remaining_entries {
-                    stopped_for_budget = true;
-                    return false;
-                }
-                missing.push(access);
-                true
-            },
-        )?;
-        if stopped_for_budget {
-            return Err(RelationalError::Admission(format!(
-                "sparse relational live index probe {}.{} exceeds the remaining {}-entry workspace budget",
-                probe.table, probe.index, remaining_entries
-            )));
-        }
-        for access in missing {
-            self.hydrate_point(&access)?;
-        }
-        self.resolved_probes.insert(probe.clone());
-        Ok(())
-    }
-
-    fn remaining_limits(&self) -> Result<RelationalRowPageSnapshotReadLimits, RelationalError> {
-        Ok(RelationalRowPageSnapshotReadLimits {
-            demand: skein_storage::RelationalRowPageDemandReadLimits {
-                max_pages: sparse_remaining(self.limits.demand.max_pages, self.pages_read, "page")?,
-                max_rows: sparse_remaining(self.limits.demand.max_rows, self.rows_decoded, "row")?,
-                max_bytes: sparse_remaining(
-                    self.limits.demand.max_bytes,
-                    self.bytes_read,
-                    "read-byte",
-                )?,
-                max_pins: self.limits.demand.max_pins,
-                max_tree_height: self.limits.demand.max_tree_height,
-            },
-            max_overlay_entries: sparse_remaining(
-                self.limits.max_overlay_entries,
-                self.overlay_entries,
-                "overlay-entry",
-            )?,
-            max_overlay_bytes: sparse_remaining(
-                self.limits.max_overlay_bytes,
-                self.overlay_resident_bytes,
-                "overlay-byte",
-            )?,
-        })
-    }
-
-    fn record_point(
-        &mut self,
-        report: &RelationalRowPageSnapshotPointReport,
-    ) -> Result<(), RelationalError> {
-        let overlay_entries = usize::from(matches!(
-            report.source,
-            RelationalRowPageSnapshotRowSource::Recovery
-                | RelationalRowPageSnapshotRowSource::Live
-                | RelationalRowPageSnapshotRowSource::Deleted
-        ));
-        self.record_snapshot_read(
-            report.identity,
-            &report.demand,
-            report.recovery.bytes_read,
-            overlay_entries,
-            report.overlay_resident_bytes,
-        )
-    }
-
-    fn record_range(
-        &mut self,
-        report: &RelationalRowPageSnapshotRangeReport,
-    ) -> Result<(), RelationalError> {
-        self.record_snapshot_read(
-            report.identity,
-            &report.demand,
-            report.recovery.bytes_read,
-            report.overlay_entries,
-            report.overlay_resident_bytes,
-        )
-    }
-
-    fn record_snapshot_read(
-        &mut self,
-        identity: RelationalRowPageReadViewIdentity,
-        demand: &skein_storage::RelationalRowPageDemandReadReport,
-        recovery_bytes: u64,
-        overlay_entries: usize,
-        overlay_resident_bytes: usize,
-    ) -> Result<(), RelationalError> {
-        if identity != self.reader.identity() {
-            return Err(RelationalError::Corruption(
-                "sparse relational live row view identity changed during hydration".to_string(),
-            ));
-        }
-        self.pages_read = sparse_add_with_limit(
-            self.pages_read,
-            demand.pages_read,
-            self.limits.demand.max_pages.get(),
-            "page",
-        )?;
-        self.rows_decoded = sparse_add_with_limit(
-            self.rows_decoded,
-            demand.rows_decoded,
-            self.limits.demand.max_rows.get(),
-            "row",
-        )?;
-        let recovery_bytes = usize::try_from(recovery_bytes).map_err(|_| {
-            RelationalError::Admission(
-                "sparse relational live recovery bytes exceed platform capacity".to_string(),
-            )
-        })?;
-        let read_bytes = demand
-            .bytes_read
-            .checked_add(recovery_bytes)
-            .ok_or_else(|| {
-                RelationalError::Admission(
-                    "sparse relational live read-byte counter overflow".to_string(),
-                )
-            })?;
-        self.bytes_read = sparse_add_with_limit(
-            self.bytes_read,
-            read_bytes,
-            self.limits.demand.max_bytes.get(),
-            "read-byte",
-        )?;
-        self.overlay_entries = sparse_add_with_limit(
-            self.overlay_entries,
-            overlay_entries,
-            self.limits.max_overlay_entries.get(),
-            "overlay-entry",
-        )?;
-        self.overlay_resident_bytes = sparse_add_with_limit(
-            self.overlay_resident_bytes,
-            overlay_resident_bytes,
-            self.limits.max_overlay_bytes.get(),
-            "overlay-byte",
-        )?;
-        Ok(())
-    }
-}
-
-fn nonzero_min(left: NonZeroUsize, right: NonZeroUsize) -> NonZeroUsize {
-    NonZeroUsize::new(left.get().min(right.get())).expect("minimum of non-zero limits is non-zero")
-}
-
-fn sparse_remaining(
-    limit: NonZeroUsize,
-    used: usize,
-    name: &'static str,
-) -> Result<NonZeroUsize, RelationalError> {
-    limit
-        .get()
-        .checked_sub(used)
-        .and_then(NonZeroUsize::new)
-        .ok_or_else(|| {
-            RelationalError::Admission(format!(
-                "sparse relational live hydration exhausted its {} {name} budget",
-                limit.get()
-            ))
-        })
-}
-
-fn sparse_add_with_limit(
-    current: usize,
-    additional: usize,
-    limit: usize,
-    name: &'static str,
-) -> Result<usize, RelationalError> {
-    let next = current.checked_add(additional).ok_or_else(|| {
-        RelationalError::Admission(format!(
-            "sparse relational live hydration {name} counter overflow"
-        ))
-    })?;
-    if next > limit {
-        return Err(RelationalError::Admission(format!(
-            "sparse relational live hydration requires {next} {name}s, exceeding limit {limit}"
-        )));
-    }
-    Ok(next)
-}
-
-fn complete_sparse_projected_row(
-    table: &str,
-    fields: &[usize],
-    projected: RelationalProjectedRow,
-) -> Result<RelationalRow, RelationalError> {
-    if projected.fields.len() != fields.len()
-        || projected
-            .fields
-            .iter()
-            .zip(fields)
-            .any(|(field, expected)| field.ordinal != *expected)
-    {
-        return Err(RelationalError::Corruption(format!(
-            "sparse relational live read returned an incomplete row for table {table}"
-        )));
-    }
-    Ok(RelationalRow::new(
-        projected
-            .fields
-            .into_iter()
-            .map(|field| field.value)
-            .collect(),
-    ))
-}
-
-fn map_sparse_live_state_to_demand_error(
-    error: RelationalError,
-) -> RelationalRowPageDemandReadError {
-    match error {
-        RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
-        RelationalError::Durability(message) => {
-            RelationalRowPageDemandReadError::Durability(message)
-        }
-        RelationalError::Schema(message)
-        | RelationalError::Constraint(message)
-        | RelationalError::Corruption(message) => {
-            RelationalRowPageDemandReadError::Corrupt(message)
-        }
-    }
-}
-
-fn map_sparse_live_snapshot_error(error: RelationalRowPageSnapshotReadError) -> RelationalError {
-    match error {
-        RelationalRowPageSnapshotReadError::Admission(message) => {
-            RelationalError::Admission(message)
-        }
-        RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            RelationalError::Admission(reason.to_string())
-        }
-        RelationalRowPageSnapshotReadError::MissingTable(table) => RelationalError::Corruption(
-            format!("sparse relational live snapshot is missing table {table}"),
-        ),
-        RelationalRowPageSnapshotReadError::Corrupt(message) => {
-            RelationalError::Corruption(message)
-        }
-        RelationalRowPageSnapshotReadError::Durability(message) => {
-            RelationalError::Durability(message)
-        }
-    }
 }
 
 impl RelationalRowPageState {
@@ -823,22 +140,12 @@ impl RelationalRowPageState {
             materialized_row_bytes: state.estimated_materialized_row_bytes(),
             logical_row_count: state.total_row_count(),
             recovery_delta_checkpoint_runs: self.delta_config.checkpoint_runs.get(),
-            monotonic_append_attempts: self
-                .monotonic_append_metrics
-                .attempts
-                .load(AtomicOrdering::Relaxed),
-            monotonic_append_hits: self
-                .monotonic_append_metrics
-                .hits
-                .load(AtomicOrdering::Relaxed),
-            monotonic_append_fallbacks: self
-                .monotonic_append_metrics
-                .fallbacks
-                .load(AtomicOrdering::Relaxed),
+            monotonic_append_attempts: self.monotonic_append_metrics.attempts(),
+            monotonic_append_hits: self.monotonic_append_metrics.hits(),
+            monotonic_append_fallbacks: self.monotonic_append_metrics.fallbacks(),
             monotonic_append_proven_absent_primary_keys: self
                 .monotonic_append_metrics
-                .proven_absent_primary_keys
-                .load(AtomicOrdering::Relaxed),
+                .proven_absent_primary_keys(),
             ..RelationalRowStorageResidencyReport::default()
         };
         let Some(view) = self.current_read_view(commit_epoch) else {
@@ -1573,64 +880,22 @@ impl GraphStore {
         ),
         RelationalError,
     > {
-        if !state.canonical_row_metadata_only() {
-            return Err(RelationalError::Admission(
-                "sparse relational live hydration requires canonical metadata-only state"
-                    .to_string(),
-            ));
-        }
-        let plan = state.plan_sparse_transaction_hydration(transaction)?;
-        let mut hydrator = RelationalSparseLiveHydrator::new(
+        hydrate_sparse_relational_workspace(
             state,
             reader,
-            row_capture_limits,
+            transaction,
+            constraint_index,
+            RelationalSparseLiveHydrationOptions {
+                mutation_limits: self.relational_mutation_limits,
+                overflow_config: self.relational_overflow_config,
+                index_capture_limits,
+                row_capture_limits,
+                monotonic_append_fast_path_enabled: self
+                    .relational_row_pages
+                    .monotonic_append_fast_path_enabled,
+            },
             Arc::clone(&self.relational_row_pages.monotonic_append_metrics),
-        );
-        for access in plan.point_access() {
-            hydrator.hydrate_point(access)?;
-        }
-        for append in plan.monotonic_appends() {
-            if self.relational_row_pages.monotonic_append_fast_path_enabled {
-                hydrator.hydrate_monotonic_append(append)?;
-            } else {
-                hydrator.hydrate_append_points(append)?;
-            }
-        }
-        for table in plan.scan_tables() {
-            hydrator.hydrate_table(table)?;
-        }
-        for probe in plan.index_probes() {
-            hydrator.resolve_probe(probe, constraint_index)?;
-        }
-
-        loop {
-            let previous_entries = hydrator.workspace.len();
-            let preparation = state.prepare_sparse_transaction_for_authoritative_live(
-                RelationalSparseLivePreparationStage {
-                    transaction: transaction.clone(),
-                    hydrated_workspace: hydrator.workspace_snapshot(),
-                    mutation_limits: self.relational_mutation_limits,
-                    overflow_config: self.relational_overflow_config,
-                    index_capture_limits,
-                    row_capture_limits,
-                },
-            )?;
-            for access in preparation.replay_access().entries() {
-                hydrator.hydrate_point(access)?;
-            }
-            for probe in preparation.constraint_probes() {
-                hydrator.resolve_probe(probe, constraint_index)?;
-            }
-            if hydrator.workspace.len() == previous_entries {
-                let report = hydrator.report();
-                let proven_absent_primary_keys = hydrator.proven_absent_primary_keys();
-                return Ok((
-                    hydrator.workspace_snapshot(),
-                    report,
-                    proven_absent_primary_keys,
-                ));
-            }
-        }
+        )
     }
 
     pub(super) fn record_relational_row_recovery_capture(
@@ -2014,10 +1279,10 @@ impl GraphStore {
                     "metadata-only transaction requires a current canonical row view".to_string(),
                 )
             })?;
-        Ok(Some(RelationalTransactionRowView {
+        Ok(Some(RelationalTransactionRowView::new(
             view,
-            limits: self.relational_row_pages.live_limits,
-        }))
+            self.relational_row_pages.live_limits,
+        )))
     }
 
     pub(crate) fn open_relational_row_snapshot_reader(
@@ -2283,7 +1548,7 @@ impl GraphStore {
             ));
         };
         let committed_identity = committed.identity();
-        let transaction_identity = rows.view.identity();
+        let transaction_identity = rows.read_view().identity();
         if committed_identity.base_generation != transaction_identity.base_generation
             || committed_identity.base_commit_epoch != transaction_identity.base_commit_epoch
             || committed_identity.root_set_digest != transaction_identity.root_set_digest
@@ -2293,7 +1558,7 @@ impl GraphStore {
                 "transaction-private row view differs from its committed base".to_string(),
             ));
         }
-        self.open_relational_row_snapshot_reader_for_view(Arc::clone(&rows.view))
+        self.open_relational_row_snapshot_reader_for_view(Arc::clone(rows.read_view()))
     }
 
     fn open_relational_row_snapshot_reader_for_view(
@@ -2342,20 +1607,6 @@ fn map_sparse_row_delta_error(error: RelationalRowDeltaError) -> RelationalError
         | RelationalRowDeltaError::StaleBase { .. }) => {
             RelationalError::Corruption(error.to_string())
         }
-    }
-}
-
-fn map_transaction_row_live_error(error: RelationalRowPageLiveError) -> RelationalError {
-    match error {
-        RelationalRowPageLiveError::Admission(message)
-        | RelationalRowPageLiveError::Invalidated(message) => RelationalError::Admission(message),
-        RelationalRowPageLiveError::RequiresCheckpoint { tables } => {
-            RelationalError::Admission(format!(
-                "transaction-private row overlay requires a canonical checkpoint for tables {}",
-                tables.join(",")
-            ))
-        }
-        RelationalRowPageLiveError::Corrupt(message) => RelationalError::Corruption(message),
     }
 }
 

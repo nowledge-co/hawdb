@@ -144,6 +144,7 @@ test_suite(
         "//crates/storage:skein_storage_positioned_read_fuzz_tests",
         "//crates/storage:skein_storage_projected_artifact_fuzz_tests",
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
+        "//crates/storage:skein_storage_relational_row_workspace_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
         "//crates/storage:skein_storage_source_scan_fuzz_tests",
         "//crates/storage:skein_storage_set_value_fuzz_tests",
