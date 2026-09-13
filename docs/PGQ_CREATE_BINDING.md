@@ -41,6 +41,11 @@ Within an element, a repeated property across labels must use the same resolved
 expression. Identity ignores source spans and redundant parentheses, but keeps
 column identities, literal values, meaningful casts, and operand order.
 
+Only a syntactic column reference, optionally parenthesized or qualified, supplies
+an implicit property name. Every other expression requires `AS`, including an
+identity cast such as `id::bigint`, even though binding can erase that cast when
+comparing expressions across labels.
+
 ## Qualified scalar and expression profile
 
 The metadata mapping is exhaustive:

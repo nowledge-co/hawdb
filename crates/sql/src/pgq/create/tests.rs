@@ -376,6 +376,58 @@ fn repeated_property_expressions_ignore_spans_parentheses_and_resolved_qualifica
 }
 
 #[test]
+fn implicit_property_names_require_syntactic_columns_even_for_identity_casts() {
+    let snapshot = snapshot();
+    for (column, cast, data_type) in [
+        ("id", "bigint", PgqDataType::Int64),
+        ("score", "float8", PgqDataType::Float64),
+        ("title", "text", PgqDataType::String),
+        ("enabled", "boolean", PgqDataType::Boolean),
+        ("payload", "bytea", PgqDataType::Binary),
+        ("external_id", "uuid", PgqDataType::Uuid),
+    ] {
+        let bind_property = |expression: &str| {
+            bind(
+                &format!(
+                    "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES ({expression}))"
+                ),
+                &snapshot,
+            )
+        };
+        for expression in [column.to_owned(), format!("((public.vertices.{column}))")] {
+            let graph = bind_property(&expression).unwrap();
+            assert_eq!(
+                graph.vertex_labels["vertices"].properties[column],
+                data_type
+            );
+        }
+        for expression in [
+            format!("{column}::{cast}"),
+            format!("((public.vertices.{column})::{cast})"),
+            format!("{column}::{cast}::{cast}"),
+        ] {
+            let error = bind_property(&expression).unwrap_err();
+            assert_eq!(
+                error.code,
+                Code::MissingPropertyName,
+                "{expression}: {error}"
+            );
+            let graph = bind_property(&format!("{expression} AS value")).unwrap();
+            assert_eq!(
+                graph.vertex_labels["vertices"].properties["value"],
+                data_type
+            );
+        }
+    }
+    bind(
+        "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices
+        LABEL a PROPERTIES (id AS p) LABEL b PROPERTIES (id::bigint AS p))",
+        &snapshot,
+    )
+    .unwrap();
+}
+
+#[test]
 fn quoted_identifiers_preserve_dots_case_and_utf8() {
     let mut source = table(
         "Mixed.Table",

@@ -333,13 +333,15 @@ impl Binder<'_> {
                     let mut expression = self.expression(source, &property.expression, 0)?;
                     let name = match &property.alias {
                         Some(alias) => self.identifier(alias)?,
-                        None => expression.column_name(source).ok_or_else(|| {
-                            self.error(
-                                Code::MissingPropertyName,
-                                property.span,
-                                "non-column property requires AS",
-                            )
-                        })?,
+                        None => expression
+                            .implicit_column_name(source, &property.expression)
+                            .ok_or_else(|| {
+                                self.error(
+                                    Code::MissingPropertyName,
+                                    property.span,
+                                    "non-column property requires AS",
+                                )
+                            })?,
                     };
                     self.resolve_unknown(&mut expression, PgqDataType::String, property.span)?;
                     if properties.insert(name.clone(), expression).is_some() {

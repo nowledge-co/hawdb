@@ -52,7 +52,18 @@ impl BoundExpression {
         }
     }
 
-    pub(super) fn column_name(&self, source: &PgqSourceTableSchema) -> Option<String> {
+    pub(super) fn implicit_column_name(
+        &self,
+        source: &PgqSourceTableSchema,
+        mut syntax: &ExpressionSyntax,
+    ) -> Option<String> {
+        // Binding erases identity casts, but they still require an explicit name.
+        while let Syntax::Parenthesized(inner) = &syntax.kind {
+            syntax = inner;
+        }
+        if !matches!(syntax.kind, Syntax::Column(_)) {
+            return None;
+        }
         match self.kind {
             Kind::Column(index) => source.columns.get(index).map(|column| column.name.clone()),
             _ => None,
