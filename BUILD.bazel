@@ -275,9 +275,19 @@ test_suite(
     name = "skein_unit_tests",
     tests = [
         ":skein_acl_capability_tests",
+        ":skein_pgq_create_binder_tests",
         ":skein_unit_fast_tests",
         ":skein_unit_storage_crash_matrix_tests",
     ],
+)
+
+# External embedded-library consumer; no internal owner imports.
+rust_test(
+    name = "skein_pgq_create_binder_tests",
+    crate_root = "tests/pgq_create_binder.rs",
+    srcs = ["tests/pgq_create_binder.rs"],
+    edition = "2024",
+    deps = [":skein"],
 )
 
 # Reuse the qualification binary without running the full root suite twice.

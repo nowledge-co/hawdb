@@ -19,6 +19,8 @@ pub enum PgqDataType {
     Int64,
     Float64,
     String,
+    Binary,
+    Uuid,
     GraphElement(PgqElementKind),
 }
 
