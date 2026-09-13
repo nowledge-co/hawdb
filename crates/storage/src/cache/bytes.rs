@@ -93,7 +93,9 @@ impl Drop for SegmentBytes {
             if pin.external_handles.load(Ordering::Acquire) == 0
                 && pin.accounted.swap(false, Ordering::Relaxed)
             {
-                shard.pinned_bytes -= self.payload.bytes.len() as u64;
+                shard.pinned_bytes = shard
+                    .pinned_bytes
+                    .saturating_sub(self.payload.bytes.len() as u64);
             }
         }
     }
