@@ -147,13 +147,13 @@ test_suite(
         "//crates/storage:skein_storage_projected_artifact_fuzz_tests",
         "//crates/storage:skein_storage_property_projection_hex_fuzz_tests",
         "//crates/storage:skein_storage_relational_index_view_fuzz_tests",
-        "//crates/storage:skein_storage_shadow_metadata_fuzz_tests",
         "//crates/storage:skein_storage_sharded_cache_fuzz_tests",
         "//crates/storage:skein_storage_source_scan_fuzz_tests",
         "//crates/storage:skein_storage_set_value_fuzz_tests",
         "//crates/storage:skein_storage_statistics_refresh_fuzz_tests",
         "//crates/storage:skein_storage_transaction_compaction_fuzz_tests",
         "//crates/storage:skein_storage_transaction_locks_fuzz_tests",
+        "//crates/storage:skein_storage_shadow_metadata_fuzz_tests",
     ],
 )
 
