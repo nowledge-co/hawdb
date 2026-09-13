@@ -12,3 +12,8 @@ skein-plan = { path = "../plan" }
 skein-plan-cache = { path = "../plan-cache" }
 skein-sql-syntax = { path = "../sql-syntax" }
 sqlparser = "0.61"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

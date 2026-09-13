@@ -1,0 +1,1710 @@
+[
+  {
+    "formatted": false,
+    "function": "exposes_owned_postgres_sql_pgq_syntax",
+    "line": 14,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (memories KEY (id))",
+    "cases": [
+      "case-0001"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_select_subset",
+    "line": 26,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT query, elapsed_micros AS elapsed FROM system.slow_queries WHERE start_time >= '2026-07-23T00:00:00Z' AND work_class IN ('query', 'shadow') ORDER BY elapsed_micros DESC LIMIT 20 OFFSET 5",
+    "cases": [
+      "case-0002"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
+    "line": 102,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT id FROM messages WHERE id = $1 {suffix}",
+    "cases": [
+      "case-0003",
+      "case-0004"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
+    "line": 111,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT id FROM messages {suffix}",
+    "cases": [
+      "case-0005",
+      "case-0006"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_parameters_in_predicates_and_bounds",
+    "line": 120,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT * FROM system.slow_queries WHERE work_class = $1 AND elapsed_micros >= $2 ORDER BY elapsed_micros DESC LIMIT $3 OFFSET $4",
+    "cases": [
+      "case-0007"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_zero_based_postgres_parameter",
+    "line": 152,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT * FROM system.slow_queries WHERE query = $0",
+    "cases": [
+      "case-0008"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "normalizes_unquoted_identifiers_with_postgres_rules",
+    "line": 160,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT \"QueryText\", ELAPSED_MICROS FROM SYSTEM.SLOW_QUERIES WHERE \"QueryText\" IS NOT NULL",
+    "cases": [
+      "case-0009"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_delete_statement",
+    "line": 198,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "DELETE FROM thread_messages WHERE thread_storage_id = $1",
+    "cases": [
+      "case-0010"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_inner_join_with_aliases",
+    "line": 216,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT * FROM system.slow_queries q JOIN system.plan_cache p ON q.digest = p.digest",
+    "cases": [
+      "case-0011"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_aggregate_projection_and_distinct_argument",
+    "line": 235,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT COUNT(DISTINCT tm.content_message_id) AS covered_messages FROM thread_messages AS tm GROUP BY tm.thread_storage_id",
+    "cases": [
+      "case-0012"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_aggregate_filter_predicate_and_parameters",
+    "line": 262,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT COUNT(*) FILTER (WHERE is_read = $1) AS unread_count FROM entries",
+    "cases": [
+      "case-0013"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_aggregate_filter_predicate_and_parameters",
+    "line": 296,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT MAX(id) FILTER (WHERE id = 'entry-1') FROM entries",
+    "cases": [
+      "case-0014"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_content_table_schema",
+    "line": 304,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "CREATE TABLE content_chunks (chunk_id TEXT PRIMARY KEY, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), chunk_index BIGINT NOT NULL, text TEXT NOT NULL, UNIQUE (content_doc_id, chunk_index))",
+    "cases": [
+      "case-0015"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_strict_append_table_storage",
+    "line": 328,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL, payload BYTEA NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence')",
+    "cases": [
+      "case-0016"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_commit_sequence_strict_append_storage",
+    "line": 355,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence', generated_order = 'commit_sequence')",
+    "cases": [
+      "case-0017"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_incomplete_strict_append_table_storage",
+    "line": 375,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id')",
+    "cases": [
+      "case-0018"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_insert_on_conflict_update",
+    "line": 385,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "INSERT INTO content_migration_state (key, value, updated_at) VALUES ($1, $2, $3), ($4, $5, $6) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+    "cases": [
+      "case-0019"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_prepared_bigint_update_arithmetic",
+    "line": 404,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "UPDATE feeds SET failure_count = failure_count + $2, retry_count = $3 + retry_count, success_count = success_count - $4 WHERE id = $1",
+    "cases": [
+      "case-0020"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_prepared_bigint_update_arithmetic",
+    "line": 445,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "UPDATE feeds SET failure_count = 1 - failure_count WHERE id = $1",
+    "cases": [
+      "case-0021"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_prepared_bigint_update_arithmetic",
+    "line": 446,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "UPDATE feeds SET failure_count = failure_count * 2 WHERE id = $1",
+    "cases": [
+      "case-0022"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_insert_on_conflict_do_nothing_returning",
+    "line": 456,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "INSERT INTO raw_turns (org_id, request_id, raw_turn_id) VALUES ($1, $2, $3) ON CONFLICT (org_id, request_id) DO NOTHING RETURNING raw_turn_id",
+    "cases": [
+      "case-0023"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_insert_returning_expression",
+    "line": 477,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "INSERT INTO raw_turns (raw_turn_id) VALUES ($1) RETURNING upper(raw_turn_id)",
+    "cases": [
+      "case-0024"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_insert_returning_expression",
+    "line": 482,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "INSERT RETURNING supports column references only",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "prepares_dense_repeated_postgres_parameters",
+    "line": 488,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 OR message_id = $1 LIMIT $2",
+    "cases": [
+      "case-0025"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_explain_and_preserves_inner_parameters",
+    "line": 505,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN ANALYZE SELECT id FROM content_documents WHERE id = $1 LIMIT $2",
+    "cases": [
+      "case-0026"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unsupported_explain_options_and_mutations",
+    "line": 525,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN VERBOSE SELECT id FROM content_documents",
+    "cases": [
+      "case-0027"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unsupported_explain_options_and_mutations",
+    "line": 526,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN VERBOSE must remain outside the supported contract",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unsupported_explain_options_and_mutations",
+    "line": 532,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN UPDATE content_documents SET content = 'changed' WHERE id = 'doc-1'",
+    "cases": [
+      "case-0028"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unsupported_explain_options_and_mutations",
+    "line": 534,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN only supports read statements",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unsupported_explain_options_and_mutations",
+    "line": 537,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "EXPLAIN only supports relational SELECT",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "rejects_gapped_postgres_parameters",
+    "line": 543,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 LIMIT $3",
+    "cases": [
+      "case-0029"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_nested_octet_length_aggregate",
+    "line": 551,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0) AS payload_bytes FROM thread_messages",
+    "cases": [
+      "case-0030"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_like_and_ilike_predicates_with_parameters_and_escape",
+    "line": 569,
+    "path": "crates/sql/src/tests.rs",
+    "sql": "SELECT id FROM documents WHERE title LIKE $1 ESCAPE '!' OR title NOT ILIKE 'guide%'",
+    "cases": [
+      "case-0031"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "unsupported_create_table_names_the_clause_without_echoing_payloads",
+    "line": 19,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "CREATE TEMP TABLE private_name (id BIGINT)",
+    "cases": [
+      "case-0032"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "unsupported_create_table_names_the_clause_without_echoing_payloads",
+    "line": 21,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "CREATE TABLE private_name AS SELECT 'private literal'",
+    "cases": [
+      "case-0033"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "unsupported_create_table_names_the_clause_without_echoing_payloads",
+    "line": 25,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "CREATE TABLE private_name (id BIGINT) ON COMMIT DROP",
+    "cases": [
+      "case-0034"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "unsupported_create_table_names_the_clause_without_echoing_payloads",
+    "line": 29,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "CREATE TABLE private_name (id BIGINT) INHERITS (private_parent)",
+    "cases": [
+      "case-0035"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "unsupported_create_table_names_the_clause_without_echoing_payloads",
+    "line": 33,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "CREATE TABLE private_name (id BIGINT) PARTITION BY RANGE (id)",
+    "cases": [
+      "case-0036"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "unsupported_insert_names_the_clause_before_parameter_preparation",
+    "line": 48,
+    "path": "crates/sql/src/tests/clause_diagnostics.rs",
+    "sql": "INSERT INTO private_name AS private_alias (id) VALUES ({values})",
+    "cases": [
+      "case-0037",
+      "case-0038"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "create_base",
+    "line": 27,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE t (id BIGINT)",
+    "cases": [
+      "case-0039"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "insert_base",
+    "line": 34,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT INTO t (id) VALUES (1)",
+    "cases": [
+      "case-0040"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "create_cases",
+    "line": 61,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "SELECT 'private literal'",
+    "cases": [
+      "case-0041"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "every_original_clause_condition_is_rejected_by_lowering",
+    "line": 218,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "every_original_clause_condition_is_rejected_by_lowering",
+    "line": 231,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "local_scope_is_present_even_when_the_global_flag_is_false",
+    "line": 243,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 291,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 319,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 344,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TEMP TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 345,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 347,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TEMP TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 352,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 357,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 362,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 368,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 371,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT INTO",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "source_contract",
+    "line": 378,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "clause_diagnostics_campaign",
+    "line": 403,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "CREATE TABLE",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "clause_diagnostics_campaign",
+    "line": 418,
+    "path": "crates/sql/src/parser/clause_tests.rs",
+    "sql": "INSERT",
+    "cases": [],
+    "exclusion": "AST-only label or generated SQL fragment; source_contract ordinary cases are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "preserves_postgres_source_spans_and_table_aliases",
+    "line": 15,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (\n        app.knowledge\n        MATCH (memory IS Memory WHERE memory.id = $1)-[IS MENTIONS]->(entity)\n        COLUMNS (memory.id AS memory_id, entity.name)\n    ) AS matched(memory_id, entity_name)",
+    "cases": [
+      "case-0042"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_property_graph_label_and_property_forms",
+    "line": 33,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge\n         VERTEX TABLES (\n             documents KEY (id) NO PROPERTIES,\n             entities DEFAULT LABEL,\n             chunks KEY (id)\n                 LABEL searchable PROPERTIES (content, rank + 1 AS boosted_rank)\n                 LABEL stored PROPERTIES ALL COLUMNS\n         )\n         EDGE TABLES (\n             mentions KEY (document_id, entity_id)\n                 SOURCE KEY (document_id) REFERENCES documents (id)\n                 DESTINATION KEY (entity_id) REFERENCES entities (id)\n                 DEFAULT LABEL\n                 LABEL weighted PROPERTIES (confidence)\n         )",
+    "cases": [
+      "case-0043"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_property_graph_endpoint_shorthand",
+    "line": 83,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge\n         VERTEX TABLES (documents, entities)\n         EDGE TABLES (mentions SOURCE documents DESTINATION entities)",
+    "cases": [
+      "case-0044"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 98,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE UNLOGGED PROPERTY GRAPH knowledge",
+    "cases": [
+      "case-0045"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 99,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge INVALID",
+    "cases": [
+      "case-0046"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 100,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES ()",
+    "cases": [
+      "case-0047"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 101,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge EDGE TABLES ()",
+    "cases": [
+      "case-0048"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 102,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents LABEL)",
+    "cases": [
+      "case-0049"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 103,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents DEFAULT)",
+    "cases": [
+      "case-0050"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 104,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents UNKNOWN EXPOSURE)",
+    "cases": [
+      "case-0051"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 105,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents PROPERTIES ())",
+    "cases": [
+      "case-0052"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 106,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents PROPERTIES ALL)",
+    "cases": [
+      "case-0053"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 107,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents KEY ())",
+    "cases": [
+      "case-0054"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 108,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge EDGE TABLES (mentions SOURCE KEY () REFERENCES documents (id) DESTINATION entities)",
+    "cases": [
+      "case-0055"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 109,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge EDGE TABLES (mentions SOURCE documents DESTINATION entities) VERTEX TABLES (documents, entities)",
+    "cases": [
+      "case-0056"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_property_graph_syntax_errors",
+    "line": 110,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (documents) VERTEX TABLES (entities)",
+    "cases": [
+      "case-0057"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 123,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d IS document) COLUMNS (d.id))",
+    "cases": [
+      "case-0058"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 127,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)-[m IS mentions]->(e IS entity) COLUMNS (d.id, e.name))",
+    "cases": [
+      "case-0059"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 131,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (e)<-[m]-(d) COLUMNS (d.id))",
+    "cases": [
+      "case-0060"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 135,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)-[m]-(e) COLUMNS (d.id))",
+    "cases": [
+      "case-0061"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 139,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)->(e)<-(x)-(y) COLUMNS (d.id))",
+    "cases": [
+      "case-0062"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_postgres_graph_path_shapes",
+    "line": 143,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d IS document | archived WHERE d.id = $1)->(e) WHERE e.active COLUMNS (d.id AS document_id)) AS matched",
+    "cases": [
+      "case-0063"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "preserves_edge_direction_and_quantifier_syntax",
+    "line": 157,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)-[m]->{1,3}(e) COLUMNS (d.id))",
+    "cases": [
+      "case-0064"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 171,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH ()() COLUMNS (1 AS one))",
+    "cases": [
+      "case-0065"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 172,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH -> COLUMNS (1 AS one))",
+    "cases": [
+      "case-0066"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 173,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH ()-[]- COLUMNS (1 AS one))",
+    "cases": [
+      "case-0067"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 174,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH ()-> ->() COLUMNS (1 AS one))",
+    "cases": [
+      "case-0068"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 175,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (a), (b) COLUMNS (1 AS one))",
+    "cases": [
+      "case-0069"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_transform_rejections_out_of_the_syntax_layer",
+    "line": 176,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH ((a)->(b)) COLUMNS (a.id))",
+    "cases": [
+      "case-0070"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 185,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH COLUMNS (1 AS one))",
+    "cases": [
+      "case-0071"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 186,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d IS) COLUMNS (d.id))",
+    "cases": [
+      "case-0072"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 187,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d WHERE) COLUMNS (d.id))",
+    "cases": [
+      "case-0073"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 188,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)-[m IS]->(e) COLUMNS (d.id))",
+    "cases": [
+      "case-0074"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 189,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)-[m](e) COLUMNS (d.id))",
+    "cases": [
+      "case-0075"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 190,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d)->{1,}(e) COLUMNS (d.id))",
+    "cases": [
+      "case-0076"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_malformed_graph_table_syntax",
+    "line": 191,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (d) COLUMNS ())",
+    "cases": [
+      "case-0077"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "bounds_recursive_graph_pattern_nesting",
+    "line": 206,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH {}(node){} COLUMNS (node.id))",
+    "cases": [
+      "case-0078"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "bounds_recursive_graph_pattern_nesting",
+    "line": 214,
+    "path": "crates/sql-syntax/tests/postgres_pgq.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH {}(node){} COLUMNS (node.id))",
+    "cases": [
+      "case-0079"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_graph_table_as_a_postgres_from_item",
+    "line": 18,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT customer_name\n        FROM GRAPH_TABLE (\n            knowledge\n            MATCH (document IS documents WHERE document.id = $1)-[IS mentions]->(entity)\n            COLUMNS (entity.name AS customer_name)\n        )",
+    "cases": [
+      "case-0080"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_graph_table_as_a_postgres_from_item",
+    "line": 28,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "GRAPH_TABLE from item",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "parses_relational_and_graph_from_items_with_outer_clauses",
+    "line": 36,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT source.id, matched.entity_name\n        FROM source,\n             GRAPH_TABLE (\n                 knowledge\n                 MATCH (document IS documents WHERE document.id = source.id)-[IS mentions]->(entity)\n                 COLUMNS (entity.name AS entity_name)\n             ) AS matched\n        WHERE matched.entity_name IS NOT NULL\n        ORDER BY source.id, matched.entity_name\n        LIMIT $1 OFFSET 0 FOR SHARE;",
+    "cases": [
+      "case-0081"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "preserves_grouping_and_having_as_bounded_expression_spans",
+    "line": 66,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT DISTINCT matched.kind, count(*) AS total\n        FROM GRAPH_TABLE (\n            knowledge MATCH (node IS entity)\n            COLUMNS (node.kind AS kind)\n        ) matched\n        GROUP BY matched.kind\n        HAVING count(*) > 1\n        ORDER BY total DESC",
+    "cases": [
+      "case-0082"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "routes_owned_postgres_statement_families_without_fallback",
+    "line": 83,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH knowledge",
+    "cases": [
+      "case-0083"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "routes_owned_postgres_statement_families_without_fallback",
+    "line": 84,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "CREATE PROPERTY GRAPH syntax",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "routes_owned_postgres_statement_families_without_fallback",
+    "line": 91,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (node) COLUMNS (node.id))",
+    "cases": [
+      "case-0084"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "routes_owned_postgres_statement_families_without_fallback",
+    "line": 93,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT syntax",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_graph_transform_errors_out_of_select_parsing",
+    "line": 100,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH ()() COLUMNS (1 AS one))",
+    "cases": [
+      "case-0085"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_graph_transform_errors_out_of_select_parsing",
+    "line": 101,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH -> COLUMNS (1 AS one))",
+    "cases": [
+      "case-0086"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_graph_transform_errors_out_of_select_parsing",
+    "line": 102,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH ()-[]- COLUMNS (1 AS one))",
+    "cases": [
+      "case-0087"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "keeps_postgres_graph_transform_errors_out_of_select_parsing",
+    "line": 103,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (left_node), (right_node) COLUMNS (1 AS one))",
+    "cases": [
+      "case-0088"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 112,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT FROM source",
+    "cases": [
+      "case-0089"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 113,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM",
+    "cases": [
+      "case-0090"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 114,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source RIGHT JOIN target ON source.id = target.id",
+    "cases": [
+      "case-0091"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 115,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source FULL JOIN target ON source.id = target.id",
+    "cases": [
+      "case-0092"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 116,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source JOIN target USING (id)",
+    "cases": [
+      "case-0093"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 117,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source FETCH FIRST 1 ROW ONLY",
+    "cases": [
+      "case-0094"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 118,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source LIMIT 1 WHERE source.id = 1",
+    "cases": [
+      "case-0095"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 119,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE source.id = 1 WHERE source.id = 2",
+    "cases": [
+      "case-0096"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 120,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source ORDER BY source.id GROUP BY source.id",
+    "cases": [
+      "case-0097"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 121,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE (source.id = 1",
+    "cases": [
+      "case-0098"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 122,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE source.id = 1)",
+    "cases": [
+      "case-0099"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 123,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE ([source.id)]",
+    "cases": [
+      "case-0100"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 124,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (node) COLUMNS (node.id)) WHERE",
+    "cases": [
+      "case-0101"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_select_shapes_outside_the_owned_slice",
+    "line": 125,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (node) COLUMNS (node.id)) AS WHERE",
+    "cases": [
+      "case-0102"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": true,
+    "function": "bounds_expression_nesting_without_heap_growth",
+    "line": 138,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE {}1{}",
+    "cases": [
+      "case-0103"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "builds_pratt_expression_trees_with_postgres_precedence",
+    "line": 148,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT source.score + 1 * 2 AS rank\n        FROM source\n        WHERE NOT source.deleted\n          AND source.score + 1 * 2 >= $1\n          AND source.kind IN ('memory', 'entity')",
+    "cases": [
+      "case-0104"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "builds_pratt_expression_trees_with_postgres_precedence",
+    "line": 177,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE NOT source.score = 1",
+    "cases": [
+      "case-0105"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "builds_pratt_expression_trees_with_postgres_precedence",
+    "line": 194,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE NOT source.score IN (1, 2)",
+    "cases": [
+      "case-0106"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "builds_pratt_expression_trees_with_postgres_precedence",
+    "line": 209,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT * FROM source WHERE NOT source.deleted AND source.visible",
+    "cases": [
+      "case-0107"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "parses_supported_joins_around_graph_table_sources",
+    "line": 230,
+    "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
+    "sql": "SELECT source.id, matched.name, target.rank\n        FROM source\n        LEFT JOIN GRAPH_TABLE (\n            knowledge MATCH (node IS entity)\n            COLUMNS (node.id AS id, node.name AS name)\n        ) matched ON matched.id = source.id\n        INNER JOIN target ON target.id = matched.id\n        CROSS JOIN tenant\n        WHERE target.rank BETWEEN 1 AND 10",
+    "cases": [
+      "case-0108"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "",
+    "line": 27,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT * FROM source",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "",
+    "line": 31,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT * FROM schema_name.\"source_\u00e9\"",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "",
+    "line": 35,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (node) COLUMNS (node.id))",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "",
+    "line": 39,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "GRAPH_TABLE (knowledge MATCH (node) COLUMNS (node.id))",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "assert_accepted_alias",
+    "line": 126,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT statement expected",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "natural_join_reports_the_unsupported_keyword_not_missing_on",
+    "line": 157,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT * FROM source ",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "natural_join_with_on_is_not_accepted_as_an_aliased_inner_join",
+    "line": 164,
+    "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
+    "sql": "SELECT * FROM source ",
+    "cases": [],
+    "exclusion": "Envelope prefix; ordinary alias-boundary combinations are expanded separately."
+  },
+  {
+    "formatted": false,
+    "function": "binds_graph_namespace_properties_and_output_schema",
+    "line": 38,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT matched.name\n        FROM source,\n        GRAPH_TABLE (\n            knowledge\n            MATCH (document IS document\n                   WHERE document.id = source.id AND document.visible)\n                  -[mention IS mentions WHERE mention.confidence >= $1]->\n                  (entity IS entity)\n            WHERE entity.kind IN ('person', 'company')\n            COLUMNS (\n                entity.name AS name,\n                mention.confidence,\n                lower(entity.name) AS normalized\n            )\n        ) matched",
+    "cases": [
+      "case-0109"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "binds_graph_tables_used_as_join_sources",
+    "line": 78,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT matched.name\n        FROM source\n        LEFT JOIN GRAPH_TABLE (\n            knowledge MATCH (entity IS entity)\n            COLUMNS (entity.id AS id, entity.name AS name)\n        ) matched ON matched.id = source.id",
+    "cases": [
+      "case-0110"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "applies_graph_table_column_alias_lists",
+    "line": 93,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT matched.entity_id, matched.entity_name\n        FROM GRAPH_TABLE (\n            knowledge MATCH (entity IS entity)\n            COLUMNS (entity.id, entity.name)\n        ) matched(entity_id, entity_name)",
+    "cases": [
+      "case-0111"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "applies_graph_table_column_alias_lists",
+    "line": 98,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "GRAPH_TABLE column alias syntax",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "applies_graph_table_column_alias_lists",
+    "line": 100,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "GRAPH_TABLE column aliases",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_raw_graph_shapes_during_binding",
+    "line": 115,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH ()() COLUMNS (1 AS one))",
+    "cases": [
+      "case-0112"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_raw_graph_shapes_during_binding",
+    "line": 119,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH -> COLUMNS (1 AS one))",
+    "cases": [
+      "case-0113"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_raw_graph_shapes_during_binding",
+    "line": 123,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH ()-[]- COLUMNS (1 AS one))",
+    "cases": [
+      "case-0114"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_postgres_raw_graph_shapes_during_binding",
+    "line": 127,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (left_node), (right_node) COLUMNS (1 AS one))",
+    "cases": [
+      "case-0115"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unknown_catalog_references_with_source_spans",
+    "line": 147,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (missing MATCH (entity) COLUMNS (entity.id))",
+    "cases": [
+      "case-0116"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unknown_catalog_references_with_source_spans",
+    "line": 151,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS missing) COLUMNS (entity.id))",
+    "cases": [
+      "case-0117"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unknown_catalog_references_with_source_spans",
+    "line": 155,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS entity) COLUMNS (entity.missing))",
+    "cases": [
+      "case-0118"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unknown_catalog_references_with_source_spans",
+    "line": 159,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS entity) COLUMNS (unknown.name))",
+    "cases": [
+      "case-0119"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unqualified_graph_table_output_expressions",
+    "line": 180,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS entity) COLUMNS (lower(entity.name)))",
+    "cases": [
+      "case-0120"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unqualified_graph_table_output_expressions",
+    "line": 184,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS entity) COLUMNS (entity.name, entity.kind AS name))",
+    "cases": [
+      "case-0121"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unqualified_graph_table_output_expressions",
+    "line": 188,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (knowledge MATCH (entity IS entity) COLUMNS (count(*) AS total))",
+    "cases": [
+      "case-0122"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unqualified_graph_table_output_expressions",
+    "line": 199,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "GRAPH_TABLE output contract must fail closed",
+    "cases": [],
+    "exclusion": "Assertion diagnostic, not SQL input."
+  },
+  {
+    "formatted": false,
+    "function": "rejects_non_boolean_graph_predicates",
+    "line": 206,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n        knowledge MATCH (entity IS entity WHERE entity.name + 1)\n        COLUMNS (entity.name)\n    )",
+    "cases": [
+      "case-0123"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_incompatible_graph_comparisons",
+    "line": 218,
+    "path": "crates/sql/src/pgq/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n        knowledge MATCH (entity IS entity WHERE entity.name > 1)\n        COLUMNS (entity.name)\n    )",
+    "cases": [
+      "case-0124"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "lowers_single_hop_into_shared_graph_operators",
+    "line": 45,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT matched.name FROM GRAPH_TABLE (\n        knowledge\n        MATCH (document IS document WHERE document.visible)\n              -[mention IS mentions WHERE mention.confidence >= $1]->\n              (entity IS entity)\n        WHERE entity.id IN (7, 9)\n        COLUMNS (lower(entity.name) AS name, mention.confidence)\n    ) matched",
+    "cases": [
+      "case-0125"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "synthesizes_deterministic_names_for_anonymous_elements",
+    "line": 96,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n            knowledge MATCH (IS document)-[IS mentions]->(IS entity)\n            COLUMNS (1 AS one)\n        ) graph_rows",
+    "cases": [
+      "case-0126"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_unbound_parameters_before_planning",
+    "line": 124,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n            knowledge MATCH (entity IS entity WHERE entity.id = $1)\n            COLUMNS (entity.id)\n        ) graph_rows",
+    "cases": [
+      "case-0127"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_quantified_paths_until_walk_semantics_are_qualified",
+    "line": 139,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n            knowledge MATCH (document IS document)-[IS mentions]->{1,2}(entity IS entity)\n            COLUMNS (entity.id)\n        ) graph_rows",
+    "cases": [
+      "case-0128"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_multi_label_elements_until_shared_scan_supports_them",
+    "line": 160,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n            knowledge MATCH (item IS entity | document) COLUMNS (item.id)\n        ) graph_rows",
+    "cases": [
+      "case-0129"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_reused_path_variables_until_identity_constraints_are_explicit",
+    "line": 173,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM GRAPH_TABLE (\n            knowledge MATCH (entity IS entity)-[IS mentions]->(entity)\n            COLUMNS (entity.id)\n        ) graph_rows",
+    "cases": [
+      "case-0130"
+    ],
+    "exclusion": ""
+  },
+  {
+    "formatted": false,
+    "function": "rejects_correlated_columns_until_relational_and_graph_plans_are_joined",
+    "line": 186,
+    "path": "crates/sql/src/pgq/lowering/tests.rs",
+    "sql": "SELECT * FROM source, GRAPH_TABLE (\n        knowledge MATCH (entity IS entity WHERE entity.id = source.id)\n        COLUMNS (entity.id)\n    ) graph_rows",
+    "cases": [
+      "case-0131"
+    ],
+    "exclusion": ""
+  }
+]

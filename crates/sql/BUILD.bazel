@@ -23,9 +23,15 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+_SQL_TEST_DATA = glob(["fixtures/frontend_*"]) + [
+    "//crates/qualification:sql_frontend_corpus_inputs",
+    "//crates/sql-syntax:frontend_corpus_sources",
+]
+
 rust_test(
     name = "skein_sql_tests",
     crate = ":skein_sql",
+    compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -43,6 +49,24 @@ rust_test(
         "--nocapture",
     ],
     crate = ":skein_sql",
+    compile_data = _SQL_TEST_DATA,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_sql_frontend_corpus_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "tests::frontend_corpus::frontend_corpus_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_sql",
+    compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

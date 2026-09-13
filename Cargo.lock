@@ -1117,6 +1117,9 @@ name = "skein-sql"
 version = "0.1.0"
 dependencies = [
  "caseless",
+ "serde",
+ "serde_json",
+ "sha2",
  "skein-core",
  "skein-plan",
  "skein-plan-cache",

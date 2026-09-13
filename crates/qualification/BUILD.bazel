@@ -7,6 +7,16 @@ test_suite(
     name = "presubmit_tests",
 )
 
+filegroup(
+    name = "sql_frontend_corpus_inputs",
+    srcs = [
+        "fixtures/nowledge_content_store/content_store_schema_v1.sql",
+        "fixtures/nowledge_content_store/postgres_statement_corpus_v1.json",
+    ],
+    testonly = True,
+    visibility = ["//crates/sql:__pkg__"],
+)
+
 rust_library(
     name = "skein_qualification",
     crate_name = "skein_qualification",

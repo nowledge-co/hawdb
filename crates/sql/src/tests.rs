@@ -7,6 +7,7 @@ use super::{
 use skein_core::Value;
 
 mod clause_diagnostics;
+mod frontend_corpus;
 
 #[test]
 fn exposes_owned_postgres_sql_pgq_syntax() {

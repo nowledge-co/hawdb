@@ -6,6 +6,17 @@ test_suite(
     name = "presubmit_tests",
 )
 
+filegroup(
+    name = "frontend_corpus_sources",
+    srcs = [
+        "tests/postgres_pgq.rs",
+        "tests/postgres_select_pgq.rs",
+        "tests/support/alias_boundaries.rs",
+    ],
+    testonly = True,
+    visibility = ["//crates/sql:__pkg__"],
+)
+
 rust_library(
     name = "skein_sql_syntax",
     crate_name = "skein_sql_syntax",
