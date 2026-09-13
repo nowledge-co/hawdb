@@ -6,6 +6,7 @@ pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
 
 static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(Jieba::new);
 
+#[cfg(test)]
 pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
     if !text.chars().any(is_han_search_char) {
         return Vec::new();
@@ -16,6 +17,21 @@ pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
         .filter(|token| token.word.chars().any(is_han_search_char))
         .map(|token| token.word.to_string())
         .collect()
+}
+
+pub(super) fn visit_chinese_search_tokens<'a>(
+    text: &'a str,
+    mut emit: impl FnMut(&'a str) -> super::Result<()>,
+) -> super::Result<()> {
+    if !text.chars().any(is_han_search_char) {
+        return Ok(());
+    }
+    for token in CHINESE_TOKENIZER.cut_for_search(text, true) {
+        if token.word.chars().any(is_han_search_char) {
+            emit(token.word)?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn is_cjk_search_char(ch: char) -> bool {

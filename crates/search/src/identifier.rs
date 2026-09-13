@@ -1,4 +1,4 @@
-//! Identifier splitting retains output parts, but needs only one lookahead char.
+//! Borrowed identifier boundaries with one lookahead character and replayable cursors.
 
 #[cfg(test)]
 #[path = "identifier/reference.rs"]
@@ -6,46 +6,80 @@ pub(super) mod reference;
 
 #[cfg(test)]
 thread_local! {
-    pub(super) static SPLIT_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static SPLIT_CURSORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
 pub(super) fn identifier_parts(raw: &str) -> Vec<String> {
-    #[cfg(test)]
-    SPLIT_VISITS.with(|visits| visits.set(visits.get() + 1));
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut previous_kind = IdentifierCharKind::Other;
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '_' {
-            push_identifier_part(&mut parts, &mut current);
-            previous_kind = IdentifierCharKind::Other;
-            continue;
-        }
-        let kind = IdentifierCharKind::from_char(ch);
-        let next_kind = chars.peek().copied().map(IdentifierCharKind::from_char);
-        if !current.is_empty()
-            && ((previous_kind == IdentifierCharKind::Lower && kind == IdentifierCharKind::Upper)
-                || (previous_kind == IdentifierCharKind::Upper
-                    && kind == IdentifierCharKind::Upper
-                    && next_kind == Some(IdentifierCharKind::Lower))
-                || (previous_kind != IdentifierCharKind::Digit
-                    && kind == IdentifierCharKind::Digit)
-                || (previous_kind == IdentifierCharKind::Digit
-                    && kind != IdentifierCharKind::Digit))
-        {
-            push_identifier_part(&mut parts, &mut current);
-        }
-        current.extend(ch.to_lowercase());
-        previous_kind = kind;
-    }
-    push_identifier_part(&mut parts, &mut current);
-    parts
+    part_slices(raw).map(normalize_part).collect()
 }
 
-fn push_identifier_part(parts: &mut Vec<String>, current: &mut String) {
-    if !current.is_empty() {
-        parts.push(std::mem::take(current));
+pub(super) fn normalize_part(part: &str) -> String {
+    part.chars().flat_map(char::to_lowercase).collect()
+}
+
+pub(super) fn part_slices(raw: &str) -> IdentifierParts<'_> {
+    #[cfg(test)]
+    SPLIT_CURSORS.with(|visits| visits.set(visits.get() + 1));
+    IdentifierParts {
+        raw,
+        chars: raw.char_indices().peekable(),
+        start: 0,
+        previous_kind: IdentifierCharKind::Other,
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct IdentifierParts<'a> {
+    raw: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    start: usize,
+    previous_kind: IdentifierCharKind,
+}
+
+impl<'a> Iterator for IdentifierParts<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((offset, ch)) = self.chars.next() {
+            if ch == '_' {
+                let start = self.start;
+                self.start = offset + 1;
+                self.previous_kind = IdentifierCharKind::Other;
+                if start != offset {
+                    return Some(&self.raw[start..offset]);
+                }
+                continue;
+            }
+            let kind = IdentifierCharKind::from_char(ch);
+            let next_kind = self
+                .chars
+                .peek()
+                .map(|(_, ch)| IdentifierCharKind::from_char(*ch));
+            let boundary = offset != self.start
+                && ((self.previous_kind == IdentifierCharKind::Lower
+                    && kind == IdentifierCharKind::Upper)
+                    || (self.previous_kind == IdentifierCharKind::Upper
+                        && kind == IdentifierCharKind::Upper
+                        && next_kind == Some(IdentifierCharKind::Lower))
+                    || (self.previous_kind != IdentifierCharKind::Digit
+                        && kind == IdentifierCharKind::Digit)
+                    || (self.previous_kind == IdentifierCharKind::Digit
+                        && kind != IdentifierCharKind::Digit));
+            self.previous_kind = kind;
+            if boundary {
+                let start = self.start;
+                self.start = offset;
+                return Some(&self.raw[start..offset]);
+            }
+        }
+        if self.start == self.raw.len() {
+            None
+        } else {
+            let part = &self.raw[self.start..];
+            self.start = self.raw.len();
+            Some(part)
+        }
     }
 }
 

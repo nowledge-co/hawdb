@@ -137,8 +137,20 @@ rust_test(
         "src/identifier.rs",
         "src/identifier/reference.rs",
         "tests/identifier_allocation.rs",
+        "tests/support/allocation.rs",
     ],
     edition = "2024",
+)
+
+rust_test(
+    name = "skein_search_analyzer_allocation_tests",
+    crate_root = "tests/analyzer_allocation.rs",
+    srcs = [
+        "tests/analyzer_allocation.rs",
+        "tests/support/allocation.rs",
+    ],
+    edition = "2024",
+    deps = [":skein_search"],
 )
 
 rust_test(

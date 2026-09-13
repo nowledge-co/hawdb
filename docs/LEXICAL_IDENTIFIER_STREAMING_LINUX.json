@@ -1,0 +1,136 @@
+{
+  "issue": 392,
+  "base_commit": "366828ec4133d10aed3b300d93cd2e04bfde5b74",
+  "platform": "x86_64-unknown-linux-gnu",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "workload": "Unchanged benches/search_tokenization.rs; 400000 CJK characters, 1200000 query bytes, empty in-memory index, fresh process per sample",
+  "measurement": "Three alternating pairs after compilation and other local tests terminated. Query time is benchmark elapsed_millis. Process peak RSS is Linux os.wait4 ru_maxrss in KiB. No workload override.",
+  "profile": {
+    "opt_level": "3",
+    "debuginfo": 0,
+    "debug_assertions": false,
+    "overflow_checks": false,
+    "test": true
+  },
+  "features": [
+    "background-maintenance",
+    "default",
+    "full-text-search",
+    "graph-analytics",
+    "vector-search"
+  ],
+  "binary_sha256": {
+    "baseline": "24b1a17e05e94397b0b9d56aa4927fe87ecf3c89891294e83f2f351541d75659",
+    "candidate": "3cee2e9eed4cca914676e4113225bb6af42f68af2eb1cc961f7af8b4fdc18fd4"
+  },
+  "candidate_source_hash_count": 982,
+  "candidate_source_receipt_sha256": "fb3f801b83d510eba847a4dd45438749e064afcd9f67257c926770fd7e98da48",
+  "samples": [
+    {
+      "round": 0,
+      "side": "baseline",
+      "exit_code": 0,
+      "wall_seconds": 1.0879057809943333,
+      "user_seconds": 1.015591,
+      "system_seconds": 0.0635,
+      "max_rss_kib": 176700,
+      "benchmark": {
+        "characters_per_second": 370958.9314065766,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 1078,
+        "query_bytes": 1200000
+      }
+    },
+    {
+      "round": 0,
+      "side": "candidate",
+      "exit_code": 0,
+      "wall_seconds": 0.7426494200481102,
+      "user_seconds": 0.693256,
+      "system_seconds": 0.044732999999999995,
+      "max_rss_kib": 156240,
+      "benchmark": {
+        "characters_per_second": 543667.2103402198,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 735,
+        "query_bytes": 1200000
+      }
+    },
+    {
+      "round": 1,
+      "side": "candidate",
+      "exit_code": 0,
+      "wall_seconds": 0.7487289819400758,
+      "user_seconds": 0.703267,
+      "system_seconds": 0.040824,
+      "max_rss_kib": 158244,
+      "benchmark": {
+        "characters_per_second": 538964.0590146458,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 742,
+        "query_bytes": 1200000
+      }
+    },
+    {
+      "round": 1,
+      "side": "baseline",
+      "exit_code": 0,
+      "wall_seconds": 0.9488659240305424,
+      "user_seconds": 0.902737,
+      "system_seconds": 0.0397,
+      "max_rss_kib": 176904,
+      "benchmark": {
+        "characters_per_second": 424985.1335419204,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 941,
+        "query_bytes": 1200000
+      }
+    },
+    {
+      "round": 2,
+      "side": "baseline",
+      "exit_code": 0,
+      "wall_seconds": 1.006389067042619,
+      "user_seconds": 0.9518449999999999,
+      "system_seconds": 0.046682,
+      "max_rss_kib": 177148,
+      "benchmark": {
+        "characters_per_second": 400349.93627089594,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 999,
+        "query_bytes": 1200000
+      }
+    },
+    {
+      "round": 2,
+      "side": "candidate",
+      "exit_code": 0,
+      "wall_seconds": 0.7709828319493681,
+      "user_seconds": 0.7212029999999999,
+      "system_seconds": 0.044686,
+      "max_rss_kib": 157672,
+      "benchmark": {
+        "characters_per_second": 523269.9747190092,
+        "cjk_character_count": 400000,
+        "elapsed_millis": 764,
+        "query_bytes": 1200000
+      }
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "median_query_ms": 999,
+      "median_rss_kib": 176904
+    },
+    "candidate": {
+      "median_query_ms": 742,
+      "median_rss_kib": 157672
+    }
+  },
+  "host": {
+    "cpu_model": "AMD Ryzen 7 7735HS with Radeon Graphics",
+    "logical_cpus": 16,
+    "available_cpus": 16,
+    "kernel": "7.1.10-zen1-1-zen"
+  }
+}
