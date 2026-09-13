@@ -6,6 +6,10 @@ use std::hash::BuildHasher;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod bytes;
+pub use bytes::SegmentBytes;
+use bytes::SegmentPayload;
+
 #[cfg(test)]
 thread_local! {
     pub(crate) static PAGE_INTEGRITY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -158,14 +162,43 @@ impl Display for SegmentCacheError {
 
 impl Error for SegmentCacheError {}
 
+/// A rejected admission, retaining the original owned input for uncached use.
+#[derive(Debug)]
+pub struct SegmentCacheAdmissionError {
+    error: SegmentCacheError,
+    bytes: Vec<u8>,
+}
+
+impl SegmentCacheAdmissionError {
+    pub fn error(&self) -> &SegmentCacheError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (SegmentCacheError, Vec<u8>) {
+        (self.error, self.bytes)
+    }
+}
+
+impl Display for SegmentCacheAdmissionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl Error for SegmentCacheAdmissionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SegmentCacheLease {
-    bytes: Arc<[u8]>,
+    bytes: SegmentBytes,
     page_integrity_verified: bool,
 }
 
 impl SegmentCacheLease {
-    pub fn into_arc(self) -> Arc<[u8]> {
+    pub fn into_bytes(self) -> SegmentBytes {
         self.bytes
     }
 
@@ -187,7 +220,7 @@ pub struct SegmentCache {
     // Admission precedes any shard lock. Hits take only their own shard;
     // snapshots lock all shards in index order while holding admission.
     admission: Mutex<SegmentCacheAdmission>,
-    shards: [Mutex<SegmentCacheShard>; CACHE_SHARD_COUNT],
+    shards: [Arc<Mutex<SegmentCacheShard>>; CACHE_SHARD_COUNT],
     shard_hasher: RandomState,
 }
 
@@ -210,23 +243,28 @@ struct SegmentCacheShard {
     clock: VecDeque<SegmentCacheIdentity>,
     hit_count: u64,
     miss_count: u64,
+    pinned_bytes: u64,
 }
 
 #[derive(Debug)]
 struct SegmentCacheEntry {
     key: SegmentCacheKey,
-    bytes: Arc<[u8]>,
+    payload: Arc<SegmentPayload>,
     verification_tag: Option<[u8; 32]>,
     page_integrity_verified: bool,
     referenced: bool,
 }
 
 impl SegmentCacheEntry {
-    fn lease(&self) -> SegmentCacheLease {
-        SegmentCacheLease {
-            bytes: Arc::clone(&self.bytes),
-            page_integrity_verified: self.page_integrity_verified,
-        }
+    fn lease(&self) -> (SegmentCacheLease, u64) {
+        let (bytes, charge) = self.payload.lease();
+        (
+            SegmentCacheLease {
+                bytes,
+                page_integrity_verified: self.page_integrity_verified,
+            },
+            charge,
+        )
     }
 }
 
@@ -242,14 +280,14 @@ impl SegmentCache {
                 digest_mismatch_count: 0,
                 admission_rejection_count: 0,
             }),
-            shards: std::array::from_fn(|_| Mutex::new(SegmentCacheShard::default())),
+            shards: std::array::from_fn(|_| Arc::new(Mutex::new(SegmentCacheShard::default()))),
             shard_hasher: RandomState::new(),
         }
     }
 
     pub fn get(&self, key: &SegmentCacheKey) -> Option<SegmentCacheLease> {
         let mut inner = self.lock_shard(&key.identity());
-        let lease = match inner.entries.get_mut(&key.identity()) {
+        let (lease, charge) = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
                     && entry.verification_tag.is_none() =>
@@ -262,6 +300,7 @@ impl SegmentCache {
                 return None;
             }
         };
+        inner.pinned_bytes = inner.pinned_bytes.saturating_add(charge);
         inner.hit_count = inner.hit_count.saturating_add(1);
         Some(lease)
     }
@@ -279,7 +318,7 @@ impl SegmentCache {
         verification_tag: [u8; 32],
     ) -> Option<SegmentCacheLease> {
         let mut inner = self.lock_shard(&key.identity());
-        let lease = match inner.entries.get_mut(&key.identity()) {
+        let (lease, charge) = match inner.entries.get_mut(&key.identity()) {
             Some(entry)
                 if entry.key.content_digest == key.content_digest
                     && entry.verification_tag == Some(verification_tag) =>
@@ -292,6 +331,7 @@ impl SegmentCache {
                 return None;
             }
         };
+        inner.pinned_bytes = inner.pinned_bytes.saturating_add(charge);
         inner.hit_count = inner.hit_count.saturating_add(1);
         Some(lease)
     }
@@ -303,7 +343,7 @@ impl SegmentCache {
         identity: &SegmentCacheIdentity,
     ) -> Option<SegmentCacheLease> {
         let mut inner = self.lock_shard(identity);
-        let lease = match inner.entries.get_mut(identity) {
+        let (lease, charge) = match inner.entries.get_mut(identity) {
             Some(entry) if entry.verification_tag.is_none() => {
                 entry.referenced = true;
                 entry.lease()
@@ -313,6 +353,7 @@ impl SegmentCache {
                 return None;
             }
         };
+        inner.pinned_bytes = inner.pinned_bytes.saturating_add(charge);
         inner.hit_count = inner.hit_count.saturating_add(1);
         Some(lease)
     }
@@ -320,9 +361,9 @@ impl SegmentCache {
     pub fn insert(
         &self,
         key: SegmentCacheKey,
-        bytes: impl Into<Arc<[u8]>>,
-    ) -> Result<SegmentCacheLease, SegmentCacheError> {
-        self.insert_checked(key, bytes.into(), false)
+        bytes: Vec<u8>,
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
+        self.insert_checked(key, bytes, false)
     }
 
     /// Admits an immutable physical page slot after its codec has verified both
@@ -331,23 +372,26 @@ impl SegmentCache {
     pub(crate) fn insert_page_verified(
         &self,
         key: SegmentCacheKey,
-        bytes: Arc<[u8]>,
-    ) -> Result<SegmentCacheLease, SegmentCacheError> {
+        bytes: Vec<u8>,
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
         self.insert_checked(key, bytes, true)
     }
 
     fn insert_checked(
         &self,
         key: SegmentCacheKey,
-        bytes: Arc<[u8]>,
+        bytes: Vec<u8>,
         page_integrity_verified: bool,
-    ) -> Result<SegmentCacheLease, SegmentCacheError> {
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
         let actual_digest = content_digest(&bytes);
         if actual_digest != key.content_digest {
             self.record_digest_mismatch();
-            return Err(SegmentCacheError::DigestMismatch {
-                expected: key.content_digest,
-                actual: actual_digest,
+            return Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::DigestMismatch {
+                    expected: key.content_digest,
+                    actual: actual_digest,
+                },
+                bytes,
             });
         }
         self.insert_inner(key, bytes, None, page_integrity_verified)
@@ -359,18 +403,18 @@ impl SegmentCache {
         &self,
         key: SegmentCacheKey,
         verification_tag: [u8; 32],
-        bytes: impl Into<Arc<[u8]>>,
-    ) -> Result<SegmentCacheLease, SegmentCacheError> {
-        self.insert_inner(key, bytes.into(), Some(verification_tag), false)
+        bytes: Vec<u8>,
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
+        self.insert_inner(key, bytes, Some(verification_tag), false)
     }
 
     fn insert_inner(
         &self,
         key: SegmentCacheKey,
-        bytes: Arc<[u8]>,
+        bytes: Vec<u8>,
         verification_tag: Option<[u8; 32]>,
         page_integrity_verified: bool,
-    ) -> Result<SegmentCacheLease, SegmentCacheError> {
+    ) -> Result<SegmentCacheLease, SegmentCacheAdmissionError> {
         let mut admission = self.lock_admission();
         let identity = key.identity();
         let mut inner = self.lock_shard(&identity);
@@ -381,16 +425,23 @@ impl SegmentCache {
         {
             if resident_digest != key.content_digest {
                 admission.digest_mismatch_count = admission.digest_mismatch_count.saturating_add(1);
-                return Err(SegmentCacheError::IdentityCollision {
-                    requested_key: key,
-                    resident_digest,
+                return Err(SegmentCacheAdmissionError {
+                    error: SegmentCacheError::IdentityCollision {
+                        requested_key: key,
+                        resident_digest,
+                    },
+                    bytes,
                 });
             }
             if inner.entries.get(&identity).is_some_and(|entry| {
-                entry.verification_tag != verification_tag || entry.bytes.as_ref() != bytes.as_ref()
+                entry.verification_tag != verification_tag
+                    || entry.payload.data() != bytes.as_slice()
             }) {
                 admission.digest_mismatch_count = admission.digest_mismatch_count.saturating_add(1);
-                return Err(SegmentCacheError::DigestCollision { key });
+                return Err(SegmentCacheAdmissionError {
+                    error: SegmentCacheError::DigestCollision { key },
+                    bytes,
+                });
             }
             let entry = inner
                 .entries
@@ -400,7 +451,8 @@ impl SegmentCache {
             // Promotion is safe only after the exact resident bytes matched.
             // Re-inserting raw bytes must not downgrade an existing proof.
             entry.page_integrity_verified |= page_integrity_verified;
-            let lease = entry.lease();
+            let (lease, charge) = entry.lease();
+            inner.pinned_bytes = inner.pinned_bytes.saturating_add(charge);
             inner.hit_count = inner.hit_count.saturating_add(1);
             return Ok(lease);
         }
@@ -409,9 +461,12 @@ impl SegmentCache {
         if entry_bytes > admission.capacity_bytes {
             admission.admission_rejection_count =
                 admission.admission_rejection_count.saturating_add(1);
-            return Err(SegmentCacheError::EntryTooLarge {
-                entry_bytes,
-                capacity_bytes: admission.capacity_bytes,
+            return Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::EntryTooLarge {
+                    entry_bytes,
+                    capacity_bytes: admission.capacity_bytes,
+                },
+                bytes,
             });
         }
         // Eviction can visit this shard too. Admission keeps identities stable
@@ -420,15 +475,18 @@ impl SegmentCache {
         if !self.evict_for(&mut admission, entry_bytes) {
             admission.admission_rejection_count =
                 admission.admission_rejection_count.saturating_add(1);
-            return Err(SegmentCacheError::PinnedCapacity {
-                requested_bytes: entry_bytes,
-                resident_bytes: admission.resident_bytes,
-                pinned_bytes: self
-                    .lock_shards()
-                    .iter()
-                    .map(|shard| shard.pinned_bytes())
-                    .fold(0, u64::saturating_add),
-                capacity_bytes: admission.capacity_bytes,
+            return Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::PinnedCapacity {
+                    requested_bytes: entry_bytes,
+                    resident_bytes: admission.resident_bytes,
+                    pinned_bytes: self
+                        .lock_shards()
+                        .iter()
+                        .map(|shard| shard.pinned_bytes)
+                        .fold(0, u64::saturating_add),
+                    capacity_bytes: admission.capacity_bytes,
+                },
+                bytes,
             });
         }
 
@@ -440,26 +498,32 @@ impl SegmentCache {
             identity,
             SegmentCacheEntry {
                 key,
-                bytes: Arc::clone(&bytes),
+                payload: SegmentPayload::cached(
+                    bytes,
+                    Arc::downgrade(&self.shards[self.shard_index(&identity)]),
+                ),
                 verification_tag,
                 page_integrity_verified,
                 referenced: true,
             },
         );
-        Ok(SegmentCacheLease {
-            bytes,
-            page_integrity_verified,
-        })
+        let (lease, charge) = inner
+            .entries
+            .get(&identity)
+            .expect("admitted cache identity remains resident")
+            .lease();
+        inner.pinned_bytes = inner.pinned_bytes.saturating_add(charge);
+        Ok(lease)
     }
 
     pub fn snapshot(&self) -> SegmentCacheSnapshot {
         let inner = self.lock_admission();
         let shards = self.lock_shards();
-        // Raw exported/shared Arcs do not notify the cache on their last drop.
-        // Retain the exact scan until the public ownership contract changes.
+        // Admission and the fixed shard set provide one coherent snapshot;
+        // handle lifecycle updates maintain each shard's pin total incrementally.
         let pinned_bytes = shards
             .iter()
-            .map(|shard| shard.pinned_bytes())
+            .map(|shard| shard.pinned_bytes)
             .fold(0, u64::saturating_add);
         SegmentCacheSnapshot {
             capacity_bytes: inner.capacity_bytes,
@@ -502,7 +566,7 @@ impl SegmentCache {
     }
 
     fn lock_shards(&self) -> [MutexGuard<'_, SegmentCacheShard>; CACHE_SHARD_COUNT] {
-        self.shards.each_ref().map(lock_unpoisoned)
+        self.shards.each_ref().map(|shard| lock_unpoisoned(shard))
     }
 
     fn evict_for(&self, admission: &mut SegmentCacheAdmission, requested_bytes: u64) -> bool {
@@ -528,14 +592,6 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl SegmentCacheShard {
-    fn pinned_bytes(&self) -> u64 {
-        self.entries
-            .values()
-            .filter(|entry| Arc::strong_count(&entry.bytes) > 1)
-            .map(|entry| entry.bytes.len() as u64)
-            .fold(0, u64::saturating_add)
-    }
-
     fn evict_bytes(&mut self, requested_bytes: u64, admission: &mut SegmentCacheAdmission) {
         let mut reclaimed_bytes = 0u64;
         // Both CLOCK passes stay under this shard lock: concurrent hits cannot
@@ -551,7 +607,7 @@ impl SegmentCacheShard {
             let Some(entry) = self.entries.get_mut(&key) else {
                 continue;
             };
-            if Arc::strong_count(&entry.bytes) > 1 {
+            if entry.payload.is_pinned() {
                 self.clock.push_back(key);
                 continue;
             }
@@ -564,10 +620,10 @@ impl SegmentCacheShard {
                 .entries
                 .remove(&key)
                 .expect("clock key remains resident");
-            reclaimed_bytes = reclaimed_bytes.saturating_add(entry.bytes.len() as u64);
+            reclaimed_bytes = reclaimed_bytes.saturating_add(entry.payload.data().len() as u64);
             admission.resident_bytes = admission
                 .resident_bytes
-                .saturating_sub(entry.bytes.len() as u64);
+                .saturating_sub(entry.payload.data().len() as u64);
             admission.eviction_count = admission.eviction_count.saturating_add(1);
         }
     }
@@ -597,11 +653,11 @@ mod tests {
     #[test]
     fn clock_evicts_unpinned_entries_under_a_byte_budget() {
         let cache = SegmentCache::new(8);
-        let first = cache.insert(key(1, b"aaaa"), &b"aaaa"[..]).unwrap();
+        let first = cache.insert(key(1, b"aaaa"), b"aaaa".to_vec()).unwrap();
         drop(first);
-        let second = cache.insert(key(2, b"bbbb"), &b"bbbb"[..]).unwrap();
+        let second = cache.insert(key(2, b"bbbb"), b"bbbb".to_vec()).unwrap();
         drop(second);
-        let third = cache.insert(key(3, b"cccc"), &b"cccc"[..]).unwrap();
+        let third = cache.insert(key(3, b"cccc"), b"cccc".to_vec()).unwrap();
         drop(third);
 
         let snapshot = cache.snapshot();
@@ -613,10 +669,13 @@ mod tests {
     #[test]
     fn pinned_leases_are_not_evicted_or_hidden_from_accounting() {
         let cache = SegmentCache::new(4);
-        let pinned = cache.insert(key(1, b"aaaa"), &b"aaaa"[..]).unwrap();
-        let error = cache.insert(key(2, b"bbbb"), &b"bbbb"[..]).unwrap_err();
+        let pinned = cache.insert(key(1, b"aaaa"), b"aaaa".to_vec()).unwrap();
+        let error = cache.insert(key(2, b"bbbb"), b"bbbb".to_vec()).unwrap_err();
 
-        assert!(matches!(error, SegmentCacheError::PinnedCapacity { .. }));
+        assert!(matches!(
+            error.error(),
+            SegmentCacheError::PinnedCapacity { .. }
+        ));
         assert_eq!(&*pinned, b"aaaa");
         let snapshot = cache.snapshot();
         assert_eq!(snapshot.pinned_bytes, 4);
@@ -629,9 +688,12 @@ mod tests {
         let cache = SegmentCache::new(16);
         let mut wrong_key = key(1, b"expected");
         wrong_key.content_digest = ContentDigest(0);
-        let error = cache.insert(wrong_key, &b"actual"[..]).unwrap_err();
+        let error = cache.insert(wrong_key, b"actual".to_vec()).unwrap_err();
 
-        assert!(matches!(error, SegmentCacheError::DigestMismatch { .. }));
+        assert!(matches!(
+            error.error(),
+            SegmentCacheError::DigestMismatch { .. }
+        ));
         let snapshot = cache.snapshot();
         assert_eq!(snapshot.resident_bytes, 0);
         assert_eq!(snapshot.digest_mismatch_count, 1);
@@ -642,15 +704,15 @@ mod tests {
         let cache = SegmentCache::new(64);
         let bytes = &b"same"[..];
         let base = key(1, bytes);
-        let first = cache.insert(base, bytes).unwrap();
+        let first = cache.insert(base, bytes.to_vec()).unwrap();
         drop(first);
         let mut next_generation = base;
         next_generation.manifest_generation = ManifestGeneration(4);
-        let second = cache.insert(next_generation, bytes).unwrap();
+        let second = cache.insert(next_generation, bytes.to_vec()).unwrap();
         drop(second);
         let mut decoded = base;
         decoded.representation = RepresentationKind::DecodedMetadata;
-        let third = cache.insert(decoded, bytes).unwrap();
+        let third = cache.insert(decoded, bytes.to_vec()).unwrap();
         drop(third);
 
         assert_eq!(cache.snapshot().entry_count, 3);
@@ -660,7 +722,7 @@ mod tests {
     fn immutable_identity_lookup_reuses_the_verified_digest() {
         let cache = SegmentCache::new(16);
         let key = key(1, b"page");
-        drop(cache.insert(key, &b"page"[..]).unwrap());
+        drop(cache.insert(key, b"page".to_vec()).unwrap());
 
         let lease = cache
             .get_by_identity(&key.identity())
@@ -674,15 +736,18 @@ mod tests {
     fn immutable_identity_rejects_different_content_in_one_generation() {
         let cache = SegmentCache::new(16);
         let first = key(1, b"page-a");
-        drop(cache.insert(first, &b"page-a"[..]).unwrap());
+        drop(cache.insert(first, b"page-a".to_vec()).unwrap());
         let second = SegmentCacheKey {
             content_digest: content_digest(b"page-b"),
             ..first
         };
 
-        let error = cache.insert(second, &b"page-b"[..]).unwrap_err();
+        let error = cache.insert(second, b"page-b".to_vec()).unwrap_err();
 
-        assert!(matches!(error, SegmentCacheError::IdentityCollision { .. }));
+        assert!(matches!(
+            error.error(),
+            SegmentCacheError::IdentityCollision { .. }
+        ));
         assert_eq!(cache.snapshot().entry_count, 1);
         assert_eq!(cache.snapshot().digest_mismatch_count, 1);
     }
@@ -693,7 +758,11 @@ mod tests {
         let mut cache_key = key(1, b"physical-slot");
         cache_key.representation = RepresentationKind::RelationalRowPageSlot;
         let tag = [7; 32];
-        drop(cache.insert_verified(cache_key, tag, &b"page"[..]).unwrap());
+        drop(
+            cache
+                .insert_verified(cache_key, tag, b"page".to_vec())
+                .unwrap(),
+        );
 
         assert!(cache.get(&cache_key).is_none());
         assert!(cache.get_verified(&cache_key, [8; 32]).is_none());
@@ -713,16 +782,16 @@ mod tests {
     fn page_verification_promotes_only_identical_resident_bytes() {
         let cache = SegmentCache::new(16);
         let cache_key = key(1, b"page");
-        let raw = cache.insert(cache_key, &b"page"[..]).unwrap();
+        let raw = cache.insert(cache_key, b"page".to_vec()).unwrap();
         assert!(!raw.page_integrity_verified());
         let verified = cache
-            .insert_page_verified(cache_key, Arc::from(&b"page"[..]))
+            .insert_page_verified(cache_key, b"page".to_vec())
             .unwrap();
         assert!(verified.page_integrity_verified());
         assert!(verified.clone().page_integrity_verified());
         assert!(!raw.page_integrity_verified());
         assert!(cache
-            .insert(cache_key, &b"page"[..])
+            .insert(cache_key, b"page".to_vec())
             .unwrap()
             .page_integrity_verified());
         assert!(cache.get(&cache_key).unwrap().page_integrity_verified());
@@ -732,15 +801,21 @@ mod tests {
             .page_integrity_verified());
 
         assert!(matches!(
-            cache.insert_page_verified(cache_key, Arc::from(&b"different"[..])),
-            Err(SegmentCacheError::DigestMismatch { .. })
+            cache.insert_page_verified(cache_key, b"different".to_vec()),
+            Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::DigestMismatch { .. },
+                ..
+            })
         ));
         assert!(matches!(
-            cache.insert_inner(cache_key, Arc::from(&b"collision"[..]), None, true),
-            Err(SegmentCacheError::DigestCollision { .. })
+            cache.insert_inner(cache_key, b"collision".to_vec(), None, true),
+            Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::DigestCollision { .. },
+                ..
+            })
         ));
-        let mut exported = verified.into_arc();
-        Arc::make_mut(&mut exported)[0] = b'P';
+        let mut exported = verified.into_bytes().to_vec();
+        exported[0] = b'P';
         assert_eq!(&*cache.get(&cache_key).unwrap(), b"page");
         let other_cache = SegmentCache::new(16);
         assert!(!other_cache
@@ -750,27 +825,28 @@ mod tests {
     }
 
     #[test]
-    fn verified_page_pins_and_eviction_preserve_raw_arc_ownership() {
+    fn verified_page_pins_and_eviction_preserve_tracked_byte_ownership() {
         let cache = SegmentCache::new(4);
-        let shared: Arc<[u8]> = Arc::from(&b"page"[..]);
-        let first = key(1, &shared);
-        let lease = cache
-            .insert_page_verified(first, Arc::clone(&shared))
-            .unwrap();
-        let exported = lease.into_arc();
+        let first = key(1, b"page");
+        let lease = cache.insert_page_verified(first, b"page".to_vec()).unwrap();
+        let exported = lease.into_bytes();
+        let shared = exported.clone();
         assert_eq!(cache.snapshot().pinned_bytes, 4);
         drop(exported);
         assert_eq!(cache.snapshot().pinned_bytes, 4);
         assert!(matches!(
-            cache.insert(key(2, b"next"), &b"next"[..]),
-            Err(SegmentCacheError::PinnedCapacity { .. })
+            cache.insert(key(2, b"next"), b"next".to_vec()),
+            Err(SegmentCacheAdmissionError {
+                error: SegmentCacheError::PinnedCapacity { .. },
+                ..
+            })
         ));
         drop(shared);
         assert_eq!(cache.snapshot().pinned_bytes, 0);
-        drop(cache.insert(key(2, b"next"), &b"next"[..]).unwrap());
+        drop(cache.insert(key(2, b"next"), b"next".to_vec()).unwrap());
         assert!(cache.get(&first).is_none());
         assert!(!cache
-            .insert(first, &b"page"[..])
+            .insert(first, b"page".to_vec())
             .unwrap()
             .page_integrity_verified());
         assert_eq!(cache.snapshot().eviction_count, 2);

@@ -1,8 +1,8 @@
 use super::{SegmentReadRange, SegmentReadSchedule};
 use crate::io::read_exact_at;
 use crate::{
-    content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
-    SegmentCacheKey, StoreId,
+    content_digest, ManifestGeneration, RepresentationKind, SegmentBytes, SegmentCache,
+    SegmentCacheError, SegmentCacheKey, StoreId,
 };
 use skein_core::{RuntimeCancellationReason, RuntimeIoWaveError, RuntimeTaskContext};
 use std::collections::BTreeMap;
@@ -142,12 +142,12 @@ impl<E: Error + 'static> Error for SegmentReadExecutionError<E> {
 }
 
 pub trait SegmentRangeReader: Sync {
-    fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError>;
+    fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError>;
 }
 
 #[derive(Debug, Clone)]
 pub struct SegmentRangeRead {
-    pub payload: Arc<[u8]>,
+    pub payload: SegmentBytes,
     pub cache_hit: bool,
     pub cache_miss: bool,
 }
@@ -223,7 +223,7 @@ impl FileSegmentRangeReader {
             && let Some(lease) = cache.get(&key)
         {
             return Ok(SegmentRangeRead {
-                payload: lease.into_arc(),
+                payload: lease.into_bytes(),
                 cache_hit: true,
                 cache_miss: false,
             });
@@ -249,7 +249,6 @@ impl FileSegmentRangeReader {
         let mut payload = vec![0; length];
         read_exact_at(file, &mut payload, range.offset)
             .map_err(|source| range_io_error(range, source))?;
-        let payload: Arc<[u8]> = payload.into();
         if let Some(expected) = range.content_digest
             && content_digest(&payload) != expected
         {
@@ -261,27 +260,34 @@ impl FileSegmentRangeReader {
                 segment_id: range.segment_ids.first().copied().unwrap_or_default(),
             });
         }
-        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-            match cache.insert(key, Arc::clone(&payload)) {
+        let payload = if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+            match cache.insert(key, payload) {
                 Ok(lease) => {
                     return Ok(SegmentRangeRead {
-                        payload: lease.into_arc(),
+                        payload: lease.into_bytes(),
                         cache_hit: false,
                         cache_miss,
                     });
                 }
-                Err(SegmentCacheError::EntryTooLarge { .. })
-                | Err(SegmentCacheError::PinnedCapacity { .. }) => {}
-                Err(source) => {
-                    return Err(SegmentReadError::Cache {
-                        artifact_id: range.artifact_id,
-                        source,
-                    });
+                Err(rejection) => {
+                    let (source, payload) = rejection.into_parts();
+                    match source {
+                        SegmentCacheError::EntryTooLarge { .. }
+                        | SegmentCacheError::PinnedCapacity { .. } => payload,
+                        source => {
+                            return Err(SegmentReadError::Cache {
+                                artifact_id: range.artifact_id,
+                                source,
+                            })
+                        }
+                    }
                 }
             }
-        }
+        } else {
+            payload
+        };
         Ok(SegmentRangeRead {
-            payload,
+            payload: payload.into(),
             cache_hit: false,
             cache_miss,
         })
@@ -289,7 +295,7 @@ impl FileSegmentRangeReader {
 }
 
 impl SegmentRangeReader for FileSegmentRangeReader {
-    fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+    fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
         self.read_range_with_report(range).map(|read| read.payload)
     }
 }
@@ -297,7 +303,7 @@ impl SegmentRangeReader for FileSegmentRangeReader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentReadPayload {
     pub range: SegmentReadRange,
-    pub bytes: Arc<[u8]>,
+    pub bytes: SegmentBytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -720,12 +726,12 @@ mod tests {
     }
 
     impl SegmentRangeReader for ConcurrencyTrackingReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
             std::thread::sleep(Duration::from_millis(10));
             self.active.fetch_sub(1, Ordering::AcqRel);
-            Ok(Arc::from(vec![0; range.length.get() as usize]))
+            Ok(vec![0; range.length.get() as usize].into())
         }
     }
 
@@ -736,13 +742,13 @@ mod tests {
     }
 
     impl SegmentRangeReader for PanickingReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
             assert_ne!(
                 range.segment_ids.first().copied(),
                 Some(self.panic_on_segment),
                 "injected range reader panic"
             );
-            Ok(Arc::from(vec![0; range.length.get() as usize]))
+            Ok(vec![0; range.length.get() as usize].into())
         }
     }
 
@@ -1028,6 +1034,86 @@ mod tests {
         let error = reader.read_range(&range).unwrap_err();
         assert!(matches!(error, SegmentReadError::DigestMismatch { .. }));
         assert_eq!(cache.snapshot().digest_mismatch_count, 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cached_scan_payload_clones_pin_bytes_and_rejected_reads_stay_uncached() {
+        let path = unique_test_file("tracked_cache_payload");
+        std::fs::write(&path, b"pagenext").unwrap();
+        let first = SegmentReadRange::new(7, 1, 0, NonZeroU64::new(4).unwrap())
+            .with_content_digest(content_digest(b"page"));
+        let next = SegmentReadRange::new(7, 2, 4, NonZeroU64::new(4).unwrap())
+            .with_content_digest(content_digest(b"next"));
+        for capacity in [0, 4] {
+            let cache = Arc::new(SegmentCache::new(capacity));
+            let mut reader = FileSegmentRangeReader::new().with_cache(
+                Arc::clone(&cache),
+                StoreId(9),
+                ManifestGeneration(1),
+            );
+            reader.register(7, &path);
+            let cold = reader.read_range_with_report(&first).unwrap();
+            let clone = cold.clone();
+            let delivered = SegmentReadPayload {
+                range: first.clone(),
+                bytes: clone.payload,
+            };
+            let delivered_clone = delivered.clone();
+            assert_eq!(cold.payload.as_ptr(), delivered_clone.bytes.as_ptr());
+            drop((cold, delivered));
+            assert_eq!(cache.snapshot().pinned_bytes, capacity);
+            let rejected = reader.read_range_with_report(&next).unwrap();
+            assert_eq!(&*rejected.payload, b"next");
+            assert!(rejected.cache_miss && !rejected.cache_hit);
+            assert_eq!(cache.snapshot().resident_bytes, capacity);
+            drop(delivered_clone);
+            assert_eq!(cache.snapshot().pinned_bytes, 0);
+            let admitted = reader.read_range_with_report(&next).unwrap();
+            assert_eq!(admitted.payload, rejected.payload);
+            assert_eq!(cache.snapshot().pinned_bytes, capacity);
+            drop(admitted);
+            // An uncached fallback must not pin a later resident copy.
+            assert_eq!(cache.snapshot().pinned_bytes, 0);
+            assert_eq!(&*rejected.payload, b"next");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_scan_consumer_releases_every_cached_payload_in_the_wave() {
+        let path = unique_test_file("tracked_cache_consumer_failure");
+        std::fs::write(&path, b"pagenext").unwrap();
+        let cache = Arc::new(SegmentCache::new(8));
+        let mut reader = FileSegmentRangeReader::new().with_cache(
+            Arc::clone(&cache),
+            StoreId(9),
+            ManifestGeneration(1),
+        );
+        reader.register(7, &path);
+        let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
+            .schedule([
+                SegmentReadRange::new(7, 1, 0, NonZeroU64::new(4).unwrap())
+                    .with_content_digest(content_digest(b"page")),
+                SegmentReadRange::new(7, 2, 4, NonZeroU64::new(4).unwrap())
+                    .with_content_digest(content_digest(b"next")),
+            ]);
+        assert_eq!(schedule.wave_count(), 1);
+        let result = SegmentReadExecutor::new(NonZeroU64::new(8).unwrap()).execute(
+            &reader,
+            &schedule,
+            |payload| {
+                assert_eq!(&*payload.bytes, b"page");
+                assert_eq!(cache.snapshot().pinned_bytes, 8);
+                Err("consumer stopped")
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(SegmentReadExecutionError::Consume("consumer stopped"))
+        ));
+        assert_eq!(cache.snapshot().pinned_bytes, 0);
+        assert_eq!(cache.snapshot().reclaimable_bytes, 8);
         std::fs::remove_file(path).unwrap();
     }
 

@@ -8,11 +8,11 @@ use super::{
     RelationalKey, RelationalOverflowRef, RelationalRow, RelationalScalarType, RelationalValue,
     RelationalValueRef,
 };
+use crate::SegmentBytes;
 use skein_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Range;
-use std::sync::Arc;
 
 mod delta;
 mod demand;
@@ -507,7 +507,7 @@ pub struct RelationalRowPageView<'a> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct VerifiedRowPage {
-    bytes: Arc<[u8]>,
+    bytes: SegmentBytes,
     metadata: VerifiedRowPageMetadata,
 }
 
@@ -556,7 +556,7 @@ impl VerifiedRowPageMetadata {
 }
 
 impl VerifiedRowPage {
-    pub(crate) fn new(bytes: Arc<[u8]>, metadata: VerifiedRowPageMetadata) -> Self {
+    pub(crate) fn new(bytes: SegmentBytes, metadata: VerifiedRowPageMetadata) -> Self {
         debug_assert_eq!(bytes.len(), metadata.encoded_len);
         Self { bytes, metadata }
     }

@@ -1828,19 +1828,44 @@ enum RelationalOverflowSegment {
 }
 
 impl RelationalOverflowSegment {
-    fn read(&self) -> Result<Arc<[u8]>, RelationalError> {
+    fn read(&self) -> Result<RelationalOverflowRead<'_>, RelationalError> {
         match self {
-            Self::Inline(bytes) => Ok(Arc::clone(bytes)),
-            Self::FileRange { reader, range } => reader.read_range(range).map_err(|error| {
-                RelationalError::Corruption(format!(
-                    "failed to read file-backed overflow segment: {error}"
-                ))
-            }),
+            Self::Inline(bytes) => Ok(RelationalOverflowRead::Inline(bytes)),
+            Self::FileRange { reader, range } => reader
+                .read_range(range)
+                .map(RelationalOverflowRead::FileRange)
+                .map_err(|error| {
+                    RelationalError::Corruption(format!(
+                        "failed to read file-backed overflow segment: {error}"
+                    ))
+                }),
         }
     }
 
     fn is_file_backed(&self) -> bool {
         matches!(self, Self::FileRange { .. })
+    }
+}
+
+enum RelationalOverflowRead<'a> {
+    Inline(&'a [u8]),
+    FileRange(crate::SegmentBytes),
+}
+
+impl std::ops::Deref for RelationalOverflowRead<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Inline(bytes) => bytes,
+            Self::FileRange(bytes) => bytes,
+        }
+    }
+}
+
+impl AsRef<[u8]> for RelationalOverflowRead<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self
     }
 }
 
@@ -3970,6 +3995,10 @@ impl RelationalState {
                                 "checkpoint overflow materialization uses {materialized_bytes} bytes, exceeding limit {max_materialized_bytes}"
                             )));
                         }
+                        // Publication owns a detached envelope under the
+                        // materialization budget above. Ordinary hydration keeps
+                        // the tracked read handle and does not copy cached bytes.
+                        let encoded = Arc::from(encoded.as_ref());
                         Ok(RelationalOverflowExtentInput::Write { reference, encoded })
                     }
                 }

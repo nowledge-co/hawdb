@@ -1719,11 +1719,15 @@ impl RelationalIndexRecoveryReader {
             )?;
             let mut cache_admission_rejected = false;
             if let Some(cache) = &self.page_cache {
-                let encoded: Arc<[u8]> = encoded.into();
                 match cache.insert(cache_key, encoded) {
                     Ok(_) => {}
-                    Err(SegmentCacheError::EntryTooLarge { .. })
-                    | Err(SegmentCacheError::PinnedCapacity { .. }) => {
+                    Err(error)
+                        if matches!(
+                            error.error(),
+                            SegmentCacheError::EntryTooLarge { .. }
+                                | SegmentCacheError::PinnedCapacity { .. }
+                        ) =>
+                    {
                         cache_admission_rejected = true;
                     }
                     Err(error) => {

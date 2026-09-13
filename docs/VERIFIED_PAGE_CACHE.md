@@ -20,9 +20,10 @@ stricter limits cannot inherit the admitting reader's limits.
 - A fully validated insertion may promote an identical resident raw entry.
   Promotion requires exact-byte equality, not just a CRC match. Raw reinsertion
   cannot downgrade an existing proof. Older unverified leases remain unverified.
-- The proof belongs to an immutable cache entry/lease, not a naked `Arc<[u8]>`.
-  Exporting bytes and inserting them into another cache loses that proof.
-  Safe `Arc::make_mut` cannot modify the resident allocation while it is shared.
+- The proof belongs to an immutable cache entry/lease. Exported `SegmentBytes`
+  retain ownership without exporting the private proof or mutable access.
+  Inserting bytes into another cache requires an explicit owned copy and does
+  not carry the original proof.
 - Eviction discards the proof. A later raw insertion must be verified again.
 - Existing compact row-page source tags remain separate: untagged lookups still
   cannot retrieve those compact representations.
@@ -48,6 +49,9 @@ cache admission (full verification per hit) and reader-verified admission at
 1/2/4/8 threads. It is a same-code control for digest work, not a historical
 checkout benchmark or proof of near-linear cache scaling. Cache sharding and
 its separate scaling benchmark are described in [Sharded page cache](SHARDED_PAGE_CACHE.md).
-The exact pinned-byte entry scan remains. Issue #196 stays open for the ownership
-decision for O(1) pin accounting and the complete multi-threaded scaling
-acceptance criteria.
+Tracked ownership now maintains exact pin totals in fixed shard counters.
+Stable-identity padding validation compares full words and the remaining bytes;
+verified reads still check the complete padding extent. The
+[qualification report](CACHE_OWNERSHIP_VALIDATION.md) includes the baseline,
+padding-only control and tracked candidate; verified hits alone do not establish
+multi-threaded scaling.
