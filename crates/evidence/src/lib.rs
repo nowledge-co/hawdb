@@ -4,9 +4,13 @@ pub mod blackbox;
 mod crash_recovery;
 #[doc(hidden)]
 pub mod inventory;
+#[doc(hidden)]
+pub mod json_access;
 mod production;
 #[doc(hidden)]
 pub mod query_inventory;
+#[doc(hidden)]
+pub mod resource_profile;
 
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,

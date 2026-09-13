@@ -601,18 +601,22 @@ fn production_sized_resource_profile_stays_within_admission_budgets() {
     };
     {
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
-        let mut tx = db.begin_transaction();
-        for id in 0..node_count {
-            tx.query_with_params(
-                "CREATE (:Memory {id: $id, body: $body})",
-                &BTreeMap::from([
-                    ("id".to_string(), Value::Int(id as i64)),
-                    ("body".to_string(), Value::String("x".repeat(body_bytes))),
-                ]),
-            )
-            .unwrap();
+        // Seed the complete dataset without exceeding the default WAL record limit.
+        let transaction_rows = 128;
+        for start in (0..node_count).step_by(transaction_rows) {
+            let mut tx = db.begin_transaction();
+            for id in start..(start + transaction_rows).min(node_count) {
+                tx.query_with_params(
+                    "CREATE (:Memory {id: $id, body: $body})",
+                    &BTreeMap::from([
+                        ("id".to_string(), Value::Int(id as i64)),
+                        ("body".to_string(), Value::String("x".repeat(body_bytes))),
+                    ]),
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
         }
-        tx.commit().unwrap();
         db.checkpoint().unwrap();
         assert!(db.storage_residency_report().out_of_core);
     }
