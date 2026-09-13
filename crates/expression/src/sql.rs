@@ -11,16 +11,195 @@ pub enum SqlValue {
     Parameter(usize),
 }
 
+/// An owned SQL expression shared by predicates, projections and ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlExpression {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: SqlSourceSpan,
+}
+
+/// Contributing token locations supplied by the frontend, not an exact text slice.
+/// Zero locations represent expressions constructed without source information.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqlSourceSpan {
+    pub start: SqlSourceLocation,
+    pub end: SqlSourceLocation,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqlSourceLocation {
+    pub line: u64,
+    pub column: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExprKind {
     Column(SqlColumnRef),
     Value(SqlValue),
     Function {
         name: String,
         arguments: Vec<SqlFunctionArgument>,
         distinct: bool,
-        filter: Option<SqlPredicate>,
+        filter: Option<Box<Expr>>,
     },
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+    Compare {
+        left: Box<Expr>,
+        op: SqlComparisonOp,
+        right: Box<Expr>,
+    },
+    InList {
+        left: Box<Expr>,
+        values: Vec<Expr>,
+        negated: bool,
+    },
+    Like {
+        left: Box<Expr>,
+        pattern: Box<Expr>,
+        case_insensitive: bool,
+        negated: bool,
+        escape: SqlLikeEscape,
+    },
+    IsNull {
+        expression: Box<Expr>,
+        negated: bool,
+    },
+}
+
+/// Compatibility name for the shared expression tree.
+pub type SqlExpression = Expr;
+/// Compatibility name for expressions used in predicate positions.
+pub type SqlPredicate = Expr;
+
+impl Expr {
+    pub fn unspanned(kind: ExprKind) -> Self {
+        Self {
+            kind,
+            span: SqlSourceSpan::default(),
+        }
+    }
+
+    pub fn column(column: SqlColumnRef) -> Self {
+        Self::unspanned(ExprKind::Column(column))
+    }
+
+    pub fn value(value: SqlValue) -> Self {
+        Self::unspanned(ExprKind::Value(value))
+    }
+
+    pub fn as_column(&self) -> Option<&SqlColumnRef> {
+        match &self.kind {
+            ExprKind::Column(column) => Some(column),
+            _ => None,
+        }
+    }
+
+    pub fn as_value(&self) -> Option<&SqlValue> {
+        match &self.kind {
+            ExprKind::Value(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn require_column(&self) -> skein_core::Result<&SqlColumnRef> {
+        self.as_column().ok_or_else(|| {
+            skein_core::SkeinError::Semantic(
+                "this SQL expression position requires a column reference".to_owned(),
+            )
+        })
+    }
+
+    pub fn require_value(&self) -> skein_core::Result<&SqlValue> {
+        self.as_value().ok_or_else(|| {
+            skein_core::SkeinError::Semantic(
+                "this SQL expression position requires a literal or parameter".to_owned(),
+            )
+        })
+    }
+
+    /// Rewrites children before their parent while retaining source metadata.
+    /// Changes made before a visitor error are not rolled back.
+    pub fn try_visit_mut<E>(
+        &mut self,
+        visitor: &mut impl FnMut(&mut Self) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        match &mut self.kind {
+            ExprKind::Column(_) | ExprKind::Value(_) => {}
+            ExprKind::Function {
+                arguments, filter, ..
+            } => {
+                for argument in arguments {
+                    if let SqlFunctionArgument::Expression(expression) = argument {
+                        expression.try_visit_mut(visitor)?;
+                    }
+                }
+                if let Some(filter) = filter {
+                    filter.try_visit_mut(visitor)?;
+                }
+            }
+            ExprKind::And(left, right)
+            | ExprKind::Or(left, right)
+            | ExprKind::Compare { left, right, .. } => {
+                left.try_visit_mut(visitor)?;
+                right.try_visit_mut(visitor)?;
+            }
+            ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
+                expression.try_visit_mut(visitor)?
+            }
+            ExprKind::InList { left, values, .. } => {
+                left.try_visit_mut(visitor)?;
+                for value in values {
+                    value.try_visit_mut(visitor)?;
+                }
+            }
+            ExprKind::Like { left, pattern, .. } => {
+                left.try_visit_mut(visitor)?;
+                pattern.try_visit_mut(visitor)?;
+            }
+        }
+        visitor(self)
+    }
+
+    /// Visits every expression once in source order, including aggregate FILTER.
+    pub fn visit<'a>(&'a self, visitor: &mut impl FnMut(&'a Self)) {
+        visitor(self);
+        match &self.kind {
+            ExprKind::Column(_) | ExprKind::Value(_) => {}
+            ExprKind::Function {
+                arguments, filter, ..
+            } => {
+                for argument in arguments {
+                    if let SqlFunctionArgument::Expression(expression) = argument {
+                        expression.visit(visitor);
+                    }
+                }
+                if let Some(filter) = filter {
+                    filter.visit(visitor);
+                }
+            }
+            ExprKind::And(left, right)
+            | ExprKind::Or(left, right)
+            | ExprKind::Compare { left, right, .. } => {
+                left.visit(visitor);
+                right.visit(visitor);
+            }
+            ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
+                expression.visit(visitor)
+            }
+            ExprKind::InList { left, values, .. } => {
+                left.visit(visitor);
+                for value in values {
+                    value.visit(visitor);
+                }
+            }
+            ExprKind::Like { left, pattern, .. } => {
+                left.visit(visitor);
+                pattern.visit(visitor);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +216,14 @@ pub struct SqlColumnRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlOrderItem {
+    pub expression: Expr,
+    pub direction: SqlOrderDirection,
+    pub nulls: SqlNullOrder,
+}
+
+/// A column-only index DDL specification, independent of query order expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlIndexColumn {
     pub column: SqlColumnRef,
     pub direction: SqlOrderDirection,
     pub nulls: SqlNullOrder,
@@ -53,39 +240,6 @@ pub enum SqlNullOrder {
     DialectDefault,
     First,
     Last,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlPredicate {
-    And(Box<SqlPredicate>, Box<SqlPredicate>),
-    Or(Box<SqlPredicate>, Box<SqlPredicate>),
-    Not(Box<SqlPredicate>),
-    Compare {
-        left: SqlColumnRef,
-        op: SqlComparisonOp,
-        right: SqlValue,
-    },
-    CompareColumns {
-        left: SqlColumnRef,
-        op: SqlComparisonOp,
-        right: SqlColumnRef,
-    },
-    InList {
-        left: SqlColumnRef,
-        values: Vec<SqlValue>,
-        negated: bool,
-    },
-    Like {
-        left: SqlColumnRef,
-        pattern: SqlValue,
-        case_insensitive: bool,
-        negated: bool,
-        escape: SqlLikeEscape,
-    },
-    IsNull {
-        column: SqlColumnRef,
-        negated: bool,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

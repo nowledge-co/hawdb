@@ -1,5 +1,6 @@
 use super::{
-    lower_column_expr, lower_sql_expression, lower_table_name, normalize_ident, object_name_parts,
+    lower_column_expr, lower_expression, lower_table_name, normalize_ident, object_name_parts,
+    ExpressionPosition,
 };
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
@@ -285,19 +286,22 @@ fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColu
 }
 
 fn lower_column_default(expr: &Expr) -> Result<SqlColumnDefault> {
-    match lower_sql_expression(expr)? {
-        SqlExpression::Value(value) => Ok(SqlColumnDefault::Literal(value)),
-        SqlExpression::Function {
+    match lower_expression(expr, ExpressionPosition::Scalar)?.kind {
+        ExprKind::Value(value) => Ok(SqlColumnDefault::Literal(value)),
+        ExprKind::Function {
             name,
             arguments,
             distinct: false,
             filter: None,
         } if name == "uuidv7" && arguments.is_empty() => Ok(SqlColumnDefault::UuidV7),
-        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+        ExprKind::Function { name, .. } => Err(SkeinError::Semantic(format!(
             "unsupported PostgreSQL column default function {name}"
         ))),
-        SqlExpression::Column(_) => Err(SkeinError::Semantic(
+        ExprKind::Column(_) => Err(SkeinError::Semantic(
             "column defaults cannot reference a column".to_string(),
+        )),
+        _ => Err(SkeinError::Semantic(
+            "unsupported PostgreSQL column default expression".to_owned(),
         )),
     }
 }
@@ -457,13 +461,13 @@ fn lower_index_columns(columns: &[sqlparser::ast::IndexColumn]) -> Result<Vec<St
         .collect()
 }
 
-fn lower_index_order_item(column: &sqlparser::ast::IndexColumn) -> Result<SqlOrderItem> {
+fn lower_index_order_item(column: &sqlparser::ast::IndexColumn) -> Result<SqlIndexColumn> {
     if column.operator_class.is_some() {
         return Err(SkeinError::Semantic(
             "index operator classes are not supported".to_string(),
         ));
     }
-    Ok(SqlOrderItem {
+    Ok(SqlIndexColumn {
         column: lower_column_expr(&column.column.expr)?,
         direction: match column.column.options.asc {
             Some(false) => SqlOrderDirection::Desc,

@@ -1,7 +1,7 @@
 use crate::{
-    DeleteStatement, InsertStatement, SelectProjection, SelectStatement, SqlArithmeticOperand,
-    SqlAssignment, SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression,
-    SqlFunctionArgument, SqlPredicate, SqlStatement, SqlValue, UpdateStatement,
+    DeleteStatement, ExprKind, InsertStatement, SelectProjection, SelectStatement,
+    SqlArithmeticOperand, SqlAssignment, SqlAssignmentValue, SqlBound, SqlColumnDefault,
+    SqlExpression, SqlStatement, SqlValue, UpdateStatement,
 };
 use skein_core::{Result, SkeinError};
 use std::collections::BTreeSet;
@@ -87,10 +87,13 @@ fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<
         }
     }
     for join in &select.joins {
-        collect_predicate_parameters(&join.on, positions);
+        collect_expression_parameters(&join.on, positions);
     }
     if let Some(predicate) = &select.selection {
-        collect_predicate_parameters(predicate, positions);
+        collect_expression_parameters(predicate, positions);
+    }
+    for order in &select.order_by {
+        collect_expression_parameters(&order.expression, positions);
     }
     collect_bound_parameter(select.limit, positions);
     collect_bound_parameter(select.offset, positions);
@@ -112,13 +115,13 @@ fn collect_insert_parameters(insert: &InsertStatement, positions: &mut BTreeSet<
 fn collect_update_parameters(update: &UpdateStatement, positions: &mut BTreeSet<usize>) {
     collect_assignment_parameters(&update.assignments, positions);
     if let Some(predicate) = &update.selection {
-        collect_predicate_parameters(predicate, positions);
+        collect_expression_parameters(predicate, positions);
     }
 }
 
 fn collect_delete_parameters(delete: &DeleteStatement, positions: &mut BTreeSet<usize>) {
     if let Some(predicate) = &delete.selection {
-        collect_predicate_parameters(predicate, positions);
+        collect_expression_parameters(predicate, positions);
     }
 }
 
@@ -145,40 +148,11 @@ fn collect_arithmetic_operand_parameter(
 }
 
 fn collect_expression_parameters(expression: &SqlExpression, positions: &mut BTreeSet<usize>) {
-    match expression {
-        SqlExpression::Value(value) => collect_value_parameter(value, positions),
-        SqlExpression::Function {
-            arguments, filter, ..
-        } => {
-            for argument in arguments {
-                if let SqlFunctionArgument::Expression(expression) = argument {
-                    collect_expression_parameters(expression, positions);
-                }
-            }
-            if let Some(filter) = filter {
-                collect_predicate_parameters(filter, positions);
-            }
+    expression.visit(&mut |expression| {
+        if let ExprKind::Value(value) = &expression.kind {
+            collect_value_parameter(value, positions);
         }
-        SqlExpression::Column(_) => {}
-    }
-}
-
-fn collect_predicate_parameters(predicate: &SqlPredicate, positions: &mut BTreeSet<usize>) {
-    match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            collect_predicate_parameters(left, positions);
-            collect_predicate_parameters(right, positions);
-        }
-        SqlPredicate::Not(inner) => collect_predicate_parameters(inner, positions),
-        SqlPredicate::Compare { right, .. } => collect_value_parameter(right, positions),
-        SqlPredicate::InList { values, .. } => {
-            for value in values {
-                collect_value_parameter(value, positions);
-            }
-        }
-        SqlPredicate::Like { pattern, .. } => collect_value_parameter(pattern, positions),
-        SqlPredicate::CompareColumns { .. } | SqlPredicate::IsNull { .. } => {}
-    }
+    });
 }
 
 fn collect_value_parameter(value: &SqlValue, positions: &mut BTreeSet<usize>) {

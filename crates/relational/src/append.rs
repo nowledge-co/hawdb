@@ -5,6 +5,7 @@ use skein_sql::{
     SqlGeneratedOrder, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
     SqlTableStorage, SqlValue,
 };
+use skein_sql::{Expr, ExprKind};
 use skein_storage::{
     AppendGeneratedRow, AppendOrderMode, AppendState, AppendTableRow, AppendTableSchema,
     AppendTransaction, AppendWrite, RelationalColumnDefault, RelationalColumnSchema, RelationalRow,
@@ -345,8 +346,8 @@ fn compile_append_select(
     if !matches!(
         select.order_by.as_slice(),
         [order]
-            if order.column.name == *expected_order
-                && qualifier_matches(&order.column.qualifier, select.from_alias.as_deref(), &schema.name)
+            if order.expression.as_column().is_some_and(|column| column.name == *expected_order
+                && qualifier_matches(&column.qualifier, select.from_alias.as_deref(), &schema.name))
                 && order.direction == SqlOrderDirection::Asc
                 && matches!(order.nulls, SqlNullOrder::DialectDefault | SqlNullOrder::Last)
     ) {
@@ -404,13 +405,26 @@ fn collect_append_predicates(
     partition: &mut Option<RelationalValue>,
     after: &mut Option<RelationalValue>,
 ) -> Result<()> {
-    if let SqlPredicate::And(left, right) = predicate {
+    if let Expr {
+        kind: ExprKind::And(left, right),
+        ..
+    } = predicate
+    {
         collect_append_predicates(left, parameters, schema, alias, partition, after)?;
         return collect_append_predicates(right, parameters, schema, alias, partition, after);
     }
-    let SqlPredicate::Compare { left, op, right } = predicate else {
+    let Expr {
+        kind: ExprKind::Compare { left, op, right },
+        ..
+    } = predicate
+    else {
         return Err(SkeinError::Semantic(
             "strict append SELECT predicates must be key comparisons joined by AND".to_string(),
+        ));
+    };
+    let (Some(left), Some(right)) = (left.as_column(), right.as_value()) else {
+        return Err(SkeinError::Semantic(
+            "strict append SELECT predicates must be key comparisons joined by AND".to_owned(),
         ));
     };
     if !qualifier_matches(&left.qualifier, alias, &schema.name) {
@@ -482,9 +496,14 @@ fn compile_append_projection(
                     });
                 }
             }
-            SelectProjection::Column {
-                name,
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
                 alias: output_alias,
+                ..
             } => {
                 if !qualifier_matches(&name.qualifier, alias, &schema.name) {
                     return Err(SkeinError::Semantic(format!(

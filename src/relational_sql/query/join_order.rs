@@ -11,9 +11,10 @@ use crate::relational_sql::{
     resolve_relational_order_target, RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStrategy, RelationalOrderTarget,
 };
+use crate::sql::{Expr, ExprKind};
 use crate::sql::{
-    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlJoin,
-    SqlJoinKind, SqlPredicate, SqlTableName,
+    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlJoin, SqlJoinKind,
+    SqlPredicate, SqlTableName,
 };
 use crate::Value;
 use skein_expression::{
@@ -1085,13 +1086,16 @@ fn binding_order_names(bindings: &[BindingId], relations: &[BoundRelation<'_>]) 
 fn combine_predicates(predicates: impl IntoIterator<Item = SqlPredicate>) -> SqlPredicate {
     predicates
         .into_iter()
-        .reduce(|left, right| SqlPredicate::And(Box::new(left), Box::new(right)))
+        .reduce(|left, right| Expr::unspanned(ExprKind::And(Box::new(left), Box::new(right))))
         .expect("join predicate group is non-empty")
 }
 
 fn collect_conjuncts(predicate: &SqlPredicate, output: &mut Vec<SqlPredicate>) {
     match predicate {
-        SqlPredicate::And(left, right) => {
+        Expr {
+            kind: ExprKind::And(left, right),
+            ..
+        } => {
             collect_conjuncts(left, output);
             collect_conjuncts(right, output);
         }
@@ -1103,100 +1107,74 @@ fn qualify_predicate(
     predicate: &SqlPredicate,
     relations: &[BoundRelation<'_>],
 ) -> Option<SqlPredicate> {
-    Some(match predicate {
-        SqlPredicate::And(left, right) => SqlPredicate::And(
-            Box::new(qualify_predicate(left, relations)?),
-            Box::new(qualify_predicate(right, relations)?),
-        ),
-        SqlPredicate::Or(left, right) => SqlPredicate::Or(
-            Box::new(qualify_predicate(left, relations)?),
-            Box::new(qualify_predicate(right, relations)?),
-        ),
-        SqlPredicate::Not(predicate) => {
-            SqlPredicate::Not(Box::new(qualify_predicate(predicate, relations)?))
-        }
-        SqlPredicate::Compare { left, op, right } => SqlPredicate::Compare {
-            left: qualify_column(left, relations)?,
-            op: *op,
-            right: right.clone(),
-        },
-        SqlPredicate::CompareColumns { left, op, right } => SqlPredicate::CompareColumns {
-            left: qualify_column(left, relations)?,
-            op: *op,
-            right: qualify_column(right, relations)?,
-        },
-        SqlPredicate::InList {
-            left,
-            values,
-            negated,
-        } => SqlPredicate::InList {
-            left: qualify_column(left, relations)?,
-            values: values.clone(),
-            negated: *negated,
-        },
-        SqlPredicate::Like {
-            left,
-            pattern,
-            case_insensitive,
-            negated,
-            escape,
-        } => SqlPredicate::Like {
-            left: qualify_column(left, relations)?,
-            pattern: pattern.clone(),
-            case_insensitive: *case_insensitive,
-            negated: *negated,
-            escape: *escape,
-        },
-        SqlPredicate::IsNull { column, negated } => SqlPredicate::IsNull {
-            column: qualify_column(column, relations)?,
-            negated: *negated,
-        },
-    })
+    let mut qualified = predicate.clone();
+    qualified
+        .try_visit_mut(&mut |expression| {
+            if let ExprKind::Column(column) = &mut expression.kind {
+                *column = qualify_column(column, relations).ok_or(())?;
+            }
+            Ok::<_, ()>(())
+        })
+        .ok()?;
+    Some(qualified)
 }
 
 fn bind_null_rejection_predicate(
     predicate: &SqlPredicate,
     relations: &[BoundRelation<'_>],
 ) -> Option<BoundPredicate> {
-    Some(match predicate {
-        SqlPredicate::And(left, right) => BoundPredicate::And(vec![
+    Some(match &predicate.kind {
+        ExprKind::And(left, right) => BoundPredicate::And(vec![
             bind_null_rejection_predicate(left, relations)?,
             bind_null_rejection_predicate(right, relations)?,
         ]),
-        SqlPredicate::Or(left, right) => BoundPredicate::Or(vec![
+        ExprKind::Or(left, right) => BoundPredicate::Or(vec![
             bind_null_rejection_predicate(left, relations)?,
             bind_null_rejection_predicate(right, relations)?,
         ]),
-        SqlPredicate::Not(predicate) => BoundPredicate::Not(Box::new(
-            bind_null_rejection_predicate(predicate, relations)?,
-        )),
-        SqlPredicate::Compare { left, right, .. } => BoundPredicate::Comparison {
-            left: bind_null_rejection_column(left, relations)?,
-            right: bind_null_rejection_value(right),
+        ExprKind::Not(predicate) => BoundPredicate::Not(Box::new(bind_null_rejection_predicate(
+            predicate, relations,
+        )?)),
+        ExprKind::Compare { left, right, .. } => BoundPredicate::Comparison {
+            left: bind_null_rejection_scalar(left, relations)?,
+            right: bind_null_rejection_scalar(right, relations)?,
         },
-        SqlPredicate::CompareColumns { left, right, .. } => BoundPredicate::Comparison {
-            left: bind_null_rejection_column(left, relations)?,
-            right: bind_null_rejection_column(right, relations)?,
-        },
-        SqlPredicate::InList {
+        ExprKind::InList {
             left,
             values,
             negated,
         } => BoundPredicate::InList {
-            expression: bind_null_rejection_column(left, relations)?,
-            values: values.iter().map(bind_null_rejection_value).collect(),
+            expression: bind_null_rejection_scalar(left, relations)?,
+            values: values
+                .iter()
+                .map(|value| bind_null_rejection_scalar(value, relations))
+                .collect::<Option<_>>()?,
             negated: *negated,
         },
-        SqlPredicate::Like { .. } => return None,
-        SqlPredicate::IsNull { column, negated } => {
-            let column = bind_null_rejection_column(column, relations)?;
+        ExprKind::IsNull {
+            expression,
+            negated,
+        } => {
+            let column = bind_null_rejection_scalar(expression, relations)?;
             if *negated {
                 BoundPredicate::IsNotNull(column)
             } else {
                 BoundPredicate::IsNull(column)
             }
         }
+        _ => return None,
     })
+}
+
+fn bind_null_rejection_scalar(
+    expression: &Expr,
+    relations: &[BoundRelation<'_>],
+) -> Option<BoundScalarExpression> {
+    match &expression.kind {
+        ExprKind::Column(column) => bind_null_rejection_column(column, relations),
+        ExprKind::Value(value) => Some(bind_null_rejection_value(value)),
+        _ => None,
+    }
 }
 
 fn bind_null_rejection_column(
@@ -1261,27 +1239,24 @@ fn predicate_bindings(
 }
 
 fn collect_predicate_columns<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlColumnRef>) {
-    match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            collect_predicate_columns(left, output);
-            collect_predicate_columns(right, output);
+    predicate.visit(&mut |expression| {
+        if let Some(column) = expression.as_column() {
+            output.push(column);
         }
-        SqlPredicate::Not(predicate) => collect_predicate_columns(predicate, output),
-        SqlPredicate::Compare { left, .. }
-        | SqlPredicate::InList { left, .. }
-        | SqlPredicate::Like { left, .. }
-        | SqlPredicate::IsNull { column: left, .. } => output.push(left),
-        SqlPredicate::CompareColumns { left, right, .. } => {
-            output.push(left);
-            output.push(right);
-        }
-    }
+    });
 }
 
 fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'_>]) -> bool {
     select.projection.iter().all(|projection| match projection {
         SelectProjection::Wildcard => true,
-        SelectProjection::Column { name, .. } => resolve_column_binding(name, relations).is_some(),
+        SelectProjection::Expression {
+            expression:
+                Expr {
+                    kind: ExprKind::Column(name),
+                    ..
+                },
+            ..
+        } => resolve_column_binding(name, relations).is_some(),
         SelectProjection::Expression { expression, .. } => {
             expression_columns_resolve(expression, relations)
         }
@@ -1309,18 +1284,13 @@ fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'
 }
 
 fn expression_columns_resolve(expression: &SqlExpression, relations: &[BoundRelation<'_>]) -> bool {
-    match expression {
-        SqlExpression::Column(column) => resolve_column_binding(column, relations).is_some(),
-        SqlExpression::Value(_) => true,
-        SqlExpression::Function { arguments, .. } => {
-            arguments.iter().all(|argument| match argument {
-                SqlFunctionArgument::Expression(expression) => {
-                    expression_columns_resolve(expression, relations)
-                }
-                SqlFunctionArgument::Wildcard => true,
-            })
+    let mut resolved = true;
+    expression.visit(&mut |expression| {
+        if let Some(column) = expression.as_column() {
+            resolved &= resolve_column_binding(column, relations).is_some();
         }
-    }
+    });
+    resolved
 }
 
 #[cfg(test)]

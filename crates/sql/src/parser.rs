@@ -1,5 +1,6 @@
 use crate::ast::*;
 use skein_core::{Result, SkeinError, Value};
+use sqlparser::ast::Spanned;
 use sqlparser::ast::{
     BinaryOperator, Distinct, DuplicateTreatment, Expr, FunctionArg, FunctionArgExpr,
     FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, LockClause,
@@ -139,7 +140,11 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
         from: from_name,
         from_alias,
         joins: from.joins.iter().map(lower_join).collect::<Result<_>>()?,
-        selection: select.selection.as_ref().map(lower_predicate).transpose()?,
+        selection: select
+            .selection
+            .as_ref()
+            .map(|expr| lower_expression(expr, ExpressionPosition::Predicate))
+            .transpose()?,
         group_by: lower_group_by(&select.group_by)?,
         order_by: lower_order_by(query.order_by.as_ref())?,
         limit: lower_limit(query.limit_clause.as_ref())?,
@@ -185,16 +190,10 @@ fn lower_projection(items: &[ParserSelectItem]) -> Result<Vec<SelectProjection>>
 }
 
 fn lower_projection_expression(expr: &Expr, alias: Option<String>) -> Result<SelectProjection> {
-    match expr {
-        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Ok(SelectProjection::Column {
-            name: lower_column_expr(expr)?,
-            alias,
-        }),
-        _ => Ok(SelectProjection::Expression {
-            expression: lower_sql_expression(expr)?,
-            alias,
-        }),
-    }
+    Ok(SelectProjection::Expression {
+        expression: lower_expression(expr, ExpressionPosition::Scalar)?,
+        alias,
+    })
 }
 
 fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlOrderItem>> {
@@ -210,7 +209,7 @@ fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlO
         .iter()
         .map(|item| {
             Ok(SqlOrderItem {
-                column: lower_column_expr(&item.expr)?,
+                expression: lower_expression(&item.expr, ExpressionPosition::Column)?,
                 direction: match item.options.asc {
                     Some(false) => SqlOrderDirection::Desc,
                     Some(true) | None => SqlOrderDirection::Asc,
@@ -255,105 +254,144 @@ fn lower_offset(limit_clause: Option<&LimitClause>) -> Result<Option<SqlBound>> 
     }
 }
 
-pub(super) fn lower_predicate(expr: &Expr) -> Result<SqlPredicate> {
-    match expr {
-        Expr::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => Ok(SqlPredicate::And(
-                Box::new(lower_predicate(left)?),
-                Box::new(lower_predicate(right)?),
-            )),
-            BinaryOperator::Or => Ok(SqlPredicate::Or(
-                Box::new(lower_predicate(left)?),
-                Box::new(lower_predicate(right)?),
-            )),
-            BinaryOperator::Eq
-            | BinaryOperator::NotEq
-            | BinaryOperator::Lt
-            | BinaryOperator::LtEq
-            | BinaryOperator::Gt
-            | BinaryOperator::GtEq => {
-                let left = lower_column_expr(left)?;
-                let op = lower_comparison_op(op);
-                match right.as_ref() {
-                    Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
-                        Ok(SqlPredicate::CompareColumns {
-                            left,
-                            op,
-                            right: lower_column_expr(right)?,
-                        })
-                    }
-                    _ => Ok(SqlPredicate::Compare {
-                        left,
-                        op,
-                        right: lower_literal_expr(right)?,
-                    }),
-                }
-            }
-            _ => Err(SkeinError::Semantic(format!(
-                "unsupported PostgreSQL predicate operator {op}"
-            ))),
-        },
-        Expr::Nested(inner) => lower_predicate(inner),
-        Expr::UnaryOp {
-            op: sqlparser::ast::UnaryOperator::Not,
-            expr,
-        } => Ok(SqlPredicate::Not(Box::new(lower_predicate(expr)?))),
-        Expr::InList {
-            expr,
-            list,
-            negated,
-        } => Ok(SqlPredicate::InList {
-            left: lower_column_expr(expr)?,
-            values: list
-                .iter()
-                .map(lower_literal_expr)
-                .collect::<Result<Vec<_>>>()?,
-            negated: *negated,
-        }),
-        Expr::Like {
-            negated,
-            any,
-            expr,
-            pattern,
-            escape_char,
-        } => lower_like_predicate(expr, pattern, *negated, *any, escape_char.as_ref(), false),
-        Expr::ILike {
-            negated,
-            any,
-            expr,
-            pattern,
-            escape_char,
-        } => lower_like_predicate(expr, pattern, *negated, *any, escape_char.as_ref(), true),
-        Expr::IsNull(expr) => Ok(SqlPredicate::IsNull {
-            column: lower_column_expr(expr)?,
-            negated: false,
-        }),
-        Expr::IsNotNull(expr) => Ok(SqlPredicate::IsNull {
-            column: lower_column_expr(expr)?,
-            negated: true,
-        }),
-        _ => Err(SkeinError::Semantic(format!(
-            "unsupported PostgreSQL predicate expression {expr}"
-        ))),
-    }
+#[derive(Clone, Copy)]
+pub(super) enum ExpressionPosition {
+    Predicate,
+    Scalar,
+    Column,
+    Value,
 }
 
-fn lower_like_predicate(
+// These position checks preserve the existing language surface independently of
+// the shared representation. New expression shapes require separate semantics.
+pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Result<crate::Expr> {
+    use ExpressionPosition::{Column, Predicate, Scalar, Value};
+    let lower = |expr: &Expr, position| lower_expression(expr, position).map(Box::new);
+    let kind = match position {
+        Column => ExprKind::Column(lower_column_expr(expr)?),
+        Value => ExprKind::Value(lower_literal_expr(expr)?),
+        Scalar => match expr {
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
+                ExprKind::Column(lower_column_expr(expr)?)
+            }
+            Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
+                ExprKind::Value(lower_literal_expr(expr)?)
+            }
+            Expr::Function(function) => lower_function_expression(function)?,
+            _ => {
+                return Err(SkeinError::Semantic(format!(
+                    "unsupported PostgreSQL projection expression {expr}"
+                )))
+            }
+        },
+        Predicate => match expr {
+            Expr::BinaryOp { left, op, right } => match op {
+                BinaryOperator::And => {
+                    ExprKind::And(lower(left, Predicate)?, lower(right, Predicate)?)
+                }
+                BinaryOperator::Or => {
+                    ExprKind::Or(lower(left, Predicate)?, lower(right, Predicate)?)
+                }
+                BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::LtEq
+                | BinaryOperator::Gt
+                | BinaryOperator::GtEq => ExprKind::Compare {
+                    left: lower(left, Column)?,
+                    op: lower_comparison_op(op),
+                    right: lower(
+                        right,
+                        match right.as_ref() {
+                            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Column,
+                            _ => Value,
+                        },
+                    )?,
+                },
+                _ => {
+                    return Err(SkeinError::Semantic(format!(
+                        "unsupported PostgreSQL predicate operator {op}"
+                    )))
+                }
+            },
+            Expr::Nested(inner) => lower_expression(inner, Predicate)?.kind,
+            Expr::UnaryOp {
+                op: sqlparser::ast::UnaryOperator::Not,
+                expr,
+            } => ExprKind::Not(lower(expr, Predicate)?),
+            Expr::InList {
+                expr,
+                list,
+                negated,
+            } => ExprKind::InList {
+                left: lower(expr, Column)?,
+                values: list
+                    .iter()
+                    .map(|value| lower_expression(value, Value))
+                    .collect::<Result<_>>()?,
+                negated: *negated,
+            },
+            Expr::Like {
+                negated,
+                any,
+                expr,
+                pattern,
+                escape_char,
+            } => lower_like_expression(expr, pattern, *negated, *any, escape_char.as_ref(), false)?,
+            Expr::ILike {
+                negated,
+                any,
+                expr,
+                pattern,
+                escape_char,
+            } => lower_like_expression(expr, pattern, *negated, *any, escape_char.as_ref(), true)?,
+            Expr::IsNull(expr) => ExprKind::IsNull {
+                expression: lower(expr, Column)?,
+                negated: false,
+            },
+            Expr::IsNotNull(expr) => ExprKind::IsNull {
+                expression: lower(expr, Column)?,
+                negated: true,
+            },
+            _ => {
+                return Err(SkeinError::Semantic(format!(
+                    "unsupported PostgreSQL predicate expression {expr}"
+                )))
+            }
+        },
+    };
+    let span = expr.span();
+    Ok(crate::Expr {
+        kind,
+        span: SqlSourceSpan {
+            start: SqlSourceLocation {
+                line: span.start.line,
+                column: span.start.column,
+            },
+            end: SqlSourceLocation {
+                line: span.end.line,
+                column: span.end.column,
+            },
+        },
+    })
+}
+
+fn lower_like_expression(
     expr: &Expr,
     pattern: &Expr,
     negated: bool,
     any: bool,
     escape_char: Option<&ParserValue>,
     case_insensitive: bool,
-) -> Result<SqlPredicate> {
+) -> Result<ExprKind> {
     if any {
         return Err(SkeinError::Semantic(
             "PostgreSQL LIKE ANY is not supported".to_string(),
         ));
     }
-    Ok(SqlPredicate::Like {
-        left: lower_column_expr(expr)?,
-        pattern: lower_literal_expr(pattern)?,
+    Ok(ExprKind::Like {
+        left: Box::new(lower_expression(expr, ExpressionPosition::Column)?),
+        pattern: Box::new(lower_expression(pattern, ExpressionPosition::Value)?),
         case_insensitive,
         negated,
         escape: lower_like_escape(escape_char)?,
@@ -448,26 +486,11 @@ fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
         kind,
         table,
         alias,
-        on: lower_predicate(on)?,
+        on: lower_expression(on, ExpressionPosition::Predicate)?,
     })
 }
 
-pub(super) fn lower_sql_expression(expr: &Expr) -> Result<SqlExpression> {
-    match expr {
-        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
-            Ok(SqlExpression::Column(lower_column_expr(expr)?))
-        }
-        Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
-            Ok(SqlExpression::Value(lower_literal_expr(expr)?))
-        }
-        Expr::Function(function) => lower_function_expression(function),
-        _ => Err(SkeinError::Semantic(format!(
-            "unsupported PostgreSQL projection expression {expr}"
-        ))),
-    }
-}
-
-fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlExpression> {
+fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<ExprKind> {
     if function.uses_odbc_syntax
         || !matches!(function.parameters, FunctionArguments::None)
         || function.null_treatment.is_some()
@@ -503,7 +526,8 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlE
         .iter()
         .map(|argument| match argument {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
-                lower_sql_expression(expr).map(SqlFunctionArgument::Expression)
+                lower_expression(expr, ExpressionPosition::Scalar)
+                    .map(SqlFunctionArgument::Expression)
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => Ok(SqlFunctionArgument::Wildcard),
             _ => Err(SkeinError::Semantic(
@@ -515,17 +539,17 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<SqlE
     let filter = function
         .filter
         .as_deref()
-        .map(lower_predicate)
+        .map(|expr| lower_expression(expr, ExpressionPosition::Predicate).map(Box::new))
         .transpose()?;
     match name.as_str() {
-        "count" | "sum" => Ok(SqlExpression::Function {
+        "count" | "sum" => Ok(ExprKind::Function {
             name: name.clone(),
             arguments,
             distinct,
             filter,
         }),
         "max" | "coalesce" | "octet_length" | "uuidv7" if filter.is_none() => {
-            Ok(SqlExpression::Function {
+            Ok(ExprKind::Function {
                 name: name.clone(),
                 arguments,
                 distinct,

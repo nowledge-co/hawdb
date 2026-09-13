@@ -11,9 +11,10 @@ use super::{
     RelationalPipelineState, RelationalQueryLimits, RelationalQueryOutput, RelationalRowRuntime,
     RelationalSortKey, RelationalSortRecord, RelationalSqlStageTimings, RelationalState,
     RelationalTableSchema, RelationalValue, Result, Row, SelectProjection, SelectStatement,
-    SkeinError, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlNullOrder, SqlOrderDirection,
-    SqlPredicate, Value,
+    SkeinError, SqlColumnRef, SqlFunctionArgument, SqlNullOrder, SqlOrderDirection, SqlPredicate,
+    Value,
 };
+use crate::sql::{Expr, ExprKind};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_aggregate_select<'a>(
@@ -301,16 +302,23 @@ pub(super) fn single_count_distinct_column(
     let [SelectProjection::Expression { expression, alias }] = select.projection.as_slice() else {
         return None;
     };
-    let SqlExpression::Function {
-        name,
-        arguments,
-        distinct: true,
-        filter,
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: true,
+                filter,
+            },
+        ..
     } = expression
     else {
         return None;
     };
-    let [SqlFunctionArgument::Expression(SqlExpression::Column(column))] = arguments.as_slice()
+    let [SqlFunctionArgument::Expression(Expr {
+        kind: ExprKind::Column(column),
+        ..
+    })] = arguments.as_slice()
     else {
         return None;
     };
@@ -318,7 +326,7 @@ pub(super) fn single_count_distinct_column(
         (
             column,
             alias.clone().unwrap_or_else(|| "count".to_string()),
-            filter.as_ref(),
+            filter.as_deref(),
         )
     })
 }

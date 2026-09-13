@@ -1,9 +1,8 @@
 use super::{bind_sql_value, compare_value_refs, relational_ref_to_value, value_to_relational};
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::row_access::RelationalReadRowRef;
-use crate::sql::{
-    SelectProjection, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlLikeEscape, SqlPredicate,
-};
+use crate::sql::{Expr, ExprKind};
+use crate::sql::{SelectProjection, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
 use crate::value::Value;
 use skein_executor::{QueryRowsBuilder, QuerySchema};
 use skein_storage::{
@@ -50,53 +49,62 @@ impl BoundStreamingPredicate {
         table: &str,
         qualifier: &str,
     ) -> Result<Self> {
-        match predicate {
-            SqlPredicate::And(left, right) => Ok(Self::And(
+        match &predicate.kind {
+            ExprKind::And(left, right) => Ok(Self::And(
                 Box::new(Self::bind(left, parameters, schema, table, qualifier)?),
                 Box::new(Self::bind(right, parameters, schema, table, qualifier)?),
             )),
-            SqlPredicate::Or(left, right) => Ok(Self::Or(
+            ExprKind::Or(left, right) => Ok(Self::Or(
                 Box::new(Self::bind(left, parameters, schema, table, qualifier)?),
                 Box::new(Self::bind(right, parameters, schema, table, qualifier)?),
             )),
-            SqlPredicate::Not(predicate) => Ok(Self::Not(Box::new(Self::bind(
+            ExprKind::Not(predicate) => Ok(Self::Not(Box::new(Self::bind(
                 predicate, parameters, schema, table, qualifier,
             )?))),
-            SqlPredicate::Compare { left, op, right } => {
-                let left = bind_column(left, schema, table, qualifier)?;
-                let right = value_to_relational(bind_sql_value(right, parameters)?)?;
-                validate_value_type(schema, left, &right)?;
-                Ok(Self::CompareValue {
-                    left,
-                    op: *op,
-                    right,
-                })
-            }
-            SqlPredicate::CompareColumns { left, op, right } => {
-                let left = bind_column(left, schema, table, qualifier)?;
-                let right = bind_column(right, schema, table, qualifier)?;
-                if schema.columns[left].scalar_type != schema.columns[right].scalar_type {
-                    return Err(SkeinError::Semantic(format!(
-                        "relational comparison between {} and {} has incompatible scalar types",
-                        schema.columns[left].name, schema.columns[right].name
-                    )));
+            ExprKind::Compare { left, op, right } => {
+                let left = bind_column(left.require_column()?, schema, table, qualifier)?;
+                match &right.kind {
+                    ExprKind::Value(right) => {
+                        let right = value_to_relational(bind_sql_value(right, parameters)?)?;
+                        validate_value_type(schema, left, &right)?;
+                        Ok(Self::CompareValue {
+                            left,
+                            op: *op,
+                            right,
+                        })
+                    }
+                    ExprKind::Column(right) => {
+                        let right = bind_column(right, schema, table, qualifier)?;
+                        if schema.columns[left].scalar_type != schema.columns[right].scalar_type {
+                            return Err(SkeinError::Semantic(format!(
+                                "relational comparison between {} and {} has incompatible scalar types",
+                                schema.columns[left].name, schema.columns[right].name
+                            )));
+                        }
+                        Ok(Self::CompareColumns {
+                            left,
+                            op: *op,
+                            right,
+                        })
+                    }
+                    _ => Err(SkeinError::Semantic(
+                        "unsupported streaming comparison operand".to_owned(),
+                    )),
                 }
-                Ok(Self::CompareColumns {
-                    left,
-                    op: *op,
-                    right,
-                })
             }
-            SqlPredicate::InList {
+            ExprKind::InList {
                 left,
                 values,
                 negated,
             } => {
-                let left = bind_column(left, schema, table, qualifier)?;
+                let left = bind_column(left.require_column()?, schema, table, qualifier)?;
                 let values = values
                     .iter()
                     .map(|value| {
-                        let value = value_to_relational(bind_sql_value(value, parameters)?)?;
+                        let value = value_to_relational(bind_sql_value(
+                            value.require_value()?,
+                            parameters,
+                        )?)?;
                         validate_value_type(schema, left, &value)?;
                         Ok(value)
                     })
@@ -107,20 +115,21 @@ impl BoundStreamingPredicate {
                     negated: *negated,
                 })
             }
-            SqlPredicate::Like {
+            ExprKind::Like {
                 left,
                 pattern,
                 case_insensitive,
                 negated,
                 escape,
             } => {
-                let left = bind_column(left, schema, table, qualifier)?;
+                let left = bind_column(left.require_column()?, schema, table, qualifier)?;
                 if schema.columns[left].scalar_type != RelationalScalarType::Text {
                     return Err(SkeinError::Semantic(
                         "LIKE and ILIKE require a TEXT column".to_string(),
                     ));
                 }
-                let pattern = value_to_relational(bind_sql_value(pattern, parameters)?)?;
+                let pattern =
+                    value_to_relational(bind_sql_value(pattern.require_value()?, parameters)?)?;
                 validate_value_type(schema, left, &pattern)?;
                 Ok(Self::Like {
                     left,
@@ -130,10 +139,16 @@ impl BoundStreamingPredicate {
                     escape: *escape,
                 })
             }
-            SqlPredicate::IsNull { column, negated } => Ok(Self::IsNull {
-                column: bind_column(column, schema, table, qualifier)?,
+            ExprKind::IsNull {
+                expression: column,
+                negated,
+            } => Ok(Self::IsNull {
+                column: bind_column(column.require_column()?, schema, table, qualifier)?,
                 negated: *negated,
             }),
+            _ => Err(SkeinError::Semantic(
+                "unsupported streaming predicate expression".to_owned(),
+            )),
         }
     }
 
@@ -240,7 +255,15 @@ impl BoundStreamingProjection {
                         }
                     }));
                 }
-                SelectProjection::Column { name, alias } => {
+                SelectProjection::Expression {
+                    expression:
+                        Expr {
+                            kind: ExprKind::Column(name),
+                            ..
+                        },
+                    alias,
+                    ..
+                } => {
                     columns.push(BoundStreamingColumn {
                         value: BoundStreamingValue::Column(bind_column(
                             name, schema, table, qualifier,
@@ -249,11 +272,15 @@ impl BoundStreamingProjection {
                     });
                 }
                 SelectProjection::Expression { expression, alias } => match expression {
-                    SqlExpression::Function {
-                        name,
-                        arguments,
-                        distinct: false,
-                        filter: None,
+                    Expr {
+                        kind:
+                            ExprKind::Function {
+                                name,
+                                arguments,
+                                distinct: false,
+                                filter: None,
+                            },
+                        ..
                     } if name == "uuidv7" && arguments.is_empty() => {
                         columns.push(BoundStreamingColumn {
                             value: BoundStreamingValue::UuidV7,

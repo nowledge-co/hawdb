@@ -1,6 +1,7 @@
 use super::*;
 use skein_core::Value;
 use skein_expression::sql::SqlNullOrder;
+use skein_expression::sql::{Expr, ExprKind};
 
 fn column(qualifier: Option<&str>, name: &str) -> SqlColumnRef {
     SqlColumnRef {
@@ -10,19 +11,19 @@ fn column(qualifier: Option<&str>, name: &str) -> SqlColumnRef {
 }
 
 fn compare(name: &str, op: SqlComparisonOp, position: usize) -> SqlPredicate {
-    SqlPredicate::Compare {
-        left: column(Some("m"), name),
+    Expr::unspanned(ExprKind::Compare {
+        left: Box::new(Expr::column(column(Some("m"), name))),
         op,
-        right: SqlValue::Parameter(position),
-    }
+        right: Box::new(Expr::value(SqlValue::Parameter(position))),
+    })
 }
 
 fn and(left: SqlPredicate, right: SqlPredicate) -> SqlPredicate {
-    SqlPredicate::And(Box::new(left), Box::new(right))
+    Expr::unspanned(ExprKind::And(Box::new(left), Box::new(right)))
 }
 
 fn or(left: SqlPredicate, right: SqlPredicate) -> SqlPredicate {
-    SqlPredicate::Or(Box::new(left), Box::new(right))
+    Expr::unspanned(ExprKind::Or(Box::new(left), Box::new(right)))
 }
 
 fn access_columns() -> BTreeSet<String> {
@@ -33,7 +34,7 @@ fn order(direction: SqlOrderDirection) -> Vec<SqlOrderItem> {
     ["created", "id"]
         .into_iter()
         .map(|name| SqlOrderItem {
-            column: column(Some("m"), name),
+            expression: Expr::column(column(Some("m"), name)),
             direction,
             nulls: SqlNullOrder::DialectDefault,
         })
@@ -72,7 +73,11 @@ fn equalities_preserve_duplicates_and_do_not_cross_or_or_not() {
                 compare("hidden", SqlComparisonOp::Eq, 4),
             ),
             and(
-                SqlPredicate::Not(Box::new(compare("negated", SqlComparisonOp::Eq, 5))),
+                Expr::unspanned(ExprKind::Not(Box::new(compare(
+                    "negated",
+                    SqlComparisonOp::Eq,
+                    5,
+                )))),
                 and(compare("range", SqlComparisonOp::Gt, 6), duplicate),
             ),
         ),
@@ -96,11 +101,11 @@ fn coverage_requires_exact_distinct_equalities_for_the_target() {
         None, &columns, "memories", "m"
     ));
     for qualifier in [None, Some("memories"), Some("m")] {
-        let predicate = SqlPredicate::Compare {
-            left: column(qualifier, "owner"),
+        let predicate = Expr::unspanned(ExprKind::Compare {
+            left: Box::new(Expr::column(column(qualifier, "owner"))),
             op: SqlComparisonOp::Eq,
-            right: SqlValue::Parameter(1),
-        };
+            right: Box::new(Expr::value(SqlValue::Parameter(1))),
+        });
         assert!(predicate_is_covered_by_equalities(
             Some(&predicate),
             &columns,
@@ -108,11 +113,11 @@ fn coverage_requires_exact_distinct_equalities_for_the_target() {
             "m"
         ));
     }
-    let other_table = SqlPredicate::Compare {
-        left: column(Some("other"), "owner"),
+    let other_table = Expr::unspanned(ExprKind::Compare {
+        left: Box::new(Expr::column(column(Some("other"), "owner"))),
         op: SqlComparisonOp::Eq,
-        right: SqlValue::Parameter(1),
-    };
+        right: Box::new(Expr::value(SqlValue::Parameter(1))),
+    });
     for predicate in [
         and(equality.clone(), equality.clone()),
         and(equality.clone(), compare("id", SqlComparisonOp::Eq, 2)),
@@ -137,11 +142,11 @@ fn keyset_recognition_preserves_direction_and_boolean_permutations() {
             for swap_tie in [false, true] {
                 for prefix_first in [false, true] {
                     for qualifier in [None, Some("memories"), Some("m")] {
-                        let prefix = SqlPredicate::Compare {
-                            left: column(qualifier, "owner"),
+                        let prefix = Expr::unspanned(ExprKind::Compare {
+                            left: Box::new(Expr::column(column(qualifier, "owner"))),
                             op: SqlComparisonOp::Eq,
-                            right: SqlValue::Parameter(3),
-                        };
+                            right: Box::new(Expr::value(SqlValue::Parameter(3))),
+                        });
                         let cursor = cursor(direction, swap_or, swap_tie);
                         let predicate = if prefix_first {
                             and(prefix, cursor)
@@ -166,6 +171,71 @@ fn keyset_recognition_preserves_direction_and_boolean_permutations() {
 }
 
 #[test]
+fn keyset_value_identity_ignores_each_occurrences_source_span() {
+    let direction = SqlOrderDirection::Asc;
+    let mut predicate = and(
+        compare("owner", SqlComparisonOp::Eq, 3),
+        cursor(direction, false, false),
+    );
+    let mut column = 1;
+    predicate
+        .try_visit_mut(&mut |node| {
+            node.span = skein_expression::sql::SqlSourceSpan {
+                start: skein_expression::sql::SqlSourceLocation { line: 1, column },
+                end: skein_expression::sql::SqlSourceLocation {
+                    line: 1,
+                    column: column + 1,
+                },
+            };
+            column += 2;
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    assert_eq!(
+        canonical_keyset_values(
+            Some(&predicate),
+            &access_columns(),
+            &order(direction),
+            "memories",
+            "m"
+        ),
+        Some((&SqlValue::Parameter(1), &SqlValue::Parameter(2)))
+    );
+}
+
+#[test]
+fn arbitrary_comparison_operands_are_not_mistaken_for_index_equalities() {
+    let column = Expr::column(column(Some("m"), "owner"));
+    let parameter = Expr::value(SqlValue::Parameter(1));
+    let function = Expr::unspanned(ExprKind::Function {
+        name: "coalesce".to_owned(),
+        arguments: vec![skein_expression::sql::SqlFunctionArgument::Expression(
+            column.clone(),
+        )],
+        distinct: false,
+        filter: None,
+    });
+    for (left, right, expected_points) in [
+        (parameter.clone(), column.clone(), 0),
+        (column.clone(), parameter, 1),
+        (function.clone(), column.clone(), 0),
+        (column, function, 0),
+    ] {
+        let predicate = Expr::unspanned(ExprKind::Compare {
+            left: Box::new(left),
+            op: SqlComparisonOp::Eq,
+            right: Box::new(right),
+        });
+        let mut equalities = Vec::new();
+        collect_conjunctive_equalities(&predicate, &mut equalities);
+        assert_eq!(equalities.len(), expected_points);
+        let mut joins = BTreeMap::new();
+        collect_conjunctive_join_equalities(&predicate, "memories", "m", &mut joins);
+        assert!(joins.is_empty());
+    }
+}
+
+#[test]
 fn keyset_recognition_keeps_unproven_terms_as_residuals() {
     let direction = SqlOrderDirection::Asc;
     let prefix = compare("owner", SqlComparisonOp::Eq, 3);
@@ -181,11 +251,11 @@ fn keyset_recognition_keeps_unproven_terms_as_residuals() {
     let literal_tie = or(
         compare("created", SqlComparisonOp::Gt, 1),
         and(
-            SqlPredicate::Compare {
-                left: column(Some("m"), "created"),
+            Expr::unspanned(ExprKind::Compare {
+                left: Box::new(Expr::column(column(Some("m"), "created"))),
                 op: SqlComparisonOp::Eq,
-                right: SqlValue::Literal(Value::Int(1)),
-            },
+                right: Box::new(Expr::value(SqlValue::Literal(Value::Int(1)))),
+            }),
             compare("id", SqlComparisonOp::Gt, 2),
         ),
     );
@@ -228,10 +298,12 @@ fn keyset_recognition_keeps_unproven_terms_as_residuals() {
 
 #[test]
 fn join_equalities_require_exactly_one_qualified_target_and_keep_the_first() {
-    let join = |left, right| SqlPredicate::CompareColumns {
-        left,
-        op: SqlComparisonOp::Eq,
-        right,
+    let join = |left, right| {
+        Expr::unspanned(ExprKind::Compare {
+            left: Box::new(Expr::column(left)),
+            op: SqlComparisonOp::Eq,
+            right: Box::new(Expr::column(right)),
+        })
     };
     let first = join(column(Some("m"), "owner"), column(Some("u"), "id"));
     let duplicate = join(

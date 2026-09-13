@@ -2,7 +2,7 @@
   {
     "formatted": false,
     "function": "exposes_owned_postgres_sql_pgq_syntax",
-    "line": 14,
+    "line": 17,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (memories KEY (id))",
     "cases": [
@@ -13,7 +13,7 @@
   {
     "formatted": false,
     "function": "parses_postgres_select_subset",
-    "line": 26,
+    "line": 29,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT query, elapsed_micros AS elapsed FROM system.slow_queries WHERE start_time >= '2026-07-23T00:00:00Z' AND work_class IN ('query', 'shadow') ORDER BY elapsed_micros DESC LIMIT 20 OFFSET 5",
     "cases": [
@@ -24,7 +24,7 @@
   {
     "formatted": true,
     "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
-    "line": 102,
+    "line": 115,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM messages WHERE id = $1 {suffix}",
     "cases": [
@@ -36,7 +36,7 @@
   {
     "formatted": true,
     "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
-    "line": 111,
+    "line": 124,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM messages {suffix}",
     "cases": [
@@ -48,7 +48,7 @@
   {
     "formatted": false,
     "function": "parses_postgres_parameters_in_predicates_and_bounds",
-    "line": 120,
+    "line": 133,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries WHERE work_class = $1 AND elapsed_micros >= $2 ORDER BY elapsed_micros DESC LIMIT $3 OFFSET $4",
     "cases": [
@@ -59,7 +59,7 @@
   {
     "formatted": false,
     "function": "rejects_zero_based_postgres_parameter",
-    "line": 152,
+    "line": 169,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries WHERE query = $0",
     "cases": [
@@ -70,7 +70,7 @@
   {
     "formatted": false,
     "function": "normalizes_unquoted_identifiers_with_postgres_rules",
-    "line": 160,
+    "line": 177,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT \"QueryText\", ELAPSED_MICROS FROM SYSTEM.SLOW_QUERIES WHERE \"QueryText\" IS NOT NULL",
     "cases": [
@@ -81,7 +81,7 @@
   {
     "formatted": false,
     "function": "parses_delete_statement",
-    "line": 198,
+    "line": 216,
     "path": "crates/sql/src/tests.rs",
     "sql": "DELETE FROM thread_messages WHERE thread_storage_id = $1",
     "cases": [
@@ -92,7 +92,7 @@
   {
     "formatted": false,
     "function": "parses_inner_join_with_aliases",
-    "line": 216,
+    "line": 234,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries q JOIN system.plan_cache p ON q.digest = p.digest",
     "cases": [
@@ -103,7 +103,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_projection_and_distinct_argument",
-    "line": 235,
+    "line": 256,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COUNT(DISTINCT tm.content_message_id) AS covered_messages FROM thread_messages AS tm GROUP BY tm.thread_storage_id",
     "cases": [
@@ -114,7 +114,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_filter_predicate_and_parameters",
-    "line": 262,
+    "line": 282,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COUNT(*) FILTER (WHERE is_read = $1) AS unread_count FROM entries",
     "cases": [
@@ -125,7 +125,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_filter_predicate_and_parameters",
-    "line": 296,
+    "line": 320,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT MAX(id) FILTER (WHERE id = 'entry-1') FROM entries",
     "cases": [
@@ -136,7 +136,7 @@
   {
     "formatted": false,
     "function": "parses_content_table_schema",
-    "line": 304,
+    "line": 328,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE content_chunks (chunk_id TEXT PRIMARY KEY, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), chunk_index BIGINT NOT NULL, text TEXT NOT NULL, UNIQUE (content_doc_id, chunk_index))",
     "cases": [
@@ -147,7 +147,7 @@
   {
     "formatted": false,
     "function": "parses_strict_append_table_storage",
-    "line": 328,
+    "line": 352,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL, payload BYTEA NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence')",
     "cases": [
@@ -158,7 +158,7 @@
   {
     "formatted": false,
     "function": "parses_commit_sequence_strict_append_storage",
-    "line": 355,
+    "line": 379,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence', generated_order = 'commit_sequence')",
     "cases": [
@@ -169,7 +169,7 @@
   {
     "formatted": false,
     "function": "rejects_incomplete_strict_append_table_storage",
-    "line": 375,
+    "line": 399,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id')",
     "cases": [
@@ -180,7 +180,7 @@
   {
     "formatted": false,
     "function": "parses_insert_on_conflict_update",
-    "line": 385,
+    "line": 409,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO content_migration_state (key, value, updated_at) VALUES ($1, $2, $3), ($4, $5, $6) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
     "cases": [
@@ -191,7 +191,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 404,
+    "line": 428,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = failure_count + $2, retry_count = $3 + retry_count, success_count = success_count - $4 WHERE id = $1",
     "cases": [
@@ -202,7 +202,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 445,
+    "line": 469,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = 1 - failure_count WHERE id = $1",
     "cases": [
@@ -213,7 +213,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 446,
+    "line": 470,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = failure_count * 2 WHERE id = $1",
     "cases": [
@@ -224,7 +224,7 @@
   {
     "formatted": false,
     "function": "parses_insert_on_conflict_do_nothing_returning",
-    "line": 456,
+    "line": 480,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO raw_turns (org_id, request_id, raw_turn_id) VALUES ($1, $2, $3) ON CONFLICT (org_id, request_id) DO NOTHING RETURNING raw_turn_id",
     "cases": [
@@ -235,7 +235,7 @@
   {
     "formatted": false,
     "function": "rejects_insert_returning_expression",
-    "line": 477,
+    "line": 501,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO raw_turns (raw_turn_id) VALUES ($1) RETURNING upper(raw_turn_id)",
     "cases": [
@@ -246,7 +246,7 @@
   {
     "formatted": false,
     "function": "rejects_insert_returning_expression",
-    "line": 482,
+    "line": 506,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT RETURNING supports column references only",
     "cases": [],
@@ -255,7 +255,7 @@
   {
     "formatted": false,
     "function": "prepares_dense_repeated_postgres_parameters",
-    "line": 488,
+    "line": 512,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 OR message_id = $1 LIMIT $2",
     "cases": [
@@ -266,7 +266,7 @@
   {
     "formatted": false,
     "function": "parses_explain_and_preserves_inner_parameters",
-    "line": 505,
+    "line": 529,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN ANALYZE SELECT id FROM content_documents WHERE id = $1 LIMIT $2",
     "cases": [
@@ -277,7 +277,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 525,
+    "line": 549,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN VERBOSE SELECT id FROM content_documents",
     "cases": [
@@ -288,7 +288,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 526,
+    "line": 550,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN VERBOSE must remain outside the supported contract",
     "cases": [],
@@ -297,7 +297,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 532,
+    "line": 556,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN UPDATE content_documents SET content = 'changed' WHERE id = 'doc-1'",
     "cases": [
@@ -308,7 +308,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 534,
+    "line": 558,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN only supports read statements",
     "cases": [],
@@ -317,7 +317,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 537,
+    "line": 561,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN only supports relational SELECT",
     "cases": [],
@@ -326,7 +326,7 @@
   {
     "formatted": false,
     "function": "rejects_gapped_postgres_parameters",
-    "line": 543,
+    "line": 567,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 LIMIT $3",
     "cases": [
@@ -337,7 +337,7 @@
   {
     "formatted": false,
     "function": "parses_nested_octet_length_aggregate",
-    "line": 551,
+    "line": 575,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0) AS payload_bytes FROM thread_messages",
     "cases": [
@@ -348,7 +348,7 @@
   {
     "formatted": false,
     "function": "parses_like_and_ilike_predicates_with_parameters_and_escape",
-    "line": 569,
+    "line": 593,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM documents WHERE title LIKE $1 ESCAPE '!' OR title NOT ILIKE 'guide%'",
     "cases": [

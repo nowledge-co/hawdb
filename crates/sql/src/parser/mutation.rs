@@ -1,6 +1,6 @@
 use super::{
-    lower_literal_expr, lower_predicate, lower_table_factor, lower_table_name, normalize_ident,
-    object_name_parts,
+    lower_expression, lower_literal_expr, lower_table_factor, lower_table_name, normalize_ident,
+    object_name_parts, ExpressionPosition,
 };
 use crate::ast::*;
 use skein_core::{Result, SkeinError};
@@ -153,7 +153,11 @@ pub(super) fn lower_update_statement(update: &sqlparser::ast::Update) -> Result<
         table,
         alias,
         assignments: lower_assignments(&update.assignments)?,
-        selection: update.selection.as_ref().map(lower_predicate).transpose()?,
+        selection: update
+            .selection
+            .as_ref()
+            .map(|expr| lower_expression(expr, ExpressionPosition::Predicate))
+            .transpose()?,
     }))
 }
 
@@ -269,6 +273,10 @@ pub(super) fn lower_delete_statement(delete: &sqlparser::ast::Delete) -> Result<
     Ok(SqlStatement::Delete(DeleteStatement {
         table,
         alias,
-        selection: delete.selection.as_ref().map(lower_predicate).transpose()?,
+        selection: delete
+            .selection
+            .as_ref()
+            .map(|expr| lower_expression(expr, ExpressionPosition::Predicate))
+            .transpose()?,
     }))
 }

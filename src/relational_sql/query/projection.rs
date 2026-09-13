@@ -13,6 +13,7 @@ use super::{
     SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder, SqlOrderDirection,
     SqlPredicate, Value,
 };
+use crate::sql::{Expr, ExprKind};
 
 pub(super) struct StreamingProjectionOutput {
     pub(super) rows: QueryRows,
@@ -218,7 +219,10 @@ impl BindingBatchSource for ProjectedSortKeyBatchSource<'_> {
                         let value = binding.values.get(column).cloned().ok_or_else(|| {
                             SkeinError::Semantic(format!(
                                 "DISTINCT ORDER BY column {} is not projected",
-                                item.column.name
+                                item.expression
+                                    .as_column()
+                                    .expect("ORDER BY column was validated")
+                                    .name
                             ))
                         })?;
                         binding.values.insert(
@@ -669,24 +673,33 @@ pub(super) fn projected_order_columns(
                         .iter()
                         .find_map(|projection| match projection {
                             SelectProjection::Wildcard => Some(column.name.clone()),
-                            SelectProjection::Column { name, alias }
-                                if name.name == column.name
-                                    && column.qualifier.as_deref().is_none_or(|qualifier| {
-                                        name.qualifier.as_deref() == Some(qualifier)
-                                            || select.from.name == qualifier
-                                            || select.from_alias.as_deref() == Some(qualifier)
-                                    }) =>
+                            SelectProjection::Expression {
+                                expression:
+                                    Expr {
+                                        kind: ExprKind::Column(name),
+                                        ..
+                                    },
+                                alias,
+                                ..
+                            } if name.name == column.name
+                                && column.qualifier.as_deref().is_none_or(|qualifier| {
+                                    name.qualifier.as_deref() == Some(qualifier)
+                                        || select.from.name == qualifier
+                                        || select.from_alias.as_deref() == Some(qualifier)
+                                }) =>
                             {
                                 Some(alias.clone().unwrap_or_else(|| name.name.clone()))
                             }
-                            SelectProjection::Column { .. }
-                            | SelectProjection::Expression { .. } => None,
+                            SelectProjection::Expression { .. } => None,
                         }),
                 };
             output.map(|output| (output, item.clone())).ok_or_else(|| {
                 SkeinError::Semantic(format!(
                     "SELECT DISTINCT requires ORDER BY column {} to appear in the projection",
-                    item.column.name
+                    item.expression
+                        .as_column()
+                        .expect("ORDER BY column was validated")
+                        .name
                 ))
             })
         })

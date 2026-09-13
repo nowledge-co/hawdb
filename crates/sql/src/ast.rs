@@ -1,6 +1,7 @@
 pub use skein_expression::sql::{
-    SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument, SqlLikeEscape, SqlNullOrder,
-    SqlOrderDirection, SqlOrderItem, SqlPredicate, SqlValue,
+    Expr, ExprKind, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument,
+    SqlIndexColumn, SqlLikeEscape, SqlNullOrder, SqlOrderDirection, SqlOrderItem, SqlPredicate,
+    SqlSourceLocation, SqlSourceSpan, SqlValue,
 };
 
 use caseless::Caseless;
@@ -207,7 +208,7 @@ pub enum SqlReferentialAction {
 pub struct CreateIndexStatement {
     pub name: String,
     pub table: SqlTableName,
-    pub columns: Vec<SqlOrderItem>,
+    pub columns: Vec<SqlIndexColumn>,
     pub unique: bool,
     pub if_not_exists: bool,
 }
@@ -234,10 +235,6 @@ pub struct SqlTableName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectProjection {
     Wildcard,
-    Column {
-        name: SqlColumnRef,
-        alias: Option<String>,
-    },
     Expression {
         expression: SqlExpression,
         alias: Option<String>,

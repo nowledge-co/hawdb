@@ -4,6 +4,7 @@ use super::{
     OperatorMemoryTracker, RelationalValue, Result, SelectProjection, SkeinError, SqlColumnRef,
     SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
 };
+use crate::sql::{Expr, ExprKind};
 
 #[derive(Clone)]
 pub(super) struct AggregateProjectionState {
@@ -14,7 +15,15 @@ pub(super) struct AggregateProjectionState {
 impl AggregateProjectionState {
     pub(super) fn new(projection: &SelectProjection, parameters: &[Value]) -> Result<Self> {
         match projection {
-            SelectProjection::Column { name, alias } => Ok(Self {
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
+                alias,
+                ..
+            } => Ok(Self {
                 name: alias.clone().unwrap_or_else(|| name.name.clone()),
                 expression: AggregateExpressionState::First {
                     column: name.clone(),
@@ -103,16 +112,26 @@ impl AggregateMemoryDelta {
 impl AggregateExpressionState {
     pub(super) fn new(expression: &SqlExpression, parameters: &[Value]) -> Result<Self> {
         match expression {
-            SqlExpression::Value(value) => Ok(Self::Constant(bind_sql_value(value, parameters)?)),
-            SqlExpression::Column(column) => Ok(Self::First {
+            Expr {
+                kind: ExprKind::Value(value),
+                ..
+            } => Ok(Self::Constant(bind_sql_value(value, parameters)?)),
+            Expr {
+                kind: ExprKind::Column(column),
+                ..
+            } => Ok(Self::First {
                 column: column.clone(),
                 value: None,
             }),
-            SqlExpression::Function {
-                name,
-                arguments,
-                distinct,
-                filter,
+            Expr {
+                kind:
+                    ExprKind::Function {
+                        name,
+                        arguments,
+                        distinct,
+                        filter,
+                    },
+                ..
             } => match name.as_str() {
                 "count" => {
                     let [argument] = arguments.as_slice() else {
@@ -122,9 +141,10 @@ impl AggregateExpressionState {
                     };
                     let column = match argument {
                         SqlFunctionArgument::Wildcard => None,
-                        SqlFunctionArgument::Expression(SqlExpression::Column(column)) => {
-                            Some(column.clone())
-                        }
+                        SqlFunctionArgument::Expression(Expr {
+                            kind: ExprKind::Column(column),
+                            ..
+                        }) => Some(column.clone()),
                         _ => {
                             return Err(SkeinError::Semantic(
                                 "COUNT supports wildcard or a column argument".to_string(),
@@ -138,7 +158,7 @@ impl AggregateExpressionState {
                     }
                     Ok(Self::Count {
                         column,
-                        filter: filter.clone(),
+                        filter: filter.as_deref().cloned(),
                         count: 0,
                         distinct: distinct.then(BTreeSet::new),
                     })
@@ -151,7 +171,7 @@ impl AggregateExpressionState {
                     };
                     Ok(Self::Numeric {
                         expression: expression.clone(),
-                        filter: filter.clone(),
+                        filter: filter.as_deref().cloned(),
                         aggregate: if name == "sum" {
                             NumericAggregate::Sum
                         } else {
@@ -184,6 +204,9 @@ impl AggregateExpressionState {
                     "unsupported relational aggregate function {name}"
                 ))),
             },
+            _ => Err(SkeinError::Semantic(
+                "unsupported aggregate expression".to_owned(),
+            )),
         }
     }
 
@@ -428,13 +451,10 @@ pub(super) fn aggregate_expression_base_memory_bytes(state: &AggregateExpression
 }
 
 pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
-    std::mem::size_of::<SqlExpression>().saturating_add(match expression {
-        SqlExpression::Column(column) => column_ref_memory_bytes(column),
-        SqlExpression::Value(SqlValue::Literal(value)) => {
-            skein_executor::binding::value_memory_bytes(value)
-        }
-        SqlExpression::Value(SqlValue::Parameter(_)) => 0,
-        SqlExpression::Function {
+    let children = match &expression.kind {
+        ExprKind::Column(column) => column_ref_memory_bytes(column),
+        ExprKind::Value(value) => sql_value_memory_bytes(value),
+        ExprKind::Function {
             name,
             arguments,
             filter,
@@ -451,31 +471,28 @@ pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
                     SqlFunctionArgument::Wildcard => total,
                 },
             )
-            .saturating_add(filter.as_ref().map_or(0, sql_predicate_memory_bytes)),
-    })
+            .saturating_add(filter.as_deref().map_or(0, sql_expression_memory_bytes)),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Compare { left, right, .. } => {
+            sql_expression_memory_bytes(left).saturating_add(sql_expression_memory_bytes(right))
+        }
+        ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
+            sql_expression_memory_bytes(expression)
+        }
+        ExprKind::InList { left, values, .. } => values.iter().fold(
+            sql_expression_memory_bytes(left).saturating_add(std::mem::size_of::<Vec<Expr>>()),
+            |total, value| total.saturating_add(sql_expression_memory_bytes(value)),
+        ),
+        ExprKind::Like { left, pattern, .. } => {
+            sql_expression_memory_bytes(left).saturating_add(sql_expression_memory_bytes(pattern))
+        }
+    };
+    std::mem::size_of::<Expr>().saturating_add(children)
 }
 
 pub(super) fn sql_predicate_memory_bytes(predicate: &SqlPredicate) -> usize {
-    std::mem::size_of::<SqlPredicate>().saturating_add(match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            sql_predicate_memory_bytes(left).saturating_add(sql_predicate_memory_bytes(right))
-        }
-        SqlPredicate::Not(predicate) => sql_predicate_memory_bytes(predicate),
-        SqlPredicate::Compare { left, right, .. } => {
-            column_ref_memory_bytes(left).saturating_add(sql_value_memory_bytes(right))
-        }
-        SqlPredicate::CompareColumns { left, right, .. } => {
-            column_ref_memory_bytes(left).saturating_add(column_ref_memory_bytes(right))
-        }
-        SqlPredicate::InList { left, values, .. } => values.iter().fold(
-            column_ref_memory_bytes(left).saturating_add(std::mem::size_of::<Vec<SqlValue>>()),
-            |total, value| total.saturating_add(sql_value_memory_bytes(value)),
-        ),
-        SqlPredicate::Like { left, pattern, .. } => {
-            column_ref_memory_bytes(left).saturating_add(sql_value_memory_bytes(pattern))
-        }
-        SqlPredicate::IsNull { column, .. } => column_ref_memory_bytes(column),
-    })
+    sql_expression_memory_bytes(predicate)
 }
 
 pub(super) fn sql_value_memory_bytes(value: &SqlValue) -> usize {

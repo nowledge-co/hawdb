@@ -1,3 +1,4 @@
+use crate::sql::{Expr, ExprKind};
 mod coordinator;
 mod group_commit;
 #[cfg(test)]
@@ -1419,7 +1420,10 @@ fn single_key_ranges(
     parameters: &[Value],
 ) -> Option<Vec<(Bound<RelationalKey>, Bound<RelationalKey>)>> {
     match predicate {
-        SqlPredicate::And(left, right) => {
+        Expr {
+            kind: ExprKind::And(left, right),
+            ..
+        } => {
             let left = single_key_ranges(left, primary_key, table, alias, parameters);
             let right = single_key_ranges(right, primary_key, table, alias, parameters);
             match (left, right) {
@@ -1438,7 +1442,10 @@ fn single_key_ranges(
                 (None, None) => None,
             }
         }
-        SqlPredicate::Or(left, right) => {
+        Expr {
+            kind: ExprKind::Or(left, right),
+            ..
+        } => {
             let mut ranges = single_key_ranges(left, primary_key, table, alias, parameters)?;
             ranges.extend(single_key_ranges(
                 right,
@@ -1449,10 +1456,14 @@ fn single_key_ranges(
             )?);
             Some(ranges)
         }
-        SqlPredicate::Compare { left, op, right }
-            if column_matches(left, primary_key, table, alias) =>
+        Expr {
+            kind: ExprKind::Compare { left, op, right },
+            ..
+        } if left
+            .as_column()
+            .is_some_and(|left| column_matches(left, primary_key, table, alias)) =>
         {
-            let key = RelationalKey(vec![bind_sql_lock_value(right, parameters)?]);
+            let key = RelationalKey(vec![bind_sql_lock_value(right.as_value()?, parameters)?]);
             match op {
                 SqlComparisonOp::Eq => {
                     Some(vec![(Bound::Included(key.clone()), Bound::Included(key))])
@@ -1464,17 +1475,27 @@ fn single_key_ranges(
                 SqlComparisonOp::NotEq => None,
             }
         }
-        SqlPredicate::InList {
-            left,
-            values,
-            negated: false,
-        } if column_matches(left, primary_key, table, alias) => values
-            .iter()
-            .map(|value| {
-                let key = RelationalKey(vec![bind_sql_lock_value(value, parameters)?]);
-                Some((Bound::Included(key.clone()), Bound::Included(key)))
-            })
-            .collect(),
+        Expr {
+            kind:
+                ExprKind::InList {
+                    left,
+                    values,
+                    negated: false,
+                },
+            ..
+        } if left
+            .as_column()
+            .is_some_and(|left| column_matches(left, primary_key, table, alias)) =>
+        {
+            values
+                .iter()
+                .map(|value| {
+                    let key =
+                        RelationalKey(vec![bind_sql_lock_value(value.as_value()?, parameters)?]);
+                    Some((Bound::Included(key.clone()), Bound::Included(key)))
+                })
+                .collect()
+        }
         _ => None,
     }
 }
@@ -1513,22 +1534,34 @@ fn collect_composite_equalities(
     values: &mut BTreeMap<String, RelationalValue>,
 ) -> Option<()> {
     match predicate {
-        SqlPredicate::And(left, right) => {
+        Expr {
+            kind: ExprKind::And(left, right),
+            ..
+        } => {
             collect_composite_equalities(left, primary_key, table, alias, parameters, values)?;
             collect_composite_equalities(right, primary_key, table, alias, parameters, values)
         }
-        SqlPredicate::Compare {
-            left,
-            op: SqlComparisonOp::Eq,
-            right,
-        } if primary_key
-            .iter()
-            .any(|column| column_matches(left, column, table, alias)) =>
+        Expr {
+            kind:
+                ExprKind::Compare {
+                    left,
+                    op: SqlComparisonOp::Eq,
+                    right,
+                },
+            ..
+        } if primary_key.iter().any(|column| {
+            left.as_column()
+                .is_some_and(|left| column_matches(left, column, table, alias))
+        }) =>
         {
+            let left = left.as_column()?;
             if values.contains_key(&left.name) {
                 return None;
             }
-            values.insert(left.name.clone(), bind_sql_lock_value(right, parameters)?);
+            values.insert(
+                left.name.clone(),
+                bind_sql_lock_value(right.as_value()?, parameters)?,
+            );
             Some(())
         }
         _ => None,

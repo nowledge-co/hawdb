@@ -5,6 +5,7 @@ use crate::schema::{
     Catalog, ConstraintKind, ConstraintSubject, IndexKind, PropertyType, SchemaObjectState,
     TableKind,
 };
+use crate::sql::{Expr, ExprKind};
 use crate::sql::{
     SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
     SqlPredicate, SqlStatement, SqlValue,
@@ -574,60 +575,26 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
     Ok(())
 }
 
-fn bind_predicate(predicate: SqlPredicate, parameters: &[Value]) -> Result<SqlPredicate> {
-    Ok(match predicate {
-        SqlPredicate::And(left, right) => SqlPredicate::And(
-            Box::new(bind_predicate(*left, parameters)?),
-            Box::new(bind_predicate(*right, parameters)?),
-        ),
-        SqlPredicate::Or(left, right) => SqlPredicate::Or(
-            Box::new(bind_predicate(*left, parameters)?),
-            Box::new(bind_predicate(*right, parameters)?),
-        ),
-        SqlPredicate::Not(inner) => {
-            SqlPredicate::Not(Box::new(bind_predicate(*inner, parameters)?))
+fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<SqlPredicate> {
+    predicate.try_visit_mut(&mut |expression| {
+        if let ExprKind::Value(value) = &mut expression.kind {
+            let unbound = std::mem::replace(value, SqlValue::Literal(Value::Null));
+            *value = SqlValue::Literal(bind_value(unbound, parameters)?);
         }
-        SqlPredicate::Compare { left, op, right } => SqlPredicate::Compare {
-            left,
-            op,
-            right: SqlValue::Literal(bind_value(right, parameters)?),
-        },
-        SqlPredicate::CompareColumns { left, op, right } => {
-            SqlPredicate::CompareColumns { left, op, right }
-        }
-        SqlPredicate::InList {
-            left,
-            values,
-            negated,
-        } => SqlPredicate::InList {
-            left,
-            values: values
-                .into_iter()
-                .map(|value| bind_value(value, parameters).map(SqlValue::Literal))
-                .collect::<Result<Vec<_>>>()?,
-            negated,
-        },
-        SqlPredicate::Like {
-            left,
+        if let ExprKind::Like {
             pattern,
-            case_insensitive,
-            negated,
             escape,
-        } => {
-            let pattern = bind_value(pattern, parameters)?;
-            if let Value::String(pattern) = &pattern {
-                skein_sql::sql_like_matches("", pattern, escape, case_insensitive)?;
-            }
-            SqlPredicate::Like {
-                left,
-                pattern: SqlValue::Literal(pattern),
-                case_insensitive,
-                negated,
-                escape,
+            case_insensitive,
+            ..
+        } = &expression.kind
+        {
+            if let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()? {
+                skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
             }
         }
-        SqlPredicate::IsNull { column, negated } => SqlPredicate::IsNull { column, negated },
-    })
+        Ok::<_, SkeinError>(())
+    })?;
+    Ok(predicate)
 }
 
 fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
@@ -762,7 +729,16 @@ fn project_rows(rows: Vec<Row>, projection: &[SelectProjection]) -> Result<Vec<R
             projection
                 .iter()
                 .map(|projection| {
-                    let SelectProjection::Column { name, alias } = projection else {
+                    let SelectProjection::Expression {
+                        expression:
+                            Expr {
+                                kind: ExprKind::Column(name),
+                                ..
+                            },
+                        alias,
+                        ..
+                    } = projection
+                    else {
                         unreachable!("wildcard handled above");
                     };
                     let value = row.get(&name.name).cloned().unwrap_or(Value::Null);
@@ -2037,68 +2013,57 @@ fn statement_summary_rows(records: &[StatementSummaryRecord]) -> Vec<Row> {
 }
 
 fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
-    match predicate {
-        SqlPredicate::And(left, right) => {
-            predicate_matches(left, row) && predicate_matches(right, row)
-        }
-        SqlPredicate::Or(left, right) => {
-            predicate_matches(left, row) || predicate_matches(right, row)
-        }
-        SqlPredicate::Not(inner) => !predicate_matches(inner, row),
-        SqlPredicate::Compare { left, op, right } => {
-            row.get(&left.name).is_some_and(|left_value| match right {
-                SqlValue::Literal(right) => compare_values(left_value, *op, right),
-                SqlValue::Parameter(_) => false,
-            })
-        }
-        SqlPredicate::CompareColumns { left, op, right } => row
-            .get(&left.name)
-            .zip(row.get(&right.name))
-            .is_some_and(|(left_value, right_value)| compare_values(left_value, *op, right_value)),
-        SqlPredicate::InList {
+    match &predicate.kind {
+        ExprKind::And(left, right) => predicate_matches(left, row) && predicate_matches(right, row),
+        ExprKind::Or(left, right) => predicate_matches(left, row) || predicate_matches(right, row),
+        ExprKind::Not(inner) => !predicate_matches(inner, row),
+        ExprKind::Compare { left, op, right } => system_expression_value(left, row)
+            .zip(system_expression_value(right, row))
+            .is_some_and(|(left, right)| compare_values(left, *op, right)),
+        ExprKind::InList {
             left,
             values,
             negated,
         } => {
-            let matched = row.get(&left.name).is_some_and(|left_value| {
-                values.iter().any(|value| match value {
-                    SqlValue::Literal(value) => left_value == value,
-                    SqlValue::Parameter(_) => false,
+            let matched = system_expression_value(left, row).is_some_and(|left| {
+                values.iter().any(|value| {
+                    system_expression_value(value, row).is_some_and(|value| left == value)
                 })
             });
-            if *negated {
-                !matched
-            } else {
-                matched
-            }
+            matched != *negated
         }
-        SqlPredicate::Like {
+        ExprKind::Like {
             left,
             pattern,
             case_insensitive,
             negated,
             escape,
         } => {
-            let matched = row.get(&left.name).zip(match pattern {
-                SqlValue::Literal(Value::String(pattern)) => Some(pattern),
-                _ => None,
-            });
-            let Some((Value::String(value), pattern)) = matched else {
+            let Some((Value::String(value), Value::String(pattern))) =
+                system_expression_value(left, row).zip(system_expression_value(pattern, row))
+            else {
                 return false;
             };
             skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
                 .is_ok_and(|matched| matched != *negated)
         }
-        SqlPredicate::IsNull { column, negated } => {
-            let matched = row
-                .get(&column.name)
+        ExprKind::IsNull {
+            expression,
+            negated,
+        } => {
+            let matched = system_expression_value(expression, row)
                 .is_none_or(|value| matches!(value, Value::Null));
-            if *negated {
-                !matched
-            } else {
-                matched
-            }
+            matched != *negated
         }
+        _ => false,
+    }
+}
+
+fn system_expression_value<'a>(expression: &'a Expr, row: &'a Row) -> Option<&'a Value> {
+    match &expression.kind {
+        ExprKind::Column(column) => row.get(&column.name),
+        ExprKind::Value(SqlValue::Literal(value)) => Some(value),
+        _ => None,
     }
 }
 
@@ -2122,9 +2087,11 @@ fn compare_ordered_rows(
     order_by: &[crate::sql::SqlOrderItem],
 ) -> Ordering {
     for item in order_by {
-        let ordering = left
-            .get(&item.column.name)
-            .cmp(&right.get(&item.column.name));
+        let column = item
+            .expression
+            .as_column()
+            .expect("system ORDER BY columns were validated");
+        let ordering = left.get(&column.name).cmp(&right.get(&column.name));
         let ordering = match item.direction {
             SqlOrderDirection::Asc => ordering,
             SqlOrderDirection::Desc => ordering.reverse(),
@@ -2171,7 +2138,14 @@ fn validate_projection(table: SystemTable, projection: &[SelectProjection]) -> R
     for projection in projection {
         match projection {
             SelectProjection::Wildcard => {}
-            SelectProjection::Column { name, .. } => validate_column(table, name)?,
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
+                ..
+            } => validate_column(table, name)?,
             SelectProjection::Expression { .. } => {
                 return Err(SkeinError::Semantic(
                     "system SQL aggregate expressions are not supported".to_string(),
@@ -2183,29 +2157,22 @@ fn validate_projection(table: SystemTable, projection: &[SelectProjection]) -> R
 }
 
 fn validate_predicate_columns(table: SystemTable, predicate: Option<&SqlPredicate>) -> Result<()> {
-    let Some(predicate) = predicate else {
-        return Ok(());
-    };
-    match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            validate_predicate_columns(table, Some(left))?;
-            validate_predicate_columns(table, Some(right))
-        }
-        SqlPredicate::Not(inner) => validate_predicate_columns(table, Some(inner)),
-        SqlPredicate::Compare { left, .. }
-        | SqlPredicate::InList { left, .. }
-        | SqlPredicate::Like { left, .. }
-        | SqlPredicate::IsNull { column: left, .. } => validate_column(table, left),
-        SqlPredicate::CompareColumns { left, right, .. } => {
-            validate_column(table, left)?;
-            validate_column(table, right)
-        }
+    let mut result = Ok(());
+    if let Some(predicate) = predicate {
+        predicate.visit(&mut |expression| {
+            if result.is_ok()
+                && let Some(column) = expression.as_column()
+            {
+                result = validate_column(table, column);
+            }
+        });
     }
+    result
 }
 
 fn validate_order_columns(table: SystemTable, order_by: &[crate::sql::SqlOrderItem]) -> Result<()> {
     for item in order_by {
-        validate_column(table, &item.column)?;
+        validate_column(table, item.expression.require_column()?)?;
     }
     Ok(())
 }
@@ -2541,6 +2508,62 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn predicate_binding_preserves_source_spans_and_system_null_behavior() {
+        let SqlStatement::Select(select) = skein_sql::prepare_postgres_sql(
+            "SELECT value FROM system.plan_cache WHERE \
+             (value IN ($1, $2) OR NOT value = $3) AND \
+             (metric LIKE $4 OR value IS NULL)",
+        )
+        .unwrap()
+        .statement
+        else {
+            panic!("expected SELECT");
+        };
+        let predicate = select.selection.unwrap();
+        let mut before = Vec::new();
+        predicate.visit(&mut |node| before.push(node.span));
+        let bound = bind_predicate(
+            predicate.clone(),
+            &[
+                Value::Null,
+                Value::Int(5),
+                Value::Null,
+                Value::String("hit%".to_owned()),
+            ],
+        )
+        .unwrap();
+        let mut after = Vec::new();
+        let mut parameters = Vec::new();
+        bound.visit(&mut |node| {
+            after.push(node.span);
+            if let ExprKind::Value(SqlValue::Parameter(position)) = &node.kind {
+                parameters.push(*position);
+            }
+        });
+        assert_eq!(after, before);
+        assert!(parameters.is_empty());
+        assert!(predicate_matches(
+            &bound,
+            &BTreeMap::from([
+                ("value".to_owned(), Value::Null),
+                ("metric".to_owned(), Value::String("misses".to_owned())),
+            ])
+        ));
+        assert!(bind_predicate(
+            predicate,
+            &[
+                Value::Null,
+                Value::Int(5),
+                Value::Null,
+                Value::String("dangling\\".to_owned()),
+            ]
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("ends with its escape"));
+    }
 
     #[test]
     fn query_plan_cache_virtual_table_with_predicate_and_projection() {

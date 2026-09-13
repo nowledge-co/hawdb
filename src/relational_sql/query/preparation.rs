@@ -160,7 +160,10 @@ pub(super) fn resolved_access_order_by(
         };
         if let Some(column) = column {
             resolved.push(crate::sql::SqlOrderItem {
-                column: column.clone(),
+                expression: crate::sql::Expr {
+                    kind: crate::sql::ExprKind::Column(column.clone()),
+                    span: item.expression.span,
+                },
                 direction: item.direction,
                 nulls: item.nulls,
             });

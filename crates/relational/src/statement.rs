@@ -5,9 +5,9 @@ use crate::{
 };
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, SqlArithmeticOperand,
-    SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate, SqlReferentialAction,
-    SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, ExprKind,
+    SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate,
+    SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
 };
 use skein_storage::{
     RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
@@ -384,15 +384,23 @@ fn compile_mutation_predicate(
 ) -> Result<RelationalPredicate> {
     let compile =
         |predicate| compile_mutation_predicate(predicate, parameters, schema, alias, table);
-    Ok(match predicate {
-        SqlPredicate::And(left, right) => {
+    Ok(match predicate.kind {
+        ExprKind::And(left, right) => {
             RelationalPredicate::And(Box::new(compile(*left)?), Box::new(compile(*right)?))
         }
-        SqlPredicate::Or(left, right) => {
+        ExprKind::Or(left, right) => {
             RelationalPredicate::Or(Box::new(compile(*left)?), Box::new(compile(*right)?))
         }
-        SqlPredicate::Not(predicate) => RelationalPredicate::Not(Box::new(compile(*predicate)?)),
-        SqlPredicate::Compare { left, op, right } => {
+        ExprKind::Not(predicate) => RelationalPredicate::Not(Box::new(compile(*predicate)?)),
+        ExprKind::Compare { left, op, right } => {
+            if right.as_column().is_some() {
+                return Err(SkeinError::Semantic(
+                    "single-table mutation predicates do not support column-to-column comparison"
+                        .to_owned(),
+                ));
+            }
+            let left = left.require_column()?.clone();
+            let right = mutation_value_expression(*right)?;
             validate_mutation_column(&left, schema, alias, table)?;
             let scalar_type = schema.columns[schema
                 .column_position(&left.name)
@@ -404,22 +412,17 @@ fn compile_mutation_predicate(
                 value: bind_relational_value_as(right, parameters, scalar_type)?,
             }
         }
-        SqlPredicate::CompareColumns { .. } => {
-            return Err(SkeinError::Semantic(
-                "single-table mutation predicates do not support column-to-column comparison"
-                    .to_string(),
-            ));
-        }
-        SqlPredicate::Like { .. } => {
+        ExprKind::Like { .. } => {
             return Err(SkeinError::Semantic(
                 "single-table mutation predicates do not support LIKE or ILIKE".to_string(),
             ));
         }
-        SqlPredicate::InList {
+        ExprKind::InList {
             left,
             values,
             negated,
         } => {
+            let left = left.require_column()?.clone();
             validate_mutation_column(&left, schema, alias, table)?;
             let scalar_type = schema.columns[schema
                 .column_position(&left.name)
@@ -428,6 +431,7 @@ fn compile_mutation_predicate(
             let mut predicates = values
                 .into_iter()
                 .map(|value| {
+                    let value = mutation_value_expression(value)?;
                     Ok(RelationalPredicate::Compare {
                         column: left.name.clone(),
                         op: if negated {
@@ -451,14 +455,32 @@ fn compile_mutation_predicate(
                 }
             })
         }
-        SqlPredicate::IsNull { column, negated } => {
+        ExprKind::IsNull {
+            expression,
+            negated,
+        } => {
+            let column = expression.require_column()?.clone();
             validate_mutation_column(&column, schema, alias, table)?;
             RelationalPredicate::IsNull {
                 column: column.name,
                 negated,
             }
         }
+        _ => {
+            return Err(SkeinError::Semantic(
+                "unsupported single-table mutation predicate".to_owned(),
+            ))
+        }
     })
+}
+
+fn mutation_value_expression(expression: skein_sql::Expr) -> Result<SqlValue> {
+    match expression.kind {
+        ExprKind::Value(value) => Ok(value),
+        _ => Err(SkeinError::Semantic(
+            "mutation predicate requires a literal or parameter".to_owned(),
+        )),
+    }
 }
 
 fn validate_mutation_column(

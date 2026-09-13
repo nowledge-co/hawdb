@@ -8,6 +8,7 @@ use super::{
     SqlComparisonOp, SqlExpression, SqlFunctionArgument, SqlLikeEscape, SqlOrderDirection,
     SqlPredicate, SqlValue, Value,
 };
+use crate::sql::{Expr, ExprKind};
 
 #[derive(Debug)]
 pub(super) struct RelationalExplainNode {
@@ -549,7 +550,7 @@ pub(super) fn explain_order_by(order_by: &[crate::sql::SqlOrderItem]) -> String 
         .map(|item| {
             format!(
                 "{} {}",
-                explain_column(&item.column),
+                explain_expression(&item.expression),
                 match item.direction {
                     SqlOrderDirection::Asc => "ASC",
                     SqlOrderDirection::Desc => "DESC",
@@ -583,17 +584,21 @@ pub(super) fn explain_aggregate_projections(projections: &[SelectProjection]) ->
             SelectProjection::Expression { expression, .. } => {
                 explain_aggregate_expression(expression)
             }
-            SelectProjection::Wildcard | SelectProjection::Column { .. } => None,
+            SelectProjection::Wildcard => None,
         })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 pub(super) fn explain_aggregate_expression(expression: &SqlExpression) -> Option<String> {
-    let SqlExpression::Function {
-        name,
-        arguments,
-        filter,
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                filter,
+                ..
+            },
         ..
     } = expression
     else {
@@ -632,10 +637,10 @@ pub(super) fn explain_aggregate_expression(expression: &SqlExpression) -> Option
 }
 
 pub(super) fn explain_expression(expression: &SqlExpression) -> String {
-    match expression {
-        SqlExpression::Column(column) => explain_column(column),
-        SqlExpression::Value(value) => explain_sql_value(value),
-        SqlExpression::Function {
+    match &expression.kind {
+        ExprKind::Column(column) => explain_column(column),
+        ExprKind::Value(value) => explain_sql_value(value),
+        ExprKind::Function {
             name, arguments, ..
         } => format!(
             "{name}({})",
@@ -648,53 +653,48 @@ pub(super) fn explain_expression(expression: &SqlExpression) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        _ => explain_predicate(expression),
     }
 }
 
 pub(super) fn explain_predicate(predicate: &SqlPredicate) -> String {
-    match predicate {
-        SqlPredicate::And(left, right) => {
+    match &predicate.kind {
+        ExprKind::And(left, right) => {
             format!(
                 "({} AND {})",
                 explain_predicate(left),
                 explain_predicate(right)
             )
         }
-        SqlPredicate::Or(left, right) => {
+        ExprKind::Or(left, right) => {
             format!(
                 "({} OR {})",
                 explain_predicate(left),
                 explain_predicate(right)
             )
         }
-        SqlPredicate::Not(predicate) => format!("NOT ({})", explain_predicate(predicate)),
-        SqlPredicate::Compare { left, op, right } => format!(
+        ExprKind::Not(predicate) => format!("NOT ({})", explain_predicate(predicate)),
+        ExprKind::Compare { left, op, right } => format!(
             "{} {} {}",
-            explain_column(left),
+            explain_expression(left),
             explain_comparison_operator(*op),
-            explain_sql_value(right)
+            explain_expression(right)
         ),
-        SqlPredicate::CompareColumns { left, op, right } => format!(
-            "{} {} {}",
-            explain_column(left),
-            explain_comparison_operator(*op),
-            explain_column(right)
-        ),
-        SqlPredicate::InList {
+        ExprKind::InList {
             left,
             values,
             negated,
         } => format!(
             "{} {}IN ({})",
-            explain_column(left),
+            explain_expression(left),
             if *negated { "NOT " } else { "" },
             values
                 .iter()
-                .map(explain_sql_value)
+                .map(explain_expression)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        SqlPredicate::Like {
+        ExprKind::Like {
             left,
             pattern,
             case_insensitive,
@@ -703,10 +703,10 @@ pub(super) fn explain_predicate(predicate: &SqlPredicate) -> String {
         } => {
             let mut explanation = format!(
                 "{} {}{} {}",
-                explain_column(left),
+                explain_expression(left),
                 if *negated { "NOT " } else { "" },
                 if *case_insensitive { "ILIKE" } else { "LIKE" },
-                explain_sql_value(pattern)
+                explain_expression(pattern)
             );
             match escape {
                 SqlLikeEscape::Character('\\') => {}
@@ -717,11 +717,15 @@ pub(super) fn explain_predicate(predicate: &SqlPredicate) -> String {
             }
             explanation
         }
-        SqlPredicate::IsNull { column, negated } => format!(
+        ExprKind::IsNull {
+            expression: column,
+            negated,
+        } => format!(
             "{} IS {}NULL",
-            explain_column(column),
+            explain_expression(column),
             if *negated { "NOT " } else { "" }
         ),
+        _ => explain_expression(predicate),
     }
 }
 

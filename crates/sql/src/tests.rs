@@ -1,12 +1,14 @@
 use super::{
     parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlArithmeticOperand,
     SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp,
-    SqlConflictAction, SqlDataType, SqlExpression, SqlFunctionArgument, SqlJoinKind, SqlLikeEscape,
-    SqlLockStrength, SqlOrderDirection, SqlPredicate, SqlStatement, SqlTableName, SqlValue,
+    SqlConflictAction, SqlDataType, SqlFunctionArgument, SqlJoinKind, SqlLikeEscape,
+    SqlLockStrength, SqlOrderDirection, SqlStatement, SqlTableName, SqlValue,
 };
+use crate::{Expr, ExprKind};
 use skein_core::Value;
 
 mod clause_diagnostics;
+mod expression_migration;
 mod frontend_corpus;
 
 #[test]
@@ -30,9 +32,10 @@ fn parses_postgres_select_subset() {
     )
     .expect("valid PostgreSQL select");
 
-    let SqlStatement::Select(select) = statement else {
+    let SqlStatement::Select(mut select) = statement else {
         panic!("expected SELECT statement");
     };
+    clear_select_source_spans(&mut select);
     assert_eq!(
         select.from,
         SqlTableName {
@@ -43,53 +46,62 @@ fn parses_postgres_select_subset() {
     assert_eq!(
         select.projection,
         vec![
-            SelectProjection::Column {
-                name: SqlColumnRef {
+            SelectProjection::Expression {
+                expression: Expr::column(SqlColumnRef {
                     qualifier: None,
                     name: "query".to_string(),
-                },
-                alias: None,
+                }),
+                alias: None
             },
-            SelectProjection::Column {
-                name: SqlColumnRef {
+            SelectProjection::Expression {
+                expression: Expr::column(SqlColumnRef {
                     qualifier: None,
                     name: "elapsed_micros".to_string(),
-                },
-                alias: Some("elapsed".to_string()),
-            },
+                }),
+                alias: Some("elapsed".to_string())
+            }
         ]
     );
     assert_eq!(select.limit, Some(SqlBound::Literal(20)));
     assert_eq!(select.offset, Some(SqlBound::Literal(5)));
     assert_eq!(select.order_by[0].direction, SqlOrderDirection::Desc);
 
-    let Some(SqlPredicate::And(left, right)) = select.selection else {
+    let Some(Expr {
+        kind: ExprKind::And(left, right),
+        ..
+    }) = select.selection
+    else {
         panic!("expected conjunctive predicate");
     };
     assert_eq!(
         *left,
-        SqlPredicate::Compare {
-            left: SqlColumnRef {
+        Expr::unspanned(ExprKind::Compare {
+            left: Box::new(Expr::column(SqlColumnRef {
                 qualifier: None,
                 name: "start_time".to_string(),
-            },
+            })),
             op: SqlComparisonOp::Gte,
-            right: SqlValue::Literal(Value::String("2026-07-23T00:00:00Z".to_string())),
-        }
+            right: Box::new(Expr::value(SqlValue::Literal(Value::String(
+                "2026-07-23T00:00:00Z".to_string()
+            )))),
+        })
     );
     assert_eq!(
         *right,
-        SqlPredicate::InList {
-            left: SqlColumnRef {
+        Expr::unspanned(ExprKind::InList {
+            left: Box::new(Expr::column(SqlColumnRef {
                 qualifier: None,
                 name: "work_class".to_string(),
-            },
-            values: vec![
+            })),
+            values: (vec![
                 SqlValue::Literal(Value::String("query".to_string())),
-                SqlValue::Literal(Value::String("shadow".to_string())),
-            ],
+                SqlValue::Literal(Value::String("shadow".to_string()))
+            ])
+            .into_iter()
+            .map(Expr::value)
+            .collect(),
             negated: false,
-        }
+        })
     );
 }
 
@@ -129,22 +141,26 @@ fn parses_postgres_parameters_in_predicates_and_bounds() {
     };
     assert_eq!(select.limit, Some(SqlBound::Parameter(3)));
     assert_eq!(select.offset, Some(SqlBound::Parameter(4)));
-    let Some(SqlPredicate::And(left, right)) = select.selection else {
+    let Some(Expr {
+        kind: ExprKind::And(left, right),
+        ..
+    }) = select.selection
+    else {
         panic!("expected conjunctive predicate");
     };
     assert!(matches!(
         *left,
-        SqlPredicate::Compare {
-            right: SqlValue::Parameter(1),
+        Expr {
+            kind: ExprKind::Compare { right, .. },
             ..
-        }
+        } if right.as_value() == Some(&SqlValue::Parameter(1))
     ));
     assert!(matches!(
         *right,
-        SqlPredicate::Compare {
-            right: SqlValue::Parameter(2),
+        Expr {
+            kind: ExprKind::Compare { right, .. },
             ..
-        }
+        } if right.as_value() == Some(&SqlValue::Parameter(2))
     ));
 }
 
@@ -162,9 +178,10 @@ fn normalizes_unquoted_identifiers_with_postgres_rules() {
     )
     .expect("valid PostgreSQL select");
 
-    let SqlStatement::Select(select) = statement else {
+    let SqlStatement::Select(mut select) = statement else {
         panic!("expected SELECT statement");
     };
+    clear_select_source_spans(&mut select);
     assert_eq!(
         select.from,
         SqlTableName {
@@ -174,22 +191,22 @@ fn normalizes_unquoted_identifiers_with_postgres_rules() {
     );
     assert_eq!(
         select.projection[0],
-        SelectProjection::Column {
-            name: SqlColumnRef {
+        SelectProjection::Expression {
+            expression: Expr::column(SqlColumnRef {
                 qualifier: None,
                 name: "QueryText".to_string(),
-            },
-            alias: None,
+            }),
+            alias: None
         }
     );
     assert_eq!(
         select.projection[1],
-        SelectProjection::Column {
-            name: SqlColumnRef {
+        SelectProjection::Expression {
+            expression: Expr::column(SqlColumnRef {
                 qualifier: None,
                 name: "elapsed_micros".to_string(),
-            },
-            alias: None,
+            }),
+            alias: None
         }
     );
 }
@@ -204,10 +221,10 @@ fn parses_delete_statement() {
     assert_eq!(delete.table.name, "thread_messages");
     assert!(matches!(
         delete.selection,
-        Some(SqlPredicate::Compare {
-            right: SqlValue::Parameter(1),
+        Some(Expr {
+            kind: ExprKind::Compare { right, .. },
             ..
-        })
+        }) if right.as_value() == Some(&SqlValue::Parameter(1))
     ));
 }
 
@@ -225,8 +242,11 @@ fn parses_inner_join_with_aliases() {
     assert_eq!(select.joins[0].kind, SqlJoinKind::Inner);
     assert_eq!(select.joins[0].alias.as_deref(), Some("p"));
     assert!(matches!(
-        select.joins[0].on,
-        SqlPredicate::CompareColumns { .. }
+        &select.joins[0].on,
+        Expr {
+            kind: ExprKind::Compare { left, right, .. },
+            ..
+        } if left.as_column().is_some() && right.as_column().is_some()
     ));
 }
 
@@ -244,15 +264,14 @@ fn parses_aggregate_projection_and_distinct_argument() {
     assert!(matches!(
         &select.projection[0],
         SelectProjection::Expression {
-            expression: SqlExpression::Function {
-                name,
-                arguments,
-                distinct: true,
-                filter: None,
+            expression: Expr {
+                kind: ExprKind::Function {
+                    name, arguments, distinct: true, filter: None,
+                },
+                ..
             },
             alias: Some(alias),
-        } if name == "count"
-            && alias == "covered_messages"
+        } if name == "count" && alias == "covered_messages"
             && matches!(arguments.as_slice(), [SqlFunctionArgument::Expression(_)])
     ));
 }
@@ -274,26 +293,30 @@ fn parses_aggregate_filter_predicate_and_parameters() {
     let SqlStatement::Select(select) = prepared.statement else {
         panic!("expected SELECT statement");
     };
+    let SelectProjection::Expression { expression, alias } = &select.projection[0] else {
+        panic!("expected expression projection");
+    };
+    let ExprKind::Function {
+        name,
+        arguments,
+        distinct: false,
+        filter: Some(filter),
+    } = &expression.kind
+    else {
+        panic!("expected filtered function");
+    };
+    assert_eq!(name, "count");
+    assert_eq!(alias.as_deref(), Some("unread_count"));
     assert!(matches!(
-        &select.projection[0],
-        SelectProjection::Expression {
-            expression: SqlExpression::Function {
-                name,
-                arguments,
-                distinct: false,
-                filter: Some(SqlPredicate::Compare {
-                    left,
-                    op: SqlComparisonOp::Eq,
-                    right: SqlValue::Parameter(1),
-                }),
-            },
-            alias: Some(alias),
-        } if name == "count"
-            && alias == "unread_count"
-            && left.name == "is_read"
-            && matches!(arguments.as_slice(), [SqlFunctionArgument::Wildcard])
+        arguments.as_slice(),
+        [SqlFunctionArgument::Wildcard]
     ));
-
+    let ExprKind::Compare { left, op, right } = &filter.kind else {
+        panic!("expected comparison filter");
+    };
+    assert_eq!(left.require_column().unwrap().name, "is_read");
+    assert_eq!(*op, SqlComparisonOp::Eq);
+    assert_eq!(right.as_value(), Some(&SqlValue::Parameter(1)));
     let error = parse_postgres_sql("SELECT MAX(id) FILTER (WHERE id = 'entry-1') FROM entries")
         .expect_err("non-supported aggregate filter must fail");
     assert!(error.to_string().contains("FILTER"));
@@ -558,7 +581,7 @@ fn parses_nested_octet_length_aggregate() {
     assert!(matches!(
         &select.projection[0],
         SelectProjection::Expression {
-            expression: SqlExpression::Function { name, .. },
+            expression: Expr { kind: ExprKind::Function { name, .. }, .. },
             alias: Some(alias),
         } if name == "coalesce" && alias == "payload_bytes"
     ));
@@ -573,28 +596,30 @@ fn parses_like_and_ilike_predicates_with_parameters_and_escape() {
     let SqlStatement::Select(select) = statement else {
         panic!("expected SELECT");
     };
-    let Some(SqlPredicate::Or(left, right)) = select.selection else {
+    let Some(Expr {
+        kind: ExprKind::Or(left, right),
+        ..
+    }) = select.selection
+    else {
         panic!("expected disjunctive predicate");
     };
     assert!(matches!(
         *left,
-        SqlPredicate::Like {
-            pattern: SqlValue::Parameter(1),
-            case_insensitive: false,
-            negated: false,
-            escape: SqlLikeEscape::Character('!'),
+        Expr {
+            kind: ExprKind::Like {
+                pattern,
+                case_insensitive: false,
+                negated: false,
+                escape: SqlLikeEscape::Character('!'),
+                ..
+            },
             ..
-        }
+        } if pattern.as_value() == Some(&SqlValue::Parameter(1))
     ));
     assert!(matches!(
-        *right,
-        SqlPredicate::Like {
-            pattern: SqlValue::Literal(Value::String(ref pattern)),
-            case_insensitive: true,
-            negated: true,
-            escape: SqlLikeEscape::Character('\\'),
-            ..
-        } if pattern == "guide%"
+        &right.kind,
+        ExprKind::Like { pattern, case_insensitive: true, negated: true, escape: SqlLikeEscape::Character('\\'), .. }
+            if pattern.as_value() == Some(&SqlValue::Literal(Value::String("guide%".to_owned())))
     ));
 }
 
@@ -657,4 +682,25 @@ fn like_matcher_handles_wildcards_escaping_and_unicode_case_insensitivity() {
             .to_string()
             .contains("ends with its escape")
     );
+}
+
+// Semantic AST snapshots deliberately omit source positions; dedicated migration
+// tests assert source provenance on the actual parser result.
+fn clear_select_source_spans(select: &mut crate::SelectStatement) {
+    let mut clear = |expression: &mut Expr| {
+        expression.span = crate::SqlSourceSpan::default();
+        Ok::<_, ()>(())
+    };
+    for projection in &mut select.projection {
+        if let SelectProjection::Expression { expression, .. } = projection {
+            expression
+                .try_visit_mut(&mut clear)
+                .expect("infallible source reset");
+        }
+    }
+    if let Some(predicate) = &mut select.selection {
+        predicate
+            .try_visit_mut(&mut clear)
+            .expect("infallible source reset");
+    }
 }

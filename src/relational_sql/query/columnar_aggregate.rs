@@ -1,5 +1,6 @@
 use super::{expression_name, resolve_column, BoundRow};
 use crate::error::{Result, SkeinError};
+use crate::sql::{Expr, ExprKind};
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlValue,
 };
@@ -314,11 +315,15 @@ fn prepare_projection(
     };
     let outer_expression = expression;
     let (expression, null_fallback) = unwrap_coalesce(outer_expression)?;
-    let SqlExpression::Function {
-        name,
-        arguments,
-        distinct: false,
-        filter: None,
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            },
+        ..
     } = expression
     else {
         return None;
@@ -331,19 +336,25 @@ fn prepare_projection(
             ColumnarAggregateKind::CountAll,
             ColumnarAggregateAccumulator::Count(0),
         ),
-        ("count", [SqlFunctionArgument::Expression(SqlExpression::Column(column))])
-            if base_column_position(column, base_schema, base_table, base_qualifier).is_some() =>
-        {
-            (
-                ColumnarAggregateKind::CountColumn(column.clone()),
-                ColumnarAggregateAccumulator::Count(0),
-            )
-        }
-        ("sum", [SqlFunctionArgument::Expression(SqlExpression::Column(column))])
-            if base_column_position(column, base_schema, base_table, base_qualifier)
-                .is_some_and(|position| {
-                    base_schema.columns[position].scalar_type == RelationalScalarType::BigInt
-                }) =>
+        (
+            "count",
+            [SqlFunctionArgument::Expression(Expr {
+                kind: ExprKind::Column(column),
+                ..
+            })],
+        ) if base_column_position(column, base_schema, base_table, base_qualifier).is_some() => (
+            ColumnarAggregateKind::CountColumn(column.clone()),
+            ColumnarAggregateAccumulator::Count(0),
+        ),
+        (
+            "sum",
+            [SqlFunctionArgument::Expression(Expr {
+                kind: ExprKind::Column(column),
+                ..
+            })],
+        ) if base_column_position(column, base_schema, base_table, base_qualifier).is_some_and(
+            |position| base_schema.columns[position].scalar_type == RelationalScalarType::BigInt,
+        ) =>
         {
             (
                 ColumnarAggregateKind::SumInt64(column.clone()),
@@ -382,16 +393,23 @@ fn prepare_projection(
 }
 
 fn octet_length_column(expression: &SqlExpression) -> Option<&SqlColumnRef> {
-    let SqlExpression::Function {
-        name,
-        arguments,
-        distinct: false,
-        filter: None,
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            },
+        ..
     } = expression
     else {
         return None;
     };
-    let [SqlFunctionArgument::Expression(SqlExpression::Column(column))] = arguments.as_slice()
+    let [SqlFunctionArgument::Expression(Expr {
+        kind: ExprKind::Column(column),
+        ..
+    })] = arguments.as_slice()
     else {
         return None;
     };
@@ -399,11 +417,15 @@ fn octet_length_column(expression: &SqlExpression) -> Option<&SqlColumnRef> {
 }
 
 fn unwrap_coalesce(expression: &SqlExpression) -> Option<(&SqlExpression, Option<Value>)> {
-    let SqlExpression::Function {
-        name,
-        arguments,
-        distinct: false,
-        filter: None,
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            },
+        ..
     } = expression
     else {
         return Some((expression, None));
@@ -416,8 +438,10 @@ fn unwrap_coalesce(expression: &SqlExpression) -> Option<(&SqlExpression, Option
     };
     let mut null_fallback = None;
     for argument in fallback {
-        let SqlFunctionArgument::Expression(SqlExpression::Value(SqlValue::Literal(value))) =
-            argument
+        let SqlFunctionArgument::Expression(Expr {
+            kind: ExprKind::Value(SqlValue::Literal(value)),
+            ..
+        }) = argument
         else {
             return None;
         };

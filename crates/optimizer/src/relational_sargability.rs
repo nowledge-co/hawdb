@@ -5,7 +5,8 @@
 //! schema/type checks, parameter binding, index enumeration, and cost selection.
 
 use skein_expression::sql::{
-    SqlColumnRef, SqlComparisonOp, SqlOrderDirection, SqlOrderItem, SqlPredicate, SqlValue,
+    ExprKind, SqlColumnRef, SqlComparisonOp, SqlOrderDirection, SqlOrderItem, SqlPredicate,
+    SqlValue,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,19 +25,22 @@ pub fn predicate_is_covered_by_equalities(
         qualifier: &str,
         columns: &mut BTreeSet<String>,
     ) -> bool {
-        match predicate {
-            SqlPredicate::And(left, right) => {
+        match &predicate.kind {
+            ExprKind::And(left, right) => {
                 covered(left, access_columns, table, qualifier, columns)
                     && covered(right, access_columns, table, qualifier, columns)
             }
-            SqlPredicate::Compare {
+            ExprKind::Compare {
                 left,
                 op: SqlComparisonOp::Eq,
-                ..
+                right,
             } => {
-                column_matches(left, table, qualifier)
-                    && access_columns.contains(&left.name)
-                    && columns.insert(left.name.clone())
+                right.as_value().is_some()
+                    && left.as_column().is_some_and(|left| {
+                        column_matches(left, table, qualifier)
+                            && access_columns.contains(&left.name)
+                            && columns.insert(left.name.clone())
+                    })
             }
             _ => false,
         }
@@ -62,6 +66,8 @@ pub fn canonical_keyset_values<'a>(
     if order_by.len() != 2 || order_by[0].direction != order_by[1].direction {
         return None;
     }
+    let first_order_column = order_by[0].expression.as_column()?;
+    let second_order_column = order_by[1].expression.as_column()?;
     let expected = match order_by[0].direction {
         SqlOrderDirection::Asc => SqlComparisonOp::Gt,
         SqlOrderDirection::Desc => SqlComparisonOp::Lt,
@@ -71,11 +77,13 @@ pub fn canonical_keyset_values<'a>(
     let mut equality_columns = BTreeSet::new();
     let mut cursor = None;
     for term in terms {
-        if let SqlPredicate::Compare {
+        if let ExprKind::Compare {
             left,
             op: SqlComparisonOp::Eq,
-            ..
-        } = term
+            right,
+        } = &term.kind
+            && right.as_value().is_some()
+            && let Some(left) = left.as_column()
             && column_matches(left, table, qualifier)
             && access_columns.contains(&left.name)
         {
@@ -89,8 +97,8 @@ pub fn canonical_keyset_values<'a>(
         }
         cursor = match_keyset_or(
             term,
-            &order_by[0].column,
-            &order_by[1].column,
+            first_order_column,
+            second_order_column,
             expected,
             table,
             qualifier,
@@ -109,16 +117,20 @@ pub fn collect_conjunctive_equalities<'a>(
     predicate: &'a SqlPredicate,
     output: &mut Vec<(&'a SqlColumnRef, &'a SqlValue)>,
 ) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
+    match &predicate.kind {
+        ExprKind::And(left, right) => {
             collect_conjunctive_equalities(left, output);
             collect_conjunctive_equalities(right, output);
         }
-        SqlPredicate::Compare {
+        ExprKind::Compare {
             left,
             op: SqlComparisonOp::Eq,
             right,
-        } => output.push((left, right)),
+        } => {
+            if let (Some(left), Some(right)) = (left.as_column(), right.as_value()) {
+                output.push((left, right));
+            }
+        }
         _ => {}
     }
 }
@@ -131,16 +143,19 @@ pub fn collect_conjunctive_join_equalities(
     qualifier: &str,
     output: &mut BTreeMap<String, SqlColumnRef>,
 ) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
+    match &predicate.kind {
+        ExprKind::And(left, right) => {
             collect_conjunctive_join_equalities(left, table, qualifier, output);
             collect_conjunctive_join_equalities(right, table, qualifier, output);
         }
-        SqlPredicate::CompareColumns {
+        ExprKind::Compare {
             left,
             op: SqlComparisonOp::Eq,
             right,
         } => {
+            let (Some(left), Some(right)) = (left.as_column(), right.as_column()) else {
+                return;
+            };
             let left_is_join = column_targets_join(left, table, qualifier);
             let right_is_join = column_targets_join(right, table, qualifier);
             match (left_is_join, right_is_join) {
@@ -162,12 +177,12 @@ pub fn collect_conjunctive_join_equalities(
 }
 
 fn collect_conjuncts<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlPredicate>) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
+    match &predicate.kind {
+        ExprKind::And(left, right) => {
             collect_conjuncts(left, output);
             collect_conjuncts(right, output);
         }
-        predicate => output.push(predicate),
+        _ => output.push(predicate),
     }
 }
 
@@ -179,7 +194,7 @@ fn match_keyset_or<'a>(
     table: &str,
     qualifier: &str,
 ) -> Option<(&'a SqlValue, &'a SqlValue)> {
-    let SqlPredicate::Or(left, right) = predicate else {
+    let ExprKind::Or(left, right) = &predicate.kind else {
         return None;
     };
     match_keyset_branches(
@@ -214,7 +229,7 @@ fn match_keyset_branches<'a>(
     qualifier: &str,
 ) -> Option<(&'a SqlValue, &'a SqlValue)> {
     let first = match_column_comparison(first_branch, first_column, comparison, table, qualifier)?;
-    let SqlPredicate::And(left, right) = tie_branch else {
+    let ExprKind::And(left, right) = &tie_branch.kind else {
         return None;
     };
     let tie = match_column_comparison(left, first_column, SqlComparisonOp::Eq, table, qualifier)
@@ -240,9 +255,11 @@ fn match_column_comparison<'a>(
     table: &str,
     qualifier: &str,
 ) -> Option<&'a SqlValue> {
-    let SqlPredicate::Compare { left, op, right } = predicate else {
+    let ExprKind::Compare { left, op, right } = &predicate.kind else {
         return None;
     };
+    let left = left.as_column()?;
+    let right = right.as_value()?;
     (*op == expected_op
         && left.name == expected_column.name
         && column_matches(left, table, qualifier))

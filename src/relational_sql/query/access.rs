@@ -11,7 +11,7 @@ use super::{
     RelationalIndexScanDirection, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalKey, RelationalReadRow, RelationalRowReadMode, RelationalRowRuntime, RelationalState,
     RelationalTableSchema, RelationalValue, Result, SkeinError, SqlColumnRef, SqlNullOrder,
-    SqlOrderDirection, SqlPredicate, SqlValue, Value,
+    SqlOrderDirection, SqlPredicate, Value,
 };
 
 pub(super) struct RelationalBaseAccessPlanning<'a> {
@@ -316,17 +316,19 @@ pub(super) fn index_order_prefix(
         SqlOrderDirection::Desc => RelationalIndexScanDirection::Backward,
     };
     for (ordinal, item) in order_by.iter().enumerate() {
+        let Some(column) = item.expression.as_column() else {
+            return (0, RelationalIndexScanDirection::Forward);
+        };
         if item.direction != order_by[0].direction
-            || item
-                .column
+            || column
                 .qualifier
                 .as_deref()
                 .is_some_and(|candidate| candidate != table && candidate != qualifier)
-            || item.column.name != index_columns[equality_prefix_len + ordinal]
+            || column.name != index_columns[equality_prefix_len + ordinal]
         {
             return (0, RelationalIndexScanDirection::Forward);
         }
-        let Some(position) = schema.column_position(&item.column.name) else {
+        let Some(position) = schema.column_position(&column.name) else {
             return (0, RelationalIndexScanDirection::Forward);
         };
         if schema.columns[position].nullable
@@ -379,7 +381,7 @@ pub(super) fn bind_canonical_keyset_bound(
     };
     let mut bound = prefix.0.clone();
     for (value, item) in [(first, &order_by[0]), (second, &order_by[1])] {
-        let Some(position) = schema.column_position(&item.column.name) else {
+        let Some(position) = schema.column_position(&item.expression.require_column()?.name) else {
             return Ok(None);
         };
         let value = value_to_relational_as(

@@ -4,13 +4,14 @@ use super::{
     SkeinError, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument,
     SqlPredicate, SqlValue, Value,
 };
+use crate::sql::{Expr, ExprKind};
 
 pub(super) fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
     match projection {
         SelectProjection::Expression { expression, .. } => {
             expression_contains_aggregate(expression)
         }
-        SelectProjection::Wildcard | SelectProjection::Column { .. } => false,
+        SelectProjection::Wildcard => false,
     }
 }
 
@@ -19,7 +20,7 @@ pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProject
         matches!(
             projection,
             SelectProjection::Expression {
-                expression: SqlExpression::Function { name, .. },
+                expression: Expr { kind: ExprKind::Function { name, .. }, .. },
                 ..
             } if name == "coalesce" && !projection_contains_aggregate(projection)
         )
@@ -35,7 +36,11 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
         let SelectProjection::Expression { expression, .. } = projection else {
             continue;
         };
-        let SqlExpression::Function { name, .. } = expression else {
+        let Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } = expression
+        else {
             continue;
         };
         if name == "coalesce" && !projection_contains_aggregate(projection) {
@@ -52,17 +57,23 @@ pub(super) fn infer_coalesce_scalar_type(
     state: &RelationalState,
 ) -> Result<Option<RelationalScalarType>> {
     match expression {
-        SqlExpression::Column(column) => {
-            resolve_projection_column_type(select, state, column).map(Some)
-        }
-        SqlExpression::Value(value) => {
-            Ok(value_to_relational(bind_sql_value(value, parameters)?)?.scalar_type())
-        }
-        SqlExpression::Function {
-            name,
-            arguments,
-            distinct,
-            filter,
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => resolve_projection_column_type(select, state, column).map(Some),
+        Expr {
+            kind: ExprKind::Value(value),
+            ..
+        } => Ok(value_to_relational(bind_sql_value(value, parameters)?)?.scalar_type()),
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct,
+                    filter,
+                },
+            ..
         } if name == "coalesce" => {
             if *distinct {
                 return Err(SkeinError::Semantic(
@@ -98,9 +109,15 @@ pub(super) fn infer_coalesce_scalar_type(
             }
             Ok(scalar_type)
         }
-        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+        Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } => Err(SkeinError::Semantic(format!(
             "unsupported COALESCE argument function {name}"
         ))),
+        _ => Err(SkeinError::Semantic(
+            "unsupported scalar expression".to_owned(),
+        )),
     }
 }
 
@@ -149,19 +166,34 @@ pub(super) fn evaluate_row_expression(
     row: &BoundRow<'_>,
 ) -> Result<RelationalValue> {
     match expression {
-        SqlExpression::Column(column) => Ok(resolve_column(row, column)?.clone()),
-        SqlExpression::Value(SqlValue::Literal(value)) => value_to_relational(value.clone()),
-        SqlExpression::Value(SqlValue::Parameter(position)) => Err(SkeinError::Semantic(format!(
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => Ok(resolve_column(row, column)?.clone()),
+        Expr {
+            kind: ExprKind::Value(SqlValue::Literal(value)),
+            ..
+        } => value_to_relational(value.clone()),
+        Expr {
+            kind: ExprKind::Value(SqlValue::Parameter(position)),
+            ..
+        } => Err(SkeinError::Semantic(format!(
             "aggregate row expression cannot bind parameter ${position}"
         ))),
-        SqlExpression::Function {
-            name,
-            arguments,
-            distinct: false,
-            filter: None,
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if name == "octet_length" => {
-            let [SqlFunctionArgument::Expression(SqlExpression::Column(column))] =
-                arguments.as_slice()
+            let [SqlFunctionArgument::Expression(Expr {
+                kind: ExprKind::Column(column),
+                ..
+            })] = arguments.as_slice()
             else {
                 return Err(SkeinError::Semantic(
                     "OCTET_LENGTH requires exactly one column".to_string(),
@@ -183,9 +215,15 @@ pub(super) fn evaluate_row_expression(
                 )),
             }
         }
-        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+        Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } => Err(SkeinError::Semantic(format!(
             "unsupported aggregate row function {name}"
         ))),
+        _ => Err(SkeinError::Semantic(
+            "unsupported scalar expression".to_owned(),
+        )),
     }
 }
 
@@ -251,8 +289,8 @@ pub(super) fn predicate_truth(
     row: &BoundRow<'_>,
     parameters: &[Value],
 ) -> Result<Option<bool>> {
-    match predicate {
-        SqlPredicate::And(left, right) => match predicate_truth(left, row, parameters)? {
+    match &predicate.kind {
+        ExprKind::And(left, right) => match predicate_truth(left, row, parameters)? {
             Some(false) => Ok(Some(false)),
             Some(true) => predicate_truth(right, row, parameters),
             None => match predicate_truth(right, row, parameters)? {
@@ -260,7 +298,7 @@ pub(super) fn predicate_truth(
                 Some(true) | None => Ok(None),
             },
         },
-        SqlPredicate::Or(left, right) => match predicate_truth(left, row, parameters)? {
+        ExprKind::Or(left, right) => match predicate_truth(left, row, parameters)? {
             Some(true) => Ok(Some(true)),
             Some(false) => predicate_truth(right, row, parameters),
             None => match predicate_truth(right, row, parameters)? {
@@ -268,32 +306,43 @@ pub(super) fn predicate_truth(
                 Some(false) | None => Ok(None),
             },
         },
-        SqlPredicate::Not(predicate) => {
+        ExprKind::Not(predicate) => {
             Ok(predicate_truth(predicate, row, parameters)?.map(|value| !value))
         }
-        SqlPredicate::Compare { left, op, right } => {
-            let (left_value, scalar_type) = resolve_column_with_type(row, left)?;
-            compare_values(
-                left_value,
-                &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
-                *op,
-            )
+        ExprKind::Compare { left, op, right } => {
+            let left = left.require_column()?;
+            match &right.kind {
+                ExprKind::Value(right) => {
+                    let (left_value, scalar_type) = resolve_column_with_type(row, left)?;
+                    compare_values(
+                        left_value,
+                        &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
+                        *op,
+                    )
+                }
+                ExprKind::Column(right) => {
+                    compare_values(resolve_column(row, left)?, resolve_column(row, right)?, *op)
+                }
+                _ => Err(SkeinError::Semantic(
+                    "unsupported comparison operand".to_owned(),
+                )),
+            }
         }
-        SqlPredicate::CompareColumns { left, op, right } => {
-            compare_values(resolve_column(row, left)?, resolve_column(row, right)?, *op)
-        }
-        SqlPredicate::InList {
+        ExprKind::InList {
             left,
             values,
             negated,
         } => {
-            let (left, scalar_type) = resolve_column_with_type(row, left)?;
+            let (left, scalar_type) = resolve_column_with_type(row, left.require_column()?)?;
             let mut has_unknown = false;
             let mut matched = false;
             for value in values {
                 match compare_values(
                     left,
-                    &value_to_relational_as(bind_sql_value(value, parameters)?, scalar_type)?,
+                    &value_to_relational_as(
+                        bind_sql_value(value.require_value()?, parameters)?,
+                        scalar_type,
+                    )?,
                     SqlComparisonOp::Eq,
                 )? {
                     Some(true) => matched = true,
@@ -310,21 +359,21 @@ pub(super) fn predicate_truth(
             };
             Ok(result.map(|value| value != *negated))
         }
-        SqlPredicate::Like {
+        ExprKind::Like {
             left,
             pattern,
             case_insensitive,
             negated,
             escape,
         } => {
-            let (left, scalar_type) = resolve_column_with_type(row, left)?;
+            let (left, scalar_type) = resolve_column_with_type(row, left.require_column()?)?;
             if scalar_type != RelationalScalarType::Text {
                 return Err(SkeinError::Semantic(
                     "LIKE and ILIKE require a TEXT column".to_string(),
                 ));
             }
             let pattern = value_to_relational_as(
-                bind_sql_value(pattern, parameters)?,
+                bind_sql_value(pattern.require_value()?, parameters)?,
                 RelationalScalarType::Text,
             )?;
             match (left, pattern) {
@@ -342,8 +391,17 @@ pub(super) fn predicate_truth(
                 )),
             }
         }
-        SqlPredicate::IsNull { column, negated } => Ok(Some(
-            matches!(resolve_column(row, column)?, RelationalValue::Null) != *negated,
+        ExprKind::IsNull {
+            expression: column,
+            negated,
+        } => Ok(Some(
+            matches!(
+                resolve_column(row, column.require_column()?)?,
+                RelationalValue::Null
+            ) != *negated,
+        )),
+        _ => Err(SkeinError::Semantic(
+            "unsupported relational predicate expression".to_owned(),
         )),
     }
 }
@@ -407,7 +465,15 @@ pub(super) fn project_bound_row(
                     }
                 }
             }
-            SelectProjection::Column { name, alias } => {
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
+                alias,
+                ..
+            } => {
                 let (_, binding, position) = resolve_binding(row, name)?;
                 let value = projected_value(position, binding)?;
                 insert_output(
@@ -434,28 +500,51 @@ pub(super) fn evaluate_projection_expression(
     parameters: &[Value],
 ) -> Result<RelationalValue> {
     match expression {
-        SqlExpression::Column(column) => Ok(resolve_column(row, column)?.clone()),
-        SqlExpression::Value(SqlValue::Literal(value)) => value_to_relational(value.clone()),
-        SqlExpression::Value(SqlValue::Parameter(position)) => Err(SkeinError::Semantic(format!(
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => Ok(resolve_column(row, column)?.clone()),
+        Expr {
+            kind: ExprKind::Value(SqlValue::Literal(value)),
+            ..
+        } => value_to_relational(value.clone()),
+        Expr {
+            kind: ExprKind::Value(SqlValue::Parameter(position)),
+            ..
+        } => Err(SkeinError::Semantic(format!(
             "projection expression cannot bind parameter ${position}"
         ))),
-        SqlExpression::Function {
-            name,
-            arguments,
-            distinct: false,
-            filter: None,
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if name == "uuidv7" && arguments.is_empty() => {
             Ok(RelationalValue::Uuid(skein_core::generate_uuidv7()?))
         }
-        SqlExpression::Function {
-            name,
-            arguments,
-            distinct: false,
-            filter: None,
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters),
-        SqlExpression::Function { name, .. } => Err(SkeinError::Semantic(format!(
+        Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } => Err(SkeinError::Semantic(format!(
             "unsupported relational projection function {name}"
         ))),
+        _ => Err(SkeinError::Semantic(
+            "unsupported projection expression".to_owned(),
+        )),
     }
 }
 
@@ -471,18 +560,36 @@ pub(super) fn evaluate_coalesce(
             ));
         };
         let value = match expression {
-            SqlExpression::Column(column) => resolve_column(row, column)?.clone(),
-            SqlExpression::Value(value) => value_to_relational(bind_sql_value(value, parameters)?)?,
-            SqlExpression::Function {
-                name,
-                arguments,
-                distinct: false,
-                filter: None,
+            Expr {
+                kind: ExprKind::Column(column),
+                ..
+            } => resolve_column(row, column)?.clone(),
+            Expr {
+                kind: ExprKind::Value(value),
+                ..
+            } => value_to_relational(bind_sql_value(value, parameters)?)?,
+            Expr {
+                kind:
+                    ExprKind::Function {
+                        name,
+                        arguments,
+                        distinct: false,
+                        filter: None,
+                    },
+                ..
             } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters)?,
-            SqlExpression::Function { name, .. } => {
+            Expr {
+                kind: ExprKind::Function { name, .. },
+                ..
+            } => {
                 return Err(SkeinError::Semantic(format!(
                     "unsupported COALESCE argument function {name}"
                 )))
+            }
+            _ => {
+                return Err(SkeinError::Semantic(
+                    "unsupported COALESCE argument expression".to_owned(),
+                ))
             }
         };
         if !matches!(value, RelationalValue::Null) {
@@ -606,9 +713,19 @@ pub(super) fn relational_to_value(value: &RelationalValue) -> Result<Value> {
 
 pub(super) fn expression_name(expression: &SqlExpression) -> String {
     match expression {
-        SqlExpression::Column(column) => column.name.clone(),
-        SqlExpression::Value(_) => "value".to_string(),
-        SqlExpression::Function { name, .. } => name.clone(),
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => column.name.clone(),
+        Expr {
+            kind: ExprKind::Value(_),
+            ..
+        } => "value".to_string(),
+        Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } => name.clone(),
+        _ => "expression".to_owned(),
     }
 }
 

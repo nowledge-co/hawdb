@@ -1,5 +1,6 @@
 use crate::error::{Result, SkeinError};
 use crate::relational_sql::{resolve_relational_order_target, RelationalOrderTarget};
+use crate::sql::{Expr, ExprKind};
 use crate::sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlPredicate,
@@ -1241,20 +1242,13 @@ fn map_projection_read_error(error: ProjectionGenerationError) -> SkeinError {
 }
 
 pub(super) fn expression_contains_aggregate(expression: &SqlExpression) -> bool {
-    match expression {
-        SqlExpression::Function {
-            name, arguments, ..
-        } => {
-            matches!(name.as_str(), "count" | "sum" | "max")
-                || arguments.iter().any(|argument| match argument {
-                    SqlFunctionArgument::Expression(expression) => {
-                        expression_contains_aggregate(expression)
-                    }
-                    SqlFunctionArgument::Wildcard => false,
-                })
+    let mut aggregate = false;
+    expression.visit(&mut |expression| {
+        if let ExprKind::Function { name, .. } = &expression.kind {
+            aggregate |= matches!(name.as_str(), "count" | "sum" | "max");
         }
-        SqlExpression::Column(_) | SqlExpression::Value(_) => false,
-    }
+    });
+    aggregate
 }
 
 pub(crate) fn plan_requested_fields(
@@ -1310,7 +1304,14 @@ pub(crate) fn plan_scan_hydration_fields(
                     }));
                 }
             }
-            SelectProjection::Column { name, .. } => value_columns.push(name.clone()),
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
+                ..
+            } => value_columns.push(name.clone()),
             SelectProjection::Expression { expression, .. } => {
                 collect_expression_hydration_columns(
                     expression,
@@ -1322,10 +1323,10 @@ pub(crate) fn plan_scan_hydration_fields(
     }
     let mut raw_references = Vec::new();
     if let Some(selection) = &select.selection {
-        collect_predicate_columns(selection, &mut raw_references);
+        collect_expression_columns(selection, &mut raw_references);
     }
     for join in &select.joins {
-        collect_predicate_columns(&join.on, &mut raw_references);
+        collect_expression_columns(&join.on, &mut raw_references);
     }
     raw_references.extend(select.group_by.iter());
     for item in &select.order_by {
@@ -1415,7 +1416,14 @@ fn plan_fields(
                             .extend(0..binding.schema.columns.len());
                     }
                 }
-                SelectProjection::Column { name, .. } => columns.push(name),
+                SelectProjection::Expression {
+                    expression:
+                        Expr {
+                            kind: ExprKind::Column(name),
+                            ..
+                        },
+                    ..
+                } => columns.push(name),
                 SelectProjection::Expression { expression, .. } => {
                     collect_expression_columns(expression, &mut columns)
                 }
@@ -1435,10 +1443,10 @@ fn plan_fields(
         }
     }
     if let Some(selection) = &select.selection {
-        collect_predicate_columns(selection, &mut columns);
+        collect_expression_columns(selection, &mut columns);
     }
     for join in &select.joins {
-        collect_predicate_columns(&join.on, &mut columns);
+        collect_expression_columns(&join.on, &mut columns);
     }
     columns.extend(select.group_by.iter());
     for item in &select.order_by {
@@ -1503,27 +1511,42 @@ fn collect_expression_hydration_columns(
     value_columns: &mut Vec<SqlColumnRef>,
 ) {
     match expression {
-        SqlExpression::Column(column) => value_columns.push(column.clone()),
-        SqlExpression::Function {
-            name,
-            arguments,
-            distinct: false,
-            filter: None,
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => value_columns.push(column.clone()),
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if matches!(name.as_str(), "count" | "octet_length")
             && matches!(
                 arguments.as_slice(),
-                [SqlFunctionArgument::Expression(SqlExpression::Column(_))]
+                [SqlFunctionArgument::Expression(Expr {
+                    kind: ExprKind::Column(_),
+                    ..
+                })]
             ) =>
         {
-            let [SqlFunctionArgument::Expression(SqlExpression::Column(column))] =
-                arguments.as_slice()
+            let [SqlFunctionArgument::Expression(Expr {
+                kind: ExprKind::Column(column),
+                ..
+            })] = arguments.as_slice()
             else {
                 unreachable!("metadata-only function shape was checked above")
             };
             metadata_columns.push(column.clone());
         }
-        SqlExpression::Function {
-            arguments, filter, ..
+        Expr {
+            kind: ExprKind::Function {
+                arguments, filter, ..
+            },
+            ..
         } => {
             for argument in arguments {
                 if let SqlFunctionArgument::Expression(expression) = argument {
@@ -1538,7 +1561,11 @@ fn collect_expression_hydration_columns(
                 collect_predicate_hydration_columns(filter, value_columns);
             }
         }
-        SqlExpression::Value(_) => {}
+        Expr {
+            kind: ExprKind::Value(_),
+            ..
+        } => {}
+        _ => collect_predicate_hydration_columns(expression, value_columns),
     }
 }
 
@@ -1546,65 +1573,22 @@ fn collect_predicate_hydration_columns(
     predicate: &SqlPredicate,
     value_columns: &mut Vec<SqlColumnRef>,
 ) {
-    match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            collect_predicate_hydration_columns(left, value_columns);
-            collect_predicate_hydration_columns(right, value_columns);
+    predicate.visit(&mut |expression| {
+        if let Some(column) = expression.as_column() {
+            value_columns.push(column.clone());
         }
-        SqlPredicate::Not(predicate) => {
-            collect_predicate_hydration_columns(predicate, value_columns)
-        }
-        SqlPredicate::Compare { left, .. }
-        | SqlPredicate::InList { left, .. }
-        | SqlPredicate::Like { left, .. } => {
-            value_columns.push(left.clone());
-        }
-        SqlPredicate::CompareColumns { left, right, .. } => {
-            value_columns.push(left.clone());
-            value_columns.push(right.clone());
-        }
-        SqlPredicate::IsNull { column, .. } => value_columns.push(column.clone()),
-    }
+    });
 }
 
 fn collect_expression_columns<'a>(
     expression: &'a SqlExpression,
     output: &mut Vec<&'a SqlColumnRef>,
 ) {
-    match expression {
-        SqlExpression::Column(column) => output.push(column),
-        SqlExpression::Function {
-            arguments, filter, ..
-        } => {
-            for argument in arguments {
-                if let SqlFunctionArgument::Expression(expression) = argument {
-                    collect_expression_columns(expression, output);
-                }
-            }
-            if let Some(filter) = filter {
-                collect_predicate_columns(filter, output);
-            }
+    expression.visit(&mut |expression| {
+        if let Some(column) = expression.as_column() {
+            output.push(column);
         }
-        SqlExpression::Value(_) => {}
-    }
-}
-
-fn collect_predicate_columns<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlColumnRef>) {
-    match predicate {
-        SqlPredicate::And(left, right) | SqlPredicate::Or(left, right) => {
-            collect_predicate_columns(left, output);
-            collect_predicate_columns(right, output);
-        }
-        SqlPredicate::Not(predicate) => collect_predicate_columns(predicate, output),
-        SqlPredicate::Compare { left, .. }
-        | SqlPredicate::InList { left, .. }
-        | SqlPredicate::Like { left, .. } => output.push(left),
-        SqlPredicate::CompareColumns { left, right, .. } => {
-            output.push(left);
-            output.push(right);
-        }
-        SqlPredicate::IsNull { column, .. } => output.push(column),
-    }
+    });
 }
 
 fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandReadError {

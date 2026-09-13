@@ -1,4 +1,5 @@
 use crate::error::{Result, SkeinError};
+use crate::sql::{Expr, ExprKind};
 use crate::sql::{SelectProjection, SelectStatement, SqlOrderItem, SqlStatement};
 pub(crate) use skein_relational::{
     bind_relational_value, coerce_relational_value, compile_append_explain_sql,
@@ -49,37 +50,41 @@ pub(crate) fn resolve_relational_order_target<'a>(
     select: &'a SelectStatement,
     item: &'a SqlOrderItem,
 ) -> Result<RelationalOrderTarget<'a>> {
-    if item.column.qualifier.is_some() {
-        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+    let column = item.expression.require_column()?;
+    if column.qualifier.is_some() {
+        return Ok(RelationalOrderTarget::InputColumn(column));
     }
     let mut aliases = select
         .projection
         .iter()
         .filter_map(|projection| match projection {
-            SelectProjection::Column {
-                name,
+            SelectProjection::Expression {
+                expression:
+                    Expr {
+                        kind: ExprKind::Column(name),
+                        ..
+                    },
                 alias: Some(alias),
-            } if alias == &item.column.name => Some(RelationalOrderTarget::ProjectionColumn {
+                ..
+            } if alias == &column.name => Some(RelationalOrderTarget::ProjectionColumn {
                 column: name,
                 alias,
             }),
             SelectProjection::Expression {
                 expression,
                 alias: Some(alias),
-            } if alias == &item.column.name => {
+            } if alias == &column.name => {
                 Some(RelationalOrderTarget::ProjectionExpression { expression, alias })
             }
-            SelectProjection::Wildcard
-            | SelectProjection::Column { .. }
-            | SelectProjection::Expression { .. } => None,
+            SelectProjection::Wildcard | SelectProjection::Expression { .. } => None,
         });
     let Some(target) = aliases.next() else {
-        return Ok(RelationalOrderTarget::InputColumn(&item.column));
+        return Ok(RelationalOrderTarget::InputColumn(column));
     };
     if aliases.next().is_some() {
         return Err(SkeinError::Semantic(format!(
             "ambiguous relational ORDER BY alias {}",
-            item.column.name
+            column.name
         )));
     }
     Ok(target)
