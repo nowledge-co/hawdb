@@ -587,10 +587,9 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
             case_insensitive,
             ..
         } = &expression.kind
+            && let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()?
         {
-            if let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()? {
-                skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
-            }
+            skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
         }
         Ok::<_, SkeinError>(())
     })?;

@@ -20,9 +20,9 @@ use super::transaction_locks::{
 };
 use super::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_query,
-    execute_database_transaction_prepared_sql, BoundedReadQueryOutput, Database, DatabaseConfig,
-    DatabaseReadTransaction, DatabaseTransactionRuntime, DatabaseTransactionSqlOptions,
-    DatabaseTransactionState, QueryOutput, StatementExecutionContext, TransactionCommitResult,
+    execute_database_transaction_prepared_sql, Database, DatabaseConfig, DatabaseReadTransaction,
+    DatabaseTransactionRuntime, DatabaseTransactionSqlOptions, DatabaseTransactionState,
+    QueryOutput, StatementExecutionContext, TransactionCommitResult,
 };
 use crate::error::{Result, SkeinError};
 use crate::sql::{
@@ -300,6 +300,7 @@ impl ConcurrentDatabase {
         }
         let statement_kind = prepared.statement_kind();
         let parse_nanos = prepared.parse_nanos();
+        let recorder = database.statement_recorder();
         let mut snapshot = database.begin_read_transaction();
         drop(database);
 
@@ -307,13 +308,21 @@ impl ConcurrentDatabase {
         self.wait_after_autocommit_read_snapshot()?;
         let result = snapshot.query_prepared_with_params_bounded_profile(prepared, parameters);
         drop(snapshot);
-        self.record_cypher_autocommit_read(
+        recorder.record_statement_execution(
+            "cypher",
             cypher_text,
             statement_kind,
             started,
-            parse_nanos,
-            &result,
-        )?;
+            result.as_ref().map(|profiled| &profiled.output),
+            StatementExecutionContext {
+                execution_profile: result
+                    .as_ref()
+                    .ok()
+                    .map(|profiled| &profiled.execution_profile),
+                access_control: None,
+                parse_nanos,
+            },
+        );
         result.map(|profiled| profiled.output)
     }
 
@@ -336,6 +345,7 @@ impl ConcurrentDatabase {
             });
         }
         let statement_kind = super::observability::sql_statement_kind(prepared.statement());
+        let recorder = database.statement_recorder();
         let snapshot = database.begin_read_transaction();
         drop(database);
 
@@ -343,7 +353,14 @@ impl ConcurrentDatabase {
         self.wait_after_autocommit_read_snapshot()?;
         let result = snapshot.query_sql_with_prepared_params(sql_text, parameters, prepared);
         drop(snapshot);
-        self.record_sql_autocommit_read(sql_text, statement_kind, started, &result)?;
+        recorder.record_statement_execution(
+            "sql",
+            sql_text,
+            statement_kind,
+            started,
+            result.as_ref(),
+            StatementExecutionContext::default(),
+        );
         result
     }
 
@@ -404,60 +421,6 @@ impl ConcurrentDatabase {
             .and_then(|mut database| execute(&mut database));
         self.inner.locks.release(transaction_id);
         result
-    }
-
-    fn record_cypher_autocommit_read(
-        &self,
-        cypher_text: &str,
-        statement_kind: &'static str,
-        started: Instant,
-        parse_nanos: u64,
-        result: &Result<BoundedReadQueryOutput>,
-    ) -> Result<()> {
-        let elapsed = started.elapsed();
-        let database = self.inner.commits.lock()?;
-        let observed_started = Instant::now().checked_sub(elapsed).unwrap_or(started);
-        let statement_result = match result {
-            Ok(profiled) => Ok(&profiled.output),
-            Err(error) => Err(error),
-        };
-        database.record_statement_execution(
-            "cypher",
-            cypher_text,
-            statement_kind,
-            observed_started,
-            statement_result,
-            StatementExecutionContext {
-                execution_profile: result
-                    .as_ref()
-                    .ok()
-                    .map(|profiled| &profiled.execution_profile),
-                access_control: None,
-                parse_nanos,
-            },
-        );
-        Ok(())
-    }
-
-    fn record_sql_autocommit_read(
-        &self,
-        sql_text: &str,
-        statement_kind: &'static str,
-        started: Instant,
-        result: &Result<QueryOutput>,
-    ) -> Result<()> {
-        let elapsed = started.elapsed();
-        let database = self.inner.commits.lock()?;
-        let observed_started = Instant::now().checked_sub(elapsed).unwrap_or(started);
-        database.record_statement_execution(
-            "sql",
-            sql_text,
-            statement_kind,
-            observed_started,
-            result.as_ref(),
-            StatementExecutionContext::default(),
-        );
-        Ok(())
     }
 
     #[cfg(test)]

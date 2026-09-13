@@ -1,5 +1,5 @@
 use super::{
-    system_sql, Database, QueryOutput, QueryStreamOptions, SlowQueryLogExportOptions,
+    system_sql, Database, QueryOutput, QueryStreamOptions, SharedState, SlowQueryLogExportOptions,
     SlowQueryLogRecordSummary, StatementExecutionContext,
 };
 use crate::error::{Result, SkeinError};
@@ -9,10 +9,11 @@ use crate::relational_sql::{
     compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
 };
 use crate::sql::SqlStatement;
-use crate::telemetry::QueryTelemetry;
+use crate::telemetry::{QueryTelemetry, TelemetrySink};
 use crate::value::Value;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     match statement {
@@ -27,7 +28,24 @@ pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     }
 }
 
-impl Database {
+// A snapshot read can finish recording after releasing the commit sequencer.
+// Only the existing bounded observation containers and configured sink are shared.
+pub(super) struct StatementRecorder {
+    slow_query_log: Arc<SharedState<system_sql::SlowQueryLog>>,
+    statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
+    slow_query_log_threshold_micros: u128,
+    telemetry: Option<Arc<dyn TelemetrySink>>,
+}
+
+// Ordinary Database calls borrow their recording target without cloning handles.
+struct StatementRecordingTarget<'a> {
+    slow_query_log: &'a SharedState<system_sql::SlowQueryLog>,
+    statement_summary: &'a SharedState<system_sql::StatementSummary>,
+    slow_query_log_threshold_micros: u128,
+    telemetry: Option<&'a dyn TelemetrySink>,
+}
+
+impl StatementRecordingTarget<'_> {
     pub(super) fn record_statement_execution(
         &self,
         query_language: &str,
@@ -57,7 +75,7 @@ impl Database {
                 error.to_string(),
             ),
         };
-        if let Some(telemetry) = &self.telemetry {
+        if let Some(telemetry) = self.telemetry {
             let pipeline = context
                 .execution_profile
                 .map(|profile| &profile.pipeline_memory_report);
@@ -85,7 +103,7 @@ impl Database {
         let Ok(output) = result else {
             return;
         };
-        let slow_log_candidate = elapsed_micros >= self.config.slow_query_log_threshold_micros;
+        let slow_log_candidate = elapsed_micros >= self.slow_query_log_threshold_micros;
         if !slow_log_candidate {
             return;
         }
@@ -111,6 +129,69 @@ impl Database {
                         .unwrap_or_default(),
                 },
             ));
+    }
+}
+
+impl StatementRecorder {
+    pub(super) fn record_statement_execution(
+        &self,
+        query_language: &str,
+        query_text: &str,
+        statement_kind: &str,
+        started: std::time::Instant,
+        result: std::result::Result<&QueryOutput, &SkeinError>,
+        context: StatementExecutionContext<'_>,
+    ) {
+        StatementRecordingTarget {
+            slow_query_log: &self.slow_query_log,
+            statement_summary: &self.statement_summary,
+            slow_query_log_threshold_micros: self.slow_query_log_threshold_micros,
+            telemetry: self.telemetry.as_deref(),
+        }
+        .record_statement_execution(
+            query_language,
+            query_text,
+            statement_kind,
+            started,
+            result,
+            context,
+        );
+    }
+}
+
+impl Database {
+    pub(super) fn statement_recorder(&self) -> StatementRecorder {
+        StatementRecorder {
+            slow_query_log: Arc::clone(&self.slow_query_log),
+            statement_summary: Arc::clone(&self.statement_summary),
+            slow_query_log_threshold_micros: self.config.slow_query_log_threshold_micros,
+            telemetry: self.telemetry.clone(),
+        }
+    }
+
+    pub(super) fn record_statement_execution(
+        &self,
+        query_language: &str,
+        query_text: &str,
+        statement_kind: &str,
+        started: std::time::Instant,
+        result: std::result::Result<&QueryOutput, &SkeinError>,
+        context: StatementExecutionContext<'_>,
+    ) {
+        StatementRecordingTarget {
+            slow_query_log: &self.slow_query_log,
+            statement_summary: &self.statement_summary,
+            slow_query_log_threshold_micros: self.config.slow_query_log_threshold_micros,
+            telemetry: self.telemetry.as_deref(),
+        }
+        .record_statement_execution(
+            query_language,
+            query_text,
+            statement_kind,
+            started,
+            result,
+            context,
+        );
     }
 
     pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
