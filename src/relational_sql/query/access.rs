@@ -11,7 +11,7 @@ use super::{
     RelationalIndexScanDirection, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalKey, RelationalReadRow, RelationalRowReadMode, RelationalRowRuntime, RelationalState,
     RelationalTableSchema, RelationalValue, Result, SkeinError, SqlColumnRef, SqlNullOrder,
-    SqlOrderDirection, SqlPredicate, SqlValue, Value,
+    SqlOrderDirection, SqlPredicate, Value,
 };
 
 pub(super) struct RelationalBaseAccessPlanning<'a> {
