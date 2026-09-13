@@ -14,6 +14,7 @@ pub mod relational_join_hypergraph;
 pub mod relational_join_rewrite;
 pub mod relational_planning;
 pub mod relational_profile;
+pub mod relational_sargability;
 pub mod rule;
 pub mod search;
 pub mod stage;

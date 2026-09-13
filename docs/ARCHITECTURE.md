@@ -88,6 +88,14 @@ re-exports the same types and functions while retaining file/CLI wrappers and
 real index checkpoint/reopen integration tests. This adds no separate host
 integration API or dependency from evidence back to search.
 
+The internal `skein-search::candidate_evidence` module owns candidate requests,
+reports and readiness assessment, compressed-retrieval advice, and shadow
+accumulation/probe decoding. These contracts consume search-owned result and
+recall models without depending on the database facade. Root `nowledge_mem`
+and `search_candidate_shadow_evidence` preserve their existing public paths;
+query execution, CLI file reads, and overall activation/readiness assembly
+remain in the root. Private model methods are not promoted to new host APIs.
+
 ```text
 crates/
   core/                errors, values, ids, catalog names, schema descriptors

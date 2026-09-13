@@ -40,6 +40,8 @@ pub mod property_spill;
 pub mod read_view;
 pub mod relational;
 #[doc(hidden)]
+pub mod relational_index_view;
+#[doc(hidden)]
 pub mod relational_row_workspace;
 pub mod scan;
 pub mod snapshot;

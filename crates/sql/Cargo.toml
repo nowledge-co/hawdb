@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 caseless = "0.2.2"
 skein-core = { path = "../core" }
+skein-expression = { path = "../expression" }
 skein-plan = { path = "../plan" }
 skein-plan-cache = { path = "../plan-cache" }
 skein-sql-syntax = { path = "../sql-syntax" }

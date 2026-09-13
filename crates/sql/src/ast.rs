@@ -1,5 +1,10 @@
+pub use skein_expression::sql::{
+    SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument, SqlLikeEscape, SqlNullOrder,
+    SqlOrderDirection, SqlOrderItem, SqlPredicate, SqlValue,
+};
+
 use caseless::Caseless;
-use skein_core::{LogicalType, Result, SkeinError, Value};
+use skein_core::{LogicalType, Result, SkeinError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlStatement {
@@ -214,12 +219,6 @@ pub struct AlterTableAddColumnStatement {
     pub column: SqlColumnDefinition,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlValue {
-    Literal(Value),
-    Parameter(usize),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlBound {
     Literal(u64),
@@ -246,30 +245,6 @@ pub enum SelectProjection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlExpression {
-    Column(SqlColumnRef),
-    Value(SqlValue),
-    Function {
-        name: String,
-        arguments: Vec<SqlFunctionArgument>,
-        distinct: bool,
-        filter: Option<SqlPredicate>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlFunctionArgument {
-    Expression(SqlExpression),
-    Wildcard,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SqlColumnRef {
-    pub qualifier: Option<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlJoin {
     pub kind: SqlJoinKind,
     pub table: SqlTableName,
@@ -281,65 +256,6 @@ pub struct SqlJoin {
 pub enum SqlJoinKind {
     Inner,
     Left,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlOrderItem {
-    pub column: SqlColumnRef,
-    pub direction: SqlOrderDirection,
-    pub nulls: SqlNullOrder,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlOrderDirection {
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlNullOrder {
-    DialectDefault,
-    First,
-    Last,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlPredicate {
-    And(Box<SqlPredicate>, Box<SqlPredicate>),
-    Or(Box<SqlPredicate>, Box<SqlPredicate>),
-    Not(Box<SqlPredicate>),
-    Compare {
-        left: SqlColumnRef,
-        op: SqlComparisonOp,
-        right: SqlValue,
-    },
-    CompareColumns {
-        left: SqlColumnRef,
-        op: SqlComparisonOp,
-        right: SqlColumnRef,
-    },
-    InList {
-        left: SqlColumnRef,
-        values: Vec<SqlValue>,
-        negated: bool,
-    },
-    Like {
-        left: SqlColumnRef,
-        pattern: SqlValue,
-        case_insensitive: bool,
-        negated: bool,
-        escape: SqlLikeEscape,
-    },
-    IsNull {
-        column: SqlColumnRef,
-        negated: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlLikeEscape {
-    Character(char),
-    Disabled,
 }
 
 /// Matches SQL LIKE patterns with locale-independent Unicode default case folding for ILIKE.
@@ -463,25 +379,6 @@ fn match_like_literal(value: &[char], expected: &str, case_insensitive: bool) ->
         }
     }
     None
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlComparisonOp {
-    Eq,
-    NotEq,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-}
-
-impl std::fmt::Display for SqlValue {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Literal(value) => write!(formatter, "{value}"),
-            Self::Parameter(position) => write!(formatter, "${position}"),
-        }
-    }
 }
 
 #[cfg(test)]

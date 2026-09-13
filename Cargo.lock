@@ -1121,6 +1121,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "skein-core",
+ "skein-expression",
  "skein-plan",
  "skein-plan-cache",
  "skein-sql-syntax",
