@@ -14,7 +14,12 @@ _SEARCH_DEFAULT_FEATURES = [
     "vector-search",
 ]
 
-_SEARCH_DEPS = all_crate_deps(normal = True) + [
+_SEARCH_BASE_DEPS = [
+    "@crate_index//:chrono",
+    "@crate_index//:jieba-rs",
+    "@crate_index//:serde",
+    "@crate_index//:serde_json",
+    "@crate_index//:zstd",
     "//crates/core:skein_core",
     "//crates/evidence:skein_evidence",
     "//crates/executor:skein_executor",
@@ -24,8 +29,14 @@ _SEARCH_DEPS = all_crate_deps(normal = True) + [
     "//crates/qos:skein_qos",
     "//crates/storage:skein_storage",
     "//crates/telemetry:skein_telemetry",
+]
+
+_SEARCH_VECTOR_DEPS = [
+    "@crate_index//:simsimd",
     "//crates/vector-projection:skein_vector_projection",
 ]
+
+_SEARCH_DEPS = _SEARCH_BASE_DEPS + _SEARCH_VECTOR_DEPS
 
 rust_library(
     name = "skein_search",
@@ -37,6 +48,20 @@ rust_library(
     aliases = aliases(),
     deps = _SEARCH_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+# Matches `skein-search = { default-features = false }` for embedded hosts
+# that own another native vector provider in the same process.
+rust_library(
+    name = "skein_search_minimal",
+    crate_name = "skein_search",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _SEARCH_BASE_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
 )
 
 # Match Cargo's explicit `skein-search/acl` forwarding without enabling ACL
