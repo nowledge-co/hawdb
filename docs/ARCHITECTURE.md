@@ -100,6 +100,7 @@ remain in the root. Private model methods are not promoted to new host APIs.
 crates/
   core/                errors, values, ids, catalog names, schema descriptors
   analytics/           immutable CSR/CSC projections and graph algorithms
+  compat/              fixtures, comparison, migration gates, shadow protocols
   evidence/            release identity, recovery, redacted diagnostic evidence
   plan/                logical/physical IR, phase roots, explain, fingerprints
   qos/                 work classes, local admission, background ranking
@@ -117,6 +118,20 @@ crates/
 
 The public facade should stay in the root `skein` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
+
+`skein-compat` owns compatibility fixtures and query inventories, row and
+projection comparison, migration/cutover evidence assessment, and the existing
+developer external-shadow protocol. This is one cohesive verification boundary,
+not a second database API or a production helper-process control plane. It
+depends inward on result/value/projection types and cannot open a database.
+Root `compat` preserves public type paths and the original database-taking
+functions. Its small internal primary-engine adapter provides query, explain,
+projection, and borrowed-session execution; session setup, check, effect, and
+drop/rollback ordering remain unchanged. `QueryOutput` lives beside the
+executor-owned `QueryRows`, with the same root re-export and payload semantics.
+Pure contract tests move with the owner, while complete fixture execution,
+real session rollback, and database-backed shadow integration stay at the
+facade. The complete generated contract campaign is explicit local fuzz only.
 
 Graph route evidence validation belongs to the internal
 `skein-readiness::graph_route` module. It consumes the existing route-ownership

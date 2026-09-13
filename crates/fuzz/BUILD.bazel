@@ -89,6 +89,7 @@ test_suite(
         "//:skein_graph_projection_residency_fuzz_tests",
         "//:skein_recovery_text_fuzz_tests",
         "//:skein_scan_callback_fuzz_tests",
+        "//crates/compat:skein_compat_contract_fuzz_tests",
         "//crates/cypher:skein_cypher_backtracking_fuzz_tests",
         "//crates/evidence:skein_inventory_health_fuzz_tests",
         "//crates/evidence:skein_source_inventory_fuzz_tests",
