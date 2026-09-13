@@ -16,6 +16,7 @@ rust_library(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
+        "//crates/expression:skein_expression",
         "//crates/plan:skein_plan",
         "//crates/plan-cache:skein_plan_cache",
         "//crates/sql-syntax:skein_sql_syntax",

@@ -1,3 +1,8 @@
+pub(super) use skein_optimizer::relational_sargability::collect_conjunctive_join_equalities;
+use skein_optimizer::relational_sargability::{
+    canonical_keyset_values, collect_conjunctive_equalities, predicate_is_covered_by_equalities,
+};
+
 use super::{
     bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
     value_to_relational_as, BTreeMap, BTreeSet, BoundRow, PlannedJoin, RelationalAccessCandidate,
@@ -5,8 +10,8 @@ use super::{
     RelationalIndexRangeScan, RelationalIndexReadMode, RelationalIndexRuntime,
     RelationalIndexScanDirection, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalKey, RelationalReadRow, RelationalRowReadMode, RelationalRowRuntime, RelationalState,
-    RelationalTableSchema, RelationalValue, Result, SkeinError, SqlColumnRef, SqlComparisonOp,
-    SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlValue, Value,
+    RelationalTableSchema, RelationalValue, Result, SkeinError, SqlColumnRef, SqlNullOrder,
+    SqlOrderDirection, SqlPredicate, SqlValue, Value,
 };
 
 pub(super) struct RelationalBaseAccessPlanning<'a> {
@@ -353,44 +358,6 @@ pub(super) fn predicate_is_covered_by_access(
             .is_some())
 }
 
-pub(super) fn predicate_is_covered_by_equalities(
-    predicate: Option<&SqlPredicate>,
-    access_columns: &BTreeSet<String>,
-    table: &str,
-    qualifier: &str,
-) -> bool {
-    fn covered(
-        predicate: &SqlPredicate,
-        access_columns: &BTreeSet<String>,
-        table: &str,
-        qualifier: &str,
-        columns: &mut BTreeSet<String>,
-    ) -> bool {
-        match predicate {
-            SqlPredicate::And(left, right) => {
-                covered(left, access_columns, table, qualifier, columns)
-                    && covered(right, access_columns, table, qualifier, columns)
-            }
-            SqlPredicate::Compare {
-                left,
-                op: SqlComparisonOp::Eq,
-                ..
-            } => {
-                column_matches(left, table, qualifier)
-                    && access_columns.contains(&left.name)
-                    && columns.insert(left.name.clone())
-            }
-            _ => false,
-        }
-    }
-
-    predicate.is_none_or(|predicate| {
-        let mut columns = BTreeSet::new();
-        covered(predicate, access_columns, table, qualifier, &mut columns)
-            && columns == *access_columns
-    })
-}
-
 pub(super) fn bind_canonical_keyset_bound(
     planning: &RelationalBaseAccessPlanning<'_>,
     prefix: &RelationalKey,
@@ -428,174 +395,6 @@ pub(super) fn bind_canonical_keyset_bound(
         bound.push(value);
     }
     Ok(Some(RelationalKey(bound)))
-}
-
-pub(super) fn canonical_keyset_values<'a>(
-    predicate: Option<&'a SqlPredicate>,
-    access_columns: &BTreeSet<String>,
-    order_by: &[crate::sql::SqlOrderItem],
-    table: &str,
-    qualifier: &str,
-) -> Option<(&'a SqlValue, &'a SqlValue)> {
-    let predicate = predicate?;
-    if order_by.len() != 2 || order_by[0].direction != order_by[1].direction {
-        return None;
-    }
-    let expected = match order_by[0].direction {
-        SqlOrderDirection::Asc => SqlComparisonOp::Gt,
-        SqlOrderDirection::Desc => SqlComparisonOp::Lt,
-    };
-    let mut terms = Vec::new();
-    collect_conjuncts(predicate, &mut terms);
-    let mut equality_columns = BTreeSet::new();
-    let mut cursor = None;
-    for term in terms {
-        if let SqlPredicate::Compare {
-            left,
-            op: SqlComparisonOp::Eq,
-            ..
-        } = term
-            && column_matches(left, table, qualifier)
-            && access_columns.contains(&left.name)
-        {
-            if !equality_columns.insert(left.name.clone()) {
-                return None;
-            }
-            continue;
-        }
-        if cursor.is_some() {
-            return None;
-        }
-        cursor = match_keyset_or(
-            term,
-            &order_by[0].column,
-            &order_by[1].column,
-            expected,
-            table,
-            qualifier,
-        );
-        cursor?;
-    }
-    if equality_columns != *access_columns {
-        return None;
-    }
-    cursor
-}
-
-pub(super) fn collect_conjuncts<'a>(
-    predicate: &'a SqlPredicate,
-    output: &mut Vec<&'a SqlPredicate>,
-) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
-            collect_conjuncts(left, output);
-            collect_conjuncts(right, output);
-        }
-        predicate => output.push(predicate),
-    }
-}
-
-pub(super) fn match_keyset_or<'a>(
-    predicate: &'a SqlPredicate,
-    first_column: &SqlColumnRef,
-    second_column: &SqlColumnRef,
-    comparison: SqlComparisonOp,
-    table: &str,
-    qualifier: &str,
-) -> Option<(&'a SqlValue, &'a SqlValue)> {
-    let SqlPredicate::Or(left, right) = predicate else {
-        return None;
-    };
-    match_keyset_branches(
-        left,
-        right,
-        first_column,
-        second_column,
-        comparison,
-        table,
-        qualifier,
-    )
-    .or_else(|| {
-        match_keyset_branches(
-            right,
-            left,
-            first_column,
-            second_column,
-            comparison,
-            table,
-            qualifier,
-        )
-    })
-}
-
-pub(super) fn match_keyset_branches<'a>(
-    first_branch: &'a SqlPredicate,
-    tie_branch: &'a SqlPredicate,
-    first_column: &SqlColumnRef,
-    second_column: &SqlColumnRef,
-    comparison: SqlComparisonOp,
-    table: &str,
-    qualifier: &str,
-) -> Option<(&'a SqlValue, &'a SqlValue)> {
-    let first = match_column_comparison(first_branch, first_column, comparison, table, qualifier)?;
-    let SqlPredicate::And(left, right) = tie_branch else {
-        return None;
-    };
-    let tie = match_column_comparison(left, first_column, SqlComparisonOp::Eq, table, qualifier)
-        .zip(match_column_comparison(
-            right,
-            second_column,
-            comparison,
-            table,
-            qualifier,
-        ))
-        .or_else(|| {
-            match_column_comparison(right, first_column, SqlComparisonOp::Eq, table, qualifier).zip(
-                match_column_comparison(left, second_column, comparison, table, qualifier),
-            )
-        })?;
-    (first == tie.0).then_some((first, tie.1))
-}
-
-pub(super) fn match_column_comparison<'a>(
-    predicate: &'a SqlPredicate,
-    expected_column: &SqlColumnRef,
-    expected_op: SqlComparisonOp,
-    table: &str,
-    qualifier: &str,
-) -> Option<&'a SqlValue> {
-    let SqlPredicate::Compare { left, op, right } = predicate else {
-        return None;
-    };
-    (*op == expected_op
-        && left.name == expected_column.name
-        && column_matches(left, table, qualifier))
-    .then_some(right)
-}
-
-pub(super) fn column_matches(column: &SqlColumnRef, table: &str, qualifier: &str) -> bool {
-    column
-        .qualifier
-        .as_deref()
-        .is_none_or(|candidate| candidate == table || candidate == qualifier)
-}
-
-pub(super) fn collect_conjunctive_equalities<'a>(
-    predicate: &'a SqlPredicate,
-    output: &mut Vec<(&'a SqlColumnRef, &'a SqlValue)>,
-) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
-            collect_conjunctive_equalities(left, output);
-            collect_conjunctive_equalities(right, output);
-        }
-        SqlPredicate::Compare {
-            left,
-            op: SqlComparisonOp::Eq,
-            right,
-        } => output.push((left, right)),
-        _ => {}
-    }
 }
 
 pub(super) fn choose_join_access(
@@ -690,49 +489,6 @@ pub(super) fn choose_join_access(
         .position(|candidate| candidate.descriptor == selected)
         .expect("selected relational join access path came from the candidate set");
     Ok(candidates.swap_remove(position))
-}
-
-pub(super) fn collect_conjunctive_join_equalities(
-    predicate: &SqlPredicate,
-    table: &str,
-    qualifier: &str,
-    output: &mut BTreeMap<String, SqlColumnRef>,
-) {
-    match predicate {
-        SqlPredicate::And(left, right) => {
-            collect_conjunctive_join_equalities(left, table, qualifier, output);
-            collect_conjunctive_join_equalities(right, table, qualifier, output);
-        }
-        SqlPredicate::CompareColumns {
-            left,
-            op: SqlComparisonOp::Eq,
-            right,
-        } => {
-            let left_is_join = column_targets_join(left, table, qualifier);
-            let right_is_join = column_targets_join(right, table, qualifier);
-            match (left_is_join, right_is_join) {
-                (true, false) => {
-                    output
-                        .entry(left.name.clone())
-                        .or_insert_with(|| right.clone());
-                }
-                (false, true) => {
-                    output
-                        .entry(right.name.clone())
-                        .or_insert_with(|| left.clone());
-                }
-                (true, true) | (false, false) => {}
-            }
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn column_targets_join(column: &SqlColumnRef, table: &str, qualifier: &str) -> bool {
-    column
-        .qualifier
-        .as_deref()
-        .is_some_and(|candidate| candidate == table || candidate == qualifier)
 }
 
 pub(super) fn complete_join_columns(
