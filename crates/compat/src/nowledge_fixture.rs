@@ -5,8 +5,8 @@ use super::{
     CompatibilityCheck, CompatibilityFixture, CompatibilityTolerance, CypherFixtureCheck,
     CypherFixtureStatement, ExpectedRows, ProjectedGraphFixtureCheck,
 };
-use crate::executor::Row;
-use crate::value::Value;
+use skein_core::Value;
+use skein_executor::Row;
 use std::collections::BTreeMap;
 
 pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {

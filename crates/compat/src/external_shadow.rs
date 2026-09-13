@@ -3,10 +3,8 @@ use super::{
     ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput, ProjectedGraphShadowResult,
     ShadowRequestContext, ShadowRequestPhase, EXTERNAL_SHADOW_PROTOCOL_VERSION,
 };
-use crate::api::QueryOutput;
-use crate::error::{Result, SkeinError};
-use crate::executor::Row;
-use crate::value::Value;
+use skein_core::{Result, SkeinError, Value};
+use skein_executor::{QueryOutput, Row};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};

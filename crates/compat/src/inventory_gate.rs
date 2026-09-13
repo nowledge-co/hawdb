@@ -2,7 +2,7 @@ use super::{
     assess_compatibility_cutover, CompatibilityCheck, CompatibilityCutoverPolicy,
     CompatibilityCutoverReport, CompatibilityFixture, CompatibilityShadowReport,
 };
-use crate::error::{Result, SkeinError};
+use skein_core::{Result, SkeinError};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

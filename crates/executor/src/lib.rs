@@ -25,6 +25,8 @@ pub mod mutation;
 pub mod numeric;
 #[doc(hidden)]
 pub mod observer;
+mod output;
+pub use output::QueryOutput;
 #[doc(hidden)]
 pub mod pipeline;
 #[doc(hidden)]
