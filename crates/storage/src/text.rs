@@ -6,6 +6,39 @@
 use skein_core::{Result, SkeinError, Value};
 use std::collections::BTreeMap;
 
+pub fn encode_string_vec(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| encode_string(value))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+pub fn decode_string_vec(input: &str) -> Result<Vec<String>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    input.split(':').map(decode_string).collect()
+}
+
+pub fn encode_u64_vec(values: impl IntoIterator<Item = u64>) -> String {
+    values
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub fn decode_u64_vec(input: &str, name: &str) -> Result<Vec<u64>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    input
+        .split(',')
+        .map(|value| parse_u64(value, name))
+        .collect()
+}
+
 pub fn encode_properties(properties: &BTreeMap<String, Value>) -> String {
     properties
         .iter()

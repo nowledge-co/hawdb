@@ -2,6 +2,9 @@ use crate::{NodeId, NodeRecord, RelId, RelationalPrimaryKeyChangeCapture};
 use skein_core::{Catalog, SchemaObjectState, Value};
 use std::collections::BTreeMap;
 
+#[doc(hidden)]
+pub mod artifact;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedGraphDefinition {
     pub node_labels: Vec<String>,
