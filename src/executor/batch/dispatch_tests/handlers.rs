@@ -200,31 +200,6 @@ fn graph_handler_errors_release_memory_without_emitting_partial_results() {
 }
 
 #[test]
-fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
-    for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
-        let plan = graph_algorithm_plan(algorithm);
-        let cancellation = skein_core::RuntimeCancellationToken::new();
-        assert!(cancellation.cancel());
-        let task = RuntimeTaskContext::without_deadline(cancellation);
-        let (result, _) = with_graph_context(&plan, 1, 4096, Some(&task), |context| {
-            // Bypass entrypoint checkpoints to pin the extracted handler's own boundary.
-            dispatch_batch_operator(
-                &plan,
-                BatchExecution {
-                    context,
-                    execution_limit: ExecutionLimit::unlimited(),
-                    emit: &mut |_| panic!("cancelled graph handler emitted a row"),
-                },
-            )
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            SkeinError::Execution("runtime task stopped: cancelled".to_string())
-        );
-    }
-}
-
-#[test]
 fn graph_handler_cancellation_from_consumer_releases_memory() {
     for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
         let plan = graph_algorithm_plan(algorithm);

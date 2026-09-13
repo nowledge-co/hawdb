@@ -23,7 +23,7 @@ pub(super) fn stream_composite_node_seek_batches(
 pub(super) fn stream_composite_node_range_seek_batches(
     variable: &str,
     label: &str,
-    seek: &crate::planner::CompositeRangeSeek,
+    seek: &skein_plan::CompositeRangeSeek,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -128,7 +128,7 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
                 context.store,
                 node.id,
                 leg,
-                skein_executor::store::AdjacencyReadMemory {
+                crate::store::AdjacencyReadMemory {
                     budget_bytes: context.memory.blocking_operator_bytes.get(),
                     account: Some(&count_account),
                 },

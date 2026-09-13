@@ -1,13 +1,13 @@
-//! Root facade wiring for storage-independent blocking operators.
+//! Recursive batch wiring for storage-independent blocking operators.
 
 use super::*;
-use skein_executor::blocking::{self as executor_blocking, BindingBatchSource};
+use crate::blocking::{self as executor_blocking, BindingBatchSource};
 
-struct RootBindingBatchSource<'a> {
+struct RecursiveBindingBatchSource<'a> {
     context: BatchReadContext<'a>,
 }
 
-impl BindingBatchSource for RootBindingBatchSource<'_> {
+impl BindingBatchSource for RecursiveBindingBatchSource<'_> {
     fn execute(
         &mut self,
         input: &PhysicalPlan,
@@ -24,7 +24,7 @@ pub(super) fn stream_distinct_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut source = RootBindingBatchSource { context };
+    let mut source = RecursiveBindingBatchSource { context };
     executor_blocking::stream_distinct_batches(
         input,
         &mut source,
@@ -41,7 +41,7 @@ pub(super) fn stream_sort_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut source = RootBindingBatchSource { context };
+    let mut source = RecursiveBindingBatchSource { context };
     executor_blocking::stream_sort_batches(
         input,
         items,
@@ -62,7 +62,7 @@ pub(super) fn stream_top_n_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut source = RootBindingBatchSource { context };
+    let mut source = RecursiveBindingBatchSource { context };
     executor_blocking::stream_top_n_batches(
         input,
         items,
@@ -83,7 +83,7 @@ pub(super) fn stream_aggregate_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut source = RootBindingBatchSource { context };
+    let mut source = RecursiveBindingBatchSource { context };
     executor_blocking::stream_aggregate_batches(
         input,
         group_keys,
@@ -102,7 +102,7 @@ pub(super) fn stream_cartesian_product_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut source = RootBindingBatchSource { context };
+    let mut source = RecursiveBindingBatchSource { context };
     executor_blocking::stream_cartesian_product_batches(
         left,
         right,

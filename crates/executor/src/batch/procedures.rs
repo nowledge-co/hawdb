@@ -13,7 +13,7 @@ pub(super) struct ShortestPathSpec<'a> {
     pub(super) target_visibility_predicate: &'a Option<Predicate>,
     pub(super) min_hops: &'a usize,
     pub(super) max_hops: &'a usize,
-    pub(super) returns: &'a [crate::planner::ShortestPathProjection],
+    pub(super) returns: &'a [skein_plan::ShortestPathProjection],
 }
 
 impl ShortestPathSpec<'_> {

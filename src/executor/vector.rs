@@ -1,5 +1,3 @@
-//! Root wiring for the executor-owned vector seed operator.
+//! Root wiring for query-owned external reads.
 
-pub(super) use skein_executor::external::seed::{
-    BatchExternalRead, BatchExternalReadAdapter, VectorSeedContext, VectorSeedScanSpec,
-};
+pub(super) use skein_executor::external::seed::BatchExternalReadAdapter;

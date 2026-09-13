@@ -85,7 +85,7 @@ _SKEIN_SRCS = glob(
         "src/bin/**",
         "src/main.rs",
     ],
-)
+) + ["//crates/executor:batch_dispatch_test_fixtures"]
 
 _SKEIN_COMMON_DEPS = [
     "@crate_index//:chrono",

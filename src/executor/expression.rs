@@ -4,8 +4,7 @@ use super::*;
 use skein_executor::store::GraphExecutionRead;
 
 pub(super) use skein_executor::expression::{
-    exact_relationship_scan_filter_from_predicate, node_scan_filter_from_predicate,
-    predicate_references_only_variable, project_value, property_filter_from_predicate,
+    node_scan_filter_from_predicate, project_value, property_filter_from_predicate,
     relationship_filter_from_properties_and_predicate,
 };
 
