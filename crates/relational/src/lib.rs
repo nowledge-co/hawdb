@@ -180,3 +180,6 @@ mod tests {
         assert_eq!(plan.max_rows, 10);
     }
 }
+
+#[cfg(test)]
+mod pgq_create_tests;
