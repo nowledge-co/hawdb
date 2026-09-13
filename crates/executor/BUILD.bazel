@@ -238,3 +238,10 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+# Compile one independent capability oracle in owner and facade integration tests.
+filegroup(
+    name = "batch_dispatch_test_fixtures",
+    srcs = ["src/batch/tests/fixtures.rs"],
+    visibility = ["//:__pkg__"],
+)

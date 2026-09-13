@@ -1,6 +1,8 @@
 #[doc(hidden)]
 pub mod analytics;
 #[doc(hidden)]
+pub mod batch;
+#[doc(hidden)]
 pub mod binding;
 #[doc(hidden)]
 pub mod blocking;

@@ -1,0 +1,204 @@
+//! Fail-closed read fixture: a test must explicitly implement every storage read it needs.
+
+use super::*;
+use crate::store::{
+    GraphExecutionRead, PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow,
+    SourceScanCandidateVisit, SourceScanReadLimits,
+};
+use skein_core::{LabelId, RelTypeId};
+use skein_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use skein_storage::{
+    AdjacencyDirection, ProjectedGraphDefinition, ProjectedNodeRecord, RelRecord, ScanPredicate,
+};
+use std::collections::BTreeSet;
+
+#[derive(Default)]
+pub(super) struct ReadFixture {
+    pub(super) nodes: Vec<NodeRecord>,
+    pub(super) relationships: Vec<RelRecord>,
+    pub(super) definition: Option<ProjectedGraphDefinition>,
+    pub(super) out_of_core: bool,
+    pub(super) source_candidates: Option<Vec<SourceScanCandidateRow>>,
+    pub(super) source_reads: Cell<usize>,
+}
+
+impl GraphExecutionRead for ReadFixture {
+    fn is_out_of_core(&self) -> bool {
+        self.out_of_core
+    }
+    fn node_count_for_label(&self, label: Option<LabelId>) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| label.is_none_or(|label| node.labels.contains(&label)))
+            .count()
+    }
+    fn relationship_count_for_type(&self, _: Option<RelTypeId>) -> usize {
+        panic!("unexpected batch test store read: relationship_count_for_type")
+    }
+    fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
+        Ok(self.nodes.iter().find(|node| node.id == id).cloned())
+    }
+    fn visit_adjacent_relationships_owned(
+        &self,
+        _node_id: NodeId,
+        _: Option<RelTypeId>,
+        _direction: AdjacencyDirection,
+        _consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_adjacent_relationships_owned")
+    }
+    fn scan_nodes_borrowed<'a>(
+        &'a self,
+        _: Option<LabelId>,
+    ) -> Box<dyn Iterator<Item = &'a NodeRecord> + 'a> {
+        panic!("unexpected batch test store read: scan_nodes_borrowed")
+    }
+    fn visit_nodes_owned(
+        &self,
+        label: Option<LabelId>,
+        consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for node in &self.nodes {
+            if label.is_none_or(|label| node.labels.contains(&label))
+                && consumer(node.clone())? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_relationships_owned(
+        &self,
+        rel_type: Option<RelTypeId>,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for relationship in &self.relationships {
+            if rel_type.is_none_or(|rel_type| relationship.rel_type == rel_type)
+                && consumer(relationship.clone())? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_projected_nodes_by_access_owned(
+        &self,
+        _: LabelId,
+        _: &NodeProjectionAccess,
+        _: &BTreeSet<String>,
+        _: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_projected_nodes_by_access_owned")
+    }
+    fn visit_nodes_by_property_owned(
+        &self,
+        _: LabelId,
+        _: &str,
+        _: &[Value],
+        _: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_nodes_by_property_owned")
+    }
+    fn visit_nodes_by_composite_property_owned(
+        &self,
+        _: LabelId,
+        _: &[(String, Value)],
+        _: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_nodes_by_composite_property_owned")
+    }
+    fn visit_nodes_by_composite_range_owned(
+        &self,
+        _: LabelId,
+        _: &CompositeRangeSeek,
+        _: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_nodes_by_composite_range_owned")
+    }
+    fn visit_nodes_by_property_range_owned(
+        &self,
+        _: LabelId,
+        _: &str,
+        _: Option<&(Value, bool)>,
+        _: Option<&(Value, bool)>,
+        _: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_nodes_by_property_range_owned")
+    }
+    fn visit_nodes_by_full_text_property_owned(
+        &self,
+        _: LabelId,
+        _: &str,
+        _: &str,
+        _: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        panic!("unexpected batch test store read: visit_nodes_by_full_text_property_owned")
+    }
+    fn projected_graph_definition(&self, name: &str) -> Option<ProjectedGraphDefinition> {
+        assert_eq!(name, "MemoryGraph");
+        self.definition.clone()
+    }
+    fn visit_source_scan_candidates(
+        &self,
+        _: &ScanPredicate,
+        limits: SourceScanReadLimits,
+        _: Option<&RuntimeTaskContext>,
+        consumer: &mut dyn FnMut(SourceScanCandidateRow) -> Result<ScanControl>,
+    ) -> Result<SourceScanCandidateVisit> {
+        let candidates = self
+            .source_candidates
+            .as_ref()
+            .expect("unexpected source scan");
+        assert_eq!(limits.io_depth.get(), SOURCE_SEGMENT_SCAN_IO_DEPTH);
+        assert_eq!(
+            limits.max_coalesced_bytes.get(),
+            SOURCE_SEGMENT_SCAN_MAX_COALESCED_BYTES
+        );
+        assert_eq!(
+            limits.max_wave_bytes.get(),
+            SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES
+        );
+        self.source_reads.set(self.source_reads.get() + 1);
+        for row in candidates {
+            if consumer(row.clone())? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(SourceScanCandidateVisit::Rows {
+            graph_epoch: 1,
+            skipped_segment_count: 0,
+            candidate_count: candidates.len(),
+            report: skein_storage::SegmentReadExecutionReport {
+                wave_count: 1,
+                range_count: 1,
+                bytes_read: 1,
+                max_wave_bytes_read: 1,
+            },
+        })
+    }
+    fn visit_adjacent_relationships_with_filter_owned(
+        &self,
+        _: NodeId,
+        _: Option<RelTypeId>,
+        _: AdjacencyDirection,
+        _: &PropertyFilter,
+        _: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+    ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
+        panic!("unexpected batch test store read: visit_adjacent_relationships_with_filter_owned")
+    }
+    fn scan_relationships_with_filter_pruning<'a>(
+        &'a self,
+        _: Option<RelTypeId>,
+        _: Option<&PropertyFilter>,
+    ) -> Result<PrunedRelationshipScan<'a>> {
+        panic!("unexpected batch test store read: scan_relationships_with_filter_pruning")
+    }
+    fn scan_nodes_with_filter_pruning<'a>(
+        &'a self,
+        _: &Catalog,
+        _: Option<LabelId>,
+        _: Option<&PropertyFilter>,
+    ) -> Result<PrunedNodeScan<'a>> {
+        panic!("unexpected batch test store read: scan_nodes_with_filter_pruning")
+    }
+}
