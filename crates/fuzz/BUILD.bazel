@@ -122,6 +122,7 @@ test_suite(
         "//crates/search:skein_search_compression_fuzz_tests",
         "//crates/search:skein_search_concurrent_read_fuzz_tests",
         "//crates/search:skein_search_document_analysis_fuzz_tests",
+        "//crates/search:skein_search_mini_delta_snapshot_fuzz_tests",
         "//crates/search:skein_search_document_frequency_fuzz_tests",
         "//crates/search:skein_search_hex_decoding_fuzz_tests",
         "//crates/search:skein_search_hydration_fuzz_tests",

@@ -1341,7 +1341,7 @@ pub struct SearchIndex {
     marker_lines: Mutex<BTreeMap<String, Vec<String>>>,
     analyzer_lexicon: SearchAnalyzerLexicon,
     lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
-    lexical_delta: Mutex<LexicalMiniDelta>,
+    lexical_delta: Mutex<Arc<LexicalMiniDelta>>,
     lexical_config: LexicalProjectionConfig,
     #[cfg(feature = "vector-search")]
     rabitq_projection: Mutex<Option<Arc<RaBitQCandidateProjection>>>,
@@ -1397,7 +1397,7 @@ impl SearchIndex {
         *self
             .lexical_delta
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::default();
     }
 
     fn load_lexical_projection(&self) -> Result<()> {
@@ -1519,16 +1519,18 @@ impl SearchIndex {
         {
             return;
         }
-        let result = self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .upsert(
+        let result = {
+            let mut delta = self
+                .lexical_delta
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::make_mut(&mut delta).upsert(
                 document,
                 self.documents.get(&document.id),
                 &self.analyzer_lexicon,
                 self.lexical_config,
-            );
+            )
+        };
         if result.is_err() {
             self.invalidate_lexical_projection();
         }
@@ -1543,16 +1545,18 @@ impl SearchIndex {
         {
             return;
         }
-        let admitted = self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .delete(
+        let admitted = {
+            let mut delta = self
+                .lexical_delta
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::make_mut(&mut delta).delete(
                 document_id,
                 self.documents.get(document_id),
                 &self.analyzer_lexicon,
                 self.lexical_config,
-            );
+            )
+        };
         if !matches!(admitted, Ok(true)) {
             self.invalidate_lexical_projection();
         }
@@ -2391,7 +2395,7 @@ impl SearchIndex {
         *self
             .lexical_delta
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::default();
         Ok(())
     }
 
@@ -3217,6 +3221,8 @@ impl SearchIndex {
         let lexical_report = lexical_projection
             .as_ref()
             .map(|projection| {
+                // Retain immutable delta state without copying its terms or
+                // holding the mutation mutex through positioned reads.
                 let delta = self
                     .lexical_delta
                     .lock()
@@ -3887,7 +3893,7 @@ impl Default for SearchIndex {
             marker_lines: Mutex::new(BTreeMap::new()),
             analyzer_lexicon: SearchAnalyzerLexicon::default(),
             lexical_projection: Mutex::new(None),
-            lexical_delta: Mutex::new(LexicalMiniDelta::default()),
+            lexical_delta: Mutex::new(Arc::default()),
             lexical_config: LexicalProjectionConfig::default(),
             #[cfg(feature = "vector-search")]
             rabitq_projection: Mutex::new(None),
@@ -13781,6 +13787,61 @@ mod tests {
         assert_eq!(summary.missing_documents, 1);
         assert!(index.full_reindex_needed());
         assert!(!index.metadata_repair_needed());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn search_index_mutations_preserve_retained_lexical_delta_snapshots() {
+        let path = unique_test_dir("retained_lexical_delta");
+        let mut index = SearchIndex::open(&path).unwrap();
+        let document = |content: &str| SearchDocument {
+            id: "a".into(),
+            title: String::new(),
+            content: content.into(),
+            embedding: None,
+            metadata: BTreeMap::new(),
+        };
+        index.upsert(document("base graph")).unwrap();
+        index.checkpoint().unwrap();
+        index.upsert(document("alpha")).unwrap();
+        let reader = index.lexical_projection.lock().unwrap().clone().unwrap();
+        let snapshot = index.lexical_delta.lock().unwrap().clone();
+        let terms = BTreeSet::from(["alpha".to_string()]);
+        let expected = reader.score(&terms, &snapshot, None, |_| Ok(true)).unwrap();
+        assert_eq!(expected.matching_document_count, 1);
+
+        for content in [Some("beta"), None, Some("gamma")] {
+            if let Some(content) = content {
+                index.upsert(document(content)).unwrap();
+            } else {
+                index.delete("a");
+            }
+            assert_eq!(
+                reader.score(&terms, &snapshot, None, |_| Ok(true)).unwrap(),
+                expected
+            );
+            let current = index.lexical_delta.lock().unwrap().clone();
+            assert_eq!(
+                reader
+                    .score(&terms, &current, None, |_| Ok(true))
+                    .unwrap()
+                    .matching_document_count,
+                0
+            );
+        }
+        index.checkpoint().unwrap();
+        assert_eq!(
+            reader.score(&terms, &snapshot, None, |_| Ok(true)).unwrap(),
+            expected
+        );
+        index.set_analyzer_lexicon(SearchAnalyzerLexicon::empty());
+        assert_eq!(
+            reader.score(&terms, &snapshot, None, |_| Ok(true)).unwrap(),
+            expected
+        );
+        drop(reader);
+        drop(index);
         std::fs::remove_dir_all(path).unwrap();
     }
 
