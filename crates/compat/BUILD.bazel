@@ -1,0 +1,56 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+filegroup(
+    name = "test_support",
+    srcs = ["src/test_support.rs"],
+    visibility = ["//:__pkg__"],
+)
+
+rust_library(
+    name = "skein_compat",
+    crate_name = "skein_compat",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/analytics:skein_analytics",
+        "//crates/core:skein_core",
+        "//crates/evidence:skein_evidence",
+        "//crates/executor:skein_executor",
+        "//crates/storage:skein_storage",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_compat_tests",
+    crate = ":skein_compat",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_compat_contract_fuzz_tests",
+    args = [
+        "differential::compatibility_contract_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_compat",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

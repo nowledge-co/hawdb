@@ -11,6 +11,7 @@ getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 skein-core = { path = "crates/core" }
+skein-compat = { path = "crates/compat" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
@@ -59,6 +60,7 @@ tokio-runtime = ["dep:skein-runtime-tokio"]
 [workspace]
 members = [
   "crates/analytics",
+  "crates/compat",
   "crates/core",
   "crates/cypher",
   "crates/ddl",

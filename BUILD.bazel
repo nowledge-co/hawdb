@@ -8,6 +8,7 @@ package(default_visibility = ["//visibility:public"])
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
     "crates/cgroup",
+    "crates/compat",
     "crates/core",
     "crates/cypher",
     "crates/ddl",
@@ -86,6 +87,7 @@ _SKEIN_SRCS = glob(
         "src/main.rs",
     ],
 ) + [
+    "//crates/compat:test_support",
     "//crates/executor:batch_dispatch_test_fixtures",
     "//crates/search:candidate_probe_test_fixtures",
 ]
@@ -98,6 +100,7 @@ _SKEIN_COMMON_DEPS = [
     "@crate_index//:unicode-width",
     "@crate_index//:zstd",
     "//crates/analytics:skein_analytics",
+    "//crates/compat:skein_compat",
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
     "//crates/ddl:skein_ddl",

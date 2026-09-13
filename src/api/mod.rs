@@ -507,10 +507,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryOutput {
-    pub rows: executor::QueryRows,
-}
+pub use skein_executor::QueryOutput;
 
 /// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
@@ -565,26 +562,6 @@ impl QueryRowLookup for &Row {
 impl QueryRowLookup for executor::QueryRowRef<'_> {
     fn get(&self, column: &str) -> Option<&Value> {
         (*self).get(column)
-    }
-}
-
-impl QueryOutput {
-    pub fn from_rows(rows: Vec<Row>) -> Self {
-        Self { rows: rows.into() }
-    }
-
-    pub fn schema(&self) -> &executor::QuerySchema {
-        self.rows.schema()
-    }
-
-    pub fn value_rows(&self) -> executor::QueryValueRows<'_> {
-        self.rows.value_rows()
-    }
-
-    /// Returns the deterministic payload accounting used by query result
-    /// admission. Container allocation overhead is intentionally excluded.
-    pub fn payload_bytes(&self) -> usize {
-        self.rows.payload_bytes()
     }
 }
 
