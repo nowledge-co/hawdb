@@ -1,8 +1,9 @@
 //! Root execution orchestration and result-accounting lifecycle.
 
 use super::*;
+use skein_executor::observer::ExecutionProfileBuilder;
 pub(super) use skein_executor::result_delivery::ConsumerMemoryMode;
-use skein_executor::result_delivery::{OutputLimits, OutputMetrics, QueryOutputAccumulator};
+use skein_executor::result_delivery::{OutputLimits, QueryOutputAccumulator};
 
 #[derive(Clone, Copy)]
 pub(super) struct ExecutionRequest<'a> {
@@ -74,75 +75,28 @@ impl<'a> ExecutionResources<'a> {
     }
 }
 
-struct ExecutionProfileBuilder {
-    profile: ReadExecutionProfile,
+fn record_process_memory(
+    report: &mut skein_executor::PipelineMemoryReport,
     process_memory_start: Option<skein_qos::ProcessMemorySnapshot>,
-}
-
-impl ExecutionProfileBuilder {
-    fn start(
-        plan: &PhysicalPlan,
-        max_rows: Option<usize>,
-        process_memory_start: Option<skein_qos::ProcessMemorySnapshot>,
-    ) -> Result<Self> {
-        Ok(Self {
-            profile: read_execution_profile(plan, max_rows)?,
-            process_memory_start,
-        })
-    }
-
-    fn finish(
-        mut self,
-        observer: QueryExecutionObserver,
-        memory_ledger: &QueryMemoryLedger,
-        output: OutputMetrics,
-    ) -> ReadExecutionProfile {
-        let QueryExecutionReports {
-            operator_cardinality,
-            scan_pruning,
-            vector_execution,
-            graph_expansion,
-            blocking_memory,
-            mut pipeline_memory,
-        } = observer.into_reports();
-        self.profile.operator_cardinality_profiles = operator_cardinality;
-        self.profile.scan_pruning_reports = scan_pruning;
-        self.profile.vector_execution_reports = vector_execution;
-        self.profile.graph_expansion_reports = graph_expansion;
-        self.profile.blocking_operator_memory_reports = blocking_memory;
-
-        pipeline_memory.output_rows = output.rows;
-        pipeline_memory.output_payload_bytes = output.payload_bytes;
-        let query_memory = memory_ledger.snapshot();
-        pipeline_memory.query_memory_budget_bytes = query_memory.budget_bytes;
-        pipeline_memory.query_memory_peak_bytes = query_memory.peak_bytes;
-        pipeline_memory.query_memory_completion_bytes = query_memory.used_bytes;
-        pipeline_memory.query_memory_account_count = query_memory.account_count;
-        self.record_process_memory(&mut pipeline_memory);
-        self.profile.pipeline_memory_report = pipeline_memory;
-        self.profile
-    }
-
-    fn record_process_memory(&self, report: &mut skein_executor::PipelineMemoryReport) {
-        let Ok(process_memory_end) = skein_qos::ProcessMemorySnapshot::capture() else {
-            return;
-        };
-        report.steady_resident_bytes = Some(process_memory_end.resident_bytes);
-        report.peak_resident_bytes = Some(process_memory_end.peak_resident_bytes);
-        let Some(process_memory_start) = self.process_memory_start else {
-            return;
-        };
-        let process_memory =
-            skein_qos::ProcessMemoryProfile::between(process_memory_start, process_memory_end);
-        report.start_resident_bytes = Some(process_memory.start_resident_bytes);
-        report.start_peak_resident_bytes = Some(process_memory.start_peak_resident_bytes);
-        report.steady_resident_growth_bytes = Some(process_memory.steady_resident_growth_bytes);
-        report.lifetime_peak_resident_growth_bytes =
-            Some(process_memory.lifetime_peak_resident_growth_bytes);
-        report.total_page_faults = process_memory.total_page_faults;
-        report.minor_page_faults = process_memory.minor_page_faults;
-        report.major_page_faults = process_memory.major_page_faults;
-    }
+) {
+    let Ok(process_memory_end) = skein_qos::ProcessMemorySnapshot::capture() else {
+        return;
+    };
+    report.steady_resident_bytes = Some(process_memory_end.resident_bytes);
+    report.peak_resident_bytes = Some(process_memory_end.peak_resident_bytes);
+    let Some(process_memory_start) = process_memory_start else {
+        return;
+    };
+    let process_memory =
+        skein_qos::ProcessMemoryProfile::between(process_memory_start, process_memory_end);
+    report.start_resident_bytes = Some(process_memory.start_resident_bytes);
+    report.start_peak_resident_bytes = Some(process_memory.start_peak_resident_bytes);
+    report.steady_resident_growth_bytes = Some(process_memory.steady_resident_growth_bytes);
+    report.lifetime_peak_resident_growth_bytes =
+        Some(process_memory.lifetime_peak_resident_growth_bytes);
+    report.total_page_faults = process_memory.total_page_faults;
+    report.minor_page_faults = process_memory.minor_page_faults;
+    report.major_page_faults = process_memory.major_page_faults;
 }
 
 pub(super) fn execute_profiled_rows(
@@ -189,11 +143,7 @@ pub(super) fn execute_profiled_consumer(
     )?;
     let process_memory_start = skein_qos::ProcessMemorySnapshot::capture().ok();
     let execution_limit = ExecutionLimit::from_user_max_rows(request.output_limits.max_rows)?;
-    let profile = ExecutionProfileBuilder::start(
-        request.plan,
-        request.output_limits.max_rows,
-        process_memory_start,
-    )?;
+    let profile = ExecutionProfileBuilder::start(request.plan, request.output_limits.max_rows)?;
     let prepared_plan = PreparedPhysicalPlan::prepare(request.plan, store, request.memory);
     debug_assert_eq!(
         prepared_plan.storage_capability(),
@@ -258,7 +208,9 @@ pub(super) fn execute_profiled_consumer(
     }
 
     output.finish_delivery(request.task_context)?;
-    let profile = profile.finish(observer, &memory_ledger, output.metrics());
+    let profile = profile.finish(observer, &memory_ledger, output.metrics(), |report| {
+        record_process_memory(report, process_memory_start);
+    });
     Ok(ProfiledQueryStream {
         fully_streamed,
         profile,

@@ -28,6 +28,7 @@ use skein_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::num::NonZeroU64;
+#[cfg(test)]
 use std::num::NonZeroUsize;
 
 #[cfg(test)]
@@ -65,7 +66,8 @@ pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::Binding;
 pub(crate) use skein_executor::external::NoExternalReadOperator;
 pub(crate) use skein_executor::memory::{
-    estimated_execution_memory, estimated_mutation_memory_bytes, max_external_read_parallelism,
+    enforced_query_memory_budget, enforced_result_memory_budget, estimated_execution_memory,
+    estimated_mutation_memory_bytes, max_external_read_parallelism,
 };
 use skein_executor::pipeline::{runtime_checkpoint, BatchControl};
 use skein_executor::predicate::{
@@ -118,43 +120,6 @@ impl StreamDelivery {
             }
         }
     }
-}
-
-pub(crate) fn enforced_query_memory_budget(
-    memory: &ExecutionMemoryConfig,
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<NonZeroUsize> {
-    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
-        return Ok(memory.query_memory_bytes);
-    };
-    // Never widen an undersized admission to an operator-configured floor.
-    // The shared root remains the admitted reservation and the operator fails
-    // closed when its first charge cannot fit.
-    runtime_memory_budget("query memory", reservation.memory_bytes())
-}
-
-pub(crate) fn enforced_result_memory_budget(
-    memory: &ExecutionMemoryConfig,
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<NonZeroUsize> {
-    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
-        return Ok(memory.query_memory_bytes);
-    };
-    let admitted = runtime_memory_budget("query result", reservation.result_bytes())?;
-    Ok(admitted.min(memory.query_memory_bytes))
-}
-
-fn runtime_memory_budget(owner: &str, bytes: u64) -> Result<NonZeroUsize> {
-    let bytes = usize::try_from(bytes).map_err(|_| {
-        SkeinError::Execution(format!(
-            "runtime-admitted {owner} reservation {bytes} does not fit the executor address space"
-        ))
-    })?;
-    NonZeroUsize::new(bytes).ok_or_else(|| {
-        SkeinError::Execution(format!(
-            "runtime-admitted {owner} reservation must be non-zero"
-        ))
-    })
 }
 
 pub(crate) fn default_morsel_cpu_ceiling(effective_cpu_slots: usize) -> usize {
@@ -539,25 +504,7 @@ pub(crate) fn execute_with_row_consumer_profile_with_delivery(
     )
 }
 
-pub fn read_execution_profile(
-    plan: &PhysicalPlan,
-    max_rows: Option<usize>,
-) -> Result<ReadExecutionProfile> {
-    let execution_limit = ExecutionLimit::from_user_max_rows(max_rows)?;
-    Ok(ReadExecutionProfile {
-        max_rows,
-        detection_row_cap: execution_limit.output_rows,
-        row_limit_enforced_before_output: max_rows.is_some(),
-        operator_row_cap_enabled: execution_limit.output_rows.is_some(),
-        operator_cardinality_profiles: Vec::new(),
-        blocking_operator_kinds: blocking_operator_kinds(plan),
-        scan_pruning_reports: Vec::new(),
-        vector_execution_reports: Vec::new(),
-        graph_expansion_reports: Vec::new(),
-        blocking_operator_memory_reports: Vec::new(),
-        pipeline_memory_report: skein_executor::PipelineMemoryReport::default(),
-    })
-}
+pub use skein_executor::observer::read_execution_profile;
 
 #[cfg(test)]
 #[path = "executor/tests.rs"]

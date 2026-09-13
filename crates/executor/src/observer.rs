@@ -3,7 +3,11 @@
 use crate::BlockingOperatorMemoryReport;
 use skein_storage::ScanPruningReport;
 
+mod profile;
 mod query;
+
+#[doc(hidden)]
+pub use profile::{read_execution_profile, ExecutionProfileBuilder};
 
 // Internal collection remains separate from the embedded host's public reports.
 #[doc(hidden)]

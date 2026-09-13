@@ -5,6 +5,19 @@ use crate::store::GraphStore;
 use std::collections::BTreeMap;
 
 #[test]
+fn root_profile_constructor_preserves_public_types_and_defaults() {
+    let profile: crate::executor::ReadExecutionProfile =
+        crate::executor::read_execution_profile(&PhysicalPlan::EmptyExec, Some(3)).unwrap();
+    let owner: skein_executor::ReadExecutionProfile<crate::store::ScanPruningReport> = profile;
+    assert_eq!(owner.max_rows, Some(3));
+    assert_eq!(owner.detection_row_cap, Some(4));
+    assert_eq!(
+        owner.pipeline_memory_report,
+        skein_executor::PipelineMemoryReport::default()
+    );
+}
+
+#[test]
 fn root_profiled_execution_uses_query_local_owner_reports() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();

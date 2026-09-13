@@ -65,6 +65,22 @@ test_suite(
 )
 
 rust_test(
+    name = "skein_execution_lifecycle_fuzz_tests",
+    args = [
+        "observer::profile::tests::execution_lifecycle_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_result_delivery_fuzz_tests",
     args = [
         "result_delivery::tests::differential::result_delivery_differential_campaign",

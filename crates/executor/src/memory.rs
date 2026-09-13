@@ -1,10 +1,50 @@
 //! Execution memory defaults and admission estimates.
 
+use skein_core::{Result, RuntimeTaskContext, SkeinError};
 use skein_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
 use skein_storage::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[doc(hidden)]
+pub fn enforced_query_memory_budget(
+    memory: &ExecutionMemoryConfig,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<NonZeroUsize> {
+    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
+        return Ok(memory.query_memory_bytes);
+    };
+    // Never widen an undersized admission to an operator-configured floor.
+    // The shared root remains the admitted reservation and the operator fails
+    // closed when its first charge cannot fit.
+    runtime_memory_budget("query memory", reservation.memory_bytes())
+}
+
+#[doc(hidden)]
+pub fn enforced_result_memory_budget(
+    memory: &ExecutionMemoryConfig,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<NonZeroUsize> {
+    let Some(reservation) = task_context.and_then(RuntimeTaskContext::memory_reservation) else {
+        return Ok(memory.query_memory_bytes);
+    };
+    let admitted = runtime_memory_budget("query result", reservation.result_bytes())?;
+    Ok(admitted.min(memory.query_memory_bytes))
+}
+
+fn runtime_memory_budget(owner: &str, bytes: u64) -> Result<NonZeroUsize> {
+    let bytes = usize::try_from(bytes).map_err(|_| {
+        SkeinError::Execution(format!(
+            "runtime-admitted {owner} reservation {bytes} does not fit the executor address space"
+        ))
+    })?;
+    NonZeroUsize::new(bytes).ok_or_else(|| {
+        SkeinError::Execution(format!(
+            "runtime-admitted {owner} reservation must be non-zero"
+        ))
+    })
+}
 
 #[doc(hidden)]
 pub const DEFAULT_EXECUTION_BATCH_ROWS: usize = 256;
