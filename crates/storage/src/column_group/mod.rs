@@ -6,13 +6,16 @@
 //! artifact with a fixed-layout directory and checksummed footer, per-chunk
 //! zone maps reusing the `FieldSummary` machinery, and a generation-bound
 //! deletion vector sidecar, and a standalone layered manifest publication
-//! protocol. These types are not yet wired into `GraphStore` checkpointing;
-//! their durable reopen contract is exercised independently first.
+//! protocol, plus the derived graph shadow's dictionary and metadata layouts.
+//! The embedded facade composes these primitives into `GraphStore` checkpoints;
+//! their durable reopen contract is also exercised independently.
 
 pub mod deletion;
 pub mod encoding;
 pub mod group;
 pub mod manifest;
+#[doc(hidden)]
+pub mod shadow_metadata;
 pub mod zone;
 
 use skein_core::PropertyId;
