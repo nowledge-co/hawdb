@@ -1,36 +1,41 @@
 #[cfg(test)]
 use crate::analytics::{LouvainOptions, PageRankOptions};
 use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
+#[cfg(test)]
 use crate::cypher::RelationshipDirection;
 use crate::error::{Result, SkeinError};
 use crate::optimizer::PhysicalPlan;
 #[cfg(test)]
 use crate::planner::GraphAlgorithmKind;
-use crate::planner::{
-    Aggregation, PlanChildren, Predicate, Projection, RelationshipCountLeg,
-    SetNodePropertiesReturnMode, SetValue, SortItem,
-};
+use crate::planner::{Predicate, SetNodePropertiesReturnMode, SetValue};
 use crate::schema::Catalog;
 use crate::store::{
     ConnectedNodesCreate, GraphScanControl, GraphStore, MatchedRelationshipCopyMerge,
     MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeId, NodeRecord, NodeSetAssignment,
-    NodeSetValue, ProjectedGraphDefinition, PropertyFilter, RelationshipDeleteRequest,
-    RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-    RelationshipTargetNodeDelete, ScanPruningReport,
+    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeSetAssignment, NodeSetValue,
+    ProjectedGraphDefinition, RelationshipDeleteRequest, RelationshipPropertiesUpdate,
+    RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
+    ScanPruningReport,
 };
 use crate::value::Value;
 #[cfg(test)]
 use skein_analytics::ProjectedGraphExecution;
 use skein_core::RuntimeTaskContext;
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
-use skein_executor::store::{ScanControl, SourceScanCandidateVisit, SourceScanReadLimits};
+#[cfg(test)]
+use skein_executor::store::ScanControl;
 use skein_executor::ExecutionLimit;
 use std::collections::BTreeMap;
-use std::num::{NonZeroU64, NonZeroUsize};
+#[cfg(test)]
+use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
+
+#[cfg(test)]
+use crate::planner::{Aggregation, Projection, RelationshipCountLeg, SortItem};
+#[cfg(test)]
+use crate::store::{NodeId, NodeRecord};
 
 mod batch;
-mod blocking;
 mod columnar;
 mod entrypoint;
 mod expression;
@@ -39,12 +44,11 @@ mod observer;
 mod read;
 mod scan;
 mod store_adapter;
+#[cfg(test)]
 mod traversal;
 mod vector;
 
 use batch::*;
-use blocking::*;
-use columnar::*;
 use entrypoint::*;
 use expression::*;
 pub(crate) use mutation::project_staged_mutation_return_rows;
@@ -52,39 +56,32 @@ pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_comm
 use mutation::{node_set_assignment, relationship_on_create_property_value};
 use observer::*;
 use read::*;
+#[cfg(test)]
 use scan::*;
 use skein_executor::analytics::try_projected_graph_with_node_filter;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use skein_executor::binding::map_memory_bytes;
 pub(crate) use skein_executor::binding::map_payload_bytes;
-use skein_executor::binding::{binding_memory_bytes, Binding};
+use skein_executor::binding::Binding;
 pub(crate) use skein_executor::external::NoExternalReadOperator;
-use skein_executor::graph::GraphExpansionExecutionState;
-use skein_executor::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
-use skein_executor::memory::SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES;
 pub(crate) use skein_executor::memory::{
     estimated_execution_memory, estimated_mutation_memory_bytes, max_external_read_parallelism,
-    ExecutionMemoryEstimate,
 };
-use skein_executor::pipeline::{
-    runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch, TransformBatchBuilder,
-};
+use skein_executor::pipeline::{runtime_checkpoint, BatchControl};
 use skein_executor::predicate::{
     label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
-    node_properties_match, property_filter_from_properties,
+    property_filter_from_properties,
 };
-use skein_executor::scan::{
-    single_node_binding, source_scan_pruning_strategy, source_storage_scan_predicate,
-    stream_expand_binding, AdjacencyExpandFilters, AdjacencyExpandSpec, NodeColumnLookupSpec,
-    NodeProjectionScanSpec, NodeScanContext, NodeScanSpec,
-};
+use skein_executor::QueryMemoryLedger;
+#[cfg(test)]
+use skein_executor::{pipeline::BindingBatch, QueryMemoryClass};
 pub use skein_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
 pub use skein_executor::{
     ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
     OperatorCardinalityProfile, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
     VectorSeedExecutionRow,
 };
-use skein_executor::{QueryMemoryClass, QueryMemoryLedger};
+#[cfg(test)]
 use traversal::*;
 use vector::*;
 
@@ -102,8 +99,7 @@ pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningRe
 pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
 const DEFAULT_MORSEL_CPU_SHARE_DIVISOR: usize = 4;
 const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
-pub(crate) const SOURCE_SEGMENT_SCAN_IO_DEPTH: usize = 2;
-const SOURCE_SEGMENT_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
+pub(crate) use skein_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamDelivery {
@@ -181,91 +177,6 @@ pub(crate) fn default_morsel_parallelism(
     memory: &ExecutionMemoryConfig,
 ) -> usize {
     columnar::default_morsel_parallelism(plan, catalog, store, memory)
-}
-
-struct ExecutionContext<'a> {
-    parameters: &'a BTreeMap<String, Value>,
-    external: &'a mut dyn ExternalReadOperator,
-    memory: &'a ExecutionMemoryConfig,
-    memory_ledger: &'a QueryMemoryLedger,
-    task_context: Option<&'a RuntimeTaskContext>,
-    observer: &'a QueryExecutionObserver,
-}
-
-/// The execution-facing form of a physical plan.
-///
-/// Planning owns operator selection. This boundary performs the one-time
-/// recursive capability check that decides whether a read can enter the
-/// streaming batch engine, leaving mutation and schema plans on the
-/// materialized path. It deliberately borrows the planner-owned tree so plan
-/// cache templates remain the sole owner of physical plan structure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreparedExecutionMode {
-    Batch,
-    Materialized,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreparedStorageCapability {
-    InMemory,
-    OutOfCore,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct PreparedPhysicalPlan<'a> {
-    plan: &'a PhysicalPlan,
-    batch_plan: Option<BatchPlanRef<'a>>,
-    execution_mode: PreparedExecutionMode,
-    storage_capability: PreparedStorageCapability,
-    required_memory: ExecutionMemoryEstimate,
-}
-
-impl<'a> PreparedPhysicalPlan<'a> {
-    pub(super) fn prepare(
-        plan: &'a PhysicalPlan,
-        store: &dyn skein_executor::store::GraphExecutionRead,
-        memory: &ExecutionMemoryConfig,
-    ) -> Self {
-        let batch_plan = BatchPlanRef::try_new(plan);
-        Self {
-            plan,
-            execution_mode: if batch_plan.is_some() {
-                PreparedExecutionMode::Batch
-            } else {
-                PreparedExecutionMode::Materialized
-            },
-            batch_plan,
-            storage_capability: if store.is_out_of_core() {
-                PreparedStorageCapability::OutOfCore
-            } else {
-                PreparedStorageCapability::InMemory
-            },
-            required_memory: estimated_execution_memory(plan, memory),
-        }
-    }
-
-    pub(in crate::executor) fn batch(self) -> Option<BatchPlanRef<'a>> {
-        match self.execution_mode() {
-            PreparedExecutionMode::Batch => self.batch_plan,
-            PreparedExecutionMode::Materialized => None,
-        }
-    }
-
-    pub(in crate::executor) fn plan(self) -> &'a PhysicalPlan {
-        self.plan
-    }
-
-    pub(in crate::executor) fn execution_mode(self) -> PreparedExecutionMode {
-        self.execution_mode
-    }
-
-    pub(in crate::executor) fn storage_capability(self) -> PreparedStorageCapability {
-        self.storage_capability
-    }
-
-    pub(in crate::executor) fn required_memory(self) -> ExecutionMemoryEstimate {
-        self.required_memory
-    }
 }
 
 pub fn execute(

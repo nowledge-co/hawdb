@@ -2,9 +2,10 @@ use super::*;
 use crate::planner::{
     ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey,
 };
-use std::cell::Cell;
 use std::collections::BTreeSet;
 
+// Share the owner's explicit capability oracle, not the production classifier.
+#[path = "../../../crates/executor/src/batch/tests/fixtures.rs"]
 mod fixtures;
 mod handlers;
 
@@ -136,40 +137,6 @@ fn unsupported_trees_fail_at_batch_entry_before_any_output_or_storage_mutation()
             }
         }
     });
-}
-
-#[test]
-fn support_probe_does_not_execute_or_capture_runtime_state() {
-    let called = Cell::new(false);
-    assert!(BatchSupport.supported(|_, _, _| {
-        called.set(true);
-        panic!("a capability probe must not execute its handler")
-    }));
-    assert!(!called.get());
-    for (plan, supported) in fixtures::operators() {
-        assert_eq!(dispatch_batch_operator(&plan, BatchSupport), supported);
-    }
-}
-
-#[test]
-fn unsupported_operator_dispatch_returns_an_error_instead_of_panicking() {
-    let plan = PhysicalPlan::CreateNode {
-        label: "Item".to_string(),
-        properties: BTreeMap::new(),
-    };
-    let error = with_context(&[7], 1, 64 * 1024, None, |context| {
-        // Deliberately bypass the proof constructor to exercise defensive dispatch.
-        execute_binding_batches_inner(
-            BatchPlanRef(&plan),
-            context,
-            ExecutionLimit::unlimited(),
-            &mut |_| panic!("unsupported output"),
-        )
-    })
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("physical operator 'CreateNode' does not support batch execution"));
 }
 
 #[test]

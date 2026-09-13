@@ -1,22 +1,9 @@
-//! Root facade wiring for storage-independent traversal operators.
+//! Facade integration helper for executor-owned shortest paths.
 
 use super::*;
+pub(super) use executor_traversal::ShortestPathSearch;
 use skein_executor::store::GraphExecutionRead;
 use skein_executor::traversal as executor_traversal;
-
-#[cfg(test)]
-pub(super) use executor_traversal::ShortestPathSearch;
-pub(super) use executor_traversal::{ShortestPathExecInput, TraversalExecutionContext};
-
-pub(super) fn execute_shortest_path(
-    catalog: &Catalog,
-    store: &dyn GraphExecutionRead,
-    input: ShortestPathExecInput<'_>,
-    execution_limit: ExecutionLimit,
-    context: TraversalExecutionContext<'_>,
-) -> Result<skein_executor::pipeline::AccountedBindingSet> {
-    executor_traversal::execute_shortest_path(catalog, store, input, execution_limit, context)
-}
 
 #[cfg(test)]
 pub(super) fn all_shortest_paths(
@@ -40,60 +27,5 @@ pub(super) fn all_shortest_paths(
         memory_account,
         task_context,
         &skein_executor::observer::NoopExecutionObserver,
-    )
-}
-
-pub(super) fn relationship_count_sum_leg(
-    catalog: &Catalog,
-    store: &dyn GraphExecutionRead,
-    source: NodeId,
-    leg: &RelationshipCountLeg,
-    memory: skein_executor::store::AdjacencyReadMemory<'_>,
-    observer: &dyn skein_executor::observer::ExecutionObserver,
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<usize> {
-    executor_traversal::relationship_count_sum_leg(
-        catalog,
-        store,
-        source,
-        leg,
-        memory,
-        observer,
-        task_context,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn thread_repair_stats_rows(
-    catalog: &Catalog,
-    store: &dyn GraphExecutionRead,
-    label: &str,
-    identity_label: &str,
-    identity_ref_property: &str,
-    thread_id_property: &str,
-    message_rel_type: &str,
-    message_label: &str,
-    memory_rel_type: &str,
-    memory_label: &str,
-    memory_budget: NonZeroUsize,
-    memory_ledger: &QueryMemoryLedger,
-    observer: &dyn skein_executor::observer::ExecutionObserver,
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<skein_executor::pipeline::AccountedBindingSet> {
-    executor_traversal::thread_repair_stats_rows(
-        catalog,
-        store,
-        label,
-        identity_label,
-        identity_ref_property,
-        thread_id_property,
-        message_rel_type,
-        message_label,
-        memory_rel_type,
-        memory_label,
-        memory_budget,
-        memory_ledger,
-        observer,
-        task_context,
     )
 }

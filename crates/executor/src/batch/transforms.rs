@@ -1,8 +1,8 @@
-//! Root fast paths and recursive-source wiring for streaming transforms.
+//! Fast paths and recursive-source wiring for streaming transforms.
 
 use super::*;
-use skein_executor::pipeline::BindingBatchSource;
-use skein_executor::transform as executor_transform;
+use crate::pipeline::BindingBatchSource;
+use crate::transform as executor_transform;
 
 struct PreparedTransformSource<'a> {
     context: BatchReadContext<'a>,
@@ -102,7 +102,7 @@ pub(super) fn stream_filter_batches(
                 context.store,
                 binding,
                 context.observer,
-                skein_executor::store::AdjacencyReadMemory {
+                crate::store::AdjacencyReadMemory {
                     budget_bytes: context.memory.blocking_operator_bytes.get(),
                     account: Some(&predicate_account),
                 },
