@@ -131,6 +131,7 @@ test_suite(
         "//crates/search:skein_search_term_policy_fuzz_tests",
         "//crates/sql:skein_sql_clause_diagnostics_fuzz_tests",
         "//crates/sql:skein_sql_frontend_corpus_fuzz_tests",
+        "//crates/sql:skein_sql_create_binding_fuzz_tests",
         "//crates/sql-syntax:skein_sql_alias_boundary_fuzz_tests",
         "//crates/storage:skein_storage_artifact_binding_fuzz_tests",
         "//crates/storage:skein_storage_backup_hex_fuzz_tests",

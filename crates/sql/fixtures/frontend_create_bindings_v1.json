@@ -1,0 +1,425 @@
+{
+  "protocol": "skein-pgq-create-corpus-v1",
+  "postgres_revision": "3d00537feb565c410baf41bb301eee338e4b2317",
+  "source_corpus_sha256": "d17c5b1b29841f3c3bc72bb50d668c06b25dc846c37119a129dac58a586107b0",
+  "bindings": [
+    {
+      "id": "case-0001",
+      "sql_sha256": "fdafaa55387fd4e125e92b1fd0f1885f5c14bf49f8a237d80f019804ba92aaef",
+      "outcome": {
+        "status": "accept",
+        "schema": {
+          "name": [
+            "knowledge"
+          ],
+          "vertex_labels": {
+            "memories": {
+              "id": "Int64"
+            }
+          },
+          "edge_labels": {}
+        }
+      }
+    },
+    {
+      "id": "case-0043",
+      "sql_sha256": "cc97366ceddfc15753a1854b64d76fa227b3e113f04b7922d8471c52dcfbe696",
+      "outcome": {
+        "status": "accept",
+        "schema": {
+          "name": [
+            "knowledge"
+          ],
+          "vertex_labels": {
+            "documents": {},
+            "entities": {
+              "id": "Int64",
+              "name": "String"
+            },
+            "searchable": {
+              "content": "String",
+              "boosted_rank": "Int64"
+            },
+            "stored": {
+              "id": "Int64",
+              "content": "String",
+              "rank": "Int64"
+            }
+          },
+          "edge_labels": {
+            "mentions": {
+              "document_id": "Int64",
+              "entity_id": "Int64",
+              "confidence": "Float64"
+            },
+            "weighted": {
+              "confidence": "Float64"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "case-0044",
+      "sql_sha256": "64ba5fc15cb75980cb595d98bf948c508173453c7e275cb488241ce9cadf5c45",
+      "outcome": {
+        "status": "accept",
+        "schema": {
+          "name": [
+            "knowledge"
+          ],
+          "vertex_labels": {
+            "documents": {
+              "id": "Int64"
+            },
+            "entities": {
+              "id": "Int64",
+              "name": "String"
+            }
+          },
+          "edge_labels": {
+            "mentions": {
+              "document_id": "Int64",
+              "entity_id": "Int64",
+              "confidence": "Float64"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "case-0046",
+      "sql_sha256": "c5ea50afe9c36637ca97cfd13c7446cfd3c1ab3c4e493391e1ae0fc89b7a809f",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0047",
+      "sql_sha256": "3f114e9dedc07fb87b19c9d45b8dc21eef5d2dca43da4347016f74db3564c3ec",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0048",
+      "sql_sha256": "35970a80050329fa8c3631c5c297ae1c669afee4a924b9dcbd7fc6b98b992ad4",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0049",
+      "sql_sha256": "88519805cb12a802b2db78b3f1790e45cb5b3fb14c3f314f378d04c942b64225",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0050",
+      "sql_sha256": "2ed449c8db8fdaa1074377a67f044ffd585eea90587f14604c7cd8e3fe8e07fc",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0051",
+      "sql_sha256": "edc8591ede21a11323ec7f1139891883f060a248a51ee725195acb533ea9843d",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0052",
+      "sql_sha256": "4c8d9bbfc3b4594546a5e6d61e652f499288408677f27a57d80a3e2e768c1d88",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0053",
+      "sql_sha256": "db8c97b38e30d39e22ca7246e86bc5935f92ed1c4d13fc9647d8be0ad21ebe3b",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0054",
+      "sql_sha256": "99d36cd68cafabe54298a21d315b9074bc95acf6ac145da775bb08d22e418586",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0055",
+      "sql_sha256": "b360bc0cd0ee97971a0d081125c5835c335dbfac2c459007e14115f19945615f",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0056",
+      "sql_sha256": "e9147bdfc780ec9080b5343fa92e64c51e634a6c8c4e3b7c1896f9994dc426ca",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0057",
+      "sql_sha256": "b77a1b6a25e2549a436c1f064430b571f669aa5ead994a2d7b3334f0ad7dcff8",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    },
+    {
+      "id": "case-0083",
+      "sql_sha256": "00fbb3a31eeb4f83bc3a28f2b3d170b1e90c8408662dfe1589b0d853057b714c",
+      "outcome": {
+        "status": "accept",
+        "schema": {
+          "name": [
+            "knowledge"
+          ],
+          "vertex_labels": {},
+          "edge_labels": {}
+        }
+      }
+    }
+  ],
+  "profile_exclusions": [
+    {
+      "id": "six-scalars",
+      "reason": "Only Boolean, BigInt, DoublePrecision, Text, Bytea and Uuid metadata are represented; PostgreSQL narrow integers, numeric, typmods, domains and collations are not erased into them."
+    },
+    {
+      "id": "creation-functions",
+      "reason": "Only lower(text), upper(text), abs(bigint|double precision), optionally pg_catalog-qualified, are supported. Unknown, aggregate and DISTINCT calls are rejected."
+    },
+    {
+      "id": "literal-syntax",
+      "reason": "The unchanged owned parser represents DATE/TIME/TIMESTAMP/INTERVAL typed string syntax, whose types this binder rejects. Six-scalar literals use existing ::type syntax; CAST(expr AS type) and multiword cast syntax remain parser exclusions."
+    },
+    {
+      "id": "expression-overloads",
+      "reason": "Numeric unary operators require a known numeric type; concatenation requires Text operands; modulo requires Int64. Wider PostgreSQL overloads and additional syntax remain outside this profile."
+    },
+    {
+      "id": "read-only-descriptor",
+      "reason": "Validation proves metadata and expression consistency only; it does not verify source rows, key uniqueness, catalog publication or DDL execution."
+    }
+  ],
+  "additional_cases": [
+    {
+      "id": "unknown-table",
+      "family": "elements",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (missing)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnknownTable"
+      }
+    },
+    {
+      "id": "missing-key",
+      "family": "keys",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (no_key)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "MissingKey"
+      }
+    },
+    {
+      "id": "duplicate-key",
+      "family": "keys",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices KEY (id,id))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "InvalidKey"
+      }
+    },
+    {
+      "id": "unknown-column",
+      "family": "properties",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (absent))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnknownColumn"
+      }
+    },
+    {
+      "id": "duplicate-alias",
+      "family": "elements",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices,vertices)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "DuplicateAlias"
+      }
+    },
+    {
+      "id": "unknown-vertex",
+      "family": "endpoints",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices) EDGE TABLES (links SOURCE links DESTINATION vertices)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnknownVertex"
+      }
+    },
+    {
+      "id": "missing-fk",
+      "family": "endpoints",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices) EDGE TABLES (links SOURCE vertices DESTINATION vertices)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "MissingForeignKey"
+      }
+    },
+    {
+      "id": "reversed-numeric",
+      "family": "endpoints",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices NO PROPERTIES) EDGE TABLES (links SOURCE KEY (score) REFERENCES vertices(id) DESTINATION KEY (destination_id) REFERENCES vertices(id) NO PROPERTIES)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "TypeMismatch"
+      }
+    },
+    {
+      "id": "label-set",
+      "family": "labels",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices AS a LABEL shared PROPERTIES (id), vertices AS b LABEL shared PROPERTIES (alternate))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "LabelMismatch"
+      }
+    },
+    {
+      "id": "duplicate-label",
+      "family": "labels",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices LABEL a NO PROPERTIES LABEL a NO PROPERTIES)",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "DuplicateLabel"
+      }
+    },
+    {
+      "id": "property-type",
+      "family": "properties",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices AS a LABEL a PROPERTIES (id AS p), vertices AS b LABEL b PROPERTIES (title AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "PropertyTypeMismatch"
+      }
+    },
+    {
+      "id": "property-expression",
+      "family": "properties",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices LABEL a PROPERTIES (id+1 AS p) LABEL b PROPERTIES (1+id AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "PropertyExpressionMismatch"
+      }
+    },
+    {
+      "id": "property-alias",
+      "family": "properties",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (id+1))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "MissingPropertyName"
+      }
+    },
+    {
+      "id": "duplicate-property",
+      "family": "properties",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (id,id))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "unknown-function",
+      "family": "profile",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (unknown(id) AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnsupportedExpression"
+      }
+    },
+    {
+      "id": "literal-range",
+      "family": "profile",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (9223372036854775808 AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "InvalidLiteral"
+      }
+    },
+    {
+      "id": "scalar-profile",
+      "family": "profile",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (id::integer AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnsupportedExpression"
+      }
+    },
+    {
+      "id": "date-profile",
+      "family": "profile",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (DATE '2026-09-13' AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "UnsupportedExpression"
+      }
+    },
+    {
+      "id": "float-modulo",
+      "family": "profile",
+      "reference": "propgraphcmds.c creation semantics adapted to the six-scalar profile",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (score%score AS p))",
+      "outcome": {
+        "status": "bind_reject",
+        "code": "TypeMismatch"
+      }
+    },
+    {
+      "id": "typed-literal-parser-scope",
+      "family": "profile",
+      "reference": "Unchanged owned expression parser literal syntax boundary",
+      "sql": "CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES (boolean 'yes' AS p))",
+      "outcome": {
+        "status": "parse_reject",
+        "code": "UnexpectedToken"
+      }
+    }
+  ]
+}
