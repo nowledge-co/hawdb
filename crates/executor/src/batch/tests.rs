@@ -176,12 +176,14 @@ mod cancellation_tests {
             observer: &observer,
         };
 
-        // Bypass the pipeline-entry checkpoint to isolate the operator's scan loop.
-        let error = execute_binding_batches_inner(
-            BatchPlanRef::descendant(&plan),
-            context,
-            ExecutionLimit::unlimited(),
-            &mut |_| Ok(BatchControl::Continue),
+        // Bypass both pipeline checkpoints to isolate the operator's scan loop.
+        let error = dispatch_batch_operator(
+            &plan,
+            BatchExecution {
+                context,
+                execution_limit: ExecutionLimit::unlimited(),
+                emit: &mut |_| Ok(BatchControl::Continue),
+            },
         )
         .unwrap_err();
 
