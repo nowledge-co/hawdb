@@ -1,6 +1,6 @@
 # SQL SELECT completion for issue #157
 
-Base: `523236934a50d9691ec8a88d5f3a2064450badcf` (explicit CROSS JOIN, PR #475).
+Initial base: `523236934a50d9691ec8a88d5f3a2064450badcf` (explicit CROSS JOIN, PR #475).
 This implementation follows the shared expression IR from PR #468. The goal is
 execution of HAVING and multiple FROM items, not parser-only acceptance.
 
@@ -51,4 +51,11 @@ No configuration, timeout, workload, persisted format or mutation protocol chang
 Each stage needs a runnable owner/runtime proof before broad verification. Exit:
 complete execution/corpus evidence, immutable source verification and reviewable
 PR delivery; no agent approval or merge bypass. The draft #475 can be updated to
-reflect the completed issue scope once the continuation is qualified.
+reflect the implemented HAVING/FROM scope once the continuation is qualified.
+The duplicate-name result contract remains open as recorded in
+[the result-column audit](SQL_RESULT_COLUMNS_CONTRACT_AUDIT.md).
+
+PR #468 merged as `d16d1ee285b67a272bcc83fd8d55bed6a2040be9`. Delivery also
+integrates the remote #475 main merge `a29947ef8b212b561d218d3e96bd45c55984f652`,
+preserving the independent compat-owner extraction. Final qualification includes
+that owner and does not substitute an earlier pre-integration result.

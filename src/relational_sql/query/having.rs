@@ -83,10 +83,9 @@ pub(super) fn projection_template(
 pub(super) fn filter_group(
     mut projections: Vec<AggregateProjectionState>,
 ) -> Result<Option<Vec<AggregateProjectionState>>> {
-    if projections.last().is_some_and(|projection| {
-        matches!(projection.expression, AggregateExpressionState::Having(_))
-    }) {
-        let projection = projections.pop().expect("HAVING group item exists");
+    if let Some(projection) = projections
+        .pop_if(|projection| matches!(projection.expression, AggregateExpressionState::Having(_)))
+    {
         let AggregateExpressionState::Having(having) = projection.expression else {
             unreachable!("HAVING item checked")
         };
