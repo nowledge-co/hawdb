@@ -928,6 +928,7 @@ dependencies = [
  "serde_json",
  "skein-analytics",
  "skein-core",
+ "skein-evidence",
  "skein-executor",
  "skein-storage",
 ]

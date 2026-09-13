@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn query_inventory_facade_preserves_owner_types_and_artifacts() {
+    use skein_evidence::query_inventory as owner;
+
+    let site: owner::CompatibilityQueryCallSite =
+        crate::CompatibilityQueryCallSite::new("lookup", "read", "client.rs:7")
+            .with_cypher("MATCH (m:Memory) RETURN m.id");
+    let inventory: owner::CompatibilityQueryInventory =
+        crate::build_compatibility_query_inventory("inventory", [site]).unwrap();
+    let item: crate::CompatibilityQueryInventoryItem = inventory.required_checks[0].clone();
+    let owner_item: owner::CompatibilityQueryInventoryItem = item;
+    assert_eq!(owner_item, inventory.required_checks[0]);
+    let json = crate::compatibility_query_inventory_to_json(&inventory);
+    assert_eq!(
+        json,
+        owner::compatibility_query_inventory_to_json(&inventory)
+    );
+    let facade: crate::CompatibilityQueryInventory =
+        owner::build_compatibility_query_inventory_from_json(&json).unwrap();
+    assert_eq!(facade, inventory);
+    assert_eq!(
+        crate::build_compatibility_query_inventory_from_json(&json).unwrap(),
+        inventory
+    );
+    assert_eq!(
+        crate::build_compatibility_query_inventory_from_json_str(&json.to_string()).unwrap(),
+        inventory
+    );
+    let options: owner::NowledgeInventoryScanOptions =
+        crate::NowledgeInventoryScanOptions::default();
+    let _: crate::NowledgeInventoryScanOptions = options;
+    let _: fn(std::path::PathBuf) -> Result<owner::CompatibilityQueryInventory> =
+        crate::scan_nowledge_query_inventory;
+    let _: fn(
+        std::path::PathBuf,
+        owner::NowledgeInventoryScanOptions,
+    ) -> Result<owner::CompatibilityQueryInventory> =
+        crate::scan_nowledge_query_inventory_with_options;
+    let _: fn(std::path::PathBuf) -> Result<serde_json::Value> =
+        crate::scan_nowledge_query_inventory_to_json;
+}
+
+#[test]
 fn inventory_health_facade_preserves_owner_types_and_entrypoints() {
     let report = serde_json::json!({"protocol": "wrong", "readiness": {}});
     let owner: skein_evidence::inventory::StorageRecoveryEvidenceHealth =

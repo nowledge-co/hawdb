@@ -23,6 +23,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/analytics:skein_analytics",
         "//crates/core:skein_core",
+        "//crates/evidence:skein_evidence",
         "//crates/executor:skein_executor",
         "//crates/storage:skein_storage",
     ],
