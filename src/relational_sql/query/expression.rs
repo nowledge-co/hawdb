@@ -289,40 +289,49 @@ pub(super) fn predicate_truth(
     row: &BoundRow<'_>,
     parameters: &[Value],
 ) -> Result<Option<bool>> {
+    predicate_truth_with(predicate, parameters, &|column| {
+        resolve_column_with_type(row, column)
+    })
+}
+
+pub(super) fn predicate_truth_with<'a>(
+    predicate: &SqlPredicate,
+    parameters: &[Value],
+    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
+) -> Result<Option<bool>> {
     match &predicate.kind {
-        ExprKind::And(left, right) => match predicate_truth(left, row, parameters)? {
+        ExprKind::Value(SqlValue::Literal(Value::Bool(value))) => Ok(Some(*value)),
+        ExprKind::And(left, right) => match predicate_truth_with(left, parameters, resolve)? {
             Some(false) => Ok(Some(false)),
-            Some(true) => predicate_truth(right, row, parameters),
-            None => match predicate_truth(right, row, parameters)? {
+            Some(true) => predicate_truth_with(right, parameters, resolve),
+            None => match predicate_truth_with(right, parameters, resolve)? {
                 Some(false) => Ok(Some(false)),
                 Some(true) | None => Ok(None),
             },
         },
-        ExprKind::Or(left, right) => match predicate_truth(left, row, parameters)? {
+        ExprKind::Or(left, right) => match predicate_truth_with(left, parameters, resolve)? {
             Some(true) => Ok(Some(true)),
-            Some(false) => predicate_truth(right, row, parameters),
-            None => match predicate_truth(right, row, parameters)? {
+            Some(false) => predicate_truth_with(right, parameters, resolve),
+            None => match predicate_truth_with(right, parameters, resolve)? {
                 Some(true) => Ok(Some(true)),
                 Some(false) | None => Ok(None),
             },
         },
         ExprKind::Not(predicate) => {
-            Ok(predicate_truth(predicate, row, parameters)?.map(|value| !value))
+            Ok(predicate_truth_with(predicate, parameters, resolve)?.map(|value| !value))
         }
         ExprKind::Compare { left, op, right } => {
             let left = left.require_column()?;
             match &right.kind {
                 ExprKind::Value(right) => {
-                    let (left_value, scalar_type) = resolve_column_with_type(row, left)?;
+                    let (left_value, scalar_type) = resolve(left)?;
                     compare_values(
                         left_value,
                         &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
                         *op,
                     )
                 }
-                ExprKind::Column(right) => {
-                    compare_values(resolve_column(row, left)?, resolve_column(row, right)?, *op)
-                }
+                ExprKind::Column(right) => compare_values(resolve(left)?.0, resolve(right)?.0, *op),
                 _ => Err(SkeinError::Semantic(
                     "unsupported comparison operand".to_owned(),
                 )),
@@ -333,16 +342,13 @@ pub(super) fn predicate_truth(
             values,
             negated,
         } => {
-            let (left, scalar_type) = resolve_column_with_type(row, left.require_column()?)?;
+            let (left, scalar_type) = resolve(left.require_column()?)?;
             let mut has_unknown = false;
             let mut matched = false;
             for value in values {
                 match compare_values(
                     left,
-                    &value_to_relational_as(
-                        bind_sql_value(value.require_value()?, parameters)?,
-                        scalar_type,
-                    )?,
+                    predicate_operand(value, parameters, scalar_type, resolve)?.as_ref(),
                     SqlComparisonOp::Eq,
                 )? {
                     Some(true) => matched = true,
@@ -366,21 +372,19 @@ pub(super) fn predicate_truth(
             negated,
             escape,
         } => {
-            let (left, scalar_type) = resolve_column_with_type(row, left.require_column()?)?;
+            let (left, scalar_type) = resolve(left.require_column()?)?;
             if scalar_type != RelationalScalarType::Text {
                 return Err(SkeinError::Semantic(
                     "LIKE and ILIKE require a TEXT column".to_string(),
                 ));
             }
-            let pattern = value_to_relational_as(
-                bind_sql_value(pattern.require_value()?, parameters)?,
-                RelationalScalarType::Text,
-            )?;
-            match (left, pattern) {
+            let pattern =
+                predicate_operand(pattern, parameters, RelationalScalarType::Text, resolve)?;
+            match (left, pattern.as_ref()) {
                 (RelationalValue::Null, _) | (_, RelationalValue::Null) => Ok(None),
                 (RelationalValue::Text(value), RelationalValue::Text(pattern)) => {
                     let matched =
-                        skein_sql::sql_like_matches(value, &pattern, *escape, *case_insensitive)?;
+                        skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
                     Ok(Some(matched != *negated))
                 }
                 (RelationalValue::Overflow(_), _) => Err(SkeinError::Execution(
@@ -395,14 +399,27 @@ pub(super) fn predicate_truth(
             expression: column,
             negated,
         } => Ok(Some(
-            matches!(
-                resolve_column(row, column.require_column()?)?,
-                RelationalValue::Null
-            ) != *negated,
+            matches!(resolve(column.require_column()?)?.0, RelationalValue::Null) != *negated,
         )),
         _ => Err(SkeinError::Semantic(
             "unsupported relational predicate expression".to_owned(),
         )),
+    }
+}
+
+fn predicate_operand<'a>(
+    expression: &Expr,
+    parameters: &[Value],
+    scalar_type: RelationalScalarType,
+    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
+) -> Result<std::borrow::Cow<'a, RelationalValue>> {
+    match &expression.kind {
+        ExprKind::Column(column) => Ok(std::borrow::Cow::Borrowed(resolve(column)?.0)),
+        ExprKind::Value(value) => Ok(std::borrow::Cow::Owned(value_to_relational_as(
+            bind_sql_value(value, parameters)?,
+            scalar_type,
+        )?)),
+        _ => Err(SkeinError::Semantic("unsupported predicate operand".into())),
     }
 }
 

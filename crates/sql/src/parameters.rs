@@ -92,6 +92,9 @@ fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<
     if let Some(predicate) = &select.selection {
         collect_expression_parameters(predicate, positions);
     }
+    if let Some(predicate) = &select.having {
+        collect_expression_parameters(predicate, positions);
+    }
     for order in &select.order_by {
         collect_expression_parameters(&order.expression, positions);
     }

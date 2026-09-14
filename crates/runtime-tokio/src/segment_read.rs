@@ -393,7 +393,10 @@ mod tests {
     }
 
     impl SegmentRangeReader for GatedReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(
+            &self,
+            range: &SegmentReadRange,
+        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
             self.reads.fetch_add(1, Ordering::AcqRel);
@@ -404,7 +407,7 @@ mod tests {
             }
             self.active.fetch_sub(1, Ordering::AcqRel);
             let _ = self.completed.send(range.artifact_id);
-            Ok(Arc::from(vec![0; range.length.get() as usize]))
+            Ok(vec![0; range.length.get() as usize].into())
         }
     }
 
@@ -443,21 +446,24 @@ mod tests {
     }
 
     impl SegmentRangeReader for TrackingReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(
+            &self,
+            range: &SegmentReadRange,
+        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.reads.fetch_add(1, Ordering::AcqRel);
             self.peak.fetch_max(active, Ordering::AcqRel);
             std::thread::sleep(Duration::from_millis(10));
             self.active.fetch_sub(1, Ordering::AcqRel);
-            Ok(Arc::from(vec![
-                range.artifact_id as u8;
-                range.length.get() as usize
-            ]))
+            Ok(vec![range.artifact_id as u8; range.length.get() as usize].into())
         }
     }
 
     impl SegmentRangeReader for PartiallyFailingReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(
+            &self,
+            range: &SegmentReadRange,
+        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
             self.active.fetch_add(1, Ordering::AcqRel);
             let result = if range.artifact_id == 1 {
                 Err(SegmentReadError::ArtifactNotFound {
@@ -465,7 +471,7 @@ mod tests {
                 })
             } else {
                 std::thread::sleep(Duration::from_millis(20));
-                Ok(Arc::from(vec![0; range.length.get() as usize]))
+                Ok(vec![0; range.length.get() as usize].into())
             };
             self.completed.fetch_add(1, Ordering::AcqRel);
             self.active.fetch_sub(1, Ordering::AcqRel);
@@ -474,7 +480,10 @@ mod tests {
     }
 
     impl SegmentRangeReader for PanickingReader {
-        fn read_range(&self, _range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(
+            &self,
+            _range: &SegmentReadRange,
+        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
             panic!("injected asynchronous segment read panic");
         }
     }

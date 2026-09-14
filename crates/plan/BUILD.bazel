@@ -26,6 +26,7 @@ rust_library(
 rust_test(
     name = "skein_plan_tests",
     crate = ":skein_plan",
+    compile_data = ["//crates/cypher:migration_corpus_test_data"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -34,6 +35,7 @@ rust_test(
 
 rust_test(
     name = "skein_plan_explain_fuzz_tests",
+    compile_data = ["//crates/cypher:migration_corpus_test_data"],
     tags = ["manual"],
     args = [
         "physical::explain::tests::explain_shape_and_payload_campaign",

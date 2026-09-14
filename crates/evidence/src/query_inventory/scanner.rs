@@ -405,25 +405,35 @@ fn parse_cooked_string(content: &str, start: usize) -> Result<(String, usize, us
                 if index >= bytes.len() {
                     break;
                 }
-                match bytes[index] {
-                    b'n' => value.push('\n'),
-                    b'r' => value.push('\r'),
-                    b't' => value.push('\t'),
-                    b'\\' => value.push('\\'),
-                    b'"' => value.push('"'),
-                    b'\n' => newlines += 1,
-                    other => value.push(other as char),
+                let escaped = content[index..].chars().next().unwrap();
+                match escaped {
+                    'n' => value.push('\n'),
+                    'r' => value.push('\r'),
+                    't' => value.push('\t'),
+                    '\\' => value.push('\\'),
+                    '"' => value.push('"'),
+                    '\n' | '\r' if escaped == '\n' || bytes.get(index + 1) == Some(&b'\n') => {
+                        // Rust discards continuation indentation, including blank lines.
+                        // Keep counting those lines for the next literal's source location.
+                        while let Some(byte @ (b' ' | b'\t' | b'\r' | b'\n')) = bytes.get(index) {
+                            newlines += usize::from(*byte == b'\n');
+                            index += 1;
+                        }
+                        continue;
+                    }
+                    other => value.push(other),
                 }
-                index += 1;
+                index += escaped.len_utf8();
             }
             b'\n' => {
                 value.push('\n');
                 newlines += 1;
                 index += 1;
             }
-            byte => {
-                value.push(byte as char);
-                index += 1;
+            _ => {
+                let character = content[index..].chars().next().unwrap();
+                value.push(character);
+                index += character.len_utf8();
             }
         }
     }

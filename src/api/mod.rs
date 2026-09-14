@@ -217,8 +217,8 @@ pub struct Database {
     plan_cache: Arc<SharedState<PlanCache>>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
     optimizer_planning_cache: Arc<SharedState<OptimizerPlanningCache>>,
-    slow_query_log: SharedState<system_sql::SlowQueryLog>,
-    statement_summary: SharedState<system_sql::StatementSummary>,
+    slow_query_log: Arc<SharedState<system_sql::SlowQueryLog>>,
+    statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
     config: DatabaseConfig,
     local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
@@ -912,12 +912,12 @@ impl Default for Database {
                 &config,
             ),
             optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
-            slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
+            slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
-            )),
-            statement_summary: SharedState::new(system_sql::StatementSummary::new(
+            ))),
+            statement_summary: Arc::new(SharedState::new(system_sql::StatementSummary::new(
                 config.statement_summary_capacity,
-            )),
+            ))),
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
@@ -990,12 +990,12 @@ impl Database {
                 &config,
             ),
             optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
-            slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
+            slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
-            )),
-            statement_summary: SharedState::new(system_sql::StatementSummary::new(
+            ))),
+            statement_summary: Arc::new(SharedState::new(system_sql::StatementSummary::new(
                 config.statement_summary_capacity,
-            )),
+            ))),
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
@@ -1118,12 +1118,12 @@ impl Database {
                 &config,
             ),
             optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
-            slow_query_log: SharedState::new(system_sql::SlowQueryLog::new(
+            slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
-            )),
-            statement_summary: SharedState::new(system_sql::StatementSummary::new(
+            ))),
+            statement_summary: Arc::new(SharedState::new(system_sql::StatementSummary::new(
                 config.statement_summary_capacity,
-            )),
+            ))),
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),

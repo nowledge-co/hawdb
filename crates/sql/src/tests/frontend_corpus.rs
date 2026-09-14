@@ -110,6 +110,14 @@ impl Corpus {
 const SOURCE_FILES: &[(&str, &[u8])] = &[
     ("crates/sql/src/tests.rs", include_bytes!("../tests.rs")),
     (
+        "crates/sql/src/tests/cross_join.rs",
+        include_bytes!("cross_join.rs"),
+    ),
+    (
+        "crates/sql/src/tests/having_from.rs",
+        include_bytes!("having_from.rs"),
+    ),
+    (
         "crates/sql/src/tests/clause_diagnostics.rs",
         include_bytes!("clause_diagnostics.rs"),
     ),

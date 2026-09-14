@@ -2,7 +2,7 @@ use super::{
     aggregate_group_base_memory_bytes, bind_bound, charge_aggregate_memory, map_payload_bytes,
     push_relational_output, relational_input_plan, relational_locator_layout,
     relational_physical_join_plan_locator_layout, resolve_column, stream_distinct_batches,
-    typed_row_set_locator, visit_relational_rows, with_typed_locator_bound_row,
+    typed_row_set_locator, visit_relational_rows, with_typed_locator_bound_row_mode,
     AggregateProjectionState, BTreeMap, BatchControl, BlockingExecutionContext, Catalog,
     ColumnarAggregateExecutor, DistinctAggregateValueBatchSource, ExecutionLimit, ExternalTopN,
     OperatorMemoryTracker, PlannedJoin, QueryMemoryClass, QueryMemoryLedger,
@@ -168,11 +168,7 @@ pub(super) fn execute_aggregate_select<'a>(
             )],
         });
     }
-    let projection_template = select
-        .projection
-        .iter()
-        .map(|projection| AggregateProjectionState::new(projection, parameters))
-        .collect::<Result<Vec<_>>>()?;
+    let projection_template = super::having::projection_template(select, parameters, state)?;
     let mut groups = BTreeMap::<Vec<RelationalValue>, Vec<AggregateProjectionState>>::new();
     let mut memory_tracker = OperatorMemoryTracker::with_account(
         execution_memory.blocking_operator_bytes,
@@ -246,11 +242,18 @@ pub(super) fn execute_aggregate_select<'a>(
         .unwrap_or(usize::MAX);
     let mut output = Vec::new();
     let mut payload_bytes = 0usize;
-    for (_, projections) in groups
-        .into_iter()
-        .skip(offset)
-        .take(limit.min(limits.max_output_rows.saturating_add(1)))
-    {
+    let mut skipped = 0;
+    for (_, projections) in groups {
+        let Some(projections) = super::having::filter_group(projections)? else {
+            continue;
+        };
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if output.len() >= limit.min(limits.max_output_rows.saturating_add(1)) {
+            break;
+        }
         let mut row = Row::new();
         for projection in projections {
             let (name, value) = projection.finish()?;
@@ -322,7 +325,11 @@ pub(super) fn single_count_distinct_column(
     else {
         return None;
     };
-    (name == "count" && select.group_by.is_empty() && select.order_by.is_empty()).then(|| {
+    (name == "count"
+        && select.having.is_none()
+        && select.group_by.is_empty()
+        && select.order_by.is_empty())
+    .then(|| {
         (
             column,
             alias.clone().unwrap_or_else(|| "count".to_string()),
@@ -449,11 +456,7 @@ pub(super) fn execute_grouped_aggregate<'a>(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
-    let projection_template = select
-        .projection
-        .iter()
-        .map(|projection| AggregateProjectionState::new(projection, parameters))
-        .collect::<Result<Vec<_>>>()?;
+    let projection_template = super::having::projection_template(select, parameters, state)?;
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
         .map_err(|_| SkeinError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
@@ -527,8 +530,12 @@ pub(super) fn execute_grouped_aggregate<'a>(
     let mut stopped = false;
     let sort_report = order.finish(|record| {
         let locator = record.into_locator();
-        let keep_going =
-            with_typed_locator_bound_row(&locator, &locator_layout, row_runtime, |row| {
+        let keep_going = with_typed_locator_bound_row_mode(
+            &locator,
+            &locator_layout,
+            row_runtime,
+            select.having.is_none(),
+            |row| {
                 let key = select
                     .group_by
                     .iter()
@@ -565,7 +572,8 @@ pub(super) fn execute_grouped_aggregate<'a>(
                     charge_aggregate_memory(delta.added_bytes, &mut tracker)?;
                 }
                 Ok(true)
-            })?;
+            },
+        )?;
         stopped = !keep_going;
         Ok(keep_going)
     })?;
@@ -614,6 +622,9 @@ pub(super) fn emit_aggregate_group(
     payload_bytes: &mut usize,
     output: &mut Vec<Row>,
 ) -> Result<bool> {
+    let Some(projections) = super::having::filter_group(projections)? else {
+        return Ok(true);
+    };
     if *offset != 0 {
         *offset -= 1;
         return Ok(true);

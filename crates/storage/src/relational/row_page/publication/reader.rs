@@ -313,7 +313,7 @@ impl RelationalRowPageRootReader {
         };
         let verification_tag = *descriptor.slot_integrity.slot_sha256.as_bytes();
         if let Some(lease) = cache.get_verified(&cache_key, verification_tag) {
-            let bytes = lease.into_arc();
+            let bytes = lease.into_bytes();
             let metadata = self.validate_verified_page(descriptor, &bytes)?;
             return Ok(RelationalRowPageSlotRead {
                 page: VerifiedRowPage::new(bytes, metadata),
@@ -322,27 +322,33 @@ impl RelationalRowPageRootReader {
                 cache_admission_rejected: false,
             });
         }
-        let slot = self.read_page_slot_bytes(descriptor)?;
+        let mut slot = self.read_page_slot_bytes(descriptor)?;
         let view = self.validate_page_slot(descriptor, &slot)?;
         let metadata = VerifiedRowPageMetadata::from_view(&view);
-        let bytes: Arc<[u8]> = Arc::from(&slot[..view.encoded_len()]);
-        match cache.insert_verified(cache_key, verification_tag, Arc::clone(&bytes)) {
+        let encoded_len = view.encoded_len();
+        slot.truncate(encoded_len);
+        match cache.insert_verified(cache_key, verification_tag, slot) {
             Ok(lease) => Ok(RelationalRowPageSlotRead {
-                page: VerifiedRowPage::new(lease.into_arc(), metadata),
+                page: VerifiedRowPage::new(lease.into_bytes(), metadata),
                 cache_hit: false,
                 cache_miss: true,
                 cache_admission_rejected: false,
             }),
-            Err(SegmentCacheError::EntryTooLarge { .. })
-            | Err(SegmentCacheError::PinnedCapacity { .. }) => Ok(RelationalRowPageSlotRead {
-                page: VerifiedRowPage::new(bytes, metadata),
-                cache_hit: false,
-                cache_miss: true,
-                cache_admission_rejected: true,
-            }),
-            Err(error) => Err(RelationalRowPagePublicationError::Corrupt(format!(
-                "row-page cache rejected immutable slot identity: {error}"
-            ))),
+            Err(rejection) => {
+                let (error, bytes) = rejection.into_parts();
+                match error {
+                    SegmentCacheError::EntryTooLarge { .. }
+                    | SegmentCacheError::PinnedCapacity { .. } => Ok(RelationalRowPageSlotRead {
+                        page: VerifiedRowPage::new(bytes.into(), metadata),
+                        cache_hit: false,
+                        cache_miss: true,
+                        cache_admission_rejected: true,
+                    }),
+                    error => Err(RelationalRowPagePublicationError::Corrupt(format!(
+                        "row-page cache rejected immutable slot identity: {error}"
+                    ))),
+                }
+            }
         }
     }
 

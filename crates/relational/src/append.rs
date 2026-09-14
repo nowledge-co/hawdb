@@ -329,6 +329,7 @@ fn compile_append_select(
     if select.distinct
         || !select.joins.is_empty()
         || !select.group_by.is_empty()
+        || select.having.is_some()
         || select.offset.is_some()
         || select.lock_strength.is_some()
     {

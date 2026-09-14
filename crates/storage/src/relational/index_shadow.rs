@@ -1250,7 +1250,7 @@ impl RelationalIndexShadowReader {
         let mut slot = vec![0; page_bytes];
         read_exact_at(self.artifact()?, &mut slot, offset)
             .map_err(durability("read shadow page"))?;
-        let slot: Arc<[u8]> = slot.into();
+
         let page = self.validate_selected_page(
             ImmutableIndexPage::decode_slot(&slot, self.config.page_limits)?,
             page_id,
@@ -1264,10 +1264,15 @@ impl RelationalIndexShadowReader {
                 content_digest: content_digest(&slot),
                 representation: cache_identity.representation,
             };
-            match cache.insert_page_verified(key, Arc::clone(&slot)) {
+            match cache.insert_page_verified(key, slot) {
                 Ok(_) => {}
-                Err(SegmentCacheError::EntryTooLarge { .. })
-                | Err(SegmentCacheError::PinnedCapacity { .. }) => {
+                Err(error)
+                    if matches!(
+                        error.error(),
+                        SegmentCacheError::EntryTooLarge { .. }
+                            | SegmentCacheError::PinnedCapacity { .. }
+                    ) =>
+                {
                     cache_admission_rejected = true;
                 }
                 Err(error) => {

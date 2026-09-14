@@ -1321,6 +1321,9 @@ pub(crate) fn plan_scan_hydration_fields(
             }
         }
     }
+    if let Some(having) = &select.having {
+        collect_expression_hydration_columns(having, &mut metadata_columns, &mut value_columns);
+    }
     let mut raw_references = Vec::new();
     if let Some(selection) = &select.selection {
         collect_expression_columns(selection, &mut raw_references);
@@ -1436,7 +1439,7 @@ fn plan_fields(
         // projection that the aggregate executor cannot evaluate.
         for projection in &select.projection {
             if let SelectProjection::Expression { expression, .. } = projection
-                && expression_contains_aggregate(expression)
+                && (select.having.is_some() || expression_contains_aggregate(expression))
             {
                 collect_expression_columns(expression, &mut columns);
             }
@@ -1444,6 +1447,9 @@ fn plan_fields(
     }
     if let Some(selection) = &select.selection {
         collect_expression_columns(selection, &mut columns);
+    }
+    if let Some(having) = &select.having {
+        collect_expression_columns(having, &mut columns);
     }
     for join in &select.joins {
         collect_expression_columns(&join.on, &mut columns);
@@ -1565,7 +1571,42 @@ fn collect_expression_hydration_columns(
             kind: ExprKind::Value(_),
             ..
         } => {}
-        _ => collect_predicate_hydration_columns(expression, value_columns),
+        Expr {
+            kind:
+                ExprKind::And(left, right)
+                | ExprKind::Or(left, right)
+                | ExprKind::Compare { left, right, .. },
+            ..
+        } => {
+            collect_expression_hydration_columns(left, metadata_columns, value_columns);
+            collect_expression_hydration_columns(right, metadata_columns, value_columns);
+        }
+        Expr {
+            kind:
+                ExprKind::Not(inner)
+                | ExprKind::IsNull {
+                    expression: inner, ..
+                },
+            ..
+        } => {
+            collect_expression_hydration_columns(inner, metadata_columns, value_columns);
+        }
+        Expr {
+            kind: ExprKind::InList { left, values, .. },
+            ..
+        } => {
+            collect_expression_hydration_columns(left, metadata_columns, value_columns);
+            for value in values {
+                collect_expression_hydration_columns(value, metadata_columns, value_columns);
+            }
+        }
+        Expr {
+            kind: ExprKind::Like { left, pattern, .. },
+            ..
+        } => {
+            collect_expression_hydration_columns(left, metadata_columns, value_columns);
+            collect_expression_hydration_columns(pattern, metadata_columns, value_columns);
+        }
     }
 }
 

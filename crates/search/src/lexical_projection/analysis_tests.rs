@@ -43,15 +43,152 @@ fn reference_identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> V
     tokens.into_vec()
 }
 
+fn reference_events(
+    text: &str,
+    analyzer: &SearchAnalyzerLexicon,
+) -> Vec<(String, TokenOccurrence)> {
+    let mut events = Vec::new();
+    let mut previous = None::<String>;
+    for raw in text.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
+        if raw.is_empty() {
+            continue;
+        }
+        let parts = identifier_parts(raw);
+        if let (Some(previous), Some(first)) = (previous.as_ref(), parts.first()) {
+            let mut phrase = TokenSequence::default();
+            push_analyzed_token(&mut phrase, format!("{previous}_{first}"), analyzer);
+            events.extend(
+                phrase
+                    .into_vec()
+                    .into_iter()
+                    .map(|token| (token, TokenOccurrence::UniqueInField)),
+            );
+        }
+        events.extend(
+            reference_identifier_tokens(raw, analyzer)
+                .into_iter()
+                .map(|token| (token, TokenOccurrence::Repeated)),
+        );
+        if let Some(last) = parts.last() {
+            previous = Some(last.clone());
+        }
+    }
+    events
+}
+
 #[test]
-fn visitor_splits_each_identifier_once_and_reuses_parts_for_phrases() {
+fn identifier_stream_preserves_every_fallible_event_prefix() {
+    for analyzer in analyzers() {
+        for text in [
+            "Graph __ Graph_graph HTTPServer42Running WAL",
+            "\u{39f}\u{3a3} \u{39f}\u{3a3}Beta \u{130}Index__V2 CAF\u{c9}",
+            "\u{77e5}\u{8b58}Graph\u{691c}\u{7d22} \u{ac00}\u{b098}\u{b2e4}\u{b77c}\u{b9c8} \u{3042}\u{3044}\u{3046}\u{3048}\u{304a}",
+        ] {
+            let expected = reference_events(text, &analyzer);
+            for stop_after in 0..expected.len() {
+                let mut actual = Vec::new();
+                let mut callbacks = 0;
+                let error = visit_token_list(text, &analyzer, |token, occurrence| {
+                    callbacks += 1;
+                    if actual.len() == stop_after {
+                        return Err(SkeinError::Execution("stop identifier".into()));
+                    }
+                    actual.push((token, occurrence));
+                    Ok(())
+                }).unwrap_err();
+                assert_eq!(actual, expected[..stop_after], "{text}: prefix {stop_after}");
+                assert_eq!(callbacks, stop_after + 1);
+                assert_eq!(error.to_string(), SkeinError::Execution("stop identifier".into()).to_string());
+            }
+            let mut actual = Vec::new();
+            visit_token_list(text, &analyzer, |token, occurrence| {
+                actual.push((token, occurrence));
+                Ok(())
+            }).unwrap();
+            assert_eq!(actual, expected, "{text}");
+        }
+    }
+}
+
+#[test]
+fn collected_tokens_preserve_phrase_and_identifier_dedup_scopes() {
+    for analyzer in analyzers() {
+        for text in [
+            "graph graph_graph graph graph",
+            "graph_graph graph graph_graph",
+            "raw evidence RawEvidence raw evidence",
+            "Graph __ Graph_graph Graph",
+            "thread memory lifecycle thread",
+        ] {
+            let expected = reference_tokens(text, &analyzer);
+            assert_eq!(crate::tokenize_list(text, &analyzer), expected, "{text}");
+            let mut collected = TokenSequence::default();
+            visit_token_list(text, &analyzer, |token, occurrence| {
+                match occurrence {
+                    TokenOccurrence::UniqueInField => collected.push_unique(token),
+                    TokenOccurrence::Repeated => collected.push(token),
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(collected.into_vec(), expected, "{text}");
+            assert_eq!(
+                crate::identifier_tokens(text, &analyzer),
+                reference_identifier_tokens(text, &analyzer),
+                "standalone identifier: {text}",
+            );
+        }
+    }
+}
+
+#[test]
+fn borrowed_identifier_cursors_preserve_unicode_and_replay_from_each_boundary() {
+    for text in [
+        "",
+        "___",
+        "HTTPServer42Graph",
+        "\u{39f}\u{3a3}_\u{39f}\u{3a3}Beta",
+        "\u{130}Index__V2",
+        "\u{77e5}\u{8b58}42Graph",
+        "aBCd__E9f",
+    ] {
+        let expected = identifier_parts(text);
+        let cursor = crate::identifier::part_slices(text);
+        assert_eq!(
+            cursor
+                .clone()
+                .map(crate::identifier::normalize_part)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let mut cursor = cursor;
+        for offset in 0..=expected.len() {
+            assert_eq!(
+                cursor
+                    .clone()
+                    .map(crate::identifier::normalize_part)
+                    .collect::<Vec<_>>(),
+                expected[offset..]
+            );
+            assert_eq!(
+                cursor.next().map(crate::identifier::normalize_part),
+                expected.get(offset).cloned()
+            );
+        }
+        assert!(cursor.next().is_none());
+        assert!(cursor.next().is_none());
+    }
+}
+
+#[test]
+fn visitor_builds_one_replayable_split_cursor_per_identifier() {
     let analyzer = SearchAnalyzerLexicon::empty();
     let text = "HTTPServer42 Graph __ aBCd ... \u{130}Index";
     let expected = reference_tokens(text, &analyzer);
-    crate::identifier::SPLIT_VISITS.with(|visits| visits.set(0));
+    crate::identifier::SPLIT_CURSORS.with(|visits| visits.set(0));
     assert_eq!(crate::tokenize_list(text, &analyzer), expected);
     assert_eq!(
-        crate::identifier::SPLIT_VISITS.with(|visits| visits.get()),
+        crate::identifier::SPLIT_CURSORS.with(|visits| visits.get()),
         5
     );
 }
@@ -227,7 +364,7 @@ fn token_admission_stops_before_analyzing_the_document_tail() {
 #[test]
 fn visitor_propagates_callback_failure_without_visiting_later_identifiers() {
     crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.set(0));
-    crate::identifier::SPLIT_VISITS.with(|visits| visits.set(0));
+    crate::identifier::SPLIT_CURSORS.with(|visits| visits.set(0));
     let mut callbacks = 0;
     let error = visit_token_list(
         "first second third",
@@ -244,7 +381,7 @@ fn visitor_propagates_callback_failure_without_visiting_later_identifiers() {
     );
     assert_eq!(callbacks, 1);
     assert_eq!(
-        crate::identifier::SPLIT_VISITS.with(|visits| visits.get()),
+        crate::identifier::SPLIT_CURSORS.with(|visits| visits.get()),
         1
     );
     assert_eq!(

@@ -133,6 +133,12 @@ by this benchmark or portable cost coefficients.
 
 ## Running and verification
 
+A later [Linux release calibration](RELATIONAL_ACCESS_COST_LINUX_CALIBRATION.md)
+records the complete 20-case timing matrix and machine-readable profiles at
+main `366828ec`. It confirms the warm prefix row-fetch penalty on that
+revision and separates locality-dependent first-query observations from
+warm-cache results.
+
 The existing Cargo/Bazel benchmark registration and existing benchmark smoke
 test already execute the added module. No new CI job or configuration is
 required. Use the normal release benchmark for timing and the default Bazel

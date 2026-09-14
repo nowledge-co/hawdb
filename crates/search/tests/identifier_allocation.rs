@@ -30,3 +30,35 @@ fn splitter_removes_source_sized_character_scratch() {
         );
     }
 }
+
+#[test]
+fn borrowed_part_cursors_do_not_allocate_input_sized_scratch() {
+    for raw in [
+        "a".repeat(1024 * 1024),
+        "HTTPServer42".repeat(8192),
+        "\u{39f}\u{3a3}_\u{130}Index42".repeat(4096),
+    ] {
+        let expected = identifier::reference::identifier_parts(&raw);
+        let (matches, bytes) = measure(|| {
+            let mut parts = identifier::part_slices(&raw);
+            for expected in &expected {
+                let Some(part) = parts.next() else {
+                    return false;
+                };
+                if !part
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .eq(expected.chars())
+                {
+                    return false;
+                }
+            }
+            parts.next().is_none()
+        });
+        assert!(matches);
+        assert_eq!(
+            bytes, 0,
+            "borrowed boundaries must not allocate per input byte or part"
+        );
+    }
+}

@@ -55,6 +55,9 @@ impl AggregateProjectionState {
 
 #[derive(Clone)]
 pub(super) enum AggregateExpressionState {
+    // A typed group filter shares the existing accounting without adding fields
+    // to every projection or exposing a synthetic output-column name.
+    Having(Box<super::having::HavingState>),
     Constant(Value),
     First {
         column: SqlColumnRef,
@@ -216,6 +219,7 @@ impl AggregateExpressionState {
         parameters: &[Value],
     ) -> Result<AggregateMemoryDelta> {
         match self {
+            Self::Having(state) => state.update(row, parameters),
             Self::Constant(_) => Ok(AggregateMemoryDelta::default()),
             Self::First { column, value } => {
                 if value.is_none() {
@@ -303,6 +307,9 @@ impl AggregateExpressionState {
 
     pub(super) fn finish(self) -> Result<Value> {
         match self {
+            Self::Having(_) => Err(SkeinError::Execution(
+                "HAVING state reached output projection".into(),
+            )),
             Self::Constant(value) => Ok(value),
             Self::First {
                 value: Some(value), ..
@@ -410,6 +417,7 @@ pub(super) fn aggregate_group_base_memory_bytes(
 pub(super) fn aggregate_expression_base_memory_bytes(state: &AggregateExpressionState) -> usize {
     let state_bytes = std::mem::size_of::<AggregateExpressionState>();
     state_bytes.saturating_add(match state {
+        AggregateExpressionState::Having(state) => state.base_memory_bytes(),
         AggregateExpressionState::Constant(value) => {
             skein_executor::binding::value_memory_bytes(value)
         }

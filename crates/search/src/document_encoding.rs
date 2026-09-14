@@ -2,6 +2,9 @@ use crate::{Result, SearchDocument, SkeinError};
 use std::fmt::{self, Write};
 use std::io;
 
+mod segment;
+pub(super) use segment::{SegmentEncoding, SegmentKind};
+
 const HEX_BUFFER_BYTES: usize = 8192;
 
 struct IoSink<'a, W> {
@@ -11,6 +14,24 @@ struct IoSink<'a, W> {
 }
 
 impl<W: io::Write> IoSink<'_, W> {
+    fn write_checked(mut self, encode: impl FnOnce(&mut Self) -> fmt::Result) -> io::Result<()> {
+        encode(&mut self).map_err(|_| {
+            self.error.take().unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "search document formatting failed",
+                )
+            })
+        })?;
+        if self.remaining != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "search document encoding did not fill its admitted length",
+            ));
+        }
+        Ok(())
+    }
+
     fn bytes(&mut self, bytes: &[u8]) -> fmt::Result {
         if bytes.len() > self.remaining {
             self.error = Some(io::Error::new(
@@ -92,14 +113,27 @@ fn write_document(sink: &mut impl DocumentSink, document: &SearchDocument) -> fm
     sink.write_char('\t')?;
     sink.write_hex(&document.content)?;
     sink.write_char('\t')?;
-    for (index, value) in document.embedding.iter().flatten().enumerate() {
+    write_embedding(sink, document.embedding.as_deref())?;
+    sink.write_char('\t')?;
+    write_metadata(sink, &document.metadata)?;
+    sink.write_char('\n')
+}
+
+fn write_embedding(sink: &mut impl DocumentSink, embedding: Option<&[f32]>) -> fmt::Result {
+    for (index, value) in embedding.iter().copied().flatten().enumerate() {
         if index != 0 {
             sink.write_char(',')?;
         }
         write!(sink, "{value}")?;
     }
-    sink.write_char('\t')?;
-    for (index, (key, value)) in document.metadata.iter().enumerate() {
+    Ok(())
+}
+
+fn write_metadata(
+    sink: &mut impl DocumentSink,
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> fmt::Result {
+    for (index, (key, value)) in metadata.iter().enumerate() {
         if index != 0 {
             sink.write_char(';')?;
         }
@@ -107,7 +141,7 @@ fn write_document(sink: &mut impl DocumentSink, document: &SearchDocument) -> fm
         sink.write_char('=')?;
         sink.write_hex(value)?;
     }
-    sink.write_char('\n')
+    Ok(())
 }
 
 pub(super) struct DocumentEncoding<'a> {
@@ -134,26 +168,12 @@ impl<'a> DocumentEncoding<'a> {
     pub(super) fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
         #[cfg(test)]
         STREAMING_ATTEMPTS.set(STREAMING_ATTEMPTS.get() + 1);
-        let mut sink = IoSink {
+        IoSink {
             writer,
             error: None,
             remaining: self.bytes,
-        };
-        write_document(&mut sink, self.document).map_err(|_| {
-            sink.error.take().unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "search document formatting failed",
-                )
-            })
-        })?;
-        if sink.remaining != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "search document encoding did not fill its admitted length",
-            ));
         }
-        Ok(())
+        .write_checked(|sink| write_document(sink, self.document))
     }
 
     #[cfg(test)]

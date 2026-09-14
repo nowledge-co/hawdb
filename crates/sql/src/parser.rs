@@ -117,7 +117,6 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
         || !select.cluster_by.is_empty()
         || !select.distribute_by.is_empty()
         || !select.sort_by.is_empty()
-        || select.having.is_some()
         || !select.named_window.is_empty()
         || select.qualify.is_some()
         || select.value_table_mode.is_some()
@@ -126,26 +125,52 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
             "unsupported PostgreSQL SELECT feature".to_string(),
         ));
     }
-    if select.from.len() != 1 {
+    if select.from.is_empty() {
         return Err(SkeinError::Semantic(
-            "PostgreSQL SELECT currently supports exactly one FROM item".to_string(),
+            "PostgreSQL SELECT requires at least one FROM item".to_string(),
         ));
     }
     let from = &select.from[0];
     let (from_name, from_alias) = lower_table_factor(&from.relation)?;
+    let projection = lower_projection(&select.projection)?;
+    let distinct = lower_distinct(select.distinct.as_ref())?;
+    let mut joins = from
+        .joins
+        .iter()
+        .map(|join| lower_join(join, 0))
+        .collect::<Result<Vec<_>>>()?;
+    for from in &select.from[1..] {
+        let on_scope_start = joins.len() + 1;
+        let (table, alias) = lower_table_factor(&from.relation)?;
+        joins.push(SqlJoin {
+            kind: SqlJoinKind::Inner,
+            table,
+            alias,
+            on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
+            on_scope_start,
+        });
+        for join in &from.joins {
+            joins.push(lower_join(join, on_scope_start)?);
+        }
+    }
 
     Ok(SqlStatement::Select(SelectStatement {
-        projection: lower_projection(&select.projection)?,
-        distinct: lower_distinct(select.distinct.as_ref())?,
+        projection,
+        distinct,
         from: from_name,
         from_alias,
-        joins: from.joins.iter().map(lower_join).collect::<Result<_>>()?,
+        joins,
         selection: select
             .selection
             .as_ref()
             .map(|expr| lower_expression(expr, ExpressionPosition::Predicate))
             .transpose()?,
         group_by: lower_group_by(&select.group_by)?,
+        having: select
+            .having
+            .as_ref()
+            .map(|expression| lower_expression(expression, ExpressionPosition::Having))
+            .transpose()?,
         order_by: lower_order_by(query.order_by.as_ref())?,
         limit: lower_limit(query.limit_clause.as_ref())?,
         offset: lower_offset(query.limit_clause.as_ref())?,
@@ -257,6 +282,8 @@ fn lower_offset(limit_clause: Option<&LimitClause>) -> Result<Option<SqlBound>> 
 #[derive(Clone, Copy)]
 pub(super) enum ExpressionPosition {
     Predicate,
+    Having,
+    HavingScalar,
     Scalar,
     Column,
     Value,
@@ -265,46 +292,51 @@ pub(super) enum ExpressionPosition {
 // These position checks preserve the existing language surface independently of
 // the shared representation. New expression shapes require separate semantics.
 pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Result<crate::Expr> {
-    use ExpressionPosition::{Column, Predicate, Scalar, Value};
+    use ExpressionPosition::{Column, Having, HavingScalar, Predicate, Scalar, Value};
+    let having = matches!(position, Having | HavingScalar);
+    let operand = if having { HavingScalar } else { Column };
     let lower = |expr: &Expr, position| lower_expression(expr, position).map(Box::new);
     let kind = match position {
         Column => ExprKind::Column(lower_column_expr(expr)?),
         Value => ExprKind::Value(lower_literal_expr(expr)?),
-        Scalar => match expr {
+        Scalar | HavingScalar => match expr {
+            Expr::Nested(inner) if having => lower_expression(inner, HavingScalar)?.kind,
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
                 ExprKind::Column(lower_column_expr(expr)?)
             }
             Expr::Value(_) | Expr::Nested(_) | Expr::UnaryOp { .. } => {
                 ExprKind::Value(lower_literal_expr(expr)?)
             }
-            Expr::Function(function) => lower_function_expression(function)?,
+            Expr::Function(function) => lower_function_expression(function, position)?,
             _ => {
                 return Err(SkeinError::Semantic(format!(
                     "unsupported PostgreSQL projection expression {expr}"
                 )))
             }
         },
-        Predicate => match expr {
+        Predicate | Having => match expr {
             Expr::BinaryOp { left, op, right } => match op {
                 BinaryOperator::And => {
-                    ExprKind::And(lower(left, Predicate)?, lower(right, Predicate)?)
+                    ExprKind::And(lower(left, position)?, lower(right, position)?)
                 }
-                BinaryOperator::Or => {
-                    ExprKind::Or(lower(left, Predicate)?, lower(right, Predicate)?)
-                }
+                BinaryOperator::Or => ExprKind::Or(lower(left, position)?, lower(right, position)?),
                 BinaryOperator::Eq
                 | BinaryOperator::NotEq
                 | BinaryOperator::Lt
                 | BinaryOperator::LtEq
                 | BinaryOperator::Gt
                 | BinaryOperator::GtEq => ExprKind::Compare {
-                    left: lower(left, Column)?,
+                    left: lower(left, operand)?,
                     op: lower_comparison_op(op),
                     right: lower(
                         right,
-                        match right.as_ref() {
-                            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Column,
-                            _ => Value,
+                        if having {
+                            HavingScalar
+                        } else {
+                            match right.as_ref() {
+                                Expr::Identifier(_) | Expr::CompoundIdentifier(_) => Column,
+                                _ => Value,
+                            }
                         },
                     )?,
                 },
@@ -314,20 +346,20 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                     )))
                 }
             },
-            Expr::Nested(inner) => lower_expression(inner, Predicate)?.kind,
+            Expr::Nested(inner) => lower_expression(inner, position)?.kind,
             Expr::UnaryOp {
                 op: sqlparser::ast::UnaryOperator::Not,
                 expr,
-            } => ExprKind::Not(lower(expr, Predicate)?),
+            } => ExprKind::Not(lower(expr, position)?),
             Expr::InList {
                 expr,
                 list,
                 negated,
             } => ExprKind::InList {
-                left: lower(expr, Column)?,
+                left: lower(expr, operand)?,
                 values: list
                     .iter()
-                    .map(|value| lower_expression(value, Value))
+                    .map(|value| lower_expression(value, if having { HavingScalar } else { Value }))
                     .collect::<Result<_>>()?,
                 negated: *negated,
             },
@@ -337,22 +369,39 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                 expr,
                 pattern,
                 escape_char,
-            } => lower_like_expression(expr, pattern, *negated, *any, escape_char.as_ref(), false)?,
+            } => lower_like_expression(
+                expr,
+                pattern,
+                *negated,
+                *any,
+                escape_char.as_ref(),
+                false,
+                having,
+            )?,
             Expr::ILike {
                 negated,
                 any,
                 expr,
                 pattern,
                 escape_char,
-            } => lower_like_expression(expr, pattern, *negated, *any, escape_char.as_ref(), true)?,
+            } => lower_like_expression(
+                expr,
+                pattern,
+                *negated,
+                *any,
+                escape_char.as_ref(),
+                true,
+                having,
+            )?,
             Expr::IsNull(expr) => ExprKind::IsNull {
-                expression: lower(expr, Column)?,
+                expression: lower(expr, operand)?,
                 negated: false,
             },
             Expr::IsNotNull(expr) => ExprKind::IsNull {
-                expression: lower(expr, Column)?,
+                expression: lower(expr, operand)?,
                 negated: true,
             },
+            _ if having => lower_expression(expr, HavingScalar)?.kind,
             _ => {
                 return Err(SkeinError::Semantic(format!(
                     "unsupported PostgreSQL predicate expression {expr}"
@@ -383,6 +432,7 @@ fn lower_like_expression(
     any: bool,
     escape_char: Option<&ParserValue>,
     case_insensitive: bool,
+    having: bool,
 ) -> Result<ExprKind> {
     if any {
         return Err(SkeinError::Semantic(
@@ -390,8 +440,22 @@ fn lower_like_expression(
         ));
     }
     Ok(ExprKind::Like {
-        left: Box::new(lower_expression(expr, ExpressionPosition::Column)?),
-        pattern: Box::new(lower_expression(pattern, ExpressionPosition::Value)?),
+        left: Box::new(lower_expression(
+            expr,
+            if having {
+                ExpressionPosition::HavingScalar
+            } else {
+                ExpressionPosition::Column
+            },
+        )?),
+        pattern: Box::new(lower_expression(
+            pattern,
+            if having {
+                ExpressionPosition::HavingScalar
+            } else {
+                ExpressionPosition::Value
+            },
+        )?),
         case_insensitive,
         negated,
         escape: lower_like_escape(escape_char)?,
@@ -462,8 +526,20 @@ fn lower_table_alias(alias: Option<&TableAlias>) -> Result<Option<String>> {
     Ok(Some(normalize_ident(&alias.name)))
 }
 
-fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
+fn lower_join(join: &sqlparser::ast::Join, on_scope_start: usize) -> Result<SqlJoin> {
     let (table, alias) = lower_table_factor(&join.relation)?;
+    if matches!(
+        join.join_operator,
+        JoinOperator::CrossJoin(JoinConstraint::None)
+    ) {
+        return Ok(SqlJoin {
+            kind: SqlJoinKind::Inner,
+            table,
+            alias,
+            on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
+            on_scope_start,
+        });
+    }
     let (kind, constraint) = match &join.join_operator {
         JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
             (SqlJoinKind::Inner, constraint)
@@ -487,10 +563,14 @@ fn lower_join(join: &sqlparser::ast::Join) -> Result<SqlJoin> {
         table,
         alias,
         on: lower_expression(on, ExpressionPosition::Predicate)?,
+        on_scope_start,
     })
 }
 
-fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<ExprKind> {
+fn lower_function_expression(
+    function: &sqlparser::ast::Function,
+    argument_position: ExpressionPosition,
+) -> Result<ExprKind> {
     if function.uses_odbc_syntax
         || !matches!(function.parameters, FunctionArguments::None)
         || function.null_treatment.is_some()
@@ -526,8 +606,7 @@ fn lower_function_expression(function: &sqlparser::ast::Function) -> Result<Expr
         .iter()
         .map(|argument| match argument {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
-                lower_expression(expr, ExpressionPosition::Scalar)
-                    .map(SqlFunctionArgument::Expression)
+                lower_expression(expr, argument_position).map(SqlFunctionArgument::Expression)
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => Ok(SqlFunctionArgument::Wildcard),
             _ => Err(SkeinError::Semantic(

@@ -34,6 +34,7 @@ pub struct SelectStatement {
     pub joins: Vec<SqlJoin>,
     pub selection: Option<SqlPredicate>,
     pub group_by: Vec<SqlColumnRef>,
+    pub having: Option<SqlPredicate>,
     pub order_by: Vec<SqlOrderItem>,
     pub limit: Option<SqlBound>,
     pub offset: Option<SqlBound>,
@@ -247,6 +248,9 @@ pub struct SqlJoin {
     pub table: SqlTableName,
     pub alias: Option<String>,
     pub on: SqlPredicate,
+    /// First input visible to ON, with the SELECT base relation at ordinal zero.
+    /// The current join's right input is the inclusive end of this scope.
+    pub on_scope_start: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

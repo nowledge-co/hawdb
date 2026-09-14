@@ -95,16 +95,16 @@ requested injectable storage-engine API.
 
 ## Generation record admission (#392)
 
-Generation ingestion computes the exact encoded record length before allocating
-the record buffer. The counter and encoder share the existing wire grammar:
+Generation ingestion computes the exact encoded record length before writing
+the framed spool record. The counter and encoder share the existing wire grammar:
 UTF-8 text is lowercase hex, floats retain Rust's `Display` representation, and
 field, vector, and metadata separators are unchanged. The counter checks size
 arithmetic and does not scan or copy text bytes; it formats vector components
 without collecting per-component strings.
 
 Per-record, cumulative logical-byte, spool-byte (including frame headers), and
-descriptor-field admission all precede record materialization. Accepted records
-use fallible reservation and write directly into their final record buffer.
+descriptor-field admission all precede record encoding. Accepted records
+stream into the spool using bounded hex scratch space.
 Metadata field names move from the admitted document rather than being cloned
 before admission. Segment batching also uses the counter instead of encoding
 and discarding a complete record just to measure it.
@@ -116,11 +116,65 @@ replacement generations must preserve the active generation and clean staging.
 The public campaign is part of the existing local storage fuzz test target.
 
 This is an allocation-order prerequisite, not completion of large-document
-support. The caller-owned document and admitted encoded record still coexist;
-decoder, analyzer, metadata/vector sidecar, and segment buffers have separate
-resident costs. No process-RSS bound, new source/term limit, streaming-source
+support. The caller still owns a complete document, and spool decoding produces
+another complete document; analyzer and descriptor state have separate resident
+costs. Segment payload encoding is described below. No process-RSS bound,
+new source/term limit, streaming-source
 API, analyzer change, or persisted-format change is implied. The fixed lexical
 4 MiB source ceiling remains pending the complete #392 lifecycle work.
+
+## Segment payload encoding (#392)
+
+The generation segment builder counts each complete document, metadata and vector
+text payload, including its header, before encoding it. It writes the existing V1
+grammar directly through zstd using bounded hex scratch, with incremental raw and
+compressed checksums. The compressed destination checks its admitted limit before
+reserving memory; geometric growth reuses existing capacity and stays within that
+limit. The final envelope is inserted in place and must fit the same limit.
+
+This removes whole uncompressed segment strings, document/sidecar encoding
+temporaries, and a separately owned copy of the compressed payload. Segment
+grouping, vector ordinals, codec level, envelope fields, defaults and publication
+order remain unchanged. An encoding failure still drops staging and preserves
+the previously published generation.
+
+The segment's owned documents and descriptor still reside in memory. zstd has
+native scratch state, and the allocator may internally copy or round a reservation.
+The compressed limit bounds requested destination capacity; it is not a total
+build-memory or process-RSS limit. The raw limit remains a representation limit,
+and the 4 MiB lexical source guard remains in force.
+
+On Linux with the default features, a public writer regression measured Rust
+allocator requests during `finish()` after analyzer warmup. Input construction and
+subsequent hydration are outside the window. The fixture is one document with a
+whitespace body, a small title and metadata; both versions verify the complete
+document after reopening. Against main `366828ec`:
+
+| Body bytes | Previous total requested | Streaming total requested | Previous largest request | Streaming largest request |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,048,576 | 19,083,795 | 4,403,396 | 4,194,524 | 1,048,576 |
+| 3,145,728 | 46,348,315 | 10,696,543 | 12,583,132 | 4,194,304 |
+
+These count allocator requests, including reallocations, rather than live memory,
+RSS, native zstd allocations or throughput. The remaining largest requests match
+the geometric decoded-input buffer. The observation uses the instrumentation retained at `6cd5df15`. The production
+encoder is unchanged in the final revision; its regression shares the cumulative
+allocation counter with the independent identifier work in PR #482. It requires
+total requests below eight times source bytes, a bound the unchanged baseline
+fails after both complete round trips succeed.
+
+Coverage retains an independent legacy text/envelope oracle for all three payloads:
+empty fields, Unicode, separators, float edge cases, optional/global vector
+ordinals, 128 seeded record sets, and hex/zstd buffer boundaries through a 1 MiB
+field. Every case compares compressed bytes, decoded text, exact budgets and
+one-short budgets. Separate tests cover rejected growth without mutation, capacity
+reuse, short writes and I/O errors. Five deliberate faults in raw/compressed
+admission, checksums, ordinals and capacity reuse produce test assertions.
+
+Use `cargo test -p skein-search` and the default Bazel search matrix plus the
+required local fuzz suite. `//crates/search:skein_search_segment_allocation_tests`
+executes the public regression under Bazel. This slice does not complete the
+large-document lifecycle or replace #206's complete-corpus qualification.
 
 ## Verification
 

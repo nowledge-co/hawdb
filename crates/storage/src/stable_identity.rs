@@ -737,7 +737,7 @@ impl StableIdentityMappingReader {
         let mut bytes = vec![0; page_bytes];
         read_exact_at(self.file()?, &mut bytes, offset)
             .map_err(durability("read stable identity page"))?;
-        let bytes: Arc<[u8]> = bytes.into();
+
         let value = consumer(decode_page_slot(
             &bytes,
             self.header.generation,
@@ -752,10 +752,15 @@ impl StableIdentityMappingReader {
                 content_digest: content_digest(&bytes),
                 representation: identity.representation,
             };
-            match cache.insert_page_verified(key, Arc::clone(&bytes)) {
+            match cache.insert_page_verified(key, bytes) {
                 Ok(_) => {}
-                Err(SegmentCacheError::EntryTooLarge { .. })
-                | Err(SegmentCacheError::PinnedCapacity { .. }) => {
+                Err(error)
+                    if matches!(
+                        error.error(),
+                        SegmentCacheError::EntryTooLarge { .. }
+                            | SegmentCacheError::PinnedCapacity { .. }
+                    ) =>
+                {
                     report.cache_admission_rejections =
                         report.cache_admission_rejections.saturating_add(1);
                 }
@@ -1594,7 +1599,7 @@ fn decode_page_slot_inner(
             "stable identity page payload length overflow".to_string(),
         )
     })?;
-    if payload_end > slot.len() || slot[payload_end..].iter().any(|byte| *byte != 0) {
+    if payload_end > slot.len() || has_nonzero_padding(&slot[payload_end..]) {
         return Err(StableIdentityMappingError::Corrupt(
             "stable identity page payload exceeds slot or has non-zero padding".to_string(),
         ));
@@ -1657,6 +1662,13 @@ fn decode_page_slot_inner(
         ));
     }
     Ok(view)
+}
+
+fn has_nonzero_padding(bytes: &[u8]) -> bool {
+    // Warm reads still check every padding byte. Word comparisons avoid a
+    // branch per byte across most of a sparsely populated page slot.
+    let mut words = bytes.chunks_exact(8);
+    words.any(|word| word != [0; 8]) || words.remainder().iter().any(|byte| *byte != 0)
 }
 
 fn encode_key(key: StableIdentityKey) -> [u8; ENCODED_KEY_BYTES] {
@@ -1744,6 +1756,62 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_ID: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn padding_word_scan_matches_every_byte_at_unaligned_boundaries() {
+        for alignment in 0..8 {
+            for length in 0..=96 {
+                let mut buffer = vec![0; alignment + length];
+                assert!(!has_nonzero_padding(&buffer[alignment..]));
+                for offset in 0..length {
+                    for value in [1, 128, 255] {
+                        buffer[alignment + offset] = value;
+                        let bytes = &buffer[alignment..];
+                        assert_eq!(
+                            has_nonzero_padding(bytes),
+                            bytes.iter().any(|byte| *byte != 0),
+                            "alignment={alignment} length={length} offset={offset} value={value}"
+                        );
+                    }
+                    buffer[alignment + offset] = 0;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn verified_and_uncached_pages_reject_nonzero_padding() {
+        let path = test_path("padding-word-scan");
+        let config = StableIdentityMappingConfig {
+            page_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_value_bytes: NonZeroUsize::new(512).unwrap(),
+            ..StableIdentityMappingConfig::default()
+        };
+        StableIdentityMappingWriter::publish(&path, 1, entries(&mapping(4)), config).unwrap();
+        let artifact = fs::read(artifact_path(&path, 1)).unwrap();
+        let mut slot = artifact[FILE_HEADER_BYTES..FILE_HEADER_BYTES + 1024].to_vec();
+        let page_id = read_u64(&slot[20..28]);
+        let payload_end = PAGE_HEADER_BYTES + read_u32(&slot[32..36]) as usize;
+        assert!(payload_end + 16 < slot.len());
+        for verified in [false, true] {
+            decode_page_slot_inner(&slot, 1, page_id, config, verified).unwrap();
+            for offset in [
+                payload_end,
+                payload_end + 7,
+                payload_end + 8,
+                slot.len() - 1,
+            ] {
+                slot[offset] = 1;
+                assert!(matches!(
+                    decode_page_slot_inner(&slot, 1, page_id, config, verified),
+                    Err(StableIdentityMappingError::Corrupt(message))
+                        if message == "stable identity page payload exceeds slot or has non-zero padding"
+                ));
+                slot[offset] = 0;
+            }
+        }
+        remove_mapping_fixture(&path, &[1]);
+    }
 
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -2036,7 +2104,11 @@ mod tests {
             segment_id: 1,
             representation: RepresentationKind::StableIdentityPageSlot,
         };
-        let bytes = cache.get_by_identity(&identity).unwrap().into_arc();
+        let bytes = cache
+            .get_by_identity(&identity)
+            .unwrap()
+            .into_bytes()
+            .to_vec();
         let raw_cache = Arc::new(SegmentCache::new(16 * 1024));
         drop(
             raw_cache
