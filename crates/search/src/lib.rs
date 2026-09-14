@@ -1527,7 +1527,7 @@ impl SearchIndex {
                 .lexical_delta
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::make_mut(&mut delta).upsert(
+            delta.upsert(
                 document,
                 self.documents.get(&document.id),
                 &self.analyzer_lexicon,
@@ -1553,7 +1553,7 @@ impl SearchIndex {
                 .lexical_delta
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::make_mut(&mut delta).delete(
+            delta.delete(
                 document_id,
                 self.documents.get(document_id),
                 &self.analyzer_lexicon,
