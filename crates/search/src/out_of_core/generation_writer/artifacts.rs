@@ -5,20 +5,20 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
-use crate::document_encoding::DocumentEncoding;
+use crate::document_encoding::{DocumentEncoding, SegmentEncoding, SegmentKind};
 use crate::error::{Result, SkeinError};
 use crate::{
-    checksum_bytes, encode_embedding, encode_metadata, encode_search_document_line,
-    encode_search_snapshot_text, encode_string, write_search_segment_descriptor, SearchDocument,
-    SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
+    checksum_bytes, write_search_segment_descriptor, SearchDocument, SearchSegmentDescriptor,
+    SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
     SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use std::collections::BTreeSet;
-use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+mod encoding;
 
 pub(super) struct SegmentArtifactBuilder<'a> {
     stage: PathBuf,
@@ -151,14 +151,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let mut descriptor =
             SearchSegmentDescriptorEntry::from_documents(segment_id, &references, self.fields);
 
-        let mut document_body =
-            String::with_capacity(usize::try_from(self.segment_encoded_bytes).unwrap_or_default());
-        document_body.push_str("SKEIN_SEARCH_SEGMENT_V1\n");
-        for document in &self.documents {
-            document_body.push_str(&encode_search_document_line(document));
-        }
-        let document_payload =
-            self.encode_segment_payload(segment_id, "document", document_body)?;
+        let document_payload = self.encode_segment_payload(segment_id, SegmentKind::Documents)?;
         let document_length = document_payload.len() as u64;
         self.document_file.write_all(&document_payload)?;
         descriptor.payload_range = Some(SearchSegmentPayloadRange {
@@ -173,28 +166,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
             .ok_or_else(|| SkeinError::Storage("search generation payload overflow".to_string()))?;
         drop(document_payload);
 
-        let mut metadata_body = String::from("SKEIN_SEARCH_METADATA_SEGMENT_V1\n");
         let vector_ordinal_base = self.next_vector_ordinal;
-        let mut next_vector_ordinal = vector_ordinal_base;
-        for document in &self.documents {
-            let vector_ordinal = document.embedding.as_ref().map(|_| {
-                let ordinal = next_vector_ordinal;
-                next_vector_ordinal = next_vector_ordinal.saturating_add(1);
-                ordinal
-            });
-            writeln!(
-                metadata_body,
-                "meta\t{}\t{}\t{}",
-                encode_string(&document.id),
-                vector_ordinal
-                    .map(|ordinal| ordinal.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                encode_metadata(&document.metadata)
-            )
-            .map_err(|_| SkeinError::Storage("search metadata encoding failed".to_string()))?;
-        }
-        let metadata_payload =
-            self.encode_segment_payload(segment_id, "metadata", metadata_body)?;
+        let metadata_payload = self.encode_segment_payload(
+            segment_id,
+            SegmentKind::Metadata {
+                vector_ordinal_base,
+            },
+        )?;
         let metadata = append_sidecar_payload(
             &mut self.metadata_file,
             &mut self.metadata_offset,
@@ -203,23 +181,18 @@ impl<'a> SegmentArtifactBuilder<'a> {
         )?;
         drop(metadata_payload);
 
-        let mut vector_body = String::from("SKEIN_SEARCH_VECTOR_SEGMENT_V1\n");
-        let mut vector_count = 0usize;
-        for document in &self.documents {
-            if let Some(embedding) = document.embedding.as_deref() {
-                writeln!(
-                    vector_body,
-                    "vector\t{}\t{}\t{}",
-                    vector_ordinal_base.saturating_add(vector_count as u64),
-                    encode_string(&document.id),
-                    encode_embedding(Some(embedding))
-                )
-                .map_err(|_| SkeinError::Storage("search vector encoding failed".to_string()))?;
-                vector_count = vector_count.saturating_add(1);
-            }
-        }
-        self.next_vector_ordinal = next_vector_ordinal;
-        let vector_payload = self.encode_segment_payload(segment_id, "vector", vector_body)?;
+        let vector_count = self
+            .documents
+            .iter()
+            .filter(|document| document.embedding.is_some())
+            .count();
+        self.next_vector_ordinal = vector_ordinal_base.saturating_add(vector_count as u64);
+        let vector_payload = self.encode_segment_payload(
+            segment_id,
+            SegmentKind::Vectors {
+                vector_ordinal_base,
+            },
+        )?;
         let vectors = append_sidecar_payload(
             &mut self.vector_file,
             &mut self.vector_offset,
@@ -255,22 +228,15 @@ impl<'a> SegmentArtifactBuilder<'a> {
         Ok(())
     }
 
-    fn encode_segment_payload(&self, segment_id: u64, name: &str, body: String) -> Result<Vec<u8>> {
-        if body.len() as u64 > self.options.max_segment_uncompressed_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "search generation {name} segment {segment_id} requires {} bytes, exceeding {}",
-                body.len(),
-                self.options.max_segment_uncompressed_bytes
-            )));
-        }
-        let payload = encode_search_snapshot_text(&body)?;
-        if payload.len() as u64 > self.options.max_segment_compressed_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "search generation {name} segment {segment_id} requires {} compressed bytes, exceeding {}",
-                payload.len(), self.options.max_segment_compressed_bytes
-            )));
-        }
-        Ok(payload)
+    fn encode_segment_payload(&self, segment_id: u64, kind: SegmentKind) -> Result<Vec<u8>> {
+        let encoding = SegmentEncoding::new(&self.documents, kind)?;
+        encoding::encode_segment_payload(
+            &encoding,
+            segment_id,
+            kind.name(),
+            self.options.max_segment_uncompressed_bytes.get(),
+            self.options.max_segment_compressed_bytes.get(),
+        )
     }
 }
 

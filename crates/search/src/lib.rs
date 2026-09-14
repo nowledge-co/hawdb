@@ -7315,14 +7315,28 @@ fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
         .map_err(|error| SkeinError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
-    let header = format!(
-        "{SEARCH_COMPRESSION_HEADER}\ncodec\tzstd\nuncompressed_checksum\t{uncompressed_checksum}\ncompressed_checksum\t{compressed_checksum}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
+    let header = search_snapshot_compression_header(
+        uncompressed_checksum,
+        compressed_checksum,
         text.len(),
-        compressed.len()
+        compressed.len(),
     );
     let mut encoded = header.into_bytes();
     encoded.extend_from_slice(&compressed);
     Ok(encoded)
+}
+
+fn search_snapshot_compression_header(
+    uncompressed_checksum: u64,
+    compressed_checksum: u64,
+    uncompressed_len: usize,
+    compressed_len: usize,
+) -> String {
+    format!(
+        "{SEARCH_COMPRESSION_HEADER}\ncodec\tzstd\nuncompressed_checksum\t{uncompressed_checksum}\ncompressed_checksum\t{compressed_checksum}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
+        uncompressed_len,
+        compressed_len
+    )
 }
 
 fn read_search_snapshot_text(path: &Path) -> Result<String> {
