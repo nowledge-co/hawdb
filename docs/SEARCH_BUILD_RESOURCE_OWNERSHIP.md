@@ -36,7 +36,7 @@ policy or 256 MiB manifest default, or change query semantics and artifact forma
 
 The decode allowance is derived from the trusted generated body's string lengths
 and vector element counts. It is never inferred solely from an arbitrary file's
-byte size. With pinned Rust 1.97.1, serde 1.0.228 and serde_json 1.0.149, sequence
+byte size. With pinned Rust 1.97.1, serde 1.0.228 and serde_json 1.0.150, sequence
 visitors grow vectors geometrically and string visitors copy decoded slices.
 The allowance includes old/replacement vector overlap, reusable escaped-string
 scratch and the returned reader's allocations. Actual retained capacities are
