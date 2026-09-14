@@ -20,9 +20,7 @@ use skein_executor::blocking::{
     stream_distinct_batches, stream_top_n_batches, BindingBatchSource, BlockingExecutionContext,
 };
 use skein_executor::external_order::ExternalTopN;
-use skein_executor::kernel::{
-    ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker,
-};
+use skein_executor::kernel::{OperatorMemoryTracker, SpillBudgetTracker};
 use skein_executor::observer::ExecutionObserver;
 use skein_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
 use skein_executor::spill::{SpillRun, SpillWriter};
@@ -86,9 +84,8 @@ use access::{
 mod aggregate;
 use aggregate::execute_aggregate_select;
 
-mod aggregate_state;
-mod having;
-use aggregate_state::{
+use skein_relational::aggregate as having;
+use skein_relational::aggregate::{
     aggregate_group_base_memory_bytes, charge_aggregate_memory, AggregateProjectionState,
 };
 
@@ -102,11 +99,10 @@ use explain::format_relational_explain;
 
 mod expression;
 use expression::{
-    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value,
-    evaluate_row_expression, expression_name, predicate_truth, project_bound_row,
-    projection_uses_non_aggregate_coalesce, reject_non_public_schema, relational_ref_to_value,
-    relational_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
-    value_to_relational, value_to_relational_as,
+    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, expression_name,
+    predicate_truth, project_bound_row, projection_uses_non_aggregate_coalesce,
+    reject_non_public_schema, relational_ref_to_value, resolve_column,
+    validate_non_aggregate_coalesce_projections, value_to_relational_as,
 };
 
 mod join;

@@ -1,10 +1,10 @@
-use super::aggregate_state::{
+use super::state::{
     aggregate_expression_base_memory_bytes, sql_expression_memory_bytes, AggregateExpressionState,
     AggregateMemoryDelta,
 };
 use super::*;
-use crate::sql::{Expr, ExprKind};
-use skein_relational::predicate::predicate_truth_with;
+use crate::predicate::predicate_truth_with;
+use skein_sql::{Expr, ExprKind};
 
 mod binding;
 use binding::{HavingBindings, ScalarState};
@@ -15,7 +15,7 @@ pub(super) struct HavingState {
     slots: Vec<ScalarState>,
 }
 
-pub(super) fn validate_having(
+pub fn validate_having(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
@@ -45,7 +45,7 @@ pub(super) fn validate_having(
     Ok(())
 }
 
-pub(super) fn projection_template(
+pub fn projection_template(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
@@ -80,7 +80,7 @@ pub(super) fn projection_template(
     Ok(projections)
 }
 
-pub(super) fn filter_group(
+pub fn filter_group(
     mut projections: Vec<AggregateProjectionState>,
 ) -> Result<Option<Vec<AggregateProjectionState>>> {
     if let Some(projection) = projections
@@ -136,9 +136,9 @@ impl HavingState {
             )
     }
 
-    pub(super) fn update(
+    pub(super) fn update<'a>(
         &mut self,
-        row: &BoundRow<'_>,
+        row: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
         parameters: &[Value],
     ) -> Result<AggregateMemoryDelta> {
         let mut delta = AggregateMemoryDelta::default();
@@ -186,7 +186,7 @@ impl Compiler<'_, '_> {
         &mut self,
         mut scalar: ScalarState,
         target: Option<RelationalScalarType>,
-        span: crate::sql::SqlSourceSpan,
+        span: skein_sql::SqlSourceSpan,
     ) -> Result<Expr> {
         scalar.coerce(target)?;
         let index = self.slots.len();

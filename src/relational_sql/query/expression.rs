@@ -156,81 +156,16 @@ pub(super) fn resolve_projection_column_type(
     Ok(first)
 }
 
-pub(super) fn evaluate_row_expression(
-    expression: &SqlExpression,
-    row: &BoundRow<'_>,
-) -> Result<RelationalValue> {
-    match expression {
-        Expr {
-            kind: ExprKind::Column(column),
-            ..
-        } => Ok(resolve_column(row, column)?.clone()),
-        Expr {
-            kind: ExprKind::Value(SqlValue::Literal(value)),
-            ..
-        } => value_to_relational(value.clone()),
-        Expr {
-            kind: ExprKind::Value(SqlValue::Parameter(position)),
-            ..
-        } => Err(SkeinError::Semantic(format!(
-            "aggregate row expression cannot bind parameter ${position}"
-        ))),
-        Expr {
-            kind:
-                ExprKind::Function {
-                    name,
-                    arguments,
-                    distinct: false,
-                    filter: None,
-                },
-            ..
-        } if name == "octet_length" => {
-            let [SqlFunctionArgument::Expression(Expr {
-                kind: ExprKind::Column(column),
-                ..
-            })] = arguments.as_slice()
-            else {
-                return Err(SkeinError::Semantic(
-                    "OCTET_LENGTH requires exactly one column".to_string(),
-                ));
-            };
-            match resolve_column(row, column)? {
-                RelationalValue::Null => Ok(RelationalValue::Null),
-                RelationalValue::Text(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Bytea(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
-                    i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
-                )),
-                _ => Err(SkeinError::Semantic(
-                    "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
-                )),
-            }
-        }
-        Expr {
-            kind: ExprKind::Function { name, .. },
-            ..
-        } => Err(SkeinError::Semantic(format!(
-            "unsupported aggregate row function {name}"
-        ))),
-        _ => Err(SkeinError::Semantic(
-            "unsupported scalar expression".to_owned(),
-        )),
-    }
-}
-
 pub(super) fn aggregate_filter_matches(
     filter: Option<&SqlPredicate>,
     row: &BoundRow<'_>,
     parameters: &[Value],
 ) -> Result<bool> {
-    match filter {
-        Some(filter) => Ok(predicate_truth(filter, row, parameters)? == Some(true)),
-        None => Ok(true),
-    }
+    skein_relational::aggregate::aggregate_filter_matches(
+        filter,
+        &|column| resolve_column_with_type(row, column),
+        parameters,
+    )
 }
 
 pub(super) fn predicate_truth(

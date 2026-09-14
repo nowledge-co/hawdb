@@ -12,6 +12,7 @@ mod connected_enumeration;
 mod costed_algorithms;
 mod cross_join;
 mod having;
+mod ordinary_aggregate;
 
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {

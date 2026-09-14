@@ -1,5 +1,7 @@
 //! Storage-neutral relational statement compilation and execution contracts.
 
+#[doc(hidden)]
+pub mod aggregate;
 mod append;
 #[doc(hidden)]
 pub mod columnar_aggregate;

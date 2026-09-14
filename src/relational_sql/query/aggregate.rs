@@ -1,3 +1,4 @@
+use super::expression::resolve_column_with_type;
 use super::{
     aggregate_group_base_memory_bytes, bind_bound, charge_aggregate_memory, map_payload_bytes,
     push_relational_output, relational_input_plan, relational_locator_layout,
@@ -217,7 +218,8 @@ pub(super) fn execute_aggregate_select<'a>(
             }
             let group = groups.get_mut(&key).expect("aggregate group was inserted");
             for projection in group {
-                let delta = projection.update(&row, parameters)?;
+                let delta = projection
+                    .update(&|column| resolve_column_with_type(&row, column), parameters)?;
                 memory_tracker.release(delta.released_bytes);
                 charge_aggregate_memory(delta.added_bytes, &mut memory_tracker)?;
             }
@@ -527,7 +529,8 @@ pub(super) fn execute_grouped_aggregate<'a>(
                     .as_mut()
                     .expect("grouped aggregate initialized current group");
                 for projection in group {
-                    let delta = projection.update(row, parameters)?;
+                    let delta = projection
+                        .update(&|column| resolve_column_with_type(row, column), parameters)?;
                     tracker.release(delta.released_bytes);
                     charge_aggregate_memory(delta.added_bytes, &mut tracker)?;
                 }
