@@ -5,8 +5,8 @@ use super::{
     AdmittedRelationalExecution, BindingId, Instant, PlannedJoin, PreparedRelationalExecutionMode,
     PreparedRelationalSelect, QueryRows, RefCell, RelationalIndexRuntime,
     RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
-    RelationalQueryOutput, RelationalRowExecutionEvidence, RelationalRowRuntime,
-    RelationalSqlStageTimings, Result, SkeinError, Value,
+    RelationalQueryOutput, RelationalRowExecutionEvidence, RelationalSqlStageTimings, Result,
+    SkeinError, Value,
 };
 
 pub(super) fn explain_select(
@@ -106,9 +106,8 @@ pub(super) fn execute_select<'state>(
     let default_task = skein_core::RuntimeTaskContext::default();
     let row_task = task_context.unwrap_or(&default_task);
     let field_plan = plan_relational_field_plan(select, state)?;
-    let row_runtime = RelationalRowRuntime::new(
+    let row_runtime = row_read_mode.open_runtime(
         state,
-        row_read_mode,
         field_plan,
         limits.row_read,
         limits.hydration,
