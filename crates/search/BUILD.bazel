@@ -131,18 +131,6 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_identifier_allocation_tests",
-    crate_root = "tests/identifier_allocation.rs",
-    srcs = [
-        "src/identifier.rs",
-        "src/identifier/reference.rs",
-        "tests/identifier_allocation.rs",
-        "tests/support/allocation.rs",
-    ],
-    edition = "2024",
-)
-
-rust_test(
     name = "skein_search_lexical_delta_allocation_tests",
     crate_root = "tests/lexical_delta_allocation.rs",
     srcs = [
@@ -152,6 +140,18 @@ rust_test(
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     deps = [":skein_search"],
+)
+
+rust_test(
+    name = "skein_search_identifier_allocation_tests",
+    crate_root = "tests/identifier_allocation.rs",
+    srcs = [
+        "src/identifier.rs",
+        "src/identifier/reference.rs",
+        "tests/identifier_allocation.rs",
+        "tests/support/allocation.rs",
+    ],
+    edition = "2024",
 )
 
 rust_test(

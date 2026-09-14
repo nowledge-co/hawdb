@@ -5,7 +5,6 @@ mod identifier;
 
 #[path = "support/allocation.rs"]
 mod allocation;
-
 use allocation::measure;
 
 #[test]
