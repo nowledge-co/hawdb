@@ -5,7 +5,8 @@ use super::{
 };
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
-use crate::build_memory::BuildMemory;
+use crate::build_memory::{BuildMemory, MAP_ENTRY_BYTES};
+use crate::build_term::Term;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_core::RuntimeTaskContext;
@@ -317,7 +318,7 @@ impl ManifestBody {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Posting {
-    term: String,
+    term: Term,
     document_id: String,
     term_frequency: u32,
     document_len: u32,
@@ -534,7 +535,7 @@ fn analyze_delta_document(
             accumulator.push(term, occurrence, field, weight)
         })?;
     }
-    Ok(accumulator.finish())
+    accumulator.finish()
 }
 
 fn admit_document_source(document: &SearchDocument, config: LexicalProjectionConfig) -> Result<()> {
@@ -577,18 +578,30 @@ struct DocumentAnalysis<'a> {
     document_id: &'a str,
     config: LexicalProjectionConfig,
     document_len: u32,
-    frequencies: BTreeMap<String, AnalyzedTerm>,
+    frequencies: BTreeMap<Term, AnalyzedTerm>,
     resident_bytes: u64,
+    map_memory: Option<QueryMemoryLease>,
 }
 
 impl<'a> DocumentAnalysis<'a> {
     fn new(document_id: &'a str, config: LexicalProjectionConfig) -> Result<Self> {
+        Self::new_with_memory(document_id, config, None)
+    }
+
+    fn new_with_memory(
+        document_id: &'a str,
+        config: LexicalProjectionConfig,
+        memory: Option<&BuildMemory>,
+    ) -> Result<Self> {
         let analysis = Self {
             document_id,
             config,
             document_len: 0,
             frequencies: BTreeMap::new(),
             resident_bytes: document_id.len() as u64 + 64,
+            map_memory: memory
+                .map(|memory| memory.retained.reserve(0))
+                .transpose()?,
         };
         analysis.admit_map_bytes(analysis.resident_bytes, 0)?;
         Ok(analysis)
@@ -597,6 +610,16 @@ impl<'a> DocumentAnalysis<'a> {
     fn push(
         &mut self,
         term: String,
+        occurrence: TokenOccurrence,
+        field: u8,
+        weight: usize,
+    ) -> Result<()> {
+        self.push_term(term.into(), occurrence, field, weight)
+    }
+
+    fn push_term(
+        &mut self,
+        term: Term,
         occurrence: TokenOccurrence,
         field: u8,
         weight: usize,
@@ -620,6 +643,9 @@ impl<'a> DocumentAnalysis<'a> {
         if previous.is_none() {
             let required_bytes = self.resident_bytes.saturating_add(term.len() as u64 + 32);
             self.admit_map_bytes(required_bytes, self.frequencies.len() + 1)?;
+            if let Some(memory) = self.map_memory.as_mut() {
+                memory.grow(MAP_ENTRY_BYTES)?;
+            }
             self.resident_bytes = required_bytes;
         }
         // One field marker per distinct term preserves phrase uniqueness without
@@ -651,17 +677,17 @@ impl<'a> DocumentAnalysis<'a> {
         resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes))
     }
 
-    fn finish(self) -> DeltaDocument {
-        DeltaDocument {
+    fn finish(self) -> Result<DeltaDocument> {
+        Ok(DeltaDocument {
             document_len: self.document_len,
             frequencies: self
                 .frequencies
                 .into_iter()
-                .map(|(term, entry)| (term, entry.frequency))
-                .collect(),
+                .map(|(term, entry)| Ok((term.into_untracked()?, entry.frequency)))
+                .collect::<Result<_>>()?,
             resident_bytes: self.resident_bytes,
             base: None,
-        }
+        })
     }
 }
 
@@ -1136,7 +1162,7 @@ impl<'a> TermPostingStream<'a> {
                 self.max_term_bytes.get(),
                 |posting| {
                     self.postings_visited = self.postings_visited.saturating_add(1);
-                    if posting.term == self.term {
+                    if posting.term.as_str() == self.term {
                         postings.push(posting);
                     }
                     Ok(())
@@ -1353,13 +1379,17 @@ impl LexicalProjectionWriter {
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut consume = |document: &SearchDocument| -> Result<()> {
-            let analyzed = document_frequency::analyze_with_workspace(
+            let analyzed = document_frequency::analyze_with_control(
                 document,
                 analyzer,
                 &mut runs,
                 &mut chunk,
                 &mut chunk_bytes,
-                self.analyzer_workspace.as_deref(),
+                crate::analyzer_stream::Control {
+                    memory: Some(&memory),
+                    task: Some(&task),
+                    workspace: self.analyzer_workspace.as_deref(),
+                },
             )?;
             let document_len = analyzed.document_len();
             document_count = document_count.saturating_add(1);
@@ -1694,7 +1724,7 @@ impl RunReader {
         let term_frequency = read_u32(&mut self.reader)?;
         let document_len = read_u32(&mut self.reader)?;
         Ok(Some(Posting {
-            term,
+            term: term.into(),
             document_id,
             term_frequency,
             document_len,
@@ -1802,7 +1832,7 @@ fn decode_posting_block(
     let mut previous = None;
     for _ in 0..count {
         let posting = Posting {
-            term: cursor.string(max_term_bytes)?,
+            term: cursor.string(max_term_bytes)?.into(),
             document_id: cursor.string(1024 * 1024)?,
             term_frequency: cursor.u32()?,
             document_len: cursor.u32()?,
@@ -1818,12 +1848,14 @@ fn decode_posting_block(
             ));
         }
         if first.is_none() {
-            first = Some(posting.term.clone());
+            first = Some(posting.term.as_str().to_owned());
         }
         consumer(posting.clone())?;
         previous = Some(posting);
     }
-    let previous_term = previous.map(|posting| posting.term);
+    let previous_term = previous
+        .map(|posting| posting.term.into_untracked())
+        .transpose()?;
     validate_block_tail(cursor, descriptor, first, previous_term)
 }
 

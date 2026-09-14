@@ -4,6 +4,8 @@ use crate::{
     push_analyzed_token, push_cjk_ngram_tokens, push_unique_token, TokenSequence,
 };
 
+mod ownership;
+
 // Freeze both traversal and identifier decomposition. Only the unchanged CJK
 // and term-expansion helpers are shared with production.
 fn reference_tokens(text: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String> {

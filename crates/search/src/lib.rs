@@ -44,6 +44,7 @@ mod analyzer_workspace;
 mod bounded_file;
 mod build_control;
 mod build_memory;
+mod build_term;
 mod cjk_tokenizer;
 #[cfg(test)]
 mod compression_tests;
@@ -1208,12 +1209,20 @@ impl SearchAnalyzerLexicon {
         is_core_search_stopword(token) || self.stopwords.contains(token)
     }
 
+    #[cfg(test)]
     fn semantic_aliases(&self, token: &str) -> Vec<String> {
         self.alias_rules
             .iter()
             .filter(|rule| rule.inputs.iter().any(|input| input == token))
             .flat_map(|rule| rule.aliases.iter().cloned())
             .collect()
+    }
+
+    fn semantic_alias_slices<'a>(&'a self, token: &str) -> impl Iterator<Item = &'a str> {
+        self.alias_rules
+            .iter()
+            .filter(move |rule| rule.inputs.iter().any(|input| input == token))
+            .flat_map(|rule| rule.aliases.iter().map(String::as_str))
     }
 }
 
@@ -6591,6 +6600,7 @@ impl TokenSequence {
     }
 }
 
+#[cfg(test)]
 fn normalize_english_suffixes(token: &str) -> Vec<String> {
     if token.len() <= 4 || token.contains('_') || token.chars().any(|ch| ch.is_ascii_digit()) {
         return Vec::new();
@@ -6619,6 +6629,41 @@ fn normalize_english_suffixes(token: &str) -> Vec<String> {
     Vec::new()
 }
 
+#[cfg(test)]
+fn suffix_stem_variants(stem: &str) -> Vec<String> {
+    let mut variants = vec![stem.to_string()];
+    if matches!(stem.chars().last(), Some('c' | 'v' | 'z')) {
+        variants.push(format!("{stem}e"));
+    }
+    variants
+}
+
+fn english_suffix_parts(token: &str) -> [Option<(&str, &str)>; 2] {
+    if token.len() <= 4 || token.contains('_') || token.chars().any(|ch| ch.is_ascii_digit()) {
+        return [None, None];
+    }
+    if let Some(stem) = token.strip_suffix("ies")
+        && stem.len() >= 2
+    {
+        return [Some((stem, "y")), None];
+    }
+    let stem = token
+        .strip_suffix("ing")
+        .or_else(|| token.strip_suffix("ed"));
+    if let Some(stem) = stem.filter(|stem| stem.len() >= 3) {
+        let stem = trim_doubled_suffix_consonant(stem);
+        let tail = matches!(stem.chars().last(), Some('c' | 'v' | 'z')).then_some((stem, "e"));
+        return [Some((stem, "")), tail];
+    }
+    if let Some(stem) = token.strip_suffix('s')
+        && stem.len() >= 3
+        && !stem.ends_with('s')
+    {
+        return [Some((stem, "")), None];
+    }
+    [None, None]
+}
+
 fn is_core_search_stopword(token: &str) -> bool {
     matches!(
         token,
@@ -6645,14 +6690,6 @@ fn is_core_search_stopword(token: &str) -> bool {
             | "was"
             | "with"
     )
-}
-
-fn suffix_stem_variants(stem: &str) -> Vec<String> {
-    let mut variants = vec![stem.to_string()];
-    if matches!(stem.chars().last(), Some('c' | 'v' | 'z')) {
-        variants.push(format!("{stem}e"));
-    }
-    variants
 }
 
 fn trim_doubled_suffix_consonant(stem: &str) -> &str {

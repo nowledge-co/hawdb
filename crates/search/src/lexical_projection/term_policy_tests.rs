@@ -247,7 +247,7 @@ fn term_policy_merge_heads_share_a_checked_memory_budget() {
     let fixture = Fixture::new();
     let mut runs = SpillRuns::new(&fixture.0, 1, config());
     let postings = ["a", "b"].map(|id| Posting {
-        term: "x".repeat(5202),
+        term: "x".repeat(5202).into(),
         document_id: id.into(),
         term_frequency: 1,
         document_len: 1,
@@ -278,7 +278,7 @@ fn term_policy_merge_heads_share_a_checked_memory_budget() {
 fn term_policy_does_not_waive_block_spill_or_source_budgets() {
     let source = document();
     let posting = Posting {
-        term: source.content.clone(),
+        term: source.content.clone().into(),
         document_id: source.id.clone(),
         term_frequency: 1,
         document_len: 1,
