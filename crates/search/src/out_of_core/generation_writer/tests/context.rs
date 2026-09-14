@@ -228,3 +228,49 @@ fn artifact_admission_and_compression_cancellation_preserve_the_active_generatio
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(feature = "vector-search")]
+#[test]
+fn cancellation_after_vector_core_calls_preserves_the_active_generation() {
+    use super::super::rabitq::evidence;
+    for call in 0..3 {
+        let root = test_dir("context_vector_cancellation");
+        let previous = document(0);
+        let mut initial =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        initial.push(previous.clone()).unwrap();
+        let generation = initial.finish().unwrap().generation;
+        let before = published_files(&root);
+        let task = context(32 * 1024 * 1024);
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &root,
+            Default::default(),
+            task.clone(),
+        )
+        .unwrap();
+        let memory = writer.memory.clone();
+        writer.push(document(1)).unwrap();
+        evidence::take();
+        evidence::cancel_after(call, task.cancellation().clone());
+        let error = writer.finish().unwrap_err();
+        assert!(error.to_string().contains("cancel"), "{error}");
+        assert_eq!(
+            evidence::take(),
+            (1, usize::from(call >= 1), usize::from(call >= 2))
+        );
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        assert_eq!(stage_directories(&root), 0);
+        assert_eq!(published_files(&root), before);
+        let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(reader.generation(), generation);
+        assert_eq!(
+            reader
+                .hydrate_documents(std::slice::from_ref(&previous.id))
+                .unwrap()
+                .documents,
+            vec![previous]
+        );
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

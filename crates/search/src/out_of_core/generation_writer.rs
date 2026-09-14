@@ -30,13 +30,18 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
+mod artifact_name;
 mod artifacts;
 mod context_memory;
 mod delta;
 mod publication;
 mod rabitq;
+#[cfg(feature = "vector-search")]
+mod rabitq_memory;
 mod spool;
 #[cfg(test)]
 mod tests;
@@ -687,7 +692,7 @@ struct GenerationArtifacts {
 
 #[derive(Debug)]
 pub(super) struct RaBitQGenerationArtifact {
-    pub(super) file_name: String,
+    pub(super) file_name: artifact_name::Name,
     pub(super) artifact_bytes: u64,
     pub(super) artifact_checksum: u64,
     pub(super) source_digest: u64,
@@ -714,7 +719,9 @@ fn build_rabitq_artifact(
             "search generation has vector documents without an embedding dimension".to_string(),
         )
     })?;
-    let file_name = crate::rabitq_artifact_file(generation);
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task)?;
+    let file_name = artifact_name::Name::rabitq(generation, &memory, &task)?;
     let path = stage.join(&file_name);
     let identity = skein_vector_projection::ProjectionIdentity {
         generation,
