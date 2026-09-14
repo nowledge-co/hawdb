@@ -1,7 +1,7 @@
 use super::*;
 use crate::production_evidence::production_evidence_blocker_codes;
 
-pub const STORAGE_RESOURCE_PROFILE_PROTOCOL: &str = "skein-storage-resource-profile-v2";
+pub use skein_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageResourceProfileLimits {

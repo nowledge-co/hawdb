@@ -24,6 +24,9 @@ pub use statement::{
     CompiledRelationalStatement, RelationalReturningProjection,
 };
 
+#[doc(hidden)]
+pub mod row_runtime;
+
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
 use skein_storage::{
