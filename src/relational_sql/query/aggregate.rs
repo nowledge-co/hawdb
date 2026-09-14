@@ -120,7 +120,7 @@ pub(super) fn execute_aggregate_select<'a>(
             row_runtime,
             &mut |row| {
                 aggregate_input_rows = aggregate_input_rows.saturating_add(1);
-                aggregate.push(&row)?;
+                aggregate.push(|column| resolve_column(&row, column))?;
                 Ok(true)
             },
         )?;

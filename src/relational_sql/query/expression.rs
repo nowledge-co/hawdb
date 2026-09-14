@@ -6,8 +6,8 @@ use super::{
 use crate::sql::{Expr, ExprKind};
 use skein_relational::predicate::predicate_truth_with;
 pub(super) use skein_relational::query_value::{
-    bind_bound, bind_sql_value, relational_ref_to_value, relational_to_value, value_to_relational,
-    value_to_relational_as,
+    bind_bound, bind_sql_value, expression_name, relational_ref_to_value, relational_to_value,
+    value_to_relational, value_to_relational_as,
 };
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
@@ -468,24 +468,6 @@ pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Res
         )));
     }
     Ok(())
-}
-
-pub(super) fn expression_name(expression: &SqlExpression) -> String {
-    match expression {
-        Expr {
-            kind: ExprKind::Column(column),
-            ..
-        } => column.name.clone(),
-        Expr {
-            kind: ExprKind::Value(_),
-            ..
-        } => "value".to_string(),
-        Expr {
-            kind: ExprKind::Function { name, .. },
-            ..
-        } => name.clone(),
-        _ => "expression".to_owned(),
-    }
 }
 
 pub(super) fn account_intermediate(total: &mut usize, rows: usize, limit: usize) -> Result<()> {

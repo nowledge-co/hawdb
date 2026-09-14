@@ -2,6 +2,8 @@
 
 mod append;
 #[doc(hidden)]
+pub mod columnar_aggregate;
+#[doc(hidden)]
 pub mod field_plan;
 #[doc(hidden)]
 pub mod index_runtime;
