@@ -17,6 +17,7 @@ mod connected_enumeration;
 mod costed_algorithms;
 mod cross_join;
 mod having;
+mod ordinary_aggregate;
 
 #[test]
 fn candidate_work_has_an_independent_budget_and_checkpoint() {
@@ -268,16 +269,6 @@ fn constrained_hash_join_memory() -> skein_executor::ExecutionMemoryConfig {
         )),
         ..skein_executor::ExecutionMemoryConfig::default()
     }
-}
-
-#[test]
-fn explain_estimated_rows_never_render_zero() {
-    assert_eq!(
-        optional_estimated_rows_explain_value(Some(0)),
-        Value::Int(1)
-    );
-    assert_eq!(optional_estimated_rows_explain_value(None), Value::Null);
-    assert_eq!(optional_usize_explain_value(Some(0)), Value::Int(0));
 }
 
 #[test]

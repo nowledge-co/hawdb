@@ -1,19 +1,15 @@
 use super::{
-    RelationalJoinPlanningOutcome, RelationalJoinPlanningStatus,
-    RelationalOperatorCardinalityProfile, RelationalOperatorId,
+    RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile, RelationalOperatorId,
 };
 use crate::error::{Result, SkeinError};
 use crate::executor::{map_payload_bytes, Row};
-use crate::relational_sql::index_access::{
-    RelationalIndexExecutionEvidence, RelationalIndexReadMode, RelationalIndexRuntime,
-};
+use crate::relational_sql::index_access::{RelationalIndexReadMode, RelationalIndexRuntime};
 use crate::relational_sql::row_access::{
     RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
 };
 use crate::sql::{
-    SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp, SqlExpression,
-    SqlFunctionArgument, SqlJoinKind, SqlLikeEscape, SqlNullOrder, SqlOrderDirection, SqlPredicate,
-    SqlStatement, SqlValue,
+    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
+    SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
 };
 use crate::value::Value;
 use skein_core::Catalog;
@@ -22,9 +18,7 @@ use skein_executor::blocking::{
     stream_distinct_batches, stream_top_n_batches, BindingBatchSource, BlockingExecutionContext,
 };
 use skein_executor::external_order::ExternalTopN;
-use skein_executor::kernel::{
-    ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker,
-};
+use skein_executor::kernel::{OperatorMemoryTracker, SpillBudgetTracker};
 use skein_executor::observer::ExecutionObserver;
 use skein_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
 use skein_executor::spill::{SpillRun, SpillWriter};
@@ -42,10 +36,11 @@ use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_relational::field_plan::{
     order_by_uses_expression_alias, plan_relational_field_plan, projection_contains_aggregate,
 };
+#[cfg(test)]
+use skein_storage::RelationalHydrationBudget;
 use skein_storage::{
-    relational_unique_index_name, RelationalHydrationBudget, RelationalIndexRangeScan,
-    RelationalIndexScanDirection, RelationalKey, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue,
+    relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
+    RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -81,11 +76,10 @@ use access::{
 };
 
 mod aggregate;
-use aggregate::{execute_aggregate_select, single_count_distinct_column};
+use aggregate::execute_aggregate_select;
 
-mod aggregate_state;
-mod having;
-use aggregate_state::{
+use skein_relational::aggregate as having;
+use skein_relational::aggregate::{
     aggregate_group_base_memory_bytes, charge_aggregate_memory, AggregateProjectionState,
 };
 
@@ -96,16 +90,13 @@ use execution::{execute_select_timed, explain_select};
 
 mod explain;
 use explain::format_relational_explain;
-#[cfg(test)]
-use explain::{optional_estimated_rows_explain_value, optional_usize_explain_value};
 
 mod expression;
 use expression::{
-    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value,
-    evaluate_row_expression, expression_name, predicate_truth, project_bound_row,
-    projection_uses_non_aggregate_coalesce, reject_non_public_schema, relational_ref_to_value,
-    relational_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
-    value_to_relational, value_to_relational_as,
+    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, predicate_truth,
+    project_bound_row, projection_uses_non_aggregate_coalesce, reject_non_public_schema,
+    relational_ref_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
+    value_to_relational_as,
 };
 
 mod join;
@@ -161,19 +152,7 @@ use streaming_projection::{execute_ordered_index_projection, execute_streaming_p
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RelationalQueryLimits {
-    pub max_output_rows: usize,
-    pub max_output_payload_bytes: usize,
-    pub max_intermediate_rows: usize,
-    /// Maximum relation-join work units, including probe attempts and rows
-    /// considered by a join predicate. This remains separate from rows emitted
-    /// at relational operator boundaries.
-    pub max_candidate_work: usize,
-    pub hydration: RelationalHydrationBudget,
-    pub index_read: skein_storage::RelationalIndexReadLimits,
-    pub row_read: skein_storage::RelationalRowPageSnapshotReadLimits,
-}
+pub(crate) use skein_relational::query_output::{RelationalQueryLimits, RelationalQueryOutput};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RelationalQueryResourceContext<'a> {
@@ -226,21 +205,6 @@ impl RelationalJoinPlanningContext {
             directive,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RelationalQueryOutput {
-    pub rows: QueryRows,
-    pub stage_timings: RelationalSqlStageTimings,
-    pub join_planning: RelationalJoinPlanningOutcome,
-    pub operator_cardinality_profiles: Vec<RelationalOperatorCardinalityProfile>,
-    pub intermediate_rows: usize,
-    pub hydration: RelationalHydrationBudget,
-    pub access_path: RelationalAccessPathDescriptor,
-    pub join_access_paths: Vec<RelationalAccessPathDescriptor>,
-    pub index_execution_evidence: Vec<RelationalIndexExecutionEvidence>,
-    pub row_execution_evidence: RelationalRowExecutionEvidence,
-    pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
 }
 
 struct AdmittedRelationalExecution<'state, 'runtime> {

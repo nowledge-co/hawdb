@@ -315,12 +315,12 @@ impl Posting {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct DeltaDocument {
     document_len: u32,
     frequencies: BTreeMap<String, u32>,
     resident_bytes: u64,
-    base: Option<BaseDocumentTerms>,
+    base: Option<Arc<BaseDocumentTerms>>,
 }
 
 impl DeltaDocument {
@@ -330,7 +330,7 @@ impl DeltaDocument {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BaseDocumentTerms {
     document_len: u32,
     terms: BTreeSet<String>,
@@ -349,8 +349,9 @@ impl BaseDocumentTerms {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LexicalMiniDelta {
-    upserts: BTreeMap<String, DeltaDocument>,
-    deletes: BTreeMap<String, BaseDocumentTerms>,
+    // A mutation can share unchanged terms with a retained query snapshot.
+    upserts: BTreeMap<String, Arc<DeltaDocument>>,
+    deletes: BTreeMap<String, Arc<BaseDocumentTerms>>,
     resident_bytes: u64,
 }
 
@@ -372,11 +373,12 @@ impl LexicalMiniDelta {
                 .map(|document| analyze_delta_document(document, analyzer, config))
                 .transpose()?
                 .map(BaseDocumentTerms::from_analyzed)
+                .map(Arc::new)
         };
         let removed_upsert = self
             .upserts
             .get(&document.id)
-            .map_or(0, DeltaDocument::total_resident_bytes);
+            .map_or(0, |document| document.total_resident_bytes());
         let removed_delete = self
             .deletes
             .get(&document.id)
@@ -396,7 +398,7 @@ impl LexicalMiniDelta {
         self.upserts.remove(&document.id);
         self.deletes.remove(&document.id);
         self.resident_bytes = required;
-        self.upserts.insert(document.id.clone(), delta);
+        self.upserts.insert(document.id.clone(), Arc::new(delta));
         Ok(())
     }
 
@@ -418,8 +420,9 @@ impl LexicalMiniDelta {
                 .map(|document| analyze_delta_document(document, analyzer, config))
                 .transpose()?
                 .map(BaseDocumentTerms::from_analyzed)
+                .map(Arc::new)
         };
-        let removed = existing_upsert.map_or(0, DeltaDocument::total_resident_bytes);
+        let removed = existing_upsert.map_or(0, |document| document.total_resident_bytes());
         let Some(base) = base else {
             self.upserts.remove(document_id);
             self.resident_bytes = self.resident_bytes.saturating_sub(removed);

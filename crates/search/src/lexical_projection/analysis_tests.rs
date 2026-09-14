@@ -439,7 +439,7 @@ fn repeated_occurrences_keep_exact_frequencies_with_a_small_map_budget() {
     assert!(actual.resident_bytes < 256);
 }
 
-fn assert_projection_scores(
+pub(super) fn assert_projection_scores(
     reader: &LexicalProjectionReader,
     delta: &LexicalMiniDelta,
     documents: &BTreeMap<String, SearchDocument>,

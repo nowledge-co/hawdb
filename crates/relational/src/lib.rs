@@ -1,5 +1,7 @@
 //! Storage-neutral relational statement compilation and execution contracts.
 
+#[doc(hidden)]
+pub mod aggregate;
 mod append;
 #[doc(hidden)]
 pub mod columnar_aggregate;
@@ -13,6 +15,11 @@ mod statement;
 pub mod predicate;
 #[doc(hidden)]
 pub mod query_value;
+
+#[doc(hidden)]
+pub mod explain;
+#[doc(hidden)]
+pub mod query_output;
 
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
