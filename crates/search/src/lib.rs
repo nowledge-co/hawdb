@@ -51,6 +51,8 @@ mod generation_cleanup;
 mod identifier;
 mod lexical_projection;
 mod lexical_readiness;
+#[cfg(all(test, feature = "full-text-search"))]
+mod lexical_snapshot_test_gate;
 mod lexical_term_policy;
 mod out_of_core;
 #[doc(hidden)]
@@ -3172,6 +3174,10 @@ impl SearchIndex {
         } else {
             None
         };
+        #[cfg(all(test, feature = "full-text-search"))]
+        if lexical_snapshot.is_some() {
+            lexical_snapshot_test_gate::pause_after_capture();
+        }
         let text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(TextCorpusStats::from_documents(
