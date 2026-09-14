@@ -176,6 +176,57 @@ required local fuzz suite. `//crates/search:skein_search_segment_allocation_test
 executes the public regression under Bazel. This slice does not complete the
 large-document lifecycle or replace #206's complete-corpus qualification.
 
+## Descriptor serialization admission (#392)
+
+Descriptor serialization uses the shared bounded hex sink for the existing V3
+grammar. A counting pass and a checksum pass determine the complete encoded size,
+including the variable-length checksum footer, before opening the temporary file.
+After admission, the descriptor streams to a buffered file, flushes and syncs,
+then uses the existing atomic replacement path. Resident checkpoints use the
+same encoder and retain their existing interface; generation builds pass their
+existing descriptor limit. The in-memory descriptor and its working-set ledger
+are unchanged.
+
+The encoder no longer builds per-value hex strings, a dictionary join, the
+complete descriptor body, or another complete body with its checksum appended.
+Its scratch consists of fixed 8 KiB hex and I/O buffers plus a small footer.
+This is not a total descriptor-memory or RSS bound: dictionary construction,
+metadata normalization, the decoded source and reader decoding remain separate
+resident costs. The existing 4 MiB lexical source guard remains in force.
+
+A Linux default-feature regression observes public `writer.finish()` after a
+warmup generation. Each fixture has one metadata value containing two tokens
+separated by padding, retaining the complete value in the descriptor without
+introducing a large token-frequency workload. Input construction and subsequent
+hydration are outside the allocation window. Both implementations compare the
+complete document after reopening. The baseline is PR #485 at `eb89261c`:
+
+| Metadata value bytes | Previous total requested bytes | Streaming total requested bytes |
+| ---: | ---: | ---: |
+| 1,048,576 | 39,007,243 | 5,448,560 |
+| 3,145,728 | 118,701,513 | 13,839,662 |
+
+These are Rust allocator requests, including reallocations, rather than peak live
+memory, native zstd allocations, RSS or throughput. The fixture regression uses
+a cumulative bound of twelve times the value size; that is a test bound, not a
+new production resource policy. The unchanged baseline fails it after both full
+reopen/hydration checks succeed.
+
+The retained previous encoder is a test-only byte oracle. Coverage includes
+empty and optional fields, Unicode, numeric/timestamp ranges, multiple segments,
+256 seeded descriptors, and the legacy representation of empty dictionary values.
+Tests check every short-write boundary through the footer, exact/one-short size
+admission before touching active or temporary files, and bounded write chunks
+for a large field. Public generation coverage proves that a rejected replacement
+preserves all previous artifacts and reader results, while exact admission
+publishes a readable generation. Six deliberate admission, checksum, dictionary,
+range, materialization and writer-budget faults produce assertions.
+
+`//crates/search:skein_search_descriptor_allocation_tests` exposes the public
+regression through the existing Bazel search matrix. This slice depends on the
+private streaming grammar from PR #485 and does not complete the remaining
+large-document lifecycle or #206's complete-corpus acceptance.
+
 ## Verification
 
 ```bash

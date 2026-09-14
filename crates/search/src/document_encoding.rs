@@ -4,6 +4,8 @@ use std::io;
 
 mod segment;
 pub(super) use segment::{SegmentEncoding, SegmentKind};
+mod descriptor;
+pub(super) use descriptor::DescriptorEncoding;
 
 const HEX_BUFFER_BYTES: usize = 8192;
 
