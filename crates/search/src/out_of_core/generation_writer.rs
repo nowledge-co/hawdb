@@ -214,9 +214,9 @@ impl SearchOutOfCoreGenerationWriter {
         Self::create_with_context(root, options, RuntimeTaskContext::default())
     }
 
-    /// Creates a generation operation with caller-owned admission and cooperative control.
-    /// The caller retains its governor permit for the operation's full lifetime.
-    pub fn create_with_context(
+    // Keep this internal until analyzer, spill, publication and delta stages
+    // share the complete operation resource contract.
+    fn create_with_context(
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
         task_context: RuntimeTaskContext,

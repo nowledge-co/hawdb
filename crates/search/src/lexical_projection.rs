@@ -9,8 +9,8 @@ use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
 use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher as Digest;
-use skein_storage::durable_replace_file;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
@@ -25,6 +25,7 @@ mod analysis_tests;
 mod artifacts;
 mod block_encoding;
 use artifacts::ArtifactBuilder;
+mod build_manifest;
 mod document_frequency;
 mod manifest_encoding;
 
@@ -179,7 +180,7 @@ struct ManifestEnvelope {
 }
 
 impl ManifestBody {
-    fn required_term_bytes(&self) -> u64 {
+    fn required_term_bytes(&self, task: Option<&RuntimeTaskContext>) -> Result<u64> {
         self.term_statistics
             .iter()
             .map(|statistics| statistics.term.len())
@@ -189,11 +190,19 @@ impl ManifestBody {
                     .filter(|block| block.kind == BlockKind::Postings)
                     .flat_map(|block| [block.min_key.len(), block.max_key.len()]),
             )
-            .max()
-            .unwrap_or(0) as u64
+            .try_fold(0u64, |largest, bytes| {
+                task.map_or(Ok(()), checkpoint)?;
+                Ok(largest.max(bytes as u64))
+            })
     }
 
+    #[cfg(test)]
     fn validate(&self) -> Result<()> {
+        self.validate_with_context(None)
+    }
+
+    fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
+        task.map_or(Ok(()), checkpoint)?;
         if self.format != "SKEIN_LEXICAL_MANIFEST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -211,6 +220,7 @@ impl ManifestBody {
         let mut documents = 0u64;
         let mut postings = 0u64;
         for block in &self.blocks {
+            task.map_or(Ok(()), checkpoint)?;
             if block.length == 0
                 || block.entry_count == 0
                 || block.min_key > block.max_key
@@ -243,6 +253,7 @@ impl ManifestBody {
         let mut previous_term: Option<&str> = None;
         let mut term_postings = 0u64;
         for statistics in &self.term_statistics {
+            task.map_or(Ok(()), checkpoint)?;
             if statistics.term.is_empty()
                 || statistics.document_frequency == 0
                 || previous_term.is_some_and(|previous| previous >= statistics.term.as_str())
@@ -272,20 +283,27 @@ impl ManifestBody {
         Ok(())
     }
 
+    #[cfg(test)]
     fn encode(&self, max_bytes: u64) -> Result<Vec<u8>> {
         self.validate()?;
         manifest_encoding::encode(self, max_bytes)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
+        Self::decode_with_context(bytes, None)
+    }
+
+    fn decode_with_context(bytes: &[u8], task: Option<&RuntimeTaskContext>) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
         let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
             .map_err(|error| SkeinError::Storage(format!("invalid lexical manifest: {error}")))?;
-        if manifest_encoding::checksum(&envelope.body)? != envelope.checksum {
+        task.map_or(Ok(()), checkpoint)?;
+        if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
             return Err(SkeinError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
             ));
         }
-        envelope.body.validate()?;
+        envelope.body.validate_with_context(task)?;
         Ok(envelope.body)
     }
 
@@ -661,6 +679,8 @@ pub(super) struct LexicalProjectionReader {
     file: Arc<File>,
     config: LexicalProjectionConfig,
     required_term_bytes: u64,
+    // Only build-created readers retain an operation-owned metadata lease.
+    _build_memory: Option<QueryMemoryLease>,
 }
 
 impl LexicalProjectionReader {
@@ -727,31 +747,61 @@ impl LexicalProjectionReader {
             ));
         }
         let manifest = ManifestBody::decode(bytes)?;
+        let artifact_path = root.join(&manifest.artifact_file);
+        Self::load_decoded_manifest(
+            &artifact_path,
+            manifest,
+            expected_source_epoch,
+            expected_analyzer_digest,
+            expected_documents_digest,
+            config,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_decoded_manifest(
+        artifact_path: &Path,
+        decoded: ManifestBody,
+        expected_source_epoch: Option<u64>,
+        expected_analyzer_digest: u64,
+        expected_documents_digest: u64,
+        config: LexicalProjectionConfig,
+        context: Option<(&BuildMemory, &RuntimeTaskContext)>,
+        build_memory: Option<QueryMemoryLease>,
+    ) -> Result<Option<Arc<Self>>> {
+        // Bind after the lease so the decoded payload drops first on every early return.
+        let manifest = decoded;
+        let task = context.map(|(_, task)| task);
+        task.map_or(Ok(()), checkpoint)?;
         if manifest.source_graph_commit_epoch != expected_source_epoch
             || manifest.analyzer_digest != expected_analyzer_digest
             || manifest.documents_digest != expected_documents_digest
         {
             return Ok(None);
         }
-        let required_term_bytes = manifest.required_term_bytes();
+        let required_term_bytes = manifest.required_term_bytes(task)?;
         admit_term_bytes(required_term_bytes, config.max_term_bytes)?;
-        if manifest
-            .blocks
-            .iter()
-            .any(|block| block.length > config.max_block_bytes.get())
-        {
-            return Err(SkeinError::Storage(
-                "lexical projection contains a block above the read admission limit".to_string(),
-            ));
+        for block in &manifest.blocks {
+            task.map_or(Ok(()), checkpoint)?;
+            if block.length > config.max_block_bytes.get() {
+                return Err(SkeinError::Storage(
+                    "lexical projection contains a block above the read admission limit"
+                        .to_string(),
+                ));
+            }
         }
-        let artifact_path = root.join(&manifest.artifact_file);
-        let file = File::open(&artifact_path)?;
+        let file = File::open(artifact_path)?;
         if file.metadata()?.len() != manifest.artifact_len {
             return Err(SkeinError::Storage(
                 "lexical projection artifact length mismatch".to_string(),
             ));
         }
-        let (length, digest) = file_digest(&file)?;
+        let (length, digest) = match context {
+            Some((memory, task)) => build_manifest::file_digest(&file, memory, task)?,
+            None => file_digest(&file)?,
+        };
         if length != manifest.artifact_len || digest != manifest.artifact_checksum {
             return Err(SkeinError::Storage(
                 "lexical projection artifact checksum mismatch".to_string(),
@@ -761,6 +811,7 @@ impl LexicalProjectionReader {
         let mut cloned = file.try_clone()?;
         cloned.seek(SeekFrom::Start(0))?;
         cloned.read_exact(&mut header)?;
+        task.map_or(Ok(()), checkpoint)?;
         if &header[..16] != ARTIFACT_HEADER
             || u64::from_le_bytes(header[16..24].try_into().unwrap()) != manifest.generation
         {
@@ -773,6 +824,7 @@ impl LexicalProjectionReader {
             file: Arc::new(file),
             config,
             required_term_bytes,
+            _build_memory: build_memory,
         })))
     }
 
@@ -1276,12 +1328,15 @@ impl LexicalProjectionWriter {
             }
         };
         checkpoint(&task)?;
-        let artifact_name = artifact_file(generation);
-        let artifact_path = root.join(&artifact_name);
-        let tmp_path = artifact_path.with_extension("skein.tmp");
-        let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
-        let mut artifact =
-            ArtifactBuilder::new_with_context(&tmp_path, generation, self.config, memory, task)?;
+        let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
+        let mut artifact_guard = build_manifest::Cleanup::new(&paths.artifact_tmp);
+        let mut artifact = ArtifactBuilder::new_with_context(
+            &paths.artifact_tmp,
+            generation,
+            self.config,
+            memory.clone(),
+            task.clone(),
+        )?;
         let mut runs = SpillRuns::new(root, generation, self.config);
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
@@ -1333,13 +1388,14 @@ impl LexicalProjectionWriter {
         runs.compact()?;
         artifact.merge_postings(&runs.paths, self.config)?;
         let artifact = artifact.finish()?;
+        let _format_memory = memory.retained.reserve("SKEIN_LEXICAL_MANIFEST_V1".len())?;
         let manifest = ManifestBody {
             format: "SKEIN_LEXICAL_MANIFEST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
             analyzer_digest,
             documents_digest,
-            artifact_file: artifact_name,
+            artifact_file: std::mem::take(&mut paths.artifact_name),
             artifact_len: artifact.len,
             artifact_checksum: artifact.checksum,
             document_count,
@@ -1348,30 +1404,16 @@ impl LexicalProjectionWriter {
             term_statistics: artifact.term_statistics,
             blocks: artifact.blocks,
         };
-        let manifest_bytes = manifest.encode(self.config.max_manifest_bytes.get())?;
-        drop(manifest);
-        drop(artifact.memory);
-        durable_replace_file(&tmp_path, &artifact_path)?;
-        artifact_guard.disarm();
-        let manifest_path = root.join(MANIFEST_FILE);
-        let manifest_tmp = manifest_path.with_extension("skein.tmp");
-        let mut manifest_guard = RemoveOnDrop::new(manifest_tmp.clone());
-        {
-            let mut file = File::create(&manifest_tmp)?;
-            file.write_all(&manifest_bytes)?;
-            file.sync_all()?;
-        }
-        drop(manifest_bytes);
-        durable_replace_file(&manifest_tmp, &manifest_path)?;
-        manifest_guard.disarm();
-        LexicalProjectionReader::load(
-            root,
-            source_graph_commit_epoch,
-            analyzer_digest,
-            documents_digest,
+        let reader = build_manifest::finish(
+            manifest,
+            artifact.memory,
+            &paths,
             self.config,
-        )?
-        .ok_or_else(|| SkeinError::Storage("published lexical projection is missing".to_string()))
+            &memory,
+            &task,
+        )?;
+        artifact_guard.disarm();
+        Ok(reader)
     }
 }
 
