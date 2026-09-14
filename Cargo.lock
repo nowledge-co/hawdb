@@ -1077,6 +1077,7 @@ dependencies = [
  "skein-core",
  "skein-evidence",
  "skein-route-ownership",
+ "skein-search",
 ]
 
 [[package]]
