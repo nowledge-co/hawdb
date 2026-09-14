@@ -1083,6 +1083,9 @@ name = "skein-relational"
 version = "0.1.0"
 dependencies = [
  "skein-core",
+ "skein-executor",
+ "skein-expression",
+ "skein-optimizer",
  "skein-sql",
  "skein-storage",
 ]

@@ -282,7 +282,9 @@ pub(super) fn visit_hash_join_candidate<'a>(
         }
     }
     *matched = true;
-    context.output_schema.ensure_matches(&combined)?;
+    context
+        .output_schema
+        .ensure_matches(combined.schema_bindings())?;
     pipeline
         .borrow_mut()
         .account_operator_row(context.operator_id)?;
@@ -306,7 +308,7 @@ pub(super) fn visit_hash_join_unmatched<'a>(
 ) -> Result<bool> {
     let mut combined = left_row.clone();
     combined.bindings.extend(null_right.bindings.clone());
-    output_schema.ensure_matches(&combined)?;
+    output_schema.ensure_matches(combined.schema_bindings())?;
     pipeline.borrow_mut().account_operator_row(operator_id)?;
     visit(combined)
 }

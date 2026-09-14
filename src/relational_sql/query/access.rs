@@ -2,6 +2,7 @@ pub(super) use skein_optimizer::relational_sargability::collect_conjunctive_join
 use skein_optimizer::relational_sargability::{
     canonical_keyset_values, collect_conjunctive_equalities, predicate_is_covered_by_equalities,
 };
+pub(super) use skein_relational::physical_plan::predicate_is_covered_by_access;
 
 use super::{
     bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
@@ -339,25 +340,6 @@ pub(super) fn index_order_prefix(
         }
     }
     (order_by.len(), direction)
-}
-
-pub(super) fn predicate_is_covered_by_access(
-    predicate: Option<&SqlPredicate>,
-    access: &RelationalAccessPathDescriptor,
-    order_by: &[crate::sql::SqlOrderItem],
-    table: &str,
-    qualifier: &str,
-) -> bool {
-    predicate_is_covered_by_equalities(predicate, &access.access_columns, table, qualifier)
-        || (access.order_prefix_len == order_by.len()
-            && canonical_keyset_values(
-                predicate,
-                &access.access_columns,
-                order_by,
-                table,
-                qualifier,
-            )
-            .is_some())
 }
 
 pub(super) fn bind_canonical_keyset_bound(
