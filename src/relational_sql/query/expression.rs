@@ -1,5 +1,5 @@
 use super::{
-    expression_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
+    projection_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
     RelationalValue, Result, Row, SelectProjection, SelectStatement, SkeinError, SqlColumnRef,
     SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
 };
@@ -9,15 +9,6 @@ pub(super) use skein_relational::query_value::{
     bind_bound, bind_sql_value, relational_ref_to_value, relational_to_value, value_to_relational,
     value_to_relational_as,
 };
-
-pub(super) fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
-    match projection {
-        SelectProjection::Expression { expression, .. } => {
-            expression_contains_aggregate(expression)
-        }
-        SelectProjection::Wildcard => false,
-    }
-}
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
     projection.iter().any(|projection| {

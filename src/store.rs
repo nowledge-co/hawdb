@@ -255,9 +255,10 @@ pub use source_scan::SourceScanRow;
 pub(crate) use statistics_refresh::OptimizerStatisticsRefreshWork;
 pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 #[cfg(test)]
 use std::fs::OpenOptions;
-use std::fs::{self, File};
+#[cfg(test)]
 use std::io::Write;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};

@@ -1,14 +1,12 @@
 use super::{
     choose_base_access, choose_join_access, elapsed_nanos, measure_nanos,
-    order_by_uses_expression_alias, plan_requested_fields, plan_scan_fields,
-    plan_scan_hydration_fields, projection_access_planning, projection_contains_aggregate,
+    plan_relational_field_plan, projection_access_planning, projection_contains_aggregate,
     reject_non_public_schema, resolve_relational_order_target,
     validate_non_aggregate_coalesce_projections, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
-    RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalFieldPlan,
-    RelationalJoinPlanningContext, RelationalOrderTarget, RelationalQueryLimits,
-    RelationalQueryReadModes, RelationalSqlStageTimings, RelationalState, Result, SelectStatement,
-    SkeinError, Value,
+    RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalJoinPlanningContext,
+    RelationalOrderTarget, RelationalQueryLimits, RelationalQueryReadModes,
+    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, SkeinError, Value,
 };
 
 pub(super) fn prepare_relational_select(
@@ -202,30 +200,4 @@ pub(super) fn prepared_access_descriptors(
     )
 }
 
-pub(super) fn plan_relational_field_plan(
-    select: &SelectStatement,
-    state: &RelationalState,
-) -> Result<RelationalFieldPlan> {
-    let has_aggregate =
-        select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
-    let output_fields = plan_requested_fields(select, state)?;
-    let projects_before_order = order_by_uses_expression_alias(select)?;
-    let scan_fields = if (!select.order_by.is_empty()
-        && !select.distinct
-        && !has_aggregate
-        && !projects_before_order)
-        || has_aggregate
-        || !select.group_by.is_empty()
-    {
-        plan_scan_fields(select, state)?
-    } else {
-        output_fields.clone()
-    };
-    let scan_hydration_fields = plan_scan_hydration_fields(select, state, &scan_fields)?;
-    Ok(RelationalFieldPlan::new(
-        scan_fields,
-        scan_hydration_fields,
-        output_fields,
-    ))
-}
 use super::join_order;
