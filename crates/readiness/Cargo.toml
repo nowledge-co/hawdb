@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = "1"
 serde_json = "1"
 skein-core = { path = "../core" }
 skein-evidence = { path = "../evidence" }
 skein-route-ownership = { path = "../route-ownership" }
+
+[dev-dependencies]
+skein-search = { path = "../search" }

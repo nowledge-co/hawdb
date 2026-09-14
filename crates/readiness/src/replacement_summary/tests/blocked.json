@@ -1,0 +1,1221 @@
+{
+  "bundle": {
+    "cutover": {
+      "blockers": [
+        "primary-only projected graph"
+      ],
+      "decision": "blocked",
+      "matched_per_million": 500000
+    },
+    "cutover_evidence": {
+      "background_maintenance_blocker_codes": [
+        "missing_evidence"
+      ],
+      "background_maintenance_blockers": [
+        "background maintenance summary is missing"
+      ],
+      "background_maintenance_ready": false,
+      "background_maintenance_required": true,
+      "blockers": [],
+      "eligible": false,
+      "replacement_readiness_blockers": [],
+      "replacement_readiness_invalid_family_count": 0,
+      "replacement_readiness_min_per_million": 500000,
+      "storage_recovery_blocker_codes": [
+        "wal_replay_unbounded"
+      ],
+      "storage_recovery_blockers": [
+        "WAL replay was not opened with a configured entry bound"
+      ],
+      "storage_recovery_ready": false,
+      "storage_recovery_required": true
+    },
+    "inventory_gate": {
+      "blockers": [
+        "inventory blocked"
+      ],
+      "coverage_per_million": 1000000
+    },
+    "migration_gate": {
+      "blockers": [
+        "shadow parity blocked"
+      ],
+      "decision": "blocked"
+    },
+    "replacement_readiness_by_query_family": [],
+    "replacement_readiness_per_million": 500000
+  },
+  "name": "blocked",
+  "summary": {
+    "active_search_route_ownership": {
+      "blocker_codes": null,
+      "explicit_route_count": null,
+      "lancedb_route_count": null,
+      "lancedb_routes": [],
+      "missing_required_routes": [],
+      "present": false,
+      "production_cutover_ready": null,
+      "protocol": null,
+      "ready": false,
+      "require_all_skein": null,
+      "required_route_count": null,
+      "skein_route_count": null
+    },
+    "active_search_route_readiness": {
+      "blocker_codes": null,
+      "candidate_identity_not_ready_routes": [],
+      "candidate_not_ready_routes": [],
+      "cjk_tokenization_not_ready_routes": [],
+      "embedding_identity_not_ready_routes": [],
+      "evidence_route_count": null,
+      "fail_soft_not_ready_routes": [],
+      "fail_soft_reason_codes_not_ready_routes": [],
+      "lancedb_handle_required_route_count": null,
+      "lancedb_handle_required_routes": [],
+      "metadata_pushdown_not_ready_routes": [],
+      "missing_required_routes": [],
+      "non_skein_routes": [],
+      "present": false,
+      "production_cutover_ready": null,
+      "protocol": null,
+      "ranking_not_ready_routes": [],
+      "ranking_window_not_ready_routes": [],
+      "ready": false,
+      "ready_route_count": null,
+      "repair_rebuild_markers_not_ready_routes": [],
+      "require_all_skein": null,
+      "required_route_count": null,
+      "skein_route_count": null,
+      "zero_vector_semantics_not_ready_routes": []
+    },
+    "blocker_summary": {
+      "omitted_count": 0,
+      "total_count": 5
+    },
+    "blockers": [
+      "WAL replay was not opened with a configured entry bound",
+      "background maintenance summary is missing",
+      "inventory blocked",
+      "primary-only projected graph",
+      "shadow parity blocked"
+    ],
+    "blocking_categories": [
+      "active_search_route_ownership",
+      "active_search_route_readiness",
+      "background_maintenance",
+      "bounded_read_evidence",
+      "cutover_evidence",
+      "dual_engine_evidence",
+      "graph_route_readiness",
+      "migration_gate",
+      "previous_wrapper_contract",
+      "query_family_readiness",
+      "query_runtime_preflight",
+      "search_candidate_shadow_evidence",
+      "search_projection_evidence",
+      "search_projection_shadow_evidence",
+      "search_route_ownership",
+      "shadow_parity",
+      "source_mutation_dual_write_readiness",
+      "storage_recovery",
+      "workload_fixture_evidence"
+    ],
+    "bounded_read_evidence": {
+      "blocker_codes": null,
+      "blocking_operator_count": null,
+      "blocking_operator_memory_reports_complete": null,
+      "blocking_operator_memory_within_budget": null,
+      "covered_routes": [],
+      "estimated_payload_bytes": null,
+      "execution_row_cap": null,
+      "max_estimated_payload_bytes": null,
+      "max_rows": null,
+      "missing_covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "mode": null,
+      "operator_row_cap_enabled": null,
+      "payload_budget_exceeded": null,
+      "present": false,
+      "primary_ready_routes": [],
+      "protocol": null,
+      "ready": false,
+      "relationship_property_pruning_report_count": null,
+      "relationship_property_pruning_required_count": null,
+      "required_covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "route_primary_ready": null,
+      "route_query_api_behavior_evidence_ready": null,
+      "route_query_plan_evidence_ready": null,
+      "route_query_profile_evidence_ready": null,
+      "route_relationship_property_pruning_evidence_ready": null,
+      "row_limit_enforced_before_output": null,
+      "spill_within_budget": null,
+      "streaming": null
+    },
+    "business_surface": {
+      "covered_per_million": 1000000,
+      "ready": true
+    },
+    "cutover_evidence": {
+      "background_maintenance_admitted_search_projection_graph_delta_count": null,
+      "background_maintenance_admitted_search_projection_graph_delta_operations": null,
+      "background_maintenance_blocker_codes": [
+        "missing_evidence"
+      ],
+      "background_maintenance_deferred_search_projection_graph_delta_count": null,
+      "background_maintenance_estimated_memory_bytes": null,
+      "background_maintenance_executable_search_projection_graph_delta_count": null,
+      "background_maintenance_executable_search_projection_graph_delta_operations": null,
+      "background_maintenance_foreground_admission_probe_admission": null,
+      "background_maintenance_foreground_admission_probe_ready": null,
+      "background_maintenance_max_search_projection_graph_delta_complete_through_graph_commit_epoch": null,
+      "background_maintenance_memory_budget_bytes": null,
+      "background_maintenance_memory_pressure_ready": null,
+      "background_maintenance_protocol_matches": null,
+      "background_maintenance_qos_snapshot_background_bounded": null,
+      "background_maintenance_qos_snapshot_blocker_codes": null,
+      "background_maintenance_qos_snapshot_foreground_admitted": null,
+      "background_maintenance_qos_snapshot_ready": null,
+      "background_maintenance_qos_snapshot_total_background_over_budget": null,
+      "background_maintenance_ready": false,
+      "background_maintenance_rejected_search_projection_graph_delta_count": null,
+      "background_maintenance_required": true,
+      "eligible": false,
+      "evidence_kind": null,
+      "ready_engine_kind": null,
+      "ready_wrapper_identity": null,
+      "replacement_readiness_min_per_million": 500000,
+      "storage_recovery_blocker_codes": [
+        "wal_replay_unbounded"
+      ],
+      "storage_recovery_checkpoint_boundary_present": null,
+      "storage_recovery_durable": null,
+      "storage_recovery_protocol_matches": null,
+      "storage_recovery_ready": false,
+      "storage_recovery_replay_boundary_consistent": null,
+      "storage_recovery_required": true,
+      "storage_recovery_torn_tail_clean": null,
+      "storage_recovery_wal_replay_bounded": null
+    },
+    "dual_engine_evidence": {
+      "consistent": false,
+      "matched_check_count": null,
+      "matched_per_million": null,
+      "present": false,
+      "primary_check_count": null,
+      "primary_engine": null,
+      "primary_only_check_count": null,
+      "ready": null,
+      "shadow_check_count": null,
+      "shadow_engine": null
+    },
+    "full_contract_evidence": {
+      "check_count": null,
+      "full_contract_checked": null,
+      "full_contract_ready": null,
+      "ready": false,
+      "required_contract_ready": null,
+      "selected_checks": null
+    },
+    "graph_route_readiness": {
+      "blocker_codes": null,
+      "covered_route_count": null,
+      "covered_routes": [],
+      "duplicate_routes": [],
+      "evidence_protocol": null,
+      "evidence_ready": null,
+      "evidence_route_coverage_matches": null,
+      "evidence_route_coverage_present": null,
+      "missing_required_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "missing_route_catalog_metadata_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "present": false,
+      "primary_ready_route_count": null,
+      "protocol": null,
+      "ready": false,
+      "relationship_property_pruning_report_count": null,
+      "relationship_property_pruning_required_count": null,
+      "required_covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "required_route_count": null,
+      "route_catalog": [
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/communities/{community_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/overview",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/sample",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "search_runtime",
+          "required_evidence_kind": "search_candidate_shadow",
+          "route": "/graph/search",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/explore",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/expand/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/live-preview/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/community-members/{community_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/subgraph",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/recent-memories",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/library/community/{community_id}/related",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/analysis",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/state",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/augmentation/pagerank/plan",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/node-details/{node_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/orphans",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "graph_runtime",
+          "required_evidence_kind": "graph_route_execution",
+          "route": "/graph/shortest-path",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/sources/{source_id}",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/entity-relations",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/sources",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/stats/top-communities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/entities/{entity_id}/relationships",
+          "stale_on_catalog_change": true
+        },
+        {
+          "owner": "read_batch_runtime",
+          "required_evidence_kind": "read_batch_runtime",
+          "route": "/agent/evolves",
+          "stale_on_catalog_change": true
+        }
+      ],
+      "route_catalog_metadata_mismatch_routes": [
+        "__route_catalog__"
+      ],
+      "route_catalog_metadata_ready": false,
+      "route_coverage_ready": null,
+      "route_primary_ready": null,
+      "route_query_api_behavior_evidence_ready": null,
+      "route_query_plan_evidence_ready": null,
+      "route_query_profile_evidence_ready": null,
+      "route_query_runtime_ready": null,
+      "route_relationship_property_pruning_evidence_ready": null,
+      "unknown_routes": []
+    },
+    "migration_gate_decision": "blocked",
+    "missing_evidence": [
+      "storage_recovery",
+      "background_maintenance",
+      "replacement_readiness_by_query_family_ready",
+      "previous_wrapper_contract_evidence",
+      "full_contract_evidence",
+      "dual_engine_evidence",
+      "source_mutation_dual_write_readiness",
+      "search_projection_evidence",
+      "search_projection_shadow_evidence",
+      "search_candidate_shadow_evidence",
+      "search_route_ownership",
+      "active_search_route_ownership",
+      "active_search_route_readiness",
+      "bounded_read_evidence",
+      "graph_route_readiness",
+      "query_runtime_preflight",
+      "workload_fixture_evidence",
+      "shadow_run",
+      "shadow_ready"
+    ],
+    "next_actions": [
+      {
+        "action": "close_blocked_query_families",
+        "evidence_fields": [
+          "replacement_readiness_per_million",
+          "replacement_readiness_by_query_family"
+        ],
+        "reason": "one or more required query families are missing or below full replacement readiness"
+      },
+      {
+        "action": "run_previous_wrapper_shadow_gate",
+        "evidence_fields": [
+          "cutover.matched_per_million",
+          "cutover.decision",
+          "migration_gate.decision",
+          "shadow_run.evidence_kind",
+          "shadow_ready.engine_kind",
+          "shadow_ready.wrapper_identity",
+          "cutover_evidence.ready_wrapper_identity",
+          "previous_wrapper_contract_evidence.wrapper_identity"
+        ],
+        "reason": "shadow parity or migration gate decision is not ready"
+      },
+      {
+        "action": "provide_eligible_cutover_evidence",
+        "evidence_fields": [
+          "cutover_evidence.eligible",
+          "cutover_evidence.evidence_kind",
+          "cutover_evidence.ready_engine_kind",
+          "cutover_evidence.ready_wrapper_identity"
+        ],
+        "reason": "cutover evidence is missing or not eligible for production replacement"
+      },
+      {
+        "action": "run_full_previous_wrapper_contract_check",
+        "evidence_fields": [
+          "required_contract_ready",
+          "full_contract_checked",
+          "full_contract_ready",
+          "selected_checks",
+          "check_count",
+          "previous_wrapper_contract_evidence.ready",
+          "previous_wrapper_contract_evidence.wrapper_identity",
+          "previous_wrapper_contract_evidence.blocker_codes"
+        ],
+        "reason": "previous-wrapper contract evidence is missing or not ready"
+      },
+      {
+        "action": "rerun_dual_engine_shadow_gate",
+        "evidence_fields": [
+          "dual_engine_evidence.present",
+          "dual_engine_evidence.ready",
+          "dual_engine_evidence.consistent",
+          "dual_engine_evidence.primary_check_count",
+          "dual_engine_evidence.shadow_check_count",
+          "dual_engine_evidence.matched_check_count",
+          "dual_engine_evidence.primary_only_check_count",
+          "dual_engine_evidence.matched_per_million"
+        ],
+        "reason": "side-by-side dual-engine evidence is missing or not ready"
+      },
+      {
+        "action": "attach_source_mutation_dual_write_readiness",
+        "evidence_fields": [
+          "source_mutation_dual_write_readiness.protocol",
+          "source_mutation_dual_write_readiness.ready",
+          "source_mutation_dual_write_readiness.required_family_count",
+          "source_mutation_dual_write_readiness.evidence_family_count",
+          "source_mutation_dual_write_readiness.ready_family_count",
+          "source_mutation_dual_write_readiness.missing_required_families",
+          "source_mutation_dual_write_readiness.blocker_codes"
+        ],
+        "reason": "Source ingest/create, refresh/reparse, indexed transition, revision edges, and search-projection effects must be covered by durable dual-write readiness"
+      },
+      {
+        "action": "attach_search_projection_replacement_evidence",
+        "evidence_fields": [
+          "search_projection_evidence.protocol",
+          "search_projection_evidence.present",
+          "search_projection_evidence.ready",
+          "search_projection_evidence.derived_projection",
+          "search_projection_evidence.all_tables_covered",
+          "search_projection_evidence.covered_table_count",
+          "search_projection_evidence.required_table_count",
+          "search_projection_evidence.fts_ready",
+          "search_projection_evidence.vector_ready",
+          "search_projection_evidence.document_identity_ready",
+          "search_projection_evidence.embedding_identity_ready",
+          "search_projection_evidence.fail_soft_ready",
+          "search_projection_evidence.rebuild_marker_ready",
+          "search_projection_evidence.metadata_repair_marker_ready",
+          "search_projection_evidence.incremental_update_ready",
+          "search_projection_evidence.source_chunk_ready",
+          "search_projection_evidence.predicate_pushdown_ready",
+          "search_projection_evidence.production_filter_pruning_ready",
+          "search_projection_evidence.compressed_vector_projection_required",
+          "search_projection_evidence.compressed_vector_projection_ready",
+          "search_projection_evidence.blocker_codes"
+        ],
+        "reason": "LanceDB replacement evidence is missing or not ready"
+      },
+      {
+        "action": "run_search_projection_shadow_evidence",
+        "evidence_fields": [
+          "search_projection_shadow_evidence.protocol",
+          "search_projection_shadow_evidence.evidence_source",
+          "search_projection_shadow_evidence.present",
+          "search_projection_shadow_evidence.ready",
+          "search_projection_shadow_evidence.primary_ready",
+          "search_projection_shadow_evidence.shadow_ready",
+          "search_projection_shadow_evidence.document_count_parity",
+          "search_projection_shadow_evidence.document_identity_parity",
+          "search_projection_shadow_evidence.table_parity.ready",
+          "search_projection_shadow_evidence.embedding_identity_parity",
+          "search_projection_shadow_evidence.lifecycle_parity",
+          "search_projection_shadow_evidence.incremental_watermark_parity",
+          "search_projection_shadow_evidence.blocker_codes"
+        ],
+        "reason": "LanceDB/Skein search projection side-by-side evidence is missing or not ready"
+      },
+      {
+        "action": "run_search_candidate_shadow_evidence",
+        "evidence_fields": [
+          "search_candidate_shadow_evidence.protocol",
+          "search_candidate_shadow_evidence.evidence_source",
+          "search_candidate_shadow_evidence.route",
+          "search_candidate_shadow_evidence.present",
+          "search_candidate_shadow_evidence.ready",
+          "search_candidate_shadow_evidence.candidate_primary_engine",
+          "search_candidate_shadow_evidence.request_count",
+          "search_candidate_shadow_evidence.primary_candidate_count",
+          "search_candidate_shadow_evidence.shadow_candidate_count",
+          "search_candidate_shadow_evidence.matched_candidate_count",
+          "search_candidate_shadow_evidence.primary_only_candidate_count",
+          "search_candidate_shadow_evidence.row_count_parity",
+          "search_candidate_shadow_evidence.text_retriever_ready",
+          "search_candidate_shadow_evidence.vector_retriever_ready",
+          "search_candidate_shadow_evidence.fts_top_k_overlap_ready",
+          "search_candidate_shadow_evidence.vector_top_k_overlap_ready",
+          "search_candidate_shadow_evidence.candidate_readiness.source_chunk_identity_ready",
+          "search_candidate_shadow_evidence.candidate_readiness.fail_soft_observed",
+          "search_candidate_shadow_evidence.candidate_readiness.projection_marker_status_visible",
+          "search_candidate_shadow_evidence.candidate_readiness.projection_watermark_ready",
+          "search_candidate_shadow_evidence.candidate_readiness.embedding_identity_ready",
+          "search_candidate_shadow_evidence.candidate_identity.ready",
+          "search_candidate_shadow_evidence.shadow_scan_filter_pushdown_ready",
+          "search_candidate_shadow_evidence.shadow_scan_field_pruning_ready",
+          "search_candidate_shadow_evidence.shadow_scan_field_summary_count",
+          "search_candidate_shadow_evidence.filter_pushdown.ready",
+          "search_candidate_shadow_evidence.filter_pushdown.field_summary_count",
+          "search_candidate_shadow_evidence.filter_pushdown.missing_required_fields",
+          "search_candidate_shadow_evidence.filter_pushdown.field_capabilities_ready",
+          "search_candidate_shadow_evidence.filter_pushdown.missing_value_summary_fields",
+          "search_candidate_shadow_evidence.filter_pushdown.missing_numeric_range_fields",
+          "search_candidate_shadow_evidence.filter_pushdown.missing_timestamp_range_fields",
+          "search_candidate_shadow_evidence.blocker_codes"
+        ],
+        "reason": "LanceDB/Skein search candidate side-by-side evidence is missing or not ready"
+      },
+      {
+        "action": "attach_search_route_ownership",
+        "evidence_fields": [
+          "search_route_ownership.protocol",
+          "search_route_ownership.ready",
+          "search_route_ownership.production_cutover_ready",
+          "search_route_ownership.required_route_count",
+          "search_route_ownership.explicit_route_count",
+          "search_route_ownership.skein_route_count",
+          "search_route_ownership.lancedb_route_count",
+          "search_route_ownership.missing_required_routes",
+          "search_route_ownership.lancedb_routes",
+          "search_route_ownership.blocker_codes"
+        ],
+        "reason": "search projection route ownership is missing or still routes a projection family to LanceDB"
+      },
+      {
+        "action": "attach_active_search_route_ownership",
+        "evidence_fields": [
+          "active_search_route_ownership.protocol",
+          "active_search_route_ownership.ready",
+          "active_search_route_ownership.production_cutover_ready",
+          "active_search_route_ownership.required_route_count",
+          "active_search_route_ownership.explicit_route_count",
+          "active_search_route_ownership.skein_route_count",
+          "active_search_route_ownership.lancedb_route_count",
+          "active_search_route_ownership.missing_required_routes",
+          "active_search_route_ownership.lancedb_routes",
+          "active_search_route_ownership.blocker_codes"
+        ],
+        "reason": "active search route ownership is missing or still routes a business search path to LanceDB"
+      },
+      {
+        "action": "attach_active_search_route_readiness",
+        "evidence_fields": [
+          "active_search_route_readiness.protocol",
+          "active_search_route_readiness.ready",
+          "active_search_route_readiness.production_cutover_ready",
+          "active_search_route_readiness.required_route_count",
+          "active_search_route_readiness.evidence_route_count",
+          "active_search_route_readiness.ready_route_count",
+          "active_search_route_readiness.skein_route_count",
+          "active_search_route_readiness.lancedb_handle_required_route_count",
+          "active_search_route_readiness.missing_required_routes",
+          "active_search_route_readiness.non_skein_routes",
+          "active_search_route_readiness.lancedb_handle_required_routes",
+          "active_search_route_readiness.candidate_not_ready_routes",
+          "active_search_route_readiness.candidate_identity_not_ready_routes",
+          "active_search_route_readiness.embedding_identity_not_ready_routes",
+          "active_search_route_readiness.zero_vector_semantics_not_ready_routes",
+          "active_search_route_readiness.cjk_tokenization_not_ready_routes",
+          "active_search_route_readiness.metadata_pushdown_not_ready_routes",
+          "active_search_route_readiness.ranking_window_not_ready_routes",
+          "active_search_route_readiness.ranking_not_ready_routes",
+          "active_search_route_readiness.fail_soft_not_ready_routes",
+          "active_search_route_readiness.fail_soft_reason_codes_not_ready_routes",
+          "active_search_route_readiness.repair_rebuild_markers_not_ready_routes",
+          "active_search_route_readiness.blocker_codes"
+        ],
+        "reason": "active search route read evidence is missing or still requires LanceDB for a business search path"
+      },
+      {
+        "action": "attach_bounded_read_profile",
+        "evidence_fields": [
+          "bounded_read_evidence.protocol",
+          "bounded_read_evidence.present",
+          "bounded_read_evidence.ready",
+          "bounded_read_evidence.mode",
+          "bounded_read_evidence.max_rows",
+          "bounded_read_evidence.execution_row_cap",
+          "bounded_read_evidence.estimated_payload_bytes",
+          "bounded_read_evidence.max_estimated_payload_bytes",
+          "bounded_read_evidence.payload_budget_exceeded",
+          "bounded_read_evidence.row_limit_enforced_before_output",
+          "bounded_read_evidence.operator_row_cap_enabled",
+          "bounded_read_evidence.blocking_operator_count",
+          "bounded_read_evidence.blocking_operator_memory_reports_complete",
+          "bounded_read_evidence.blocking_operator_memory_within_budget",
+          "bounded_read_evidence.spill_within_budget",
+          "bounded_read_evidence.covered_routes",
+          "bounded_read_evidence.route_primary_ready",
+          "bounded_read_evidence.primary_ready_routes",
+          "bounded_read_evidence.route_query_plan_evidence_ready",
+          "bounded_read_evidence.route_query_profile_evidence_ready",
+          "bounded_read_evidence.route_query_api_behavior_evidence_ready",
+          "bounded_read_evidence.relationship_property_pruning_required_count",
+          "bounded_read_evidence.relationship_property_pruning_report_count",
+          "bounded_read_evidence.route_relationship_property_pruning_evidence_ready",
+          "bounded_read_evidence.blocker_codes"
+        ],
+        "reason": "bounded read execution profile is missing or not ready"
+      },
+      {
+        "action": "attach_graph_route_readiness_evidence",
+        "evidence_fields": [
+          "graph_route_readiness.protocol",
+          "graph_route_readiness.present",
+          "graph_route_readiness.ready",
+          "graph_route_readiness.evidence_protocol",
+          "graph_route_readiness.evidence_ready",
+          "graph_route_readiness.required_route_count",
+          "graph_route_readiness.covered_route_count",
+          "graph_route_readiness.covered_routes",
+          "graph_route_readiness.route_coverage_ready",
+          "graph_route_readiness.evidence_route_coverage_present",
+          "graph_route_readiness.evidence_route_coverage_matches",
+          "graph_route_readiness.route_query_runtime_ready",
+          "graph_route_readiness.route_query_plan_evidence_ready",
+          "graph_route_readiness.route_query_profile_evidence_ready",
+          "graph_route_readiness.route_query_api_behavior_evidence_ready",
+          "graph_route_readiness.relationship_property_pruning_required_count",
+          "graph_route_readiness.relationship_property_pruning_report_count",
+          "graph_route_readiness.route_relationship_property_pruning_evidence_ready",
+          "graph_route_readiness.route_primary_ready",
+          "graph_route_readiness.primary_ready_route_count",
+          "graph_route_readiness.route_primary_blocker_codes"
+        ],
+        "reason": "graph route readiness evidence is missing, stale, or does not cover all required graph read routes"
+      },
+      {
+        "action": "attach_query_runtime_preflight_evidence",
+        "evidence_fields": [
+          "query_runtime_preflight.protocol",
+          "query_runtime_preflight.present",
+          "query_runtime_preflight.ready",
+          "query_runtime_preflight.database_opened",
+          "query_runtime_preflight.probe_count",
+          "query_runtime_preflight.passed_probe_count",
+          "query_runtime_preflight.failed_probe_count",
+          "query_runtime_preflight.required_routes_covered",
+          "query_runtime_preflight.route_coverage_ready",
+          "query_runtime_preflight.probe_details_ready",
+          "query_runtime_preflight.blocker_codes",
+          "query_runtime_preflight.probes"
+        ],
+        "reason": "query runtime preflight evidence is missing or does not cover all required graph read routes"
+      },
+      {
+        "action": "run_workload_fixture_evidence",
+        "evidence_fields": [
+          "workload_fixture_evidence.protocol",
+          "workload_fixture_evidence.present",
+          "workload_fixture_evidence.ready",
+          "workload_fixture_evidence.route_count",
+          "workload_fixture_evidence.query_count",
+          "workload_fixture_evidence.failed_query_count",
+          "workload_fixture_evidence.bounded_expansion_probe_count",
+          "workload_fixture_evidence.failed_bounded_expansion_probe_count",
+          "workload_fixture_evidence.search_metadata_probe_count",
+          "workload_fixture_evidence.failed_search_metadata_probe_count",
+          "workload_fixture_evidence.graph_rag_probe_count",
+          "workload_fixture_evidence.failed_graph_rag_probe_count",
+          "workload_fixture_evidence.graph_rag_reports",
+          "workload_fixture_evidence.source_projection_probe_count",
+          "workload_fixture_evidence.failed_source_projection_probe_count",
+          "workload_fixture_evidence.source_projection_reports",
+          "workload_fixture_evidence.blocker_codes"
+        ],
+        "reason": "graph route, bounded expansion, metadata-filtered search, or source projection workload fixture evidence is missing or not ready"
+      },
+      {
+        "action": "attach_storage_recovery_report",
+        "evidence_fields": [
+          "cutover_evidence.storage_recovery_present",
+          "cutover_evidence.storage_recovery_ready",
+          "cutover_evidence.storage_recovery_protocol_matches",
+          "cutover_evidence.storage_recovery_durable",
+          "cutover_evidence.storage_recovery_checkpoint_boundary_present",
+          "cutover_evidence.storage_recovery_wal_replay_bounded",
+          "cutover_evidence.storage_recovery_replay_boundary_consistent",
+          "cutover_evidence.storage_recovery_torn_tail_clean",
+          "cutover_evidence.storage_recovery_blocker_codes"
+        ],
+        "reason": "required storage recovery evidence is missing or blocked"
+      },
+      {
+        "action": "attach_background_maintenance_report",
+        "evidence_fields": [
+          "cutover_evidence.background_maintenance_present",
+          "cutover_evidence.background_maintenance_ready",
+          "cutover_evidence.background_maintenance_executable_search_projection_graph_delta_count",
+          "cutover_evidence.background_maintenance_admitted_search_projection_graph_delta_count",
+          "cutover_evidence.background_maintenance_blocker_codes"
+        ],
+        "reason": "required background maintenance QoS or graph-delta evidence is missing or blocked"
+      }
+    ],
+    "previous_wrapper_contract_evidence": {
+      "blocker_codes": null,
+      "evidence_kind": null,
+      "ready": false,
+      "requires_full_contract_ready": null,
+      "requires_wrapper_identity": null,
+      "wrapper_identity": null
+    },
+    "production_cutover_ready": false,
+    "production_replacement_per_million": 0,
+    "protocol": "skein-nowledge-replacement-summary",
+    "query_runtime_preflight": {
+      "blocker_codes": null,
+      "covered_route_count": null,
+      "covered_routes": [],
+      "database_opened": null,
+      "duplicate_routes": [],
+      "failed_probe_count": null,
+      "missing_required_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "passed_probe_count": null,
+      "present": false,
+      "probe_count": null,
+      "probe_details_ready": false,
+      "protocol": null,
+      "ready": false,
+      "required_covered_routes": [
+        "/communities",
+        "/communities/{community_id}",
+        "/graph/overview",
+        "/graph/sample",
+        "/graph/search",
+        "/graph/explore",
+        "/graph/expand/{node_id}",
+        "/graph/live-preview",
+        "/graph/live-preview/{node_id}",
+        "/graph/community-members/{community_id}",
+        "/library/community/{community_id}/subgraph",
+        "/library/community/{community_id}/recent-memories",
+        "/library/community/{community_id}/related",
+        "/graph/analysis",
+        "/graph/augmentation/state",
+        "/graph/augmentation/pagerank/plan",
+        "/graph/node-details/{node_id}",
+        "/graph/orphans",
+        "/graph/shortest-path",
+        "/sources/{source_id}",
+        "/stats/entity-relations",
+        "/stats/sources",
+        "/stats/top-communities",
+        "/entities",
+        "/entities/{entity_id}/relationships",
+        "/agent/evolves"
+      ],
+      "required_route_count": null,
+      "required_routes_covered": null,
+      "route_coverage_ready": false,
+      "unknown_routes": []
+    },
+    "replacement_boundaries": {
+      "content_store": {
+        "replacement_role": "external_out_of_scope",
+        "scope": "sqlite_content_store",
+        "storage_owner": "nowledge_mem"
+      },
+      "graph_layer": {
+        "replacement_role": "primary_replacement",
+        "scope": "kuzu_ladybug_graph_layer",
+        "storage_owner": "skein"
+      },
+      "large_blob_store": {
+        "replacement_role": "external_out_of_scope",
+        "scope": "large_blob_value_store",
+        "storage_owner": "nowledge_mem"
+      },
+      "search_projection": {
+        "replacement_role": "rebuildable_projection",
+        "scope": "lancedb_search_projection",
+        "storage_owner": "skein"
+      }
+    },
+    "replacement_readiness_by_query_family": [],
+    "replacement_readiness_family_summary": {
+      "blocked_count": 0,
+      "blocked_query_families": [],
+      "min_replacement_readiness_per_million": null,
+      "missing_required_query_families": [
+        "memory_lookup",
+        "graph_traversal",
+        "projected_graph",
+        "label_stats_read",
+        "search_projection"
+      ],
+      "omitted_count": 0,
+      "ready_count": 0,
+      "required_query_families": [
+        "memory_lookup",
+        "graph_traversal",
+        "projected_graph",
+        "label_stats_read",
+        "search_projection"
+      ],
+      "total_count": 0
+    },
+    "replacement_readiness_per_million": 500000,
+    "search_candidate_shadow_evidence": {
+      "blocker_codes": null,
+      "candidate_counts_ready": false,
+      "candidate_identity_parity": null,
+      "candidate_identity_ready": null,
+      "candidate_primary_engine": null,
+      "embedding_identity_ready": null,
+      "evidence_source": null,
+      "fail_soft_observed": null,
+      "filter_pushdown_field_capabilities_ready": null,
+      "filter_pushdown_field_summary_count": null,
+      "filter_pushdown_missing_numeric_range_fields": [],
+      "filter_pushdown_missing_required_fields": [],
+      "filter_pushdown_missing_timestamp_range_fields": [],
+      "filter_pushdown_missing_value_summary_fields": [],
+      "filter_pushdown_ready": null,
+      "fts_top_k_overlap_ready": null,
+      "matched_candidate_count": null,
+      "present": false,
+      "primary_candidate_count": null,
+      "primary_engine": null,
+      "primary_only_candidate_count": null,
+      "projection_marker_status_visible": null,
+      "projection_watermark_ready": null,
+      "protocol": null,
+      "ready": false,
+      "request_count": null,
+      "route": null,
+      "row_count_parity": null,
+      "shadow_candidate_count": null,
+      "shadow_engine": null,
+      "shadow_scan_field_pruning_ready": null,
+      "shadow_scan_field_summary_count": null,
+      "shadow_scan_filter_pushdown_ready": null,
+      "source_chunk_identity_ready": null,
+      "text_retriever_ready": null,
+      "vector_retriever_ready": null,
+      "vector_top_k_overlap_ready": null
+    },
+    "search_projection_evidence": {
+      "all_tables_covered": null,
+      "blocker_codes": null,
+      "compressed_vector_projection_ready": null,
+      "compressed_vector_projection_required": null,
+      "covered_table_count": null,
+      "derived_projection": null,
+      "document_identity_ready": null,
+      "embedding_identity_ready": null,
+      "fail_soft_ready": null,
+      "fts_ready": null,
+      "incremental_update_ready": null,
+      "metadata_repair_marker_ready": null,
+      "predicate_pushdown_ready": null,
+      "present": false,
+      "production_filter_pruning_ready": null,
+      "protocol": null,
+      "ready": false,
+      "rebuild_marker_ready": null,
+      "required_table_count": null,
+      "source_chunk_ready": null,
+      "vector_ready": null
+    },
+    "search_projection_shadow_evidence": {
+      "blocker_codes": [
+        "search_projection_shadow_pushdown_evidence_not_ready",
+        "skein_search_projection_segment_descriptor_fields_missing",
+        "skein_search_projection_segment_descriptor_missing"
+      ],
+      "document_count_parity": null,
+      "document_identity_parity": null,
+      "embedding_identity_parity": null,
+      "evidence_source": null,
+      "incremental_watermark_parity": null,
+      "lifecycle_parity": null,
+      "predicate_pushdown_parity": null,
+      "present": false,
+      "primary_engine": null,
+      "primary_ready": null,
+      "protocol": null,
+      "pushdown_evidence": {
+        "missing_numeric_range_fields": [
+          "importance",
+          "confidence"
+        ],
+        "missing_timestamp_range_fields": [
+          "created_at",
+          "updated_at",
+          "event_start",
+          "event_end"
+        ],
+        "missing_value_summary_fields": [
+          "kind",
+          "external_id",
+          "source_id",
+          "space_id",
+          "unit_type",
+          "lifecycle_state",
+          "is_latest"
+        ],
+        "predicate_pushdown_parity": false,
+        "primary_predicate_pushdown_ready": false,
+        "primary_scan_filter_fields": [],
+        "ready": false,
+        "shadow_persisted_segment_descriptor_ready": false,
+        "shadow_predicate_pushdown_ready": false,
+        "shadow_scan_filter_fields": [],
+        "shadow_segment_descriptor_capabilities_ready": false,
+        "shadow_segment_descriptor_field_summaries": [],
+        "shadow_segment_descriptor_scan_filter_fields_ready": false,
+        "shadow_segment_document_pruning_ready": false,
+        "shadow_segment_pruned_document_count": null,
+        "shadow_segment_pruning_candidate_document_count": null,
+        "shadow_segment_scanned_document_count": null
+      },
+      "ready": false,
+      "shadow_engine": null,
+      "shadow_ready": null,
+      "table_parity_ready": null
+    },
+    "search_route_ownership": {
+      "blocker_codes": null,
+      "explicit_route_count": null,
+      "lancedb_route_count": null,
+      "lancedb_routes": [],
+      "missing_required_routes": [],
+      "present": false,
+      "production_cutover_ready": null,
+      "protocol": null,
+      "ready": false,
+      "require_all_skein": null,
+      "required_route_count": null,
+      "skein_route_count": null
+    },
+    "shadow_evidence": {
+      "contract_wrapper_identity": null,
+      "cutover_ready_wrapper_identity": null,
+      "ready": false,
+      "ready_engine_kind": null,
+      "ready_wrapper_identity": null,
+      "run_evidence_kind": null
+    },
+    "shadow_parity": {
+      "decision": "blocked",
+      "matched_per_million": 500000,
+      "ready": false
+    },
+    "source_mutation_dual_write_readiness": {
+      "blocker_codes": null,
+      "duplicate_families": [],
+      "evidence_family_count": null,
+      "missing_required_families": [],
+      "present": false,
+      "protocol": null,
+      "ready": false,
+      "ready_family_count": null,
+      "required_family_count": null,
+      "unknown_families": []
+    },
+    "workload_fixture_evidence": {
+      "blocker_codes": null,
+      "bounded_expansion_probe_count": null,
+      "failed_bounded_expansion_probe_count": null,
+      "failed_graph_rag_probe_count": null,
+      "failed_query_count": null,
+      "failed_search_metadata_probe_count": null,
+      "failed_source_projection_probe_count": null,
+      "graph_rag_probe_count": null,
+      "graph_rag_reports": null,
+      "present": false,
+      "protocol": null,
+      "query_count": null,
+      "ready": false,
+      "route_count": null,
+      "search_metadata_probe_count": null,
+      "source_projection_probe_count": null,
+      "source_projection_reports": null
+    }
+  },
+  "baseline_revision": "7fedeeee27472762959cb0e048922e351ed81f7e"
+}

@@ -8,7 +8,19 @@ pub mod graph_summary;
 pub mod integration_bundle;
 
 #[doc(hidden)]
+pub mod integration_readiness;
+
+#[doc(hidden)]
+pub mod previous_wrapper_preflight;
+
+#[doc(hidden)]
 pub mod graph_route;
+
+#[doc(hidden)]
+pub mod graph_route_cli;
+
+#[doc(hidden)]
+pub mod replacement_summary;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemReadinessAreaMap {

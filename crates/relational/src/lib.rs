@@ -1,14 +1,25 @@
 //! Storage-neutral relational statement compilation and execution contracts.
 
+#[doc(hidden)]
+pub mod aggregate;
 mod append;
 #[doc(hidden)]
+pub mod columnar_aggregate;
+#[doc(hidden)]
 pub mod field_plan;
+#[doc(hidden)]
+pub mod index_runtime;
 mod statement;
 
 #[doc(hidden)]
 pub mod predicate;
 #[doc(hidden)]
 pub mod query_value;
+
+#[doc(hidden)]
+pub mod explain;
+#[doc(hidden)]
+pub mod query_output;
 
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
@@ -21,6 +32,12 @@ pub use statement::{
     compile_relational_statement_sql, compile_relational_statement_sql_with_result,
     CompiledRelationalStatement, RelationalReturningProjection,
 };
+
+#[doc(hidden)]
+pub mod row_runtime;
+
+#[doc(hidden)]
+pub mod physical_plan;
 
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};

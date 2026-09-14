@@ -163,6 +163,45 @@ pub fn plan_relational_field_plan(
     ))
 }
 
+pub fn single_count_distinct_column(
+    select: &SelectStatement,
+) -> Option<(&SqlColumnRef, String, Option<&SqlPredicate>)> {
+    let [SelectProjection::Expression { expression, alias }] = select.projection.as_slice() else {
+        return None;
+    };
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: true,
+                filter,
+            },
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let [SqlFunctionArgument::Expression(Expr {
+        kind: ExprKind::Column(column),
+        ..
+    })] = arguments.as_slice()
+    else {
+        return None;
+    };
+    (name == "count"
+        && select.having.is_none()
+        && select.group_by.is_empty()
+        && select.order_by.is_empty())
+    .then(|| {
+        (
+            column,
+            alias.clone().unwrap_or_else(|| "count".to_string()),
+            filter.as_deref(),
+        )
+    })
+}
+
 pub fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
     match projection {
         SelectProjection::Expression { expression, .. } => {
@@ -575,3 +614,33 @@ fn collect_expression_columns<'a>(
 
 #[cfg(test)]
 mod tests;
+
+pub fn resolved_access_order_by(select: &SelectStatement) -> Result<Vec<skein_sql::SqlOrderItem>> {
+    let mut resolved = Vec::with_capacity(select.order_by.len());
+    let mut supports_ordered_access = true;
+    for item in &select.order_by {
+        let column = match resolve_relational_order_target(select, item)? {
+            RelationalOrderTarget::InputColumn(column) => Some(column),
+            RelationalOrderTarget::ProjectionColumn { column, .. } => Some(column),
+            RelationalOrderTarget::ProjectionExpression { .. } => {
+                supports_ordered_access = false;
+                None
+            }
+        };
+        if let Some(column) = column {
+            resolved.push(skein_sql::SqlOrderItem {
+                expression: skein_sql::Expr {
+                    kind: skein_sql::ExprKind::Column(column.clone()),
+                    span: item.expression.span,
+                },
+                direction: item.direction,
+                nulls: item.nulls,
+            });
+        }
+    }
+    Ok(if supports_ordered_access {
+        resolved
+    } else {
+        Vec::new()
+    })
+}

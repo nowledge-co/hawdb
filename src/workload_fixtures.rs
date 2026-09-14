@@ -17,8 +17,7 @@ use skein_core::{
 };
 use std::collections::BTreeMap;
 
-pub const NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL: &str =
-    "skein-nowledge-graph-route-workload-fixture-v1";
+pub use skein_evidence::replacement_contract::NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowledgeGraphRouteWorkloadFixtureOptions {

@@ -1072,10 +1072,12 @@ dependencies = [
 name = "skein-readiness"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "skein-core",
  "skein-evidence",
  "skein-route-ownership",
+ "skein-search",
 ]
 
 [[package]]
@@ -1083,6 +1085,9 @@ name = "skein-relational"
 version = "0.1.0"
 dependencies = [
  "skein-core",
+ "skein-executor",
+ "skein-expression",
+ "skein-optimizer",
  "skein-sql",
  "skein-storage",
 ]
