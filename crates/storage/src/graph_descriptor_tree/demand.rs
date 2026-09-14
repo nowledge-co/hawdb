@@ -506,7 +506,6 @@ impl GraphDescriptorTreeDemandReader {
         )
         .map_err(GraphDescriptorTreeError::Page)?;
         if use_cache {
-            let encoded: Arc<[u8]> = encoded.into();
             let key = SegmentCacheKey {
                 store_id: identity.store_id,
                 manifest_generation: identity.manifest_generation,
@@ -516,8 +515,13 @@ impl GraphDescriptorTreeDemandReader {
             };
             match self.cache.insert(key, encoded) {
                 Ok(_) => {}
-                Err(SegmentCacheError::EntryTooLarge { .. })
-                | Err(SegmentCacheError::PinnedCapacity { .. }) => {
+                Err(error)
+                    if matches!(
+                        error.error(),
+                        SegmentCacheError::EntryTooLarge { .. }
+                            | SegmentCacheError::PinnedCapacity { .. }
+                    ) =>
+                {
                     report.cache_admission_rejections = report
                         .cache_admission_rejections
                         .checked_add(1)

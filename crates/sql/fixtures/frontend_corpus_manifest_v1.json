@@ -1,7 +1,7 @@
 {
   "protocol": "skein-sql-frontend-corpus-v1",
   "audited_base_revision": "1977888050c405adc873ebcccfec77c3352f4659",
-  "case_count": 981,
+  "case_count": 1007,
   "owned_families": [
     "select",
     "select_graph_table",
@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "4f621befd885d9697f7f298e63c82e200c1181ba1a328629a7a91d40f230c0c3",
+      "sha256": "5df364d1bf6f7e471ea7de0ffb3133831d4e12d8121a0b8828873cd052dcebd2",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -1044,6 +1044,44 @@
         "case-0976",
         "case-0977"
       ]
+    },
+    {
+      "path": "crates/sql/src/tests/cross_join.rs",
+      "sha256": "e752327fd50d3aa186474b69ee51ef10ec0dcb8ed26a46c4fe495fc6e327b602",
+      "case_ids": [
+        "case-0982",
+        "case-0983",
+        "case-0984",
+        "case-0985",
+        "case-0986",
+        "case-0987",
+        "case-0988",
+        "case-0989",
+        "case-0990",
+        "case-0992",
+        "case-0993"
+      ]
+    },
+    {
+      "path": "crates/sql/src/tests/having_from.rs",
+      "sha256": "6dc5809d41c641481d6ed6874332daf6bda99d94c6beae05c68850a8a751a408",
+      "case_ids": [
+        "case-0991",
+        "case-0994",
+        "case-0995",
+        "case-0996",
+        "case-0997",
+        "case-0998",
+        "case-0999",
+        "case-1000",
+        "case-1001",
+        "case-1002",
+        "case-1003",
+        "case-1004",
+        "case-1005",
+        "case-1006",
+        "case-1007"
+      ]
     }
   ],
   "waivers": [
@@ -1150,5 +1188,5 @@
     "case-0980",
     "case-0981"
   ],
-  "literal_count": 161
+  "literal_count": 187
 }

@@ -7,6 +7,12 @@ test_suite(
     name = "presubmit_tests",
 )
 
+filegroup(
+    name = "migration_corpus_test_data",
+    testonly = True,
+    srcs = glob(["fixtures/migration_*"]),
+)
+
 rust_library(
     name = "skein_cypher",
     crate_name = "skein_cypher",
@@ -24,6 +30,7 @@ rust_library(
 rust_test(
     name = "skein_cypher_tests",
     crate = ":skein_cypher",
+    compile_data = [":migration_corpus_test_data"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -32,6 +39,7 @@ rust_test(
 
 rust_test(
     name = "skein_cypher_backtracking_fuzz_tests",
+    compile_data = [":migration_corpus_test_data"],
     args = [
         "tests::backtracking::parser_backtracking_differential_campaign",
         "--exact",

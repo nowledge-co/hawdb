@@ -2,7 +2,7 @@
   {
     "formatted": false,
     "function": "exposes_owned_postgres_sql_pgq_syntax",
-    "line": 17,
+    "line": 19,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE PROPERTY GRAPH knowledge VERTEX TABLES (memories KEY (id))",
     "cases": [
@@ -13,7 +13,7 @@
   {
     "formatted": false,
     "function": "parses_postgres_select_subset",
-    "line": 29,
+    "line": 31,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT query, elapsed_micros AS elapsed FROM system.slow_queries WHERE start_time >= '2026-07-23T00:00:00Z' AND work_class IN ('query', 'shadow') ORDER BY elapsed_micros DESC LIMIT 20 OFFSET 5",
     "cases": [
@@ -24,7 +24,7 @@
   {
     "formatted": true,
     "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
-    "line": 115,
+    "line": 117,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM messages WHERE id = $1 {suffix}",
     "cases": [
@@ -36,7 +36,7 @@
   {
     "formatted": true,
     "function": "parses_postgres_locking_selects_and_rejects_nonblocking_variants",
-    "line": 124,
+    "line": 126,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM messages {suffix}",
     "cases": [
@@ -48,7 +48,7 @@
   {
     "formatted": false,
     "function": "parses_postgres_parameters_in_predicates_and_bounds",
-    "line": 133,
+    "line": 135,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries WHERE work_class = $1 AND elapsed_micros >= $2 ORDER BY elapsed_micros DESC LIMIT $3 OFFSET $4",
     "cases": [
@@ -59,7 +59,7 @@
   {
     "formatted": false,
     "function": "rejects_zero_based_postgres_parameter",
-    "line": 169,
+    "line": 171,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries WHERE query = $0",
     "cases": [
@@ -70,7 +70,7 @@
   {
     "formatted": false,
     "function": "normalizes_unquoted_identifiers_with_postgres_rules",
-    "line": 177,
+    "line": 179,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT \"QueryText\", ELAPSED_MICROS FROM SYSTEM.SLOW_QUERIES WHERE \"QueryText\" IS NOT NULL",
     "cases": [
@@ -81,7 +81,7 @@
   {
     "formatted": false,
     "function": "parses_delete_statement",
-    "line": 216,
+    "line": 218,
     "path": "crates/sql/src/tests.rs",
     "sql": "DELETE FROM thread_messages WHERE thread_storage_id = $1",
     "cases": [
@@ -92,7 +92,7 @@
   {
     "formatted": false,
     "function": "parses_inner_join_with_aliases",
-    "line": 234,
+    "line": 236,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM system.slow_queries q JOIN system.plan_cache p ON q.digest = p.digest",
     "cases": [
@@ -103,7 +103,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_projection_and_distinct_argument",
-    "line": 256,
+    "line": 258,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COUNT(DISTINCT tm.content_message_id) AS covered_messages FROM thread_messages AS tm GROUP BY tm.thread_storage_id",
     "cases": [
@@ -114,7 +114,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_filter_predicate_and_parameters",
-    "line": 282,
+    "line": 284,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COUNT(*) FILTER (WHERE is_read = $1) AS unread_count FROM entries",
     "cases": [
@@ -125,7 +125,7 @@
   {
     "formatted": false,
     "function": "parses_aggregate_filter_predicate_and_parameters",
-    "line": 320,
+    "line": 322,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT MAX(id) FILTER (WHERE id = 'entry-1') FROM entries",
     "cases": [
@@ -136,7 +136,7 @@
   {
     "formatted": false,
     "function": "parses_content_table_schema",
-    "line": 328,
+    "line": 330,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE content_chunks (chunk_id TEXT PRIMARY KEY, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), chunk_index BIGINT NOT NULL, text TEXT NOT NULL, UNIQUE (content_doc_id, chunk_index))",
     "cases": [
@@ -147,7 +147,7 @@
   {
     "formatted": false,
     "function": "parses_strict_append_table_storage",
-    "line": 352,
+    "line": 354,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL, payload BYTEA NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence')",
     "cases": [
@@ -158,7 +158,7 @@
   {
     "formatted": false,
     "function": "parses_commit_sequence_strict_append_storage",
-    "line": 379,
+    "line": 381,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id', order_key = 'sequence', generated_order = 'commit_sequence')",
     "cases": [
@@ -169,7 +169,7 @@
   {
     "formatted": false,
     "function": "rejects_incomplete_strict_append_table_storage",
-    "line": 399,
+    "line": 401,
     "path": "crates/sql/src/tests.rs",
     "sql": "CREATE TABLE events (stream_id TEXT NOT NULL, sequence BIGINT NOT NULL) WITH (storage_mode = 'strict_append', partition_key = 'stream_id')",
     "cases": [
@@ -180,7 +180,7 @@
   {
     "formatted": false,
     "function": "parses_insert_on_conflict_update",
-    "line": 409,
+    "line": 411,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO content_migration_state (key, value, updated_at) VALUES ($1, $2, $3), ($4, $5, $6) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
     "cases": [
@@ -191,7 +191,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 428,
+    "line": 430,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = failure_count + $2, retry_count = $3 + retry_count, success_count = success_count - $4 WHERE id = $1",
     "cases": [
@@ -202,7 +202,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 469,
+    "line": 471,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = 1 - failure_count WHERE id = $1",
     "cases": [
@@ -213,7 +213,7 @@
   {
     "formatted": false,
     "function": "parses_prepared_bigint_update_arithmetic",
-    "line": 470,
+    "line": 472,
     "path": "crates/sql/src/tests.rs",
     "sql": "UPDATE feeds SET failure_count = failure_count * 2 WHERE id = $1",
     "cases": [
@@ -224,7 +224,7 @@
   {
     "formatted": false,
     "function": "parses_insert_on_conflict_do_nothing_returning",
-    "line": 480,
+    "line": 482,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO raw_turns (org_id, request_id, raw_turn_id) VALUES ($1, $2, $3) ON CONFLICT (org_id, request_id) DO NOTHING RETURNING raw_turn_id",
     "cases": [
@@ -235,7 +235,7 @@
   {
     "formatted": false,
     "function": "rejects_insert_returning_expression",
-    "line": 501,
+    "line": 503,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT INTO raw_turns (raw_turn_id) VALUES ($1) RETURNING upper(raw_turn_id)",
     "cases": [
@@ -246,7 +246,7 @@
   {
     "formatted": false,
     "function": "rejects_insert_returning_expression",
-    "line": 506,
+    "line": 508,
     "path": "crates/sql/src/tests.rs",
     "sql": "INSERT RETURNING supports column references only",
     "cases": [],
@@ -255,7 +255,7 @@
   {
     "formatted": false,
     "function": "prepares_dense_repeated_postgres_parameters",
-    "line": 512,
+    "line": 514,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 OR message_id = $1 LIMIT $2",
     "cases": [
@@ -266,7 +266,7 @@
   {
     "formatted": false,
     "function": "parses_explain_and_preserves_inner_parameters",
-    "line": 529,
+    "line": 531,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN ANALYZE SELECT id FROM content_documents WHERE id = $1 LIMIT $2",
     "cases": [
@@ -277,7 +277,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 549,
+    "line": 551,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN VERBOSE SELECT id FROM content_documents",
     "cases": [
@@ -288,7 +288,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 550,
+    "line": 552,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN VERBOSE must remain outside the supported contract",
     "cases": [],
@@ -297,7 +297,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 556,
+    "line": 558,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN UPDATE content_documents SET content = 'changed' WHERE id = 'doc-1'",
     "cases": [
@@ -308,7 +308,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 558,
+    "line": 560,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN only supports read statements",
     "cases": [],
@@ -317,7 +317,7 @@
   {
     "formatted": false,
     "function": "rejects_unsupported_explain_options_and_mutations",
-    "line": 561,
+    "line": 563,
     "path": "crates/sql/src/tests.rs",
     "sql": "EXPLAIN only supports relational SELECT",
     "cases": [],
@@ -326,7 +326,7 @@
   {
     "formatted": false,
     "function": "rejects_gapped_postgres_parameters",
-    "line": 567,
+    "line": 569,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT * FROM thread_messages WHERE thread_storage_id = $1 LIMIT $3",
     "cases": [
@@ -337,7 +337,7 @@
   {
     "formatted": false,
     "function": "parses_nested_octet_length_aggregate",
-    "line": 575,
+    "line": 577,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0) AS payload_bytes FROM thread_messages",
     "cases": [
@@ -348,7 +348,7 @@
   {
     "formatted": false,
     "function": "parses_like_and_ilike_predicates_with_parameters_and_escape",
-    "line": 593,
+    "line": 595,
     "path": "crates/sql/src/tests.rs",
     "sql": "SELECT id FROM documents WHERE title LIKE $1 ESCAPE '!' OR title NOT ILIKE 'guide%'",
     "cases": [
@@ -1704,6 +1704,292 @@
     "sql": "SELECT * FROM source, GRAPH_TABLE (\n        knowledge MATCH (entity IS entity WHERE entity.id = source.id)\n        COLUMNS (entity.id)\n    ) graph_rows",
     "cases": [
       "case-0131"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_lowers_to_an_unconditional_inner_join",
+    "line": 6,
+    "sql": "SELECT a.id FROM items a CROSS JOIN owners b INNER JOIN tags c ON a.id = c.id WHERE b.id = $1 LIMIT $2",
+    "formatted": false,
+    "cases": [
+      "case-0982"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_lowers_to_an_unconditional_inner_join",
+    "line": 30,
+    "sql": "SELECT a.id FROM items a CROSS JOIN owners b WHERE b.id = $2",
+    "formatted": false,
+    "cases": [
+      "case-0983"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 40,
+    "sql": "SELECT a.id FROM a CROSS JOIN b ON a.id = b.id",
+    "formatted": false,
+    "cases": [
+      "case-0984"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 41,
+    "sql": "SELECT a.id FROM a CROSS JOIN b USING (id)",
+    "formatted": false,
+    "cases": [
+      "case-0985"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 42,
+    "sql": "SELECT a.id FROM a RIGHT JOIN b ON a.id = b.id",
+    "formatted": false,
+    "cases": [
+      "case-0986"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 43,
+    "sql": "SELECT a.id FROM a FULL JOIN b ON a.id = b.id",
+    "formatted": false,
+    "cases": [
+      "case-0987"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 44,
+    "sql": "SELECT a.id FROM a NATURAL JOIN b",
+    "formatted": false,
+    "cases": [
+      "case-0988"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 45,
+    "sql": "SELECT a.id FROM a JOIN b USING (id)",
+    "formatted": false,
+    "cases": [
+      "case-0989"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 46,
+    "sql": "SELECT a.id FROM a CROSS JOIN LATERAL (SELECT id FROM b) x",
+    "formatted": false,
+    "cases": [
+      "case-0990"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "comma_from_retains_join_precedence_and_on_namespace_boundaries",
+    "line": 12,
+    "sql": "SELECT a.id FROM a, b INNER JOIN c ON a.id = c.id",
+    "formatted": false,
+    "cases": [
+      "case-0991"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 47,
+    "sql": "SELECT a.id FROM a JOIN b ON TRUE",
+    "formatted": false,
+    "cases": [
+      "case-0992"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/cross_join.rs",
+    "function": "cross_join_does_not_discard_constraints_or_admit_other_join_forms",
+    "line": 48,
+    "sql": "SELECT a.id FROM a CROSS JOIN b WHERE TRUE",
+    "formatted": false,
+    "cases": [
+      "case-0993"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 86,
+    "sql": "SELECT a.id FROM a HAVING COUNT(*) > 1",
+    "formatted": false,
+    "cases": [
+      "case-0994"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "comma_from_retains_join_precedence_and_on_namespace_boundaries",
+    "line": 8,
+    "sql": "SELECT a.id FROM a CROSS JOIN b JOIN c ON a.id = c.id",
+    "formatted": false,
+    "cases": [
+      "case-0995"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "comma_from_retains_join_precedence_and_on_namespace_boundaries",
+    "line": 16,
+    "sql": "SELECT a.id FROM a LEFT JOIN b ON a.id = b.id, c JOIN d ON c.id = d.id, e",
+    "formatted": false,
+    "cases": [
+      "case-0996"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "comma_from_retains_join_precedence_and_on_namespace_boundaries",
+    "line": 34,
+    "sql": "SELECT * FROM a, b WHERE a.id = b.id",
+    "formatted": false,
+    "cases": [
+      "case-0997"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_parameters_and_source_metadata_survive_template_caching",
+    "line": 39,
+    "sql": "SELECT a.owner, SUM($1) AS total FROM items a, owners b WHERE a.owner = b.owner AND a.id >= $2 GROUP BY a.owner HAVING COUNT(*) FILTER (WHERE a.enabled = $3) >= $4 LIMIT $5 OFFSET $6",
+    "formatted": false,
+    "cases": [
+      "case-0998"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 87,
+    "sql": "SELECT owner, COUNT(*) FROM items GROUP BY owner HAVING COUNT(*) > 1",
+    "formatted": false,
+    "cases": [
+      "case-0999"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 88,
+    "sql": "SELECT 1 FROM items HAVING TRUE",
+    "formatted": false,
+    "cases": [
+      "case-1000"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 89,
+    "sql": "SELECT owner FROM items GROUP BY owner HAVING SUM(amount) IN (MAX(amount), NULL)",
+    "formatted": false,
+    "cases": [
+      "case-1001"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 90,
+    "sql": "SELECT owner FROM items GROUP BY owner HAVING NOT (COALESCE(SUM(amount), 0) > $1) OR owner ILIKE $2",
+    "formatted": false,
+    "cases": [
+      "case-1002"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 96,
+    "sql": "SELECT owner FROM items WHERE COUNT(*) > 1",
+    "formatted": false,
+    "cases": [
+      "case-1003"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 97,
+    "sql": "SELECT owner FROM items JOIN owners ON COUNT(*) > 1",
+    "formatted": false,
+    "cases": [
+      "case-1004"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 98,
+    "sql": "SELECT owner FROM items HAVING COUNT(*) + 1 > 2",
+    "formatted": false,
+    "cases": [
+      "case-1005"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 99,
+    "sql": "SELECT owner FROM items HAVING EXISTS (SELECT id FROM owners)",
+    "formatted": false,
+    "cases": [
+      "case-1006"
+    ],
+    "exclusion": ""
+  },
+  {
+    "path": "crates/sql/src/tests/having_from.rs",
+    "function": "having_lowers_group_predicates_without_expanding_where_or_join_profiles",
+    "line": 100,
+    "sql": "SELECT owner FROM items HAVING owner LIKE ANY ('a%')",
+    "formatted": false,
+    "cases": [
+      "case-1007"
     ],
     "exclusion": ""
   }

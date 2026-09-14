@@ -234,7 +234,7 @@ pub use skein_storage::{
     ScanPruningTargetKind, ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest,
     SchemaMaintenanceAction, SchemaMaintenancePlanItem, SearchProjectionChangefeedReadiness,
     SearchProjectionChangefeedStatus, SearchProjectionGraphChange, SearchProjectionMutationId,
-    SegmentCache, SegmentCacheSnapshot, SegmentRangeReader, SegmentReadError,
+    SegmentBytes, SegmentCache, SegmentCacheSnapshot, SegmentRangeReader, SegmentReadError,
     SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
     SegmentReadRange, SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave,
     StorageBackupReport, StorageDebtController, StorageOpenTimings, StoragePressureReasonCode,

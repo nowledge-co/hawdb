@@ -1,7 +1,7 @@
 {
   "protocol": "skein-pgq-create-corpus-v1",
   "postgres_revision": "3d00537feb565c410baf41bb301eee338e4b2317",
-  "source_corpus_sha256": "baf7e1d9b1fc9e0e059f2342c8d90f4e07215ada88073fae87da72690853f722",
+  "source_corpus_sha256": "46106700679cbe1936bf17d769e917c6b3530fcddb65ed00465cbf8165ed2209",
   "bindings": [
     {
       "id": "case-0001",

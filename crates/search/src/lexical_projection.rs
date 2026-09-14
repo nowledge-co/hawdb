@@ -2073,6 +2073,8 @@ fn checksum(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "full-text-search")]
+    mod checkpoint;
     mod robustness;
 
     fn projection_root(name: &str) -> PathBuf {

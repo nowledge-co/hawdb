@@ -28,10 +28,10 @@ fn hits_do_not_acquire_admission_or_an_unrelated_shard() {
     let cache = SegmentCache::new(64);
     let raw = keys_in_shard(&cache, 1, 1)[0];
     let verified = keys_in_shard(&cache, 2, 1)[0];
-    drop(cache.insert(raw, &b"12345678"[..]).unwrap());
+    drop(cache.insert(raw, b"12345678".to_vec()).unwrap());
     drop(
         cache
-            .insert_verified(verified, [3; 32], &b"compact"[..])
+            .insert_verified(verified, [3; 32], b"compact".to_vec())
             .unwrap(),
     );
     std::thread::scope(|scope| {
@@ -65,13 +65,13 @@ fn skewed_shard_can_use_the_entire_global_budget() {
     let cache = SegmentCache::new(512);
     let keys = keys_in_shard(&cache, 11, 65);
     for key in &keys[..64] {
-        drop(cache.insert(*key, &b"12345678"[..]).unwrap());
+        drop(cache.insert(*key, b"12345678".to_vec()).unwrap());
     }
     let full = cache.snapshot();
     assert_eq!(full.resident_bytes, 512);
     assert_eq!(full.entry_count, 64);
     assert_eq!(full.eviction_count, 0);
-    drop(cache.insert(keys[64], &b"12345678"[..]).unwrap());
+    drop(cache.insert(keys[64], b"12345678".to_vec()).unwrap());
     let after = cache.snapshot();
     assert_eq!(after.resident_bytes, 512);
     assert_eq!(after.entry_count, 64);
@@ -79,20 +79,20 @@ fn skewed_shard_can_use_the_entire_global_budget() {
 }
 
 #[test]
-fn eviction_reclaims_other_shards_without_evicting_exported_arcs() {
+fn eviction_reclaims_other_shards_without_evicting_exported_handles() {
     let cache = SegmentCache::new(32);
     let keys: Vec<_> = [0, 5, 10, 15]
         .map(|index| keys_in_shard(&cache, index, 1)[0])
         .into();
     let mut pins = Vec::new();
     for (index, key) in keys.iter().enumerate() {
-        let lease = cache.insert(*key, &b"12345678"[..]).unwrap();
+        let lease = cache.insert(*key, b"12345678".to_vec()).unwrap();
         if index < 2 {
-            pins.push(lease.into_arc());
+            pins.push(lease.into_bytes());
         }
     }
     let next = key(1_000_001, b"abcdefghijklmnop");
-    let lease = cache.insert(next, &b"abcdefghijklmnop"[..]).unwrap();
+    let lease = cache.insert(next, b"abcdefghijklmnop".to_vec()).unwrap();
     let snapshot = cache.snapshot();
     assert_eq!(snapshot.resident_bytes, 32);
     assert_eq!(snapshot.pinned_bytes, 32);
@@ -101,9 +101,12 @@ fn eviction_reclaims_other_shards_without_evicting_exported_arcs() {
         assert!(cache.get(key).is_some());
     }
     assert!(matches!(
-        cache.insert(key(1_000_002, b"x"), &b"x"[..]),
-        Err(SegmentCacheError::PinnedCapacity {
-            pinned_bytes: 32,
+        cache.insert(key(1_000_002, b"x"), b"x".to_vec()),
+        Err(SegmentCacheAdmissionError {
+            error: SegmentCacheError::PinnedCapacity {
+                pinned_bytes: 32,
+                ..
+            },
             ..
         })
     ));
@@ -116,17 +119,27 @@ fn eviction_reclaims_other_shards_without_evicting_exported_arcs() {
 #[test]
 fn zero_capacity_and_oversized_admission_preserve_existing_entries() {
     let empty = SegmentCache::new(0);
-    drop(empty.insert(key(1, b""), &b""[..]).unwrap());
+    drop(empty.insert(key(1, b""), b"".to_vec()).unwrap());
     assert!(matches!(
-        empty.insert(key(2, b"x"), &b"x"[..]),
-        Err(SegmentCacheError::EntryTooLarge { .. })
+        empty.insert(key(2, b"x"), b"x".to_vec()),
+        Err(SegmentCacheAdmissionError {
+            error: SegmentCacheError::EntryTooLarge { .. },
+            ..
+        })
     ));
     assert_eq!(empty.snapshot().entry_count, 1);
     let cache = SegmentCache::new(8);
-    drop(cache.insert(key(1, b"12345678"), &b"12345678"[..]).unwrap());
+    drop(
+        cache
+            .insert(key(1, b"12345678"), b"12345678".to_vec())
+            .unwrap(),
+    );
     assert!(matches!(
-        cache.insert(key(2, b"123456789"), &b"123456789"[..]),
-        Err(SegmentCacheError::EntryTooLarge { .. })
+        cache.insert(key(2, b"123456789"), b"123456789".to_vec()),
+        Err(SegmentCacheAdmissionError {
+            error: SegmentCacheError::EntryTooLarge { .. },
+            ..
+        })
     ));
     assert!(cache.get(&key(1, b"12345678")).is_some());
     assert_eq!(cache.snapshot().eviction_count, 0);
@@ -144,12 +157,15 @@ fn concurrent_identity_collision_has_exactly_one_winner() {
                 scope.spawn(move || {
                     let bytes = [byte; 8];
                     barrier.wait();
-                    match cache.insert(key(1, &bytes), &bytes[..]) {
+                    match cache.insert(key(1, &bytes), bytes.to_vec()) {
                         Ok(lease) => {
                             assert_eq!(&*lease, &bytes);
                             true
                         }
-                        Err(SegmentCacheError::IdentityCollision { .. }) => false,
+                        Err(SegmentCacheAdmissionError {
+                            error: SegmentCacheError::IdentityCollision { .. },
+                            ..
+                        }) => false,
                         other => panic!("unexpected collision result: {other:?}"),
                     }
                 })
@@ -186,7 +202,7 @@ fn serial_campaign(seed: u64, steps: usize) {
     let capacity = 16;
     let cache = SegmentCache::new(capacity);
     let mut resident = BTreeMap::<u64, Vec<u8>>::new();
-    let mut pins = Vec::<(u64, Arc<[u8]>)>::new();
+    let mut pins = Vec::<(u64, SegmentBytes)>::new();
     let mut state = seed;
     let mut expected = SegmentCacheSnapshot {
         capacity_bytes: capacity,
@@ -207,25 +223,31 @@ fn serial_campaign(seed: u64, steps: usize) {
         match random % 8 {
             0 | 3 => {
                 let existing = resident.contains_key(&id);
-                let shared: Arc<[u8]> = Arc::from(bytes.clone());
                 let before_bytes: u64 = resident.values().map(|bytes| bytes.len() as u64).sum();
                 may_evict = !existing && before_bytes + bytes.len() as u64 > capacity;
-                let result = cache.insert(cache_key, Arc::clone(&shared));
+                let result = cache.insert(cache_key, bytes.clone());
                 if existing {
                     assert_eq!(&*result.unwrap(), bytes.as_slice());
                     expected.hit_count += 1;
                 } else if pinned_bytes + bytes.len() as u64 > capacity {
                     assert!(
-                        matches!(result, Err(SegmentCacheError::PinnedCapacity { .. })),
+                        matches!(
+                            result,
+                            Err(SegmentCacheAdmissionError {
+                                error: SegmentCacheError::PinnedCapacity { .. },
+                                ..
+                            })
+                        ),
                         "seed={seed} step={step}"
                     );
                     expected.admission_rejection_count += 1;
                 } else {
-                    assert_eq!(&*result.unwrap(), bytes.as_slice());
+                    let lease = result.unwrap();
+                    assert_eq!(&*lease, bytes.as_slice());
                     resident.insert(id, bytes.clone());
                     expected.insertion_count += 1;
                     if random % 8 == 3 {
-                        pins.push((id, shared));
+                        pins.push((id, lease.into_bytes()));
                     }
                 }
             }
@@ -234,7 +256,7 @@ fn serial_campaign(seed: u64, steps: usize) {
                     assert!(resident.contains_key(&id));
                     assert_eq!(&*lease, bytes.as_slice());
                     expected.hit_count += 1;
-                    pins.push((id, lease.into_arc()));
+                    pins.push((id, lease.into_bytes()));
                 }
                 None => {
                     assert!(!resident.contains_key(&id));
@@ -253,13 +275,16 @@ fn serial_campaign(seed: u64, steps: usize) {
                 };
                 assert!(matches!(
                     cache.insert(bad, bytes),
-                    Err(SegmentCacheError::DigestMismatch { .. })
+                    Err(SegmentCacheAdmissionError {
+                        error: SegmentCacheError::DigestMismatch { .. },
+                        ..
+                    })
                 ));
                 expected.digest_mismatch_count += 1;
             }
             6 if !pins.is_empty() => {
-                let (id, arc) = &pins[(random >> 16) as usize % pins.len()];
-                pins.push((*id, Arc::clone(arc)));
+                let (id, bytes) = &pins[(random >> 16) as usize % pins.len()];
+                pins.push((*id, bytes.clone()));
             }
             _ => {}
         }
@@ -303,23 +328,27 @@ fn concurrent_campaign(seed: u64, steps: usize) {
             let barrier = &barrier;
             scope.spawn(move || {
                 let mut state = seed + worker + 1;
-                let mut pins = Vec::<(SegmentCacheKey, Arc<[u8]>)>::new();
+                let mut pins = Vec::<(SegmentCacheKey, SegmentBytes)>::new();
                 barrier.wait();
                 for _ in 0..steps {
                     let random = next_random(&mut state);
                     let id = random % 32;
                     let bytes = [id as u8; 8];
                     let cache_key = key(id, &bytes);
-                    match cache.insert(cache_key, &bytes[..]) {
+                    match cache.insert(cache_key, bytes.to_vec()) {
                         Ok(lease) => {
                             assert_eq!(&*lease, &bytes);
                             if random.is_multiple_of(3) {
-                                pins.push((cache_key, lease.into_arc()));
+                                pins.push((cache_key, lease.into_bytes()));
                             }
                         }
-                        Err(SegmentCacheError::PinnedCapacity {
-                            resident_bytes,
-                            pinned_bytes,
+                        Err(SegmentCacheAdmissionError {
+                            error:
+                                SegmentCacheError::PinnedCapacity {
+                                    resident_bytes,
+                                    pinned_bytes,
+                                    ..
+                                },
                             ..
                         }) => {
                             assert!(pinned_bytes <= resident_bytes && resident_bytes <= 64);

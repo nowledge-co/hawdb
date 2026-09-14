@@ -524,12 +524,12 @@ pub use store::{
     RelationalRowPageCompactionReport, RelationalRowPageRecoveryStatus,
     RelationalRowStorageResidencyReport, RelationalScalarType, RelationalValue,
     SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus,
-    SearchProjectionMutationId, SegmentCacheSnapshot, SegmentRangeReader, SegmentReadError,
-    SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
-    SegmentReadRange, SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave,
-    StorageBackupReport, StorageDebtController, StorageOpenTimings, StoragePressureReasonCode,
-    StoragePressureSignals, StoragePressureSnapshot, StoragePressureState,
-    StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode,
+    SearchProjectionMutationId, SegmentBytes, SegmentCacheSnapshot, SegmentRangeReader,
+    SegmentReadError, SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor,
+    SegmentReadPayload, SegmentReadRange, SegmentReadSchedule, SegmentReadScheduler,
+    SegmentReadWave, StorageBackupReport, StorageDebtController, StorageOpenTimings,
+    StoragePressureReasonCode, StoragePressureSignals, StoragePressureSnapshot,
+    StoragePressureState, StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode,
     StorageResidencyReport, StorageRestoreReport, StorageScrubReport, WalDoctorOptions,
     WalRepairAcknowledgement, WalReplayConfig, WalTailRepairPlan, WalTailRepairReason,
     WalTailRepairReport, DENSE_ADJACENCY_DEGREE_THRESHOLD, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
@@ -564,21 +564,21 @@ mod tests {
         Database, IoConcurrencyBudget, NowledgeGraphAdapter, NowledgeGraphStatement,
         RuntimeGovernor, RuntimeGovernorConfig, RuntimeIoWaveError, RuntimeMemorySnapshot,
         RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTaskContext, RuntimeWorkPriority,
-        RuntimeWorkRequest, SegmentRangeReader, SegmentReadError, SegmentReadExecutionError,
-        SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler, Value,
+        RuntimeWorkRequest, SegmentBytes, SegmentRangeReader, SegmentReadError,
+        SegmentReadExecutionError, SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler,
+        Value,
     };
     use std::collections::BTreeMap;
     use std::num::{NonZeroU64, NonZeroUsize};
-    use std::sync::Arc;
 
     struct GovernorObservingReader {
         governor: RuntimeGovernor,
     }
 
     impl SegmentRangeReader for GovernorObservingReader {
-        fn read_range(&self, range: &SegmentReadRange) -> Result<Arc<[u8]>, SegmentReadError> {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
             assert_eq!(self.governor.snapshot().active_foreground_io_slots, 1);
-            Ok(Arc::from(vec![0; range.length.get() as usize]))
+            Ok(vec![0; range.length.get() as usize].into())
         }
     }
 

@@ -2229,7 +2229,7 @@ impl CanonicalSegmentReader {
     fn read_segment(
         &self,
         descriptor: &CanonicalSegmentDescriptor,
-    ) -> Result<Arc<[u8]>, CanonicalSegmentError> {
+    ) -> Result<crate::SegmentBytes, CanonicalSegmentError> {
         self.read_segment_with_report(descriptor)
             .map(|read| read.payload)
     }

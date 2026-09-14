@@ -2,6 +2,75 @@ use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn cooked_query_text_matches_rust_string_continuations() {
+    macro_rules! check_literal {
+        ($literal:literal) => {{
+            let source = stringify!($literal);
+            let (value, next, newlines) = parse_cooked_string(source, 0).unwrap();
+            assert_eq!(value, $literal);
+            assert_eq!(next, source.len());
+            assert_eq!(
+                newlines,
+                source.bytes().filter(|byte| *byte == b'\n').count()
+            );
+        }};
+    }
+
+    check_literal!(
+        "MATCH (m:Mem\
+                    ory) RETURN m.id"
+    );
+    check_literal!(
+        "MATCH (m:Memory) WHERE m.title = 'head\
+                    tail' RETURN m.id"
+    );
+    check_literal!(
+        "MATCH  (m:Memory) \
+                    RETURN 'a  b' AS title"
+    );
+    check_literal!("MATCH (m:Memory) RETURN '\\n' AS escaped");
+}
+
+#[test]
+fn cooked_query_continuations_preserve_source_line_provenance() {
+    for newline in ["\n", "\r\n"] {
+        for prefix in ["", "b"] {
+            let first = format!(r#"const Q = {prefix}"MATCH (m:Mem\"#);
+            let source = [
+                first.as_str(),
+                "\t  ",
+                " \tory) \\",
+                "\tRETURN m.id\";",
+                r#"const NEXT = "CHECKPOINT";"#,
+            ]
+            .join(newline);
+            let literals = extract_rust_string_literals(&source).unwrap();
+            assert_eq!(literals.len(), 2, "{prefix:?} {newline:?}");
+            assert_eq!(literals[0].value, "MATCH (m:Memory) RETURN m.id");
+            assert_eq!(literals[0].line, 1);
+            assert_eq!(literals[1].value, "CHECKPOINT");
+            assert_eq!(literals[1].line, 5);
+        }
+    }
+}
+
+#[test]
+fn cooked_query_text_preserves_utf8_and_non_continuation_whitespace() {
+    let unicode = "MATCH (m:Memory) RETURN 'caf\u{00e9}\u{1f9ea}' AS title";
+    let source = format!("\"{unicode}\"");
+    assert_eq!(parse_cooked_string(&source, 0).unwrap().0, unicode);
+
+    let source = concat!("\"left\\\n \t", "\u{00a0}", "right\"");
+    let (value, next, newlines) = parse_cooked_string(source, 0).unwrap();
+    assert_eq!(value, "left\u{00a0}right");
+    assert_eq!(next, source.len());
+    assert_eq!(newlines, 1);
+
+    let source = "\"left\n  right\"";
+    assert_eq!(parse_cooked_string(source, 0).unwrap().0, "left\n  right");
+}
+
+#[test]
 fn extracts_cooked_and_raw_rust_cypher_literals() {
     let source = r##"
         let read = "MATCH (m:Memory {id: $id})\nRETURN m.id";

@@ -552,6 +552,11 @@ fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
 }
 
 fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
+    if select.having.is_some() {
+        return Err(SkeinError::Semantic(
+            "system SQL does not support HAVING".into(),
+        ));
+    }
     if select.distinct
         || select.from_alias.is_some()
         || !select.joins.is_empty()
@@ -587,10 +592,9 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
             case_insensitive,
             ..
         } = &expression.kind
+            && let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()?
         {
-            if let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()? {
-                skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
-            }
+            skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
         }
         Ok::<_, SkeinError>(())
     })?;

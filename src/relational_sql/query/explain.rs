@@ -85,7 +85,21 @@ pub(super) fn format_relational_explain(
             report_operator: Some("TopNExec"),
         });
     }
-    let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+    if let Some(having) = &select.having {
+        nodes.push(RelationalExplainNode {
+            operator: "SelectionExec",
+            identity: RelationalExplainNodeIdentity::Logical("having"),
+            estimated_rows: None,
+            access_object: String::new(),
+            operator_info: format!(
+                "implementation=fused, phase=having, predicate={}",
+                explain_predicate(having)
+            ),
+            report_operator: None,
+        });
+    }
+    let has_aggregate =
+        select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
     if has_aggregate || !select.group_by.is_empty() {
         nodes.push(RelationalExplainNode {
             operator: "RelationalAggregateExec",
@@ -641,18 +655,28 @@ pub(super) fn explain_expression(expression: &SqlExpression) -> String {
         ExprKind::Column(column) => explain_column(column),
         ExprKind::Value(value) => explain_sql_value(value),
         ExprKind::Function {
-            name, arguments, ..
-        } => format!(
-            "{name}({})",
-            arguments
+            name,
+            arguments,
+            distinct,
+            filter,
+        } => {
+            let arguments = arguments
                 .iter()
                 .map(|argument| match argument {
                     SqlFunctionArgument::Wildcard => "*".to_string(),
                     SqlFunctionArgument::Expression(expression) => explain_expression(expression),
                 })
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .join(", ");
+            let mut explanation = format!(
+                "{name}({}{arguments})",
+                if *distinct { "DISTINCT " } else { "" }
+            );
+            if let Some(filter) = filter {
+                explanation.push_str(&format!(" FILTER (WHERE {})", explain_predicate(filter)));
+            }
+            explanation
+        }
         _ => explain_predicate(expression),
     }
 }

@@ -63,7 +63,6 @@ mod snapshot_writer;
 mod vector_execution;
 
 use document_encoding::encode_search_document_line;
-use identifier::identifier_parts;
 
 mod error {
     pub use skein_core::{Result, SkeinError};
@@ -136,7 +135,8 @@ mod compiled_capabilities {
 }
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
 use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
-use cjk_tokenizer::{chinese_search_tokens, is_cjk_search_char};
+#[cfg(test)]
+use cjk_tokenizer::is_cjk_search_char;
 pub use generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
@@ -1389,15 +1389,37 @@ impl SearchIndex {
         self.invalidate_lexical_projection();
     }
 
-    fn invalidate_lexical_projection(&self) {
-        *self
+    fn lexical_snapshot(&self) -> Option<(Arc<LexicalProjectionReader>, LexicalMiniDelta)> {
+        let projection = self
             .lexical_projection
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *self
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let reader = projection.as_ref()?;
+        // Keep the reader locked until its delta is captured: checkpoint replaces both.
+        let delta = self
             .lexical_delta
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Some((Arc::clone(reader), delta))
+    }
+
+    fn replace_lexical_projection(&self, projection: Option<Arc<LexicalProjectionReader>>) {
+        // Match snapshot acquisition order and publish the reader and reset together.
+        let mut current = self
+            .lexical_projection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut delta = self
+            .lexical_delta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = projection;
+        *delta = LexicalMiniDelta::default();
+    }
+
+    fn invalidate_lexical_projection(&self) {
+        self.replace_lexical_projection(None);
     }
 
     fn load_lexical_projection(&self) -> Result<()> {
@@ -1411,10 +1433,7 @@ impl SearchIndex {
             lexical_documents_digest(&self.documents),
             self.lexical_config,
         )?;
-        *self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = projection;
+        self.replace_lexical_projection(projection);
         Ok(())
     }
 
@@ -2384,14 +2403,7 @@ impl SearchIndex {
             self.documents.values(),
             &self.analyzer_lexicon,
         )?;
-        *self
-            .lexical_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(projection);
-        *self
-            .lexical_delta
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = LexicalMiniDelta::default();
+        self.replace_lexical_projection(Some(projection));
         Ok(())
     }
 
@@ -3164,19 +3176,16 @@ impl SearchIndex {
             } else {
                 (Vec::new(), Vec::new())
             };
-        let lexical_projection = if text_available
+        let lexical_snapshot = if text_available
             && mode != SearchMode::Vector
             && matches!(payload_access, SearchPayloadAccess::PrunedRanges)
         {
-            self.lexical_projection
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+            self.lexical_snapshot()
         } else {
             None
         };
         let text_corpus =
-            if text_available && mode != SearchMode::Vector && lexical_projection.is_none() {
+            if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(TextCorpusStats::from_documents(
                     filtered_documents.iter().copied(),
                     &self.analyzer_lexicon,
@@ -3214,15 +3223,10 @@ impl SearchIndex {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
-        let lexical_report = lexical_projection
+        let lexical_report = lexical_snapshot
             .as_ref()
-            .map(|projection| {
-                let delta = self
-                    .lexical_delta
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                projection.score(&query_terms, &delta, retained_text_score_limit, |id| {
+            .map(|(projection, delta)| {
+                projection.score(&query_terms, delta, retained_text_score_limit, |id| {
                     Ok(filtered_documents
                         .binary_search_by(|document| document.id.as_str().cmp(id))
                         .is_ok())
@@ -3244,7 +3248,7 @@ impl SearchIndex {
         } else {
             (BTreeMap::new(), 0, 0, 0)
         };
-        if lexical_projection.is_none() {
+        if lexical_snapshot.is_none() {
             for document in &filtered_documents {
                 let text_score = if text_available && mode != SearchMode::Vector {
                     text_corpus
@@ -3261,7 +3265,7 @@ impl SearchIndex {
                 }
             }
         }
-        let segmented_lexical_projection_used = lexical_projection.is_some();
+        let segmented_lexical_projection_used = lexical_snapshot.is_some();
         let text_candidate_count = if segmented_lexical_projection_used {
             lexical_matching_document_count
         } else {
@@ -6459,16 +6463,7 @@ fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<St
 }
 
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
-    let mut tokens = TokenSequence::default();
-    visit_token_list(text, analyzer_lexicon, |token, occurrence| {
-        match occurrence {
-            TokenOccurrence::UniqueInField => tokens.push_unique(token),
-            TokenOccurrence::Repeated => tokens.push(token),
-        }
-        Ok(())
-    })
-    .expect("token collection has no fallible admission");
-    tokens.into_vec()
+    analyzer_stream::collect_token_list(text, analyzer_lexicon)
 }
 
 fn normalized_alias_rule_terms(text: &str) -> Vec<String> {
@@ -6480,38 +6475,11 @@ fn normalized_stopword_terms(text: &str) -> Vec<String> {
 }
 
 fn identifier_tokens(raw: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Vec::new();
-    }
-    identifier_tokens_with_parts(raw, None, analyzer_lexicon)
+    analyzer_stream::identifier_tokens(raw, analyzer_lexicon)
 }
 
-fn identifier_tokens_with_parts(
-    raw: &str,
-    parts: Option<&[String]>,
-    analyzer_lexicon: &SearchAnalyzerLexicon,
-) -> Vec<String> {
-    let mut tokens = TokenSequence::default();
-    push_unique_token(&mut tokens, raw.to_lowercase(), analyzer_lexicon);
-    for token in chinese_search_tokens(raw) {
-        push_analyzed_token(&mut tokens, token, analyzer_lexicon);
-    }
-    push_cjk_ngram_tokens(&mut tokens, raw, analyzer_lexicon);
-    // Field traversal already needs these parts for cross-word phrases. Other
-    // callers retain the original late split, after opaque CJK scratch is freed.
-    let parts = parts
-        .map(Cow::Borrowed)
-        .unwrap_or_else(|| Cow::Owned(identifier_parts(raw)));
-    for part in parts.iter() {
-        push_analyzed_token(&mut tokens, part.clone(), analyzer_lexicon);
-    }
-    for pair in parts.windows(2) {
-        push_analyzed_token(&mut tokens, pair.join("_"), analyzer_lexicon);
-    }
-    tokens.into_vec()
-}
-
+// Keep the eager expansion helpers as an independent test reference.
+#[cfg(test)]
 fn push_cjk_ngram_tokens(
     tokens: &mut TokenSequence,
     raw: &str,
@@ -6529,6 +6497,7 @@ fn push_cjk_ngram_tokens(
     push_cjk_ngram_run_tokens(tokens, &run, analyzer_lexicon);
 }
 
+#[cfg(test)]
 fn push_cjk_ngram_run_tokens(
     tokens: &mut TokenSequence,
     run: &[char],
@@ -6544,6 +6513,7 @@ fn push_cjk_ngram_run_tokens(
     }
 }
 
+#[cfg(test)]
 fn push_unique_token(
     tokens: &mut TokenSequence,
     token: String,
@@ -6554,6 +6524,7 @@ fn push_unique_token(
     }
 }
 
+#[cfg(test)]
 fn push_analyzed_token(
     tokens: &mut TokenSequence,
     token: String,
@@ -6583,6 +6554,7 @@ impl TokenSequence {
         }
     }
 
+    #[cfg(test)]
     fn push(&mut self, token: String) {
         let next_id = self.token_ids.len();
         let token_id = *self.token_ids.entry(token).or_insert(next_id);

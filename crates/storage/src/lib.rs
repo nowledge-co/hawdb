@@ -87,8 +87,9 @@ pub use backup::{
     STABLE_ID_MAPPING_FILE, STORAGE_MANIFEST_FILE,
 };
 pub use cache::{
-    content_digest, ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache,
-    SegmentCacheError, SegmentCacheKey, SegmentCacheLease, SegmentCacheSnapshot, StoreId,
+    content_digest, ContentDigest, ManifestGeneration, RepresentationKind, SegmentBytes,
+    SegmentCache, SegmentCacheAdmissionError, SegmentCacheError, SegmentCacheKey,
+    SegmentCacheLease, SegmentCacheSnapshot, StoreId,
 };
 pub use canonical::{
     canonical_segment_descriptor_page_file, canonical_segment_descriptor_root_file,

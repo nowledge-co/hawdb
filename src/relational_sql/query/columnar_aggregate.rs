@@ -65,6 +65,9 @@ impl ColumnarAggregateExecutor {
         batch_payload_bytes: NonZeroUsize,
         memory_ledger: &QueryMemoryLedger,
     ) -> Result<Option<Self>> {
+        if select.having.is_some() {
+            return Ok(None);
+        }
         if !has_no_joins || select.projection.is_empty() {
             return Ok(None);
         }

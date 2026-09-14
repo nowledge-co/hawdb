@@ -88,6 +88,7 @@ mod aggregate;
 use aggregate::{execute_aggregate_select, single_count_distinct_column};
 
 mod aggregate_state;
+mod having;
 use aggregate_state::{
     aggregate_group_base_memory_bytes, charge_aggregate_memory, AggregateProjectionState,
 };
@@ -144,7 +145,7 @@ mod pipeline;
 use pipeline::{
     project_typed_locator, relational_locator_layout, relational_physical_join_plan_locator_layout,
     typed_row_set_locator, visit_prepared_physical_join_plan_node, visit_relational_rows,
-    with_typed_locator_bound_row, with_typed_locator_bound_row_for_scan,
+    with_typed_locator_bound_row_for_scan, with_typed_locator_bound_row_mode,
     AccountedRelationalLocatorBatch, PlannedJoin, RelationalPipelineState,
     RELATIONAL_ROW_LOCATOR_SLOT,
 };

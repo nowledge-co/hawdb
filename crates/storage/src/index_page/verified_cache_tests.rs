@@ -3,7 +3,6 @@ use crate::cache::PAGE_INTEGRITY_CHECKS;
 use crate::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheKey, StoreId,
 };
-use std::sync::Arc;
 
 fn id(value: u64) -> IndexPageId {
     IndexPageId::new(NonZeroU64::new(value).unwrap())
@@ -72,10 +71,10 @@ fn check_seed(seed: u64) {
         ..ImmutableIndexPageLimits::default()
     };
     for page in pages(seed) {
-        let slot: Arc<[u8]> = page.encode_slot(limits).unwrap().into();
+        let slot = page.encode_slot(limits).unwrap();
         let key = cache_key(&slot, page.generation);
         let cache = SegmentCache::new(1024);
-        let raw = cache.insert(key, Arc::clone(&slot)).unwrap();
+        let raw = cache.insert(key, slot.clone()).unwrap();
         assert!(!raw.page_integrity_verified());
         let before = PAGE_INTEGRITY_CHECKS.get();
         assert_eq!(
@@ -84,7 +83,7 @@ fn check_seed(seed: u64) {
         );
         assert_eq!(PAGE_INTEGRITY_CHECKS.get(), before + 1);
         drop(raw);
-        let verified = cache.insert_page_verified(key, Arc::clone(&slot)).unwrap();
+        let verified = cache.insert_page_verified(key, slot.clone()).unwrap();
         for reader_limits in [
             limits,
             ImmutableIndexPageLimits {
@@ -144,7 +143,7 @@ fn check_seed(seed: u64) {
             );
         }
 
-        let exported = verified.into_arc();
+        let exported = verified.into_bytes();
         drop(slot);
         assert_eq!(cache.snapshot().pinned_bytes, 1024);
         drop(exported);

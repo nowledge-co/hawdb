@@ -33,7 +33,9 @@ use skein_optimizer::{
 };
 
 mod implementations;
+mod scopes;
 use implementations::{prepare_join_implementations, PreparedJoinImplementation};
+pub(super) use scopes::bind_from_scopes;
 use skein_sql::timing::measure_nanos;
 use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -908,6 +910,7 @@ fn prepare_inner_select(
                     table: relation.table.clone(),
                     alias: relation.alias.clone(),
                     on,
+                    on_scope_start: 0,
                 }
             })
             .collect();
@@ -964,6 +967,7 @@ fn prepare_outer_select(
                     table: relation.table.clone(),
                     alias: relation.alias.clone(),
                     on,
+                    on_scope_start: 0,
                 }
             })
             .collect();
@@ -1264,6 +1268,10 @@ fn select_columns_resolve(select: &SelectStatement, relations: &[BoundRelation<'
         .selection
         .as_ref()
         .is_none_or(|predicate| predicate_bindings(predicate, relations).is_some())
+        && select
+            .having
+            .as_ref()
+            .is_none_or(|predicate| expression_columns_resolve(predicate, relations))
         && select
             .group_by
             .iter()

@@ -2899,9 +2899,54 @@ fn checkpoint_file_keeps_overflow_out_of_resident_state_and_checks_size_before_r
     ));
     std::fs::write(&path, &checkpoint).expect("write checkpoint fixture");
 
-    let decoded = decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
-        .expect("decode file-backed checkpoint");
+    let mut decoded =
+        decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
+            .expect("decode file-backed checkpoint");
     assert_eq!(decoded.state.file_backed_overflow_segment_count(), 1);
+    let cache = Arc::new(crate::SegmentCache::new(checkpoint.len() as u64));
+    let segment = decoded.state.overflow_segments.values_mut().next().unwrap();
+    let RelationalOverflowSegment::FileRange { reader, range } = segment else {
+        panic!("checkpoint overflow must remain file backed");
+    };
+    let mut cached_reader = FileSegmentRangeReader::new().with_cache(
+        Arc::clone(&cache),
+        crate::StoreId(1),
+        crate::ManifestGeneration(1),
+    );
+    cached_reader.register(range.artifact_id, &path);
+    *reader = Arc::new(cached_reader);
+    let retained = reader.read_range(range).unwrap();
+    let encoded_bytes = retained.len();
+    assert_eq!(cache.snapshot().pinned_bytes, encoded_bytes as u64);
+    assert!(matches!(
+        decoded
+            .state
+            .overflow_generation_inputs(false, encoded_bytes - 1),
+        Err(RelationalError::Admission(_))
+    ));
+    let materialized = decoded
+        .state
+        .overflow_generation_inputs(false, encoded_bytes)
+        .unwrap();
+    let [RelationalOverflowExtentInput::Write { encoded, .. }] = materialized.as_slice() else {
+        panic!("initial publication must own one overflow envelope");
+    };
+    assert_eq!(encoded.as_ref(), retained.as_ref());
+    assert_ne!(
+        encoded.as_ptr(),
+        retained.as_ptr(),
+        "publication must detach cached ownership"
+    );
+    drop(retained);
+    assert_eq!(cache.snapshot().pinned_bytes, 0);
+    assert!(matches!(
+        decoded
+            .state
+            .overflow_generation_inputs(true, 0)
+            .unwrap()
+            .as_slice(),
+        [RelationalOverflowExtentInput::Reuse(_)]
+    ));
     let key = RelationalKey(vec![RelationalValue::Text("message-1".to_string())]);
     let hydrated = decoded
         .state

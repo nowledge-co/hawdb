@@ -1036,7 +1036,8 @@ impl PreparedRelationalExecutionDescriptor {
         select: &SelectStatement,
         access_plan: &PreparedRelationalAccessPlan,
     ) -> Result<Self> {
-        let has_aggregate = select.projection.iter().any(projection_contains_aggregate);
+        let has_aggregate =
+            select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
         let access_order_by = resolved_access_order_by(select)?;
         let ordered_index_projection = !select.order_by.is_empty()
             && access_order_by.len() == select.order_by.len()
