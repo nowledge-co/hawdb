@@ -9,9 +9,8 @@ use crate::relational_sql::row_access::{
     RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
 };
 use crate::sql::{
-    SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp, SqlExpression,
-    SqlFunctionArgument, SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
-    SqlValue,
+    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
+    SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
 };
 use crate::value::Value;
 use skein_core::Catalog;
@@ -99,10 +98,10 @@ use explain::format_relational_explain;
 
 mod expression;
 use expression::{
-    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, expression_name,
-    predicate_truth, project_bound_row, projection_uses_non_aggregate_coalesce,
-    reject_non_public_schema, relational_ref_to_value, resolve_column,
-    validate_non_aggregate_coalesce_projections, value_to_relational_as,
+    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, predicate_truth,
+    project_bound_row, projection_uses_non_aggregate_coalesce, reject_non_public_schema,
+    relational_ref_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
+    value_to_relational_as,
 };
 
 mod join;
