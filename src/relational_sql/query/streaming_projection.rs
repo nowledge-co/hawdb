@@ -270,7 +270,7 @@ pub(super) fn execute_borrowed_streaming_full_scan(
             pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
             if predicate
                 .as_ref()
-                .map(|predicate| predicate.truth(row))
+                .map(|predicate| predicate.truth_with(&|ordinal| row.value(ordinal)))
                 .transpose()?
                 .is_some_and(|truth| truth != Some(true))
             {

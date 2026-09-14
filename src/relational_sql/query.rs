@@ -13,7 +13,7 @@ use crate::relational_sql::row_access::{
     RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
 };
 use crate::sql::{
-    SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression,
+    SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp, SqlExpression,
     SqlFunctionArgument, SqlJoinKind, SqlLikeEscape, SqlNullOrder, SqlOrderDirection, SqlPredicate,
     SqlStatement, SqlValue,
 };
@@ -47,7 +47,7 @@ use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_storage::{
     relational_unique_index_name, RelationalHydrationBudget, RelationalIndexRangeScan,
     RelationalIndexScanDirection, RelationalKey, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue, RelationalValueRef,
+    RelationalTableSchema, RelationalValue,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -71,9 +71,8 @@ use self::columnar_aggregate::ColumnarAggregateExecutor;
 use self::locator::{
     RelationalLocatorLayout, RelationalRowSetLocator, RelationalSortKey, RelationalSortRecord,
 };
-use self::streaming_binding::{BoundStreamingPredicate, BoundStreamingProjection};
-
-use super::coerce_relational_value;
+use self::streaming_binding::BoundStreamingProjection;
+use skein_relational::predicate::BoundStreamingPredicate;
 
 mod access;
 #[cfg(test)]
@@ -105,7 +104,7 @@ use explain::{optional_estimated_rows_explain_value, optional_usize_explain_valu
 
 mod expression;
 use expression::{
-    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, compare_value_refs,
+    account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value,
     evaluate_row_expression, expression_name, predicate_truth, project_bound_row,
     projection_contains_aggregate, projection_uses_non_aggregate_coalesce,
     reject_non_public_schema, relational_ref_to_value, relational_to_value, resolve_column,

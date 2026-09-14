@@ -2,9 +2,9 @@ use super::aggregate_state::{
     aggregate_expression_base_memory_bytes, sql_expression_memory_bytes, AggregateExpressionState,
     AggregateMemoryDelta,
 };
-use super::expression::predicate_truth_with;
 use super::*;
 use crate::sql::{Expr, ExprKind};
+use skein_relational::predicate::predicate_truth_with;
 
 mod binding;
 use binding::{HavingBindings, ScalarState};

@@ -23,6 +23,22 @@ rust_library(
 )
 
 rust_test(
+    name = "skein_relational_qualification_fuzz_tests",
+    args = [
+        "predicate::tests::qualification_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_relational",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_relational_statement_fuzz_tests",
     args = [
         "statement::tests::statement_compilation_differential_campaign",
