@@ -8,13 +8,13 @@ use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VE
 use crate::document_encoding::{DocumentEncoding, SegmentEncoding, SegmentKind};
 use crate::error::{Result, SkeinError};
 use crate::{
-    checksum_bytes, write_search_segment_descriptor, SearchDocument, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
-    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_DESCRIPTOR_FILE,
-    SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
+    checksum_bytes, write_search_segment_descriptor_bounded, SearchDocument,
+    SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -97,14 +97,11 @@ impl<'a> SegmentArtifactBuilder<'a> {
         self.metadata_file.sync_all()?;
         self.vector_file.sync_all()?;
         self.descriptor.document_count = document_count;
-        write_search_segment_descriptor(&self.stage, &self.descriptor)?;
-        let descriptor_bytes = fs::metadata(self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE))?.len();
-        if descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "search generation descriptor requires {descriptor_bytes} bytes, exceeding {}",
-                self.options.max_descriptor_working_bytes
-            )));
-        }
+        let descriptor_bytes = write_search_segment_descriptor_bounded(
+            &self.stage,
+            &self.descriptor,
+            self.options.max_descriptor_working_bytes.get(),
+        )?;
         Ok(SegmentArtifactOutput {
             layout: SearchOutOfCoreLayoutBody {
                 format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
