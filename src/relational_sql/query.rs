@@ -8,9 +8,7 @@ use crate::relational_sql::index_access::{
     RelationalIndexExecutionEvidence, RelationalIndexReadMode, RelationalIndexRuntime,
 };
 use crate::relational_sql::row_access::{
-    expression_contains_aggregate, plan_requested_fields, plan_scan_fields,
-    plan_scan_hydration_fields, RelationalFieldPlan, RelationalReadRow,
-    RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
+    RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
 };
 use crate::sql::{
     SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression,
@@ -44,6 +42,10 @@ use skein_optimizer::{
     RelationalJoinSelectivity,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
+use skein_relational::field_plan::{
+    order_by_uses_expression_alias, plan_relational_field_plan, projection_contains_aggregate,
+    RelationalFieldPlan,
+};
 use skein_storage::{
     relational_unique_index_name, RelationalHydrationBudget, RelationalIndexRangeScan,
     RelationalIndexScanDirection, RelationalKey, RelationalScalarType, RelationalState,
@@ -107,9 +109,9 @@ mod expression;
 use expression::{
     account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, compare_value_refs,
     evaluate_row_expression, expression_name, predicate_truth, project_bound_row,
-    projection_contains_aggregate, projection_uses_non_aggregate_coalesce,
-    reject_non_public_schema, relational_ref_to_value, relational_to_value, resolve_column,
-    validate_non_aggregate_coalesce_projections, value_to_relational, value_to_relational_as,
+    projection_uses_non_aggregate_coalesce, reject_non_public_schema, relational_ref_to_value,
+    relational_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
+    value_to_relational, value_to_relational_as,
 };
 
 mod join;
@@ -152,15 +154,13 @@ use pipeline::{
 
 mod preparation;
 use preparation::{
-    plan_relational_field_plan, prepare_relational_select, prepared_access_descriptors,
-    resolved_access_order_by,
+    prepare_relational_select, prepared_access_descriptors, resolved_access_order_by,
 };
 
 mod projection;
 use projection::{
-    execute_blocking_projection, order_by_uses_expression_alias, push_relational_output,
-    relational_input_plan, DistinctAggregateValueBatchSource, RelationalBlockingObserver,
-    StreamingProjectionOutput,
+    execute_blocking_projection, push_relational_output, relational_input_plan,
+    DistinctAggregateValueBatchSource, RelationalBlockingObserver, StreamingProjectionOutput,
 };
 
 mod streaming_projection;

@@ -1,19 +1,10 @@
 use super::{
-    expression_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
+    projection_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
     RelationalValue, RelationalValueRef, Result, Row, SelectProjection, SelectStatement,
     SkeinError, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument,
     SqlPredicate, SqlValue, Value,
 };
 use crate::sql::{Expr, ExprKind};
-
-pub(super) fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
-    match projection {
-        SelectProjection::Expression { expression, .. } => {
-            expression_contains_aggregate(expression)
-        }
-        SelectProjection::Wildcard => false,
-    }
-}
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
     projection.iter().any(|projection| {

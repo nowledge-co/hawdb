@@ -1,17 +1,17 @@
 use super::{
-    aggregate_filter_matches, bind_bound, map_payload_bytes, project_bound_row,
-    project_typed_locator, relational_locator_layout, relational_physical_join_plan_locator_layout,
-    resolve_column, resolve_relational_order_target, stream_distinct_batches, stream_top_n_batches,
-    typed_row_set_locator, visit_relational_rows, AccountedBindingBatch, BatchControl,
-    BindingBatch, BindingBatchSource, BlockingExecutionContext, BlockingOperatorMemoryReport,
-    BoundRow, Catalog, ExecutionLimit, ExecutionObserver, ExecutorBinding, ExternalTopN,
-    NonZeroUsize, PhysicalPlan, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
-    RelationalBaseAccess, RelationalIndexRuntime, RelationalOrderTarget,
-    RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
-    RelationalRowRuntime, RelationalSortKey, RelationalSortRecord, RelationalState,
-    RelationalTableSchema, RelationalValue, Result, Row, SelectProjection, SelectStatement,
-    SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder, SqlOrderDirection,
-    SqlPredicate, Value,
+    aggregate_filter_matches, bind_bound, map_payload_bytes, order_by_uses_expression_alias,
+    project_bound_row, project_typed_locator, relational_locator_layout,
+    relational_physical_join_plan_locator_layout, resolve_column, resolve_relational_order_target,
+    stream_distinct_batches, stream_top_n_batches, typed_row_set_locator, visit_relational_rows,
+    AccountedBindingBatch, BatchControl, BindingBatch, BindingBatchSource,
+    BlockingExecutionContext, BlockingOperatorMemoryReport, BoundRow, Catalog, ExecutionLimit,
+    ExecutionObserver, ExecutorBinding, ExternalTopN, NonZeroUsize, PhysicalPlan, PlannedJoin,
+    QueryMemoryLedger, QueryRows, RefCell, RelationalBaseAccess, RelationalIndexRuntime,
+    RelationalOrderTarget, RelationalPhysicalJoinExecution, RelationalPipelineState,
+    RelationalQueryLimits, RelationalRowRuntime, RelationalSortKey, RelationalSortRecord,
+    RelationalState, RelationalTableSchema, RelationalValue, Result, Row, SelectProjection,
+    SelectStatement, SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder,
+    SqlOrderDirection, SqlPredicate, Value,
 };
 use crate::sql::{Expr, ExprKind};
 
@@ -578,16 +578,6 @@ pub(super) fn execute_relational_order(
 
 pub(super) fn relational_sort_column(ordinal: usize) -> String {
     format!("{RELATIONAL_SORT_COLUMN_PREFIX}{ordinal}")
-}
-
-pub(super) fn order_by_uses_expression_alias(select: &SelectStatement) -> Result<bool> {
-    select.order_by.iter().try_fold(false, |found, item| {
-        Ok(found
-            || matches!(
-                resolve_relational_order_target(select, item)?,
-                RelationalOrderTarget::ProjectionExpression { .. }
-            ))
-    })
 }
 
 pub(super) fn add_relational_order_keys(

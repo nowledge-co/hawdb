@@ -1,6 +1,8 @@
 //! Storage-neutral relational statement compilation and execution contracts.
 
 mod append;
+#[doc(hidden)]
+pub mod field_plan;
 mod statement;
 
 pub use append::{
