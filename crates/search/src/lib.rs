@@ -195,23 +195,7 @@ const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "SKEIN_COMPRESSED_V1";
 const SEARCH_COMPRESSION_LEVEL: i32 = 3;
 const SEARCH_DOCUMENT_ID_FIELD: &str = "document_id";
-pub const NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS: &[&str] = &[
-    "kind",
-    "external_id",
-    "source_id",
-    "space_id",
-    "labels",
-    "unit_type",
-    "lifecycle_state",
-    "temporal_context",
-    "importance",
-    "confidence",
-    "created_at",
-    "updated_at",
-    "event_start",
-    "event_end",
-    "is_latest",
-];
+pub use skein_evidence::replacement_contract::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
 
 /// Nested Memory metadata paths with stable scalar/list semantics that are
 /// materialized into the search projection. Unknown paths remain residual

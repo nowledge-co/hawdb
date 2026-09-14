@@ -96,6 +96,18 @@ and `search_candidate_shadow_evidence` preserve their existing public paths;
 query execution, CLI file reads, and overall activation/readiness assembly
 remain in the root. Private model methods are not promoted to new host APIs.
 
+Overall replacement-evidence reduction belongs to
+`skein-readiness::replacement_summary`. It recomputes readiness from supplied
+evidence without a database or search-engine dependency; the facade retains
+the existing summary APIs, CLI help, database probes, and activation decisions.
+`skein-evidence::replacement_contract` owns the shared candidate/workload
+protocol identifiers and projection field inventory. Producers re-export the
+same constants, so readiness does not depend on their execution code. Full
+JSON baselines, original reducer tests, and local-only generated campaigns
+preserve gate semantics, evidence precedence, diagnostic ordering, and bounded
+detail presentation. This boundary does not add a second host API or change
+any release policy.
+
 ```text
 crates/
   core/                errors, values, ids, catalog names, schema descriptors

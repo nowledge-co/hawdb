@@ -116,6 +116,7 @@ test_suite(
         "//crates/plan:skein_plan_explain_fuzz_tests",
         "//crates/readiness:skein_graph_route_readiness_fuzz_tests",
         "//crates/readiness:skein_integration_bundle_fuzz_tests",
+        "//crates/readiness:skein_replacement_summary_fuzz_tests",
         "//crates/readiness:skein_source_mutation_readiness_fuzz_tests",
         "//crates/relational:skein_relational_row_runtime_fuzz_tests",
         "//crates/relational:skein_relational_field_plan_fuzz_tests",

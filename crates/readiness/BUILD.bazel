@@ -25,6 +25,23 @@ rust_library(
 )
 
 rust_test(
+    name = "skein_replacement_summary_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "replacement_summary::tests::differential::replacement_summary_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_readiness",
+    compile_data = _READINESS_TEST_DATA,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_source_mutation_readiness_fuzz_tests",
     tags = ["manual"],
     args = [
