@@ -3,8 +3,8 @@ use crate::{search_snapshot_compression_header, Result, SkeinError, SEARCH_COMPR
 use skein_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
-pub(super) fn encode_segment_payload(
-    encoding: &SegmentEncoding<'_>,
+pub(super) fn encode_segment_payload<T: std::borrow::Borrow<crate::SearchDocument>>(
+    encoding: &SegmentEncoding<'_, T>,
     segment_id: u64,
     name: &str,
     max_uncompressed_bytes: u64,

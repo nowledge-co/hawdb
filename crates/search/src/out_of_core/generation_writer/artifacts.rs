@@ -5,6 +5,7 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use crate::build_memory::{checked_mul, AdmittedDocument, BuildMemory};
 use crate::document_encoding::{DocumentEncoding, SegmentEncoding, SegmentKind};
 use crate::error::{Result, SkeinError};
 use crate::{
@@ -13,6 +14,7 @@ use crate::{
     SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
+use skein_executor::QueryMemoryLease;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
@@ -29,7 +31,9 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     document_file: File,
     metadata_file: File,
     vector_file: File,
-    documents: Vec<SearchDocument>,
+    documents: Vec<AdmittedDocument>,
+    #[cfg(test)]
+    memory: BuildMemory,
     segment_encoded_bytes: u64,
     descriptor: SearchSegmentDescriptor,
     layouts: Vec<SearchOutOfCoreSegmentLayout>,
@@ -40,6 +44,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     descriptor_working_bytes: u64,
     peak_segment_document_count: usize,
     peak_segment_encoded_bytes: u64,
+    _documents_memory: QueryMemoryLease,
 }
 
 pub(super) struct SegmentArtifactOutput {
@@ -54,12 +59,46 @@ pub(super) struct SegmentArtifactOutput {
 }
 
 impl<'a> SegmentArtifactBuilder<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         stage: &Path,
         generation: u64,
         fields: &'a BTreeSet<String>,
         options: &'a SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
+        Self::new_with_memory(
+            stage,
+            generation,
+            fields,
+            options,
+            BuildMemory::new(&skein_core::RuntimeTaskContext::default())?,
+        )
+    }
+
+    pub(super) fn new_with_memory(
+        stage: &Path,
+        generation: u64,
+        fields: &'a BTreeSet<String>,
+        options: &'a SearchOutOfCoreGenerationBuildOptions,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        let documents_memory = memory.retained.reserve(checked_mul(
+            SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
+            std::mem::size_of::<AdmittedDocument>(),
+        )?)?;
+        let mut documents = Vec::new();
+        documents
+            .try_reserve_exact(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS)
+            .map_err(|error| {
+                SkeinError::Execution(format!(
+                    "search segment document allocation failed: {error}"
+                ))
+            })?;
+        if documents.capacity() > SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS {
+            return Err(SkeinError::Execution(
+                "search segment document capacity exceeded admission".into(),
+            ));
+        }
         Ok(Self {
             stage: stage.to_path_buf(),
             generation,
@@ -68,7 +107,9 @@ impl<'a> SegmentArtifactBuilder<'a> {
             document_file: File::create(stage.join(SEARCH_SEGMENT_PAYLOAD_FILE))?,
             metadata_file: File::create(stage.join(STAGE_METADATA_FILE))?,
             vector_file: File::create(stage.join(STAGE_VECTOR_FILE))?,
-            documents: Vec::with_capacity(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS),
+            documents,
+            #[cfg(test)]
+            memory,
             segment_encoded_bytes: 0,
             descriptor: SearchSegmentDescriptor {
                 target_documents: SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
@@ -83,6 +124,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             descriptor_working_bytes: 0,
             peak_segment_document_count: 0,
             peak_segment_encoded_bytes: 0,
+            _documents_memory: documents_memory,
         })
     }
 
@@ -120,7 +162,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, document: SearchDocument) -> Result<()> {
+        let document = self.memory.admit_document(document)?;
+        self.push_admitted(document)
+    }
+
+    pub(super) fn push_admitted(&mut self, document: AdmittedDocument) -> Result<()> {
         let encoded_bytes = DocumentEncoding::new(&document)?.len() as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()

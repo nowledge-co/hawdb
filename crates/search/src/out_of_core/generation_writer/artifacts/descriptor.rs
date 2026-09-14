@@ -3,14 +3,14 @@ use crate::{
     normalized_projection_kind, search_document_field_value, search_field_is_enum_like,
     SearchSegmentFieldSummary,
 };
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::BTreeMap;
 
 mod values;
 
-pub(super) fn build(
+pub(super) fn build<T: Borrow<SearchDocument>>(
     segment_id: u64,
-    documents: &[SearchDocument],
+    documents: &[T],
     fields: &BTreeSet<String>,
     retained_bytes: u64,
     max_bytes: u64,
@@ -21,8 +21,10 @@ pub(super) fn build(
     };
     let first = documents
         .first()
-        .map_or("", |document| document.id.as_str());
-    let last = documents.last().map_or("", |document| document.id.as_str());
+        .map_or("", |document| document.borrow().id.as_str());
+    let last = documents
+        .last()
+        .map_or("", |document| document.borrow().id.as_str());
     // Retain the existing descriptor and layout estimates. Charge each owned
     // component before inserting it instead of checking after segment I/O.
     budget.reserve(256 + 96)?;
@@ -43,6 +45,7 @@ pub(super) fn build(
             .insert(field.clone(), SearchSegmentFieldSummary::default());
     }
     for document in documents {
+        let document = document.borrow();
         for (field, summary) in &mut descriptor.metadata {
             let mut present = false;
             values::visit(document, field, &mut |value| {

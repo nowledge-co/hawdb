@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Borrow;
 
 #[derive(Clone, Copy)]
 pub(crate) enum SegmentKind {
@@ -17,14 +18,14 @@ impl SegmentKind {
     }
 }
 
-pub(crate) struct SegmentEncoding<'a> {
-    documents: &'a [SearchDocument],
+pub(crate) struct SegmentEncoding<'a, T> {
+    documents: &'a [T],
     kind: SegmentKind,
     bytes: usize,
 }
 
-impl<'a> SegmentEncoding<'a> {
-    pub(crate) fn new(documents: &'a [SearchDocument], kind: SegmentKind) -> Result<Self> {
+impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
+    pub(crate) fn new(documents: &'a [T], kind: SegmentKind) -> Result<Self> {
         let mut length = EncodedLength::default();
         write_segment(&mut length, documents, kind).map_err(|_| {
             SkeinError::Storage(format!(
@@ -53,9 +54,9 @@ impl<'a> SegmentEncoding<'a> {
     }
 }
 
-fn write_segment(
+fn write_segment<T: Borrow<SearchDocument>>(
     sink: &mut impl DocumentSink,
-    documents: &[SearchDocument],
+    documents: &[T],
     kind: SegmentKind,
 ) -> fmt::Result {
     let mut ordinal = match kind {
@@ -77,6 +78,7 @@ fn write_segment(
         }
     };
     for document in documents {
+        let document = document.borrow();
         match kind {
             SegmentKind::Documents => write_document(sink, document)?,
             SegmentKind::Metadata { .. } => {
