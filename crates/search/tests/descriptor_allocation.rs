@@ -68,3 +68,58 @@ fn generation_descriptor_avoids_materializing_hex_dictionary() {
         );
     }
 }
+
+fn repeated_labels(count: usize, json: bool) -> (usize, usize) {
+    let root = TestDirectory(std::env::temp_dir().join(format!(
+        "skein-descriptor-labels-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+    )));
+    let value = if json {
+        format!("[{}\"x\"]", "\"x\",".repeat(count - 1))
+    } else {
+        format!("{}x", "x,".repeat(count - 1))
+    };
+    let bytes = value.len();
+    let source = SearchDocument {
+        id: "repeated-labels".into(),
+        title: String::new(),
+        content: String::new(),
+        embedding: None,
+        metadata: BTreeMap::from([("labels".into(), value)]),
+    };
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root.0, Default::default()).unwrap();
+    writer.push(source.clone()).unwrap();
+    let (result, requested) = measure(|| writer.finish());
+    let result = result.unwrap();
+    assert_eq!(result.document_count, 1);
+    assert!(result.descriptor_bytes < 2048);
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(
+        reader
+            .hydrate_documents(std::slice::from_ref(&source.id))
+            .unwrap()
+            .documents,
+        vec![source]
+    );
+    println!("label_count={count} json={json} source_bytes={bytes} requested_bytes={requested}");
+    (bytes, requested)
+}
+
+#[test]
+fn generation_descriptor_does_not_collect_repeated_labels() {
+    round_trip(1024, false);
+    let results = [false, true].map(|json| {
+        let [small, large] = [32 * 1024, 128 * 1024].map(|count| repeated_labels(count, json));
+        (json, small, large)
+    });
+    for (json, small, large) in results {
+        // Exclude the fixed generation/analyzer floor. Growing the input must
+        // not also grow a label array and per-occurrence owned strings.
+        let growth = large.1.saturating_sub(small.1);
+        assert!(
+            growth <= (large.0 - small.0) * 8,
+            "json={json}, small={small:?}, large={large:?}, growth={growth}"
+        );
+    }
+}
