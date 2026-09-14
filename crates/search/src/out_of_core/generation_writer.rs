@@ -524,25 +524,27 @@ impl SearchOutOfCoreGenerationWriter {
             max_document_source_bytes: self.options.lexical_max_document_source_bytes,
             ..LexicalProjectionConfig::default()
         };
-        let lexical = LexicalProjectionWriter::new(lexical_config).write_scanned(
-            &self.stage.path,
-            generation,
-            self.options.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.options.analyzer_lexicon),
-            self.documents_digest.finish(),
-            |consume| {
-                source.scan_admitted(&self.task_context, &mut |document| {
-                    consume(&document)?;
-                    vectors.push(&document)?;
-                    segments.push_admitted(document)
-                })?;
-                // Drop both writers' buffers before lexical external merge.
-                // All artifacts remain private to the stage until publication.
-                completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
-                Ok(())
-            },
-            &self.options.analyzer_lexicon,
-        )?;
+        let lexical = LexicalProjectionWriter::new(lexical_config)
+            .with_context(self.memory.clone(), self.task_context.clone())
+            .write_scanned(
+                &self.stage.path,
+                generation,
+                self.options.source_graph_commit_epoch,
+                lexical_analyzer_digest(&self.options.analyzer_lexicon),
+                self.documents_digest.finish(),
+                |consume| {
+                    source.scan_admitted(&self.task_context, &mut |document| {
+                        consume(&document)?;
+                        vectors.push(&document)?;
+                        segments.push_admitted(document)
+                    })?;
+                    // Drop both writers' buffers before lexical external merge.
+                    // All artifacts remain private to the stage until publication.
+                    completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
+                    Ok(())
+                },
+                &self.options.analyzer_lexicon,
+            )?;
         drop(lexical);
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
         let lexical_artifact_name = lexical_artifact_file(generation);

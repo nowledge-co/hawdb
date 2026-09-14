@@ -4,8 +4,11 @@ use super::{
     TokenOccurrence, BM25_B, BM25_K1,
 };
 use crate::bounded_file::read_bounded_file;
+use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher as Digest;
 use skein_storage::durable_replace_file;
 use std::cmp::Reverse;
@@ -19,7 +22,9 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+mod artifacts;
 mod block_encoding;
+use artifacts::ArtifactBuilder;
 mod document_frequency;
 mod manifest_encoding;
 
@@ -1206,11 +1211,20 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
 
 pub(super) struct LexicalProjectionWriter {
     config: LexicalProjectionConfig,
+    build_context: Option<(BuildMemory, RuntimeTaskContext)>,
 }
 
 impl LexicalProjectionWriter {
     pub(super) const fn new(config: LexicalProjectionConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            build_context: None,
+        }
+    }
+
+    pub(super) fn with_context(mut self, memory: BuildMemory, task: RuntimeTaskContext) -> Self {
+        self.build_context = Some((memory, task));
+        self
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1251,11 +1265,20 @@ impl LexicalProjectionWriter {
         scan: impl FnOnce(&mut dyn FnMut(&SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
+        let (memory, task) = match &self.build_context {
+            Some((memory, task)) => (memory.clone(), task.clone()),
+            None => {
+                let task = RuntimeTaskContext::default();
+                (BuildMemory::new(&task)?, task)
+            }
+        };
+        checkpoint(&task)?;
         let artifact_name = artifact_file(generation);
         let artifact_path = root.join(&artifact_name);
         let tmp_path = artifact_path.with_extension("skein.tmp");
         let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
-        let mut artifact = ArtifactBuilder::new(&tmp_path, generation, self.config)?;
+        let mut artifact =
+            ArtifactBuilder::new_with_context(&tmp_path, generation, self.config, memory, task)?;
         let mut runs = SpillRuns::new(root, generation, self.config);
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
@@ -1272,7 +1295,7 @@ impl LexicalProjectionWriter {
             let document_len = analyzed.document_len();
             document_count = document_count.saturating_add(1);
             total_document_len = total_document_len.saturating_add(u64::from(document_len));
-            artifact.push_document(document.id.clone(), document_len)?;
+            artifact.push_document(&document.id, document_len)?;
             analyzed.visit(self.config, |term, term_frequency, retained| {
                 let bytes = Posting::resident_bytes(&term, &document.id);
                 let posting_limit = self
@@ -1324,6 +1347,7 @@ impl LexicalProjectionWriter {
         };
         let manifest_bytes = manifest.encode(self.config.max_manifest_bytes.get())?;
         drop(manifest);
+        drop(artifact.memory);
         durable_replace_file(&tmp_path, &artifact_path)?;
         artifact_guard.disarm();
         let manifest_path = root.join(MANIFEST_FILE);
@@ -1348,30 +1372,6 @@ impl LexicalProjectionWriter {
     }
 }
 
-struct ArtifactBuilder {
-    writer: BufWriter<File>,
-    path: PathBuf,
-    generation: u64,
-    config: LexicalProjectionConfig,
-    offset: u64,
-    next_block_id: u64,
-    document_pending: Vec<(String, u32)>,
-    document_pending_bytes: u64,
-    posting_pending: Vec<Posting>,
-    posting_pending_bytes: u64,
-    posting_count: u64,
-    term_statistics: Vec<TermStatistics>,
-    blocks: Vec<BlockDescriptor>,
-}
-
-struct ArtifactSummary {
-    len: u64,
-    checksum: u64,
-    posting_count: u64,
-    term_statistics: Vec<TermStatistics>,
-    blocks: Vec<BlockDescriptor>,
-}
-
 struct RemoveOnDrop {
     path: PathBuf,
     armed: bool,
@@ -1392,144 +1392,6 @@ impl Drop for RemoveOnDrop {
         if self.armed {
             let _ = fs::remove_file(&self.path);
         }
-    }
-}
-
-impl ArtifactBuilder {
-    fn new(path: &Path, generation: u64, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut writer = BufWriter::new(File::create(path)?);
-        writer.write_all(ARTIFACT_HEADER)?;
-        writer.write_all(&generation.to_le_bytes())?;
-        Ok(Self {
-            writer,
-            path: path.to_path_buf(),
-            generation,
-            config,
-            offset: ARTIFACT_HEADER.len() as u64 + 8,
-            next_block_id: 0,
-            document_pending: Vec::new(),
-            document_pending_bytes: 0,
-            posting_pending: Vec::new(),
-            posting_pending_bytes: 0,
-            posting_count: 0,
-            term_statistics: Vec::new(),
-            blocks: Vec::new(),
-        })
-    }
-
-    fn push_document(&mut self, id: String, length: u32) -> Result<()> {
-        let bytes = 4u64.saturating_add(id.len() as u64).saturating_add(4);
-        if !self.document_pending.is_empty()
-            && self.document_pending_bytes.saturating_add(bytes)
-                > self.config.target_block_bytes.get()
-        {
-            self.flush_documents()?;
-        }
-        self.document_pending_bytes = self.document_pending_bytes.saturating_add(bytes);
-        self.document_pending.push((id, length));
-        Ok(())
-    }
-
-    fn finish_documents(&mut self) -> Result<()> {
-        self.flush_documents()
-    }
-
-    fn flush_documents(&mut self) -> Result<()> {
-        if self.document_pending.is_empty() {
-            return Ok(());
-        }
-        let descriptor = block_encoding::write_block(
-            &mut self.writer,
-            self.generation,
-            self.next_block_id,
-            self.offset,
-            self.config.max_block_bytes.get(),
-            block_encoding::Entries::Documents(&self.document_pending),
-        )?;
-        self.commit_block(descriptor);
-        self.document_pending.clear();
-        self.document_pending_bytes = 0;
-        Ok(())
-    }
-
-    fn merge_postings(&mut self, paths: &[PathBuf], config: LexicalProjectionConfig) -> Result<()> {
-        visit_merged_postings(paths, config, |posting| self.push_posting(posting.clone()))?;
-        self.flush_postings()
-    }
-
-    fn push_posting(&mut self, posting: Posting) -> Result<()> {
-        match self.term_statistics.last_mut() {
-            Some(statistics) if statistics.term == posting.term => {
-                statistics.document_frequency = statistics
-                    .document_frequency
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        SkeinError::Storage(
-                            "lexical term document frequency exceeds u64".to_string(),
-                        )
-                    })?;
-            }
-            Some(statistics) if statistics.term > posting.term => {
-                return Err(SkeinError::Storage(
-                    "lexical merge produced unordered term statistics".to_string(),
-                ));
-            }
-            _ => self.term_statistics.push(TermStatistics {
-                term: posting.term.clone(),
-                document_frequency: 1,
-            }),
-        }
-        let bytes = posting.encoded_len();
-        if !self.posting_pending.is_empty()
-            && self.posting_pending_bytes.saturating_add(bytes)
-                > self.config.target_block_bytes.get()
-        {
-            self.flush_postings()?;
-        }
-        self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
-        self.posting_pending.push(posting);
-        Ok(())
-    }
-
-    fn flush_postings(&mut self) -> Result<()> {
-        if self.posting_pending.is_empty() {
-            return Ok(());
-        }
-        let descriptor = block_encoding::write_block(
-            &mut self.writer,
-            self.generation,
-            self.next_block_id,
-            self.offset,
-            self.config.max_block_bytes.get(),
-            block_encoding::Entries::Postings(&self.posting_pending),
-        )?;
-        self.posting_count = self
-            .posting_count
-            .saturating_add(self.posting_pending.len() as u64);
-        self.commit_block(descriptor);
-        self.posting_pending.clear();
-        self.posting_pending_bytes = 0;
-        Ok(())
-    }
-
-    fn commit_block(&mut self, descriptor: BlockDescriptor) {
-        // Encoding checked both additions before writing the block.
-        self.offset += descriptor.length;
-        self.next_block_id += 1;
-        self.blocks.push(descriptor);
-    }
-
-    fn finish(mut self) -> Result<ArtifactSummary> {
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
-        let (length, digest) = file_digest(&File::open(&self.path)?)?;
-        Ok(ArtifactSummary {
-            len: length,
-            checksum: digest,
-            posting_count: self.posting_count,
-            term_statistics: self.term_statistics,
-            blocks: self.blocks,
-        })
     }
 }
 
