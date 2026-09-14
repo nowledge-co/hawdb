@@ -495,3 +495,78 @@ fn compaction_read_errors_preserve_cleanup_after_completed_groups() {
         fixture.assert_empty();
     }
 }
+
+#[test]
+fn governed_compaction_faults_and_corruption_release_all_paths_and_capacity() {
+    use skein_core::RuntimeMemoryReservation;
+    let populate = |fixture: &Fixture, memory: &BuildMemory, task: &RuntimeTaskContext| {
+        let mut pool = SpillRuns::with_context(
+            &fixture.0,
+            1,
+            LexicalProjectionConfig {
+                max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+                ..Default::default()
+            },
+            memory.clone(),
+            task.clone(),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            pool.spill(&mut postings()).unwrap();
+        }
+        pool
+    };
+    for fault in [
+        Fault::CreateAfterFile,
+        Fault::WriteAfter(15),
+        Fault::Flush,
+        Fault::RemoveAfter(1),
+        Fault::RemoveAfter(2),
+        Fault::PanicRemoveAfter(1),
+        Fault::PanicAfter(0),
+    ] {
+        let fixture = Fixture::new();
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(1024 * 1024, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let pool = populate(&fixture, &memory, &task);
+        let before = memory.ledger.snapshot();
+        let competitor = memory
+            .input
+            .reserve(before.budget_bytes - before.used_bytes)
+            .unwrap();
+        let mut io = ObservedIo {
+            fault,
+            ..Default::default()
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut pool = pool;
+            pool.compact_with_io(&mut io)
+        }));
+        match fault {
+            Fault::PanicAfter(_) | Fault::PanicRemoveAfter(_) => assert!(outcome.is_err()),
+            _ => assert!(outcome.unwrap().is_err()),
+        }
+        assert!(io.fired.get(), "fault did not fire: {fault:?}");
+        fixture.assert_empty();
+        assert_eq!(memory.ledger.snapshot().used_bytes, competitor.bytes());
+        drop(competitor);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+    for length in [0, 7, 9, reference_run(postings()).len() - 1] {
+        let fixture = Fixture::new();
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let mut pool = populate(&fixture, &memory, &task);
+        File::options()
+            .write(true)
+            .open(&pool.paths[2])
+            .unwrap()
+            .set_len(length as u64)
+            .unwrap();
+        assert!(pool.compact().is_err());
+        drop(pool);
+        fixture.assert_empty();
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
