@@ -1,10 +1,14 @@
 use super::{
     projection_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
-    RelationalValue, RelationalValueRef, Result, Row, SelectProjection, SelectStatement,
-    SkeinError, SqlBound, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument,
-    SqlPredicate, SqlValue, Value,
+    RelationalValue, Result, Row, SelectProjection, SelectStatement, SkeinError, SqlColumnRef,
+    SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
 };
 use crate::sql::{Expr, ExprKind};
+use skein_relational::predicate::predicate_truth_with;
+pub(super) use skein_relational::query_value::{
+    bind_bound, bind_sql_value, relational_ref_to_value, relational_to_value, value_to_relational,
+    value_to_relational_as,
+};
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
     projection.iter().any(|projection| {
@@ -229,52 +233,6 @@ pub(super) fn aggregate_filter_matches(
     }
 }
 
-pub(super) fn compare_value_refs(
-    left: RelationalValueRef<'_>,
-    right: RelationalValueRef<'_>,
-    op: SqlComparisonOp,
-) -> Result<Option<bool>> {
-    if matches!(left, RelationalValueRef::Overflow(_))
-        || matches!(right, RelationalValueRef::Overflow(_))
-    {
-        return Err(SkeinError::Execution(
-            "relational filter or join requires overflow hydration before qualification"
-                .to_string(),
-        ));
-    }
-    if matches!(left, RelationalValueRef::Null) || matches!(right, RelationalValueRef::Null) {
-        return Ok(None);
-    }
-    if left.scalar_type() != right.scalar_type() {
-        return Err(SkeinError::Semantic(
-            "relational comparison has incompatible scalar types".to_string(),
-        ));
-    }
-    Ok(Some(match op {
-        SqlComparisonOp::Eq => left == right,
-        SqlComparisonOp::NotEq => left != right,
-        SqlComparisonOp::Lt => left < right,
-        SqlComparisonOp::Lte => left <= right,
-        SqlComparisonOp::Gt => left > right,
-        SqlComparisonOp::Gte => left >= right,
-    }))
-}
-
-pub(super) fn relational_ref_to_value(value: RelationalValueRef<'_>) -> Result<Value> {
-    match value {
-        RelationalValueRef::Null => Ok(Value::Null),
-        RelationalValueRef::Boolean(value) => Ok(Value::Bool(value)),
-        RelationalValueRef::BigInt(value) => Ok(Value::Int(value)),
-        RelationalValueRef::DoublePrecision(value) => Ok(Value::Float(value)),
-        RelationalValueRef::Text(value) => Ok(Value::String(value.to_owned())),
-        RelationalValueRef::Bytea(value) => Ok(Value::Binary(value.to_vec())),
-        RelationalValueRef::Uuid(value) => Ok(Value::Uuid(value)),
-        RelationalValueRef::Overflow(_) => Err(SkeinError::Execution(
-            "overflow value reached projection without hydration".to_string(),
-        )),
-    }
-}
-
 pub(super) fn predicate_truth(
     predicate: &SqlPredicate,
     row: &BoundRow<'_>,
@@ -283,143 +241,6 @@ pub(super) fn predicate_truth(
     predicate_truth_with(predicate, parameters, &|column| {
         resolve_column_with_type(row, column)
     })
-}
-
-pub(super) fn predicate_truth_with<'a>(
-    predicate: &SqlPredicate,
-    parameters: &[Value],
-    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
-) -> Result<Option<bool>> {
-    match &predicate.kind {
-        ExprKind::Value(SqlValue::Literal(Value::Bool(value))) => Ok(Some(*value)),
-        ExprKind::And(left, right) => match predicate_truth_with(left, parameters, resolve)? {
-            Some(false) => Ok(Some(false)),
-            Some(true) => predicate_truth_with(right, parameters, resolve),
-            None => match predicate_truth_with(right, parameters, resolve)? {
-                Some(false) => Ok(Some(false)),
-                Some(true) | None => Ok(None),
-            },
-        },
-        ExprKind::Or(left, right) => match predicate_truth_with(left, parameters, resolve)? {
-            Some(true) => Ok(Some(true)),
-            Some(false) => predicate_truth_with(right, parameters, resolve),
-            None => match predicate_truth_with(right, parameters, resolve)? {
-                Some(true) => Ok(Some(true)),
-                Some(false) | None => Ok(None),
-            },
-        },
-        ExprKind::Not(predicate) => {
-            Ok(predicate_truth_with(predicate, parameters, resolve)?.map(|value| !value))
-        }
-        ExprKind::Compare { left, op, right } => {
-            let left = left.require_column()?;
-            match &right.kind {
-                ExprKind::Value(right) => {
-                    let (left_value, scalar_type) = resolve(left)?;
-                    compare_values(
-                        left_value,
-                        &value_to_relational_as(bind_sql_value(right, parameters)?, scalar_type)?,
-                        *op,
-                    )
-                }
-                ExprKind::Column(right) => compare_values(resolve(left)?.0, resolve(right)?.0, *op),
-                _ => Err(SkeinError::Semantic(
-                    "unsupported comparison operand".to_owned(),
-                )),
-            }
-        }
-        ExprKind::InList {
-            left,
-            values,
-            negated,
-        } => {
-            let (left, scalar_type) = resolve(left.require_column()?)?;
-            let mut has_unknown = false;
-            let mut matched = false;
-            for value in values {
-                match compare_values(
-                    left,
-                    predicate_operand(value, parameters, scalar_type, resolve)?.as_ref(),
-                    SqlComparisonOp::Eq,
-                )? {
-                    Some(true) => matched = true,
-                    None => has_unknown = true,
-                    Some(false) => {}
-                }
-            }
-            let result = if matched {
-                Some(true)
-            } else if has_unknown {
-                None
-            } else {
-                Some(false)
-            };
-            Ok(result.map(|value| value != *negated))
-        }
-        ExprKind::Like {
-            left,
-            pattern,
-            case_insensitive,
-            negated,
-            escape,
-        } => {
-            let (left, scalar_type) = resolve(left.require_column()?)?;
-            if scalar_type != RelationalScalarType::Text {
-                return Err(SkeinError::Semantic(
-                    "LIKE and ILIKE require a TEXT column".to_string(),
-                ));
-            }
-            let pattern =
-                predicate_operand(pattern, parameters, RelationalScalarType::Text, resolve)?;
-            match (left, pattern.as_ref()) {
-                (RelationalValue::Null, _) | (_, RelationalValue::Null) => Ok(None),
-                (RelationalValue::Text(value), RelationalValue::Text(pattern)) => {
-                    let matched =
-                        skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
-                    Ok(Some(matched != *negated))
-                }
-                (RelationalValue::Overflow(_), _) => Err(SkeinError::Execution(
-                    "LIKE reached an overflow value without hydration".to_string(),
-                )),
-                _ => Err(SkeinError::Semantic(
-                    "LIKE and ILIKE require TEXT values".to_string(),
-                )),
-            }
-        }
-        ExprKind::IsNull {
-            expression: column,
-            negated,
-        } => Ok(Some(
-            matches!(resolve(column.require_column()?)?.0, RelationalValue::Null) != *negated,
-        )),
-        _ => Err(SkeinError::Semantic(
-            "unsupported relational predicate expression".to_owned(),
-        )),
-    }
-}
-
-fn predicate_operand<'a>(
-    expression: &Expr,
-    parameters: &[Value],
-    scalar_type: RelationalScalarType,
-    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
-) -> Result<std::borrow::Cow<'a, RelationalValue>> {
-    match &expression.kind {
-        ExprKind::Column(column) => Ok(std::borrow::Cow::Borrowed(resolve(column)?.0)),
-        ExprKind::Value(value) => Ok(std::borrow::Cow::Owned(value_to_relational_as(
-            bind_sql_value(value, parameters)?,
-            scalar_type,
-        )?)),
-        _ => Err(SkeinError::Semantic("unsupported predicate operand".into())),
-    }
-}
-
-pub(super) fn compare_values(
-    left: &RelationalValue,
-    right: &RelationalValue,
-    op: SqlComparisonOp,
-) -> Result<Option<bool>> {
-    compare_value_refs(left.as_ref(), right.as_ref(), op)
 }
 
 pub(super) fn resolve_column<'a>(
@@ -647,76 +468,6 @@ pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Res
         )));
     }
     Ok(())
-}
-
-pub(super) fn bind_bound(
-    bound: Option<SqlBound>,
-    parameters: &[Value],
-    name: &str,
-) -> Result<Option<u64>> {
-    bound
-        .map(|bound| match bound {
-            SqlBound::Literal(value) => Ok(value),
-            SqlBound::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
-                Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
-                Some(_) => Err(SkeinError::Semantic(format!(
-                    "PostgreSQL {name} parameter ${position} must be a non-negative integer"
-                ))),
-                None => Err(SkeinError::Semantic(format!(
-                    "missing PostgreSQL parameter ${position}"
-                ))),
-            },
-        })
-        .transpose()
-}
-
-pub(super) fn bind_sql_value(value: &SqlValue, parameters: &[Value]) -> Result<Value> {
-    match value {
-        SqlValue::Literal(value) => Ok(value.clone()),
-        SqlValue::Parameter(position) => parameters
-            .get(position.saturating_sub(1))
-            .cloned()
-            .ok_or_else(|| {
-                SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-            }),
-    }
-}
-
-pub(super) fn value_to_relational(value: Value) -> Result<RelationalValue> {
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
-            "relational SQL values must be scalar".to_string(),
-        )),
-    }
-}
-
-pub(super) fn value_to_relational_as(
-    value: Value,
-    scalar_type: RelationalScalarType,
-) -> Result<RelationalValue> {
-    super::coerce_relational_value(value_to_relational(value)?, scalar_type)
-}
-
-pub(super) fn relational_to_value(value: &RelationalValue) -> Result<Value> {
-    match value {
-        RelationalValue::Null => Ok(Value::Null),
-        RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
-        RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
-        RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
-        RelationalValue::Text(value) => Ok(Value::String(value.clone())),
-        RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
-        RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        RelationalValue::Overflow(_) => Err(SkeinError::Execution(
-            "overflow value reached projection without hydration".to_string(),
-        )),
-    }
 }
 
 pub(super) fn expression_name(expression: &SqlExpression) -> String {
