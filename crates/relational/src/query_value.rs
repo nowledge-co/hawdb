@@ -1,8 +1,26 @@
 //! Query parameter binding and scalar conversion without row or storage access.
 
 use skein_core::{Result, SkeinError, Value};
-use skein_sql::{SqlBound, SqlValue};
+use skein_sql::{Expr, ExprKind, SqlBound, SqlExpression, SqlValue};
 use skein_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
+
+pub fn expression_name(expression: &SqlExpression) -> String {
+    match expression {
+        Expr {
+            kind: ExprKind::Column(column),
+            ..
+        } => column.name.clone(),
+        Expr {
+            kind: ExprKind::Value(_),
+            ..
+        } => "value".to_string(),
+        Expr {
+            kind: ExprKind::Function { name, .. },
+            ..
+        } => name.clone(),
+        _ => "expression".to_owned(),
+    }
+}
 
 pub fn relational_ref_to_value(value: RelationalValueRef<'_>) -> Result<Value> {
     match value {

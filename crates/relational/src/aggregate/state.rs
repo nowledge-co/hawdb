@@ -1,13 +1,7 @@
-use super::{
-    aggregate_filter_matches, bind_sql_value, ensure_operator_item_fits, evaluate_row_expression,
-    expression_name, relational_to_value, resolve_column, BTreeSet, BoundRow,
-    OperatorMemoryTracker, RelationalValue, Result, SelectProjection, SkeinError, SqlColumnRef,
-    SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
-};
-use crate::sql::{Expr, ExprKind};
+use super::*;
 
 #[derive(Clone)]
-pub(super) struct AggregateProjectionState {
+pub struct AggregateProjectionState {
     pub(super) name: String,
     pub(super) expression: AggregateExpressionState,
 }
@@ -40,15 +34,15 @@ impl AggregateProjectionState {
         }
     }
 
-    pub(super) fn update(
+    pub fn update<'a>(
         &mut self,
-        row: &BoundRow<'_>,
+        row: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
         parameters: &[Value],
     ) -> Result<AggregateMemoryDelta> {
         self.expression.update(row, parameters)
     }
 
-    pub(super) fn finish(self) -> Result<(String, Value)> {
+    pub fn finish(self) -> Result<(String, Value)> {
         Ok((self.name, self.expression.finish()?))
     }
 }
@@ -86,9 +80,9 @@ pub(super) enum NumericAggregate {
 }
 
 #[derive(Default)]
-pub(super) struct AggregateMemoryDelta {
-    pub(super) added_bytes: usize,
-    pub(super) released_bytes: usize,
+pub struct AggregateMemoryDelta {
+    pub added_bytes: usize,
+    pub released_bytes: usize,
 }
 
 impl AggregateMemoryDelta {
@@ -213,9 +207,9 @@ impl AggregateExpressionState {
         }
     }
 
-    pub(super) fn update(
+    pub(super) fn update<'a>(
         &mut self,
-        row: &BoundRow<'_>,
+        row: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
         parameters: &[Value],
     ) -> Result<AggregateMemoryDelta> {
         match self {
@@ -376,10 +370,7 @@ pub(super) fn update_numeric_aggregate(
     Ok(AggregateMemoryDelta::between(previous_bytes, next_bytes))
 }
 
-pub(super) fn charge_aggregate_memory(
-    bytes: usize,
-    tracker: &mut OperatorMemoryTracker,
-) -> Result<()> {
+pub fn charge_aggregate_memory(bytes: usize, tracker: &mut OperatorMemoryTracker) -> Result<()> {
     ensure_operator_item_fits("RelationalAggregateExec", bytes, tracker)?;
     if tracker.would_exceed(bytes) {
         return Err(SkeinError::Execution(format!(
@@ -391,7 +382,7 @@ pub(super) fn charge_aggregate_memory(
     Ok(())
 }
 
-pub(super) fn aggregate_group_base_memory_bytes(
+pub fn aggregate_group_base_memory_bytes(
     key: &[RelationalValue],
     projections: &[AggregateProjectionState],
 ) -> usize {

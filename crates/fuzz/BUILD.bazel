@@ -121,6 +121,7 @@ test_suite(
         "//crates/relational:skein_relational_field_plan_fuzz_tests",
         "//crates/relational:skein_relational_statement_fuzz_tests",
         "//crates/relational:skein_relational_qualification_fuzz_tests",
+        "//crates/relational:skein_relational_aggregate_state_fuzz_tests",
         "//crates/route-ownership:skein_graph_route_ownership_fuzz_tests",
         "//crates/search:skein_search_block_encoding_fuzz_tests",
         "//crates/search:skein_search_candidate_evidence_fuzz_tests",

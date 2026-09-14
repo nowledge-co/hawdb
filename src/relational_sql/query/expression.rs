@@ -6,8 +6,8 @@ use super::{
 use crate::sql::{Expr, ExprKind};
 use skein_relational::predicate::predicate_truth_with;
 pub(super) use skein_relational::query_value::{
-    bind_bound, bind_sql_value, relational_ref_to_value, relational_to_value, value_to_relational,
-    value_to_relational_as,
+    bind_bound, bind_sql_value, expression_name, relational_ref_to_value, relational_to_value,
+    value_to_relational, value_to_relational_as,
 };
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
@@ -156,81 +156,16 @@ pub(super) fn resolve_projection_column_type(
     Ok(first)
 }
 
-pub(super) fn evaluate_row_expression(
-    expression: &SqlExpression,
-    row: &BoundRow<'_>,
-) -> Result<RelationalValue> {
-    match expression {
-        Expr {
-            kind: ExprKind::Column(column),
-            ..
-        } => Ok(resolve_column(row, column)?.clone()),
-        Expr {
-            kind: ExprKind::Value(SqlValue::Literal(value)),
-            ..
-        } => value_to_relational(value.clone()),
-        Expr {
-            kind: ExprKind::Value(SqlValue::Parameter(position)),
-            ..
-        } => Err(SkeinError::Semantic(format!(
-            "aggregate row expression cannot bind parameter ${position}"
-        ))),
-        Expr {
-            kind:
-                ExprKind::Function {
-                    name,
-                    arguments,
-                    distinct: false,
-                    filter: None,
-                },
-            ..
-        } if name == "octet_length" => {
-            let [SqlFunctionArgument::Expression(Expr {
-                kind: ExprKind::Column(column),
-                ..
-            })] = arguments.as_slice()
-            else {
-                return Err(SkeinError::Semantic(
-                    "OCTET_LENGTH requires exactly one column".to_string(),
-                ));
-            };
-            match resolve_column(row, column)? {
-                RelationalValue::Null => Ok(RelationalValue::Null),
-                RelationalValue::Text(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Bytea(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
-                    i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
-                )),
-                _ => Err(SkeinError::Semantic(
-                    "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
-                )),
-            }
-        }
-        Expr {
-            kind: ExprKind::Function { name, .. },
-            ..
-        } => Err(SkeinError::Semantic(format!(
-            "unsupported aggregate row function {name}"
-        ))),
-        _ => Err(SkeinError::Semantic(
-            "unsupported scalar expression".to_owned(),
-        )),
-    }
-}
-
 pub(super) fn aggregate_filter_matches(
     filter: Option<&SqlPredicate>,
     row: &BoundRow<'_>,
     parameters: &[Value],
 ) -> Result<bool> {
-    match filter {
-        Some(filter) => Ok(predicate_truth(filter, row, parameters)? == Some(true)),
-        None => Ok(true),
-    }
+    skein_relational::aggregate::aggregate_filter_matches(
+        filter,
+        &|column| resolve_column_with_type(row, column),
+        parameters,
+    )
 }
 
 pub(super) fn predicate_truth(
@@ -468,24 +403,6 @@ pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Res
         )));
     }
     Ok(())
-}
-
-pub(super) fn expression_name(expression: &SqlExpression) -> String {
-    match expression {
-        Expr {
-            kind: ExprKind::Column(column),
-            ..
-        } => column.name.clone(),
-        Expr {
-            kind: ExprKind::Value(_),
-            ..
-        } => "value".to_string(),
-        Expr {
-            kind: ExprKind::Function { name, .. },
-            ..
-        } => name.clone(),
-        _ => "expression".to_owned(),
-    }
 }
 
 pub(super) fn account_intermediate(total: &mut usize, rows: usize, limit: usize) -> Result<()> {

@@ -35,7 +35,7 @@ impl ScalarState {
                 AggregateExpressionState::First { value, .. }
                 | AggregateExpressionState::Numeric { value, .. } => value.as_ref().map_or(
                     std::mem::size_of::<Value>(),
-                    super::super::aggregate_state::relational_value_memory_bytes,
+                    super::super::state::relational_value_memory_bytes,
                 ),
                 AggregateExpressionState::Count { .. } => std::mem::size_of::<Value>(),
                 AggregateExpressionState::Coalesce(states) => states
@@ -95,7 +95,7 @@ pub(super) fn coerce_value(
         {
             value = RelationalValue::DoublePrecision(integer as f64);
         }
-        value = super::super::super::coerce_relational_value(value, target)?;
+        value = crate::coerce_relational_value(value, target)?;
         if value.scalar_type().is_some_and(|actual| actual != target) {
             return Err(SkeinError::Semantic(
                 "HAVING operands have incompatible scalar types".into(),

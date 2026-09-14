@@ -3,8 +3,8 @@ pub(crate) use skein_relational::field_plan::{
     resolve_relational_order_target, RelationalOrderTarget,
 };
 pub(crate) use skein_relational::{
-    bind_relational_value, coerce_relational_value, compile_append_explain_sql,
-    compile_append_select_sql, compile_append_statement_sql, compile_relational_statement_sql,
+    bind_relational_value, compile_append_explain_sql, compile_append_select_sql,
+    compile_append_statement_sql, compile_relational_statement_sql,
     compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
     RelationalReturningProjection,
 };
