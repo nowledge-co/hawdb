@@ -499,12 +499,13 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
-        let mut segments = SegmentArtifactBuilder::new_with_memory(
+        let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
             generation,
             &self.metadata_fields,
             &self.options,
             self.memory.clone(),
+            self.task_context.clone(),
         )?;
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
@@ -582,7 +583,7 @@ impl SearchOutOfCoreGenerationWriter {
             self.embedding_dimension,
             self.options.embedding_manifest.as_ref(),
         )?;
-        let encoding = DocumentEncoding::new(&document)?;
+        let encoding = DocumentEncoding::new_with_context(&document, Some(&self.task_context))?;
         let record_bytes = encoding.len() as u64;
         if record_bytes > self.options.max_record_bytes.get() {
             return Err(SkeinError::Storage(format!(

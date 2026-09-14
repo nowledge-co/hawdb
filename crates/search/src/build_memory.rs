@@ -118,6 +118,40 @@ pub(crate) fn checked_mul(left: usize, right: usize) -> Result<usize> {
     left.checked_mul(right).ok_or_else(overflow)
 }
 
+pub(crate) fn reserve_capacity<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    lease: &mut QueryMemoryLease,
+) -> Result<()> {
+    if capacity <= values.capacity() {
+        return Ok(());
+    }
+    let old = checked_mul(values.capacity(), size_of::<T>())?;
+    let replacement = checked_mul(capacity, size_of::<T>())?;
+    // The allocator can keep the old allocation alive while replacing it.
+    lease.grow(replacement)?;
+    if let Err(error) = values.try_reserve_exact(capacity - values.len()) {
+        lease.shrink(replacement);
+        return Err(SkeinError::Execution(format!(
+            "search build capacity allocation failed: {error}"
+        )));
+    }
+    if values.capacity() > capacity {
+        return Err(SkeinError::Execution(
+            "search build capacity exceeded admission".into(),
+        ));
+    }
+    lease.shrink(old);
+    Ok(())
+}
+
+pub(crate) fn grow_slots<T>(values: &mut Vec<T>, lease: &mut QueryMemoryLease) -> Result<()> {
+    if values.len() == values.capacity() {
+        reserve_capacity(values, checked_mul(values.capacity().max(2), 2)?, lease)?;
+    }
+    Ok(())
+}
+
 fn overflow() -> SkeinError {
     SkeinError::Execution("search build memory accounting overflow".into())
 }

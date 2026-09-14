@@ -1230,7 +1230,7 @@ fn streaming_generation_recovers_generation_after_active_manifest_corruption() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn document(number: usize) -> SearchDocument {
+pub(super) fn document(number: usize) -> SearchDocument {
     SearchDocument {
         id: format!("memory:{number:06}"),
         title: format!("Graph storage {number}"),
@@ -1265,7 +1265,7 @@ fn stage_directories(root: &Path) -> usize {
         .count()
 }
 
-fn test_dir(name: &str) -> PathBuf {
+pub(super) fn test_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

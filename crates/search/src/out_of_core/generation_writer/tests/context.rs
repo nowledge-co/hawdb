@@ -175,3 +175,56 @@ fn cancellation_during_spool_read_drops_all_staged_outputs_and_charges() {
     assert_eq!(published_files(&root), before);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn artifact_admission_and_compression_cancellation_preserve_the_active_generation() {
+    use super::super::artifacts::encoding::evidence;
+    for cancel in [false, true] {
+        let root = test_dir("context_compression_failure");
+        let previous = document(0);
+        let mut initial =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        initial.push(previous.clone()).unwrap();
+        let generation = initial.finish().unwrap().generation;
+        let before = published_files(&root);
+        let task = context(if cancel {
+            32 * 1024 * 1024
+        } else {
+            4 * 1024 * 1024
+        });
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &root,
+            Default::default(),
+            task.clone(),
+        )
+        .unwrap();
+        let memory = writer.memory.clone();
+        writer.push(document(1)).unwrap();
+        evidence::take_starts();
+        if cancel {
+            evidence::cancel_on_output(task.cancellation().clone());
+        }
+        let error = writer.finish().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(if cancel { "cancel" } else { "budget" }),
+            "{error}"
+        );
+        assert_eq!(evidence::take_starts(), usize::from(cancel));
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        assert_eq!(stage_directories(&root), 0);
+        assert_eq!(published_files(&root), before);
+        let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(reader.generation(), generation);
+        assert_eq!(
+            reader
+                .hydrate_documents(std::slice::from_ref(&previous.id))
+                .unwrap()
+                .documents,
+            vec![previous]
+        );
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -132,3 +132,23 @@ fn delta_source_identity_capacity_is_part_of_the_owned_input() {
         + MAP_ENTRY_BYTES;
     assert_eq!(projection_row_bytes(&row).unwrap(), expected);
 }
+
+#[test]
+fn replacement_capacity_is_admitted_with_the_old_allocation_still_owned() {
+    for limit in [23, 24] {
+        let memory = memory(limit);
+        let mut lease = memory.retained.reserve(0).unwrap();
+        let mut values = Vec::<u8>::new();
+        reserve_capacity(&mut values, 8, &mut lease).unwrap();
+        values.extend_from_slice(b"original");
+        let result = reserve_capacity(&mut values, 16, &mut lease);
+        assert_eq!(result.is_ok(), limit == 24);
+        assert_eq!(values, b"original");
+        assert_eq!(values.capacity(), if limit == 24 { 16 } else { 8 });
+        assert_eq!(lease.bytes(), values.capacity());
+        assert_eq!(memory.ledger.snapshot().used_bytes, lease.bytes());
+        drop(values);
+        drop(lease);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}

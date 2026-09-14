@@ -66,6 +66,23 @@ impl OwnedPath {
         Self::finish_with_task(value, lease, Some(task))
     }
 
+    pub(crate) fn with_extension(
+        path: &Path,
+        extension: &str,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(task)?;
+        // Path::_with_extension reserves the result up front. Include the old
+        // extension in this bound while preserving native path semantics.
+        let bytes = add(
+            path.as_os_str().as_encoded_bytes().len(),
+            add(extension.len(), 1)?,
+        )?;
+        let lease = memory.retained.reserve(bytes)?;
+        Self::finish(path.with_extension(extension), lease, task)
+    }
+
     fn finish_with_task(
         value: PathBuf,
         lease: QueryMemoryLease,

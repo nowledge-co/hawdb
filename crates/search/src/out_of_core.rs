@@ -2194,19 +2194,29 @@ fn write_out_of_core_sidecars(
 }
 
 fn append_sidecar_payload(
-    file: &mut File,
+    file: &mut impl Write,
     offset: &mut u64,
     payload: &[u8],
     entry_count: usize,
 ) -> Result<SearchOutOfCoreRange> {
+    append_sidecar_payload_with_context(file, offset, payload, entry_count, None)
+}
+
+fn append_sidecar_payload_with_context(
+    file: &mut impl Write,
+    offset: &mut u64,
+    payload: &[u8],
+    entry_count: usize,
+    task: Option<&skein_core::RuntimeTaskContext>,
+) -> Result<SearchOutOfCoreRange> {
     let length = u64::try_from(payload.len()).map_err(|_| {
         SkeinError::Storage("search sidecar payload length exceeds u64".to_string())
     })?;
-    file.write_all(payload)?;
+    let checksum = crate::build_control::write_checksummed(file, payload, task)?;
     let range = SearchOutOfCoreRange {
         offset: *offset,
         length,
-        checksum: checksum_bytes(payload),
+        checksum,
         entry_count,
     };
     *offset = offset

@@ -25,9 +25,30 @@ pub(crate) struct SegmentEncoding<'a, T> {
 }
 
 impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
+    #[cfg(test)]
     pub(crate) fn new(documents: &'a [T], kind: SegmentKind) -> Result<Self> {
+        Self::new_with_context(documents, kind, None)
+    }
+
+    pub(crate) fn new_with_context(
+        documents: &'a [T],
+        kind: SegmentKind,
+        task: Option<&skein_core::RuntimeTaskContext>,
+    ) -> Result<Self> {
         let mut length = EncodedLength::default();
-        write_segment(&mut length, documents, kind).map_err(|_| {
+        write_segment(
+            &mut CheckedSink {
+                sink: &mut length,
+                task,
+            },
+            documents,
+            kind,
+        )
+        .map_err(|_| {
+            if let Some(error) = task.and_then(|task| crate::build_control::checkpoint(task).err())
+            {
+                return error;
+            }
             SkeinError::Storage(format!(
                 "search {} segment encoded size overflow",
                 kind.name()
