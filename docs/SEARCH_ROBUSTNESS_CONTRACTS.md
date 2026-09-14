@@ -157,8 +157,11 @@ document after reopening. Against main `366828ec`:
 
 These count allocator requests, including reallocations, rather than live memory,
 RSS, native zstd allocations or throughput. The remaining largest requests match
-the geometric decoded-input buffer. The unchanged baseline fails the regression's
-allocation bound after both complete round trips succeed.
+the geometric decoded-input buffer. The observation uses the instrumentation retained at `6cd5df15`. The production
+encoder is unchanged in the final revision; its regression shares the cumulative
+allocation counter with the independent identifier work in PR #482. It requires
+total requests below eight times source bytes, a bound the unchanged baseline
+fails after both complete round trips succeed.
 
 Coverage retains an independent legacy text/envelope oracle for all three payloads:
 empty fields, Unicode, separators, float edge cases, optional/global vector

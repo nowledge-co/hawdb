@@ -16,8 +16,8 @@ fn splitter_removes_source_sized_character_scratch() {
         ("camel_digits", "HTTPServer42".repeat(8192)),
         ("unicode_expansion", "\u{130}\u{4e2d}\u{e9}".repeat(32768)),
     ] {
-        let (expected, (old_bytes, _)) = measure(|| identifier::reference::identifier_parts(&raw));
-        let (actual, (new_bytes, _)) = measure(|| identifier::identifier_parts(&raw));
+        let (expected, old_bytes) = measure(|| identifier::reference::identifier_parts(&raw));
+        let (actual, new_bytes) = measure(|| identifier::identifier_parts(&raw));
         assert_eq!(actual, expected, "{name}");
         let char_bytes = raw.chars().count() * std::mem::size_of::<char>();
         assert!(

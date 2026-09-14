@@ -33,7 +33,7 @@ fn round_trip(bytes: usize, report: bool) -> usize {
     writer.push(source.clone()).unwrap();
     // This window includes spool decode, analysis, segment encoding and
     // publication. Caller-owned input and subsequent hydration are excluded.
-    let (result, (total, largest)) = measure(|| writer.finish());
+    let (result, total) = measure(|| writer.finish());
     assert_eq!(result.unwrap().document_count, 1);
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
     assert_eq!(
@@ -44,9 +44,9 @@ fn round_trip(bytes: usize, report: bool) -> usize {
         vec![source]
     );
     if report {
-        println!("source_bytes={bytes} requested_bytes={total} largest_request={largest}");
+        println!("source_bytes={bytes} requested_bytes={total}");
     }
-    largest
+    total
 }
 
 #[test]
@@ -54,12 +54,12 @@ fn generation_finish_does_not_allocate_an_encoded_source_copy() {
     // Initialize shared analyzer state before observing allocator requests.
     round_trip(1024, false);
     let results = [1024 * 1024, 3 * 1024 * 1024].map(|bytes| (bytes, round_trip(bytes, true)));
-    for (bytes, largest) in results {
-        // The decoded source still needs a geometrically grown Vec. A whole
-        // hex-encoded segment or document copy exceeds that resident unit.
+    for (bytes, requested) in results {
+        // The complete finish path still allocates decoded input and analyzer
+        // state. Its cumulative requests must leave out the old encoded copies.
         assert!(
-            largest <= bytes.next_power_of_two(),
-            "source={bytes}, largest={largest}"
+            requested <= bytes * 8,
+            "source={bytes}, requested={requested}"
         );
     }
 }

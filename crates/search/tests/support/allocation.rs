@@ -4,13 +4,13 @@ use std::cell::Cell;
 struct CountingAllocator;
 
 thread_local! {
-    static REQUESTED_BYTES: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static REQUESTED_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 fn record(size: usize) {
     let _ = REQUESTED_BYTES.try_with(|bytes| {
-        if let Some((total, largest)) = bytes.get() {
-            bytes.set(Some((total.saturating_add(size), largest.max(size))));
+        if let Some(total) = bytes.get() {
+            bytes.set(Some(total.saturating_add(size)));
         }
     });
 }
@@ -45,14 +45,14 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-pub(super) fn measure<T>(run: impl FnOnce() -> T) -> (T, (usize, usize)) {
+pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
             REQUESTED_BYTES.with(|bytes| bytes.set(None));
         }
     }
-    REQUESTED_BYTES.with(|bytes| assert!(bytes.replace(Some((0, 0))).is_none()));
+    REQUESTED_BYTES.with(|bytes| assert!(bytes.replace(Some(0)).is_none()));
     let reset = Reset;
     let result = run();
     let requested = REQUESTED_BYTES.with(|bytes| bytes.get().unwrap());
