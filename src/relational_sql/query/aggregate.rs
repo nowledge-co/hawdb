@@ -11,11 +11,10 @@ use super::{
     RelationalIndexRuntime, RelationalJoinPlanningOutcome, RelationalPhysicalJoinExecution,
     RelationalPipelineState, RelationalQueryLimits, RelationalQueryOutput, RelationalRowRuntime,
     RelationalSortKey, RelationalSortRecord, RelationalSqlStageTimings, RelationalState,
-    RelationalTableSchema, RelationalValue, Result, Row, SelectProjection, SelectStatement,
-    SkeinError, SqlColumnRef, SqlFunctionArgument, SqlNullOrder, SqlOrderDirection, SqlPredicate,
-    Value,
+    RelationalTableSchema, RelationalValue, Result, Row, SelectStatement, SkeinError, SqlColumnRef,
+    SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
-use crate::sql::{Expr, ExprKind};
+pub(super) use skein_relational::field_plan::single_count_distinct_column;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_aggregate_select<'a>(
@@ -298,45 +297,6 @@ pub(super) fn execute_aggregate_select<'a>(
             aggregate_input_rows,
             execution_memory,
         )],
-    })
-}
-
-pub(super) fn single_count_distinct_column(
-    select: &SelectStatement,
-) -> Option<(&SqlColumnRef, String, Option<&SqlPredicate>)> {
-    let [SelectProjection::Expression { expression, alias }] = select.projection.as_slice() else {
-        return None;
-    };
-    let Expr {
-        kind:
-            ExprKind::Function {
-                name,
-                arguments,
-                distinct: true,
-                filter,
-            },
-        ..
-    } = expression
-    else {
-        return None;
-    };
-    let [SqlFunctionArgument::Expression(Expr {
-        kind: ExprKind::Column(column),
-        ..
-    })] = arguments.as_slice()
-    else {
-        return None;
-    };
-    (name == "count"
-        && select.having.is_none()
-        && select.group_by.is_empty()
-        && select.order_by.is_empty())
-    .then(|| {
-        (
-            column,
-            alias.clone().unwrap_or_else(|| "count".to_string()),
-            filter.as_deref(),
-        )
     })
 }
 

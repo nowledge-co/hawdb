@@ -1,19 +1,20 @@
 use super::{
-    aggregate_filter_matches, bind_bound, map_payload_bytes, order_by_uses_expression_alias,
-    project_bound_row, project_typed_locator, relational_locator_layout,
-    relational_physical_join_plan_locator_layout, resolve_column, resolve_relational_order_target,
-    stream_distinct_batches, stream_top_n_batches, typed_row_set_locator, visit_relational_rows,
-    AccountedBindingBatch, BatchControl, BindingBatch, BindingBatchSource,
-    BlockingExecutionContext, BlockingOperatorMemoryReport, BoundRow, Catalog, ExecutionLimit,
-    ExecutionObserver, ExecutorBinding, ExternalTopN, NonZeroUsize, PhysicalPlan, PlannedJoin,
-    QueryMemoryLedger, QueryRows, RefCell, RelationalBaseAccess, RelationalIndexRuntime,
-    RelationalOrderTarget, RelationalPhysicalJoinExecution, RelationalPipelineState,
-    RelationalQueryLimits, RelationalRowRuntime, RelationalSortKey, RelationalSortRecord,
-    RelationalState, RelationalTableSchema, RelationalValue, Result, Row, SelectProjection,
-    SelectStatement, SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder,
-    SqlOrderDirection, SqlPredicate, Value,
+    aggregate_filter_matches, bind_bound, order_by_uses_expression_alias, project_bound_row,
+    project_typed_locator, relational_locator_layout, relational_physical_join_plan_locator_layout,
+    resolve_column, resolve_relational_order_target, stream_distinct_batches, stream_top_n_batches,
+    typed_row_set_locator, visit_relational_rows, AccountedBindingBatch, BatchControl,
+    BindingBatch, BindingBatchSource, BlockingExecutionContext, BlockingOperatorMemoryReport,
+    BoundRow, Catalog, ExecutionLimit, ExecutionObserver, ExecutorBinding, ExternalTopN,
+    NonZeroUsize, PhysicalPlan, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
+    RelationalBaseAccess, RelationalIndexRuntime, RelationalOrderTarget,
+    RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
+    RelationalRowRuntime, RelationalSortKey, RelationalSortRecord, RelationalState,
+    RelationalTableSchema, RelationalValue, Result, Row, SelectProjection, SelectStatement,
+    SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder, SqlOrderDirection,
+    SqlPredicate, Value,
 };
 use crate::sql::{Expr, ExprKind};
+pub(super) use skein_relational::query_output::push_relational_output;
 
 pub(super) struct StreamingProjectionOutput {
     pub(super) rows: QueryRows,
@@ -495,29 +496,6 @@ pub(super) fn consume_projected_batch(
         push_relational_output(binding.values, output, payload_bytes, limits)?;
     }
     Ok(BatchControl::Continue)
-}
-
-pub(super) fn push_relational_output(
-    row: Row,
-    output: &mut Vec<Row>,
-    payload_bytes: &mut usize,
-    limits: RelationalQueryLimits,
-) -> Result<()> {
-    if output.len() >= limits.max_output_rows {
-        return Err(SkeinError::Execution(format!(
-            "relational SQL output exceeds max_output_rows {}",
-            limits.max_output_rows
-        )));
-    }
-    *payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
-    if *payload_bytes > limits.max_output_payload_bytes {
-        return Err(SkeinError::Execution(format!(
-            "relational SQL output exceeds max_output_payload_bytes {}",
-            limits.max_output_payload_bytes
-        )));
-    }
-    output.push(row);
-    Ok(())
 }
 
 pub(super) fn relational_input_plan() -> PhysicalPlan {

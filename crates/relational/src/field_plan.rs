@@ -163,6 +163,45 @@ pub fn plan_relational_field_plan(
     ))
 }
 
+pub fn single_count_distinct_column(
+    select: &SelectStatement,
+) -> Option<(&SqlColumnRef, String, Option<&SqlPredicate>)> {
+    let [SelectProjection::Expression { expression, alias }] = select.projection.as_slice() else {
+        return None;
+    };
+    let Expr {
+        kind:
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: true,
+                filter,
+            },
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let [SqlFunctionArgument::Expression(Expr {
+        kind: ExprKind::Column(column),
+        ..
+    })] = arguments.as_slice()
+    else {
+        return None;
+    };
+    (name == "count"
+        && select.having.is_none()
+        && select.group_by.is_empty()
+        && select.order_by.is_empty())
+    .then(|| {
+        (
+            column,
+            alias.clone().unwrap_or_else(|| "count".to_string()),
+            filter.as_deref(),
+        )
+    })
+}
+
 pub fn projection_contains_aggregate(projection: &SelectProjection) -> bool {
     match projection {
         SelectProjection::Expression { expression, .. } => {

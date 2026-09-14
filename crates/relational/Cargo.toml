@@ -8,5 +8,6 @@ license.workspace = true
 [dependencies]
 skein-core = { path = "../core" }
 skein-executor = { path = "../executor" }
+skein-optimizer = { path = "../optimizer" }
 skein-sql = { path = "../sql" }
 skein-storage = { path = "../storage" }

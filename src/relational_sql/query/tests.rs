@@ -267,16 +267,6 @@ fn constrained_hash_join_memory() -> skein_executor::ExecutionMemoryConfig {
 }
 
 #[test]
-fn explain_estimated_rows_never_render_zero() {
-    assert_eq!(
-        optional_estimated_rows_explain_value(Some(0)),
-        Value::Int(1)
-    );
-    assert_eq!(optional_estimated_rows_explain_value(None), Value::Null);
-    assert_eq!(optional_usize_explain_value(Some(0)), Value::Int(0));
-}
-
-#[test]
 fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
     let state = RelationalState::default();
     let memory = skein_executor::ExecutionMemoryConfig::default();

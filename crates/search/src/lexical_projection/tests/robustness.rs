@@ -50,6 +50,175 @@ impl Drop for Fixture {
     }
 }
 
+fn assert_delta_snapshot(
+    fixture: &Fixture,
+    delta: &LexicalMiniDelta,
+    documents: &BTreeMap<String, SearchDocument>,
+) {
+    let tokens = |document: &SearchDocument| {
+        analysis_tests::reference_document_tokens(document, &fixture.analyzer)
+    };
+    let terms = fixture
+        .documents
+        .values()
+        .chain(documents.values())
+        .flat_map(tokens)
+        .collect::<BTreeSet<_>>();
+    analysis_tests::assert_projection_scores(
+        &fixture.reader,
+        delta,
+        documents,
+        &fixture.analyzer,
+        &terms,
+    );
+    let expected_len = documents
+        .values()
+        .map(|document| tokens(document).len() as u64)
+        .sum();
+    assert_eq!(
+        delta.projected_corpus(
+            fixture.reader.manifest.document_count,
+            fixture.reader.manifest.total_document_len,
+        ),
+        (documents.len(), expected_len),
+    );
+    let resident = |document: &SearchDocument| {
+        document.id.len() as u64
+            + 64
+            + tokens(document)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .iter()
+                .map(|term| term.len() as u64 + 32)
+                .sum::<u64>()
+    };
+    let expected_bytes = delta
+        .upserts
+        .keys()
+        .map(|id| resident(&documents[id]) + fixture.documents.get(id).map_or(0, resident))
+        .chain(
+            delta
+                .deletes
+                .keys()
+                .map(|id| resident(&fixture.documents[id])),
+        )
+        .sum::<u64>();
+    assert_eq!(delta.resident_bytes, expected_bytes);
+}
+
+#[test]
+fn retained_delta_snapshots_survive_mutations_and_budget_rejection() {
+    let fixture = Fixture::new("delta-snapshots");
+    let config = LexicalProjectionConfig::default();
+    let mut active = Arc::new(LexicalMiniDelta::default());
+    let mut documents = fixture.documents.clone();
+    let mut retained = Vec::new();
+    for next in [
+        Some(document("a", "graph", "first replacement")),
+        Some(document("a", "memory", "second replacement")),
+        None,
+        Some(document("a", "graph", "restored storage")),
+    ] {
+        retained.push((Arc::clone(&active), documents.clone()));
+        if let Some(next) = next {
+            Arc::make_mut(&mut active)
+                .upsert(&next, documents.get("a"), &fixture.analyzer, config)
+                .unwrap();
+            documents.insert("a".into(), next);
+        } else {
+            assert!(Arc::make_mut(&mut active)
+                .delete("a", documents.get("a"), &fixture.analyzer, config)
+                .unwrap());
+            documents.remove("a");
+        }
+        assert_delta_snapshot(&fixture, &active, &documents);
+        for (snapshot, expected) in &retained {
+            assert_delta_snapshot(&fixture, snapshot, expected);
+        }
+    }
+    let exact = LexicalProjectionConfig {
+        mini_delta_bytes: NonZeroU64::new(active.resident_bytes).unwrap(),
+        ..config
+    };
+    let next = documents["a"].clone();
+    retained.push((Arc::clone(&active), documents.clone()));
+    Arc::make_mut(&mut active)
+        .upsert(&next, None, &fixture.analyzer, exact)
+        .unwrap();
+    let short = LexicalProjectionConfig {
+        mini_delta_bytes: NonZeroU64::new(active.resident_bytes - 1).unwrap(),
+        ..config
+    };
+    assert!(Arc::make_mut(&mut active)
+        .upsert(&next, None, &fixture.analyzer, short)
+        .is_err());
+    assert!(!Arc::make_mut(&mut active)
+        .delete("b", documents.get("b"), &fixture.analyzer, short)
+        .unwrap());
+    let invalid = document("a", "graph", &"x".repeat(4097));
+    assert!(Arc::make_mut(&mut active)
+        .upsert(&invalid, None, &fixture.analyzer, config)
+        .is_err());
+    assert_delta_snapshot(&fixture, &active, &documents);
+    for (snapshot, expected) in retained {
+        assert_delta_snapshot(&fixture, &snapshot, &expected);
+    }
+}
+
+#[test]
+#[ignore = "manual local mini-delta snapshot lifecycle campaign"]
+fn mini_delta_snapshot_lifecycle_campaign() {
+    let fixture = Fixture::new("delta-snapshot-campaign");
+    let config = LexicalProjectionConfig::default();
+    for seed in [392_u64, 7, 0x5eed] {
+        let mut random = seed;
+        let mut active = Arc::new(LexicalMiniDelta::default());
+        let mut documents = fixture.documents.clone();
+        let mut retained = std::collections::VecDeque::new();
+        for step in 0..64 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let id = ["a", "b", "new"][(random as usize) % 3];
+            retained.push_back((Arc::clone(&active), documents.clone()));
+            if retained.len() > 4 {
+                retained.pop_front();
+            }
+            match (random >> 8) % 4 {
+                0 => {
+                    assert!(Arc::make_mut(&mut active)
+                        .delete(id, documents.get(id), &fixture.analyzer, config)
+                        .unwrap());
+                    documents.remove(id);
+                }
+                1 => {
+                    let invalid = document(id, "graph", &"x".repeat(4097));
+                    assert!(Arc::make_mut(&mut active)
+                        .upsert(&invalid, documents.get(id), &fixture.analyzer, config)
+                        .is_err());
+                }
+                _ => {
+                    let body = [
+                        "graph graph",
+                        "storage memory",
+                        "HTTPServerV2",
+                        "\u{77e5}\u{8bc6}\u{56fe}\u{8c31}",
+                    ][(random >> 16) as usize % 4];
+                    let next = document(id, if step % 2 == 0 { "graph" } else { "" }, body);
+                    Arc::make_mut(&mut active)
+                        .upsert(&next, documents.get(id), &fixture.analyzer, config)
+                        .unwrap();
+                    documents.insert(id.into(), next);
+                }
+            }
+            assert_delta_snapshot(&fixture, &active, &documents);
+            for (snapshot, expected) in &retained {
+                assert_delta_snapshot(&fixture, snapshot, expected);
+            }
+        }
+    }
+}
+
 #[test]
 fn old_analyzer_fingerprints_are_not_reused_for_supplementary_han_ngrams() {
     let fixture = Fixture::new("analyzer-fingerprint");

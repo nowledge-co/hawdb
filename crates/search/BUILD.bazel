@@ -131,6 +131,18 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_search_lexical_delta_allocation_tests",
+    crate_root = "tests/lexical_delta_allocation.rs",
+    srcs = [
+        "tests/lexical_delta_allocation.rs",
+        "tests/support/allocation.rs",
+    ],
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    deps = [":skein_search"],
+)
+
+rust_test(
     name = "skein_search_identifier_allocation_tests",
     crate_root = "tests/identifier_allocation.rs",
     srcs = [
@@ -290,6 +302,22 @@ rust_test(
         "--exact",
         "--ignored",
         "--nocapture",
+    ],
+    crate = ":skein_search",
+    crate_features = _SEARCH_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_search_mini_delta_snapshot_fuzz_tests",
+    tags = ["manual"],
+    args = [
+        "lexical_projection::tests::robustness::mini_delta_snapshot_lifecycle_campaign",
+        "--exact",
+        "--ignored",
     ],
     crate = ":skein_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,

@@ -172,6 +172,7 @@ mod query_first_support;
 mod query_observability;
 mod read_transactions;
 mod relational_cross_join;
+mod relational_explain_output;
 mod relational_from_scopes;
 mod relational_having;
 mod relational_ordering;

@@ -3,8 +3,6 @@ use skein_relational::index_runtime::RelationalIndexStoreReader;
 use skein_storage::relational_index_view::RelationalIndexReadViewReport;
 use skein_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
-pub(crate) use skein_relational::index_runtime::RelationalIndexExecutionEvidence;
-
 pub(crate) type RelationalIndexReadMode<'a> =
     skein_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
 pub(crate) type RelationalIndexRuntime<'a> =

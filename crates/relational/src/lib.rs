@@ -16,6 +16,11 @@ pub mod predicate;
 #[doc(hidden)]
 pub mod query_value;
 
+#[doc(hidden)]
+pub mod explain;
+#[doc(hidden)]
+pub mod query_output;
+
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
     format_append_explain, project_append_rows, AppendExplainPlan, AppendSelectPlan,
