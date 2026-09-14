@@ -1267,6 +1267,7 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
 pub(super) struct LexicalProjectionWriter {
     config: LexicalProjectionConfig,
     build_context: Option<(BuildMemory, RuntimeTaskContext)>,
+    analyzer_workspace: Option<Arc<crate::analyzer_workspace::Workspace>>,
 }
 
 impl LexicalProjectionWriter {
@@ -1274,11 +1275,20 @@ impl LexicalProjectionWriter {
         Self {
             config,
             build_context: None,
+            analyzer_workspace: None,
         }
     }
 
     pub(super) fn with_context(mut self, memory: BuildMemory, task: RuntimeTaskContext) -> Self {
         self.build_context = Some((memory, task));
+        self
+    }
+
+    pub(super) fn with_analyzer_workspace(
+        mut self,
+        workspace: Option<Arc<crate::analyzer_workspace::Workspace>>,
+    ) -> Self {
+        self.analyzer_workspace = workspace;
         self
     }
 
@@ -1343,12 +1353,13 @@ impl LexicalProjectionWriter {
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut consume = |document: &SearchDocument| -> Result<()> {
-            let analyzed = document_frequency::analyze(
+            let analyzed = document_frequency::analyze_with_workspace(
                 document,
                 analyzer,
                 &mut runs,
                 &mut chunk,
                 &mut chunk_bytes,
+                self.analyzer_workspace.as_deref(),
             )?;
             let document_len = analyzed.document_len();
             document_count = document_count.saturating_add(1);
