@@ -3,6 +3,8 @@
 mod append;
 #[doc(hidden)]
 pub mod field_plan;
+#[doc(hidden)]
+pub mod index_runtime;
 mod statement;
 
 #[doc(hidden)]

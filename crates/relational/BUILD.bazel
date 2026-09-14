@@ -64,6 +64,22 @@ rust_test(
 )
 
 rust_test(
+    name = "skein_relational_index_runtime_fuzz_tests",
+    args = [
+        "index_runtime::tests::index_runtime_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_relational",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "skein_relational_field_plan_fuzz_tests",
     args = [
         "field_plan::tests::field_planning_differential_campaign",
