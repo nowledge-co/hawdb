@@ -1,6 +1,8 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 #[doc(hidden)]
 pub mod candidate_evidence;
+#[doc(hidden)]
+pub mod candidate_evidence_cli;
 #[cfg(feature = "vector-search")]
 use simsimd::SpatialSimilarity;
 use skein_core::{Catalog, Result, RuntimeCapabilities, RuntimeCapability, SkeinError, Value};
