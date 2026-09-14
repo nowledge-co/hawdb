@@ -14,6 +14,9 @@ pub mod previous_wrapper_preflight;
 pub mod graph_route;
 
 #[doc(hidden)]
+pub mod graph_route_cli;
+
+#[doc(hidden)]
 pub mod replacement_summary;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
