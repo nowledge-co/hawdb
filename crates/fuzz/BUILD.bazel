@@ -122,6 +122,7 @@ test_suite(
         "//crates/relational:skein_relational_explain_report_fuzz_tests",
         "//crates/relational:skein_relational_row_runtime_fuzz_tests",
         "//crates/relational:skein_relational_field_plan_fuzz_tests",
+        "//crates/relational:skein_relational_physical_plan_fuzz_tests",
         "//crates/relational:skein_relational_index_runtime_fuzz_tests",
         "//crates/relational:skein_relational_statement_fuzz_tests",
         "//crates/relational:skein_relational_qualification_fuzz_tests",

@@ -18,6 +18,76 @@ mod spool_encoding;
 mod term_policy;
 
 #[test]
+fn descriptor_file_budget_preserves_previous_generation_and_accepts_exact_size() {
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let reference_root = test_dir("descriptor_file_budget_reference");
+    let _reference_cleanup = Cleanup(reference_root.clone());
+    let mut source = document(0);
+    source.metadata.insert("note".into(), "token ".repeat(4096));
+    let mut reference =
+        SearchOutOfCoreGenerationWriter::create(&reference_root, Default::default()).unwrap();
+    reference.push(source.clone()).unwrap();
+    let report = reference.finish().unwrap();
+    assert!(report.descriptor_bytes - 1 > report.descriptor_working_bytes);
+    fs::remove_dir_all(reference_root).unwrap();
+    for exact in [false, true] {
+        let root = test_dir("descriptor_file_budget");
+        let _cleanup = Cleanup(root.clone());
+        let previous = document(1);
+        let mut initial =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        initial.push(previous.clone()).unwrap();
+        let initial = initial.finish().unwrap();
+        let before = published_files(&root);
+        let limit = report.descriptor_bytes - u64::from(!exact);
+        let mut replacement = SearchOutOfCoreGenerationWriter::create(
+            &root,
+            SearchOutOfCoreGenerationBuildOptions {
+                max_descriptor_working_bytes: NonZeroU64::new(limit).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        replacement.push(source.clone()).unwrap();
+        let result = replacement.finish();
+        let reader = super::super::SearchOutOfCoreReader::open(&root).unwrap();
+        if exact {
+            assert_eq!(result.unwrap().descriptor_bytes, limit);
+            assert!(reader.generation() > initial.generation);
+            assert_eq!(
+                reader
+                    .hydrate_documents(std::slice::from_ref(&source.id))
+                    .unwrap()
+                    .documents,
+                vec![source.clone()]
+            );
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("descriptor requires"));
+            assert_eq!(published_files(&root), before);
+            assert_eq!(reader.generation(), initial.generation);
+            assert_eq!(
+                reader
+                    .hydrate_documents(std::slice::from_ref(&previous.id))
+                    .unwrap()
+                    .documents,
+                vec![previous]
+            );
+        }
+        assert_eq!(stage_directories(&root), 0);
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn segment_admission_sizes_documents_without_encoding_them() {
     use crate::document_encoding::ENCODING_ATTEMPTS;
 

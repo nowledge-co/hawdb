@@ -6818,18 +6818,25 @@ fn write_search_segment_descriptor(
     path: &Path,
     descriptor: &SearchSegmentDescriptor,
 ) -> Result<()> {
+    write_search_segment_descriptor_bounded(path, descriptor, u64::MAX).map(|_| ())
+}
+
+fn write_search_segment_descriptor_bounded(
+    path: &Path,
+    descriptor: &SearchSegmentDescriptor,
+    max_bytes: u64,
+) -> Result<u64> {
+    let encoding = document_encoding::DescriptorEncoding::new(descriptor, max_bytes)?;
     let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
     let tmp_path = descriptor_path.with_extension("skein.tmp");
-    let body = encode_search_segment_descriptor_body(descriptor);
-    let checksum = checksum_bytes(body.as_bytes());
-    let data = format!("{body}checksum\t{checksum}\n");
     {
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(data.as_bytes())?;
-        file.sync_all()?;
+        let mut file = std::io::BufWriter::new(File::create(&tmp_path)?);
+        encoding.write_to(&mut file)?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
     }
     durable_replace_file(&tmp_path, &descriptor_path)?;
-    Ok(())
+    Ok(encoding.len() as u64)
 }
 
 fn read_search_segment_descriptor(path: &Path) -> Result<Option<SearchSegmentDescriptor>> {
@@ -6841,6 +6848,7 @@ fn read_search_segment_descriptor(path: &Path) -> Result<Option<SearchSegmentDes
     decode_search_segment_descriptor_text(&text).map(Some)
 }
 
+#[cfg(test)]
 fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -> String {
     let mut body = String::new();
     body.push_str("SKEIN_SEARCH_SEGMENTS_V3\n");
@@ -7145,6 +7153,7 @@ fn validate_search_segment_documents(
     Ok(())
 }
 
+#[cfg(test)]
 fn encode_segment_values(values: &BTreeSet<String>) -> String {
     values
         .iter()
@@ -7160,12 +7169,14 @@ fn decode_segment_values(input: &str) -> Result<BTreeSet<String>> {
     input.split(',').map(decode_string).collect()
 }
 
+#[cfg(test)]
 fn encode_search_numeric_range(range: Option<SearchNumericRange>) -> (String, String) {
     range
         .map(|range| (range.min.to_string(), range.max.to_string()))
         .unwrap_or_else(|| (String::new(), String::new()))
 }
 
+#[cfg(test)]
 fn encode_search_timestamp_range(range: Option<SearchTimestampRange>) -> (String, String) {
     range
         .map(|range| {

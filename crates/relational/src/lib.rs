@@ -36,6 +36,9 @@ pub use statement::{
 #[doc(hidden)]
 pub mod row_runtime;
 
+#[doc(hidden)]
+pub mod physical_plan;
+
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
 use skein_storage::{

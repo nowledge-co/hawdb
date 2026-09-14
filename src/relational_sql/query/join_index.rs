@@ -178,7 +178,9 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                     row: Some(row),
                 }],
             };
-            right_relation.output_schema.ensure_matches(&bound)?;
+            right_relation
+                .output_schema
+                .ensure_matches(bound.schema_bindings())?;
             let bytes = bound_row_resident_bytes(&bound);
             if batch_tracker.would_exceed(bytes) {
                 return Err(SkeinError::Execution(format!(
@@ -205,7 +207,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             };
             let mut combined = left_row.clone();
             combined.bindings.extend(null_right.bindings.clone());
-            output_schema.ensure_matches(&combined)?;
+            output_schema.ensure_matches(combined.schema_bindings())?;
             pipeline.borrow_mut().account_operator_row(operator_id)?;
             if !visit(combined)? {
                 return Ok(false);
@@ -231,7 +233,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             if !predicates_match {
                 continue;
             }
-            output_schema.ensure_matches(&combined)?;
+            output_schema.ensure_matches(combined.schema_bindings())?;
             matched = true;
             pipeline.borrow_mut().account_operator_row(operator_id)?;
             if !visit(combined)? {
@@ -246,7 +248,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             };
             let mut combined = left_row.clone();
             combined.bindings.extend(null_right.bindings.clone());
-            output_schema.ensure_matches(&combined)?;
+            output_schema.ensure_matches(combined.schema_bindings())?;
             pipeline.borrow_mut().account_operator_row(operator_id)?;
             if !visit(combined)? {
                 return Ok(false);

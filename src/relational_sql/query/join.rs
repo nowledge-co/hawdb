@@ -164,7 +164,7 @@ pub(super) fn null_extended_tree_row<'a>(
         return Err(error);
     }
     let row = BoundRow { bindings };
-    node.output_schema().ensure_matches(&row)?;
+    node.output_schema().ensure_matches(row.schema_bindings())?;
     Ok(row)
 }
 

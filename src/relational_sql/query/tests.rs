@@ -4,6 +4,11 @@ use crate::relational_sql::{
     compile_relational_statement_sql, RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy,
 };
 use crate::Value;
+use skein_optimizer::{
+    estimate_relational_access_cost, estimate_relational_join_cost,
+    estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinRightInput,
+    RelationalJoinSelectivity, RelationalOperatorKind,
+};
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -339,77 +344,6 @@ fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
         error.to_string().contains("exceeding query_memory_bytes 1"),
         "{error}"
     );
-}
-
-#[test]
-fn physical_join_plan_rejects_output_schema_drift() {
-    let full_scan = || RelationalAccessPathDescriptor {
-        kind: RelationalAccessPathKind::FullScan,
-        name: "__full_scan".to_string(),
-        index_columns: Vec::new(),
-        access_columns: BTreeSet::new(),
-        equality_prefix_len: 0,
-        order_prefix_len: 0,
-        exclusive_range: false,
-        reverse_order: false,
-        unique_point: false,
-        covering: false,
-        requires_row_fetch: false,
-        estimated_rows: 1,
-    };
-    let join_predicate = match skein_sql::prepare_postgres_sql(
-            "SELECT left_table.id FROM left_table INNER JOIN right_table ON left_table.id = right_table.id",
-        )
-        .expect("parse join predicate")
-        .statement
-        {
-            SqlStatement::Select(select) => select
-                .joins
-                .into_iter()
-                .next()
-                .expect("join")
-                .on,
-            _ => unreachable!("join test must parse as a SELECT"),
-        };
-    let left = RelationalPhysicalJoinNode::relation(
-        BindingId::new(0),
-        "left_table".to_string(),
-        "left_table".to_string(),
-        RelationalPhysicalAccess::Base(RelationalAccessCandidate {
-            descriptor: full_scan(),
-            access: RelationalBaseAccess::FullScan,
-        }),
-    );
-    let right = RelationalPhysicalJoinNode::relation(
-        BindingId::new(1),
-        "right_table".to_string(),
-        "right_table".to_string(),
-        RelationalPhysicalAccess::Probe(RelationalJoinAccessCandidate {
-            descriptor: full_scan(),
-            access: RelationalJoinAccess::FullScan,
-        }),
-    );
-    let mut plan = RelationalPhysicalJoinPlan::new(
-        RelationalPhysicalJoinNode::join(
-            RelationalOperatorId::from_plan_index(1),
-            SqlJoinKind::Inner,
-            vec![join_predicate],
-            left,
-            right,
-        )
-        .expect("build physical join"),
-        estimate_relational_access_cost(1),
-    );
-    let RelationalPhysicalJoinNode::Join { output_schema, .. } = &mut plan.root else {
-        panic!("expected physical join root");
-    };
-    *output_schema =
-        RelationalPhysicalOutputSchema::relation(BindingId::new(0), "left_table", "left_table");
-
-    let error = plan
-        .validate()
-        .expect_err("schema drift must fail closed before execution");
-    assert!(error.to_string().contains("inconsistent output schema"));
 }
 
 #[test]
@@ -1220,4 +1154,107 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
     assert!(error
         .to_string()
         .contains("RelationalBushyJoinMaterialize state exceeds blocking_operator_bytes"));
+}
+
+#[test]
+fn physical_schema_adapter_keeps_null_extended_binding_identity_without_hydration() {
+    let state = batched_index_join_state();
+    let row = BoundRow {
+        bindings: vec![
+            Binding {
+                binding: BindingId::new(0),
+                table: "batch_outer",
+                qualifier: "o",
+                schema: state.table_schema("batch_outer").unwrap(),
+                row: None,
+            },
+            Binding {
+                binding: BindingId::new(1),
+                table: "batch_inner",
+                qualifier: "i",
+                schema: state.table_schema("batch_inner").unwrap(),
+                row: None,
+            },
+        ],
+    };
+    let schema = RelationalPhysicalOutputSchema::join(
+        &RelationalPhysicalOutputSchema::relation(BindingId::new(0), "batch_outer", "o"),
+        &RelationalPhysicalOutputSchema::relation(BindingId::new(1), "batch_inner", "i"),
+    )
+    .unwrap();
+    schema.ensure_matches(row.schema_bindings()).unwrap();
+    assert_eq!(row.bindings[1].value(0).unwrap(), &RelationalValue::Null);
+    let mut reversed = row.clone();
+    reversed.bindings.reverse();
+    assert!(schema
+        .ensure_matches(reversed.schema_bindings())
+        .unwrap_err()
+        .to_string()
+        .contains("schema binding 0"));
+    let mut renamed = row.clone();
+    renamed.bindings[1].qualifier = "wrong";
+    assert!(schema
+        .ensure_matches(renamed.schema_bindings())
+        .unwrap_err()
+        .to_string()
+        .contains("executor produced wrong"));
+    let mut missing = row;
+    missing.bindings.pop();
+    assert!(schema
+        .ensure_matches(missing.schema_bindings())
+        .unwrap_err()
+        .to_string()
+        .contains("has 2 bindings but executor produced 1"));
+}
+
+#[test]
+fn migrated_plan_admission_retains_cancellation_before_memory_error() {
+    let state = batched_index_join_state();
+    let prepared = prepare_batched_index_join(&state);
+    let memory = skein_executor::ExecutionMemoryConfig {
+        query_memory_bytes: NonZeroUsize::MIN,
+        ..Default::default()
+    };
+    let cancellation = skein_core::RuntimeCancellationToken::new();
+    let context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    cancellation.cancel();
+    let error = prepared
+        .execution
+        .admit(
+            &state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            RelationalQueryResourceContext::new(
+                Default::default(),
+                batched_index_join_limits(),
+                &memory,
+                Some(&context),
+            ),
+        )
+        .err()
+        .expect("cancelled admission must fail");
+    assert!(error.to_string().contains("cancelled"), "{error}");
+    let error = prepared
+        .execution
+        .admit(
+            &state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Materialized,
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            RelationalQueryResourceContext::new(
+                Default::default(),
+                batched_index_join_limits(),
+                &memory,
+                None,
+            ),
+        )
+        .err()
+        .expect("undersized admission must fail");
+    assert!(
+        error.to_string().contains("exceeding query_memory_bytes 1"),
+        "{error}"
+    );
 }

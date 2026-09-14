@@ -1,5 +1,7 @@
 //! Production qualification, recovery, and redacted diagnostic evidence.
 
+#[doc(hidden)]
+pub mod background_maintenance_evidence;
 pub mod blackbox;
 mod crash_recovery;
 #[doc(hidden)]
@@ -8,9 +10,13 @@ pub mod inventory;
 pub mod json_access;
 mod production;
 #[doc(hidden)]
+pub mod query_family_evidence;
+#[doc(hidden)]
 pub mod query_inventory;
 #[doc(hidden)]
 pub mod replacement_contract;
+#[doc(hidden)]
+pub mod storage_recovery_evidence;
 
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,

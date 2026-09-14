@@ -5,9 +5,10 @@ use super::{
     validate_non_aggregate_coalesce_projections, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
     RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalJoinPlanningContext,
-    RelationalOrderTarget, RelationalQueryLimits, RelationalQueryReadModes,
-    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, SkeinError, Value,
+    RelationalQueryLimits, RelationalQueryReadModes, RelationalSqlStageTimings, RelationalState,
+    Result, SelectStatement, SkeinError, Value,
 };
+pub(super) use skein_relational::field_plan::resolved_access_order_by;
 
 pub(super) fn prepare_relational_select(
     mut select: SelectStatement,
@@ -142,38 +143,6 @@ pub(super) fn prepare_syntax_access_plan(
         join_accesses,
         join_selection: None,
         physical_join_plan: None,
-    })
-}
-
-pub(super) fn resolved_access_order_by(
-    select: &SelectStatement,
-) -> Result<Vec<crate::sql::SqlOrderItem>> {
-    let mut resolved = Vec::with_capacity(select.order_by.len());
-    let mut supports_ordered_access = true;
-    for item in &select.order_by {
-        let column = match resolve_relational_order_target(select, item)? {
-            RelationalOrderTarget::InputColumn(column) => Some(column),
-            RelationalOrderTarget::ProjectionColumn { column, .. } => Some(column),
-            RelationalOrderTarget::ProjectionExpression { .. } => {
-                supports_ordered_access = false;
-                None
-            }
-        };
-        if let Some(column) = column {
-            resolved.push(crate::sql::SqlOrderItem {
-                expression: crate::sql::Expr {
-                    kind: crate::sql::ExprKind::Column(column.clone()),
-                    span: item.expression.span,
-                },
-                direction: item.direction,
-                nulls: item.nulls,
-            });
-        }
-    }
-    Ok(if supports_ordered_access {
-        resolved
-    } else {
-        Vec::new()
     })
 }
 
