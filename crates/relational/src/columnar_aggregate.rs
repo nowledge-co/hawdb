@@ -1,20 +1,20 @@
-use super::{expression_name, resolve_column, BoundRow};
-use crate::error::{Result, SkeinError};
-use crate::sql::{Expr, ExprKind};
-use crate::sql::{
-    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument, SqlValue,
-};
-use crate::value::Value;
-use skein_core::LogicalType;
+//! SQL-shaped columnar aggregation over caller-bound borrowed values.
+
+use crate::query_value::expression_name;
+use skein_core::{LogicalType, Result, SkeinError, Value};
 use skein_executor::{
     BindingSchema, ColumnVector, ColumnarBatch, QueryMemoryClass, QueryMemoryLease,
     QueryMemoryLedger, SlotDescriptor, SlotId, SlotType, ValidityBuilder,
+};
+use skein_sql::{
+    Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlExpression,
+    SqlFunctionArgument, SqlValue,
 };
 use skein_storage::{RelationalScalarType, RelationalTableSchema, RelationalValue};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-pub(super) struct ColumnarAggregateExecutor {
+pub struct ColumnarAggregateExecutor {
     projections: Vec<ColumnarAggregateProjection>,
     schema: Arc<BindingSchema>,
     buffers: Vec<ColumnBuffer>,
@@ -54,8 +54,10 @@ enum ColumnBuffer {
 }
 
 impl ColumnarAggregateExecutor {
+    /// The outer aggregate planner retains GROUP BY, DISTINCT, and ORDER BY handling.
+    /// Unsupported shapes return None without reserving a columnar input batch.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn try_new(
+    pub fn try_new(
         select: &SelectStatement,
         base_schema: &RelationalTableSchema,
         base_table: &str,
@@ -128,7 +130,7 @@ impl ColumnarAggregateExecutor {
         }))
     }
 
-    pub(super) fn blocking_state_bytes(&self) -> usize {
+    pub fn blocking_state_bytes(&self) -> usize {
         self.projections.iter().fold(
             std::mem::size_of::<Self>().saturating_add(
                 self.projections
@@ -157,7 +159,12 @@ impl ColumnarAggregateExecutor {
         )
     }
 
-    pub(super) fn push(&mut self, row: &BoundRow<'_>) -> Result<()> {
+    /// The caller retains row binding, hydration, and the referenced value lifetime.
+    /// A failed push aborts this operator; callers must not reuse partial input buffers.
+    pub fn push<'a>(
+        &mut self,
+        mut resolve: impl FnMut(&SqlColumnRef) -> Result<&'a RelationalValue>,
+    ) -> Result<()> {
         for (projection, buffer) in self.projections.iter().zip(&mut self.buffers) {
             match (&projection.kind, buffer) {
                 (ColumnarAggregateKind::CountAll, ColumnBuffer::Bool { values, validity }) => {
@@ -169,15 +176,12 @@ impl ColumnarAggregateExecutor {
                     ColumnBuffer::Bool { values, validity },
                 ) => {
                     values.push(1);
-                    validity.push(!matches!(
-                        resolve_column(row, column)?,
-                        RelationalValue::Null
-                    ));
+                    validity.push(!matches!(resolve(column)?, RelationalValue::Null));
                 }
                 (
                     ColumnarAggregateKind::SumInt64(column),
                     ColumnBuffer::Int64 { values, validity },
-                ) => match resolve_column(row, column)? {
+                ) => match resolve(column)? {
                     RelationalValue::Null => {
                         values.push(0);
                         validity.push(false);
@@ -195,7 +199,7 @@ impl ColumnarAggregateExecutor {
                 (
                     ColumnarAggregateKind::SumOctetLength(column),
                     ColumnBuffer::Int64 { values, validity },
-                ) => match resolve_column(row, column)? {
+                ) => match resolve(column)? {
                     RelationalValue::Null => {
                         values.push(0);
                         validity.push(false);
@@ -229,7 +233,7 @@ impl ColumnarAggregateExecutor {
         Ok(())
     }
 
-    pub(super) fn finish(mut self) -> Result<Vec<(String, Value)>> {
+    pub fn finish(mut self) -> Result<Vec<(String, Value)>> {
         self.consume_batch()?;
         self.projections
             .into_iter()
@@ -563,58 +567,4 @@ fn create_buffers(projections: &[ColumnarAggregateProjection], rows: usize) -> V
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use skein_storage::RelationalColumnSchema;
-
-    #[test]
-    fn recognizes_coalesced_sum_octet_length_as_columnar_aggregate() {
-        let crate::sql::SqlStatement::Select(select) = skein_sql::parse_postgres_sql(
-            "SELECT COALESCE(SUM(OCTET_LENGTH(body)), 0) AS body_bytes FROM documents",
-        )
-        .expect("parse length aggregate") else {
-            panic!("expected SELECT statement")
-        };
-        let schema = RelationalTableSchema {
-            name: "documents".to_string(),
-            columns: vec![
-                RelationalColumnSchema {
-                    name: "id".to_string(),
-                    scalar_type: RelationalScalarType::Text,
-                    nullable: false,
-                    default: None,
-                },
-                RelationalColumnSchema {
-                    name: "body".to_string(),
-                    scalar_type: RelationalScalarType::Text,
-                    nullable: false,
-                    default: None,
-                },
-            ],
-            primary_key: vec!["id".to_string()],
-            unique_constraints: Vec::new(),
-            foreign_keys: Vec::new(),
-            indexes: Vec::new(),
-        };
-        let ledger =
-            QueryMemoryLedger::new(NonZeroUsize::new(64 * 1024).expect("non-zero query memory"));
-        let executor = ColumnarAggregateExecutor::try_new(
-            &select,
-            &schema,
-            "documents",
-            "documents",
-            true,
-            64,
-            NonZeroUsize::new(16 * 1024).expect("non-zero batch bytes"),
-            &ledger,
-        )
-        .expect("plan columnar aggregate")
-        .expect("length aggregate must use the columnar path");
-
-        assert!(matches!(
-            executor.projections[0].kind,
-            ColumnarAggregateKind::SumOctetLength(_)
-        ));
-        assert_eq!(executor.projections[0].null_fallback, Some(Value::Int(0)));
-    }
-}
+mod tests;

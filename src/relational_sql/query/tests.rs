@@ -7,6 +7,7 @@ use crate::Value;
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod columnar_aggregate;
 mod connected_enumeration;
 mod costed_algorithms;
 mod cross_join;

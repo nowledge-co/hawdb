@@ -2,6 +2,8 @@
 
 mod append;
 #[doc(hidden)]
+pub mod columnar_aggregate;
+#[doc(hidden)]
 pub mod field_plan;
 mod statement;
 

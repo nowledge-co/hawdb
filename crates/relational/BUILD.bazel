@@ -16,6 +16,7 @@ rust_library(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
+        "//crates/executor:skein_executor",
         "//crates/sql:skein_sql",
         "//crates/storage:skein_storage",
     ],
@@ -26,6 +27,22 @@ rust_test(
     name = "skein_relational_qualification_fuzz_tests",
     args = [
         "predicate::tests::qualification_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_relational",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_relational_columnar_aggregate_fuzz_tests",
+    args = [
+        "columnar_aggregate::tests::columnar_aggregate_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",

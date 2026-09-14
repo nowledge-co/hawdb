@@ -64,16 +64,15 @@ use super::{
 };
 use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
-mod columnar_aggregate;
 mod join_order;
 mod locator;
 mod streaming_binding;
 
-use self::columnar_aggregate::ColumnarAggregateExecutor;
 use self::locator::{
     RelationalLocatorLayout, RelationalRowSetLocator, RelationalSortKey, RelationalSortRecord,
 };
 use self::streaming_binding::BoundStreamingProjection;
+use skein_relational::columnar_aggregate::ColumnarAggregateExecutor;
 use skein_relational::predicate::BoundStreamingPredicate;
 
 mod access;
