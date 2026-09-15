@@ -150,6 +150,9 @@ mod compiled_capabilities {
         requested.intersection(super::compiled_runtime_capabilities())
     }
 }
+
+#[cfg(test)]
+mod fallible_wrapper_proof;
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
 use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 #[cfg(test)]
