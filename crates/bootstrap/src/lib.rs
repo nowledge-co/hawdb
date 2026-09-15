@@ -19,6 +19,8 @@ pub mod developer_staging;
 #[doc(hidden)]
 pub mod developer_staging_gc;
 #[doc(hidden)]
+pub mod developer_staging_import;
+#[doc(hidden)]
 pub mod developer_staging_verification;
 
 #[doc(hidden)]
@@ -37,6 +39,10 @@ pub use developer_staging::{
 };
 #[doc(hidden)]
 pub use developer_staging_gc::skein_lightning_gc_staging_report;
+#[doc(hidden)]
+pub use developer_staging_import::{
+    skein_lightning_import_state_marker, skein_lightning_import_status,
+};
 #[doc(hidden)]
 pub use developer_staging_verification::{
     read_skein_lightning_staging_artifact_json, verify_skein_lightning_published_manifest,
