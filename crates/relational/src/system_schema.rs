@@ -1,5 +1,6 @@
 use skein_core::{Result, SkeinError};
 use skein_integrity::IntegrityHasher;
+use skein_sql::SqlStatement;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemSchemaMigration {
@@ -143,6 +144,32 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
     Ok(())
 }
 
+/// Identifies statements that may mutate Skein's internal migration registry.
+///
+/// The embedded facade owns authorization and transaction handling; the
+/// relational owner defines which SQL AST shapes target the registry.
+#[doc(hidden)]
+pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool {
+    const REGISTRY_TABLE: &str = "skein_schema_migrations";
+
+    let table = match statement {
+        SqlStatement::Insert(statement) => Some(&statement.table),
+        SqlStatement::Update(statement) => Some(&statement.table),
+        SqlStatement::Delete(statement) => Some(&statement.table),
+        SqlStatement::CreateTable(statement) => Some(&statement.table),
+        SqlStatement::CreateIndex(statement) => Some(&statement.table),
+        SqlStatement::AlterTableAddColumn(statement) => Some(&statement.table),
+        SqlStatement::Select(_) | SqlStatement::Explain(_) => None,
+    };
+    table.is_some_and(|table| {
+        table.name == REGISTRY_TABLE
+            && table
+                .schema
+                .as_deref()
+                .is_none_or(|schema| schema == "public")
+    })
+}
+
 fn hash_component(hasher: &mut IntegrityHasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
@@ -150,7 +177,10 @@ fn hash_component(hasher: &mut IntegrityHasher, bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_system_schema_registry, SystemSchemaMigration, SystemSchemaRegistry};
+    use super::{
+        statement_writes_system_schema_registry, validate_system_schema_registry,
+        SystemSchemaMigration, SystemSchemaRegistry,
+    };
 
     #[test]
     fn migration_checksum_binds_owner_order_and_statement_boundaries() {
@@ -225,5 +255,28 @@ mod tests {
         for registry in invalid_registries {
             assert!(validate_system_schema_registry(&registry).is_err());
         }
+    }
+
+    #[test]
+    fn registry_write_guard_is_limited_to_public_mutations() {
+        let insert = skein_sql::parse_postgres_sql(
+            "INSERT INTO skein_schema_migrations (version, name, checksum) VALUES (1, 'init', 'x')",
+        )
+        .expect("parse registry insert");
+        let public_create = skein_sql::parse_postgres_sql(
+            "CREATE TABLE public.skein_schema_migrations (version BIGINT)",
+        )
+        .expect("parse public registry create");
+        let other_schema = skein_sql::parse_postgres_sql(
+            "INSERT INTO archive.skein_schema_migrations (version) VALUES (1)",
+        )
+        .expect("parse other-schema insert");
+        let read = skein_sql::parse_postgres_sql("SELECT version FROM skein_schema_migrations")
+            .expect("parse registry read");
+
+        assert!(statement_writes_system_schema_registry(&insert));
+        assert!(statement_writes_system_schema_registry(&public_create));
+        assert!(!statement_writes_system_schema_registry(&other_schema));
+        assert!(!statement_writes_system_schema_registry(&read));
     }
 }

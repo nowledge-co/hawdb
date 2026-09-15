@@ -19952,7 +19952,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
 ) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
     if !options.allow_system_schema_registry_write
-        && crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
+        && skein_relational::system_schema::statement_writes_system_schema_registry(
+            prepared.statement(),
+        )
     {
         return Err(SkeinError::Semantic(
             "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
