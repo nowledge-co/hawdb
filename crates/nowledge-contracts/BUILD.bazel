@@ -10,6 +10,7 @@ test_suite(
 _NOWLEDGE_CONTRACTS_BASE_DEPS = all_crate_deps(normal = True) + [
     "//crates/core:skein_core",
     "//crates/qos:skein_qos",
+    "//crates/storage:skein_storage",
 ]
 
 rust_library(

@@ -1,16 +1,19 @@
-mod registry;
-mod types;
-pub(super) use registry::ConsumerRegistry;
-pub use types::*;
+pub(super) use skein_search::projection_consumer::ConsumerRegistry;
+pub use skein_search::projection_consumer::{
+    SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
+    SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadiness,
+    SearchProjectionConsumerRebuildReason, SearchProjectionConsumerResult,
+    SearchProjectionConsumerState, SearchProjectionConsumerStatus,
+};
 
 use super::Database;
 use crate::{
     DatabaseReadTransaction, Result, SearchIndex, SearchProjectionCatchUpReport,
     SearchProjectionChangeBatch, SearchProjectionRelationalDelta, SkeinError,
 };
-use registry::{Record, MAX_CONSUMERS};
 use skein_core::uuidv7::generate_uuidv7;
 use skein_search::consumer::{CheckpointReceipt, ConsumerBinding, ConsumerProjection};
+use skein_search::projection_consumer::{Record, MAX_CONSUMERS};
 use std::path::{Path, PathBuf};
 use SearchProjectionConsumerError as Error;
 use SearchProjectionConsumerRebuildReason as Reason;
@@ -143,7 +146,7 @@ impl Database {
         self.projection_consumers
             .verified
             .insert(id.as_str().into(), State::Active);
-        Ok(SearchProjectionConsumer { id, projection })
+        Ok(SearchProjectionConsumer::from_projection(id, projection))
     }
 
     pub fn open_search_projection_consumer(
@@ -167,10 +170,7 @@ impl Database {
             }
             Err(error) => return Err(error.into()),
         };
-        let consumer = SearchProjectionConsumer {
-            id: id.clone(),
-            projection,
-        };
+        let consumer = SearchProjectionConsumer::from_projection(id.clone(), projection);
         if let Err(error) = self.validate_consumer_receipt(&consumer) {
             if let Error::RebuildRequired(reason) = &error {
                 self.projection_consumers
@@ -203,7 +203,7 @@ impl Database {
         self.validate_consumer_receipt(consumer)?;
         self.projection_consumers
             .verified
-            .insert(consumer.id.as_str().into(), State::Active);
+            .insert(consumer.id().as_str().into(), State::Active);
         if max_change_operations_per_batch == 0
             || max_projection_operations_per_batch == 0
             || max_batches == 0
@@ -231,22 +231,22 @@ impl Database {
             drop(snapshot);
             batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
             consumer
-                .projection
+                .projection_mut()
                 .apply(|index| self.apply_search_projection_change_batch(index, batch, hydrated))?;
             // Any error from this point leaves an applied or durable projection
             // that must not be silently paired with the previous cursor receipt.
             self.projection_consumers.verified.insert(
-                consumer.id.as_str().into(),
+                consumer.id().as_str().into(),
                 State::RebuildRequired(Reason::CheckpointMismatch),
             );
             publication_failpoint(PublicationStage::BeforeCheckpoint)?;
-            let receipt = consumer.projection.checkpoint()?;
+            let receipt = consumer.projection_mut().checkpoint()?;
             publication_failpoint(PublicationStage::AfterCheckpoint)?;
-            self.acknowledge_consumer_checkpoint(&consumer.id, &receipt)?;
+            self.acknowledge_consumer_checkpoint(consumer.id(), &receipt)?;
             self.publish_consumer_registry(&root)?;
             self.projection_consumers
                 .verified
-                .insert(consumer.id.as_str().into(), State::Active);
+                .insert(consumer.id().as_str().into(), State::Active);
             applied_batch_count = applied_batch_count.saturating_add(1);
             applied_operation_count = applied_operation_count.saturating_add(operation_count);
         }
@@ -262,7 +262,7 @@ impl Database {
                 applied_operation_count,
                 complete: end.durable_source_graph_commit_epoch == Some(graph_commit_epoch),
             },
-            consumer: self.search_projection_consumer_status(&consumer.id)?,
+            consumer: self.search_projection_consumer_status(consumer.id())?,
         })
     }
 
@@ -274,11 +274,11 @@ impl Database {
         self.validate_consumer_receipt(consumer)?;
         self.projection_consumers
             .verified
-            .insert(consumer.id.as_str().into(), State::Active);
+            .insert(consumer.id().as_str().into(), State::Active);
         let record = self
             .projection_consumers
             .records
-            .get_mut(consumer.id.as_str())
+            .get_mut(consumer.id().as_str())
             .ok_or(Error::InvalidHandle)?;
         record.expires_at_commit_epoch = self
             .store
@@ -286,7 +286,7 @@ impl Database {
             .checked_add(record.max_idle_commits)
             .ok_or_else(|| SkeinError::Semantic("consumer expiry epoch overflow".into()))?;
         self.publish_consumer_registry(&root)?;
-        self.search_projection_consumer_status(&consumer.id)
+        self.search_projection_consumer_status(consumer.id())
     }
 
     pub fn unregister_search_projection_consumer(
@@ -363,7 +363,7 @@ impl Database {
         consumer: &SearchProjectionConsumer,
         max_operations: Option<usize>,
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerReadiness> {
-        let mut status = self.search_projection_consumer_status(&consumer.id)?;
+        let mut status = self.search_projection_consumer_status(consumer.id())?;
         match self.validate_consumer_receipt(consumer) {
             Ok(()) => {}
             Err(Error::RebuildRequired(reason)) => status.state = State::RebuildRequired(reason),
@@ -397,17 +397,17 @@ impl Database {
         &self,
         consumer: &SearchProjectionConsumer,
     ) -> SearchProjectionConsumerResult<()> {
-        let status = self.search_projection_consumer_status(&consumer.id)?;
+        let status = self.search_projection_consumer_status(consumer.id())?;
         let record = self
             .projection_consumers
             .records
-            .get(consumer.id.as_str())
+            .get(consumer.id().as_str())
             .ok_or(Error::InvalidHandle)?;
-        let binding = consumer.projection.binding();
+        let binding = consumer.projection().binding();
         if Some(binding.database_uuid) != self.store.search_projection_database_identity() {
             return Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch));
         }
-        if binding.consumer_id != consumer.id.as_str()
+        if binding.consumer_id != consumer.id().as_str()
             || binding.registration_uuid.to_string() != record.registration_uuid
         {
             return Err(Error::InvalidHandle);
@@ -418,7 +418,7 @@ impl Database {
         if let State::RebuildRequired(reason) = status.state {
             return Err(Error::RebuildRequired(reason));
         }
-        let receipt = consumer.projection.receipt();
+        let receipt = consumer.projection().receipt();
         if receipt.binding.checkpoint_uuid.to_string() != record.checkpoint_uuid
             || receipt.encoded_len != record.snapshot_encoded_len
             || receipt.sha256 != record.snapshot_sha256
@@ -426,7 +426,7 @@ impl Database {
         {
             return Err(Error::RebuildRequired(Reason::CheckpointMismatch));
         }
-        if !consumer.projection.binding_is_valid() {
+        if !consumer.projection().binding_is_valid() {
             return Err(Error::RebuildRequired(Reason::UntrackedProjectionMutation));
         }
         let freshness = consumer.search_index().projection_freshness();
@@ -469,7 +469,11 @@ impl Database {
     }
 
     fn publish_consumer_registry(&mut self, root: &Path) -> SearchProjectionConsumerResult<()> {
-        if let Err(error) = self.projection_consumers.publish(root) {
+        if let Err(error) = self.projection_consumers.publish(
+            root,
+            || publication_failpoint(PublicationStage::BeforeRegistry),
+            || publication_failpoint(PublicationStage::AfterRegistry),
+        ) {
             self.projection_consumers.unavailable = true;
             return Err(error.into());
         }

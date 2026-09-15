@@ -36,6 +36,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/sql",
     "crates/sql-syntax",
     "crates/storage",
+    "crates/system-sql",
     "crates/telemetry",
     "crates/vector-projection",
 ]
@@ -125,6 +126,7 @@ _SKEIN_COMMON_DEPS = [
     "//crates/route-ownership:skein_route_ownership",
     "//crates/sql:skein_sql",
     "//crates/storage:skein_storage",
+    "//crates/system-sql:skein_system_sql",
     "//crates/telemetry:skein_telemetry",
 ]
 
@@ -374,31 +376,9 @@ sh_test(
     data = [":skein_storage_crash_recovery_tests"],
 )
 
-rust_test(
+alias(
     name = "skein_system_sql_loom_tests",
-    args = ["api::system_sql::loom_tests"],
-    crate_features = [
-        "background-maintenance",
-        "full-text-search",
-        "graph-analytics",
-        "loom-tests",
-        "tokio-runtime",
-        "vector-search",
-    ],
-    crate_root = "src/lib.rs",
-    srcs = _SKEIN_SRCS,
-    edition = "2024",
-    aliases = aliases(
-        normal = True,
-        normal_dev = True,
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    deps = _SKEIN_FULL_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
-        "//crates/runtime-tokio:skein_runtime_tokio",
-    ],
-    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
-    size = "medium",
+    actual = "//crates/system-sql:skein_system_sql_loom_tests",
 )
 
 # Matches `cargo test -p skein --features acl --lib` for the storage crash

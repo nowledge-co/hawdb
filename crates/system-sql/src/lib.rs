@@ -1,143 +1,197 @@
-use super::{DatabaseConfig, PlanCacheStats, QueryOutput};
-use crate::error::{Result, SkeinError};
-use crate::executor::Row;
-use crate::schema::{
-    Catalog, ConstraintKind, ConstraintSubject, IndexKind, PropertyType, SchemaObjectState,
-    TableKind,
+//! Virtual `system`, `information_schema`, and `pg_catalog` query execution.
+//!
+//! This crate owns the bounded, storage-backed system-catalog query engine.
+//! The embedded facade supplies a snapshot of its live state and retains all
+//! database lifecycle and transaction coordination.
+
+use skein_core::{
+    Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, IndexKind, IndexStatisticsSample,
+    LabelId, PropertyType, RelTypeId, Result, RuntimeCapabilities, SchemaObjectState, SkeinError,
+    TableKind, Value,
 };
-use crate::sql::{Expr, ExprKind};
-use crate::sql::{
-    SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
-    SqlPredicate, SqlStatement, SqlValue,
-};
-use crate::store::GraphStore;
-use crate::value::Value;
-use skein_core::{GraphStatistics, RuntimeCapabilities};
+use skein_executor::{binding::map_payload_bytes, QueryOutput, Row, VectorExecutionReport};
+use skein_plan_cache::PlanCacheStats;
 use skein_query::QueryIdentity;
+use skein_sql::{Expr, ExprKind};
+use skein_sql::{
+    SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
+    SqlOrderItem, SqlPredicate, SqlStatement, SqlValue,
+};
 use skein_storage::{
-    ProjectedGraphStatus, RelationalColumnDefault, RelationalScalarType, RelationalState,
+    AppendOrderMode, AppendState, AppendStorageResidencyReport, ProjectedGraphStatus,
+    RelationalColumnDefault, RelationalIndexMode, RelationalScalarType, RelationalState,
     RelationalTableSchema, RelationalValue, SearchProjectionChangefeedStatus, StorageResidencyMode,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const DEFAULT_SLOW_QUERY_LOG_CAPACITY: usize = 256;
-pub(crate) const DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS: u128 = 300_000;
-pub(crate) const DEFAULT_STATEMENT_SUMMARY_CAPACITY: usize = 256;
+#[doc(hidden)]
+pub const DEFAULT_SLOW_QUERY_LOG_CAPACITY: usize = 256;
+#[doc(hidden)]
+pub const DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS: u128 = 300_000;
+#[doc(hidden)]
+pub const DEFAULT_STATEMENT_SUMMARY_CAPACITY: usize = 256;
+pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
 const MAX_SLOW_QUERY_TEXT_BYTES: usize = 4096;
 const MAX_STATEMENT_TEXT_BYTES: usize = 4096;
 const MAX_STATEMENT_ERROR_BYTES: usize = 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SlowQueryRecord {
-    pub(crate) sequence: u64,
-    pub(crate) query_language: String,
-    pub(crate) statement_kind: String,
-    pub(crate) query_digest: String,
-    pub(crate) query_text_hash: String,
-    pub(crate) query_text: String,
-    pub(crate) started_unix_micros: i64,
-    pub(crate) elapsed_micros: i64,
-    pub(crate) row_count: i64,
-    pub(crate) success: bool,
-    pub(crate) error: Option<String>,
-    pub(crate) slow_log_candidate: bool,
-    pub(crate) access_control_policy_epoch: Option<u64>,
-    pub(crate) vector_execution_reports: Vec<skein_executor::VectorExecutionReport>,
-}
-
-pub(crate) struct SlowQueryCompletion<'a> {
-    pub(crate) query_language: &'a str,
-    pub(crate) statement_kind: &'a str,
-    pub(crate) query_text: &'a str,
-    pub(crate) query_identity: &'a QueryIdentity,
-    pub(crate) elapsed_micros: u128,
-    pub(crate) row_count: usize,
-    pub(crate) success: bool,
-    pub(crate) error: Option<String>,
-    pub(crate) slow_log_candidate: bool,
-    pub(crate) access_control_policy_epoch: Option<u64>,
-    pub(crate) vector_execution_reports: Vec<skein_executor::VectorExecutionReport>,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlowQueryLogExportOptions {
+    pub include_query_text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SlowQueryLog {
+pub struct SlowQueryLogRecordSummary {
+    pub sequence: u64,
+    pub query_language: String,
+    pub statement_kind: String,
+    pub query_digest: String,
+    pub started_unix_micros: i64,
+    pub elapsed_micros: i64,
+    pub row_count: i64,
+    pub success: bool,
+    pub slow_log_candidate: bool,
+    pub access_control_policy_epoch: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct SlowQueryRecord {
+    pub sequence: u64,
+    pub query_language: String,
+    pub statement_kind: String,
+    pub query_digest: String,
+    pub query_text_hash: String,
+    pub query_text: String,
+    pub started_unix_micros: i64,
+    pub elapsed_micros: i64,
+    pub row_count: i64,
+    pub success: bool,
+    pub error: Option<String>,
+    pub slow_log_candidate: bool,
+    pub access_control_policy_epoch: Option<u64>,
+    pub vector_execution_reports: Vec<VectorExecutionReport>,
+}
+
+#[doc(hidden)]
+pub struct SlowQueryCompletion<'a> {
+    pub query_language: &'a str,
+    pub statement_kind: &'a str,
+    pub query_text: &'a str,
+    pub query_identity: &'a QueryIdentity,
+    pub elapsed_micros: u128,
+    pub row_count: usize,
+    pub success: bool,
+    pub error: Option<String>,
+    pub slow_log_candidate: bool,
+    pub access_control_policy_epoch: Option<u64>,
+    pub vector_execution_reports: Vec<VectorExecutionReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct SlowQueryLog {
     capacity: usize,
     next_sequence: u64,
     records: VecDeque<SlowQueryRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StatementExecution {
-    pub(crate) query_language: String,
-    pub(crate) query_text: String,
-    pub(crate) statement_kind: String,
-    pub(crate) query_digest: String,
-    pub(crate) query_text_hash: String,
-    pub(crate) elapsed_micros: i64,
-    pub(crate) row_count: i64,
-    pub(crate) success: bool,
-    pub(crate) error: Option<String>,
+#[doc(hidden)]
+pub struct StatementExecution {
+    pub query_language: String,
+    pub query_text: String,
+    pub statement_kind: String,
+    pub query_digest: String,
+    pub query_text_hash: String,
+    pub elapsed_micros: i64,
+    pub row_count: i64,
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StatementSummaryRecord {
-    pub(crate) digest: String,
-    pub(crate) query_language: String,
-    pub(crate) query_text: String,
-    pub(crate) sample_query_text_hash: String,
-    pub(crate) statement_kind: String,
-    pub(crate) execution_count: i64,
-    pub(crate) success_count: i64,
-    pub(crate) error_count: i64,
-    pub(crate) total_elapsed_micros: i64,
-    pub(crate) max_elapsed_micros: i64,
-    pub(crate) total_row_count: i64,
-    pub(crate) last_seen_unix_micros: i64,
-    pub(crate) last_elapsed_micros: i64,
-    pub(crate) last_row_count: i64,
-    pub(crate) last_success: bool,
-    pub(crate) last_error: Option<String>,
+#[doc(hidden)]
+pub struct StatementSummaryRecord {
+    pub digest: String,
+    pub query_language: String,
+    pub query_text: String,
+    pub sample_query_text_hash: String,
+    pub statement_kind: String,
+    pub execution_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub total_elapsed_micros: i64,
+    pub max_elapsed_micros: i64,
+    pub total_row_count: i64,
+    pub last_seen_unix_micros: i64,
+    pub last_elapsed_micros: i64,
+    pub last_row_count: i64,
+    pub last_success: bool,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StatementSummary {
+#[doc(hidden)]
+pub struct StatementSummary {
     capacity: usize,
     records: BTreeMap<String, StatementSummaryRecord>,
     insertion_order: VecDeque<String>,
 }
 
-pub(crate) struct SystemSqlContext<'a> {
-    pub(crate) catalog: &'a Catalog,
-    pub(crate) store: &'a GraphStore,
-    pub(crate) relational_state: &'a RelationalState,
-    pub(crate) append_state: &'a skein_storage::AppendState,
-    pub(crate) runtime: SystemRuntimeSnapshot,
-    pub(crate) plan_cache_stats: &'a PlanCacheStats,
-    pub(crate) slow_queries: &'a [SlowQueryRecord],
-    pub(crate) statement_summaries: &'a [StatementSummaryRecord],
+/// Supplies the storage state needed by bounded virtual catalog queries.
+///
+/// The embedded facade owns the concrete store and adapts it at this boundary.
+#[doc(hidden)]
+pub trait SystemSqlStore {
+    fn commit_epoch(&self) -> u64;
+    fn append_storage_residency_report(&self) -> AppendStorageResidencyReport;
+    fn statistics(&self, catalog: &Catalog) -> GraphStatistics;
+    fn projected_graph_statuses(&self) -> Vec<ProjectedGraphStatus>;
+    fn search_projection_changefeed_status(&self) -> SearchProjectionChangefeedStatus;
+}
+
+#[doc(hidden)]
+pub struct SystemSqlContext<'a, Store: SystemSqlStore> {
+    pub catalog: &'a Catalog,
+    pub store: &'a Store,
+    pub relational_state: &'a RelationalState,
+    pub append_state: &'a AppendState,
+    pub runtime: SystemRuntimeSnapshot,
+    pub plan_cache_stats: &'a PlanCacheStats,
+    pub slow_queries: &'a [SlowQueryRecord],
+    pub statement_summaries: &'a [StatementSummaryRecord],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SystemRuntimeSnapshot {
+#[doc(hidden)]
+pub struct SystemRuntimeSnapshot {
     read_only: bool,
     max_read_result_rows: Option<usize>,
     max_read_result_payload_bytes: Option<usize>,
     storage_residency_mode: StorageResidencyMode,
-    relational_index_mode: skein_storage::RelationalIndexMode,
+    relational_index_mode: RelationalIndexMode,
     runtime_capabilities: RuntimeCapabilities,
 }
 
 impl SystemRuntimeSnapshot {
-    pub(crate) fn from_config(config: &DatabaseConfig) -> Self {
+    pub fn new(
+        read_only: bool,
+        max_read_result_rows: Option<usize>,
+        max_read_result_payload_bytes: Option<usize>,
+        storage_residency_mode: StorageResidencyMode,
+        relational_index_mode: RelationalIndexMode,
+        runtime_capabilities: RuntimeCapabilities,
+    ) -> Self {
         Self {
-            read_only: config.read_only,
-            max_read_result_rows: config.max_read_result_rows,
-            max_read_result_payload_bytes: config.max_read_result_payload_bytes,
-            storage_residency_mode: config.storage_residency_mode,
-            relational_index_mode: config.relational_index_mode,
-            runtime_capabilities: config.runtime_capabilities,
+            read_only,
+            max_read_result_rows,
+            max_read_result_payload_bytes,
+            storage_residency_mode,
+            relational_index_mode,
+            runtime_capabilities,
         }
     }
 }
@@ -157,7 +211,7 @@ pub(crate) struct SystemTableScan {
     table: SystemTable,
     projection: Vec<SelectProjection>,
     predicate: Option<SqlPredicate>,
-    order_by: Vec<crate::sql::SqlOrderItem>,
+    order_by: Vec<SqlOrderItem>,
     offset: Option<u64>,
     limit: Option<u64>,
 }
@@ -184,7 +238,8 @@ enum SystemTable {
     PgIndexes,
 }
 
-pub(crate) fn is_virtual_catalog_select(select: &SelectStatement) -> bool {
+#[doc(hidden)]
+pub fn is_virtual_catalog_select(select: &SelectStatement) -> bool {
     matches!(
         (select.from.schema.as_deref(), select.from.name.as_str()),
         (Some("system" | "information_schema" | "pg_catalog"), _)
@@ -193,7 +248,7 @@ pub(crate) fn is_virtual_catalog_select(select: &SelectStatement) -> bool {
 }
 
 impl SlowQueryRecord {
-    pub(crate) fn completed(completion: SlowQueryCompletion<'_>) -> Self {
+    pub fn completed(completion: SlowQueryCompletion<'_>) -> Self {
         Self {
             sequence: 0,
             query_language: completion.query_language.to_string(),
@@ -214,7 +269,7 @@ impl SlowQueryRecord {
 }
 
 impl SlowQueryLog {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
             next_sequence: 1,
@@ -222,7 +277,7 @@ impl SlowQueryLog {
         }
     }
 
-    pub(crate) fn push(&mut self, mut record: SlowQueryRecord) {
+    pub fn push(&mut self, mut record: SlowQueryRecord) {
         if self.capacity == 0 {
             return;
         }
@@ -234,12 +289,12 @@ impl SlowQueryLog {
         self.records.push_back(record);
     }
 
-    pub(crate) fn snapshot(&self) -> Vec<SlowQueryRecord> {
+    pub fn snapshot(&self) -> Vec<SlowQueryRecord> {
         self.records.iter().cloned().collect()
     }
 }
 
-pub(crate) fn slow_query_log_jsonl(
+pub fn slow_query_log_jsonl(
     records: &[SlowQueryRecord],
     include_query_text: bool,
 ) -> Result<String> {
@@ -255,10 +310,8 @@ pub(crate) fn slow_query_log_jsonl(
     Ok(jsonl)
 }
 
-pub(crate) fn slow_query_record_summary(
-    record: &SlowQueryRecord,
-) -> super::SlowQueryLogRecordSummary {
-    super::SlowQueryLogRecordSummary {
+pub fn slow_query_record_summary(record: &SlowQueryRecord) -> SlowQueryLogRecordSummary {
+    SlowQueryLogRecordSummary {
         sequence: record.sequence,
         query_language: record.query_language.clone(),
         statement_kind: record.statement_kind.clone(),
@@ -274,7 +327,7 @@ pub(crate) fn slow_query_record_summary(
 
 fn slow_query_record_json(record: &SlowQueryRecord, include_query_text: bool) -> serde_json::Value {
     let mut object = serde_json::json!({
-        "protocol": super::SLOW_QUERY_LOG_EVENT_PROTOCOL,
+        "protocol": SLOW_QUERY_LOG_EVENT_PROTOCOL,
         "protocol_version": 1,
         "sequence": record.sequence,
         "query_language": record.query_language,
@@ -311,9 +364,7 @@ fn slow_query_record_json(record: &SlowQueryRecord, include_query_text: bool) ->
     object
 }
 
-fn vector_execution_report_json(
-    report: &skein_executor::VectorExecutionReport,
-) -> serde_json::Value {
+fn vector_execution_report_json(report: &VectorExecutionReport) -> serde_json::Value {
     serde_json::json!({
         "backend": report.backend.as_str(),
         "compression_mode": report.compression_mode.as_str(),
@@ -351,7 +402,7 @@ fn vector_execution_report_json(
 }
 
 impl StatementExecution {
-    pub(crate) fn completed(
+    pub fn completed(
         query_language: &str,
         query_text: &str,
         statement_kind: &str,
@@ -372,7 +423,7 @@ impl StatementExecution {
         }
     }
 
-    pub(crate) fn failed(
+    pub fn failed(
         query_language: &str,
         query_text: &str,
         statement_kind: &str,
@@ -395,7 +446,7 @@ impl StatementExecution {
 }
 
 impl StatementSummary {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
             records: BTreeMap::new(),
@@ -403,7 +454,7 @@ impl StatementSummary {
         }
     }
 
-    pub(crate) fn record(&mut self, execution: StatementExecution) {
+    pub fn record(&mut self, execution: StatementExecution) {
         if self.capacity == 0 {
             return;
         }
@@ -428,7 +479,7 @@ impl StatementSummary {
         );
     }
 
-    pub(crate) fn snapshot(&self) -> Vec<StatementSummaryRecord> {
+    pub fn snapshot(&self) -> Vec<StatementSummaryRecord> {
         self.insertion_order
             .iter()
             .filter_map(|digest| self.records.get(digest).cloned())
@@ -482,27 +533,27 @@ impl StatementSummaryRecord {
 }
 
 #[cfg(test)]
-pub(crate) fn query_sql(
+pub fn query_sql<Store: SystemSqlStore>(
     sql_text: &str,
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
-    context: &SystemSqlContext<'_>,
+    context: &SystemSqlContext<'_, Store>,
 ) -> Result<QueryOutput> {
     query_sql_with_params(sql_text, &[], max_rows, max_payload_bytes, context)
 }
 
-pub(crate) fn query_sql_with_params(
+pub fn query_sql_with_params<Store: SystemSqlStore>(
     sql_text: &str,
     parameters: &[Value],
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
-    context: &SystemSqlContext<'_>,
+    context: &SystemSqlContext<'_, Store>,
 ) -> Result<QueryOutput> {
     let logical = plan_sql(sql_text, parameters)?;
     let physical = optimize_sql(logical);
     let rows = execute_sql(physical, context, max_rows)?;
     let payload_bytes = rows.iter().fold(0usize, |total, row| {
-        total.saturating_add(crate::executor::map_payload_bytes(row))
+        total.saturating_add(map_payload_bytes(row))
     });
     if max_payload_bytes.is_some_and(|limit| payload_bytes > limit) {
         return Err(SkeinError::Execution(format!(
@@ -571,7 +622,7 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
     if select
         .order_by
         .iter()
-        .any(|item| item.nulls != crate::sql::SqlNullOrder::DialectDefault)
+        .any(|item| item.nulls != skein_sql::SqlNullOrder::DialectDefault)
     {
         return Err(SkeinError::Semantic(
             "system SQL does not support explicit NULLS FIRST/LAST".to_string(),
@@ -631,9 +682,9 @@ fn optimize_sql(logical: SqlLogicalPlan) -> SqlPhysicalPlan {
     }
 }
 
-fn execute_sql(
+fn execute_sql<Store: SystemSqlStore>(
     physical: SqlPhysicalPlan,
-    context: &SystemSqlContext<'_>,
+    context: &SystemSqlContext<'_, Store>,
     max_rows: Option<usize>,
 ) -> Result<Vec<Row>> {
     match physical {
@@ -643,9 +694,9 @@ fn execute_sql(
     }
 }
 
-fn execute_system_table_scan(
+fn execute_system_table_scan<Store: SystemSqlStore>(
     scan: SystemTableScan,
-    context: &SystemSqlContext<'_>,
+    context: &SystemSqlContext<'_, Store>,
     max_rows: Option<usize>,
 ) -> Result<Vec<Row>> {
     let mut rows = match scan.table {
@@ -1265,7 +1316,7 @@ fn constraint_rows(catalog: &Catalog) -> Vec<Row> {
     rows
 }
 
-fn runtime_status_rows(context: &SystemSqlContext<'_>) -> Vec<Row> {
+fn runtime_status_rows<Store: SystemSqlStore>(context: &SystemSqlContext<'_, Store>) -> Vec<Row> {
     vec![BTreeMap::from([
         (
             "commit_epoch".to_string(),
@@ -1298,7 +1349,7 @@ fn runtime_status_rows(context: &SystemSqlContext<'_>) -> Vec<Row> {
     ])]
 }
 
-fn append_table_rows(state: &skein_storage::AppendState) -> Vec<Row> {
+fn append_table_rows(state: &AppendState) -> Vec<Row> {
     state
         .schemas()
         .values()
@@ -1335,8 +1386,8 @@ fn append_table_rows(state: &skein_storage::AppendState) -> Vec<Row> {
                     "order_mode".to_string(),
                     Value::String(
                         match schema.order_mode {
-                            skein_storage::AppendOrderMode::CallerProvided => "caller_provided",
-                            skein_storage::AppendOrderMode::CommitSequence => "commit_sequence",
+                            AppendOrderMode::CallerProvided => "caller_provided",
+                            AppendOrderMode::CommitSequence => "commit_sequence",
                         }
                         .to_string(),
                     ),
@@ -1356,7 +1407,7 @@ fn append_table_rows(state: &skein_storage::AppendState) -> Vec<Row> {
         .collect()
 }
 
-fn append_storage_rows(store: &GraphStore, state: &skein_storage::AppendState) -> Vec<Row> {
+fn append_storage_rows(store: &impl SystemSqlStore, state: &AppendState) -> Vec<Row> {
     let mut report = store.append_storage_residency_report();
     report.live_rows = state.live_rows();
     report.live_payload_bytes = state.live_payload_bytes();
@@ -1662,7 +1713,7 @@ fn graph_statistic_count_row(statistics: &GraphStatistics, kind: &str, count: u6
     row
 }
 
-fn populate_index_sample(row: &mut Row, sample: crate::schema::IndexStatisticsSample) {
+fn populate_index_sample(row: &mut Row, sample: IndexStatisticsSample) {
     row.insert("index_size".to_string(), u64_value(sample.index_size));
     row.insert("unique_values".to_string(), u64_value(sample.unique_values));
     row.insert("sample_size".to_string(), u64_value(sample.sample_size));
@@ -1714,9 +1765,9 @@ fn graph_statistic_base_row(statistics: &GraphStatistics, kind: &str) -> Row {
 fn populate_path_statistic_names(
     row: &mut Row,
     catalog: &Catalog,
-    source_label_id: crate::schema::LabelId,
-    rel_type_id: crate::schema::RelTypeId,
-    target_label_id: crate::schema::LabelId,
+    source_label_id: LabelId,
+    rel_type_id: RelTypeId,
+    target_label_id: LabelId,
 ) {
     row.insert(
         "source_label_name".to_string(),
@@ -2085,11 +2136,7 @@ fn compare_values(left: &Value, op: SqlComparisonOp, right: &Value) -> bool {
     }
 }
 
-fn compare_ordered_rows(
-    left: &Row,
-    right: &Row,
-    order_by: &[crate::sql::SqlOrderItem],
-) -> Ordering {
+fn compare_ordered_rows(left: &Row, right: &Row, order_by: &[SqlOrderItem]) -> Ordering {
     for item in order_by {
         let column = item
             .expression
@@ -2174,7 +2221,7 @@ fn validate_predicate_columns(table: SystemTable, predicate: Option<&SqlPredicat
     result
 }
 
-fn validate_order_columns(table: SystemTable, order_by: &[crate::sql::SqlOrderItem]) -> Result<()> {
+fn validate_order_columns(table: SystemTable, order_by: &[SqlOrderItem]) -> Result<()> {
     for item in order_by {
         validate_column(table, item.expression.require_column()?)?;
     }
@@ -2469,12 +2516,12 @@ const fn storage_residency_mode_name(mode: StorageResidencyMode) -> &'static str
     }
 }
 
-const fn relational_index_mode_name(mode: skein_storage::RelationalIndexMode) -> &'static str {
+const fn relational_index_mode_name(mode: RelationalIndexMode) -> &'static str {
     match mode {
-        skein_storage::RelationalIndexMode::Materialized => "materialized",
-        skein_storage::RelationalIndexMode::Shadow => "shadow",
-        skein_storage::RelationalIndexMode::DemandPaged => "demand_paged",
-        skein_storage::RelationalIndexMode::Authoritative => "authoritative",
+        RelationalIndexMode::Materialized => "materialized",
+        RelationalIndexMode::Shadow => "shadow",
+        RelationalIndexMode::DemandPaged => "demand_paged",
+        RelationalIndexMode::Authoritative => "authoritative",
     }
 }
 
@@ -2512,6 +2559,52 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct TestStore;
+
+    impl SystemSqlStore for TestStore {
+        fn commit_epoch(&self) -> u64 {
+            0
+        }
+
+        fn append_storage_residency_report(&self) -> AppendStorageResidencyReport {
+            AppendStorageResidencyReport::default()
+        }
+
+        fn statistics(&self, _catalog: &Catalog) -> GraphStatistics {
+            GraphStatistics::default()
+        }
+
+        fn projected_graph_statuses(&self) -> Vec<ProjectedGraphStatus> {
+            Vec::new()
+        }
+
+        fn search_projection_changefeed_status(&self) -> SearchProjectionChangefeedStatus {
+            SearchProjectionChangefeedStatus {
+                graph_commit_epoch: 0,
+                resume_floor_commit_epoch: 0,
+                oldest_retained_mutation_id: None,
+                newest_retained_mutation_id: None,
+                first_rebuild_required_mutation_id: None,
+                retained_mutation_count: 0,
+                retained_bytes: 0,
+                max_retained_bytes: None,
+                restart_recoverable: true,
+            }
+        }
+    }
+
+    fn default_runtime() -> SystemRuntimeSnapshot {
+        SystemRuntimeSnapshot::new(
+            false,
+            Some(512),
+            Some(4 * 1024 * 1024),
+            StorageResidencyMode::Auto,
+            RelationalIndexMode::default(),
+            RuntimeCapabilities::default(),
+        )
+    }
 
     #[test]
     fn predicate_binding_preserves_source_spans_and_system_null_behavior() {
@@ -2572,7 +2665,9 @@ mod tests {
     #[test]
     fn query_plan_cache_virtual_table_with_predicate_and_projection() {
         let catalog = Catalog::default();
-        let store = GraphStore::default();
+        let store = TestStore;
+        let relational_state = RelationalState::default();
+        let append_state = AppendState::default();
         let stats = PlanCacheStats {
             max_entries: Some(128),
             entries: 3,
@@ -2592,9 +2687,9 @@ mod tests {
             &SystemSqlContext {
                 catalog: &catalog,
                 store: &store,
-                relational_state: store.relational_state(),
-                append_state: store.append_state(),
-                runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
+                relational_state: &relational_state,
+                append_state: &append_state,
+                runtime: default_runtime(),
                 plan_cache_stats: &stats,
                 slow_queries: &[],
                 statement_summaries: &[],
@@ -2611,7 +2706,9 @@ mod tests {
     #[test]
     fn query_system_table_with_postgres_parameters() {
         let catalog = Catalog::default();
-        let store = GraphStore::default();
+        let store = TestStore;
+        let relational_state = RelationalState::default();
+        let append_state = AppendState::default();
         let stats = PlanCacheStats {
             max_entries: Some(128),
             entries: 3,
@@ -2626,9 +2723,9 @@ mod tests {
         let context = SystemSqlContext {
             catalog: &catalog,
             store: &store,
-            relational_state: store.relational_state(),
-            append_state: store.append_state(),
-            runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
+            relational_state: &relational_state,
+            append_state: &append_state,
+            runtime: default_runtime(),
             plan_cache_stats: &stats,
             slow_queries: &[],
             statement_summaries: &[],
@@ -2661,7 +2758,9 @@ mod tests {
     #[test]
     fn query_system_table_rejects_parameter_contract_mismatch() {
         let catalog = Catalog::default();
-        let store = GraphStore::default();
+        let store = TestStore;
+        let relational_state = RelationalState::default();
+        let append_state = AppendState::default();
         let stats = PlanCacheStats {
             max_entries: None,
             entries: 0,
@@ -2676,9 +2775,9 @@ mod tests {
         let context = SystemSqlContext {
             catalog: &catalog,
             store: &store,
-            relational_state: store.relational_state(),
-            append_state: store.append_state(),
-            runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
+            relational_state: &relational_state,
+            append_state: &append_state,
+            runtime: default_runtime(),
             plan_cache_stats: &stats,
             slow_queries: &[],
             statement_summaries: &[],
@@ -2710,7 +2809,9 @@ mod tests {
     #[test]
     fn query_slow_queries_pushes_filter_order_and_limit_into_scan() {
         let catalog = Catalog::default();
-        let store = GraphStore::default();
+        let store = TestStore;
+        let relational_state = RelationalState::default();
+        let append_state = AppendState::default();
         let stats = PlanCacheStats {
             max_entries: None,
             entries: 0,
@@ -2782,9 +2883,9 @@ mod tests {
             &SystemSqlContext {
                 catalog: &catalog,
                 store: &store,
-                relational_state: store.relational_state(),
-                append_state: store.append_state(),
-                runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
+                relational_state: &relational_state,
+                append_state: &append_state,
+                runtime: default_runtime(),
                 plan_cache_stats: &stats,
                 slow_queries: &records,
                 statement_summaries: &[],
@@ -2804,15 +2905,12 @@ mod tests {
     #[test]
     fn query_catalog_virtual_tables_expose_schema_without_typed_getters() {
         let mut catalog = Catalog::default();
-        let store = GraphStore::default();
+        let store = TestStore;
+        let relational_state = RelationalState::default();
+        let append_state = AppendState::default();
         let memory_label = catalog.get_or_create_label("Memory");
         let memory_table = catalog.get_or_create_table(TableKind::Node, "Memory");
-        catalog.get_or_create_property(
-            memory_table,
-            "id",
-            crate::schema::PropertyType::String,
-            false,
-        );
+        catalog.get_or_create_property(memory_table, "id", PropertyType::String, false);
         catalog.get_or_create_property_index_with_kind(memory_label, "id", IndexKind::Equality);
         catalog.get_or_create_unique_constraint(memory_label, "id");
         let stats = PlanCacheStats {
@@ -2829,9 +2927,9 @@ mod tests {
         let context = SystemSqlContext {
             catalog: &catalog,
             store: &store,
-            relational_state: store.relational_state(),
-            append_state: store.append_state(),
-            runtime: SystemRuntimeSnapshot::from_config(&DatabaseConfig::default()),
+            relational_state: &relational_state,
+            append_state: &append_state,
+            runtime: default_runtime(),
             plan_cache_stats: &stats,
             slow_queries: &[],
             statement_summaries: &[],
