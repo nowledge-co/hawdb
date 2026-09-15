@@ -105,8 +105,7 @@ use std::time::Instant;
 mod app_read_snapshot_tests;
 #[cfg(test)]
 mod candidate_facade_tests;
-mod serving_path;
-pub use serving_path::{
+pub use skein_readiness::nowledge_mem_serving_path::{
     NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
     NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
 };
@@ -6792,15 +6791,16 @@ mod tests {
         NowledgeMemReadinessOptions, NowledgeMemRetrievalProjectionAdvisor,
         NowledgeMemRouteReadinessSummary, NowledgeMemSearchCandidateReadinessOptions,
         NowledgeMemSearchCandidateRequest, NowledgeMemSearchCandidateShadowAccumulator,
-        NowledgeMemSearchProjection, NowledgeMemSourceMutationDualWriteEvidence,
-        NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
-        NowledgeMemStorageRecoveryReport, NowledgeMemWorkControl,
-        NowledgeQueryRuntimePreflightProbe, NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
-        NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
-        NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-        NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL, NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
-        NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
-        NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+        NowledgeMemSearchProjection, NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
+        NowledgeMemSourceMutationDualWriteEvidence, NowledgeMemStorageLifecycleActionKind,
+        NowledgeMemStorageLifecycleDecision, NowledgeMemStorageRecoveryReport,
+        NowledgeMemWorkControl, NowledgeQueryRuntimePreflightProbe,
+        NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
+        NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL, NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL,
+        NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL,
+        NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL, NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL,
+        NOWLEDGE_MEM_READ_REPORT_PROTOCOL, NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
+        NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
         NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL,
         NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
         NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
@@ -6851,6 +6851,7 @@ mod tests {
         StorageResourceProfileLimits, VectorRecallValidationOptions, VectorRecallValidationReport,
         WorkClass, PRODUCTION_QUALIFICATION_POLICY_VERSION, VECTOR_RECALL_VALIDATION_PROTOCOL,
     };
+    use std::any::TypeId;
     use std::collections::BTreeMap;
     use std::sync::mpsc;
     use std::thread;
@@ -6916,6 +6917,20 @@ mod tests {
             )
             .compressed_vector_search_mode,
             CompressedVectorSearchMode::Required
+        );
+    }
+
+    #[test]
+    fn serving_path_readiness_reexports_the_readiness_owner_contract() {
+        assert_eq!(
+            TypeId::of::<NowledgeMemServingPathReadiness>(),
+            TypeId::of::<skein_readiness::nowledge_mem_serving_path::NowledgeMemServingPathReadiness>(
+            )
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemServingEntrypoint>(),
+            TypeId::of::<skein_readiness::nowledge_mem_serving_path::NowledgeMemServingEntrypoint>(
+            )
         );
     }
 
