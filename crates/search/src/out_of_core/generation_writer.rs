@@ -752,8 +752,8 @@ impl SearchOutOfCoreGenerationWriter {
         )?;
         checkpoint(&self.task_context)?;
         self.documents_digest = documents_digest;
-        self.needs_chinese_analyzer |= crate::analyzer_stream::document_token_fields(&document)
-            .any(|(text, _)| text.chars().any(crate::cjk_tokenizer::is_han_search_char));
+        self.needs_chinese_analyzer |=
+            crate::analyzer_workspace::document_needs_workspace(&document);
         self.last_document_id = Some(document.document.id);
         self.document_count = self.document_count.saturating_add(1);
         if document.document.embedding.is_some() {

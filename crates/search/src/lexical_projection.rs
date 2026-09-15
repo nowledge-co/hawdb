@@ -555,12 +555,31 @@ fn analyze_delta_document(
     config: LexicalProjectionConfig,
 ) -> Result<DeltaDocument> {
     admit_document_source(document, config)?;
+    if crate::analyzer_workspace::document_needs_workspace(document) {
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task)?;
+        return crate::analyzer_workspace::run(&memory, &task, |workspace| {
+            analyze_delta_document_with_workspace(document, analyzer, config, Some(&workspace))
+        });
+    }
+    analyze_delta_document_with_workspace(document, analyzer, config, None)
+}
+
+fn analyze_delta_document_with_workspace(
+    document: &SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    config: LexicalProjectionConfig,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
+) -> Result<DeltaDocument> {
     let mut accumulator = DocumentAnalysis::new(&document.id, config)?;
     for (field, (text, weight)) in document_token_fields(document).enumerate() {
         let field = u8::try_from(field).expect("document analysis has at most six fields");
-        visit_token_list(text, analyzer, |term, occurrence| {
-            accumulator.push(term, occurrence, field, weight)
-        })?;
+        crate::analyzer_stream::visit_token_list_with_workspace(
+            text,
+            analyzer,
+            workspace,
+            |term, occurrence| accumulator.push(term, occurrence, field, weight),
+        )?;
     }
     accumulator.finish()
 }
@@ -1345,6 +1364,32 @@ impl LexicalProjectionWriter {
         self
     }
 
+    fn context(&self) -> Result<(BuildMemory, RuntimeTaskContext)> {
+        match &self.build_context {
+            Some((memory, task)) => Ok((memory.clone(), task.clone())),
+            None => {
+                let task = RuntimeTaskContext::default();
+                Ok((BuildMemory::new(&task)?, task))
+            }
+        }
+    }
+
+    fn needs_analyzer_workspace<'a>(
+        &self,
+        documents: impl Iterator<Item = &'a SearchDocument>,
+    ) -> Result<bool> {
+        for document in documents {
+            if let Some((_, task)) = &self.build_context {
+                checkpoint(task)?;
+            }
+            admit_document_source(document, self.config)?;
+            if crate::analyzer_workspace::document_needs_workspace(document) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn write<'a>(
         &self,
@@ -1353,9 +1398,29 @@ impl LexicalProjectionWriter {
         source_graph_commit_epoch: Option<u64>,
         analyzer_digest: u64,
         documents_digest: u64,
-        documents: impl Iterator<Item = &'a SearchDocument>,
+        documents: impl Iterator<Item = &'a SearchDocument> + Clone + Send,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
+        if let Some((_, task)) = &self.build_context {
+            checkpoint(task)?;
+        }
+        if self.analyzer_workspace.is_none() && self.needs_analyzer_workspace(documents.clone())? {
+            let (memory, task) = self.context()?;
+            return crate::analyzer_workspace::run(&memory, &task, |workspace| {
+                Self::new(self.config)
+                    .with_context(memory.clone(), task.clone())
+                    .with_analyzer_workspace(Some(workspace))
+                    .write(
+                        root,
+                        generation,
+                        source_graph_commit_epoch,
+                        analyzer_digest,
+                        documents_digest,
+                        documents,
+                        analyzer,
+                    )
+            });
+        }
         self.write_scanned(
             root,
             generation,
@@ -1383,13 +1448,7 @@ impl LexicalProjectionWriter {
         scan: impl FnOnce(&mut dyn FnMut(&SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
-        let (memory, task) = match &self.build_context {
-            Some((memory, task)) => (memory.clone(), task.clone()),
-            None => {
-                let task = RuntimeTaskContext::default();
-                (BuildMemory::new(&task)?, task)
-            }
-        };
+        let (memory, task) = self.context()?;
         checkpoint(&task)?;
         let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
         let mut artifact_guard = build_manifest::Cleanup::new(&paths.artifact_tmp);

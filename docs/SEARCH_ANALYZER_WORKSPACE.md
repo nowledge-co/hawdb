@@ -6,6 +6,28 @@ in an analyzed field builds its fused lexical/segment/vector artifacts on one
 operation-owned worker. ASCII-only generations retain their existing execution
 path. Query-time analysis and the public query contract are unchanged.
 
+The checkpoint lexical writer and mini-delta upsert/delete analysis also use this
+workspace when an analyzed field contains Han characters. The checkpoint writer
+borrows its input iterator on one scoped worker, using the same build accounts
+as artifact construction. It joins before returning the reader. A mini-delta
+analysis joins before its result can enter the copy-on-write delta maps. Replacing
+a base document can require two sequential analyses; each releases its native TLS
+before the next begins. Source admission still precedes mini-delta analysis.
+
+These existing facade entrypoints retain their default task context. A context
+with no memory reservation has no aggregate operation ceiling; this change does
+not reinterpret the logical posting or mini-delta limits as such a ceiling.
+The private writer honors an explicitly supplied reservation, and all three paths
+retain the input-dependent workspace leases through join. Shared host admission,
+facade context configuration and query-time analyzer ownership remain separate
+contracts. No public API, persisted encoding or default limit changes here.
+
+Mini-delta analysis failure still invalidates the optional lexical projection and
+lets the existing mutation/query fallback proceed. Checkpoint analyzer failure
+does not publish a lexical reader. The enclosing checkpoint keeps its existing
+snapshot and publication boundaries; this does not introduce a new transaction
+boundary around those artifacts.
+
 The worker borrows the operation's three existing accounts. It admits a 2 MiB
 native stack, a 4 KiB Rust thread bookkeeping allowance and the captured closure
 and result sizes before spawning. One worker stays within either nonzero task
@@ -93,6 +115,13 @@ active generation and removes its private stage. Actual ledger tests cover share
 root pressure, repeated work, consumer failure, cooperative cancellation, worker
 panic, parent unwind and simultaneous panic; TLS observations precede the final
 lease release.
+
+Entrypoint regressions observe native TLS exit through real checkpoint,
+checkpoint-with-report, upsert and delete calls. They require the thread lease to
+remain live at TLS exit and the operation accounts to drain after their owners
+drop. They also cover checkpoint reservation denial and cancellation before file
+creation, failed mini-delta analysis with its existing mutation fallback, retained
+snapshots, complete reopen, and the unchanged inline path for non-Han input.
 
 The independent allocator target uses the production formulas and real pinned
 Jieba/regex. It checks construction, repeated growth, short-after-long inputs and
