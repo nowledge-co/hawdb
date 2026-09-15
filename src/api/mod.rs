@@ -75,8 +75,8 @@ pub(crate) enum KnowledgeNeighborDirection {
     Both,
 }
 use system_variables::{
-    query_statement_variables_for_statement, query_work_request_for_statement,
-    reject_system_variable_parameters,
+    apply_set_system_variable, query_statement_variables_for_statement,
+    query_work_request_for_statement, reject_system_variable_parameters,
 };
 
 mod access_control;
@@ -110,7 +110,6 @@ const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
 
-pub use access_control::AccessControlPolicyReadiness;
 pub use artifact_jobs::{
     DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
     ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
@@ -182,6 +181,8 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
+pub use skein_core::QueryAccessControlContext;
+pub use skein_evidence::AccessControlPolicyReadiness;
 pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
@@ -636,82 +637,6 @@ impl ProjectionRelationalReadBinding {
 
     pub fn tables(&self) -> &BTreeSet<String> {
         &self.tables
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct QueryAccessControlContext {
-    policy_epoch: u64,
-    visibility_property: String,
-    allowed_visibility_values: BTreeSet<String>,
-}
-
-impl QueryAccessControlContext {
-    pub fn visibility_scope(
-        policy_epoch: u64,
-        visibility_property: impl Into<String>,
-        allowed_visibility_value: impl Into<String>,
-    ) -> Self {
-        Self::visibility_scopes(
-            policy_epoch,
-            visibility_property,
-            std::iter::once(allowed_visibility_value),
-        )
-    }
-
-    pub fn visibility_scopes(
-        policy_epoch: u64,
-        visibility_property: impl Into<String>,
-        allowed_visibility_values: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        Self {
-            policy_epoch,
-            visibility_property: visibility_property.into(),
-            allowed_visibility_values: allowed_visibility_values
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        }
-    }
-
-    pub fn policy_epoch(&self) -> u64 {
-        self.policy_epoch
-    }
-
-    pub fn visibility_property(&self) -> &str {
-        &self.visibility_property
-    }
-
-    pub fn allowed_visibility_values(&self) -> &BTreeSet<String> {
-        &self.allowed_visibility_values
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.policy_epoch == 0 {
-            return Err(SkeinError::Semantic(
-                "access control policy epoch must be non-zero".to_string(),
-            ));
-        }
-        if self.visibility_property.trim().is_empty() {
-            return Err(SkeinError::Semantic(
-                "access control visibility property must be non-empty".to_string(),
-            ));
-        }
-        if self.allowed_visibility_values.is_empty() {
-            return Err(SkeinError::Semantic(
-                "access control visibility scope must not be empty".to_string(),
-            ));
-        }
-        if self
-            .allowed_visibility_values
-            .iter()
-            .any(|value| value.trim().is_empty())
-        {
-            return Err(SkeinError::Semantic(
-                "access control visibility scope values must be non-empty".to_string(),
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -3308,7 +3233,7 @@ impl Database {
                 batch.complete_through_commit_epoch().unwrap_or(source_graph_commit_epoch)
             )));
         }
-        Ok(Some(batch.graph_delta))
+        Ok(Some(batch.into_graph_delta()))
     }
 
     pub fn build_search_projection_change_batch_after(
@@ -3407,14 +3332,14 @@ impl Database {
             complete_through_commit_epoch = current_epoch;
         }
 
-        Ok(Some(SearchProjectionChangeBatch {
-            graph_delta: SearchProjectionGraphDeltaRequest {
+        Ok(Some(SearchProjectionChangeBatch::new(
+            SearchProjectionGraphDeltaRequest {
                 upsert_node_ids: upsert_node_ids.into_iter().collect(),
                 delete_document_ids: delete_document_ids.into_iter().collect(),
                 max_operations,
                 complete_through_graph_commit_epoch: Some(complete_through_commit_epoch),
             },
-            relational_primary_key_changes: relational_primary_keys
+            relational_primary_keys
                 .into_iter()
                 .map(
                     |(table, primary_keys)| skein_storage::RelationalTablePrimaryKeyChanges {
@@ -3423,7 +3348,7 @@ impl Database {
                     },
                 )
                 .collect(),
-        }))
+        )))
     }
 
     pub fn build_search_projection_graph_delta_request_from_freshness(
@@ -3684,7 +3609,7 @@ impl Database {
         relational: SearchProjectionRelationalDelta,
     ) -> Result<SearchProjectionDeltaReport> {
         let expected_primary_key_count = batch
-            .relational_primary_key_changes
+            .relational_primary_key_changes()
             .iter()
             .map(|table| table.primary_keys.len())
             .fold(0usize, usize::saturating_add);
@@ -3701,8 +3626,8 @@ impl Database {
             ));
         }
         let complete_through_commit_epoch = batch.complete_through_commit_epoch();
-        let max_operations = batch.graph_delta.max_operations;
-        let mut graph = self.build_search_projection_graph_delta(&batch.graph_delta)?;
+        let max_operations = batch.graph_delta().max_operations;
+        let mut graph = self.build_search_projection_graph_delta(batch.graph_delta())?;
         let SearchProjectionDelta {
             upserts,
             deletes,
@@ -20734,7 +20659,7 @@ impl DatabaseSession<'_> {
             }
             cypher::Statement::SetSystemVariable(set) => {
                 reject_system_variable_parameters(parameters)?;
-                self.system_variables.apply_set_system_variable(set)
+                apply_set_system_variable(&mut self.system_variables, set)
             }
             cypher::Statement::Explain(_) if self.graph_transaction.is_some() => {
                 Err(SkeinError::Execution(

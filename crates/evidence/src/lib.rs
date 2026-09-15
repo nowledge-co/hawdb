@@ -1,5 +1,6 @@
 //! Production qualification, recovery, and redacted diagnostic evidence.
 
+mod access_control;
 #[doc(hidden)]
 pub mod background_maintenance_evidence;
 pub mod blackbox;
@@ -18,6 +19,7 @@ pub mod replacement_contract;
 #[doc(hidden)]
 pub mod storage_recovery_evidence;
 
+pub use access_control::{access_control_policy_readiness, AccessControlPolicyReadiness};
 pub use crash_recovery::{
     StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
     STORAGE_CRASH_RECOVERY_EVIDENCE_PROTOCOL,

@@ -692,9 +692,7 @@ impl Database {
         }
         if let cypher::Statement::SetSystemVariable(set) = body {
             reject_system_variable_parameters(parameters)?;
-            return self
-                .system_variables
-                .apply_set_system_variable(set)
+            return apply_set_system_variable(&mut self.system_variables, set)
                 .map(|output| (output, QueryExecutionTrace::uncached(statement.clone())));
         }
         if matches!(body, cypher::Statement::Checkpoint) {

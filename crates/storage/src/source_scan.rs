@@ -10,7 +10,8 @@ use crate::text::{
 };
 use crate::{
     durable_replace_file, DateTimeMinMax, DurableCompression, EnumDictionaryStats, FieldSummary,
-    NodeRecord, PersistedScanSegment, ScanSegmentManifest, SegmentPayloadRange, SegmentSummary,
+    NodeRecord, PersistedScanSegment, ScanPredicate, ScanSegmentFallback, ScanSegmentManifest,
+    SegmentPayloadRange, SegmentReadExecutionReport, SegmentSummary,
 };
 use skein_core::schema::LabelId;
 use skein_core::{Result, SkeinError, Value};
@@ -63,6 +64,233 @@ struct SourceScanSegment {
 pub struct SourceScanRow {
     pub node_id: u64,
     pub properties: BTreeMap<String, Value>,
+}
+
+const MAX_SOURCE_CANDIDATE_ROWS: usize = 10_000;
+
+/// A bounded page request over checkpoint-published Source candidates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceCandidateScanRequest {
+    pub predicate: ScanPredicate,
+    pub after: Option<SourceCandidateCursor>,
+    pub limit: usize,
+    pub max_payload_bytes: usize,
+    pub property_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCandidateCursor {
+    pub created_at: Option<Value>,
+    pub node_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCandidateRow {
+    pub node_id: u64,
+    pub source_id: Option<String>,
+    pub properties: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceCandidateScanOrigin {
+    Sidecar {
+        graph_epoch: u64,
+        skipped_segment_count: usize,
+    },
+    CanonicalFallback {
+        reason: ScanSegmentFallback,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCandidateScanOutput {
+    pub graph_commit_epoch: u64,
+    pub rows: Vec<SourceCandidateRow>,
+    pub next_cursor: Option<SourceCandidateCursor>,
+    pub origin: SourceCandidateScanOrigin,
+    pub read_report: Option<SegmentReadExecutionReport>,
+}
+
+#[doc(hidden)]
+pub fn validate_source_candidate_scan_request(request: &SourceCandidateScanRequest) -> Result<()> {
+    if request.limit == 0 {
+        return Err(SkeinError::Semantic(
+            "knowledge source candidate scan requires a positive limit".to_string(),
+        ));
+    }
+    if request.limit > MAX_SOURCE_CANDIDATE_ROWS {
+        return Err(SkeinError::Semantic(format!(
+            "knowledge source candidate scan limit {} exceeds {MAX_SOURCE_CANDIDATE_ROWS}",
+            request.limit
+        )));
+    }
+    if request.max_payload_bytes == 0 {
+        return Err(SkeinError::Semantic(
+            "knowledge source candidate scan requires a positive payload budget".to_string(),
+        ));
+    }
+    if request
+        .property_names
+        .iter()
+        .any(|name| name.trim().is_empty())
+    {
+        return Err(SkeinError::Semantic(
+            "knowledge source candidate scan requires non-empty property names".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Adds one canonical node to a bounded Source candidate page.
+#[doc(hidden)]
+pub fn select_source_candidate(
+    nodes: &mut Vec<NodeRecord>,
+    mut node: NodeRecord,
+    request: &SourceCandidateScanRequest,
+) -> Result<()> {
+    if request
+        .after
+        .as_ref()
+        .is_some_and(|after| !compare_source_candidate_to_cursor(&node, after).is_gt())
+    {
+        return Ok(());
+    }
+    node.properties.retain(|name, _| {
+        name == "id" || name == "created_at" || request.property_names.contains(name)
+    });
+    let insertion = nodes
+        .binary_search_by(|existing| compare_source_candidates(existing, &node))
+        .unwrap_or_else(|index| index);
+    nodes.insert(insertion, node);
+    if nodes.len() > request.limit.saturating_add(1) {
+        nodes.pop();
+    }
+    let payload_bytes = nodes
+        .iter()
+        .map(estimated_source_candidate_payload_bytes)
+        .fold(0usize, usize::saturating_add);
+    if payload_bytes > request.max_payload_bytes {
+        return Err(SkeinError::Execution(format!(
+            "knowledge source candidate payload budget exceeded: estimated_payload_bytes={payload_bytes}, max_payload_bytes={}",
+            request.max_payload_bytes
+        )));
+    }
+    Ok(())
+}
+
+/// Builds the externally visible candidate page from canonical source nodes.
+#[doc(hidden)]
+pub fn render_source_candidate_page(
+    graph_commit_epoch: u64,
+    mut nodes: Vec<NodeRecord>,
+    request: &SourceCandidateScanRequest,
+    origin: SourceCandidateScanOrigin,
+    read_report: Option<SegmentReadExecutionReport>,
+) -> Result<SourceCandidateScanOutput> {
+    let mut bounded = Vec::with_capacity(request.limit.saturating_add(1));
+    for node in nodes.drain(..) {
+        select_source_candidate(&mut bounded, node, request)?;
+    }
+    nodes = bounded;
+    let has_more = nodes.len() > request.limit;
+    nodes.truncate(request.limit);
+    let next_cursor = has_more
+        .then(|| {
+            nodes.last().map(|node| SourceCandidateCursor {
+                created_at: node.properties.get("created_at").cloned(),
+                node_id: node.id.0,
+            })
+        })
+        .flatten();
+    let rows = nodes
+        .into_iter()
+        .map(|node| SourceCandidateRow {
+            node_id: node.id.0,
+            source_id: node
+                .properties
+                .get("id")
+                .and_then(|value| matches!(value, Value::String(_)).then(|| value.clone()))
+                .and_then(|value| match value {
+                    Value::String(value) => Some(value),
+                    _ => None,
+                }),
+            properties: node
+                .properties
+                .iter()
+                .filter(|(name, _)| request.property_names.contains(*name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    Ok(SourceCandidateScanOutput {
+        graph_commit_epoch,
+        rows,
+        next_cursor,
+        origin,
+        read_report,
+    })
+}
+
+fn estimated_source_candidate_payload_bytes(node: &NodeRecord) -> usize {
+    node.properties
+        .iter()
+        .fold(16usize, |bytes, (name, value)| {
+            bytes
+                .saturating_add(name.len())
+                .saturating_add(estimated_value_bytes(value))
+        })
+}
+
+fn estimated_value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null => 1,
+        Value::Bool(_) => 1,
+        Value::Int(_) | Value::Float(_) => 8,
+        Value::String(value) => value.len(),
+        Value::Binary(value) => value.len(),
+        Value::Uuid(_) => 16,
+        Value::List(values) => values
+            .iter()
+            .map(estimated_value_bytes)
+            .fold(16usize, usize::saturating_add),
+        Value::Map(values) => values.iter().fold(16usize, |bytes, (name, value)| {
+            bytes
+                .saturating_add(name.len())
+                .saturating_add(estimated_value_bytes(value))
+        }),
+    }
+}
+
+fn compare_source_candidates(left: &NodeRecord, right: &NodeRecord) -> std::cmp::Ordering {
+    compare_source_candidate_keys(
+        left.properties.get("created_at"),
+        left.id.0,
+        right.properties.get("created_at"),
+        right.id.0,
+    )
+}
+
+fn compare_source_candidate_to_cursor(
+    node: &NodeRecord,
+    cursor: &SourceCandidateCursor,
+) -> std::cmp::Ordering {
+    compare_source_candidate_keys(
+        node.properties.get("created_at"),
+        node.id.0,
+        cursor.created_at.as_ref(),
+        cursor.node_id,
+    )
+}
+
+fn compare_source_candidate_keys(
+    left_created_at: Option<&Value>,
+    left_node_id: u64,
+    right_created_at: Option<&Value>,
+    right_node_id: u64,
+) -> std::cmp::Ordering {
+    right_created_at
+        .cmp(&left_created_at)
+        .then_with(|| right_node_id.cmp(&left_node_id))
 }
 
 pub fn build<'a>(
