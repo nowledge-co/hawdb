@@ -181,7 +181,7 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
-pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput};
+pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -763,15 +763,6 @@ pub struct BoundedReadQueryOutput {
 pub struct NowledgeGraphStatement {
     pub cypher: String,
     pub parameters: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeGraphExplainOutput {
-    pub plan: String,
-    pub trace: OptimizerTrace,
-    pub work_request: WorkRequest,
-    pub plan_cache_lookup: PlanCacheLookup,
-    pub statement_kind: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

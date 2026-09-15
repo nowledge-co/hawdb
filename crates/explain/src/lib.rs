@@ -33,6 +33,15 @@ pub struct ExplainAnalyzeOutput {
     pub statement_kind: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NowledgeGraphExplainOutput {
+    pub plan: String,
+    pub trace: OptimizerTrace,
+    pub work_request: WorkRequest,
+    pub plan_cache_lookup: PlanCacheLookup,
+    pub statement_kind: &'static str,
+}
+
 impl Display for ExplainOutput {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         let rows = plan_rows(&self.physical_plan, |node, operator_id, _is_root| {
