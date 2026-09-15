@@ -454,7 +454,7 @@ pub use skein_bootstrap::{
     skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
     stage_skein_lightning_bootstrap_export,
     stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
-    sync_bootstrap_directory, write_bootstrap_atomic_file,
+    sync_bootstrap_directory, verify_skein_lightning_staging_catalog, write_bootstrap_atomic_file,
     SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 pub use skein_core::LogicalType;

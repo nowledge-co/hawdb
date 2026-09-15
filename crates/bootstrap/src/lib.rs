@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod developer_json;
 #[doc(hidden)]
 pub mod developer_staging;
+#[doc(hidden)]
+pub mod developer_staging_verification;
 
 #[doc(hidden)]
 pub use developer_json::{
@@ -31,6 +33,8 @@ pub use developer_staging::{
     sync_bootstrap_directory, write_bootstrap_atomic_file,
     SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
+#[doc(hidden)]
+pub use developer_staging_verification::verify_skein_lightning_staging_catalog;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalGraphSnapshotExport {
