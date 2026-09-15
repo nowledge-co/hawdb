@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde_json = "1"
 skein-core = { path = "../core" }
 skein-qos = { path = "../qos" }
 skein-search = { path = "../search", default-features = false }
+skein-storage = { path = "../storage" }

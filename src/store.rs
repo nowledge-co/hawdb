@@ -1138,6 +1138,30 @@ pub struct GraphStore {
     durable: Option<DurableStore>,
 }
 
+impl skein_system_sql::SystemSqlStore for GraphStore {
+    fn commit_epoch(&self) -> u64 {
+        GraphStore::commit_epoch(self)
+    }
+
+    fn append_storage_residency_report(&self) -> skein_storage::AppendStorageResidencyReport {
+        GraphStore::append_storage_residency_report(self)
+    }
+
+    fn statistics(&self, catalog: &Catalog) -> GraphStatistics {
+        GraphStore::statistics(self, catalog)
+    }
+
+    fn projected_graph_statuses(&self) -> Vec<skein_storage::ProjectedGraphStatus> {
+        GraphStore::projected_graph_statuses(self)
+    }
+
+    fn search_projection_changefeed_status(
+        &self,
+    ) -> skein_storage::SearchProjectionChangefeedStatus {
+        GraphStore::search_projection_changefeed_status(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphScanControl {
     Continue,

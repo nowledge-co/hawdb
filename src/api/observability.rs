@@ -313,7 +313,7 @@ impl Database {
                         store: &self.store,
                         relational_state: self.store.relational_state(),
                         append_state: self.store.append_state(),
-                        runtime: system_sql::SystemRuntimeSnapshot::from_config(&self.config),
+                        runtime: super::system_runtime_snapshot(&self.config),
                         plan_cache_stats: &plan_cache_stats,
                         slow_queries: &slow_queries,
                         statement_summaries: &statement_summaries,

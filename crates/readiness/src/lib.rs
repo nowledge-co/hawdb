@@ -26,6 +26,9 @@ pub mod integration_readiness;
 pub mod library_readiness;
 
 #[doc(hidden)]
+pub mod nowledge_mem_serving_path;
+
+#[doc(hidden)]
 pub mod previous_wrapper_preflight;
 
 #[doc(hidden)]
