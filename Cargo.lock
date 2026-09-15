@@ -892,6 +892,7 @@ dependencies = [
  "skein-executor",
  "skein-explain",
  "skein-expression",
+ "skein-fuzz-contracts",
  "skein-integrity",
  "skein-nowledge-contracts",
  "skein-optimizer",
@@ -1035,6 +1036,15 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "skein",
+ "skein-fuzz-contracts",
+]
+
+[[package]]
+name = "skein-fuzz-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
 ]
 
 [[package]]
