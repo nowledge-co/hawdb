@@ -56,14 +56,13 @@ use super::{
 use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
 mod join_order;
-mod locator;
 mod streaming_binding;
 
-use self::locator::{
-    RelationalLocatorLayout, RelationalRowSetLocator, RelationalSortKey, RelationalSortRecord,
-};
 use self::streaming_binding::BoundStreamingProjection;
 use skein_relational::columnar_aggregate::ColumnarAggregateExecutor;
+pub(super) use skein_relational::locator::{
+    RelationalLocatorLayout, RelationalRowSetLocator, RelationalSortKey, RelationalSortRecord,
+};
 use skein_relational::predicate::BoundStreamingPredicate;
 
 mod access;
