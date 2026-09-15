@@ -27,27 +27,25 @@ use skein::search_projection_evidence::{
 use skein::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
 use skein::{
     add_shadow_ready_report, add_shadow_run_report, add_shadow_trace_report,
-    cutover_evidence_is_eligible, enforce_external_shadow_adapter_smoke_requirements,
-    external_shadow_adapter_smoke_fixture, external_shadow_adapter_smoke_report_json,
-    is_self_shadow_command, nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
-    should_run_shadow_ready, BackgroundMaintenanceOptions, LocalQosPolicy, LocalQosState,
+    assess_external_shadow_cutover_evidence, cutover_evidence_is_eligible,
+    enforce_external_shadow_adapter_smoke_requirements, external_shadow_adapter_smoke_fixture,
+    external_shadow_adapter_smoke_report_json, is_self_shadow_command,
+    nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow, should_run_shadow_ready,
+    BackgroundMaintenanceOptions, ExternalShadowCutoverEvidence, LocalQosPolicy, LocalQosState,
     WorkClass, WORK_CLASS_COUNT,
 };
 use skein::{
-    background_maintenance_evidence_health_from_bundle, external_shadow_ready_missing_capabilities,
-    external_shadow_trace_health_from_bundle,
-    replacement_readiness_family_evidence_health_from_bundle,
+    background_maintenance_evidence_health_from_bundle,
     scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
     scan_nowledge_query_inventory_cypher_coverage_to_json,
     scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json,
-    scan_nowledge_query_inventory_to_json, storage_recovery_evidence_health_from_bundle,
-    CanonicalGraphSnapshotValidation, CanonicalSnapshotIdentityAudit,
-    CompatibilityRollbackEvidence, Database, DatabaseConfig, ExternalShadowCommand,
-    ExternalShadowReady, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result, SearchIndex, SkeinError,
-    SkeinLightningBootstrapManifest, StorageRecoveryReport, StorageResidencyMode,
-    StorageResourceProfileLimits, Value, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
-    SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    scan_nowledge_query_inventory_to_json, CanonicalGraphSnapshotValidation,
+    CanonicalSnapshotIdentityAudit, CompatibilityRollbackEvidence, Database, DatabaseConfig,
+    ExternalShadowCommand, ExternalShadowReady, NowledgeCypherMigrationGateJsonOptions,
+    NowledgeMemGraph, NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result,
+    SearchIndex, SkeinError, SkeinLightningBootstrapManifest, StorageRecoveryReport,
+    StorageResidencyMode, StorageResourceProfileLimits, Value,
+    REQUIRED_EXTERNAL_SHADOW_CAPABILITIES, SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
 };
 use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use skein_integrity::checksum_u64;
@@ -1933,84 +1931,33 @@ fn add_cutover_evidence_report(
     storage_recovery_required: bool,
     background_maintenance_required: bool,
 ) -> Result<()> {
-    let evidence_kind = if self_shadow {
-        "protocol_smoke"
-    } else {
-        "previous_wrapper"
-    };
-    let ready_preflight = shadow_ready.is_some();
-    let ready_engine_kind = shadow_ready.and_then(|ready| ready.engine_kind.as_deref());
-    let ready_wrapper_identity = shadow_ready.and_then(|ready| ready.wrapper_identity.as_deref());
-    let ready_missing_capabilities = external_shadow_ready_missing_capabilities(shadow_ready);
-    let migration_gate = bundle
-        .get("migration_gate")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| {
-            SkeinError::Execution("migration gate bundle missing migration_gate".to_string())
-        })?;
-    let migration_gate_ready = migration_gate
-        .get("decision")
-        .and_then(serde_json::Value::as_str)
-        == Some("ready");
-    let shadow_evidence_present = migration_gate
-        .get("shadow_evidence_present")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let shadow_trace_health = external_shadow_trace_health_from_bundle(bundle);
-    let storage_recovery_health =
-        storage_recovery_evidence_health_from_bundle(bundle, storage_recovery_required);
-    let background_maintenance_health =
-        background_maintenance_evidence_health_from_bundle(bundle, background_maintenance_required);
-    let replacement_family_health =
-        replacement_readiness_family_evidence_health_from_bundle(bundle);
-    let mut blockers = Vec::new();
-    if self_shadow {
-        blockers.push("shadow run is protocol smoke, not previous-wrapper evidence".to_string());
-    }
-    if !ready_preflight {
-        blockers.push("shadow ready preflight was not executed".to_string());
-    }
-    if ready_preflight && ready_engine_kind.is_none() {
-        blockers.push("shadow ready response missing engine_kind".to_string());
-    }
-    if let Some(engine_kind) = ready_engine_kind
-        && engine_kind != "previous_wrapper"
-    {
-        blockers.push("shadow ready engine_kind is not previous_wrapper".to_string());
-    }
-    if ready_preflight
-        && ready_engine_kind == Some("previous_wrapper")
-        && ready_wrapper_identity.is_none()
-    {
-        blockers.push("shadow ready response missing wrapper_identity".to_string());
-    }
-    if ready_preflight && !ready_missing_capabilities.is_empty() {
-        blockers.push("shadow ready response missing required capabilities".to_string());
-    }
-    if !shadow_evidence_present {
-        blockers.push("no matched shadow checks are present".to_string());
-    }
-    if shadow_trace_health.present && !shadow_trace_health.complete {
-        blockers.push("shadow trace is incomplete or unavailable".to_string());
-    }
-    if !storage_recovery_health.ready {
-        blockers.extend(storage_recovery_health.blockers.iter().cloned());
-    }
-    if !background_maintenance_health.ready {
-        blockers.extend(background_maintenance_health.blockers.iter().cloned());
-    }
-    if !replacement_family_health.ready {
-        blockers.extend(replacement_family_health.blockers.iter().cloned());
-    }
-    if !migration_gate_ready {
-        blockers.push("migration gate decision is not ready".to_string());
-    }
+    let ExternalShadowCutoverEvidence {
+        eligible,
+        evidence_kind,
+        ready_preflight,
+        ready_engine_kind,
+        ready_wrapper_identity,
+        ready_missing_capabilities,
+        shadow_evidence_present,
+        shadow_trace_health,
+        storage_recovery_health,
+        background_maintenance_health,
+        replacement_family_health,
+        migration_gate_ready,
+        blockers,
+    } = assess_external_shadow_cutover_evidence(
+        bundle,
+        self_shadow,
+        shadow_ready,
+        storage_recovery_required,
+        background_maintenance_required,
+    )?;
 
     let object = bundle.as_object_mut().ok_or_else(|| {
         SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     let mut evidence = serde_json::Map::new();
-    insert_json(&mut evidence, "eligible", blockers.is_empty());
+    insert_json(&mut evidence, "eligible", eligible);
     insert_json(&mut evidence, "evidence_kind", evidence_kind);
     insert_json(&mut evidence, "requires_previous_wrapper", true);
     insert_json(&mut evidence, "requires_ready_preflight", true);

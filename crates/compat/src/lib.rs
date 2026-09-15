@@ -36,7 +36,8 @@ pub use external_shadow::{
 #[doc(hidden)]
 pub use external_shadow_gate::{
     add_shadow_ready_report, add_shadow_run_report, add_shadow_trace_report,
-    cutover_evidence_is_eligible,
+    assess_external_shadow_cutover_evidence, cutover_evidence_is_eligible,
+    ExternalShadowCutoverEvidence,
 };
 #[doc(hidden)]
 pub use external_shadow_smoke::{
