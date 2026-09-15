@@ -35,7 +35,7 @@ impl SearchProjectionPublishLease {
     ) -> Result<Self> {
         let lease = Self::acquire_lock_with_context(root, memory, task)?;
         // Check the binding under the same exclusion used by consumer owners.
-        super::super::consumer::require_unregistered_directory(root)?;
+        super::super::consumer::require_unregistered_directory(root, memory, task)?;
         checkpoint(task)?;
         Ok(lease)
     }
@@ -259,6 +259,79 @@ mod tests {
         fs::remove_file(snapshot).unwrap();
         drop(SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task).unwrap());
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_control_probe_covers_requested_allocations() {
+        use crate::test_allocation as allocation;
+        let _serial = allocation::serial();
+        assert_eq!(allocation::live(), 0);
+        let root = test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let snapshot = root.join(crate::SEARCH_SNAPSHOT_FILE);
+        let text = format!(
+            "SKEIN_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n{}",
+            "payload".repeat(2048)
+        );
+        let variants = [
+            ("plain", text.as_bytes().to_vec()),
+            (
+                "compressed",
+                crate::encode_search_snapshot_text(&text).unwrap(),
+            ),
+        ];
+        let mut observations = Vec::with_capacity(variants.len());
+        for (name, bytes) in variants {
+            fs::write(&snapshot, bytes).unwrap();
+            let task = RuntimeTaskContext::default();
+            let memory = BuildMemory::new(&task).unwrap();
+            drop(memory.input.reserve(1).unwrap());
+            drop(memory.spool.reserve(1).unwrap());
+            drop(memory.retained.reserve(1).unwrap());
+            let (lease, peak) = allocation::measure(|| {
+                SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task).unwrap()
+            });
+            let admitted_peak = memory.ledger.snapshot().peak_bytes;
+            drop(lease);
+            assert_eq!(allocation::live(), 0);
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+            observations.push((name, peak, admitted_peak));
+        }
+        fs::remove_dir_all(root).unwrap();
+        for (name, peak, admitted_peak) in &observations {
+            eprintln!("control probe {name}: requested_peak={peak}, admitted_peak={admitted_peak}");
+        }
+        assert!(
+            observations
+                .iter()
+                .all(|(_, peak, admitted)| peak <= admitted),
+            "publication control-record buffers must be admitted before allocation"
+        );
+    }
+
+    #[test]
+    fn publication_control_probe_releases_exclusion_after_admission_denial() {
+        use skein_core::RuntimeMemoryReservation;
+        let root = test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let snapshot = root.join(crate::SEARCH_SNAPSHOT_FILE);
+        let contents = b"SKEIN_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
+        for bytes in [
+            contents.to_vec(),
+            crate::encode_search_snapshot_text(std::str::from_utf8(contents).unwrap()).unwrap(),
+        ] {
+            fs::write(&snapshot, &bytes).unwrap();
+            let task = RuntimeTaskContext::default()
+                .with_memory_reservation(RuntimeMemoryReservation::new(1024, 0));
+            let memory = BuildMemory::new(&task).unwrap();
+            let error = SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task)
+                .unwrap_err();
+            assert!(error.to_string().contains("memory"));
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+            assert_eq!(fs::read(&snapshot).unwrap(), bytes);
+            drop(SearchProjectionPublishLease::acquire_for_consumer(&root).unwrap());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

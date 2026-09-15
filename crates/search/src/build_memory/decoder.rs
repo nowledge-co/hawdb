@@ -14,7 +14,7 @@ const CONTEXT_BYTES: usize = 256 * 1024;
 const BLOCK_BYTES: u64 = 128 * 1024;
 const DEFAULT_MAX_WINDOW: u64 = (1 << 27) + 1;
 
-pub(super) struct Decoder<'a, R> {
+pub(crate) struct Decoder<'a, R> {
     input: R,
     context: DCtx<'static>,
     header: [u8; 18],
@@ -28,7 +28,7 @@ pub(super) struct Decoder<'a, R> {
 }
 
 impl<'a, R: BufRead> Decoder<'a, R> {
-    pub(super) fn new(
+    pub(crate) fn new(
         input: R,
         memory: &BuildMemory,
         task: &'a RuntimeTaskContext,

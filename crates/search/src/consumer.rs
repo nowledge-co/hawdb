@@ -1,12 +1,15 @@
 //! Internal projection ownership used by the embedded database facade.
-use super::{SearchIndex, SEARCH_COMPRESSION_HEADER, SEARCH_SNAPSHOT_FILE};
+use super::{SearchIndex, SEARCH_SNAPSHOT_FILE};
 use crate::error::{Result, SkeinError};
 use crate::out_of_core::SearchProjectionPublishLease;
 use skein_core::Uuid;
 use skein_integrity::IntegrityHasher;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::Path;
+
+mod control;
+pub(crate) use control::require_unregistered_directory;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsumerBinding {
@@ -325,65 +328,6 @@ impl SearchIndex {
         }
         Ok(())
     }
-}
-
-/// Check the leading control records without loading a corpus-sized snapshot.
-/// A registered writer always places its binding immediately after the header.
-pub(crate) fn require_unregistered_directory(root: &Path) -> Result<()> {
-    let file = match File::open(root.join(SEARCH_SNAPSHOT_FILE)) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut reader = BufReader::new(file);
-    let first = bounded_line(&mut reader)?;
-    if first.trim_end() == SEARCH_COMPRESSION_HEADER {
-        let mut total = first.len();
-        loop {
-            let line = bounded_line(&mut reader)?;
-            total += line.len();
-            if total > 4096 {
-                return Err(invalid("snapshot envelope exceeds header limit"));
-            }
-            if line == "\n" {
-                break;
-            }
-            if line.is_empty() {
-                return Err(invalid("incomplete snapshot envelope"));
-            }
-        }
-        let decoder = zstd::stream::read::Decoder::new(reader)?;
-        let mut reader = BufReader::new(decoder);
-        let first = bounded_line(&mut reader)?;
-        check_control_records(&first, &control_prefix(&mut reader)?)
-    } else {
-        check_control_records(&first, &control_prefix(&mut reader)?)
-    }
-}
-
-fn check_control_records(first: &str, second: &str) -> Result<()> {
-    if first != "SKEIN_SEARCH_PROJECTION_V1\n" {
-        return Err(invalid("invalid snapshot header"));
-    }
-    if second.starts_with("projection_consumer_binding") {
-        return Err(invalid("registered projection requires its consumer owner"));
-    }
-    Ok(())
-}
-
-fn control_prefix(reader: &mut impl Read) -> Result<String> {
-    let mut prefix = Vec::with_capacity(27);
-    reader.take(27).read_to_end(&mut prefix)?;
-    Ok(String::from_utf8_lossy(&prefix).into_owned())
-}
-
-fn bounded_line(reader: &mut impl BufRead) -> Result<String> {
-    let mut line = String::new();
-    reader.take(1025).read_line(&mut line)?;
-    if line.len() > 1024 {
-        return Err(invalid("snapshot control record exceeds limit"));
-    }
-    Ok(line)
 }
 
 fn canonical_uuid(raw: &str) -> Result<Uuid> {
