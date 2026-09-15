@@ -1,8 +1,7 @@
 use super::*;
 use crate::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
 
-mod probe_fixtures;
-use probe_fixtures::ready_probe;
+use super::probe_fixtures::ready_probe;
 
 fn ready_structured_probe() -> serde_json::Value {
     let field_summaries = NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS

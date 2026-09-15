@@ -97,8 +97,6 @@ mod graph_recovery;
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
 mod relational_row_pages;
-#[path = "store/source_scan.rs"]
-mod source_scan;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
@@ -172,6 +170,8 @@ pub(crate) use skein_storage::mutation::evaluate::{
 use skein_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
 };
+pub(crate) use skein_storage::source_scan;
+pub use skein_storage::source_scan::SourceScanRow;
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
@@ -251,7 +251,6 @@ pub use skein_storage::{
 };
 pub use skein_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
 pub(crate) use skein_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
-pub use source_scan::SourceScanRow;
 pub(crate) use statistics_refresh::OptimizerStatisticsRefreshWork;
 pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 use std::collections::{BTreeMap, BTreeSet};

@@ -3,12 +3,16 @@ use super::super::{
     SearchOutOfCoreManifestBody, OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
 };
 use super::{RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
+use crate::build_control::checkpoint;
+#[cfg(feature = "vector-search")]
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
 use crate::{
     checksum_bytes, SearchEmbeddingManifest, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
 use std::fs::{self, File};
 use std::io::Read;
@@ -232,12 +236,32 @@ fn verify_published_artifact(
 }
 
 pub(super) fn file_len_checksum(path: &Path) -> Result<(u64, u64)> {
+    file_len_checksum_controlled(path, None)
+}
+
+#[cfg(feature = "vector-search")]
+pub(super) fn file_len_checksum_with_context(
+    path: &Path,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<(u64, u64)> {
+    checkpoint(task)?;
+    let _scratch = memory.spool.reserve(64 * 1024)?;
+    file_len_checksum_controlled(path, Some(task))
+}
+
+fn file_len_checksum_controlled(
+    path: &Path,
+    task: Option<&RuntimeTaskContext>,
+) -> Result<(u64, u64)> {
+    task.map_or(Ok(()), checkpoint)?;
     let mut file = File::open(path)?;
     let expected_len = file.metadata()?.len();
     let mut checksum = Crc32cHasher::new();
     let mut actual_len = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        task.map_or(Ok(()), checkpoint)?;
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -245,6 +269,7 @@ pub(super) fn file_len_checksum(path: &Path) -> Result<(u64, u64)> {
         checksum.update(&buffer[..read]);
         actual_len = actual_len.saturating_add(read as u64);
     }
+    task.map_or(Ok(()), checkpoint)?;
     if actual_len != expected_len {
         return Err(SkeinError::Storage(format!(
             "search generation artifact {} changed while checksumming",

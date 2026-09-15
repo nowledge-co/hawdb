@@ -219,6 +219,61 @@ fn long_fields_are_written_in_bounded_chunks() {
 }
 
 #[test]
+fn cancellation_during_short_writes_or_after_the_last_write_rejects_the_block() {
+    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+
+    struct CancelWriter {
+        output: ObservedWriter,
+        cancel_at: usize,
+        cancellation: RuntimeCancellationToken,
+    }
+
+    impl Write for CancelWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = self.output.write(bytes)?;
+            if self.output.bytes.len() >= self.cancel_at {
+                self.cancellation.cancel();
+            }
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.output.flush()
+        }
+    }
+
+    let documents = vec![("x".repeat(20_000), 1)];
+    let entries = Entries::Documents(&documents);
+    let expected = reference(entries, 7, 2);
+    for cancel_at in [1, 8192, expected.len()] {
+        let cancellation = RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(cancellation.clone());
+        let mut writer = CancelWriter {
+            output: ObservedWriter {
+                short_write: 127,
+                ..Default::default()
+            },
+            cancel_at,
+            cancellation,
+        };
+        let error = write_block_with_context(
+            &mut writer,
+            7,
+            2,
+            24,
+            expected.len() as u64,
+            entries,
+            Some(&task),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancel"));
+        assert_eq!(writer.output.bytes, expected[..writer.output.bytes.len()]);
+        assert!(writer.output.max_request <= SPILL_IO_BUFFER_BYTES);
+        assert!(writer.output.bytes.len() <= cancel_at + 126);
+    }
+}
+
+#[test]
 fn every_write_fault_preserves_only_the_written_prefix() {
     let documents = vec![("doc-\u{4e2d}".into(), 3), ("doc-z".into(), 9)];
     let postings = postings();
@@ -288,14 +343,14 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
         ("z\u{e9}".into(), u32::MAX),
     ];
     for (id, length) in &documents {
-        builder.push_document(id.clone(), *length).unwrap();
+        builder.push_document(id, *length).unwrap();
     }
     builder.finish_documents().unwrap();
     let postings = postings();
     for posting in &postings {
-        builder.push_posting(posting.clone()).unwrap();
+        builder.push_posting(posting).unwrap();
     }
-    builder.flush_postings().unwrap();
+    builder.merge_postings(&[], config).unwrap();
     let summary = builder.finish().unwrap();
     let actual = fs::read(&path).unwrap();
     assert_eq!(

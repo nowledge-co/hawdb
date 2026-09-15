@@ -181,6 +181,7 @@ pub use search_projection_catch_up::{
 };
 pub use skein_core::QueryAccessControlContext;
 pub use skein_evidence::AccessControlPolicyReadiness;
+pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -566,12 +567,6 @@ impl QueryRowLookup for executor::QueryRowRef<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct QueryStreamOptions {
-    pub max_rows: Option<usize>,
-    pub max_payload_bytes: Option<usize>,
-}
-
 /// Declares the relational tables exposed by one owner-scoped projection
 /// generation inside a pinned read transaction.
 ///
@@ -642,14 +637,6 @@ impl ProjectionRelationalReadBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryStreamReport {
-    pub fully_streamed: bool,
-    pub output_rows: usize,
-    pub output_payload_bytes: usize,
-    pub execution_profile: executor::ReadExecutionProfile,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SlowQueryLogExportOptions {
     pub include_query_text: bool,
@@ -674,12 +661,6 @@ pub(super) struct StatementExecutionContext<'a> {
     execution_profile: Option<&'a executor::ReadExecutionProfile>,
     access_control: Option<&'a QueryAccessControlContext>,
     parse_nanos: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoundedReadQueryOutput {
-    pub output: QueryOutput,
-    pub execution_profile: executor::ReadExecutionProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
