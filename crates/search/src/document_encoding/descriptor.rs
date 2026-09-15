@@ -1,30 +1,59 @@
 use super::*;
+use crate::build_control::{checkpoint, CheckedWriter};
 use crate::{SearchSegmentDescriptor, SearchSegmentPayloadRange};
+use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
+use std::io::Write as _;
 
 pub(crate) struct DescriptorEncoding<'a> {
     descriptor: &'a SearchSegmentDescriptor,
     body_bytes: usize,
-    footer: String,
+    footer: [u8; 32],
+    footer_len: usize,
+    task: Option<&'a RuntimeTaskContext>,
     bytes: usize,
 }
 
 impl<'a> DescriptorEncoding<'a> {
     pub(crate) fn new(descriptor: &'a SearchSegmentDescriptor, max_bytes: u64) -> Result<Self> {
+        Self::new_with_context(descriptor, max_bytes, None)
+    }
+
+    pub(crate) fn new_with_context(
+        descriptor: &'a SearchSegmentDescriptor,
+        max_bytes: u64,
+        task: Option<&'a RuntimeTaskContext>,
+    ) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
         let mut length = EncodedLength::default();
-        write_body(&mut length, descriptor).map_err(|_| size_overflow())?;
+        write_body(
+            &mut CheckedSink {
+                sink: &mut length,
+                task,
+            },
+            descriptor,
+        )
+        .map_err(|_| {
+            task.and_then(|task| checkpoint(task).err())
+                .unwrap_or_else(size_overflow)
+        })?;
         let mut encoding = Self {
             descriptor,
             body_bytes: length.0,
-            footer: String::new(),
+            footer: [0; 32],
+            footer_len: 0,
+            task,
             bytes: 0,
         };
         let mut digest = DigestWriter(Crc32cHasher::new());
         encoding.write_body_to(&mut digest)?;
-        encoding.footer = format!("checksum\t{}\n", digest.0.finish());
+        // A u64 checksum and the fixed grammar fit without a heap footer.
+        let mut footer = io::Cursor::new(&mut encoding.footer[..]);
+        writeln!(footer, "checksum\t{}", digest.0.finish())?;
+        encoding.footer_len = footer.position() as usize;
         encoding.bytes = encoding
             .body_bytes
-            .checked_add(encoding.footer.len())
+            .checked_add(encoding.footer_len)
             .ok_or_else(size_overflow)?;
         if encoding.bytes as u64 > max_bytes {
             return Err(SkeinError::Storage(format!(
@@ -41,12 +70,13 @@ impl<'a> DescriptorEncoding<'a> {
 
     pub(crate) fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
         self.write_body_to(writer)?;
-        writer.write_all(self.footer.as_bytes())
+        CheckedWriter::new(writer, self.task).write_all(&self.footer[..self.footer_len])
     }
 
     fn write_body_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        let mut output = CheckedWriter::new(writer, self.task);
         IoSink {
-            writer,
+            writer: &mut output,
             error: None,
             remaining: self.body_bytes,
         }
@@ -63,6 +93,8 @@ struct DigestWriter(Crc32cHasher);
 impl io::Write for DigestWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.update(bytes);
+        #[cfg(test)]
+        tests::record_digest(bytes.len());
         Ok(bytes.len())
     }
 

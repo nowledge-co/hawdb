@@ -1,6 +1,6 @@
 use crate::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
 
-pub(super) fn ready_probe() -> serde_json::Value {
+pub(crate) fn ready_probe() -> serde_json::Value {
     serde_json::json!({
         "requests": [
             {

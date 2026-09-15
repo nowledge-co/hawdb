@@ -34,6 +34,7 @@ pub mod pipeline;
 #[doc(hidden)]
 pub mod predicate;
 pub mod profile;
+mod read_output;
 #[doc(hidden)]
 pub mod result_delivery;
 #[doc(hidden)]
@@ -80,6 +81,7 @@ pub use profile::{
     QueryRowsIntoIter, QueryRowsIter, QuerySchema, QueryValueRows, ReadExecutionProfile, Row,
     RowRef, RowRefIter,
 };
+pub use read_output::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
 pub use spill::SpillPoolSnapshot;
 pub use vector::{
     execute_vector_plan, VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics,

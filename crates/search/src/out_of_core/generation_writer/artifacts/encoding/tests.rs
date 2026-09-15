@@ -194,11 +194,9 @@ fn seeded_segment_records_preserve_vector_ordinals_and_metadata() {
 
 #[test]
 fn compressed_buffer_rejects_growth_before_allocation_or_mutation() {
-    let mut buffer = CompressedBuffer {
-        bytes: Vec::new(),
-        limit: 4,
-        digest: Crc32cHasher::new(),
-    };
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut buffer = CompressedBuffer::new(4, &memory, &task).unwrap();
     buffer.write_all(b"1234").unwrap();
     let capacity = buffer.bytes.capacity();
     let digest = buffer.digest.finish();
@@ -211,11 +209,9 @@ fn compressed_buffer_rejects_growth_before_allocation_or_mutation() {
 
 #[test]
 fn small_compressed_writes_reuse_capacity_without_reserving_the_whole_budget() {
-    let mut buffer = CompressedBuffer {
-        bytes: Vec::new(),
-        limit: 256 * 1024 * 1024,
-        digest: Crc32cHasher::new(),
-    };
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut buffer = CompressedBuffer::new(256 * 1024 * 1024, &memory, &task).unwrap();
     for _ in 0..1024 {
         buffer.write_all(&[0; 1024]).unwrap();
         assert!(buffer.bytes.capacity() <= buffer.bytes.len() * 2);
@@ -249,4 +245,84 @@ fn digest_writer_accounts_only_accepted_bytes_and_propagates_failure() {
     assert_eq!(error.to_string(), "injected failure");
     assert_eq!(writer.0, b"123");
     assert_eq!(digest.finish(), crate::checksum_bytes(b"123"));
+}
+
+fn admitted_context(bytes: usize) -> RuntimeTaskContext {
+    RuntimeTaskContext::default()
+        .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(bytes as u64, 0))
+}
+
+#[test]
+fn native_workspace_denial_precedes_encoder_creation() {
+    let task = admitted_context(COMPRESSION_WORKSPACE_BYTES - 1);
+    let memory = BuildMemory::new(&task).unwrap();
+    let documents: [SearchDocument; 0] = [];
+    let encoding = SegmentEncoding::new(&documents, SegmentKind::Documents).unwrap();
+    evidence::take_starts();
+    let error = encode_segment_payload_with_context(
+        &encoding,
+        0,
+        "document",
+        u64::MAX,
+        u64::MAX,
+        &memory,
+        &task,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("budget"), "{error}");
+    assert_eq!(evidence::take_starts(), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn compressed_output_retains_its_capacity_after_native_workspace_is_released() {
+    let budget = 16 * 1024 * 1024;
+    let task = admitted_context(budget);
+    let memory = BuildMemory::new(&task).unwrap();
+    let documents = [crate::out_of_core::generation_writer::tests::document(0)];
+    let encoding = SegmentEncoding::new(&documents, SegmentKind::Documents).unwrap();
+    let output = encode_segment_payload_with_context(
+        &encoding,
+        0,
+        "document",
+        u64::MAX,
+        u64::MAX,
+        &memory,
+        &task,
+    )
+    .unwrap();
+    assert_eq!(memory.ledger.snapshot().used_bytes, output.bytes.capacity());
+    assert!(memory.ledger.snapshot().peak_bytes >= COMPRESSION_WORKSPACE_BYTES);
+    let rest = memory
+        .input
+        .reserve(budget - output.bytes.capacity())
+        .unwrap();
+    assert!(memory.spool.reserve(1).is_err());
+    drop(output);
+    assert_eq!(memory.ledger.snapshot().used_bytes, rest.bytes());
+    drop(rest);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn cancelled_compression_releases_native_and_output_capacity() {
+    let task = admitted_context(16 * 1024 * 1024);
+    let memory = BuildMemory::new(&task).unwrap();
+    let documents = [crate::out_of_core::generation_writer::tests::document(0)];
+    let encoding = SegmentEncoding::new(&documents, SegmentKind::Documents).unwrap();
+    evidence::take_starts();
+    evidence::cancel_on_output(task.cancellation().clone());
+    let error = encode_segment_payload_with_context(
+        &encoding,
+        0,
+        "document",
+        u64::MAX,
+        u64::MAX,
+        &memory,
+        &task,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert_eq!(evidence::take_starts(), 1);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }

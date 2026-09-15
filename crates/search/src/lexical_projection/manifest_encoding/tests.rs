@@ -6,7 +6,7 @@ use crate::lexical_projection::{
 use serde::ser::Error as _;
 use std::cell::Cell;
 
-fn manifest(mut terms: Vec<String>) -> ManifestBody {
+pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> ManifestBody {
     terms.sort();
     terms.dedup();
     let header_len = ARTIFACT_HEADER.len() as u64 + 8;
@@ -214,6 +214,73 @@ fn serialization_growth_shrinkage_and_errors_fail_closed() {
         2,
         "over-budget encoding must not reach the output pass"
     );
+}
+
+#[test]
+fn operation_output_admission_is_exact_and_retained_with_the_bytes() {
+    use skein_core::{RuntimeMemoryReservation, RuntimeTaskContext};
+    let body = manifest(vec!["alpha".into(), "\"".repeat(9000)]);
+    let expected = legacy_encode(&body);
+    for short in [0, 1] {
+        let budget = expected.len() + 4096 - short;
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(budget as u64, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let other = memory.spool.reserve(4096).unwrap();
+        let result = encode_with_context(&body, expected.len() as u64, &memory, &task);
+        if short == 1 {
+            assert!(result.unwrap_err().to_string().contains("query memory"));
+        } else {
+            let encoded = result.unwrap();
+            assert_eq!(encoded.bytes, expected);
+            assert_eq!(memory.ledger.snapshot().used_bytes, budget);
+            assert!(memory.input.reserve(1).is_err());
+            drop(encoded);
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, other.bytes());
+        drop(other);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn cancellation_in_any_json_pass_releases_output_and_stops_later_passes() {
+    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+    struct CancelBody {
+        pass: Cell<usize>,
+        cancel_at: usize,
+        cancellation: RuntimeCancellationToken,
+    }
+    impl Serialize for CancelBody {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            let pass = self.pass.get() + 1;
+            self.pass.set(pass);
+            let result = serializer.serialize_str("unchanged");
+            if pass == self.cancel_at {
+                self.cancellation.cancel();
+            }
+            result
+        }
+    }
+    for cancel_at in [1, 2, 3] {
+        let cancellation = RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(cancellation.clone());
+        let memory = BuildMemory::new(&task).unwrap();
+        let body = CancelBody {
+            pass: Cell::new(0),
+            cancel_at,
+            cancellation,
+        };
+        assert!(encode_with_context(&body, 4096, &memory, &task)
+            .unwrap_err()
+            .to_string()
+            .contains("cancel"));
+        assert_eq!(body.pass.get(), cancel_at);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
 }
 
 #[test]

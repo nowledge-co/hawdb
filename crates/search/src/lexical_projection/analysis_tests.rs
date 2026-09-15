@@ -555,7 +555,7 @@ fn streamed_frequencies_preserve_persisted_scores_delta_reopen_and_failed_public
             .count();
         assert_eq!(reader.manifest.document_frequency(term), expected_df as u64);
     }
-    let mut delta = LexicalMiniDelta::default();
+    let mut delta = Arc::new(LexicalMiniDelta::default());
     assert_projection_scores(&reader, &delta, &documents, &analyzer, &terms);
 
     let mut updated = documents["document-0"].clone();

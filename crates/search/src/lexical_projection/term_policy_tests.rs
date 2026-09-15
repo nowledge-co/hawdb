@@ -137,7 +137,7 @@ fn term_policy_query_and_delta_exact_memory_boundaries() {
     let source = document();
     let analyzed = analyze_delta_document(&source, &Default::default(), config()).unwrap();
     let bytes = analyzed.resident_bytes;
-    let mut delta = LexicalMiniDelta::default();
+    let mut delta = Arc::new(LexicalMiniDelta::default());
     let exact = LexicalProjectionConfig {
         mini_delta_bytes: NonZeroU64::new(bytes).unwrap(),
         ..config()

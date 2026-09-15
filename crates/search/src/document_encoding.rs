@@ -7,7 +7,7 @@ pub(super) use segment::{SegmentEncoding, SegmentKind};
 mod descriptor;
 pub(super) use descriptor::DescriptorEncoding;
 
-const HEX_BUFFER_BYTES: usize = 8192;
+pub(crate) const HEX_BUFFER_BYTES: usize = 8192;
 
 struct IoSink<'a, W> {
     writer: &'a mut W,
@@ -76,6 +76,33 @@ impl<W: io::Write> DocumentSink for IoSink<'_, W> {
 // be sized without scanning their bytes or allocating an encoded string.
 trait DocumentSink: Write {
     fn write_hex(&mut self, value: &str) -> fmt::Result;
+}
+
+struct CheckedSink<'a, S> {
+    sink: &'a mut S,
+    task: Option<&'a skein_core::RuntimeTaskContext>,
+}
+
+impl<S> CheckedSink<'_, S> {
+    fn checkpoint(&self) -> fmt::Result {
+        self.task
+            .map_or(Ok(()), crate::build_control::checkpoint)
+            .map_err(|_| fmt::Error)
+    }
+}
+
+impl<S: Write> Write for CheckedSink<'_, S> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.checkpoint()?;
+        self.sink.write_str(value)
+    }
+}
+
+impl<S: DocumentSink> DocumentSink for CheckedSink<'_, S> {
+    fn write_hex(&mut self, value: &str) -> fmt::Result {
+        self.checkpoint()?;
+        self.sink.write_hex(value)
+    }
 }
 
 impl DocumentSink for String {
@@ -152,9 +179,28 @@ pub(super) struct DocumentEncoding<'a> {
 }
 
 impl<'a> DocumentEncoding<'a> {
+    #[cfg(test)]
     pub(super) fn new(document: &'a SearchDocument) -> Result<Self> {
+        Self::new_with_context(document, None)
+    }
+
+    pub(super) fn new_with_context(
+        document: &'a SearchDocument,
+        task: Option<&skein_core::RuntimeTaskContext>,
+    ) -> Result<Self> {
         let mut length = EncodedLength::default();
-        write_document(&mut length, document).map_err(|_| {
+        write_document(
+            &mut CheckedSink {
+                sink: &mut length,
+                task,
+            },
+            document,
+        )
+        .map_err(|_| {
+            if let Some(error) = task.and_then(|task| crate::build_control::checkpoint(task).err())
+            {
+                return error;
+            }
             SkeinError::Storage("search document encoded size overflow".to_string())
         })?;
         Ok(Self {
