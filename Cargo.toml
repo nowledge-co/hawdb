@@ -24,6 +24,7 @@ skein-plan = { path = "crates/plan" }
 skein-plan-cache = { path = "crates/plan-cache" }
 skein-qos = { path = "crates/qos" }
 skein-query = { path = "crates/query" }
+skein-query-policy = { path = "crates/query-policy" }
 skein-readiness = { path = "crates/readiness" }
 skein-relational = { path = "crates/relational" }
 skein-route-ownership = { path = "crates/route-ownership" }
@@ -75,6 +76,7 @@ members = [
   "crates/plan-cache",
   "crates/qos",
   "crates/query",
+  "crates/query-policy",
   "crates/qualification",
   "crates/readiness",
   "crates/relational",

@@ -896,6 +896,7 @@ dependencies = [
  "skein-plan-cache",
  "skein-qos",
  "skein-query",
+ "skein-query-policy",
  "skein-readiness",
  "skein-relational",
  "skein-route-ownership",
@@ -1066,6 +1067,16 @@ name = "skein-query"
 version = "0.1.0"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "skein-query-policy"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-cypher",
+ "skein-optimizer",
+ "skein-qos",
 ]
 
 [[package]]

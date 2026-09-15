@@ -75,8 +75,8 @@ pub(crate) enum KnowledgeNeighborDirection {
     Both,
 }
 use system_variables::{
-    query_statement_variables_for_statement, query_work_request_for_statement,
-    reject_system_variable_parameters,
+    apply_set_system_variable, query_statement_variables_for_statement,
+    query_work_request_for_statement, reject_system_variable_parameters,
 };
 
 mod access_control;
@@ -20738,7 +20738,7 @@ impl DatabaseSession<'_> {
             }
             cypher::Statement::SetSystemVariable(set) => {
                 reject_system_variable_parameters(parameters)?;
-                self.system_variables.apply_set_system_variable(set)
+                apply_set_system_variable(&mut self.system_variables, set)
             }
             cypher::Statement::Explain(_) if self.graph_transaction.is_some() => {
                 Err(SkeinError::Execution(
