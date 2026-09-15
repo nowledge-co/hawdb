@@ -879,7 +879,6 @@ dependencies = [
  "chrono",
  "getrandom",
  "libc",
- "loom",
  "serde",
  "serde_json",
  "skein-analytics",
@@ -908,6 +907,7 @@ dependencies = [
  "skein-search",
  "skein-sql",
  "skein-storage",
+ "skein-system-sql",
  "skein-telemetry",
  "skein-vector-projection",
  "unicode-width",
@@ -1227,6 +1227,20 @@ dependencies = [
  "skein-core",
  "skein-integrity",
  "zstd",
+]
+
+[[package]]
+name = "skein-system-sql"
+version = "0.1.0"
+dependencies = [
+ "loom",
+ "serde_json",
+ "skein-core",
+ "skein-executor",
+ "skein-plan-cache",
+ "skein-query",
+ "skein-sql",
+ "skein-storage",
 ]
 
 [[package]]

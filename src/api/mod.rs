@@ -86,10 +86,11 @@ mod search_projection_consumer;
 pub use search_projection_consumer::*;
 mod source_candidates;
 mod system_schema;
-mod system_sql;
 mod system_variables;
 mod transaction_locks;
 mod types;
+
+pub(crate) use skein_system_sql as system_sql;
 
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
@@ -101,7 +102,6 @@ pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_BYTES: usize = 64 * 1024 * 1024;
-pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
 
 pub use artifact_jobs::{
     DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
@@ -178,6 +178,9 @@ pub use skein_core::QueryAccessControlContext;
 pub use skein_evidence::AccessControlPolicyReadiness;
 pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
 pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
+pub use skein_system_sql::{
+    SlowQueryLogExportOptions, SlowQueryLogRecordSummary, SLOW_QUERY_LOG_EVENT_PROTOCOL,
+};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -506,6 +509,19 @@ impl Default for DatabaseConfig {
     }
 }
 
+pub(crate) fn system_runtime_snapshot(
+    config: &DatabaseConfig,
+) -> system_sql::SystemRuntimeSnapshot {
+    system_sql::SystemRuntimeSnapshot::new(
+        config.read_only,
+        config.max_read_result_rows,
+        config.max_read_result_payload_bytes,
+        config.storage_residency_mode,
+        config.relational_index_mode,
+        config.runtime_capabilities,
+    )
+}
+
 pub use skein_executor::QueryOutput;
 
 /// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
@@ -632,25 +648,6 @@ impl ProjectionRelationalReadBinding {
     pub fn tables(&self) -> &BTreeSet<String> {
         &self.tables
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SlowQueryLogExportOptions {
-    pub include_query_text: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlowQueryLogRecordSummary {
-    pub sequence: u64,
-    pub query_language: String,
-    pub statement_kind: String,
-    pub query_digest: String,
-    pub started_unix_micros: i64,
-    pub elapsed_micros: i64,
-    pub row_count: i64,
-    pub success: bool,
-    pub slow_log_candidate: bool,
-    pub access_control_policy_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -19634,7 +19631,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 store: graph_transaction.store(),
                 relational_state: &state.relational_state,
                 append_state: &state.append_state,
-                runtime: system_sql::SystemRuntimeSnapshot::from_config(&runtime.config),
+                runtime: system_runtime_snapshot(&runtime.config),
                 plan_cache_stats: &plan_cache_stats,
                 slow_queries: &[],
                 statement_summaries: &[],
@@ -21374,7 +21371,7 @@ impl DatabaseReadTransaction {
                     store: &self.store,
                     relational_state: self.store.relational_state(),
                     append_state: self.store.append_state(),
-                    runtime: system_sql::SystemRuntimeSnapshot::from_config(&self.config),
+                    runtime: system_runtime_snapshot(&self.config),
                     plan_cache_stats: &self.plan_cache.borrow().stats(),
                     slow_queries: &self.slow_query_snapshot,
                     statement_summaries: &self.statement_summary_snapshot,

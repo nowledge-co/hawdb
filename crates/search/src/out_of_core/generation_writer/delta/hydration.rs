@@ -2,8 +2,8 @@
 
 use crate::build_control::checkpoint;
 use crate::build_memory::{
-    checked_add as add, checked_mul as mul, reserve_capacity, AdmittedDocument, BuildMemory,
-    SET_ENTRY_BYTES,
+    checked_add as add, checked_mul as mul, decoder, reserve_capacity, AdmittedDocument,
+    BuildMemory, SET_ENTRY_BYTES,
 };
 use crate::out_of_core::hydration::{CheckedReader, RangeReader};
 use crate::out_of_core::search_document_bytes;
@@ -14,8 +14,6 @@ use crate::{
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::io::{self, BufRead, BufReader, Read};
-
-mod decoder;
 
 const INPUT_BYTES: usize = 8192;
 

@@ -31,6 +31,29 @@ Public query APIs, logical limits, defaults and persisted encodings are unchange
   the native exclusive handle lock; [LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)
   excludes overlapping exclusive locks, including separately opened handles.
 
+## Consumer control-record admission
+
+The consumer binding check remains inside the same publication lease. Its joined
+snapshot path, native open scratch, 8 KiB input buffer, reusable 1025-byte control
+line and 27-byte prefix use the existing operation ledger. Compressed probes also
+admit their 8 KiB decoded buffer and the same pinned frame-aware zstd owner used
+by delta hydration. Native context and window capacity are admitted before native
+allocation or growth and retain their leases until the decoder drops.
+
+The probe preserves the 1024-byte control-line and 4096-byte envelope limits. It
+reads only the leading binding records, including concatenated/skippable frames;
+it does not verify the rest of a snapshot. Delta hydration still separately
+requires complete range, envelope and payload integrity. Cancellation checkpoints
+surround control reads and the shared decoder's controlled loops. An opaque read
+or native call already in progress is not preempted.
+
+Missing snapshots remain eligible for ordinary publication. A registered binding,
+malformed header, cancellation or admission denial rejects ordinary publication
+and releases the lease. No active snapshot is rewritten by this inspection.
+Requested Rust allocation probes and exact/one-short limits qualify this path;
+native admission uses the shared decoder's context/frame tests and version bound.
+This neither introduces shared host admission nor claims a process RSS ceiling.
+
 ## Failure and commit boundary
 
 Cancellation checkpoints surround discovery/decode validation and occur between

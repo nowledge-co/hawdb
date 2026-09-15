@@ -36,6 +36,7 @@ skein-search = { path = "crates/search", default-features = false }
 skein-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
 skein-sql = { path = "crates/sql" }
 skein-storage = { path = "crates/storage" }
+skein-system-sql = { path = "crates/system-sql" }
 skein-vector-projection = { path = "crates/vector-projection", optional = true }
 zstd = "0.13"
 unicode-width = "0.2"
@@ -43,7 +44,6 @@ skein-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
 libc = "0.2"
-loom = "0.7"
 
 [features]
 default = [
@@ -57,7 +57,7 @@ background-maintenance = ["skein-search/background-maintenance"]
 full-text-search = ["skein-search/full-text-search"]
 graph-analytics = ["skein-search/graph-analytics"]
 vector-search = ["skein-search/vector-search", "dep:skein-vector-projection"]
-loom-tests = []
+loom-tests = ["skein-system-sql/loom-tests"]
 opentelemetry = ["skein-telemetry/opentelemetry"]
 qualification = ["skein-search/qualification"]
 tokio-runtime = ["dep:skein-runtime-tokio"]
@@ -93,6 +93,7 @@ members = [
   "crates/sql",
   "crates/sql-syntax",
   "crates/storage",
+  "crates/system-sql",
   "crates/telemetry",
   "crates/runtime-tokio",
   "crates/vector-projection",
