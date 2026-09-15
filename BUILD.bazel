@@ -13,6 +13,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/cypher",
     "crates/ddl",
     "crates/evidence",
+    "crates/explain",
     "crates/executor",
     "crates/expression",
     "crates/fuzz",
