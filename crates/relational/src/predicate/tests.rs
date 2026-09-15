@@ -1,7 +1,11 @@
 use super::*;
 use crate::query_value::*;
+use crate::row_runtime::RelationalReadRowRef;
 use skein_sql::{SqlBound, SqlStatement, SqlValue};
-use skein_storage::{RelationalColumnSchema, RelationalOverflowRef, RelationalTableSchema};
+use skein_storage::{
+    RelationalColumnSchema, RelationalKey, RelationalOverflowRef, RelationalProjectedField,
+    RelationalProjectedRow, RelationalTableSchema,
+};
 use std::cell::RefCell;
 
 fn predicate(source: &str) -> SqlPredicate {
@@ -432,6 +436,68 @@ fn streaming_binding_keeps_eager_validation_and_qualifier_errors() {
                 .is_ok()
         );
     }
+}
+
+#[test]
+fn borrowed_row_binding_short_circuits_before_missing_fields() {
+    let schema = RelationalTableSchema {
+        name: "logic_rows".to_string(),
+        columns: vec![
+            RelationalColumnSchema {
+                name: "id".to_string(),
+                scalar_type: RelationalScalarType::Text,
+                nullable: false,
+                default: None,
+            },
+            RelationalColumnSchema {
+                name: "flag".to_string(),
+                scalar_type: RelationalScalarType::Boolean,
+                nullable: false,
+                default: None,
+            },
+            RelationalColumnSchema {
+                name: "body".to_string(),
+                scalar_type: RelationalScalarType::Text,
+                nullable: false,
+                default: None,
+            },
+        ],
+        primary_key: vec!["id".to_string()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    };
+    let row = RelationalProjectedRow {
+        primary_key: RelationalKey(vec![RelationalValue::Text("row-1".to_string())]),
+        fields: vec![RelationalProjectedField {
+            ordinal: 1,
+            value: RelationalValue::Boolean(false),
+        }],
+    };
+    let row = RelationalReadRowRef::from_projected(&row);
+
+    let and = BoundStreamingPredicate::bind(
+        &predicate("flag = TRUE AND body = 'unused'"),
+        &[],
+        &schema,
+        "logic_rows",
+        "logic_rows",
+    )
+    .expect("bind short-circuit AND predicate");
+    assert_eq!(
+        and.truth_with(&|ordinal| row.value(ordinal)),
+        Ok(Some(false))
+    );
+
+    let or = BoundStreamingPredicate::bind(
+        &predicate("flag = FALSE OR body = 'unused'"),
+        &[],
+        &schema,
+        "logic_rows",
+        "logic_rows",
+    )
+    .expect("bind short-circuit OR predicate");
+    assert_eq!(or.truth_with(&|ordinal| row.value(ordinal)), Ok(Some(true)));
 }
 
 #[test]
