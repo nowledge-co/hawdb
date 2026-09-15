@@ -28,6 +28,8 @@ mod block_encoding;
 use artifacts::ArtifactBuilder;
 mod build_manifest;
 mod document_frequency;
+mod spill_memory;
+use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
 
 #[cfg(test)]
@@ -1379,9 +1381,9 @@ impl LexicalProjectionWriter {
             memory.clone(),
             task.clone(),
         )?;
-        let mut runs = SpillRuns::new(root, generation, self.config);
-        let mut chunk = Vec::new();
-        let mut chunk_bytes = 0u64;
+        let mut runs =
+            SpillRuns::with_context(root, generation, self.config, memory.clone(), task.clone())?;
+        let mut chunk = PendingPostings::new(Some(&memory))?;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut consume = |document: &SearchDocument| -> Result<()> {
@@ -1390,7 +1392,6 @@ impl LexicalProjectionWriter {
                 analyzer,
                 &mut runs,
                 &mut chunk,
-                &mut chunk_bytes,
                 crate::analyzer_stream::Control {
                     memory: Some(&memory),
                     task: Some(&task),
@@ -1401,39 +1402,37 @@ impl LexicalProjectionWriter {
             document_count = document_count.saturating_add(1);
             total_document_len = total_document_len.saturating_add(u64::from(document_len));
             artifact.push_document(&document.id, document_len)?;
-            analyzed.visit(self.config, |term, term_frequency, retained| {
-                let bytes = Posting::resident_bytes(&term, &document.id);
-                let posting_limit = self
-                    .config
-                    .build_memory_bytes
-                    .get()
-                    .saturating_sub(retained);
-                if bytes > posting_limit {
-                    return Err(SkeinError::Storage(
-                        "one lexical posting exceeds the build memory budget".to_string(),
-                    ));
-                }
-                if !chunk.is_empty() && chunk_bytes.saturating_add(bytes) > posting_limit {
-                    document_frequency::flush_pending(&mut runs, &mut chunk, &mut chunk_bytes)?;
-                }
-                chunk_bytes = chunk_bytes.saturating_add(bytes);
-                chunk.push(Posting {
-                    term,
-                    document_id: document.id.clone(),
-                    term_frequency,
-                    document_len,
-                });
-                Ok(())
-            })?;
+            if let document_frequency::AnalyzedDocument::Spilled { run, .. } = analyzed {
+                chunk.flush(&mut runs)?;
+                document_frequency::spill_postings(run, &document.id, document_len, &mut runs)?;
+            } else {
+                analyzed.visit(self.config, |term, term_frequency, retained| {
+                    runs.prepare(term.len(), document.id.len())?;
+                    let bytes = Posting::resident_bytes(&term, &document.id);
+                    let posting_limit = self
+                        .config
+                        .build_memory_bytes
+                        .get()
+                        .saturating_sub(retained);
+                    if bytes > posting_limit {
+                        return Err(SkeinError::Storage(
+                            "one lexical posting exceeds the build memory budget".into(),
+                        ));
+                    }
+                    if !chunk.values.is_empty() && chunk.bytes.saturating_add(bytes) > posting_limit
+                    {
+                        chunk.flush(&mut runs)?;
+                    }
+                    chunk.push(term, &document.id, term_frequency, document_len)
+                })?;
+            }
             Ok(())
         };
         scan(&mut consume)?;
         artifact.finish_documents()?;
-        if !chunk.is_empty() {
-            runs.spill(&mut chunk)?;
-        }
+        chunk.flush(&mut runs)?;
         runs.compact()?;
-        artifact.merge_postings(&runs.paths, self.config)?;
+        artifact.merge_postings_with_progress(&runs.paths, self.config, runs.progress.as_ref())?;
         let artifact = artifact.finish()?;
         let _format_memory = memory.retained.reserve("SKEIN_LEXICAL_MANIFEST_V1".len())?;
         let manifest = ManifestBody {
@@ -1467,22 +1466,32 @@ impl LexicalProjectionWriter {
 struct RemoveOnDrop {
     path: PathBuf,
     armed: bool,
+    _memory: Option<crate::build_memory::reserved::Grant>,
 }
 
 impl RemoveOnDrop {
-    fn new(path: PathBuf) -> Self {
-        Self { path, armed: true }
-    }
-
     fn disarm(&mut self) {
         self.armed = false;
+    }
+
+    fn remove(&mut self) -> Result<()> {
+        if let Some(memory) = &self._memory {
+            memory.with_scratch(
+                crate::build_memory::reserved::native_path::bytes(&self.path)?,
+                || Ok(fs::remove_file(&self.path)?),
+            )?;
+        } else {
+            fs::remove_file(&self.path)?;
+        }
+        self.disarm();
+        Ok(())
     }
 }
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fs::remove_file(&self.path);
+            let _ = self.remove();
         }
     }
 }
@@ -1491,10 +1500,17 @@ struct SpillRuns {
     root: PathBuf,
     generation: u64,
     config: LexicalProjectionConfig,
-    paths: Vec<PathBuf>,
+    paths: Vec<RemoveOnDrop>,
     bytes: u64,
     sequence: usize,
     max_posting_bytes: u64,
+    progress: Option<crate::build_memory::reserved::ReservedMemory>,
+    context: Option<(BuildMemory, RuntimeTaskContext)>,
+    max_term_bytes: usize,
+    max_id_bytes: usize,
+    prepared_paths: Option<usize>,
+    path_slots: Option<crate::build_memory::reserved::Grant>,
+    _root_memory: Option<QueryMemoryLease>,
 }
 
 trait SpillIo {
@@ -1537,34 +1553,67 @@ struct SpillRunWriter<W> {
     writer: W,
     total_bytes: u64,
     limit: NonZeroU64,
+    _buffer_memory: Option<crate::build_memory::reserved::Grant>,
+    task: Option<RuntimeTaskContext>,
 }
 
 impl<W: Write> SpillRunWriter<W> {
-    fn create(
+    fn create_with_progress(
         path: &Path,
         previous_bytes: u64,
         limit: NonZeroU64,
         io: &mut impl SpillIo<Writer = W>,
+        progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+        task: Option<&RuntimeTaskContext>,
     ) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
         let total_bytes = checked_spill_bytes(previous_bytes, RUN_HEADER.len() as u64, limit)?;
-        let mut writer = io.create(path)?;
+        let buffer_memory = progress
+            .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
+            .transpose()?;
+        let mut writer = match progress {
+            Some(progress) => progress.with_scratch(
+                crate::build_memory::reserved::native_path::bytes(path)?,
+                || io.create(path),
+            )?,
+            None => io.create(path)?,
+        };
         writer.write_all(RUN_HEADER)?;
         Ok(Self {
             writer,
             total_bytes,
             limit,
+            _buffer_memory: buffer_memory,
+            task: task.cloned(),
         })
     }
 
     fn push(&mut self, posting: &Posting) -> Result<()> {
-        let total_bytes = checked_spill_bytes(self.total_bytes, posting.encoded_len(), self.limit)?;
-        encode_posting(&mut self.writer, posting)?;
+        self.push_parts(
+            &posting.term,
+            &posting.document_id,
+            posting.term_frequency,
+            posting.document_len,
+        )
+    }
+
+    fn push_parts(&mut self, term: &str, id: &str, frequency: u32, length: u32) -> Result<()> {
+        let bytes = (term.len() as u64)
+            .saturating_add(id.len() as u64)
+            .saturating_add(16);
+        let total_bytes = checked_spill_bytes(self.total_bytes, bytes, self.limit)?;
+        let mut writer =
+            crate::build_control::CheckedWriter::new(&mut self.writer, self.task.as_ref());
+        write_string(&mut writer, term)?;
+        write_string(&mut writer, id)?;
+        writer.write_all(&frequency.to_le_bytes())?;
+        writer.write_all(&length.to_le_bytes())?;
         self.total_bytes = total_bytes;
         Ok(())
     }
 
     fn finish(mut self) -> Result<u64> {
-        self.writer.flush()?;
+        crate::build_control::CheckedWriter::new(&mut self.writer, self.task.as_ref()).flush()?;
         Ok(self.total_bytes)
     }
 }
@@ -1579,6 +1628,13 @@ impl SpillRuns {
             bytes: 0,
             sequence: 0,
             max_posting_bytes: 0,
+            progress: None,
+            context: None,
+            max_term_bytes: 0,
+            max_id_bytes: 0,
+            prepared_paths: None,
+            path_slots: None,
+            _root_memory: None,
         }
     }
 
@@ -1596,11 +1652,18 @@ impl SpillRuns {
             checked_spill_bytes(self.bytes, RUN_HEADER.len() as u64, limit)?,
             |bytes, posting| checked_spill_bytes(bytes, posting.encoded_len(), limit),
         )?;
-        let path = self.next_path()?;
-        // Declare cleanup before the writer so the handle closes first on
-        // error or unwind, including on platforms that forbid open-file unlink.
-        let mut guard = RemoveOnDrop::new(path.clone());
-        let mut writer = SpillRunWriter::create(&path, self.bytes, limit, io)?;
+        for posting in postings.iter() {
+            self.prepare(posting.term.len(), posting.document_id.len())?;
+        }
+        let guard = self.next_guard()?;
+        let mut writer = SpillRunWriter::create_with_progress(
+            &guard.path,
+            self.bytes,
+            limit,
+            io,
+            self.progress.as_ref(),
+            self.task(),
+        )?;
         for posting in postings.iter() {
             writer.push(posting)?;
         }
@@ -1612,8 +1675,7 @@ impl SpillRuns {
                 .max()
                 .unwrap_or(0),
         );
-        self.paths.push(path);
-        guard.disarm();
+        self.register(guard)?;
         postings.clear();
         Ok(())
     }
@@ -1647,14 +1709,27 @@ impl SpillRuns {
             let old_len = self.paths.len();
             for start in (0..old_len).step_by(fan_in) {
                 let end = start.saturating_add(fan_in).min(old_len);
-                let group = self.paths[start..end].to_vec();
-                let path = self.next_path()?;
-                let mut guard = RemoveOnDrop::new(path.clone());
-                self.bytes = merge_runs(&group, &path, self.config, self.bytes, io)?;
-                self.paths.push(path);
-                guard.disarm();
-                for source in &group {
-                    io.remove(source)?;
+                let guard = self.next_guard()?;
+                self.bytes = merge_runs_with_progress(
+                    &self.paths[start..end],
+                    &guard.path,
+                    self.config,
+                    self.bytes,
+                    io,
+                    self.progress.as_ref(),
+                    self.task(),
+                )?;
+                self.register(guard)?;
+                for source in &mut self.paths[start..end] {
+                    if let Some(memory) = &source._memory {
+                        memory.with_scratch(
+                            crate::build_memory::reserved::native_path::bytes(&source.path)?,
+                            || io.remove(&source.path),
+                        )?;
+                    } else {
+                        io.remove(&source.path)?;
+                    }
+                    source.disarm();
                 }
             }
             self.paths.drain(..old_len);
@@ -1681,37 +1756,58 @@ impl SpillRuns {
     }
 }
 
-impl Drop for SpillRuns {
-    fn drop(&mut self) {
-        for path in &self.paths {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
 struct RunReader {
     reader: BufReader<File>,
     config: LexicalProjectionConfig,
+    progress: Option<crate::build_memory::reserved::ReservedMemory>,
+    task: Option<RuntimeTaskContext>,
+    _buffer_memory: Option<crate::build_memory::reserved::Grant>,
 }
 
 impl RunReader {
+    #[cfg(test)]
     fn open(path: &Path, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, File::open(path)?);
+        Self::open_with_progress(path, config, None, None)
+    }
+
+    fn open_with_progress(
+        path: &Path,
+        config: LexicalProjectionConfig,
+        progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
+        let memory = progress
+            .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
+            .transpose()?;
+        let file = match progress {
+            Some(progress) => progress.with_scratch(
+                crate::build_memory::reserved::native_path::bytes(path)?,
+                || Ok(File::open(path)?),
+            )?,
+            None => File::open(path)?,
+        };
+        let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
         if &header != RUN_HEADER {
             return Err(SkeinError::Storage(
-                "lexical spill run header mismatch".to_string(),
+                "lexical spill run header mismatch".into(),
             ));
         }
-        Ok(Self { reader, config })
+        Ok(Self {
+            reader,
+            config,
+            progress: progress.cloned(),
+            task: task.cloned(),
+            _buffer_memory: memory,
+        })
     }
 
-    fn next(&mut self, available_bytes: u64) -> Result<Option<Posting>> {
-        // Charge variable-size merge heads before allocating either string.
-        // Fixed I/O buffers remain independently bounded by the merge fan-in.
+    fn next(&mut self, available_bytes: u64) -> Result<Option<RunPosting>> {
+        self.task.as_ref().map_or(Ok(()), checkpoint)?;
         let available_strings = available_bytes.saturating_sub(32);
-        let Some(term) = read_optional_string(
+        let Some(length) = read_optional_length(
             &mut self.reader,
             self.config.max_term_bytes.get().min(available_strings),
         )?
@@ -1723,44 +1819,106 @@ impl RunReader {
                 "lexical merge head exceeds the build memory budget".into(),
             ));
         }
-        let document_id = read_string(
+        let term = if let Some(progress) = &self.progress {
+            Term::build_reserved(length, progress, || {
+                spill_memory::read_text(&mut self.reader, length, self.task.as_ref())
+            })?
+        } else {
+            spill_memory::read_text(&mut self.reader, length, self.task.as_ref())?.into()
+        };
+        let id_length = read_optional_length(
             &mut self.reader,
             (1024 * 1024).min(available_strings.saturating_sub(term.len() as u64)),
-        )?;
+        )?
+        .ok_or_else(|| SkeinError::Storage("lexical spill run is truncated".into()))?;
+        let id_memory = self
+            .progress
+            .as_ref()
+            .map(|memory| memory.reserve(id_length))
+            .transpose()?;
+        let document_id = spill_memory::read_text(&mut self.reader, id_length, self.task.as_ref())?;
         let term_frequency = read_u32(&mut self.reader)?;
         let document_len = read_u32(&mut self.reader)?;
-        Ok(Some(Posting {
-            term: term.into(),
-            document_id,
-            term_frequency,
-            document_len,
+        Ok(Some(RunPosting {
+            posting: Posting {
+                term,
+                document_id,
+                term_frequency,
+                document_len,
+            },
+            _id_memory: id_memory,
         }))
     }
 }
 
-fn merge_runs(
-    paths: &[PathBuf],
+#[allow(clippy::too_many_arguments)]
+fn merge_runs_with_progress(
+    paths: &[impl AsRef<Path>],
     destination: &Path,
     config: LexicalProjectionConfig,
     previous_bytes: u64,
     io: &mut impl SpillIo,
+    progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+    task: Option<&RuntimeTaskContext>,
 ) -> Result<u64> {
-    let mut writer =
-        SpillRunWriter::create(destination, previous_bytes, config.max_spill_bytes, io)?;
-    visit_merged_postings(paths, config, |posting| writer.push(posting))?;
+    let mut writer = SpillRunWriter::create_with_progress(
+        destination,
+        previous_bytes,
+        config.max_spill_bytes,
+        io,
+        progress,
+        task,
+    )?;
+    visit_merged_postings_with_progress(paths, config, progress, task, |posting| {
+        writer.push(posting)
+    })?;
     writer.finish()
 }
 
+#[cfg(test)]
 fn visit_merged_postings(
-    paths: &[PathBuf],
+    paths: &[impl AsRef<Path>],
     config: LexicalProjectionConfig,
+    consume: impl FnMut(&Posting) -> Result<()>,
+) -> Result<()> {
+    visit_merged_postings_with_progress(paths, config, None, None, consume)
+}
+
+fn visit_merged_postings_with_progress(
+    paths: &[impl AsRef<Path>],
+    config: LexicalProjectionConfig,
+    progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+    task: Option<&RuntimeTaskContext>,
     mut consume: impl FnMut(&Posting) -> Result<()>,
 ) -> Result<()> {
-    let mut readers = paths
-        .iter()
-        .map(|path| RunReader::open(path, config))
-        .collect::<Result<Vec<_>>>()?;
-    let mut heap = BinaryHeap::new();
+    task.map_or(Ok(()), checkpoint)?;
+    // Admit the complete registry before opening readers or growing the heap.
+    let _reader_slots = progress
+        .map(|memory| {
+            memory.reserve(crate::build_memory::checked_mul(
+                paths.len(),
+                std::mem::size_of::<RunReader>(),
+            )?)
+        })
+        .transpose()?;
+    let mut readers = Vec::with_capacity(paths.len());
+    for path in paths {
+        readers.push(RunReader::open_with_progress(
+            path.as_ref(),
+            config,
+            progress,
+            task,
+        )?);
+    }
+    let _heap_slots = progress
+        .map(|memory| {
+            memory.reserve(crate::build_memory::checked_mul(
+                paths.len(),
+                std::mem::size_of::<Reverse<(RunPosting, usize)>>(),
+            )?)
+        })
+        .transpose()?;
+    let mut heap = BinaryHeap::with_capacity(paths.len());
     let mut resident_bytes = 0u64;
     for (index, reader) in readers.iter_mut().enumerate() {
         if let Some(posting) = reader.next(
@@ -1773,8 +1931,9 @@ fn visit_merged_postings(
             heap.push(Reverse((posting, index)));
         }
     }
-    let mut previous: Option<Posting> = None;
+    let mut previous: Option<RunPosting> = None;
     while let Some(Reverse((posting, index))) = heap.pop() {
+        task.map_or(Ok(()), checkpoint)?;
         if previous.as_ref() != Some(&posting) {
             consume(&posting)?;
             if let Some(previous) = previous.take() {
@@ -1969,7 +2128,7 @@ fn write_string(writer: &mut impl Write, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_optional_string(reader: &mut impl Read, max: u64) -> Result<Option<String>> {
+fn read_optional_length(reader: &mut impl Read, max: u64) -> Result<Option<usize>> {
     let mut length = [0u8; 4];
     match reader.read(&mut length)? {
         0 => return Ok(None),
@@ -1984,6 +2143,13 @@ fn read_optional_string(reader: &mut impl Read, max: u64) -> Result<Option<Strin
             "lexical spill string exceeds its admitted length".to_string(),
         ));
     }
+    Ok(Some(length))
+}
+
+fn read_optional_string(reader: &mut impl Read, max: u64) -> Result<Option<String>> {
+    let Some(length) = read_optional_length(reader, max)? else {
+        return Ok(None);
+    };
     let mut bytes = vec![0u8; length];
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes)

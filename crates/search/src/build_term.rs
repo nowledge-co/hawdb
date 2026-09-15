@@ -1,5 +1,6 @@
 //! Private immutable terms retain their admitted payload through every consumer.
 
+use crate::build_memory::shared::Shared;
 use crate::build_memory::{checked_add, BuildMemory};
 use crate::{Result, SkeinError};
 use skein_executor::QueryMemoryLease;
@@ -8,7 +9,6 @@ use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::ops::Deref;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct Term(Value);
@@ -16,12 +16,13 @@ pub(crate) struct Term(Value);
 #[derive(Clone)]
 enum Value {
     Untracked(String),
-    Tracked(Arc<Payload>),
+    Tracked(Shared<Payload>),
+    Reserved(Shared<Payload<crate::build_memory::reserved::Grant>>),
 }
 
-struct Payload {
+struct Payload<M = QueryMemoryLease> {
     text: String,
-    _memory: QueryMemoryLease,
+    _memory: M,
 }
 
 impl Term {
@@ -46,16 +47,44 @@ impl Term {
             ));
         }
         lease.shrink(capacity - text.capacity());
-        Ok(Self(Value::Tracked(Arc::new(Payload {
+        Ok(Self(Value::Tracked(Shared::new(Payload {
             text,
             _memory: lease,
         }))))
+    }
+
+    pub(crate) fn build_reserved(
+        capacity: usize,
+        memory: &crate::build_memory::reserved::ReservedMemory,
+        build: impl FnOnce() -> Result<String>,
+    ) -> Result<Self> {
+        let mut lease = memory.reserve(Self::reserved_bytes(capacity)?)?;
+        let text = build()?;
+        if text.capacity() > capacity {
+            return Err(SkeinError::Execution(
+                "search spill term allocation exceeded its admitted capacity".into(),
+            ));
+        }
+        lease.shrink(capacity - text.capacity());
+        Ok(Self(Value::Reserved(Shared::new(Payload {
+            text,
+            _memory: lease,
+        }))))
+    }
+
+    pub(crate) fn reserved_bytes(capacity: usize) -> Result<usize> {
+        use crate::build_memory::reserved::Grant;
+        checked_add(
+            capacity,
+            size_of::<Payload<Grant>>() + 2 * size_of::<usize>(),
+        )
     }
 
     fn text(&self) -> &String {
         match &self.0 {
             Value::Untracked(text) => text,
             Value::Tracked(payload) => &payload.text,
+            Value::Reserved(payload) => &payload.text,
         }
     }
 
@@ -71,6 +100,22 @@ impl Term {
         match &self.0 {
             Value::Untracked(text) => text.len(),
             Value::Tracked(_) => 0,
+            Value::Reserved(_) => 0,
+        }
+    }
+
+    // Retained artifact buffers must not monopolize a merge progress grant.
+    pub(crate) fn retained_clone_bytes(&self) -> usize {
+        match &self.0 {
+            Value::Reserved(text) => text.text.len(),
+            _ => self.clone_bytes(),
+        }
+    }
+
+    pub(crate) fn clone_for_retention(&self) -> Self {
+        match &self.0 {
+            Value::Reserved(text) => text.text.clone().into(),
+            _ => self.clone(),
         }
     }
 
@@ -79,6 +124,9 @@ impl Term {
             Value::Untracked(text) => Ok(text),
             Value::Tracked(_) => Err(SkeinError::Execution(
                 "admitted search term requires an ownership-preserving consumer".into(),
+            )),
+            Value::Reserved(_) => Err(SkeinError::Execution(
+                "reserved search term requires an ownership-preserving consumer".into(),
             )),
         }
     }
