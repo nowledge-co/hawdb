@@ -333,7 +333,12 @@ fn three_pass_artifacts(
         &input.options.analyzer_lexicon,
     )?;
     drop(lexical);
-    let lexical_artifact_name = lexical_artifact_file(generation);
+    let lexical_artifact_name = artifact_name::Name::generated(
+        "search_lexical.",
+        generation,
+        &input.memory,
+        &input.task_context,
+    )?;
     let (lexical_artifact_bytes, _) =
         file_len_checksum(&input.stage.path.join(&lexical_artifact_name))?;
     let (lexical_manifest_bytes, _) =

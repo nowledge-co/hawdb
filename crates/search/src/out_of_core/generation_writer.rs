@@ -1,4 +1,3 @@
-use super::next_generation;
 use crate::build_control::checkpoint;
 use crate::build_memory::{
     checked_add, checked_mul, AdmittedDocument, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
@@ -8,10 +7,11 @@ use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
     SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
 };
+#[cfg(test)]
+use crate::lexical_projection::artifact_file as lexical_artifact_file;
 use crate::lexical_projection::{
-    analyzer_digest as lexical_analyzer_digest, artifact_file as lexical_artifact_file,
-    LexicalProjectionConfig, LexicalProjectionWriter, DEFAULT_MAX_MANIFEST_BYTES,
-    MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
+    analyzer_digest as lexical_analyzer_digest, LexicalProjectionConfig, LexicalProjectionWriter,
+    DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
     SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
@@ -19,7 +19,9 @@ use crate::{
     SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
-use publication::{file_len_checksum, publish_generation, PublishGenerationInput};
+#[cfg(test)]
+use publication::file_len_checksum;
+use publication::{publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 use skein_core::RuntimeTaskContext;
@@ -38,6 +40,8 @@ mod artifact_name;
 mod artifacts;
 mod context_memory;
 mod delta;
+mod discovery;
+mod io;
 mod publication;
 mod rabitq;
 #[cfg(feature = "vector-search")]
@@ -416,9 +420,13 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
-        let _publish_lease = super::SearchProjectionPublishLease::acquire(&self.root)?;
+        let _publish_lease = super::SearchProjectionPublishLease::acquire_with_context(
+            &self.root,
+            &self.memory,
+            &self.task_context,
+        )?;
         if let Some(expected) = self.expected_active_generation {
-            let actual = super::active_manifest_generation(&self.root)?;
+            let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
             if actual != Some(expected) {
                 return Err(SkeinError::Storage(format!(
                     "search generation update base changed before publication: expected {expected}, got {actual:?}"
@@ -433,7 +441,12 @@ impl SearchOutOfCoreGenerationWriter {
             max_metadata_fields: self.options.max_metadata_fields.get(),
             memory: self.memory.clone(),
         };
-        let generation = next_generation(&self.root, self.max_lexical_manifest_bytes.get())?;
+        let generation = discovery::next(
+            &self.root,
+            self.max_lexical_manifest_bytes.get(),
+            &self.memory,
+            &self.task_context,
+        )?;
         let lexical_generation = generation;
         let GenerationArtifacts {
             segment: segment_output,
@@ -444,24 +457,28 @@ impl SearchOutOfCoreGenerationWriter {
         } = build(&self, &source, generation)?;
 
         checkpoint(&self.task_context)?;
-        let published = publish_generation(PublishGenerationInput {
-            root: &self.root,
-            stage: &self.stage.path,
-            generation,
-            document_count: self.document_count,
-            documents_digest: self.documents_digest.finish(),
-            source_graph_commit_epoch: self.options.source_graph_commit_epoch,
-            import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
-            embedding_manifest: self.options.embedding_manifest.as_ref(),
-            embedding_dimension: self.embedding_dimension,
-            layout: &segment_output.layout,
-            lexical_artifact_name: &lexical_artifact_name,
-            rabitq: rabitq.as_ref(),
-            payload_bytes: segment_output.document_payload_bytes,
-            metadata_payload_bytes: segment_output.metadata_payload_bytes,
-            vector_payload_bytes: segment_output.vector_payload_bytes,
-            max_generation_bytes: self.options.max_generation_bytes.get(),
-        })?;
+        let published = publish_generation(
+            PublishGenerationInput {
+                root: &self.root,
+                stage: &self.stage.path,
+                generation,
+                document_count: self.document_count,
+                documents_digest: self.documents_digest.finish(),
+                source_graph_commit_epoch: self.options.source_graph_commit_epoch,
+                import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
+                embedding_manifest: self.options.embedding_manifest.as_ref(),
+                embedding_dimension: self.embedding_dimension,
+                layout: &segment_output.layout,
+                lexical_artifact_name: &lexical_artifact_name,
+                rabitq: rabitq.as_ref(),
+                payload_bytes: segment_output.document_payload_bytes,
+                metadata_payload_bytes: segment_output.metadata_payload_bytes,
+                vector_payload_bytes: segment_output.vector_payload_bytes,
+                max_generation_bytes: self.options.max_generation_bytes.get(),
+            },
+            &self.memory,
+            &self.task_context,
+        )?;
 
         let mut cleanup_state = SearchProjectionCleanupState::default();
         let cleanup = cleanup_state.run(
@@ -571,11 +588,17 @@ impl SearchOutOfCoreGenerationWriter {
             )?;
         drop(lexical);
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
-        let lexical_artifact_name = lexical_artifact_file(generation);
+        let lexical_artifact_name = artifact_name::Name::generated(
+            "search_lexical.",
+            generation,
+            &self.memory,
+            &self.task_context,
+        )?;
+        let io = io::GenerationIo::new(&self.memory, &self.task_context);
         let (lexical_artifact_bytes, _) =
-            file_len_checksum(&self.stage.path.join(&lexical_artifact_name))?;
+            io.checksum(&io.path(&self.stage.path, lexical_artifact_name.as_ref())?)?;
         let (lexical_manifest_bytes, _) =
-            file_len_checksum(&self.stage.path.join(LEXICAL_MANIFEST_FILE))?;
+            io.checksum(&io.path(&self.stage.path, Path::new(LEXICAL_MANIFEST_FILE))?)?;
         Ok(GenerationArtifacts {
             segment,
             lexical_artifact_name,
@@ -712,7 +735,7 @@ impl SearchOutOfCoreGenerationWriter {
 
 struct GenerationArtifacts {
     segment: artifacts::SegmentArtifactOutput,
-    lexical_artifact_name: String,
+    lexical_artifact_name: artifact_name::Name,
     lexical_artifact_bytes: u64,
     lexical_manifest_bytes: u64,
     rabitq: Option<RaBitQGenerationArtifact>,

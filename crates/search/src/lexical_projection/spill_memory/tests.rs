@@ -3,8 +3,7 @@ use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[path = "../../../tests/support/live_allocation.rs"]
-mod allocation;
+use crate::test_allocation as allocation;
 
 const BUDGET: usize = 2 * 1024 * 1024;
 
@@ -59,8 +58,9 @@ fn populate(pool: &mut SpillRuns, memory: &BuildMemory, runs: usize) {
 
 #[test]
 fn admitted_corpus_merge_levels_progress_at_a_full_root_and_cover_live_allocations() {
-    // Only this test enables the process-wide requested-capacity probe. Other
-    // test threads remain untracked, including their eventual deallocations.
+    let _serial = allocation::serial();
+    // The serialization guard spans all measured owners. Other test threads
+    // remain untracked, including their eventual deallocations.
     for fan_in in [2, 4, 32] {
         let fixture = Fixture::new();
         let (memory, task) = context();

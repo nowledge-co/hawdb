@@ -61,6 +61,25 @@ pub(super) fn manifest_generation(path: &Path, max_bytes: u64) -> Result<Option<
         .map(|body| body.generation))
 }
 
+pub(super) fn admitted_manifest_generation(
+    bytes: &[u8],
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<Option<u64>> {
+    let capacity = crate::build_control::json::decode_capacity(
+        bytes,
+        std::mem::size_of::<BlockDescriptor>().max(std::mem::size_of::<TermStatistics>()),
+        2,
+        task,
+    )?;
+    let capacity = crate::build_memory::checked_add(capacity, 3 * 128)?;
+    let _decode = memory.spool.reserve(capacity)?;
+    let result = ManifestBody::decode_with_context(bytes, Some(task));
+    // A cancelled checksum/validation must never become a skippable candidate.
+    checkpoint(task)?;
+    Ok(result.ok().map(|body| body.generation))
+}
+
 pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
     let mut digest = Digest::new();
     digest.update(ANALYZER_FORMAT_VERSION);
