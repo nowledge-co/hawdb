@@ -2,6 +2,9 @@
 
 //! Explain output contracts and terminal formatting for embedded query clients.
 
+#[doc(hidden)]
+pub mod json;
+
 use skein_executor::{QueryOutput, ReadExecutionProfile};
 use skein_optimizer::{OptimizerTrace, PhysicalOperatorId, PhysicalPlanKind};
 use skein_plan::{PhysicalPlan, PhysicalPlanChildren};

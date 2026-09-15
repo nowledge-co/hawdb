@@ -15,6 +15,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
+        "//crates/core:skein_core",
         "//crates/executor:skein_executor",
         "//crates/optimizer:skein_optimizer",
         "//crates/plan:skein_plan",
