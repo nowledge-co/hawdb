@@ -11,6 +11,9 @@ pub mod bounded_read_evidence_cli;
 pub mod graph_summary;
 
 #[doc(hidden)]
+pub mod graph_route_catalog;
+
+#[doc(hidden)]
 pub mod integration_bundle;
 
 #[doc(hidden)]
