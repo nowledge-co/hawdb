@@ -108,7 +108,6 @@ const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
 
-pub use access_control::AccessControlPolicyReadiness;
 pub use artifact_jobs::{
     DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
     ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
@@ -180,6 +179,8 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
+pub use skein_core::QueryAccessControlContext;
+pub use skein_evidence::AccessControlPolicyReadiness;
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -647,82 +648,6 @@ pub struct QueryStreamReport {
     pub output_rows: usize,
     pub output_payload_bytes: usize,
     pub execution_profile: executor::ReadExecutionProfile,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct QueryAccessControlContext {
-    policy_epoch: u64,
-    visibility_property: String,
-    allowed_visibility_values: BTreeSet<String>,
-}
-
-impl QueryAccessControlContext {
-    pub fn visibility_scope(
-        policy_epoch: u64,
-        visibility_property: impl Into<String>,
-        allowed_visibility_value: impl Into<String>,
-    ) -> Self {
-        Self::visibility_scopes(
-            policy_epoch,
-            visibility_property,
-            std::iter::once(allowed_visibility_value),
-        )
-    }
-
-    pub fn visibility_scopes(
-        policy_epoch: u64,
-        visibility_property: impl Into<String>,
-        allowed_visibility_values: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        Self {
-            policy_epoch,
-            visibility_property: visibility_property.into(),
-            allowed_visibility_values: allowed_visibility_values
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        }
-    }
-
-    pub fn policy_epoch(&self) -> u64 {
-        self.policy_epoch
-    }
-
-    pub fn visibility_property(&self) -> &str {
-        &self.visibility_property
-    }
-
-    pub fn allowed_visibility_values(&self) -> &BTreeSet<String> {
-        &self.allowed_visibility_values
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.policy_epoch == 0 {
-            return Err(SkeinError::Semantic(
-                "access control policy epoch must be non-zero".to_string(),
-            ));
-        }
-        if self.visibility_property.trim().is_empty() {
-            return Err(SkeinError::Semantic(
-                "access control visibility property must be non-empty".to_string(),
-            ));
-        }
-        if self.allowed_visibility_values.is_empty() {
-            return Err(SkeinError::Semantic(
-                "access control visibility scope must not be empty".to_string(),
-            ));
-        }
-        if self
-            .allowed_visibility_values
-            .iter()
-            .any(|value| value.trim().is_empty())
-        {
-            return Err(SkeinError::Semantic(
-                "access control visibility scope values must be non-empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

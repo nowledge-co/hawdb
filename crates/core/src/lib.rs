@@ -1,3 +1,4 @@
+pub mod access_control;
 pub mod cancellation;
 pub mod capability;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod schema;
 pub mod uuidv7;
 pub mod value;
 
+pub use access_control::QueryAccessControlContext;
 pub use cancellation::{
     RuntimeCancellationFuture, RuntimeCancellationReason, RuntimeCancellationToken,
     RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
