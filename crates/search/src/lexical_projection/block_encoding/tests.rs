@@ -140,14 +140,14 @@ fn assert_wire(entries: Entries<'_>, generation: u64, block_id: u64, short_write
         Entries::Documents(values) => (
             values.len(),
             BlockKind::Documents,
-            &values.first().unwrap().0,
-            &values.last().unwrap().0,
+            values.first().unwrap().0.as_str(),
+            values.last().unwrap().0.as_str(),
         ),
         Entries::Postings(values) => (
             values.len(),
             BlockKind::Postings,
-            &values.first().unwrap().term,
-            &values.last().unwrap().term,
+            values.first().unwrap().term.as_str(),
+            values.last().unwrap().term.as_str(),
         ),
     };
     assert_eq!(descriptor.entry_count as usize, count);
@@ -209,7 +209,7 @@ fn long_fields_are_written_in_bounded_chunks() {
     let id = format!("a{}z", "\u{e9}".repeat(20_000));
     let documents = vec![(id.clone(), 1)];
     let postings = vec![Posting {
-        term: id.clone(),
+        term: id.clone().into(),
         document_id: id,
         term_frequency: 1,
         document_len: 1,
@@ -499,7 +499,7 @@ fn campaign(cases: usize) {
         let postings = documents
             .iter()
             .map(|(id, length)| Posting {
-                term: format!("term-{}-\u{1f980}", next() % 7),
+                term: format!("term-{}-\u{1f980}", next() % 7).into(),
                 document_id: id.clone(),
                 term_frequency: next() as u32,
                 document_len: *length,

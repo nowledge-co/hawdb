@@ -315,6 +315,47 @@ fn chinese_analyzer_denial_preserves_the_active_generation_and_cleans_the_stage(
 }
 
 #[test]
+fn resident_frequency_denial_stops_analysis_and_preserves_the_active_generation() {
+    let root = test_dir("context_frequency_denial");
+    let previous = document(0);
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    initial.push(previous.clone()).unwrap();
+    let generation = initial.finish().unwrap().generation;
+    let before = published_files(&root);
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+        &root,
+        Default::default(),
+        context(4 * 1024 * 1024),
+    )
+    .unwrap();
+    let memory = writer.memory.clone();
+    let mut next = document(1);
+    next.embedding = None;
+    next.content = (0..4096).map(|index| format!("token{index:05} ")).collect();
+    writer.push(next).unwrap();
+    assert!(!writer.needs_chinese_analyzer);
+    crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.set(0));
+    let error = writer.finish().unwrap_err();
+    assert!(error.to_string().contains("query_memory_bytes"), "{error}");
+    let visited = crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.get());
+    assert!(visited > 0 && visited < 4096, "analysis visits={visited}");
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(published_files(&root), before);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.generation(), generation);
+    assert_eq!(
+        reader
+            .hydrate_documents(std::slice::from_ref(&previous.id))
+            .unwrap()
+            .documents,
+        vec![previous]
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn governed_chinese_build_preserves_the_complete_artifact_bytes_and_reopen() {
     let original_root = test_dir("context_chinese_original");
     let governed_root = test_dir("context_chinese_governed");

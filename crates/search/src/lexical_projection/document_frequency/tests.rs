@@ -90,7 +90,7 @@ fn actual_document_spill_matches_complete_legacy_frequencies() {
         result
             .visit(config, |term, frequency, retained| {
                 assert!(retained < budget);
-                assert!(actual.insert(term, frequency).is_none());
+                assert!(actual.insert(term.into_untracked()?, frequency).is_none());
                 Ok(())
             })
             .unwrap();
@@ -155,7 +155,11 @@ fn drain(path: &Path, config: LexicalProjectionConfig) -> Result<Vec<(String, u8
     let mut reader = FrequencyRunReader::open(path, config)?;
     let mut records = Vec::new();
     while let Some(record) = reader.next()? {
-        records.push((record.term, record.field, record.summary.frequency()?));
+        records.push((
+            record.term.into_untracked()?,
+            record.field,
+            record.summary.frequency()?,
+        ));
     }
     Ok(records)
 }
@@ -337,7 +341,7 @@ fn assert_full_postings(
             |posting| {
                 assert!(actual
                     .insert(
-                        (posting.term, posting.document_id),
+                        (posting.term.into_untracked()?, posting.document_id),
                         (posting.term_frequency, posting.document_len)
                     )
                     .is_none());
@@ -645,7 +649,7 @@ fn document_frequency_spill_differential_campaign() {
         let mut actual = BTreeMap::new();
         result
             .visit(config, |term, frequency, _| {
-                assert!(actual.insert(term, frequency).is_none());
+                assert!(actual.insert(term.into_untracked()?, frequency).is_none());
                 Ok(())
             })
             .unwrap();

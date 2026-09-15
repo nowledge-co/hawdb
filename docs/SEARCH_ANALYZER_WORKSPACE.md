@@ -110,8 +110,9 @@ cargo clippy -p skein-search --all-targets -- -D warnings
 bazel test //crates/search:all //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
 ```
 
-Skein-owned normalized strings, identifier deduplication, emitted frequency state,
-spill/merge ownership, outer publication, delta hydration and the public constructor
+Skein-owned normalized strings, identifier deduplication and resident frequencies
+now retain their own admission; see [the token ownership contract](SEARCH_TOKEN_OWNERSHIP.md).
+Complete spill/merge ownership, outer publication, delta hydration and the public constructor
 pair remain subsequent deliveries. The 4 MiB source guard and existing finite term
 and manifest policies remain. This stage does not complete whole-analyzer admission,
 shared host governance, large-source support or the original #206 corpus gate.

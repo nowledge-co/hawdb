@@ -159,7 +159,7 @@ pub(super) struct FrequencyRunReader {
     digest: Digest,
     records: u64,
     finished: bool,
-    previous: Option<(String, u8)>,
+    previous: Option<(Term, u8)>,
     config: LexicalProjectionConfig,
 }
 
@@ -220,7 +220,7 @@ impl FrequencyRunReader {
         let ordinal = read_u64(&mut reader)?;
         let unique_weight = read_u64(&mut reader)?;
         let record = FrequencyRecord {
-            term,
+            term: term.into(),
             field: field[0],
             summary: PartialFieldFrequency {
                 repeated_weight,
