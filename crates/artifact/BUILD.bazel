@@ -16,6 +16,8 @@ rust_library(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
+        "//crates/executor:skein_executor",
+        "//crates/qos:skein_qos",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )

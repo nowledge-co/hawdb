@@ -1098,6 +1098,7 @@ pub struct GraphStore {
     projected_graph_artifacts: CowSegment<BTreeMap<String, ProjectedGraphArtifact>>,
     stable_id_mapping: CowSegment<StoreStableIdMapping>,
     initial_import_source_fingerprint: Option<String>,
+    search_projection_database_identity: Option<skein_core::Uuid>,
     search_projection_change_log_start_epoch: u64,
     search_projection_graph_changes: CowSegment<Vec<SearchProjectionGraphChange>>,
     search_projection_change_log_retained_bytes: usize,
@@ -2004,6 +2005,7 @@ impl GraphStore {
             projected_graph_artifacts: CowSegment::default(),
             stable_id_mapping: CowSegment::default(),
             initial_import_source_fingerprint: None,
+            search_projection_database_identity: None,
             search_projection_change_log_start_epoch: 0,
             search_projection_graph_changes: CowSegment::default(),
             search_projection_change_log_retained_bytes: 0,
@@ -2272,6 +2274,18 @@ impl GraphStore {
         )
     }
 
+    pub(crate) fn search_projection_database_identity(&self) -> Option<skein_core::Uuid> {
+        self.search_projection_database_identity
+    }
+
+    pub(crate) fn set_search_projection_database_identity(&mut self, identity: skein_core::Uuid) {
+        self.search_projection_database_identity = Some(identity);
+    }
+
+    pub(crate) fn search_projection_registry_root(&self) -> Option<&Path> {
+        self.durable.as_ref().map(|durable| durable.root_path())
+    }
+
     pub fn initial_import_source_fingerprint(&self) -> Option<&str> {
         self.initial_import_source_fingerprint.as_deref()
     }
@@ -2372,6 +2386,7 @@ impl GraphStore {
             projected_graph_artifacts: self.projected_graph_artifacts.clone(),
             stable_id_mapping: self.stable_id_mapping.clone(),
             initial_import_source_fingerprint: self.initial_import_source_fingerprint.clone(),
+            search_projection_database_identity: self.search_projection_database_identity,
             search_projection_change_log_start_epoch: self.search_projection_change_log_start_epoch,
             search_projection_graph_changes: self.search_projection_graph_changes.clone(),
             search_projection_change_log_retained_bytes: self

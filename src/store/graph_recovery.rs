@@ -366,6 +366,23 @@ impl GraphStore {
                     loaded_search_projection_change_log_start_epoch = Some(start_epoch);
                     self.search_projection_change_log_start_epoch = start_epoch;
                 }
+                ["search_projection_database_identity", raw] => {
+                    if self.search_projection_database_identity.is_some() {
+                        return Err(SkeinError::Storage(
+                            "checkpoint contains duplicate search projection database identity"
+                                .into(),
+                        ));
+                    }
+                    let identity = raw.parse::<skein_core::Uuid>().map_err(|_| {
+                        SkeinError::Storage("invalid search projection database identity".into())
+                    })?;
+                    if identity.is_nil() || identity.to_string() != *raw {
+                        return Err(SkeinError::Storage(
+                            "noncanonical search projection database identity".into(),
+                        ));
+                    }
+                    self.search_projection_database_identity = Some(identity);
+                }
                 ["initial_import_source_fingerprint", raw] => {
                     if self.initial_import_source_fingerprint.is_some() {
                         return Err(SkeinError::Storage(

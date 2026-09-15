@@ -143,6 +143,11 @@ impl DurableStore {
             "search_projection_change_log_start_epoch\t{}\n",
             image.search_projection_change_log_start_epoch
         ));
+        if let Some(identity) = image.search_projection_database_identity {
+            body.push_str(&format!(
+                "search_projection_database_identity\t{identity}\n"
+            ));
+        }
         if let Some(source_fingerprint) = image.initial_import_source_fingerprint {
             body.push_str(&format!(
                 "initial_import_source_fingerprint\t{}\n",

@@ -22,7 +22,25 @@ impl SearchProjectionPublishLease {
         Self::acquire_with_context(root, &memory, &task)
     }
 
+    pub(crate) fn acquire_for_consumer(root: &Path) -> Result<Self> {
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task)?;
+        Self::acquire_lock_with_context(root, &memory, &task)
+    }
+
     pub(crate) fn acquire_with_context(
+        root: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        let lease = Self::acquire_lock_with_context(root, memory, task)?;
+        // Check the binding under the same exclusion used by consumer owners.
+        super::super::consumer::require_unregistered_directory(root)?;
+        checkpoint(task)?;
+        Ok(lease)
+    }
+
+    fn acquire_lock_with_context(
         root: &Path,
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
@@ -202,6 +220,45 @@ mod tests {
         assert!(SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task).is_err());
         assert!(!lock.exists());
         SearchProjectionPublishLease::acquire(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_publication_preserves_consumer_exclusion_and_releases_rejected_leases() {
+        let root = test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let snapshot = root.join(crate::SEARCH_SNAPSHOT_FILE);
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let header = "SKEIN_SEARCH_PROJECTION_V1\nprojection_consumer_binding\towner\n";
+        for contents in [
+            header.as_bytes().to_vec(),
+            crate::encode_search_snapshot_text(header).unwrap(),
+        ] {
+            fs::write(&snapshot, contents).unwrap();
+            for rejected in [
+                SearchProjectionPublishLease::acquire(&root),
+                SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task),
+            ] {
+                assert!(rejected
+                    .unwrap_err()
+                    .to_string()
+                    .contains("registered projection requires its consumer owner"));
+            }
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+            let owner = SearchProjectionPublishLease::acquire_for_consumer(&root).unwrap();
+            assert!(
+                SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("another search projection publication is active")
+            );
+            assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+            drop(owner);
+        }
+        fs::remove_file(snapshot).unwrap();
+        drop(SearchProjectionPublishLease::acquire_with_context(&root, &memory, &task).unwrap());
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         fs::remove_dir_all(root).unwrap();
     }
 

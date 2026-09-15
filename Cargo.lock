@@ -926,6 +926,8 @@ name = "skein-artifact"
 version = "0.1.0"
 dependencies = [
  "skein-core",
+ "skein-executor",
+ "skein-qos",
 ]
 
 [[package]]
