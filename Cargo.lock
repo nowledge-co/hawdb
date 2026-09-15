@@ -1088,6 +1088,7 @@ dependencies = [
  "skein-core",
  "skein-executor",
  "skein-expression",
+ "skein-integrity",
  "skein-optimizer",
  "skein-sql",
  "skein-storage",
