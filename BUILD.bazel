@@ -332,6 +332,8 @@ test_suite(
         ":skein_acl_capability_tests",
         ":skein_minimal_native_vector_boundary_test",
         ":skein_pgq_create_binder_tests",
+        ":skein_search_generation_context_minimal_tests",
+        ":skein_search_generation_context_tests",
         ":skein_search_projection_consumer_tests",
         ":skein_search_projection_consumer_minimal_tests",
         ":skein_unit_fast_tests",
@@ -346,6 +348,24 @@ rust_test(
     srcs = ["tests/pgq_create_binder.rs"],
     edition = "2024",
     deps = [":skein"],
+)
+
+# External generation consumers in both supported dependency profiles.
+rust_test(
+    name = "skein_search_generation_context_tests",
+    crate_root = "tests/search_generation_context.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = ["tests/search_generation_context.rs"],
+    edition = "2024",
+    deps = [":skein"],
+)
+
+rust_test(
+    name = "skein_search_generation_context_minimal_tests",
+    crate_root = "tests/search_generation_context.rs",
+    srcs = ["tests/search_generation_context.rs"],
+    edition = "2024",
+    deps = [":skein_minimal"],
 )
 
 # The same public consumer contract is available in both feature profiles.

@@ -3,7 +3,8 @@
 This private #392 stage follows PR513. The writer now owns cleanup capacity
 through its final handoff, including failure and unwind. Query APIs, logical
 limits, persisted bytes and the current/previous-generation retention rules
-remain unchanged. The approved context constructors remain private.
+remain unchanged. The approved pair now exposes the integrated
+[context contract](SEARCH_GENERATION_CONTEXT.md).
 
 ## One-shot old-generation cleanup
 
@@ -76,6 +77,7 @@ and separate source/target mutation controls live in
 `target/qualification-cache/392-cleanup-audit` on the validation host. Local
 verification uses the unchanged default Bazel search and mandatory fuzz targets.
 
-Delta input conversion, ordered hydration and final facade ownership are the next
-#392 boundary. The 4 MiB source guard remains; shared host admission/adaptive
+Delta input conversion and ordered hydration now retain operation admission;
+see the [delta contract](SEARCH_DELTA_OWNERSHIP.md) and
+[context facade](SEARCH_GENERATION_CONTEXT.md). The 4 MiB source guard remains; shared host admission/adaptive
 profiles and the original #206 corpus acceptance remain distinct requirements.
