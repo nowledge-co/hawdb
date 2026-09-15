@@ -83,7 +83,8 @@ mod artifact_jobs;
 mod canonical_snapshot;
 mod concurrent;
 mod explain;
-mod explain_format;
+#[cfg(test)]
+mod explain_format_tests;
 mod observability;
 mod plan_cache;
 mod query_runtime;
@@ -181,6 +182,7 @@ pub use search_projection_catch_up::{
 pub use skein_core::QueryAccessControlContext;
 pub use skein_evidence::AccessControlPolicyReadiness;
 pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
+pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -666,15 +668,6 @@ pub(super) struct StatementExecutionContext<'a> {
 pub struct NowledgeGraphStatement {
     pub cypher: String,
     pub parameters: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NowledgeGraphExplainOutput {
-    pub plan: String,
-    pub trace: OptimizerTrace,
-    pub work_request: WorkRequest,
-    pub plan_cache_lookup: PlanCacheLookup,
-    pub statement_kind: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19614,7 +19607,9 @@ pub(super) fn execute_database_transaction_prepared_sql(
 ) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
     if !options.allow_system_schema_registry_write
-        && crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
+        && skein_relational::system_schema::statement_writes_system_schema_registry(
+            prepared.statement(),
+        )
     {
         return Err(SkeinError::Semantic(
             "skein_schema_migrations is read-only outside system schema upgrade".to_string(),

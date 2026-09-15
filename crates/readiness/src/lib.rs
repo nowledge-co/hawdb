@@ -17,7 +17,13 @@ pub mod graph_route_catalog;
 pub mod integration_bundle;
 
 #[doc(hidden)]
+pub mod integration_bundle_cli;
+
+#[doc(hidden)]
 pub mod integration_readiness;
+
+#[doc(hidden)]
+pub mod library_readiness;
 
 #[doc(hidden)]
 pub mod previous_wrapper_preflight;

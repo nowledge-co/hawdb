@@ -8,7 +8,7 @@ use skein_storage::{
 };
 use std::collections::BTreeSet;
 
-pub(super) use skein_relational::row_runtime::{RelationalReadRow, RelationalReadRowRef};
+pub(super) use skein_relational::row_runtime::RelationalReadRow;
 pub(crate) use skein_relational::row_runtime::{
     RelationalRowExecutionEvidence, RelationalRowRuntime,
 };

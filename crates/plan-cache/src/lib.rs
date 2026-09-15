@@ -8,6 +8,47 @@ pub use template::{
     ParameterizedLogicalPlan, PlanParameterCacheKey,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanCacheLookup {
+    Hit,
+    Miss,
+    Bypass(PlanCacheBypassReason),
+}
+
+impl PlanCacheLookup {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Bypass(_) => "bypass",
+        }
+    }
+
+    pub const fn bypass_reason(self) -> Option<PlanCacheBypassReason> {
+        match self {
+            Self::Bypass(reason) => Some(reason),
+            Self::Hit | Self::Miss => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanCacheBypassReason {
+    MutationPlanning,
+    OptimizerDirective,
+    StatementNotCacheable,
+}
+
+impl PlanCacheBypassReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MutationPlanning => "mutation_planning",
+            Self::OptimizerDirective => "optimizer_directive",
+            Self::StatementNotCacheable => "statement_not_cacheable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanCacheStats {
     pub max_entries: Option<usize>,
@@ -156,7 +197,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::LfuCache;
+    use super::{LfuCache, PlanCacheBypassReason, PlanCacheLookup};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
@@ -200,6 +241,22 @@ mod tests {
         assert_eq!(cache.stats().disabled_misses, 1);
         assert_eq!(cache.stats().admissions, 0);
         assert_eq!(cache.stats().memory_pressure_events, 0);
+    }
+
+    #[test]
+    fn lookup_reports_cacheability_and_bypass_reason() {
+        let bypass = PlanCacheLookup::Bypass(PlanCacheBypassReason::OptimizerDirective);
+
+        assert_eq!(PlanCacheLookup::Hit.as_str(), "hit");
+        assert_eq!(bypass.as_str(), "bypass");
+        assert_eq!(
+            bypass.bypass_reason(),
+            Some(PlanCacheBypassReason::OptimizerDirective)
+        );
+        assert_eq!(
+            PlanCacheBypassReason::StatementNotCacheable.as_str(),
+            "statement_not_cacheable"
+        );
     }
 
     #[test]

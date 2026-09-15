@@ -827,26 +827,6 @@ pub struct KnowledgeGraphContextPath {
     pub target_external_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExplainOutput {
-    pub physical_plan: PhysicalPlan,
-    pub trace: OptimizerTrace,
-    pub work_request: WorkRequest,
-    pub plan_cache_lookup: PlanCacheLookup,
-    pub statement_kind: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExplainAnalyzeOutput {
-    pub output: QueryOutput,
-    pub execution_profile: executor::ReadExecutionProfile,
-    pub physical_plan: PhysicalPlan,
-    pub trace: OptimizerTrace,
-    pub work_request: WorkRequest,
-    pub plan_cache_lookup: PlanCacheLookup,
-    pub statement_kind: &'static str,
-}
-
 pub(crate) struct QueryExecutionTrace {
     pub(crate) statement: cypher::Statement,
     pub(crate) optimizer_trace: Option<OptimizerTrace>,

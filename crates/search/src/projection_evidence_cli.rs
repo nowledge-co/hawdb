@@ -285,11 +285,13 @@ mod tests {
                 active_embedding_dimension: Some(8),
             });
         let evidence = nowledge_search_projection_evidence_json(&probe);
+        // The fixture requires a compressed vector projection. Profiles without
+        // that backend must retain the complete probe and report its blocker.
+        let vector_ready = cfg!(feature = "vector-search");
 
         assert_eq!(probe["protocol"], "skein-nowledge-search-projection-probe");
-        let vector_search_enabled = cfg!(feature = "vector-search");
         assert_eq!(
-            evidence["ready"], vector_search_enabled,
+            evidence["ready"], vector_ready,
             "probe={probe:#}\nevidence={evidence:#}"
         );
         assert_eq!(evidence["covered_table_count"], 6);
@@ -301,13 +303,14 @@ mod tests {
             true
         );
         assert_eq!(evidence["compressed_vector_projection_required"], true);
-        assert_eq!(
-            evidence["compressed_vector_projection_ready"],
-            vector_search_enabled
-        );
-        if !vector_search_enabled {
+        assert_eq!(evidence["compressed_vector_projection_ready"], vector_ready);
+        if !vector_ready {
             assert_eq!(
-                probe["compressed_vector_projection"]["blocker_codes"],
+                evidence["blocker_codes"],
+                serde_json::json!(["compressed_vector_projection_not_ready"])
+            );
+            assert_eq!(
+                evidence["compressed_vector_projection"]["blocker_codes"],
                 serde_json::json!(["vector_search_feature_disabled"])
             );
         }

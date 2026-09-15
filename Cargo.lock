@@ -890,6 +890,7 @@ dependencies = [
  "skein-ddl",
  "skein-evidence",
  "skein-executor",
+ "skein-explain",
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
@@ -988,6 +989,20 @@ dependencies = [
  "skein-ddl",
  "skein-plan",
  "skein-storage",
+]
+
+[[package]]
+name = "skein-explain"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-executor",
+ "skein-optimizer",
+ "skein-plan",
+ "skein-plan-cache",
+ "skein-qos",
+ "skein-storage",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1107,6 +1122,7 @@ dependencies = [
  "skein-core",
  "skein-executor",
  "skein-expression",
+ "skein-integrity",
  "skein-optimizer",
  "skein-sql",
  "skein-storage",

@@ -889,7 +889,7 @@ pub(super) fn query_runtime_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::{default_morsel_cpu_ceiling, MAX_MORSEL_PARALLELISM};
+    use crate::executor::MAX_MORSEL_PARALLELISM;
     use std::num::NonZeroUsize;
 
     fn limits(cpu_slots: usize, memory_budget_bytes: u64) -> skein_qos::RuntimeGovernorLimits {
@@ -1168,17 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn default_morsel_cpu_ceiling_scales_with_effective_cpu_capacity() {
-        assert_eq!(default_morsel_cpu_ceiling(1), 1);
-        assert_eq!(default_morsel_cpu_ceiling(2), 2);
-        assert_eq!(default_morsel_cpu_ceiling(4), 4);
-        assert_eq!(default_morsel_cpu_ceiling(8), 4);
-        assert_eq!(default_morsel_cpu_ceiling(16), 4);
-        assert_eq!(default_morsel_cpu_ceiling(17), 5);
-        assert_eq!(default_morsel_cpu_ceiling(32), 8);
-        assert_eq!(default_morsel_cpu_ceiling(64), 16);
-        assert_eq!(default_morsel_cpu_ceiling(128), 16);
-
+    fn default_morsel_request_uses_executor_cpu_ceiling() {
         let request = admission(true).runtime_work_request(1024, limits(32, 1024 * 1024));
         assert_eq!(request.cpu_slots, 8);
         assert_eq!(request.memory_bytes, 8 * 1024);

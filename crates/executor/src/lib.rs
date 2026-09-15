@@ -9,6 +9,8 @@ pub mod blocking;
 pub mod columnar;
 pub mod concurrent;
 #[doc(hidden)]
+pub mod execution_request;
+#[doc(hidden)]
 pub mod expression;
 #[doc(hidden)]
 pub mod external;

@@ -40,6 +40,18 @@ use std::sync::Arc;
 
 /// Shared ceiling for root admission and numeric morsel execution.
 pub const MAX_MORSEL_PARALLELISM: usize = 16;
+const DEFAULT_MORSEL_CPU_SHARE_DIVISOR: usize = 4;
+const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
+
+/// Derives the CPU budget for a morsel-capable query from host capacity.
+pub fn default_morsel_cpu_ceiling(effective_cpu_slots: usize) -> usize {
+    let effective_cpu_slots = effective_cpu_slots.max(1);
+    effective_cpu_slots
+        .div_ceil(DEFAULT_MORSEL_CPU_SHARE_DIVISOR)
+        .max(DEFAULT_MORSEL_MIN_PARALLELISM)
+        .min(effective_cpu_slots)
+        .min(MAX_MORSEL_PARALLELISM)
+}
 
 #[derive(Clone, Copy)]
 pub struct NumericExecutionContext<'a> {
@@ -1388,9 +1400,9 @@ fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> SkeinE
 #[cfg(test)]
 mod tests {
     use super::{
-        default_morsel_worker_count, numeric_columnar_schema, numeric_morsel_memory,
-        prepare_lending_numeric_morsel, LendingNumericScan, NumericFragment, NumericPredicate,
-        DEFAULT_BATCHES_PER_MORSEL, DEFAULT_MIN_MORSELS_PER_WORKER,
+        default_morsel_cpu_ceiling, default_morsel_worker_count, numeric_columnar_schema,
+        numeric_morsel_memory, prepare_lending_numeric_morsel, LendingNumericScan, NumericFragment,
+        NumericPredicate, DEFAULT_BATCHES_PER_MORSEL, DEFAULT_MIN_MORSELS_PER_WORKER,
     };
     use crate::morsel::{MorselAdmission, MorselAdmissionRequest, PipelineId};
     use crate::{ExecutionMemoryConfig, NumericLiteral};
@@ -1401,6 +1413,19 @@ mod tests {
     use skein_storage::{NodeId, NodeRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;
+
+    #[test]
+    fn default_morsel_cpu_ceiling_scales_with_effective_cpu_capacity() {
+        assert_eq!(default_morsel_cpu_ceiling(1), 1);
+        assert_eq!(default_morsel_cpu_ceiling(2), 2);
+        assert_eq!(default_morsel_cpu_ceiling(4), 4);
+        assert_eq!(default_morsel_cpu_ceiling(8), 4);
+        assert_eq!(default_morsel_cpu_ceiling(16), 4);
+        assert_eq!(default_morsel_cpu_ceiling(17), 5);
+        assert_eq!(default_morsel_cpu_ceiling(32), 8);
+        assert_eq!(default_morsel_cpu_ceiling(64), 16);
+        assert_eq!(default_morsel_cpu_ceiling(128), 16);
+    }
 
     #[test]
     fn default_worker_count_requires_enough_work_per_worker() {

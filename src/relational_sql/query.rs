@@ -56,14 +56,12 @@ use super::{
 use skein_sql::timing::{elapsed_nanos, measure_nanos};
 
 mod join_order;
-mod streaming_binding;
-
-use self::streaming_binding::BoundStreamingProjection;
 use skein_relational::columnar_aggregate::ColumnarAggregateExecutor;
 pub(super) use skein_relational::locator::{
     RelationalLocatorLayout, RelationalRowSetLocator, RelationalSortKey, RelationalSortRecord,
 };
 use skein_relational::predicate::BoundStreamingPredicate;
+use skein_relational::streaming_projection::BoundStreamingProjection;
 
 mod access;
 #[cfg(test)]
@@ -94,8 +92,7 @@ mod expression;
 use expression::{
     account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, predicate_truth,
     project_bound_row, projection_uses_non_aggregate_coalesce, reject_non_public_schema,
-    relational_ref_to_value, resolve_column, validate_non_aggregate_coalesce_projections,
-    value_to_relational_as,
+    resolve_column, validate_non_aggregate_coalesce_projections, value_to_relational_as,
 };
 
 mod join;
