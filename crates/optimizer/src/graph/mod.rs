@@ -18,7 +18,8 @@ mod stages;
 mod value_range;
 
 pub use catalog::{
-    OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics,
+    optimizer_catalog_from_graph_statistics, OptimizerCatalog, OptimizerCatalogIndexes,
+    OptimizerCatalogStatistics, OptimizerIndexStatistics,
 };
 pub use lowering::CascadesOptimizer;
 pub use roots::{

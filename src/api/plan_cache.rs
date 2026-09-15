@@ -1,5 +1,5 @@
 use super::{
-    optimizer_catalog, optimizer_config_from_database_config, statement_body, DatabaseConfig,
+    optimizer_config_from_database_config, statement_body, DatabaseConfig,
     QueryAccessControlContext, SharedState,
 };
 use crate::cypher;
@@ -12,6 +12,7 @@ use crate::planner::{self, LogicalPlan, Predicate};
 use crate::schema::{Catalog, GraphStatistics, IndexKind};
 use crate::store::GraphStore;
 use crate::value::Value;
+use skein_optimizer::graph::optimizer_catalog_from_graph_statistics;
 pub use skein_plan_cache::PlanCacheStats;
 use skein_plan_cache::{
     bind_physical_plan_parameters, parameterize_logical_plan, parameterize_value_list, LfuCache,
@@ -370,7 +371,7 @@ impl OptimizerPlanningCache {
             };
         }
 
-        let optimized = Arc::new(optimizer_catalog(catalog, statistics));
+        let optimized = Arc::new(optimizer_catalog_from_graph_statistics(catalog, statistics));
         decisions.push(format!(
             "optimizer catalog cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
             statistics.computed_at_commit_epoch,

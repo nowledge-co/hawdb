@@ -3,7 +3,7 @@ use crate::cardinality_defaults::{
     NULL_SELECTIVITY_DIVISOR_CAP, RANGE_SELECTIVITY_DIVISOR, SAMPLED_HISTOGRAM_MATCH_PSEUDOCOUNT,
     SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT,
 };
-use skein_core::Value;
+use skein_core::{Catalog, GraphStatistics, IndexKind, Value};
 use skein_plan::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -88,6 +88,274 @@ pub struct OptimizerCatalogStatistics {
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
     pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
+}
+
+/// Converts storage-neutral schema and statistics into optimizer cost inputs.
+///
+/// Basic cardinalities remain usable while an advanced statistics refresh is
+/// incomplete; only advanced histograms, path counts, and index samples are
+/// withheld in that state.
+#[doc(hidden)]
+pub fn optimizer_catalog_from_graph_statistics(
+    catalog: &Catalog,
+    statistics: &GraphStatistics,
+) -> OptimizerCatalog {
+    let advanced_statistics = statistics
+        .advanced_statistics_complete
+        .then_some(statistics);
+    let equality_property_indexes = catalog.property_indexes().filter_map(|index| {
+        if index.kind != IndexKind::Equality {
+            return None;
+        }
+        catalog
+            .label_name(index.label_id)
+            .map(|label| (label.to_string(), index.property.clone()))
+    });
+    let composite_property_indexes = catalog.composite_property_indexes().filter_map(|index| {
+        catalog
+            .label_name(index.label_id)
+            .map(|label| (label.to_string(), index.properties.clone()))
+    });
+    let range_property_indexes = catalog.property_indexes().filter_map(|index| {
+        if index.kind != IndexKind::Range {
+            return None;
+        }
+        catalog
+            .label_name(index.label_id)
+            .map(|label| (label.to_string(), index.property.clone()))
+    });
+    let full_text_property_indexes = catalog.property_indexes().filter_map(|index| {
+        if index.kind != IndexKind::FullText {
+            return None;
+        }
+        catalog
+            .label_name(index.label_id)
+            .map(|label| (label.to_string(), index.property.clone()))
+    });
+    let label_counts = statistics
+        .label_counts
+        .iter()
+        .filter_map(|(label_id, count)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| (label.to_string(), *count))
+        });
+    let rel_type_counts = statistics
+        .rel_type_counts
+        .iter()
+        .filter_map(|(rel_type_id, count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| (rel_type.to_string(), *count))
+        });
+    let rel_type_source_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_type_source_counts.iter())
+        .filter_map(|(rel_type_id, count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| (rel_type.to_string(), *count))
+        });
+    let rel_type_target_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_type_target_counts.iter())
+        .filter_map(|(rel_type_id, count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| (rel_type.to_string(), *count))
+        });
+    let path_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
+            Some((
+                (
+                    catalog.label_name(*source_label_id)?.to_string(),
+                    catalog.rel_type_name(*rel_type_id)?.to_string(),
+                    catalog.label_name(*target_label_id)?.to_string(),
+                ),
+                *count,
+            ))
+        });
+    let path_source_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_source_distinct_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
+            Some((
+                (
+                    catalog.label_name(*source_label_id)?.to_string(),
+                    catalog.rel_type_name(*rel_type_id)?.to_string(),
+                    catalog.label_name(*target_label_id)?.to_string(),
+                ),
+                *count,
+            ))
+        });
+    let path_target_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.path_target_distinct_counts.iter())
+        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
+            Some((
+                (
+                    catalog.label_name(*source_label_id)?.to_string(),
+                    catalog.rel_type_name(*rel_type_id)?.to_string(),
+                    catalog.label_name(*target_label_id)?.to_string(),
+                ),
+                *count,
+            ))
+        });
+    let bounded_path_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_counts.iter())
+        .filter_map(
+            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
+                Some((
+                    (
+                        catalog.label_name(*source_label_id)?.to_string(),
+                        catalog.rel_type_name(*rel_type_id)?.to_string(),
+                        catalog.label_name(*target_label_id)?.to_string(),
+                        *hops,
+                    ),
+                    *count,
+                ))
+            },
+        );
+    let bounded_path_source_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_source_distinct_counts.iter())
+        .filter_map(
+            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
+                Some((
+                    (
+                        catalog.label_name(*source_label_id)?.to_string(),
+                        catalog.rel_type_name(*rel_type_id)?.to_string(),
+                        catalog.label_name(*target_label_id)?.to_string(),
+                        *hops,
+                    ),
+                    *count,
+                ))
+            },
+        );
+    let bounded_path_target_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.bounded_path_target_distinct_counts.iter())
+        .filter_map(
+            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
+                Some((
+                    (
+                        catalog.label_name(*source_label_id)?.to_string(),
+                        catalog.rel_type_name(*rel_type_id)?.to_string(),
+                        catalog.label_name(*target_label_id)?.to_string(),
+                        *hops,
+                    ),
+                    *count,
+                ))
+            },
+        );
+    let property_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.property_distinct_counts.iter())
+        .filter_map(|((label_id, property), count)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *count))
+        });
+    let property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.property_histograms.iter())
+        .filter_map(|((label_id, property), values)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), values.clone()))
+        });
+    let sampled_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_property_histograms.iter())
+        .filter_map(|((label_id, property), sampled)| {
+            catalog
+                .label_name(*label_id)
+                .map(|label| ((label.to_string(), property.clone()), *sampled))
+        });
+    let rel_property_distinct_counts = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
+        .filter_map(|((rel_type_id, property), count)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), *count))
+        });
+    let rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), values)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
+        });
+    let sampled_rel_property_histograms = advanced_statistics
+        .into_iter()
+        .flat_map(|statistics| statistics.sampled_rel_property_histograms.iter())
+        .filter_map(|((rel_type_id, property), sampled)| {
+            catalog
+                .rel_type_name(*rel_type_id)
+                .map(|rel_type| ((rel_type.to_string(), property.clone()), *sampled))
+        });
+    let property_index_statistics = catalog.property_indexes().filter_map(|index| {
+        if index.kind == IndexKind::FullText {
+            return None;
+        }
+        let statistics = advanced_statistics?;
+        let sample = statistics.index_samples.get(&index.id)?;
+        let distinct_count = sample.estimated_unique_values()?;
+        let label = catalog.label_name(index.label_id)?;
+        Some((
+            (label.to_string(), index.property.clone()),
+            OptimizerIndexStatistics {
+                index_size: sample.index_size,
+                distinct_count,
+            },
+        ))
+    });
+    let composite_index_statistics = catalog.composite_property_indexes().filter_map(|index| {
+        let statistics = advanced_statistics?;
+        let sample = statistics.index_samples.get(&index.id)?;
+        let distinct_count = sample.estimated_unique_values()?;
+        let label = catalog.label_name(index.label_id)?;
+        Some((
+            (label.to_string(), index.properties.clone()),
+            OptimizerIndexStatistics {
+                index_size: sample.index_size,
+                distinct_count,
+            },
+        ))
+    });
+    OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new(
+            equality_property_indexes,
+            composite_property_indexes,
+            range_property_indexes,
+            full_text_property_indexes,
+        ),
+        OptimizerCatalogStatistics::new(
+            label_counts,
+            rel_type_counts,
+            rel_type_source_counts,
+            path_counts,
+            bounded_path_counts,
+            property_distinct_counts,
+            property_histograms,
+        )
+        .with_property_index_statistics(property_index_statistics)
+        .with_composite_index_statistics(composite_index_statistics)
+        .with_relationship_type_target_counts(rel_type_target_counts)
+        .with_path_source_distinct_counts(path_source_distinct_counts)
+        .with_path_target_distinct_counts(path_target_distinct_counts)
+        .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
+        .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
+        .with_relationship_property_distinct_counts(rel_property_distinct_counts)
+        .with_relationship_property_histograms(rel_property_histograms)
+        .with_sampled_property_histograms(sampled_property_histograms)
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
+    )
 }
 
 impl OptimizerCatalog {
@@ -944,6 +1212,39 @@ impl OptimizerCatalogStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_statistics_catalog_keeps_basic_counts_when_advanced_stats_are_incomplete() {
+        let mut source_catalog = Catalog::default();
+        let memory = source_catalog.get_or_create_label("Memory");
+        let mut statistics = GraphStatistics {
+            advanced_statistics_complete: false,
+            label_counts: BTreeMap::from([(memory, 64)]),
+            property_distinct_counts: BTreeMap::from([((memory, "kind".to_string()), 4)]),
+            property_histograms: BTreeMap::from([(
+                (memory, "kind".to_string()),
+                vec![Value::String("note".to_string())],
+            )]),
+            ..GraphStatistics::default()
+        };
+
+        let incomplete = optimizer_catalog_from_graph_statistics(&source_catalog, &statistics);
+        assert_eq!(incomplete.label_count("Memory"), 64);
+        assert_eq!(incomplete.known_distinct_count("Memory", "kind"), None);
+        assert!(incomplete.property_histograms.is_empty());
+
+        statistics.advanced_statistics_complete = true;
+        let complete = optimizer_catalog_from_graph_statistics(&source_catalog, &statistics);
+        assert_eq!(complete.label_count("Memory"), 64);
+        assert_eq!(complete.known_distinct_count("Memory", "kind"), Some(4));
+        assert_eq!(
+            complete.property_histograms,
+            BTreeMap::from([(
+                ("Memory".to_string(), "kind".to_string()),
+                vec![Value::String("note".to_string())],
+            )])
+        );
+    }
 
     #[test]
     fn range_cardinality_honors_half_open_histogram_bounds() {
