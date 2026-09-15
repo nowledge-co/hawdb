@@ -9,6 +9,7 @@ pub mod columnar_aggregate;
 pub mod field_plan;
 #[doc(hidden)]
 pub mod index_runtime;
+mod read_profile;
 mod statement;
 
 #[doc(hidden)]
@@ -27,6 +28,13 @@ pub mod locator;
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
     format_append_explain, project_append_rows, AppendExplainPlan, AppendSelectPlan,
+};
+
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use read_profile::{
+    ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
+    RelationalSqlRowReadProfile,
 };
 
 // These are internal ownership seams. Hosts continue to use the embedded facade.
