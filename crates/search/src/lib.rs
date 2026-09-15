@@ -72,6 +72,9 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+
+#[doc(hidden)]
+pub mod projection_consumer;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;
