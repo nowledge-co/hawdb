@@ -1,127 +1,12 @@
-use crate::{Result, SkeinError};
-use std::path::Path;
-
 pub use skein_readiness::integration_bundle::{
     nowledge_mem_integration_bundle_json, IntegrationBundleInputs,
+};
+pub use skein_readiness::integration_bundle_cli::{
+    nowledge_mem_integration_bundle_usage, run_nowledge_mem_integration_bundle,
 };
 
 #[cfg(test)]
 const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
-pub fn nowledge_mem_integration_bundle_usage() -> String {
-    "nowledge-mem-integration-bundle requires [--require-ready] --submodule-path <path> --submodule-commit <commit> --legacy-data-retained --coexistence-mode shadow|side_by_side --content-store-present --content-store-engine sqlite --content-store-messages-available --content-store-source-chunks-available --previous-wrapper-preflight-json <path> --replacement-summary-json <path> --bounded-read-evidence-json <path> --graph-route-readiness-json <path> --route-ownership-json <path> --search-route-ownership-json <path> --active-search-route-ownership-json <path> --active-search-route-readiness-json <path> --query-runtime-preflight-json <path> --search-candidate-shadow-evidence-json <path> --library-readiness-json <path> --cutover-controls-json <path> --operations-readiness-json <path> --blackbox-manifest-json <path>"
-        .to_string()
-}
-
-pub fn run_nowledge_mem_integration_bundle(
-    mut args: impl Iterator<Item = String>,
-) -> Result<(serde_json::Value, bool)> {
-    let mut inputs = IntegrationBundleInputs::default();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--require-ready" => {
-                inputs.require_ready = true;
-            }
-            "--submodule-path" => {
-                inputs.submodule_path = Some(next_arg(&mut args)?);
-            }
-            "--submodule-commit" => {
-                inputs.submodule_commit = Some(next_arg(&mut args)?);
-            }
-            "--legacy-data-retained" => {
-                inputs.legacy_data_retained = true;
-            }
-            "--legacy-data-deleted" => {
-                inputs.legacy_data_deleted = true;
-            }
-            "--coexistence-mode" => {
-                inputs.coexistence_mode = Some(next_arg(&mut args)?);
-            }
-            "--content-store-present" => {
-                inputs.content_store_present = true;
-            }
-            "--content-store-engine" => {
-                inputs.content_store_engine = Some(next_arg(&mut args)?);
-            }
-            "--content-store-messages-available" => {
-                inputs.content_store_messages_available = true;
-            }
-            "--content-store-source-chunks-available" => {
-                inputs.content_store_source_chunks_available = true;
-            }
-            "--previous-wrapper-preflight-json" => {
-                inputs.previous_wrapper_preflight = Some(read_json_arg(&mut args)?);
-            }
-            "--replacement-summary-json" => {
-                inputs.replacement_summary = Some(read_json_arg(&mut args)?);
-            }
-            "--bounded-read-evidence-json" => {
-                inputs.bounded_read_evidence = Some(read_json_arg(&mut args)?);
-            }
-            "--graph-route-readiness-json" => {
-                inputs.graph_route_readiness = Some(read_json_arg(&mut args)?);
-            }
-            "--route-ownership-json" => {
-                inputs.route_ownership = Some(read_json_arg(&mut args)?);
-            }
-            "--search-route-ownership-json" => {
-                inputs.search_route_ownership = Some(read_json_arg(&mut args)?);
-            }
-            "--active-search-route-ownership-json" => {
-                inputs.active_search_route_ownership = Some(read_json_arg(&mut args)?);
-            }
-            "--active-search-route-readiness-json" => {
-                inputs.active_search_route_readiness = Some(read_json_arg(&mut args)?);
-            }
-            "--query-runtime-preflight-json" => {
-                inputs.query_runtime_preflight = Some(read_json_arg(&mut args)?);
-            }
-            "--search-candidate-shadow-evidence-json" => {
-                inputs.search_candidate_shadow_evidence = Some(read_json_arg(&mut args)?);
-            }
-            "--library-readiness-json" => {
-                inputs.library_readiness = Some(read_json_arg(&mut args)?);
-            }
-            "--cutover-controls-json" => {
-                inputs.cutover_controls = Some(read_json_arg(&mut args)?);
-            }
-            "--operations-readiness-json" => {
-                inputs.operations_readiness = Some(read_json_arg(&mut args)?);
-            }
-            "--blackbox-manifest-json" => {
-                inputs.blackbox_manifest = Some(read_json_arg(&mut args)?);
-            }
-            _ => {
-                return Err(SkeinError::Semantic(nowledge_mem_integration_bundle_usage()));
-            }
-        }
-    }
-
-    let require_ready = inputs.require_ready;
-    Ok((nowledge_mem_integration_bundle_json(inputs)?, require_ready))
-}
-
-fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::Value> {
-    let path = next_arg(args)?;
-    read_json_file(Path::new(&path))
-}
-
-fn read_json_file(path: &Path) -> Result<serde_json::Value> {
-    let raw = std::fs::read_to_string(path).map_err(|_| {
-        SkeinError::Execution(
-            "failed to read Nowledge Mem integration bundle input: io_error".to_string(),
-        )
-    })?;
-    serde_json::from_str(&raw).map_err(|_| {
-        SkeinError::Semantic(
-            "failed to parse Nowledge Mem integration bundle input: invalid_json".to_string(),
-        )
-    })
-}
-
-fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
-    args.next()
-        .ok_or_else(|| SkeinError::Semantic(nowledge_mem_integration_bundle_usage()))
-}
 
 #[cfg(test)]
 mod tests {
@@ -147,12 +32,10 @@ mod tests {
         REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
         REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
     };
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn facade_preserves_owner_type_and_function_identity() {
-        use skein_readiness::{graph_summary, integration_bundle};
+        use skein_readiness::{graph_summary, integration_bundle, integration_bundle_cli};
         use std::any::TypeId;
 
         assert_eq!(
@@ -169,6 +52,17 @@ mod tests {
         assert!(std::ptr::fn_addr_eq(
             owner,
             integration_bundle::nowledge_mem_integration_bundle_json as fn(_) -> _
+        ));
+        let usage: fn() -> String = super::nowledge_mem_integration_bundle_usage;
+        assert!(std::ptr::fn_addr_eq(
+            usage,
+            integration_bundle_cli::nowledge_mem_integration_bundle_usage as fn() -> _
+        ));
+        type BundleRun = fn(std::vec::IntoIter<String>) -> crate::Result<(serde_json::Value, bool)>;
+        let run: BundleRun = super::run_nowledge_mem_integration_bundle;
+        assert!(std::ptr::fn_addr_eq(
+            run,
+            integration_bundle_cli::run_nowledge_mem_integration_bundle as BundleRun
         ));
         let summary: fn(&serde_json::Value) -> graph_summary::GraphRouteReadinessSummary =
             crate::nowledge_graph_route_readiness_summary;
@@ -270,43 +164,6 @@ mod tests {
             .any(|artifact| artifact["background_qos"]["memory_pressure_ready"] == true));
         assert_eq!(readiness["ready"], true);
         assert_eq!(readiness["failed_checks"], serde_json::json!([]));
-    }
-
-    #[test]
-    fn bundle_input_read_errors_are_redacted_by_default() {
-        let secret_path =
-            unique_test_path("bundle-input-secret-path-do-not-emit").join("missing-secret.json");
-
-        let error = super::read_json_file(&secret_path).unwrap_err().to_string();
-
-        assert_eq!(
-            error,
-            "execution error: failed to read Nowledge Mem integration bundle input: io_error"
-        );
-        assert!(!error.contains("bundle-input-secret-path-do-not-emit"));
-        assert!(!error.contains("missing-secret"));
-    }
-
-    #[test]
-    fn bundle_input_parse_errors_are_redacted_by_default() {
-        let root = unique_test_path("bundle-input-parse-redaction");
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("secret-bundle-input-path-do-not-emit.json");
-        std::fs::write(
-            &path,
-            "{ \"secret\": \"bundle-input-parse-secret-do-not-emit\", \"unterminated\": ",
-        )
-        .unwrap();
-
-        let error = super::read_json_file(&path).unwrap_err().to_string();
-
-        assert_eq!(
-            error,
-            "semantic error: failed to parse Nowledge Mem integration bundle input: invalid_json"
-        );
-        assert!(!error.contains("secret-bundle-input-path-do-not-emit"));
-        assert!(!error.contains("bundle-input-parse-secret-do-not-emit"));
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1541,13 +1398,5 @@ mod tests {
                 "artifact_paths_are_relative": true
             }
         })
-    }
-
-    fn unique_test_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}"))
     }
 }
