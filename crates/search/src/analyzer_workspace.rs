@@ -16,6 +16,11 @@ const STACK_BYTES: usize = 2 * 1024 * 1024;
 const THREAD_BOOKKEEPING_BYTES: usize = 4096;
 const WARMUP: &str = "\u{9f98}\u{9750}";
 
+pub(crate) fn document_needs_workspace(document: &crate::SearchDocument) -> bool {
+    crate::analyzer_stream::document_token_fields(document)
+        .any(|(text, _)| text.chars().any(crate::cjk_tokenizer::is_han_search_char))
+}
+
 pub(crate) struct Workspace {
     memory: BuildMemory,
     task: RuntimeTaskContext,
@@ -107,11 +112,15 @@ where
     )?;
     let thread_memory = memory.retained.reserve(thread_bytes)?;
     let workspace = Arc::new(Workspace::new(memory.clone(), task.clone())?);
+    #[cfg(test)]
+    let observation = entrypoint_tests::capture(memory);
     std::thread::scope(|scope| {
         let worker_workspace = Arc::clone(&workspace);
         let handle = std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn_scoped(scope, move || {
+                #[cfg(test)]
+                entrypoint_tests::install(observation);
                 worker_workspace.warm_up()?;
                 work(worker_workspace)
             })
@@ -158,3 +167,6 @@ fn required(bytes: Option<usize>) -> Result<usize> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod entrypoint_tests;
