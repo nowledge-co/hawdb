@@ -50,7 +50,6 @@ use crate::{
         NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
         REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
     },
-    store::{ScanPruningReport, ScanPruningStrategy},
     workload_fixtures::{
         NowledgeGraphRouteWorkloadFixtureReport, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
     },
@@ -69,7 +68,22 @@ pub use skein_readiness::bounded_read_evidence::{
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
+use skein_readiness::nowledge_mem_query_report::nowledge_mem_plan_cache_report;
+pub use skein_readiness::nowledge_mem_query_report::{
+    nowledge_mem_fast_path_classification, NowledgeMemFastPathClassification,
+    NowledgeMemQueryApiBehavior, NowledgeMemQueryExecutionPath, NowledgeMemQueryOutput,
+    NowledgeMemQueryOutputRowShape, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
+    NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
+};
 pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
+use skein_readiness::query_runtime_preflight_report::{
+    nowledge_query_runtime_route_coverage, query_runtime_preflight_blocker_codes,
+    query_runtime_probe_blocker_codes, skein_error_class,
+};
+pub use skein_readiness::query_runtime_preflight_report::{
+    NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightRedactionSummary,
+    NowledgeQueryRuntimePreflightReport,
+};
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use skein_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
@@ -924,7 +938,6 @@ impl NowledgeMemCutoverControlsReport {
 pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "skein-nowledge-mem-open-report";
 pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "skein-nowledge-mem-runtime-status-v1";
 pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "skein-nowledge-mem-production-status-v1";
-pub use skein_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
 pub use skein_readiness::previous_wrapper_preflight::{
     NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
     NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
@@ -943,206 +956,6 @@ pub use skein_route_ownership::graph::{
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
     NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeQueryRuntimePreflightReport {
-    pub protocol: String,
-    pub ready: bool,
-    pub database_opened: bool,
-    pub redaction: NowledgeQueryRuntimePreflightRedactionSummary,
-    pub probe_count: usize,
-    pub passed_probe_count: usize,
-    pub failed_probe_count: usize,
-    pub required_route_count: usize,
-    pub covered_route_count: usize,
-    pub covered_routes: Vec<String>,
-    pub missing_required_routes: Vec<String>,
-    pub required_routes_covered: bool,
-    pub unknown_routes: Vec<String>,
-    pub duplicate_routes: Vec<String>,
-    pub route_catalog_version: String,
-    pub route_catalog_digest: String,
-    pub route_coverage_ready: bool,
-    pub route_coverage_blocker_codes: Vec<String>,
-    pub blocker_codes: Vec<String>,
-    pub probes: Vec<NowledgeQueryRuntimePreflightProbeReport>,
-}
-
-impl NowledgeQueryRuntimePreflightReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "ready": self.ready,
-            "database_opened": self.database_opened,
-            "redaction": self.redaction.json(),
-            "probe_count": self.probe_count,
-            "passed_probe_count": self.passed_probe_count,
-            "failed_probe_count": self.failed_probe_count,
-            "required_route_count": self.required_route_count,
-            "covered_route_count": self.covered_route_count,
-            "covered_routes": self.covered_routes,
-            "missing_required_routes": self.missing_required_routes,
-            "required_routes_covered": self.required_routes_covered,
-            "unknown_routes": self.unknown_routes,
-            "duplicate_routes": self.duplicate_routes,
-            "route_catalog_version": self.route_catalog_version,
-            "route_catalog_digest": self.route_catalog_digest,
-            "route_coverage_ready": self.route_coverage_ready,
-            "route_coverage_blocker_codes": self.route_coverage_blocker_codes,
-            "blocker_codes": self.blocker_codes,
-            "probes": self.probes.iter().map(NowledgeQueryRuntimePreflightProbeReport::json).collect::<Vec<_>>(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct NowledgeQueryRuntimePreflightRedactionSummary {
-    pub rows_copied: bool,
-    pub parameters_copied: bool,
-    pub local_paths_copied: bool,
-    pub raw_errors_copied: bool,
-}
-
-impl NowledgeQueryRuntimePreflightRedactionSummary {
-    pub fn ready(&self) -> bool {
-        !self.rows_copied
-            && !self.parameters_copied
-            && !self.local_paths_copied
-            && !self.raw_errors_copied
-    }
-
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "ready": self.ready(),
-            "rows_copied": self.rows_copied,
-            "parameters_copied": self.parameters_copied,
-            "local_paths_copied": self.local_paths_copied,
-            "raw_errors_copied": self.raw_errors_copied,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeQueryRuntimePreflightProbeReport {
-    pub name: String,
-    pub route: Option<String>,
-    pub query_family: Option<String>,
-    pub ready: bool,
-    pub success: bool,
-    pub output_row_count: usize,
-    pub selected_plan_fingerprint: Option<String>,
-    pub search_mode: Option<String>,
-    pub selected_plan_operator_counts: BTreeMap<String, usize>,
-    pub selected_plan_class_counts: BTreeMap<String, usize>,
-    pub optimizer_decision_count: usize,
-    pub optimizer_rule_event_count: usize,
-    pub plan_cache_lookup: Option<String>,
-    pub plan_cache_bypass_reason: Option<String>,
-    pub plan_cache_cacheable: bool,
-    pub plan_cache_hit: bool,
-    pub plan_cache_miss: bool,
-    pub plan_cache_bypassed: bool,
-    pub work_priority: Option<String>,
-    pub work_class: Option<String>,
-    pub estimated_operations: Option<usize>,
-    pub max_rows: Option<usize>,
-    pub detection_row_cap: Option<usize>,
-    pub row_limit_enforced_before_output: bool,
-    pub operator_row_cap_enabled: bool,
-    pub blocking_operator_kinds: Vec<String>,
-    pub scan_pruning_reports: Vec<ScanPruningReport>,
-    pub pruned_scan_count: usize,
-    pub error_class: Option<String>,
-    pub blocker_codes: Vec<String>,
-}
-
-impl NowledgeQueryRuntimePreflightProbeReport {
-    pub fn json(&self) -> serde_json::Value {
-        let mut value = serde_json::json!({
-            "name": self.name,
-            "route": self.route,
-            "query_family": self.query_family,
-            "ready": self.ready,
-            "success": self.success,
-            "blocker_codes": self.blocker_codes,
-        });
-        let object = value
-            .as_object_mut()
-            .expect("query runtime preflight probe report is an object");
-        if self.success {
-            object.insert(
-                "output_row_count".to_string(),
-                serde_json::json!(self.output_row_count),
-            );
-            object.insert(
-                "selected_plan_fingerprint".to_string(),
-                serde_json::json!(self.selected_plan_fingerprint),
-            );
-            object.insert(
-                "search_mode".to_string(),
-                serde_json::json!(self.search_mode),
-            );
-            object.insert(
-                "selected_plan_operator_counts".to_string(),
-                serde_json::json!(self.selected_plan_operator_counts),
-            );
-            object.insert(
-                "selected_plan_class_counts".to_string(),
-                serde_json::json!(self.selected_plan_class_counts),
-            );
-            object.insert(
-                "optimizer_decision_count".to_string(),
-                serde_json::json!(self.optimizer_decision_count),
-            );
-            object.insert(
-                "optimizer_rule_event_count".to_string(),
-                serde_json::json!(self.optimizer_rule_event_count),
-            );
-            object.insert(
-                "plan_cache_lookup".to_string(),
-                serde_json::json!(self.plan_cache_lookup),
-            );
-            object.insert(
-                "plan_cache".to_string(),
-                serde_json::json!({
-                    "lookup": self.plan_cache_lookup,
-                    "bypass_reason": self.plan_cache_bypass_reason,
-                    "cacheable": self.plan_cache_cacheable,
-                    "hit": self.plan_cache_hit,
-                    "miss": self.plan_cache_miss,
-                    "bypassed": self.plan_cache_bypassed,
-                }),
-            );
-            object.insert(
-                "work_request".to_string(),
-                serde_json::json!({
-                    "priority": self.work_priority,
-                    "class": self.work_class,
-                    "estimated_operations": self.estimated_operations,
-                }),
-            );
-            object.insert(
-                "execution_profile".to_string(),
-                serde_json::json!({
-                    "max_rows": self.max_rows,
-                    "detection_row_cap": self.detection_row_cap,
-                    "row_limit_enforced_before_output": self.row_limit_enforced_before_output,
-                    "operator_row_cap_enabled": self.operator_row_cap_enabled,
-                    "blocking_operator_kinds": self.blocking_operator_kinds,
-                    "scan_pruning_report_count": self.scan_pruning_reports.len(),
-                    "pruned_scan_count": self.pruned_scan_count,
-                    "scan_pruning_reports": self.scan_pruning_reports.iter().map(scan_pruning_report_json).collect::<Vec<_>>(),
-                }),
-            );
-        } else {
-            object.insert(
-                "error_class".to_string(),
-                serde_json::json!(self.error_class),
-            );
-        }
-        value
-    }
-}
 
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS: usize = 512;
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -1175,172 +988,6 @@ impl Default for NowledgeMemReadOptions {
 pub struct NowledgeMemReadOutput {
     pub output: QueryOutput,
     pub report: NowledgeMemReadReport,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemQueryExecutionPath {
-    FastPath,
-    OptimizedPath,
-}
-
-impl NowledgeMemQueryExecutionPath {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::FastPath => "fast_path",
-            Self::OptimizedPath => "optimized_path",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryReport {
-    pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
-    pub statement_kind: String,
-    pub execution_path: NowledgeMemQueryExecutionPath,
-    pub fast_path_reason: Option<String>,
-    pub elapsed_micros: u128,
-    pub slow_log_threshold_micros: Option<u128>,
-    pub slow_log_candidate: bool,
-    pub physical_plan_captured: bool,
-    pub plan_cache_lookup: Option<String>,
-    pub plan_cache_bypass_reason: Option<String>,
-    pub plan_cache_cacheable: bool,
-    pub plan_cache_hit: bool,
-    pub plan_cache_miss: bool,
-    pub plan_cache_bypassed: bool,
-    pub physical_operator_counts: BTreeMap<String, usize>,
-    pub optimizer_decision_count: usize,
-    pub optimizer_rule_event_count: usize,
-    pub scan_pruning_reports: Vec<ScanPruningReport>,
-    pub vector_execution_reports: Vec<skein_executor::VectorExecutionReport>,
-    pub graph_expansion_reports: Vec<skein_executor::GraphExpansionExecutionReport>,
-    pub pipeline_memory_report: Option<skein_executor::PipelineMemoryReport>,
-    pub output_row_shape: NowledgeMemQueryOutputRowShape,
-    pub api_behavior: NowledgeMemQueryApiBehavior,
-}
-
-impl NowledgeMemQueryReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "mode": self.mode.as_str(),
-            "statement_kind": self.statement_kind,
-            "execution_path": self.execution_path.as_str(),
-            "fast_path_reason": self.fast_path_reason,
-            "fast_path_selected": self.execution_path == NowledgeMemQueryExecutionPath::FastPath,
-            "elapsed_micros": self.elapsed_micros,
-            "slow_log_threshold_micros": self.slow_log_threshold_micros,
-            "slow_log_candidate": self.slow_log_candidate,
-            "physical_plan_captured": self.physical_plan_captured,
-            "plan_cache_lookup": self.plan_cache_lookup,
-            "plan_cache_bypass_reason": self.plan_cache_bypass_reason,
-            "plan_cache_cacheable": self.plan_cache_cacheable,
-            "plan_cache_hit": self.plan_cache_hit,
-            "plan_cache_miss": self.plan_cache_miss,
-            "plan_cache_bypassed": self.plan_cache_bypassed,
-            "plan_cache": {
-                "lookup": self.plan_cache_lookup,
-                "bypass_reason": self.plan_cache_bypass_reason,
-                "cacheable": self.plan_cache_cacheable,
-                "hit": self.plan_cache_hit,
-                "miss": self.plan_cache_miss,
-                "bypassed": self.plan_cache_bypassed,
-            },
-            "physical_operator_counts": self.physical_operator_counts,
-            "optimizer_decision_count": self.optimizer_decision_count,
-            "optimizer_rule_event_count": self.optimizer_rule_event_count,
-            "scan_pruning_report_count": self.scan_pruning_reports.len(),
-            "scan_pruning_reports": self.scan_pruning_reports.iter().map(scan_pruning_report_json).collect::<Vec<_>>(),
-            "vector_execution_report_count": self.vector_execution_reports.len(),
-            "vector_execution_reports": self.vector_execution_reports.iter().map(vector_execution_report_json).collect::<Vec<_>>(),
-            "graph_expansion_report_count": self.graph_expansion_reports.len(),
-            "graph_expansion_reports": self.graph_expansion_reports.iter().map(graph_expansion_report_json).collect::<Vec<_>>(),
-            "pipeline_memory_report": self.pipeline_memory_report.as_ref().map(pipeline_memory_report_json),
-            "output_row_shape": self.output_row_shape.json(),
-            "api_behavior": self.api_behavior.json(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryOutputRowShape {
-    pub row_count: usize,
-    pub column_count: usize,
-    pub columns: Vec<String>,
-}
-
-impl NowledgeMemQueryOutputRowShape {
-    fn from_output(output: &QueryOutput) -> Self {
-        let columns = output
-            .schema()
-            .columns()
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        Self {
-            row_count: output.rows.len(),
-            column_count: columns.len(),
-            columns,
-        }
-    }
-
-    fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "row_count": self.row_count,
-            "column_count": self.column_count,
-            "columns": self.columns,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryApiBehavior {
-    pub include_metadata_false_strips_metadata: bool,
-    pub ordering_contract_recorded: bool,
-    pub pagination_contract_recorded: bool,
-    pub error_class_stable: bool,
-    pub statement_has_ordering: bool,
-    pub statement_has_pagination: bool,
-}
-
-impl NowledgeMemQueryApiBehavior {
-    fn from_statement(statement: &cypher::Statement) -> Self {
-        let shape = skein_cypher::read_route::classify_read_route_shape(statement);
-        Self {
-            include_metadata_false_strips_metadata: true,
-            ordering_contract_recorded: true,
-            pagination_contract_recorded: true,
-            error_class_stable: true,
-            statement_has_ordering: shape.has_ordering,
-            statement_has_pagination: shape.has_pagination,
-        }
-    }
-
-    fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "include_metadata_false_strips_metadata": self.include_metadata_false_strips_metadata,
-            "ordering_contract_recorded": self.ordering_contract_recorded,
-            "pagination_contract_recorded": self.pagination_contract_recorded,
-            "error_class_stable": self.error_class_stable,
-            "statement_has_ordering": self.statement_has_ordering,
-            "statement_has_pagination": self.statement_has_pagination,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemQueryOutput {
-    pub output: QueryOutput,
-    pub report: NowledgeMemQueryReport,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NowledgeMemQueryReportOptions {
-    pub capture_physical_plan: bool,
-    pub slow_log_threshold_micros: Option<u128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5460,216 +5107,33 @@ fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowledge
         skein_cypher::read_route::query_statement_body(input.statement),
     );
     let decision = nowledge_mem_fast_path_classification(input.statement);
-    let slow_log_candidate = input
-        .options
-        .slow_log_threshold_micros
-        .is_some_and(|threshold| input.elapsed_micros >= threshold);
-    let plan_cache = NowledgeMemPlanCacheReport::from_lookup(input.plan_cache_lookup);
-    NowledgeMemQueryReport {
-        protocol: NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL.to_string(),
-        mode: input.mode,
-        statement_kind: statement_kind.to_string(),
-        execution_path: decision.execution_path,
-        fast_path_reason: decision.fast_path_reason.map(str::to_string),
-        elapsed_micros: input.elapsed_micros,
-        slow_log_threshold_micros: input.options.slow_log_threshold_micros,
-        slow_log_candidate,
-        physical_plan_captured: input.trace.is_some(),
-        plan_cache_lookup: input
-            .plan_cache_lookup
-            .map(|lookup| lookup.as_str().to_string()),
-        plan_cache_bypass_reason: input
-            .plan_cache_lookup
-            .and_then(|lookup| lookup.bypass_reason())
-            .map(|reason| reason.as_str().to_string()),
-        plan_cache_cacheable: plan_cache.cacheable,
-        plan_cache_hit: plan_cache.hit,
-        plan_cache_miss: plan_cache.miss,
-        plan_cache_bypassed: plan_cache.bypassed,
-        physical_operator_counts: input
-            .trace
-            .map(|trace| trace.selected_plan_operator_counts.clone())
-            .unwrap_or_default(),
-        optimizer_decision_count: input
-            .trace
-            .map(|trace| trace.decisions.len())
-            .unwrap_or_default(),
-        optimizer_rule_event_count: input
-            .trace
-            .map(|trace| trace.rule_events.len())
-            .unwrap_or_default(),
-        scan_pruning_reports: input
-            .execution_profile
-            .map(|profile| profile.scan_pruning_reports.clone())
-            .unwrap_or_default(),
-        vector_execution_reports: input
-            .execution_profile
-            .map(|profile| profile.vector_execution_reports.clone())
-            .unwrap_or_default(),
-        graph_expansion_reports: input
-            .execution_profile
-            .map(|profile| profile.graph_expansion_reports.clone())
-            .unwrap_or_default(),
-        pipeline_memory_report: input
-            .execution_profile
-            .map(|profile| profile.pipeline_memory_report.clone()),
-        output_row_shape: NowledgeMemQueryOutputRowShape::from_output(input.output),
-        api_behavior: NowledgeMemQueryApiBehavior::from_statement(input.statement),
-    }
-}
-
-fn vector_execution_report_json(
-    report: &skein_executor::VectorExecutionReport,
-) -> serde_json::Value {
-    serde_json::json!({
-        "backend": report.backend.as_str(),
-        "compression_mode": report.compression_mode.as_str(),
-        "candidate_source": report.candidate_source.as_str(),
-        "backend_selection_reason": report.backend_selection_reason.map(|reason| reason.as_str()),
-        "estimated_raw_vector_bytes": report.estimated_raw_vector_bytes,
-        "filter_selectivity_per_million": report.filter_selectivity_per_million,
-        "candidate_score_source": report.candidate_score_source.as_str(),
-        "final_score_source": report.final_score_source.as_str(),
-        "generated_candidate_count": report.generated_candidate_count,
-        "descriptor_pruned_count": report.descriptor_pruned_count,
-        "scalar_filtered_count": report.scalar_filtered_count,
-        "residual_filtered_count": report.residual_filtered_count,
-        "candidate_scan_rounds": report.candidate_scan_rounds,
-        "reranked_candidate_count": report.reranked_candidate_count,
-        "returned_count": report.returned_count,
-        "raw_vector_bytes_read": report.raw_vector_bytes_read,
-        "candidate_scan": report.candidate_scan_metrics.as_ref().map(|metrics| serde_json::json!({
-            "kernel": metrics.kernel,
-            "worker_count": metrics.worker_count,
-            "segment_count": metrics.segment_count,
-            "scanned_segment_count": metrics.scanned_segment_count,
-            "scored_document_count": metrics.scored_document_count,
-            "filtered_document_count": metrics.filtered_document_count,
-            "scanned_block_count": metrics.scanned_block_count,
-            "skipped_block_count": metrics.skipped_block_count,
-            "payload_bytes_read": metrics.payload_bytes_read,
-            "admitted_working_bytes": metrics.admitted_working_bytes,
-        })),
-        "index_covered_document_count": report.index_covered_document_count,
-        "index_candidate_document_count": report.index_candidate_document_count,
-        "index_coverage_complete": report.index_coverage_complete,
-        "fallback_reason_codes": report.fallback_reason_codes.iter().map(|code| code.as_str()).collect::<Vec<_>>(),
-    })
-}
-
-fn pipeline_memory_report_json(report: &skein_executor::PipelineMemoryReport) -> serde_json::Value {
-    serde_json::json!({
-        "intermediate_rows": report.intermediate_rows,
-        "intermediate_payload_bytes": report.intermediate_payload_bytes,
-        "peak_batch_rows": report.peak_batch_rows,
-        "peak_batch_payload_bytes": report.peak_batch_payload_bytes,
-        "output_rows": report.output_rows,
-        "output_payload_bytes": report.output_payload_bytes,
-        "start_resident_bytes": report.start_resident_bytes,
-        "start_peak_resident_bytes": report.start_peak_resident_bytes,
-        "steady_resident_bytes": report.steady_resident_bytes,
-        "peak_resident_bytes": report.peak_resident_bytes,
-        "steady_resident_growth_bytes": report.steady_resident_growth_bytes,
-        "lifetime_peak_resident_growth_bytes": report.lifetime_peak_resident_growth_bytes,
-        "total_page_faults": report.total_page_faults,
-        "minor_page_faults": report.minor_page_faults,
-        "major_page_faults": report.major_page_faults,
-    })
-}
-
-fn graph_expansion_report_json(
-    report: &skein_executor::GraphExpansionExecutionReport,
-) -> serde_json::Value {
-    serde_json::json!({
-        "seed_count": report.seed_count,
-        "expanded_node_count": report.expanded_node_count,
-        "expanded_edge_count": report.expanded_edge_count,
-        "relation_types": report.relation_types,
-        "min_hops": report.min_hops,
-        "max_hops": report.max_hops,
-        "reranked_seed_count": report.reranked_seed_count,
-        "candidate_limit": report.candidate_limit,
-        "payload_byte_limit": report.payload_byte_limit,
-        "payload_bytes_used": report.payload_bytes_used,
-        "returned_count": report.returned_count,
-        "truncated": report.truncated(),
-        "truncation_reason": report.truncation_reason.map(|reason| reason.as_str()),
-    })
-}
-
-fn scan_pruning_report_json(report: &ScanPruningReport) -> serde_json::Value {
-    serde_json::json!({
-        "target_kind": report.target_kind.as_str(),
-        "label_id": report.label_id.map(|label_id| label_id.0),
-        "rel_type_id": report.rel_type_id.map(|rel_type_id| rel_type_id.0),
-        "strategy": scan_pruning_strategy_json(&report.strategy),
-        "pruned": report.pruned,
-        "exact_empty": report.exact_empty,
-        "candidate_count_before_pruning": report.candidate_count_before_pruning,
-        "pruned_candidate_count": report.pruned_candidate_count,
-        "candidate_count_before_filter": report.candidate_count_before_filter,
-        "output_count": report.output_count,
-        "filtered_out_count": report.filtered_out_count,
-    })
-}
-
-fn scan_pruning_strategy_json(strategy: &ScanPruningStrategy) -> serde_json::Value {
-    match strategy {
-        ScanPruningStrategy::FullLabelScan => serde_json::json!({"kind": "full_label_scan"}),
-        ScanPruningStrategy::ExactCount => serde_json::json!({"kind": "exact_count"}),
-        ScanPruningStrategy::Empty => serde_json::json!({"kind": "empty"}),
-        ScanPruningStrategy::IdEq => serde_json::json!({"kind": "id_eq"}),
-        ScanPruningStrategy::IdIn => serde_json::json!({"kind": "id_in"}),
-        ScanPruningStrategy::IdRange => serde_json::json!({"kind": "id_range"}),
-        ScanPruningStrategy::PropertyEq { property } => {
-            serde_json::json!({"kind": "property_eq", "property": property})
-        }
-        ScanPruningStrategy::PropertyNotEq { property } => {
-            serde_json::json!({"kind": "property_not_eq", "property": property})
-        }
-        ScanPruningStrategy::PropertyMissingOrNull { property } => {
-            serde_json::json!({"kind": "property_missing_or_null", "property": property})
-        }
-        ScanPruningStrategy::PropertyExists { property } => {
-            serde_json::json!({"kind": "property_exists", "property": property})
-        }
-        ScanPruningStrategy::PropertyDefaultIfNullEq { property } => {
-            serde_json::json!({"kind": "property_default_if_null_eq", "property": property})
-        }
-        ScanPruningStrategy::PropertyDefaultIfNullNotEq { property } => {
-            serde_json::json!({"kind": "property_default_if_null_not_eq", "property": property})
-        }
-        ScanPruningStrategy::PropertyIn { property } => {
-            serde_json::json!({"kind": "property_in", "property": property})
-        }
-        ScanPruningStrategy::CompositePropertyEq { properties } => {
-            serde_json::json!({"kind": "composite_property_eq", "properties": properties})
-        }
-        ScanPruningStrategy::CompositePropertyRange { properties } => serde_json::json!({
-            "kind": "composite_property_range",
-            "properties": properties,
-        }),
-        ScanPruningStrategy::PropertyRange { property } => {
-            serde_json::json!({"kind": "property_range", "property": property})
-        }
-        ScanPruningStrategy::FullText { property } => {
-            serde_json::json!({"kind": "full_text", "property": property})
-        }
-        ScanPruningStrategy::OrUnion => serde_json::json!({"kind": "or_union"}),
-    }
-}
-
-#[derive(Debug)]
-struct NowledgeQueryRuntimeRouteCoverage {
-    required_route_count: usize,
-    covered_route_count: usize,
-    covered_routes: Vec<String>,
-    missing_required_routes: Vec<String>,
-    required_routes_covered: bool,
-    unknown_routes: Vec<String>,
-    duplicate_routes: Vec<String>,
-    ready: bool,
-    blocker_codes: Vec<String>,
+    skein_readiness::nowledge_mem_query_report::nowledge_mem_query_report(
+        skein_readiness::nowledge_mem_query_report::NowledgeMemQueryReportInput {
+            mode: input.mode,
+            statement_kind,
+            statement: input.statement,
+            execution_path: decision.execution_path,
+            fast_path_reason: decision.fast_path_reason,
+            physical_plan_captured: input.trace.is_some(),
+            physical_operator_counts: input
+                .trace
+                .map(|trace| trace.selected_plan_operator_counts.clone())
+                .unwrap_or_default(),
+            optimizer_decision_count: input
+                .trace
+                .map(|trace| trace.decisions.len())
+                .unwrap_or_default(),
+            optimizer_rule_event_count: input
+                .trace
+                .map(|trace| trace.rule_events.len())
+                .unwrap_or_default(),
+            plan_cache_lookup: input.plan_cache_lookup,
+            execution_profile: input.execution_profile,
+            output: input.output,
+            options: input.options,
+            elapsed_micros: input.elapsed_micros,
+        },
+    )
 }
 
 fn nowledge_query_runtime_preflight_report(
@@ -5710,63 +5174,6 @@ fn nowledge_query_runtime_preflight_report(
     }
 }
 
-fn nowledge_query_runtime_route_coverage(
-    probes: &[NowledgeQueryRuntimePreflightProbe],
-) -> NowledgeQueryRuntimeRouteCoverage {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let mut route_counts = BTreeMap::<&str, usize>::new();
-    for route in probes.iter().filter_map(|probe| probe.route.as_deref()) {
-        *route_counts.entry(route).or_default() += 1;
-    }
-    let observed_routes = route_counts.keys().copied().collect::<BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .filter(|route| observed_routes.contains(route))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .filter(|route| !observed_routes.contains(route))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let unknown_routes = observed_routes
-        .iter()
-        .filter(|route| !required_routes.contains(**route))
-        .map(|route| (*route).to_string())
-        .collect::<Vec<_>>();
-    let duplicate_routes = route_counts
-        .iter()
-        .filter(|(_, count)| **count > 1)
-        .map(|(route, _)| (*route).to_string())
-        .collect::<Vec<_>>();
-    let required_routes_covered = missing_required_routes.is_empty();
-    let mut blocker_codes = Vec::new();
-    if !required_routes_covered {
-        blocker_codes.push("query_runtime_route_coverage_missing".to_string());
-    }
-    if !unknown_routes.is_empty() {
-        blocker_codes.push("query_runtime_unknown_routes".to_string());
-    }
-    let ready = blocker_codes.is_empty();
-
-    NowledgeQueryRuntimeRouteCoverage {
-        required_route_count: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-        covered_route_count: covered_routes.len(),
-        covered_routes,
-        missing_required_routes,
-        required_routes_covered,
-        unknown_routes,
-        duplicate_routes,
-        ready,
-        blocker_codes,
-    }
-}
-
 fn nowledge_query_runtime_probe_report(
     db: &mut Database,
     probe: &NowledgeQueryRuntimePreflightProbe,
@@ -5788,7 +5195,7 @@ fn nowledge_query_runtime_probe_report(
                 output_row_count,
             );
             let plan_cache_lookup = output.plan_cache_lookup;
-            let plan_cache = NowledgeMemPlanCacheReport::from_lookup(Some(plan_cache_lookup));
+            let plan_cache = nowledge_mem_plan_cache_report(Some(plan_cache_lookup));
             NowledgeQueryRuntimePreflightProbeReport {
                 name: probe.name.clone(),
                 route: probe.route.clone(),
@@ -5858,135 +5265,6 @@ fn nowledge_query_runtime_probe_report(
             error_class: Some(skein_error_class(&error).to_string()),
             blocker_codes: vec!["query_runtime_failed".to_string()],
         },
-    }
-}
-
-fn query_runtime_preflight_blocker_codes(
-    probe_count: usize,
-    failed_probe_count: usize,
-    route_coverage: &NowledgeQueryRuntimeRouteCoverage,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if probe_count == 0 {
-        blockers.push("query_runtime_probes_missing".to_string());
-    }
-    if failed_probe_count > 0 {
-        blockers.push("query_runtime_probe_failed".to_string());
-    }
-    blockers.extend(route_coverage.blocker_codes.iter().cloned());
-    blockers
-}
-
-fn query_runtime_probe_blocker_codes(
-    probe: &NowledgeQueryRuntimePreflightProbe,
-    scan_pruning_report_count: usize,
-    pruned_scan_count: usize,
-    output_row_count: usize,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    blockers.extend(query_runtime_probe_identity_blocker_codes(probe));
-    if probe.require_scan_pruning && scan_pruning_report_count < probe.min_scan_pruning_reports {
-        blockers.push("scan_pruning_report_missing".to_string());
-    }
-    if probe.require_pruned && pruned_scan_count == 0 {
-        blockers.push("scan_pruning_not_pruned".to_string());
-    }
-    if let Some(max_output_rows) = probe.max_output_rows
-        && output_row_count > max_output_rows
-    {
-        blockers.push("output_row_count_exceeded".to_string());
-    }
-    blockers
-}
-
-fn query_runtime_probe_identity_blocker_codes(
-    probe: &NowledgeQueryRuntimePreflightProbe,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if probe.name.trim().is_empty() || probe.name == "unnamed" {
-        blockers.push("query_runtime_probe_name_missing".to_string());
-    }
-    match probe.route.as_deref() {
-        Some(route) if REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&route) => {}
-        Some(_) => blockers.push("query_runtime_probe_unknown_route".to_string()),
-        None => blockers.push("query_runtime_probe_route_missing".to_string()),
-    }
-    match probe.query_family.as_deref() {
-        Some(family) if REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES.contains(&family) => {}
-        Some(_) => blockers.push("query_runtime_probe_unknown_query_family".to_string()),
-        None => blockers.push("query_runtime_probe_query_family_missing".to_string()),
-    }
-    blockers
-}
-
-fn skein_error_class(error: &SkeinError) -> &'static str {
-    match error {
-        SkeinError::Parse(_) => "parse",
-        SkeinError::Semantic(_) => "semantic",
-        SkeinError::Storage(_)
-        | SkeinError::StorageIntegrity(_)
-        | SkeinError::AppendSequenceExhausted { .. } => "storage",
-        SkeinError::Execution(_) => "execution",
-        SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemFastPathClassification {
-    pub execution_path: NowledgeMemQueryExecutionPath,
-    pub fast_path_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NowledgeMemPlanCacheReport {
-    cacheable: bool,
-    hit: bool,
-    miss: bool,
-    bypassed: bool,
-}
-
-impl NowledgeMemPlanCacheReport {
-    fn from_lookup(lookup: Option<PlanCacheLookup>) -> Self {
-        match lookup {
-            Some(PlanCacheLookup::Hit) => Self {
-                cacheable: true,
-                hit: true,
-                miss: false,
-                bypassed: false,
-            },
-            Some(PlanCacheLookup::Miss) => Self {
-                cacheable: true,
-                hit: false,
-                miss: true,
-                bypassed: false,
-            },
-            Some(PlanCacheLookup::Bypass(_)) => Self {
-                cacheable: false,
-                hit: false,
-                miss: false,
-                bypassed: true,
-            },
-            None => Self {
-                cacheable: false,
-                hit: false,
-                miss: false,
-                bypassed: false,
-            },
-        }
-    }
-}
-
-pub fn nowledge_mem_fast_path_classification(
-    statement: &cypher::Statement,
-) -> NowledgeMemFastPathClassification {
-    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
-    NowledgeMemFastPathClassification {
-        execution_path: if shape.is_fast_path() {
-            NowledgeMemQueryExecutionPath::FastPath
-        } else {
-            NowledgeMemQueryExecutionPath::OptimizedPath
-        },
-        fast_path_reason: shape.fast_path_reason,
     }
 }
 

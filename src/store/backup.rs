@@ -3,20 +3,20 @@
 use super::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checksum_bytes,
-    parse_append_manifest_generation_file, parse_append_segment_generation_file,
-    parse_generation_file, parse_relational_index_artifact_generation_file,
+    copy_file_with_checksum, file_checksum, parse_append_manifest_generation_file,
+    parse_append_segment_generation_file, parse_generation_file,
+    parse_relational_index_artifact_generation_file,
     parse_relational_index_manifest_generation_file, parse_relational_overflow_generation_file,
     parse_relational_row_generation_file, property_projection_artifact_generation_file,
     property_projection_manifest_generation_file, property_spill_artifact_generation_file,
     property_spill_manifest_generation_file, read_durable_text_bytes_with_limit,
     relational_checkpoint_generation_file, relational_checkpoint_metadata, source_scan,
-    split_checkpoint_checksum, store_id_for_path, sync_parent_dir, wal_generation_file,
-    BackupFileEntry, BackupManifest, DurableManifest, BACKUP_MANIFEST_FILE, MANIFEST_FILE,
-    PROPERTY_PROJECTION_MANIFEST_MAX_BYTES, PROPERTY_SPILL_MANIFEST_MAX_BYTES,
+    split_checkpoint_checksum, store_id_for_path, sync_parent_dir, validate_new_backup_destination,
+    wal_generation_file, BackupFileEntry, BackupManifest, DurableManifest, BACKUP_MANIFEST_FILE,
+    MANIFEST_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES, PROPERTY_SPILL_MANIFEST_MAX_BYTES,
     STABLE_ID_MAPPING_FILE,
 };
 use crate::error::{Result, SkeinError};
-use skein_integrity::{IntegrityHasher, Sha256Digest};
 use skein_storage::{
     append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
     validate_backup_file_name, AppendGenerationReader, AppendPublicationConfig,
@@ -32,96 +32,10 @@ use skein_storage::{
     SegmentCache, StableIdentityMappingConfig, StableIdentityMappingReader, StorageRestoreReport,
 };
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-
-pub(super) fn validate_new_backup_destination(root: &Path, destination: &Path) -> Result<()> {
-    if destination.exists() {
-        return Err(SkeinError::Storage(format!(
-            "backup destination already exists: {}",
-            destination.display()
-        )));
-    }
-    let file_name = destination.file_name().ok_or_else(|| {
-        SkeinError::Storage("backup destination must have a file name".to_string())
-    })?;
-    let parent = destination.parent().ok_or_else(|| {
-        SkeinError::Storage("backup destination must have a parent directory".to_string())
-    })?;
-    let canonical_parent = parent.canonicalize()?;
-    let destination = canonical_parent.join(file_name);
-    let canonical_root = root.canonicalize()?;
-    if destination.starts_with(&canonical_root) {
-        return Err(SkeinError::Storage(
-            "backup destination cannot be inside the database directory".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn copy_backup_file(
-    source: &Path,
-    destination: &Path,
-    name: &str,
-) -> Result<BackupFileEntry> {
-    let (encoded_len, encoded_checksum, sha256) = copy_file_with_checksum(source, destination)?;
-    Ok(BackupFileEntry {
-        name: name.to_string(),
-        encoded_len,
-        encoded_checksum,
-        sha256,
-    })
-}
-
-pub(super) fn copy_file_with_checksum(
-    source: &Path,
-    destination: &Path,
-) -> Result<(u64, u64, Sha256Digest)> {
-    let mut source = File::open(source)?;
-    let mut destination = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    let mut integrity = IntegrityHasher::new();
-    let mut total = 0u64;
-    let mut buffer = vec![0u8; 1024 * 1024];
-    loop {
-        let read = source.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        destination.write_all(&buffer[..read])?;
-        integrity.update(&buffer[..read]);
-        total = total
-            .checked_add(read as u64)
-            .ok_or_else(|| SkeinError::Storage("file byte count overflow".to_string()))?;
-    }
-    destination.sync_all()?;
-    let digest = integrity.finish();
-    Ok((total, digest.crc32c.as_u64(), digest.sha256))
-}
-
-pub(super) fn file_checksum(path: &Path) -> Result<(u64, u64, Sha256Digest)> {
-    let mut file = File::open(path)?;
-    let mut integrity = IntegrityHasher::new();
-    let mut total = 0u64;
-    let mut buffer = vec![0u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        integrity.update(&buffer[..read]);
-        total = total
-            .checked_add(read as u64)
-            .ok_or_else(|| SkeinError::Storage("file byte count overflow".to_string()))?;
-    }
-    let digest = integrity.finish();
-    Ok((total, digest.crc32c.as_u64(), digest.sha256))
-}
 
 pub(super) fn validate_backup_files(
     root: &Path,

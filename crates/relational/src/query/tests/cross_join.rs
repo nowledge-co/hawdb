@@ -4,8 +4,8 @@ use super::*;
 fn cross_join_preserves_candidate_intermediate_and_cancellation_limits() {
     let state = batched_index_join_state();
     let read_modes = RelationalQueryReadModes::new(
-        RelationalIndexReadMode::Materialized,
-        RelationalRowReadMode::CanonicalMemory,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
     );
     let SqlStatement::Select(select) = skein_sql::parse_postgres_sql(
         "SELECT o.id AS outer_id, i.id AS inner_id \

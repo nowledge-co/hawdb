@@ -18,7 +18,10 @@ pub(super) fn execute_ordered_index_projection<'a>(
     base_qualifier: &'a str,
     base_access: &RelationalBaseAccess,
     pipeline: &mut RelationalPipelineState<'_>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
@@ -149,7 +152,10 @@ pub(super) fn execute_streaming_projection<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
 ) -> Result<StreamingProjectionOutput> {

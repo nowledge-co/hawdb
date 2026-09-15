@@ -12,4 +12,5 @@ skein-sql = { path = "../sql" }
 skein-expression = { path = "../expression" }
 skein-integrity = { path = "../integrity" }
 skein-optimizer = { path = "../optimizer" }
+skein-plan = { path = "../plan" }
 skein-storage = { path = "../storage" }

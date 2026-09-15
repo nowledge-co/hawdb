@@ -3,12 +3,12 @@ use super::{
     RelationalValue, Result, Row, SelectProjection, SelectStatement, SkeinError, SqlColumnRef,
     SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
 };
-use crate::sql::{Expr, ExprKind};
-use skein_relational::predicate::predicate_truth_with;
-pub(super) use skein_relational::query_value::{
+use crate::predicate::predicate_truth_with;
+pub(super) use crate::query_value::{
     bind_bound, bind_sql_value, expression_name, relational_to_value, value_to_relational,
     value_to_relational_as,
 };
+use skein_sql::{Expr, ExprKind};
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
     projection.iter().any(|projection| {
@@ -161,7 +161,7 @@ pub(super) fn aggregate_filter_matches(
     row: &BoundRow<'_>,
     parameters: &[Value],
 ) -> Result<bool> {
-    skein_relational::aggregate::aggregate_filter_matches(
+    crate::aggregate::aggregate_filter_matches(
         filter,
         &|column| resolve_column_with_type(row, column),
         parameters,

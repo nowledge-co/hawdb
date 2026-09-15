@@ -2,6 +2,9 @@
 pub mod evidence_json;
 
 #[doc(hidden)]
+pub mod embedded_query_path;
+
+#[doc(hidden)]
 pub mod bounded_read_evidence;
 
 #[doc(hidden)]
@@ -32,6 +35,9 @@ pub mod library_readiness_cli;
 pub mod nowledge_mem_serving_path;
 
 #[doc(hidden)]
+pub mod nowledge_mem_query_report;
+
+#[doc(hidden)]
 pub mod previous_wrapper_preflight;
 
 #[doc(hidden)]
@@ -39,6 +45,9 @@ pub mod query_runtime_preflight;
 
 #[doc(hidden)]
 pub mod query_runtime_preflight_cli;
+
+#[doc(hidden)]
+pub mod query_runtime_preflight_report;
 
 #[doc(hidden)]
 pub mod graph_route;

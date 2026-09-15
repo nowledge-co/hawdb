@@ -14,7 +14,7 @@ use super::{
 
 pub(super) struct PlannedJoin<'a> {
     pub(super) binding: BindingId,
-    pub(super) join: &'a crate::sql::SqlJoin,
+    pub(super) join: &'a skein_sql::SqlJoin,
     pub(super) schema: &'a RelationalTableSchema,
     pub(super) qualifier: String,
     pub(super) access: RelationalJoinAccess,
@@ -284,7 +284,10 @@ pub(super) fn visit_prepared_physical_join_plan_node<'a>(
     profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
@@ -525,7 +528,10 @@ pub(super) fn visit_relational_rows<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'_>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
@@ -605,7 +611,10 @@ pub(super) fn visit_joined_row<'a>(
     join_index: usize,
     row: BoundRow<'a>,
     pipeline: &mut RelationalPipelineState<'_>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {

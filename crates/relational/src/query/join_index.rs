@@ -30,7 +30,10 @@ pub(super) fn flush_batched_index_join_rows<'a>(
     state: &'a RelationalState,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
@@ -272,7 +275,10 @@ pub(super) fn visit_batched_index_nested_loop<'a>(
     profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
