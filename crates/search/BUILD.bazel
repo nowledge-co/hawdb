@@ -74,6 +74,7 @@ rust_library(
         "//:__pkg__",
         "//crates/bootstrap:__pkg__",
         "//crates/nowledge-contracts:__pkg__",
+        "//crates/readiness:__pkg__",
     ],
 )
 
@@ -94,6 +95,7 @@ rust_library(
         "//:__pkg__",
         "//crates/bootstrap:__pkg__",
         "//crates/nowledge-contracts:__pkg__",
+        "//crates/readiness:__pkg__",
     ],
 )
 
