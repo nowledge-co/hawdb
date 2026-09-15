@@ -48,7 +48,7 @@ use skein::{
     skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
     skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
     stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
-    sync_bootstrap_directory, write_bootstrap_atomic_file,
+    SkeinLightningPublishOptions,
 };
 use skein::{
     nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
@@ -56,7 +56,6 @@ use skein::{
     WORK_CLASS_COUNT,
 };
 use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
-use skein_integrity::checksum_u64;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -1329,7 +1328,7 @@ fn main() -> Result<()> {
         if command == "skein-lightning-publish-staging" {
             let (options, staging_dir, publish_dir) =
                 parse_skein_lightning_publish_staging_args(args)?;
-            let report = if options == PublishSkeinLightningOptions::default() {
+            let report = if options == SkeinLightningPublishOptions::default() {
                 publish_skein_lightning_staging_catalog(staging_dir, publish_dir)?
             } else {
                 publish_skein_lightning_staging_catalog_with_options(
@@ -1616,17 +1615,10 @@ fn skein_lightning_publish_staging_usage() -> String {
     "skein-lightning-publish-staging requires [--require-state-marker] [--fencing-token <token>] [--expected-database-epoch <epoch>] <staging-dir> <publish-dir>".to_string()
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct PublishSkeinLightningOptions {
-    require_state_marker: bool,
-    fencing_token: Option<String>,
-    expected_database_epoch: Option<u64>,
-}
-
 fn parse_skein_lightning_publish_staging_args(
     args: impl Iterator<Item = String>,
-) -> Result<(PublishSkeinLightningOptions, String, String)> {
-    let mut options = PublishSkeinLightningOptions::default();
+) -> Result<(SkeinLightningPublishOptions, String, String)> {
+    let mut options = SkeinLightningPublishOptions::default();
     let mut positional = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -2781,206 +2773,19 @@ fn verify_skein_lightning_staging_catalog(
     skein::verify_skein_lightning_staging_catalog(staging_dir)
 }
 
-fn push_grouped_error(
-    errors: &mut Vec<String>,
-    group: &mut Vec<String>,
-    message: impl Into<String>,
-) {
-    let message = message.into();
-    errors.push(message.clone());
-    group.push(message);
-}
 fn publish_skein_lightning_staging_catalog(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    publish_skein_lightning_staging_catalog_with_options(
-        staging_dir,
-        publish_dir,
-        PublishSkeinLightningOptions::default(),
-    )
+    skein::publish_skein_lightning_staging_catalog(staging_dir, publish_dir)
 }
 
 fn publish_skein_lightning_staging_catalog_with_options(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
-    options: PublishSkeinLightningOptions,
+    options: SkeinLightningPublishOptions,
 ) -> Result<serde_json::Value> {
-    let staging_dir = staging_dir.as_ref();
-    let publish_dir = publish_dir.as_ref();
-    let verification = verify_skein_lightning_staging_catalog(staging_dir)?;
-    if verification
-        .get("validation_gate")
-        .and_then(|gate| gate.get("decision"))
-        .and_then(serde_json::Value::as_str)
-        != Some("ready")
-    {
-        return Err(SkeinError::Execution(
-            "Skein Lightning staging verification is not ready".to_string(),
-        ));
-    }
-
-    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
-    let catalog_bytes = fs::read(&catalog_path)?;
-    let catalog_checksum = checksum_bytes(&catalog_bytes);
-    let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))?;
-    let manifest = read_staging_artifact_json(&catalog, staging_dir, "manifest")?;
-    let publish_preflight = skein_lightning_publish_preflight(staging_dir, &manifest, &options)?;
-    let pointer = serde_json::json!({
-        "protocol": "skein-lightning-published-manifest",
-        "protocol_version": 1,
-        "state": "PUBLISHED",
-        "database_commit_epoch": manifest["database_commit_epoch"].clone(),
-        "graph_commit_epoch": manifest["graph_commit_epoch"].clone(),
-        "logical_checksum": manifest["logical_checksum"].clone(),
-        "schema_checksum": manifest["schema_checksum"].clone(),
-        "graph_stream_checksum": manifest["graph_stream_checksum"].clone(),
-        "graph_stream_byte_len": manifest["graph_stream_byte_len"].clone(),
-        "relational_stream_checksum": manifest["relational_stream_checksum"].clone(),
-        "relational_stream_byte_len": manifest["relational_stream_byte_len"].clone(),
-        "relational_table_count": manifest["relational_table_count"].clone(),
-        "relational_row_count": manifest["relational_row_count"].clone(),
-        "node_count": manifest["node_count"].clone(),
-        "relationship_count": manifest["relationship_count"].clone(),
-        "staging_catalog": {
-            "path": "skein_lightning_staging_catalog.json",
-            "checksum": catalog_checksum,
-            "byte_len": catalog_bytes.len(),
-        },
-    });
-
-    fs::create_dir_all(publish_dir)?;
-    let pointer_path = publish_dir.join("skein_lightning_published_manifest.json");
-    if pointer_path.exists() {
-        let existing = read_json_file(&pointer_path)?;
-        if same_published_manifest_identity(&existing, &pointer) {
-            let mut report = pointer;
-            if let Some(object) = report.as_object_mut() {
-                object.insert(
-                    "publish_gate".to_string(),
-                    serde_json::json!({
-                        "decision": "idempotent",
-                        "preflight": publish_preflight,
-                        "errors": [],
-                    }),
-                );
-            }
-            return Ok(report);
-        }
-        return Err(SkeinError::Execution(
-            "published Skein Lightning manifest already points to a different snapshot".to_string(),
-        ));
-    }
-
-    let mut report = pointer;
-    if let Some(object) = report.as_object_mut() {
-        object.insert(
-            "publish_gate".to_string(),
-            serde_json::json!({
-                "decision": "published",
-                "preflight": publish_preflight,
-                "errors": [],
-            }),
-        );
-    }
-    let pointer_bytes = serde_json::to_vec_pretty(&report).unwrap();
-    write_atomic_file(
-        publish_dir,
-        "skein_lightning_published_manifest.json",
-        &pointer_bytes,
-    )?;
-    sync_directory(publish_dir)?;
-    Ok(report)
-}
-
-fn skein_lightning_publish_preflight(
-    staging_dir: &Path,
-    manifest: &serde_json::Value,
-    options: &PublishSkeinLightningOptions,
-) -> Result<serde_json::Value> {
-    let mut errors = Vec::new();
-    let mut state_errors = Vec::new();
-    let state_marker =
-        skein_lightning_import_state_marker(staging_dir, &mut errors, &mut state_errors);
-    let marker_present = state_marker
-        .get("present")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true);
-    let marker_state = state_marker
-        .get("import_state")
-        .and_then(serde_json::Value::as_str);
-    if options.require_state_marker && !marker_present {
-        push_grouped_error(
-            &mut errors,
-            &mut state_errors,
-            "publish requires Skein Lightning import state marker",
-        );
-    }
-    if marker_present && marker_state != Some("VALIDATING") {
-        push_grouped_error(
-            &mut errors,
-            &mut state_errors,
-            format!(
-                "publish requires VALIDATING import state marker, found {}",
-                marker_state.unwrap_or("missing")
-            ),
-        );
-    }
-
-    let manifest_epoch = manifest
-        .get("database_commit_epoch")
-        .and_then(serde_json::Value::as_u64);
-    let expected_database_epoch_matches = options
-        .expected_database_epoch
-        .is_none_or(|expected| manifest_epoch == Some(expected));
-    if !expected_database_epoch_matches {
-        push_grouped_error(
-            &mut errors,
-            &mut state_errors,
-            format!(
-                "expected database epoch {:?} did not match staged manifest epoch {:?}",
-                options.expected_database_epoch, manifest_epoch
-            ),
-        );
-    }
-
-    let marker_fencing_token = state_marker
-        .get("idempotency_key")
-        .and_then(|key| key.get("fencing_token"))
-        .and_then(serde_json::Value::as_str);
-    let fencing_token_matches = options
-        .fencing_token
-        .as_deref()
-        .is_none_or(|expected| marker_fencing_token == Some(expected));
-    if !fencing_token_matches {
-        push_grouped_error(
-            &mut errors,
-            &mut state_errors,
-            "publish fencing token did not match import state marker",
-        );
-    }
-
-    if !errors.is_empty() {
-        return Err(SkeinError::Execution(format!(
-            "Skein Lightning publish preflight blocked: {}",
-            errors.join("; ")
-        )));
-    }
-
-    Ok(serde_json::json!({
-        "decision": "ready",
-        "require_state_marker": options.require_state_marker,
-        "expected_database_epoch": options.expected_database_epoch,
-        "manifest_database_epoch": manifest_epoch,
-        "expected_database_epoch_matches": expected_database_epoch_matches,
-        "fencing_token_required": options.fencing_token.is_some(),
-        "fencing_token_matches": fencing_token_matches,
-        "state_marker": state_marker,
-        "state_errors": state_errors.len(),
-        "state_error_messages": state_errors,
-        "errors": errors,
-    }))
+    skein::publish_skein_lightning_staging_catalog_with_options(staging_dir, publish_dir, options)
 }
 
 fn verify_skein_lightning_published_manifest(
@@ -3004,57 +2809,10 @@ fn skein_lightning_import_status(
     skein::skein_lightning_import_status(staging_dir, publish_dir)
 }
 
-fn skein_lightning_import_state_marker(
-    staging_dir: &Path,
-    errors: &mut Vec<String>,
-    state_errors: &mut Vec<String>,
-) -> serde_json::Value {
-    skein::skein_lightning_import_state_marker(staging_dir, errors, state_errors)
-}
-
-fn read_staging_artifact_json(
-    catalog: &serde_json::Value,
-    staging_dir: &Path,
-    kind: &str,
-) -> Result<serde_json::Value> {
-    skein::read_skein_lightning_staging_artifact_json(catalog, staging_dir, kind)
-}
-
-fn same_published_manifest_identity(left: &serde_json::Value, right: &serde_json::Value) -> bool {
-    [
-        "database_commit_epoch",
-        "graph_commit_epoch",
-        "logical_checksum",
-        "schema_checksum",
-        "graph_stream_checksum",
-        "graph_stream_byte_len",
-        "relational_stream_checksum",
-        "relational_stream_byte_len",
-        "relational_table_count",
-        "relational_row_count",
-        "node_count",
-        "relationship_count",
-    ]
-    .iter()
-    .all(|key| left.get(*key) == right.get(*key))
-}
-
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
         .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))
-}
-
-fn write_atomic_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<()> {
-    write_bootstrap_atomic_file(dir, file_name, bytes)
-}
-
-fn checksum_bytes(bytes: &[u8]) -> u64 {
-    checksum_u64(bytes)
-}
-
-fn sync_directory(path: &Path) -> Result<()> {
-    sync_bootstrap_directory(path)
 }
 
 fn explain_output_json(
@@ -3504,7 +3262,7 @@ mod tests {
         stage_skein_lightning_bootstrap_export_with_storage_recovery, storage_recovery_report_json,
         validate_canonical_snapshot_usage, value_from_json, value_json,
         verify_skein_lightning_published_manifest, verify_skein_lightning_staging_catalog,
-        BackgroundMaintenanceReportOptions, PublishSkeinLightningOptions,
+        BackgroundMaintenanceReportOptions, SkeinLightningPublishOptions,
         StorageRecoveryRequirements,
     };
     use skein::{
@@ -5623,7 +5381,7 @@ mod tests {
         let published = publish_skein_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            PublishSkeinLightningOptions {
+            SkeinLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("fence-1".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5674,7 +5432,7 @@ mod tests {
         let error = publish_skein_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            PublishSkeinLightningOptions {
+            SkeinLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: None,
                 expected_database_epoch: None,
@@ -5721,7 +5479,7 @@ mod tests {
         let error = publish_skein_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            PublishSkeinLightningOptions {
+            SkeinLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("stale-fence".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5754,7 +5512,7 @@ mod tests {
         let error = publish_skein_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            PublishSkeinLightningOptions {
+            SkeinLightningPublishOptions {
                 require_state_marker: false,
                 fencing_token: None,
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch + 1),
