@@ -1,22 +1,15 @@
 use super::{
     choose_base_access, choose_join_access, projection_access_planning,
+    RelationalBaseAccessPlanning, RelationalJoinPlanningContext, RelationalQueryLimits,
+    RelationalQueryReadModes, RelationalQueryStoreReader,
+};
+use crate::field_plan::{resolve_relational_order_target, RelationalOrderTarget};
+use crate::physical_plan::{
     PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
-    RelationalBaseAccess, RelationalBaseAccessPlanning, RelationalJoinAccess,
-    RelationalJoinAccessCandidate, RelationalJoinPlanningContext, RelationalOperatorId,
+    RelationalBaseAccess, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
-    RelationalQueryLimits, RelationalQueryReadModes,
 };
-use crate::error::{Result, SkeinError};
-use crate::relational_sql::{
-    resolve_relational_order_target, RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome,
-    RelationalJoinPlanningReason, RelationalJoinPlanningStrategy, RelationalOrderTarget,
-};
-use crate::sql::{Expr, ExprKind};
-use crate::sql::{
-    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlJoin, SqlJoinKind,
-    SqlPredicate, SqlTableName,
-};
-use crate::Value;
+use skein_core::{Result, SkeinError, Value};
 use skein_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
@@ -30,6 +23,15 @@ use skein_optimizer::{
     RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewriteError,
     RelationalJoinRewritePlan, RelationalJoinRewriteProblem, RelationalJoinTree,
     RequiredProperties,
+};
+use skein_optimizer::{
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
+    RelationalJoinPlanningStrategy, RelationalOperatorId,
+};
+use skein_sql::{Expr, ExprKind};
+use skein_sql::{
+    SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlJoin, SqlJoinKind,
+    SqlPredicate, SqlTableName,
 };
 
 mod implementations;
@@ -80,7 +82,7 @@ pub(super) fn plan_select_join_order(
     select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
     planning: RelationalJoinPlanningContext,
     binding_nanos: &mut u64,
@@ -511,7 +513,7 @@ fn build_graph_relations(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     predicates: &[BoundJoinPredicate],
@@ -534,7 +536,7 @@ fn build_graph_relation(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
     relations: &[BoundRelation<'_>],
     relation: &BoundRelation<'_>,
@@ -1198,11 +1200,11 @@ fn bind_null_rejection_column(
     })
 }
 
-fn bind_null_rejection_value(value: &crate::sql::SqlValue) -> BoundScalarExpression {
+fn bind_null_rejection_value(value: &skein_sql::SqlValue) -> BoundScalarExpression {
     match value {
-        crate::sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
-        crate::sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
-        crate::sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
+        skein_sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
+        skein_sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
+        skein_sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
             nullability: ScalarNullability::MaybeNull,
         },
     }
@@ -1304,7 +1306,7 @@ fn expression_columns_resolve(expression: &SqlExpression, relations: &[BoundRela
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::SqlStatement;
+    use skein_sql::SqlStatement;
 
     fn select(sql: &str) -> SelectStatement {
         let prepared = skein_sql::prepare_postgres_sql(sql).expect("valid PostgreSQL SELECT");

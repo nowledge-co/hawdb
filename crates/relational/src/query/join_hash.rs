@@ -343,7 +343,10 @@ pub(super) fn visit_hash_join<'a>(
     profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
@@ -549,7 +552,10 @@ pub(super) fn visit_grace_hash_join<'a>(
     profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     grace: &mut HashJoinGraceSpill,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,

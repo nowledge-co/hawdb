@@ -14,7 +14,7 @@ use super::{
     RelationalTableSchema, RelationalValue, Result, Row, SelectStatement, SkeinError, SqlColumnRef,
     SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
-pub(super) use skein_relational::field_plan::single_count_distinct_column;
+pub(super) use crate::field_plan::single_count_distinct_column;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_aggregate_select<'a>(
@@ -27,7 +27,10 @@ pub(super) fn execute_aggregate_select<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
@@ -314,7 +317,10 @@ pub(super) fn execute_single_count_distinct<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,
@@ -404,7 +410,10 @@ pub(super) fn execute_grouped_aggregate<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     execution_memory: &skein_executor::ExecutionMemoryConfig,

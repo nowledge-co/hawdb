@@ -56,7 +56,10 @@ pub(super) fn relational_key_resident_bytes(key: &RelationalKey) -> usize {
 
 pub(super) fn visit_tree_relation_entries<'a>(
     state: &'a RelationalState,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     relation: &'a RelationalPhysicalRelation,
     outer: Option<&BoundRow<'a>>,

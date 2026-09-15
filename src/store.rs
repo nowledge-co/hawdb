@@ -102,10 +102,7 @@ mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
 pub use backup::restore_storage_backup;
-use backup::{
-    copy_backup_file, copy_file_with_checksum, file_checksum, remove_source_scan_artifacts,
-    validate_backup_files, validate_new_backup_destination,
-};
+use backup::{remove_source_scan_artifacts, validate_backup_files};
 pub use derived_repair::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
@@ -193,13 +190,14 @@ use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
 use skein_storage::COW_MAP_TARGET_SEGMENT_BYTES;
 use skein_storage::{
-    available_storage_space, decode_append_wal_batch,
+    available_storage_space, copy_backup_file, copy_file_with_checksum, decode_append_wal_batch,
     decode_relational_checkpoint_file_with_index_load,
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
-    encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
-    sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
-    AppendMutationLimits, AppendPublicationConfig, AppendPublicationState, AppendPublisher,
-    AppendState, CanonicalEndpointDirection, CanonicalSegmentError,
+    encode_append_wal_batch, encode_relational_checkpoint, file_checksum,
+    persistent_composite_property_identity, sync_parent_directory, validate_new_backup_destination,
+    AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader, AppendMutationLimits,
+    AppendPublicationConfig, AppendPublicationState, AppendPublisher, AppendState,
+    CanonicalEndpointDirection, CanonicalSegmentError,
     PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
     RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
     RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,

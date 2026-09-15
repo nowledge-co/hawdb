@@ -62,6 +62,7 @@ use scan::*;
 use skein_executor::analytics::try_projected_graph_with_node_filter;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use skein_executor::binding::map_memory_bytes;
+#[cfg(test)]
 pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::Binding;
 pub(crate) use skein_executor::external::NoExternalReadOperator;

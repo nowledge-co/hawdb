@@ -1,20 +1,17 @@
 use super::preparation::prepare_syntax_access_plan;
 use super::*;
-use crate::relational_sql::{
-    compile_relational_statement_sql, RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy,
-};
-use crate::Value;
+use crate::compile_relational_statement_sql;
+use skein_core::Value;
 use skein_optimizer::{
     estimate_relational_access_cost, estimate_relational_join_cost,
-    estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinRightInput,
-    RelationalJoinSelectivity, RelationalOperatorKind,
+    estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinPlanningAttempt,
+    RelationalJoinPlanningStrategy, RelationalJoinRightInput, RelationalJoinSelectivity,
+    RelationalOperatorKind,
 };
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 mod columnar_aggregate;
-mod connected_enumeration;
-mod costed_algorithms;
 mod cross_join;
 mod having;
 mod ordinary_aggregate;
@@ -111,8 +108,8 @@ fn prepare_batched_index_join(state: &RelationalState) -> PreparedRelationalSele
         &[],
         state,
         RelationalQueryReadModes::new(
-            RelationalIndexReadMode::Materialized,
-            RelationalRowReadMode::CanonicalMemory,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
         batched_index_join_limits(),
         RelationalJoinPlanningContext::default(),
@@ -145,12 +142,15 @@ fn merge_join_state() -> RelationalState {
 }
 
 fn prepare_merge_join(state: &RelationalState) -> PreparedRelationalSelect {
-    prepare_merge_join_with_index_read_mode(state, RelationalIndexReadMode::Materialized)
+    prepare_merge_join_with_index_read_mode(
+        state,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+    )
 }
 
 fn prepare_merge_join_with_index_read_mode(
     state: &RelationalState,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    index_read_mode: RelationalIndexReadMode<'_, crate::RelationalMaterializedReader>,
 ) -> PreparedRelationalSelect {
     let prepared_sql = skein_sql::prepare_postgres_sql(
         "SELECT l.id AS left_id, r.id AS right_id \
@@ -166,7 +166,10 @@ fn prepare_merge_join_with_index_read_mode(
         select,
         &[],
         state,
-        RelationalQueryReadModes::new(index_read_mode, RelationalRowReadMode::CanonicalMemory),
+        RelationalQueryReadModes::new(
+            index_read_mode,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
+        ),
         batched_index_join_limits(),
         RelationalJoinPlanningContext::new(
             RelationalJoinEnumerationConfig::default(),
@@ -216,8 +219,8 @@ fn prepare_hash_join(state: &RelationalState) -> PreparedRelationalSelect {
         &[],
         state,
         RelationalQueryReadModes::new(
-            RelationalIndexReadMode::Materialized,
-            RelationalRowReadMode::CanonicalMemory,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
         batched_index_join_limits(),
         RelationalJoinPlanningContext::default(),
@@ -243,8 +246,8 @@ fn prepare_hash_left_join(state: &RelationalState) -> PreparedRelationalSelect {
         &[],
         state,
         RelationalQueryReadModes::new(
-            RelationalIndexReadMode::Materialized,
-            RelationalRowReadMode::CanonicalMemory,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
         batched_index_join_limits(),
         RelationalJoinPlanningContext::default(),
@@ -287,8 +290,8 @@ fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
         skein_core::RuntimeMemoryReservation::new(admitted_bytes, 1024),
     );
     let read_modes = RelationalQueryReadModes::new(
-        RelationalIndexReadMode::Materialized,
-        RelationalRowReadMode::CanonicalMemory,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
     );
 
     let governed = descriptor
@@ -377,8 +380,8 @@ fn batched_index_join_preserves_duplicate_probe_keys_and_left_join_nulls() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -445,8 +448,8 @@ fn batched_index_join_rejects_an_input_row_larger_than_its_batch_budget() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -500,7 +503,7 @@ fn transaction_workspace_join_keeps_the_batched_index_probe_plan() {
     let state = merge_join_state();
     let prepared = prepare_merge_join_with_index_read_mode(
         &state,
-        RelationalIndexReadMode::TransactionWorkspace,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::TransactionWorkspace,
     );
     let RelationalPhysicalJoinNode::Join { algorithm, .. } = &prepared
         .access_plan
@@ -523,8 +526,8 @@ fn merge_join_reuses_right_key_groups_and_preserves_left_index_order() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -585,8 +588,8 @@ fn merge_join_rejects_right_input_that_exceeds_its_blocking_budget() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -649,8 +652,8 @@ fn hash_join_preserves_duplicate_build_rows_and_evaluates_full_on_predicates() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -704,8 +707,8 @@ fn hash_join_spills_and_falls_back_for_a_hot_partition() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -777,8 +780,8 @@ fn hash_left_join_null_extends_unmatched_and_null_keys() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -834,8 +837,8 @@ fn hash_join_observes_cancellation_after_admission() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
@@ -903,8 +906,8 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         &[],
         &state,
         RelationalQueryReadModes::new(
-            RelationalIndexReadMode::Materialized,
-            RelationalRowReadMode::CanonicalMemory,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
         limits,
         RelationalJoinPlanningContext::default(),
@@ -928,14 +931,18 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         &[],
         &state,
         RelationalQueryReadModes::new(
-            RelationalIndexReadMode::Materialized,
-            RelationalRowReadMode::CanonicalMemory,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
         ),
         limits,
     )
     .expect("prepare syntax access plan");
     syntax_plan
-        .finalize_physical_join_plan(&select, &state, RelationalIndexReadMode::Materialized)
+        .finalize_physical_join_plan(
+            &select,
+            &state,
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        )
         .expect("finalize syntax physical join plan");
     let syntax_physical_plan = syntax_plan
         .physical_join_plan()
@@ -1104,8 +1111,8 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             resources,
         )
@@ -1143,8 +1150,8 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             constrained_resources,
         )
@@ -1223,8 +1230,8 @@ fn migrated_plan_admission_retains_cancellation_before_memory_error() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 Default::default(),
@@ -1241,8 +1248,8 @@ fn migrated_plan_admission_retains_cancellation_before_memory_error() {
         .admit(
             &state,
             RelationalQueryReadModes::new(
-                RelationalIndexReadMode::Materialized,
-                RelationalRowReadMode::CanonicalMemory,
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
                 Default::default(),

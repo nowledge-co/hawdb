@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 serde_json = "1"
 skein = { path = "../..", default-features = false }
+skein-fuzz-contracts = { path = "../fuzz-contracts" }
 
 [features]
 default = [

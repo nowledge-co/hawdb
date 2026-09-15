@@ -1,8 +1,10 @@
 use super::*;
 use skein_core::{RuntimeCancellationToken, Value};
 use skein_storage::{
-    ProjectionGenerationReadReport, RelationalRowPageDemandReadReport, RelationalValue,
+    ProjectionGenerationReadReport, RelationalRowPageDemandReadReport,
+    RelationalRowPageSnapshotReader, RelationalValue,
 };
+use std::cell::Cell;
 
 mod fixtures;
 use fixtures::{apply, fields, key, state, Fixture};
@@ -15,6 +17,114 @@ const SHAPES: [(&str, &[usize], &[usize]); 6] = [
     ("SELECT count(body) FROM docs", &[2], &[2]),
     ("SELECT count(*) FROM docs", &[], &[]),
 ];
+
+#[derive(Default)]
+struct SnapshotlessStore {
+    snapshot_opens: Cell<usize>,
+    transaction_opens: Cell<usize>,
+}
+
+impl RelationalRowStoreReader for SnapshotlessStore {
+    type TransactionRows = ();
+
+    fn open_relational_row_snapshot_reader(
+        &self,
+    ) -> Result<Option<RelationalRowPageSnapshotReader>> {
+        self.snapshot_opens.set(self.snapshot_opens.get() + 1);
+        Ok(None)
+    }
+
+    fn open_relational_transaction_row_snapshot_reader(
+        &self,
+        _rows: &Self::TransactionRows,
+    ) -> Result<RelationalRowPageSnapshotReader> {
+        self.transaction_opens.set(self.transaction_opens.get() + 1);
+        Err(SkeinError::Storage(
+            "transaction snapshot sentinel".to_string(),
+        ))
+    }
+}
+
+#[test]
+fn row_read_mode_delegates_host_snapshots_and_preserves_projection_selection() {
+    let fixture = Fixture::new();
+    let task = RuntimeTaskContext::default();
+    let store = SnapshotlessStore::default();
+
+    let canonical = RelationalRowReadMode::<SnapshotlessStore>::CanonicalMemory;
+    assert!(!canonical.is_projection_table("docs"));
+    assert_eq!(canonical.projection_estimated_rows("docs"), None);
+    let canonical_runtime = canonical
+        .open_runtime(
+            &fixture.state,
+            fields("SELECT * FROM docs", &fixture.state),
+            Default::default(),
+            Default::default(),
+            &task,
+        )
+        .unwrap();
+    assert_eq!(
+        canonical_runtime.evidence().runtime_path,
+        "canonical_memory"
+    );
+
+    let store_mode = RelationalRowReadMode::Store(&store);
+    let store_runtime = store_mode
+        .open_runtime(
+            &fixture.state,
+            fields("SELECT * FROM docs", &fixture.state),
+            Default::default(),
+            Default::default(),
+            &task,
+        )
+        .unwrap();
+    assert_eq!(store.snapshot_opens.get(), 1);
+    assert_eq!(store_runtime.evidence().runtime_path, "canonical_memory");
+
+    let projection = RelationalRowReadMode::ProjectionGeneration {
+        store: &store,
+        reader: &fixture.projection,
+        tables: &fixture.tables,
+    };
+    assert!(projection.is_projection_table("docs"));
+    assert_eq!(
+        projection.projection_estimated_rows("docs"),
+        Some(usize::try_from(fixture.projection.manifest().member_count).unwrap())
+    );
+    let projection_runtime = projection
+        .open_runtime(
+            &fixture.state,
+            fields("SELECT * FROM docs", &fixture.state),
+            Default::default(),
+            Default::default(),
+            &task,
+        )
+        .unwrap();
+    assert_eq!(store.snapshot_opens.get(), 2);
+    assert_eq!(
+        projection_runtime.evidence().runtime_path,
+        "projection_generation"
+    );
+
+    let transaction = RelationalRowReadMode::Transaction {
+        store: &store,
+        rows: &(),
+    };
+    let error = transaction
+        .open_runtime(
+            &fixture.state,
+            fields("SELECT * FROM docs", &fixture.state),
+            Default::default(),
+            Default::default(),
+            &task,
+        )
+        .err()
+        .expect("transaction mode must preserve the host reader error");
+    assert!(error.to_string().contains("transaction snapshot sentinel"));
+    assert_eq!(store.transaction_opens.get(), 1);
+    drop((canonical_runtime, store_runtime, projection_runtime));
+    fixture.remove();
+}
 
 fn values(row: &RelationalReadRow, ordinals: &[usize]) -> Vec<RelationalValue> {
     for ordinal in 0..3 {
