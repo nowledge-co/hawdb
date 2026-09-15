@@ -38,6 +38,9 @@ pub mod previous_wrapper_preflight;
 pub mod query_runtime_preflight;
 
 #[doc(hidden)]
+pub mod query_runtime_preflight_cli;
+
+#[doc(hidden)]
 pub mod graph_route;
 
 #[doc(hidden)]
