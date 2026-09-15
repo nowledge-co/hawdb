@@ -1346,14 +1346,14 @@ pub struct NowledgeMemQueryApiBehavior {
 
 impl NowledgeMemQueryApiBehavior {
     fn from_statement(statement: &cypher::Statement) -> Self {
-        let body = nowledge_statement_body(statement);
+        let shape = skein_cypher::read_route::classify_read_route_shape(statement);
         Self {
             include_metadata_false_strips_metadata: true,
             ordering_contract_recorded: true,
             pagination_contract_recorded: true,
             error_class_stable: true,
-            statement_has_ordering: statement_has_ordering(body),
-            statement_has_pagination: statement_has_pagination(body),
+            statement_has_ordering: shape.has_ordering,
+            statement_has_pagination: shape.has_pagination,
         }
     }
 
@@ -5754,7 +5754,9 @@ struct NowledgeMemQueryReportInput<'a> {
 }
 
 fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
-    let statement_kind = crate::api::statement_kind(nowledge_statement_body(input.statement));
+    let statement_kind = crate::api::statement_kind(
+        skein_cypher::read_route::query_statement_body(input.statement),
+    );
     let decision = nowledge_mem_fast_path_classification(input.statement);
     let slow_log_candidate = input
         .options
@@ -6275,108 +6277,15 @@ impl NowledgeMemPlanCacheReport {
 pub fn nowledge_mem_fast_path_classification(
     statement: &cypher::Statement,
 ) -> NowledgeMemFastPathClassification {
-    let body = nowledge_statement_body(statement);
-    let fast_path_reason = match body {
-        cypher::Statement::MatchReturn(query) if is_simple_node_lookup(query) => {
-            Some("simple_node_lookup")
-        }
-        cypher::Statement::MatchReturn(query) if is_simple_one_hop_expand(query) => {
-            Some("simple_one_hop_expand")
-        }
-        cypher::Statement::MatchNodesReturn(query) if is_simple_two_node_lookup(query) => {
-            Some("simple_two_node_lookup")
-        }
-        cypher::Statement::ShortestPathReturn(_) => Some("bounded_shortest_path"),
-        _ => None,
-    };
+    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
     NowledgeMemFastPathClassification {
-        execution_path: if fast_path_reason.is_some() {
+        execution_path: if shape.is_fast_path() {
             NowledgeMemQueryExecutionPath::FastPath
         } else {
             NowledgeMemQueryExecutionPath::OptimizedPath
         },
-        fast_path_reason,
+        fast_path_reason: shape.fast_path_reason,
     }
-}
-
-fn nowledge_statement_body(statement: &cypher::Statement) -> &cypher::Statement {
-    match statement {
-        cypher::Statement::CypherQuery(query) => &query.statement,
-        _ => statement,
-    }
-}
-
-fn statement_has_ordering(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            !query.order_by.is_empty() || !query.with_order_by.is_empty()
-        }
-        _ => false,
-    }
-}
-
-fn statement_has_pagination(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            query.offset.is_some()
-                || query.limit.is_some()
-                || query.with_offset.is_some()
-                || query.with_limit.is_some()
-        }
-        cypher::Statement::MatchNodesReturn(query) => query.limit.is_some(),
-        _ => false,
-    }
-}
-
-fn is_simple_node_lookup(query: &cypher::MatchReturn) -> bool {
-    !query.properties.is_empty()
-        && query.expand.is_none()
-        && query.post_match_expand.is_none()
-        && query.optional_expand.is_none()
-        && query.optional_with.is_none()
-        && query.collect_with.is_none()
-        && query.distinct_with.is_none()
-        && query.with_projection.is_none()
-        && query.with_order_by.is_empty()
-        && query.with_offset.is_none()
-        && query.with_limit.is_none()
-        && query.aggregate_with.is_none()
-        && query.aggregate_with_filter.is_none()
-        && query.post_with_match.is_none()
-        && query.predicate.is_none()
-        && !query.distinct
-        && query.order_by.is_empty()
-        && query.offset.is_none()
-}
-
-fn is_simple_one_hop_expand(query: &cypher::MatchReturn) -> bool {
-    query.expand.as_ref().is_some_and(|expand| {
-        expand.min_hops == 1
-            && expand.max_hops == 1
-            && !query.properties.is_empty()
-            && query.post_match_expand.is_none()
-            && query.optional_expand.is_none()
-            && query.optional_with.is_none()
-            && query.collect_with.is_none()
-            && query.distinct_with.is_none()
-            && query.with_projection.is_none()
-            && query.with_order_by.is_empty()
-            && query.with_offset.is_none()
-            && query.with_limit.is_none()
-            && query.aggregate_with.is_none()
-            && query.aggregate_with_filter.is_none()
-            && query.post_with_match.is_none()
-            && query.predicate.is_none()
-            && !query.distinct
-            && query.order_by.is_empty()
-            && query.offset.is_none()
-    })
-}
-
-fn is_simple_two_node_lookup(query: &cypher::MatchNodesReturn) -> bool {
-    !query.left_properties.is_empty()
-        && !query.right_properties.is_empty()
-        && query.predicate.is_none()
 }
 
 fn recovery_mode_name(mode: RecoveryMode) -> &'static str {
