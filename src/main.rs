@@ -26,8 +26,16 @@ use skein::search_projection_evidence::{
 };
 use skein::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
 use skein::{
+    add_shadow_ready_report, add_shadow_run_report, add_shadow_trace_report,
+    cutover_evidence_is_eligible, enforce_external_shadow_adapter_smoke_requirements,
+    external_shadow_adapter_smoke_fixture, external_shadow_adapter_smoke_report_json,
+    is_self_shadow_command, nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
+    should_run_shadow_ready, BackgroundMaintenanceOptions, LocalQosPolicy, LocalQosState,
+    WorkClass, WORK_CLASS_COUNT,
+};
+use skein::{
     background_maintenance_evidence_health_from_bundle, external_shadow_ready_missing_capabilities,
-    external_shadow_trace_health_from_bundle, external_shadow_trace_report_json,
+    external_shadow_trace_health_from_bundle,
     replacement_readiness_family_evidence_health_from_bundle,
     scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
     scan_nowledge_query_inventory_cypher_coverage_to_json,
@@ -40,12 +48,6 @@ use skein::{
     SkeinLightningBootstrapManifest, StorageRecoveryReport, StorageResidencyMode,
     StorageResourceProfileLimits, Value, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
     SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
-};
-use skein::{
-    enforce_external_shadow_adapter_smoke_requirements, external_shadow_adapter_smoke_fixture,
-    external_shadow_adapter_smoke_report_json, is_self_shadow_command,
-    nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow, should_run_shadow_ready,
-    BackgroundMaintenanceOptions, LocalQosPolicy, LocalQosState, WorkClass, WORK_CLASS_COUNT,
 };
 use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use skein_integrity::checksum_u64;
@@ -1924,48 +1926,6 @@ fn insert_json<T: serde::Serialize>(
     );
 }
 
-fn add_shadow_ready_report(
-    bundle: &mut serde_json::Value,
-    ready: &ExternalShadowReady,
-) -> Result<()> {
-    let object = bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
-    })?;
-    object.insert(
-        "shadow_ready".to_string(),
-        serde_json::json!({
-            "protocol_version": ready.protocol_version,
-            "capabilities": &ready.capabilities,
-            "engine_kind": &ready.engine_kind,
-            "wrapper_identity": &ready.wrapper_identity,
-        }),
-    );
-    Ok(())
-}
-
-fn add_shadow_run_report(
-    bundle: &mut serde_json::Value,
-    shadow_name: &str,
-    self_shadow: bool,
-) -> Result<()> {
-    let object = bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
-    })?;
-    object.insert(
-        "shadow_run".to_string(),
-        serde_json::json!({
-            "shadow_name": shadow_name,
-            "self_shadow": self_shadow,
-            "evidence_kind": if self_shadow {
-                "protocol_smoke"
-            } else {
-                "previous_wrapper"
-            },
-        }),
-    );
-    Ok(())
-}
-
 fn add_cutover_evidence_report(
     bundle: &mut serde_json::Value,
     self_shadow: bool,
@@ -2338,29 +2298,6 @@ fn add_cutover_evidence_report(
         serde_json::Value::Object(evidence),
     );
     Ok(())
-}
-
-fn add_shadow_trace_report(
-    bundle: &mut serde_json::Value,
-    trace_path: &str,
-    request_count: u64,
-) -> Result<()> {
-    let object = bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
-    })?;
-    object.insert(
-        "shadow_trace".to_string(),
-        external_shadow_trace_report_json(trace_path, request_count),
-    );
-    Ok(())
-}
-
-fn cutover_evidence_is_eligible(bundle: &serde_json::Value) -> bool {
-    bundle
-        .get("cutover_evidence")
-        .and_then(|evidence| evidence.get("eligible"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
 }
 
 fn canonical_snapshot_validation_json(
