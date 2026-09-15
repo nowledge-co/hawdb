@@ -78,6 +78,7 @@ pub use skein_readiness::bounded_read_evidence::{
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
+pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use skein_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
@@ -938,66 +939,6 @@ pub use skein_route_ownership::graph::{
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
     NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeQueryRuntimePreflightProbe {
-    pub name: String,
-    pub route: Option<String>,
-    pub query_family: Option<String>,
-    pub cypher: String,
-    pub parameters: BTreeMap<String, Value>,
-    pub require_scan_pruning: bool,
-    pub require_pruned: bool,
-    pub min_scan_pruning_reports: usize,
-    pub max_output_rows: Option<usize>,
-}
-
-impl NowledgeQueryRuntimePreflightProbe {
-    pub fn new(name: impl Into<String>, cypher: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            route: None,
-            query_family: None,
-            cypher: cypher.into(),
-            parameters: BTreeMap::new(),
-            require_scan_pruning: false,
-            require_pruned: false,
-            min_scan_pruning_reports: 1,
-            max_output_rows: None,
-        }
-    }
-
-    pub fn with_route(mut self, route: impl Into<String>) -> Self {
-        self.route = Some(route.into());
-        self
-    }
-
-    pub fn with_query_family(mut self, query_family: impl Into<String>) -> Self {
-        self.query_family = Some(query_family.into());
-        self
-    }
-
-    pub fn with_parameters(mut self, parameters: BTreeMap<String, Value>) -> Self {
-        self.parameters = parameters;
-        self
-    }
-
-    pub fn require_scan_pruning(mut self, min_scan_pruning_reports: usize) -> Self {
-        self.require_scan_pruning = true;
-        self.min_scan_pruning_reports = min_scan_pruning_reports;
-        self
-    }
-
-    pub fn require_pruned(mut self) -> Self {
-        self.require_pruned = true;
-        self
-    }
-
-    pub fn with_max_output_rows(mut self, max_output_rows: usize) -> Self {
-        self.max_output_rows = Some(max_output_rows);
-        self
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeQueryRuntimePreflightReport {
