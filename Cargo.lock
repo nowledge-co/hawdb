@@ -902,6 +902,7 @@ dependencies = [
  "skein-query-policy",
  "skein-readiness",
  "skein-relational",
+ "skein-resource-profile",
  "skein-route-ownership",
  "skein-runtime-tokio",
  "skein-search",
@@ -1150,6 +1151,17 @@ dependencies = [
  "skein-integrity",
  "skein-optimizer",
  "skein-sql",
+ "skein-storage",
+]
+
+[[package]]
+name = "skein-resource-profile"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
+ "skein-evidence",
+ "skein-executor",
  "skein-storage",
 ]
 
