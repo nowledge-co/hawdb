@@ -1,0 +1,60 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+rust_library(
+    name = "skein_system_sql",
+    crate_name = "skein_system_sql",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/core:skein_core",
+        "//crates/executor:skein_executor",
+        "//crates/plan-cache:skein_plan_cache",
+        "//crates/query:skein_query",
+        "//crates/sql:skein_sql",
+        "//crates/storage:skein_storage",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_system_sql_tests",
+    crate = ":skein_system_sql",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "skein_system_sql_loom_tests",
+    args = ["loom_tests"],
+    crate_features = ["loom-tests"],
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        "//crates/core:skein_core",
+        "//crates/executor:skein_executor",
+        "//crates/plan-cache:skein_plan_cache",
+        "//crates/query:skein_query",
+        "//crates/sql:skein_sql",
+        "//crates/storage:skein_storage",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    size = "medium",
+)
