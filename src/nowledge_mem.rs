@@ -1177,20 +1177,7 @@ pub struct NowledgeMemReadOutput {
     pub report: NowledgeMemReadReport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemQueryExecutionPath {
-    FastPath,
-    OptimizedPath,
-}
-
-impl NowledgeMemQueryExecutionPath {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::FastPath => "fast_path",
-            Self::OptimizedPath => "optimized_path",
-        }
-    }
-}
+pub use skein_cypher::read_route::CypherReadRouteExecutionPath as NowledgeMemQueryExecutionPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemQueryReport {
@@ -5931,11 +5918,7 @@ fn skein_error_class(error: &SkeinError) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemFastPathClassification {
-    pub execution_path: NowledgeMemQueryExecutionPath,
-    pub fast_path_reason: Option<&'static str>,
-}
+pub use skein_cypher::read_route::CypherReadRouteClassification as NowledgeMemFastPathClassification;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NowledgeMemPlanCacheReport {
@@ -5979,15 +5962,7 @@ impl NowledgeMemPlanCacheReport {
 pub fn nowledge_mem_fast_path_classification(
     statement: &cypher::Statement,
 ) -> NowledgeMemFastPathClassification {
-    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
-    NowledgeMemFastPathClassification {
-        execution_path: if shape.is_fast_path() {
-            NowledgeMemQueryExecutionPath::FastPath
-        } else {
-            NowledgeMemQueryExecutionPath::OptimizedPath
-        },
-        fast_path_reason: shape.fast_path_reason,
-    }
+    skein_cypher::read_route::classify_read_route(statement)
 }
 
 fn missing_search_projection_evidence_json() -> serde_json::Value {

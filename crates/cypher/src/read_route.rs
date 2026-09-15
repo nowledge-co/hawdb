@@ -13,6 +13,42 @@ impl CypherReadRouteShape {
     pub const fn is_fast_path(self) -> bool {
         self.fast_path_reason.is_some()
     }
+
+    pub const fn classification(self) -> CypherReadRouteClassification {
+        CypherReadRouteClassification {
+            execution_path: if self.is_fast_path() {
+                CypherReadRouteExecutionPath::FastPath
+            } else {
+                CypherReadRouteExecutionPath::OptimizedPath
+            },
+            fast_path_reason: self.fast_path_reason,
+        }
+    }
+}
+
+/// Execution-path classification derived solely from the parsed read route.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CypherReadRouteExecutionPath {
+    FastPath,
+    OptimizedPath,
+}
+
+impl CypherReadRouteExecutionPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FastPath => "fast_path",
+            Self::OptimizedPath => "optimized_path",
+        }
+    }
+}
+
+/// Read-route execution classification for host reporting contracts.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CypherReadRouteClassification {
+    pub execution_path: CypherReadRouteExecutionPath,
+    pub fast_path_reason: Option<&'static str>,
 }
 
 /// Returns the executable statement nested below a `CYPHER` wrapper.
@@ -44,6 +80,12 @@ pub fn classify_read_route_shape(statement: &Statement) -> CypherReadRouteShape 
         has_ordering: statement_has_ordering(body),
         has_pagination: statement_has_pagination(body),
     }
+}
+
+/// Classifies the execution-path reporting fields without accessing a host database.
+#[doc(hidden)]
+pub fn classify_read_route(statement: &Statement) -> CypherReadRouteClassification {
+    classify_read_route_shape(statement).classification()
 }
 
 fn statement_has_ordering(statement: &Statement) -> bool {
@@ -121,7 +163,7 @@ fn is_simple_two_node_lookup(query: &MatchNodesReturn) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_read_route_shape;
+    use super::{classify_read_route, classify_read_route_shape, CypherReadRouteExecutionPath};
 
     #[test]
     fn classifies_read_route_shape_from_ast_not_query_text() {
@@ -147,5 +189,19 @@ mod tests {
         assert!(!ordered_shape.is_fast_path());
         assert!(ordered_shape.has_ordering);
         assert!(ordered_shape.has_pagination);
+
+        let compact_classification = classify_read_route(&compact);
+        assert_eq!(
+            compact_classification.execution_path,
+            CypherReadRouteExecutionPath::FastPath
+        );
+        assert_eq!(
+            compact_classification.fast_path_reason,
+            Some("simple_node_lookup")
+        );
+        assert_eq!(
+            classify_read_route(&ordered).execution_path,
+            CypherReadRouteExecutionPath::OptimizedPath
+        );
     }
 }
