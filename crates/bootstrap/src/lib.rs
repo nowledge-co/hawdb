@@ -17,6 +17,8 @@ pub mod developer_json;
 #[doc(hidden)]
 pub mod developer_staging;
 #[doc(hidden)]
+pub mod developer_staging_gc;
+#[doc(hidden)]
 pub mod developer_staging_verification;
 
 #[doc(hidden)]
@@ -33,6 +35,8 @@ pub use developer_staging::{
     sync_bootstrap_directory, write_bootstrap_atomic_file,
     SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
+#[doc(hidden)]
+pub use developer_staging_gc::skein_lightning_gc_staging_report;
 #[doc(hidden)]
 pub use developer_staging_verification::{
     read_skein_lightning_staging_artifact_json, verify_skein_lightning_published_manifest,
