@@ -92,6 +92,8 @@ mod resource_profile;
 mod retrieval_pipeline;
 mod schema_guidance;
 mod search_projection_catch_up;
+mod search_projection_consumer;
+pub use search_projection_consumer::*;
 mod source_candidates;
 mod system_schema;
 mod system_sql;
@@ -228,6 +230,7 @@ pub struct Database {
     derived_artifact_jobs: Vec<DerivedArtifactJob>,
     telemetry: Option<Arc<dyn TelemetrySink>>,
     runtime_governor: Option<skein_qos::RuntimeGovernor>,
+    projection_consumers: search_projection_consumer::ConsumerRegistry,
 }
 
 pub(crate) struct DatabaseCheckpointSource {
@@ -884,6 +887,10 @@ impl Default for Database {
         configure_relational_fast_paths(&mut store, &config);
         Self {
             catalog: Catalog::default(),
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
@@ -962,6 +969,10 @@ impl Database {
         let optimizer = optimizer_from_database_config(&config);
         Self {
             catalog: Catalog::default(),
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer,
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
@@ -1090,6 +1101,10 @@ impl Database {
         configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
             catalog,
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(

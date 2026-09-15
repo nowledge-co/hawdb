@@ -1,6 +1,6 @@
 # Durable search projection consumers: proposed public contract
 
-Status: proposed; public names and persisted records require owner approval.
+Status: approved by the owner on September 15, 2026; production implementation in progress.
 This proposal addresses [issue #455](https://github.com/nowledge-co/skein/issues/455).
 It is based on main `1d9970f382b1896e3e6d450cef93f8b709192c88` and the private
 source/state proofs described below. It does not claim that issue 455 is complete.
@@ -27,7 +27,7 @@ Two alternatives were rejected:
   the changefeed. Suppressing their capture alone would still create a moving
   catch-up target. Do not add ordinary SQL metadata writes to every batch.
 
-## Exact public surface for review
+## Approved public surface
 
 Export these types through `skein`; internal owners remain implementation details:
 
@@ -135,7 +135,8 @@ yet exist; its parent must exist.
 An existing projection is not silently adopted on the strength of its epoch.
 The library builds in its own staging directory, holds a pinned database read
 transaction, and gives the initializer a fresh staging SearchIndex. The initializer
-must populate the complete application projection from that snapshot, including
+must retain the supplied staging index and populate the complete application
+projection from that snapshot, including
 host-owned relational content when applicable. It can use the existing typed
 rebuild path and parameterized bounded queries. It must propagate incomplete
 hydration, row/payload-budget failure and initialization errors.
@@ -147,6 +148,13 @@ Skein does not infer or validate arbitrary application mapping logic. This is an
 explicit initialization contract, not automatic adoption of unknown existing data.
 Initialization does not claim to finish #392/#529's separate SearchIndex memory
 ownership work.
+
+The current implementation requires the default analyzer lexicon. Existing
+snapshots do not persist arbitrary analyzer rules, so initialization rejects a
+custom lexicon before publication instead of silently changing query semantics on
+reopen. Unregistered SearchIndex configuration remains unchanged. Other ephemeral
+initializer runtime settings are retained during the owning process, with the
+existing defaults on reopen.
 
 Only after initialization and the complete projection checkpoint succeed does
 creation publish the destination and durable registry entry. An error before
@@ -177,7 +185,9 @@ lifecycle must fail closed; the consumer lifecycle is the explicit opt-in path.
    UUID and a fresh checkpoint UUID. These records and the existing source epoch
    are covered by the snapshot integrity check. The text record is the tab-separated
    tag followed by the five fields in that order; the consumer ID excludes tabs.
-   UUIDs use canonical lowercase hyphenated form. Duplicate identity/binding
+   UUIDs use canonical lowercase hyphenated form. The binding immediately follows
+   the snapshot header so publication guards can inspect bounded control records
+   without reading the document corpus. Duplicate identity/binding
    records, malformed UUIDs and impossible source epochs fail closed.
    An empty graph at source epoch zero is permitted. Normal unregistered
    snapshots omit the record.
@@ -267,35 +277,33 @@ registry is useful only with its matching database and projection checkpoint;
 rollback/replacement mismatches require rebuild. Checkpoint, pruning and cleanup
 must preserve the live registry and identity record.
 
-## Evidence and delivery gates
+## Production implementation and verification
 
-Private proof files are under
-`src/api/tests/search_projection_graph_delta/cursor_protocol_proof.rs` and
-`cursor_state_proof.rs`. They establish the source counterexamples, real
-checkpoint/cursor process-crash ordering, monotonic/idempotent advancement bounds,
-minimum-consumer semantics, selective invalidation, expiry, unregister and
-unverified reopen. The combined owner filter has 57 passing tests, including a pinned initializer with mixed graph/relational content,
-initializer failure and active source WAL sync-group rejection, and the
-existing whole-commit, zero-retention, hydration-failure and catch-up regressions.
-Two separate compiled state mutations fail their intended assertions when the
-durable-progress or hard-floor guard is removed.
+The owner approved this contract on September 15, 2026 in draft PR535. The original
+57-test feasibility evidence and two private model negative controls remain in
+commit `afb2bb99b7aa114f137b4e2382691e78fad3534d`; the private model/scaffolding is
+replaced by production-path tests in the implementation.
 
-These are feasibility proofs, not a production cursor implementation. The fixture
-codec and model checkpoint constructor are private test scaffolding. Production
-qualification after approval must additionally cover initializer failure/staging
-cleanup, source/projection identity persistence, owned lease exclusion, active WAL
-sync-group rejection, registry encode/decode budgets and corruption, publication
-I/O failures, exact reopen validation, expiry overflow, the full consumer API from
-an external embedded-library caller, and default/minimal profiles.
+Production ownership and streamed snapshot receipts live in
+`crates/search/src/consumer.rs`. The facade and bounded registry live in
+`src/api/search_projection_consumer/`; external callers are covered by
+`tests/search_projection_consumer.rs`. Optional database identity is propagated
+through graph checkpoint writing, recovery and pinned snapshots.
 
-The unchanged default Bazel root/mandatory local fuzz command was attempted and
-failed before execution on missing external rules_shell files. A same-session
-recovery attempt for the preceding review work also failed on missing rules_rust
-files. No passing Bazel result is claimed; normal required verification remains a
-production delivery gate. No build settings or timeouts were changed.
+The actual-path tests cover pinned mixed graph/relational initialization, failure
+cleanup, exact receipt reopen, process crashes at all three publication boundaries,
+registry I/O failure, missing/corrupt registry, entry/byte/zero retention, selective
+invalidation, inclusive expiry, unregister/re-registration, capacity, source sync
+groups, source rollback and backup identity, malformed bindings, and public facade
+use. Default and minimal profiles, strict owner Clippy and bounded registry decoder
+allocation are qualification gates. Complete results belong in the PR delivery
+receipt; partial intermediate runs do not close issue 455.
 
-The owner decision requested by this proposal covers the exact additive API,
-owned-consumer lifecycle, explicit initializer responsibility, conservative
-rebuild-on-receipt-mismatch behavior, 64-record/64-KiB bounds, source-commit expiry,
-and the three persisted record/file changes above. It does not close #455, relax
-retention limits, authorize a background worker or change query semantics.
+The unchanged default Bazel root, search, external facade and mandatory local
+fuzz command currently fails before test execution on missing external rules_shell
+files. No build settings, workloads, timeouts or fuzz CI policy were changed.
+This environment failure is not a passing Bazel result.
+
+This contract does not relax retention limits, authorize a background worker,
+change existing query semantics, or complete incremental artifact compaction (#291)
+and SearchIndex analyzer workspace ownership (#392/#529).

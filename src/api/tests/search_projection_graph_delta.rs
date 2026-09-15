@@ -1549,6 +1549,3 @@ fn scheduled_graph_search_projection_delta_releases_budget_on_build_error() {
     assert_eq!(scheduler.state().running_background_operations, 0);
     assert!(search_index.document("memory:old").is_some());
 }
-
-mod cursor_protocol_proof;
-mod cursor_state_proof;

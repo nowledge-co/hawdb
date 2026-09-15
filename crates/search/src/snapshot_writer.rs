@@ -4,7 +4,7 @@ use super::{
 };
 use crate::error::{Result, SkeinError};
 use serde::Serialize;
-use skein_integrity::Crc32cHasher;
+use skein_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use skein_storage::durable_replace_file;
 use std::fs::{self, File};
 use std::io::Write;
@@ -45,6 +45,8 @@ pub(super) struct SearchSnapshotWriteReport {
     uncompressed_bytes: u64,
     compressed_bytes: u64,
     peak_record_bytes: u64,
+    pub(super) encoded_len: u64,
+    pub(super) encoded_sha256: Sha256Digest,
 }
 
 impl SearchSnapshotWriteReport {
@@ -66,6 +68,7 @@ pub(super) fn write_search_snapshot<'a>(
     import_source_graph_commit_epoch: Option<u64>,
     embedding_manifest: Option<&SearchEmbeddingManifest>,
     embedding_dimension: Option<usize>,
+    consumer_binding: Option<&super::consumer::ConsumerBinding>,
     documents: impl Iterator<Item = &'a SearchDocument>,
 ) -> Result<SearchSnapshotWriteReport> {
     let compressed_path = target.with_extension("skein.zstd.tmp");
@@ -86,6 +89,15 @@ pub(super) fn write_search_snapshot<'a>(
         &mut uncompressed_bytes,
         b"SKEIN_SEARCH_PROJECTION_V1\n",
     )?;
+    if let Some(binding) = consumer_binding {
+        write_body_chunk(
+            &mut encoder,
+            &mut body_checksum,
+            &mut uncompressed_checksum,
+            &mut uncompressed_bytes,
+            binding.record().as_bytes(),
+        )?;
+    }
     if let Some(epoch) = source_graph_commit_epoch {
         let line = format!("source_graph_commit_epoch\t{epoch}\n");
         write_body_chunk(
@@ -166,8 +178,12 @@ pub(super) fn write_search_snapshot<'a>(
         "{SEARCH_COMPRESSION_HEADER}\ncodec\tzstd\nuncompressed_checksum\t{}\ncompressed_checksum\t{compressed_checksum}\nuncompressed_len\t{uncompressed_bytes}\ncompressed_len\t{compressed_bytes}\n\n",
         uncompressed_checksum.finish()
     );
+    let encoded_sha256;
     {
-        let mut output = File::create(&temporary)?;
+        let mut output = DigestWriter {
+            file: File::create(&temporary)?,
+            hasher: IntegrityHasher::new(),
+        };
         output.write_all(header.as_bytes())?;
         let mut compressed = File::open(&compressed_path)?;
         let copied = std::io::copy(&mut compressed, &mut output)?;
@@ -176,7 +192,8 @@ pub(super) fn write_search_snapshot<'a>(
                 "search checkpoint copied {copied} compressed bytes, expected {compressed_bytes}"
             )));
         }
-        output.sync_all()?;
+        output.file.sync_all()?;
+        encoded_sha256 = output.hasher.finish().sha256;
     }
     fs::remove_file(&compressed_path)?;
     compressed_guard.disarm();
@@ -188,7 +205,25 @@ pub(super) fn write_search_snapshot<'a>(
         uncompressed_bytes,
         compressed_bytes,
         peak_record_bytes,
+        encoded_len: header.len() as u64 + compressed_bytes,
+        encoded_sha256,
     })
+}
+
+struct DigestWriter {
+    file: File,
+    hasher: IntegrityHasher,
+}
+
+impl Write for DigestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.file.write(bytes)?;
+        self.hasher.update(&bytes[..written]);
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 fn write_body_chunk<W: Write>(
@@ -317,6 +352,7 @@ mod tests {
             Some(7),
             Some(&manifest),
             Some(2),
+            None,
             documents.iter(),
         )
         .unwrap();

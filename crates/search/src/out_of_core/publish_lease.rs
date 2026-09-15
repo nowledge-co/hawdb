@@ -16,6 +16,12 @@ pub(crate) struct SearchProjectionPublishLease {
 
 impl SearchProjectionPublishLease {
     pub(crate) fn acquire(root: &Path) -> Result<Self> {
+        let lease = Self::acquire_for_consumer(root)?;
+        super::super::consumer::require_unregistered_directory(root)?;
+        Ok(lease)
+    }
+
+    pub(crate) fn acquire_for_consumer(root: &Path) -> Result<Self> {
         let canonical_root = fs::canonicalize(root).map_err(|error| {
             SkeinError::Storage(format!(
                 "failed to resolve search projection directory: {error}"
