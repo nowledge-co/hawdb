@@ -20,6 +20,9 @@ pub mod integration_bundle;
 pub mod integration_readiness;
 
 #[doc(hidden)]
+pub mod library_readiness;
+
+#[doc(hidden)]
 pub mod previous_wrapper_preflight;
 
 #[doc(hidden)]
