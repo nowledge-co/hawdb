@@ -420,6 +420,7 @@ _SKEIN_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])
 
 _SKEIN_CLI_DEPS = all_crate_deps(normal = True) + [
     ":skein",
+    "//crates/compat:skein_compat",
     "//crates/core:skein_core",
     "//crates/evidence:skein_evidence",
     "//crates/integrity:skein_integrity",
