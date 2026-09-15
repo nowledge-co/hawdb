@@ -1,3 +1,4 @@
+use crate::nowledge_mem::NowledgeQueryRuntimePreflightRedactionSummary;
 use crate::{
     nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, NowledgeMemEmbeddedStore,
     NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result, SkeinError,
@@ -68,7 +69,7 @@ pub fn query_runtime_preflight_json(
                 "protocol": crate::NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
                 "ready": false,
                 "database_opened": false,
-                "redaction": query_runtime_preflight_redaction_json(),
+                "redaction": NowledgeQueryRuntimePreflightRedactionSummary::default().json(),
                 "probe_count": probes.len(),
                 "passed_probe_count": 0,
                 "failed_probe_count": probes.len(),
@@ -94,16 +95,6 @@ pub fn query_runtime_preflight_json(
     };
     let mut store = NowledgeMemEmbeddedStore::new(graph, None);
     store.query_runtime_preflight_json(probes)
-}
-
-fn query_runtime_preflight_redaction_json() -> serde_json::Value {
-    serde_json::json!({
-        "ready": true,
-        "rows_copied": false,
-        "parameters_copied": false,
-        "local_paths_copied": false,
-        "raw_errors_copied": false,
-    })
 }
 
 fn database_open_blocker_codes(probe_count: usize, failed_probe_count: usize) -> Vec<&'static str> {
@@ -147,6 +138,7 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 mod tests {
     use super::run_nowledge_query_runtime_preflight;
     use crate::{Database, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES};
+    use std::any::TypeId;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -591,6 +583,26 @@ mod tests {
         assert!(!error.contains("secret-probe-path-do-not-emit"));
         assert!(!error.contains("secret-cypher-do-not-emit"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn query_runtime_preflight_facade_preserves_owner_type_identity() {
+        assert_eq!(
+            TypeId::of::<crate::NowledgeQueryRuntimePreflightReport>(),
+            TypeId::of::<
+                skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightReport,
+            >()
+        );
+        assert_eq!(
+            TypeId::of::<crate::NowledgeQueryRuntimePreflightProbeReport>(),
+            TypeId::of::<
+                skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbeReport,
+            >()
+        );
+        assert_eq!(
+            TypeId::of::<crate::nowledge_mem::NowledgeQueryRuntimePreflightRedactionSummary>(),
+            TypeId::of::<skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightRedactionSummary>()
+        );
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {
