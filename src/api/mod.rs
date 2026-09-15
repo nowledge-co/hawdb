@@ -100,9 +100,12 @@ mod system_variables;
 mod transaction_locks;
 mod types;
 
-pub(crate) use query_runtime::{runtime_planning_request, PreparedRuntimeQuery};
+pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
-pub(crate) use query_runtime::{RuntimeAdmissionPlan, RuntimePlanningSnapshot};
+pub(crate) use query_runtime::RuntimePlanningSnapshot;
+pub(crate) use skein_executor::runtime_admission::runtime_planning_request;
+#[cfg(feature = "tokio-runtime")]
+pub(crate) use skein_executor::runtime_admission::RuntimeAdmissionPlan;
 pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
