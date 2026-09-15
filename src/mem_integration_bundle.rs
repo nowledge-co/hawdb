@@ -27,5 +27,23 @@ mod tests {
             integration_bundle_cli::run_nowledge_mem_integration_bundle
                 as fn(std::vec::IntoIter<String>) -> crate::Result<(serde_json::Value, bool)>
         ));
+
+        use skein_readiness::graph_summary;
+        assert_eq!(
+            TypeId::of::<crate::GraphRouteReadinessSummary>(),
+            TypeId::of::<graph_summary::GraphRouteReadinessSummary>()
+        );
+        let summary: fn(&serde_json::Value) -> graph_summary::GraphRouteReadinessSummary =
+            crate::nowledge_graph_route_readiness_summary;
+        assert!(std::ptr::fn_addr_eq(
+            summary,
+            graph_summary::nowledge_graph_route_readiness_summary as fn(_) -> _
+        ));
+        let from_bundle: fn(&serde_json::Value) -> graph_summary::GraphRouteReadinessSummary =
+            crate::nowledge_graph_route_readiness_summary_from_bundle;
+        assert!(std::ptr::fn_addr_eq(
+            from_bundle,
+            graph_summary::nowledge_graph_route_readiness_summary_from_bundle as fn(_) -> _
+        ));
     }
 }
