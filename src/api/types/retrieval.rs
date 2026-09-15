@@ -1,4 +1,4 @@
-pub use skein_nowledge_contracts::*;
+pub use skein_nowledge_contracts::public::*;
 
 #[cfg(test)]
 mod facade_tests {
