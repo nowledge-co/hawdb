@@ -31,7 +31,8 @@ pub struct NowledgeMemServingPathReadiness {
 }
 
 impl NowledgeMemServingPathReadiness {
-    pub(super) fn embedded_store_handle() -> Self {
+    #[doc(hidden)]
+    pub fn embedded_store_handle() -> Self {
         Self {
             protocol: NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL.to_string(),
             entrypoint: NowledgeMemServingEntrypoint::EmbeddedStoreHandle,
@@ -159,6 +160,24 @@ mod tests {
         let bound = unbound.bind_host_runtime("nmem_graph_skein_embedded_runtime");
         assert!(bound.ready());
         assert!(bound.blocker_codes().is_empty());
+        assert_eq!(
+            bound.json(),
+            serde_json::json!({
+                "protocol": NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
+                "entrypoint": "nowledge_mem_embedded_store_handle",
+                "host_runtime_binding": "nmem_graph_skein_embedded_runtime",
+                "shared_runtime_governor": true,
+                "foreground_parameterized_cypher_admitted": true,
+                "bounded_streaming_read_admitted": true,
+                "typed_mutation_admitted": true,
+                "typed_analytics_admitted": true,
+                "typed_maintenance_admitted": true,
+                "direct_database_access": false,
+                "admission_safe": true,
+                "ready": true,
+                "blocker_codes": [],
+            })
+        );
     }
 
     #[test]

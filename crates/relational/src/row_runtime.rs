@@ -128,6 +128,92 @@ impl<'a> RelationalReadRowRef<'a> {
     }
 }
 
+/// Internal static-dispatch seam to the facade-selected row-page readers.
+/// Implementations pin the committed or transaction-private view before this
+/// runtime begins reading, so all query paths share one caller-owned snapshot.
+#[doc(hidden)]
+pub trait RelationalRowStoreReader {
+    type TransactionRows;
+
+    fn open_relational_row_snapshot_reader(
+        &self,
+    ) -> Result<Option<RelationalRowPageSnapshotReader>>;
+
+    fn open_relational_transaction_row_snapshot_reader(
+        &self,
+        rows: &Self::TransactionRows,
+    ) -> Result<RelationalRowPageSnapshotReader>;
+}
+
+/// Caller-selected relational row source for one query execution.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum RelationalRowReadMode<'a, R: RelationalRowStoreReader> {
+    CanonicalMemory,
+    Store(&'a R),
+    Transaction {
+        store: &'a R,
+        rows: &'a R::TransactionRows,
+    },
+    ProjectionGeneration {
+        store: &'a R,
+        reader: &'a ProjectionGenerationReader,
+        tables: &'a BTreeSet<String>,
+    },
+}
+
+impl<R: RelationalRowStoreReader> Copy for RelationalRowReadMode<'_, R> {}
+
+impl<R: RelationalRowStoreReader> Clone for RelationalRowReadMode<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
+    pub fn is_projection_table(self, table: &str) -> bool {
+        matches!(
+            self,
+            Self::ProjectionGeneration { tables, .. } if tables.contains(table)
+        )
+    }
+
+    pub fn projection_estimated_rows(self, table: &str) -> Option<usize> {
+        match self {
+            Self::ProjectionGeneration { reader, tables, .. } if tables.contains(table) => {
+                Some(usize::try_from(reader.manifest().member_count).unwrap_or(usize::MAX))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn open_runtime(
+        self,
+        state: &'a RelationalState,
+        fields: RelationalFieldPlan,
+        limits: RelationalRowPageSnapshotReadLimits,
+        hydration: RelationalHydrationBudget,
+        task: &'a RuntimeTaskContext,
+    ) -> Result<RelationalRowRuntime<'a>> {
+        let projection = match self {
+            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
+            _ => None,
+        };
+        let snapshot = match self {
+            Self::CanonicalMemory => None,
+            Self::Store(store) | Self::ProjectionGeneration { store, .. } => {
+                store.open_relational_row_snapshot_reader()?
+            }
+            Self::Transaction { store, rows } => {
+                Some(store.open_relational_transaction_row_snapshot_reader(rows)?)
+            }
+        };
+        Ok(RelationalRowRuntime::new(
+            state, snapshot, projection, fields, limits, hydration, task,
+        ))
+    }
+}
+
 enum RelationalRowBackend {
     CanonicalMemory,
     Snapshot(RelationalRowPageSnapshotReader),

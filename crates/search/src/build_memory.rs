@@ -17,7 +17,10 @@ pub(crate) const MAP_ENTRY_BYTES: usize = 2048;
 pub(crate) const SET_ENTRY_BYTES: usize = 1024;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
+pub(crate) mod directory;
 pub(crate) mod path;
+pub(crate) mod reserved;
+pub(crate) mod shared;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuildMemory {

@@ -11,10 +11,10 @@ use crate::artifact_files::{
 };
 use crate::durable_replace_file;
 use skein_core::{Result, SkeinError};
-use skein_integrity::{checksum_u64, Sha256Digest};
+use skein_integrity::{checksum_u64, IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 
 pub const BACKUP_MANIFEST_FILE: &str = "backup.skein";
@@ -28,6 +28,91 @@ pub struct BackupFileEntry {
     pub encoded_len: u64,
     pub encoded_checksum: u64,
     pub sha256: Sha256Digest,
+}
+
+#[doc(hidden)]
+pub fn validate_new_backup_destination(root: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Err(SkeinError::Storage(format!(
+            "backup destination already exists: {}",
+            destination.display()
+        )));
+    }
+    let file_name = destination.file_name().ok_or_else(|| {
+        SkeinError::Storage("backup destination must have a file name".to_string())
+    })?;
+    let parent = destination.parent().ok_or_else(|| {
+        SkeinError::Storage("backup destination must have a parent directory".to_string())
+    })?;
+    let canonical_parent = parent.canonicalize()?;
+    let destination = canonical_parent.join(file_name);
+    let canonical_root = root.canonicalize()?;
+    if destination.starts_with(&canonical_root) {
+        return Err(SkeinError::Storage(
+            "backup destination cannot be inside the database directory".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn copy_backup_file(source: &Path, destination: &Path, name: &str) -> Result<BackupFileEntry> {
+    let (encoded_len, encoded_checksum, sha256) = copy_file_with_checksum(source, destination)?;
+    Ok(BackupFileEntry {
+        name: name.to_string(),
+        encoded_len,
+        encoded_checksum,
+        sha256,
+    })
+}
+
+#[doc(hidden)]
+pub fn copy_file_with_checksum(
+    source: &Path,
+    destination: &Path,
+) -> Result<(u64, u64, Sha256Digest)> {
+    let mut source = File::open(source)?;
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut integrity = IntegrityHasher::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..read])?;
+        integrity.update(&buffer[..read]);
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| SkeinError::Storage("file byte count overflow".to_string()))?;
+    }
+    destination.sync_all()?;
+    let digest = integrity.finish();
+    Ok((total, digest.crc32c.as_u64(), digest.sha256))
+}
+
+#[doc(hidden)]
+pub fn file_checksum(path: &Path) -> Result<(u64, u64, Sha256Digest)> {
+    let mut file = File::open(path)?;
+    let mut integrity = IntegrityHasher::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        integrity.update(&buffer[..read]);
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| SkeinError::Storage("file byte count overflow".to_string()))?;
+    }
+    let digest = integrity.finish();
+    Ok((total, digest.crc32c.as_u64(), digest.sha256))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,5 +429,53 @@ mod tests {
         let error = split_backup_manifest_checksum(&text).unwrap_err();
 
         assert!(error.to_string().contains("data after checksum"));
+    }
+
+    #[test]
+    fn backup_file_copy_preserves_integrity_and_manifest_entry() {
+        let directory = test_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.skein");
+        let destination = directory.join("destination.skein");
+        let payload = vec![0x5a; 1024 * 1024 + 17];
+        fs::write(&source, &payload).unwrap();
+
+        let entry = copy_backup_file(&source, &destination, "checkpoint.7.skein").unwrap();
+        let source_identity = file_checksum(&source).unwrap();
+        let destination_identity = file_checksum(&destination).unwrap();
+
+        assert_eq!(source_identity, destination_identity);
+        assert_eq!(
+            entry,
+            BackupFileEntry {
+                name: "checkpoint.7.skein".to_string(),
+                encoded_len: source_identity.0,
+                encoded_checksum: source_identity.1,
+                sha256: source_identity.2,
+            }
+        );
+        assert_eq!(fs::read(destination).unwrap(), payload);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_destination_must_be_new_and_outside_database_root() {
+        let directory = test_directory();
+        let root = directory.join("database");
+        let backup_parent = directory.join("backups");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&backup_parent).unwrap();
+
+        validate_new_backup_destination(&root, &backup_parent.join("backup")).unwrap();
+        let error = validate_new_backup_destination(&root, &root.join("backup")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot be inside the database directory"));
+
+        let existing = backup_parent.join("existing");
+        fs::create_dir(&existing).unwrap();
+        let error = validate_new_backup_destination(&root, &existing).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        fs::remove_dir_all(directory).unwrap();
     }
 }

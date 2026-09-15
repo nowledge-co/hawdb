@@ -165,6 +165,321 @@ fn drain(path: &Path, config: LexicalProjectionConfig) -> Result<Vec<(String, u8
 }
 
 #[test]
+fn reserved_two_way_merge_progresses_with_live_input_and_frequencies_at_a_full_root() {
+    use crate::build_memory::reserved::ReservedMemory;
+    use skein_core::RuntimeMemoryReservation;
+    let root = TestRoot::new();
+    let task = RuntimeTaskContext::default()
+        .with_memory_reservation(RuntimeMemoryReservation::new(128 * 1024, 0));
+    let memory = BuildMemory::new(&task).unwrap();
+    let root_memory = memory
+        .retained
+        .reserve(root.0.as_os_str().as_encoded_bytes().len())
+        .unwrap();
+    let mut pool = SpillRuns::new(&root.0, 1, Default::default());
+    let scratch = crate::build_memory::reserved::native_path::child_bytes(&root.0, 80).unwrap();
+    let progress =
+        ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, scratch).unwrap();
+    let progress_bytes = 32 * 1024 + scratch + ReservedMemory::metadata_bytes();
+    pool.progress = Some(progress.clone());
+    let owned = |text: &str, field, ordinal, occurrence, weight| {
+        let mut summary = PartialFieldFrequency::default();
+        summary.push(ordinal, occurrence, weight).unwrap();
+        Ok(FrequencyRecord {
+            term: Term::copy(text, Some(&memory)).unwrap(),
+            field,
+            summary,
+        })
+    };
+    let left = write_run(
+        [
+            owned("alpha", 0, 1, TokenOccurrence::UniqueInField, 2),
+            owned("alpha", 0, 5, TokenOccurrence::Repeated, 1),
+            owned("beta", 0, 2, TokenOccurrence::Repeated, 1),
+        ],
+        &mut pool,
+        &mut FileSpillIo,
+    )
+    .unwrap();
+    let right = write_run(
+        [
+            owned("alpha", 0, 3, TokenOccurrence::UniqueInField, 1),
+            owned("alpha", 0, 7, TokenOccurrence::Repeated, 1),
+            owned("beta", 1, 2, TokenOccurrence::Repeated, 2),
+        ],
+        &mut pool,
+        &mut FileSpillIo,
+    )
+    .unwrap();
+    let input = memory.admit_document(large_document("live input")).unwrap();
+    let mut frequencies =
+        DocumentAnalysis::new_with_memory(&input.id, Default::default(), Some(&memory)).unwrap();
+    frequencies
+        .push_term(
+            Term::copy("retained frequency", Some(&memory)).unwrap(),
+            TokenOccurrence::Repeated,
+            0,
+            1,
+        )
+        .unwrap();
+    let before = memory.ledger.snapshot();
+    let competing = memory
+        .input
+        .reserve(before.budget_bytes - before.used_bytes)
+        .unwrap();
+    assert!(memory.retained.reserve(1).is_err());
+    let merged = merge_pair(left, right, &mut pool).unwrap();
+    assert_eq!(root.entries(), 1);
+    assert_eq!(memory.ledger.snapshot().used_bytes, before.budget_bytes);
+    let mut reader =
+        FrequencyRunReader::open_with_progress(&merged.guard.path, pool.config, Some(&progress))
+            .unwrap();
+    let mut actual = Vec::new();
+    let mut retained = None;
+    while let Some(record) = reader.next().unwrap() {
+        actual.push((
+            record.term.as_str().to_owned(),
+            record.field,
+            record.summary.frequency().unwrap(),
+        ));
+        retained = Some(record.term);
+    }
+    assert_eq!(
+        actual,
+        vec![
+            ("alpha".into(), 0, 4),
+            ("beta".into(), 0, 1),
+            ("beta".into(), 1, 2)
+        ]
+    );
+    drop(reader);
+    drop(merged);
+    drop(frequencies);
+    drop(input);
+    drop((competing, pool, progress, root_memory));
+    assert_eq!(root.entries(), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, progress_bytes);
+    assert_eq!(retained.as_ref().unwrap().as_str(), "beta");
+    drop(retained);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn reserved_readers_deny_a_second_buffer_and_one_short_term_before_decode() {
+    use crate::build_memory::reserved::ReservedMemory;
+    let root = TestRoot::new();
+    let mut pool = SpillRuns::new(&root.0, 1, Default::default());
+    let run = write_run(
+        [Ok(record("alpha", 0, 1, TokenOccurrence::Repeated, 1))],
+        &mut pool,
+        &mut FileSpillIo,
+    )
+    .unwrap();
+    let memory = BuildMemory::new(&RuntimeTaskContext::default()).unwrap();
+    let scratch = crate::build_memory::reserved::native_path::bytes(&run.guard.path).unwrap();
+    let progress =
+        ReservedMemory::with_scratch_capacity(&memory.spool, SPILL_IO_BUFFER_BYTES, scratch)
+            .unwrap();
+    let reader =
+        FrequencyRunReader::open_with_progress(&run.guard.path, pool.config, Some(&progress))
+            .unwrap();
+    assert!(
+        FrequencyRunReader::open_with_progress(&run.guard.path, pool.config, Some(&progress))
+            .is_err()
+    );
+    drop((reader, progress));
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    for (extra, accepted) in [(0, true), (1, false)] {
+        let progress = ReservedMemory::with_scratch_capacity(
+            &memory.spool,
+            SPILL_IO_BUFFER_BYTES + Term::reserved_bytes("alpha".len()).unwrap() - extra,
+            scratch,
+        )
+        .unwrap();
+        let mut reader =
+            FrequencyRunReader::open_with_progress(&run.guard.path, pool.config, Some(&progress))
+                .unwrap();
+        let result = reader.next();
+        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            let record = result.unwrap().unwrap();
+            assert_eq!(record.term.as_str(), "alpha");
+            assert_eq!(record.term.clone_bytes(), 0);
+        } else {
+            assert!(result.unwrap_err().to_string().contains("spill progress"));
+        }
+        drop((reader, progress));
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn frequency_run_path_retains_its_reservation_until_cleanup_after_pool_drop() {
+    use crate::build_memory::reserved::ReservedMemory;
+    let root = TestRoot::new();
+    let memory = BuildMemory::new(&RuntimeTaskContext::default()).unwrap();
+    let mut pool = SpillRuns::new(&root.0, 1, Default::default());
+    let scratch = crate::build_memory::reserved::native_path::child_bytes(&root.0, 80).unwrap();
+    pool.progress =
+        Some(ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, scratch).unwrap());
+    let run = write_run(
+        [Ok(record("alpha", 0, 1, TokenOccurrence::Repeated, 1))],
+        &mut pool,
+        &mut FileSpillIo,
+    )
+    .unwrap();
+    let retained = memory.ledger.snapshot().used_bytes;
+    drop(pool);
+    assert!(run.guard.path.exists());
+    assert_eq!(root.entries(), 1);
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained);
+    drop(run);
+    assert_eq!(root.entries(), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
+    use skein_core::RuntimeMemoryReservation;
+
+    let id = "source";
+    // The logical posting unit includes 32 bytes besides the term and ID.
+    let long_term = "z".repeat(262);
+    for (limit, accepted) in [(300, true), (299, false)] {
+        let root = TestRoot::new();
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(256 * 1024, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let config = LexicalProjectionConfig {
+            build_memory_bytes: NonZeroU64::new(limit).unwrap(),
+            ..Default::default()
+        };
+        let mut pool = SpillRuns::with_context(&root.0, 1, config, memory.clone(), task).unwrap();
+        pool.prepare(long_term.len(), id.len()).unwrap();
+        let records = [("alpha", 2), (long_term.as_str(), 3)].map(|(text, weight)| {
+            let mut summary = PartialFieldFrequency::default();
+            summary.push(1, TokenOccurrence::Repeated, weight).unwrap();
+            Ok(FrequencyRecord {
+                term: Term::copy(text, Some(&memory)).unwrap(),
+                field: 0,
+                summary,
+            })
+        });
+        let run = write_run(records, &mut pool, &mut FileSpillIo).unwrap();
+        assert!(run.progress.is_some());
+        assert!(run.task.is_some());
+        let input_path = run.guard.path.clone();
+        let input_bytes = pool.bytes;
+        assert_eq!(root.entries(), 1);
+
+        let result = spill_postings(run, id, 5, &mut pool);
+        assert_eq!(result.is_ok(), accepted, "limit={limit}: {result:?}");
+        assert_eq!(pool.sequence, 2, "the output run must have been created");
+        assert!(!input_path.exists());
+        if accepted {
+            result.unwrap();
+            assert_eq!(pool.paths.len(), 1);
+            assert_eq!(root.entries(), 1);
+            assert_eq!(pool.max_posting_bytes, limit);
+            assert!(pool.bytes > input_bytes);
+            let mut reader = RunReader::open_with_progress(
+                &pool.paths[0].path,
+                config,
+                pool.progress.as_ref(),
+                pool.task(),
+            )
+            .unwrap();
+            for (term, frequency) in [("alpha", 2), (long_term.as_str(), 3)] {
+                let posting = reader.next(limit).unwrap().unwrap();
+                assert_eq!(posting.term.as_str(), term);
+                assert_eq!(posting.document_id, id);
+                assert_eq!(posting.term_frequency, frequency);
+                assert_eq!(posting.document_len, 5);
+            }
+            assert!(reader.next(limit).unwrap().is_none());
+        } else {
+            assert!(matches!(result, Err(SkeinError::Storage(message))
+                if message == "one lexical posting exceeds the build memory budget"));
+            assert!(pool.paths.is_empty());
+            assert_eq!(root.entries(), 0);
+            assert_eq!(pool.bytes, input_bytes);
+            assert_eq!(pool.max_posting_bytes, 0);
+        }
+        drop(pool);
+        assert_eq!(root.entries(), 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn native_spill_path_scratch_is_admitted_before_create_and_retained_through_cleanup() {
+    use crate::build_memory::reserved::{native_path, ReservedMemory};
+    use skein_core::RuntimeMemoryReservation;
+    let root = TestRoot::new();
+    let mut directory = root.0.clone();
+    for _ in 0..5 {
+        directory.push("long_path_component".repeat(5));
+    }
+    fs::create_dir_all(&directory).unwrap();
+    let expected_path = directory.join(".search-lexical.1.0.tmp");
+    let required = native_path::bytes(&expected_path).unwrap();
+    assert!(required > 0);
+    for extra in [1, 0] {
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(64 * 1024, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let root_memory = memory
+            .retained
+            .reserve(directory.as_os_str().as_encoded_bytes().len())
+            .unwrap();
+        let mut pool = SpillRuns::new(&directory, 1, Default::default());
+        pool.progress = Some(
+            ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, required - extra)
+                .unwrap(),
+        );
+        let term = Term::copy("alpha", Some(&memory)).unwrap();
+        let mut input = record("alpha", 0, 1, TokenOccurrence::Repeated, 1);
+        input.term = term.clone();
+        let before = memory.ledger.snapshot();
+        let competing = memory
+            .input
+            .reserve(before.budget_bytes - before.used_bytes)
+            .unwrap();
+        let result = write_run([Ok(input)], &mut pool, &mut FileSpillIo);
+        assert_eq!(memory.ledger.snapshot().used_bytes, before.budget_bytes);
+        if extra == 1 {
+            assert!(result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("native path scratch"));
+            assert!(!expected_path.exists());
+            drop((pool, root_memory, term, competing));
+        } else {
+            let run = result.unwrap();
+            assert_eq!(run.guard.path, expected_path);
+            let reader = FrequencyRunReader::open_with_progress(
+                &run.guard.path,
+                pool.config,
+                pool.progress.as_ref(),
+            )
+            .unwrap();
+            drop(reader);
+            drop((pool, root_memory, term, competing));
+            assert_eq!(
+                memory.ledger.snapshot().used_bytes,
+                32 * 1024 + required + ReservedMemory::metadata_bytes()
+            );
+            assert!(expected_path.exists());
+            drop(run);
+            assert!(!expected_path.exists());
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn run_wire_admission_integrity_and_cleanup_are_explicit() {
     let root = TestRoot::new();
     let config = LexicalProjectionConfig::default();
@@ -459,6 +774,7 @@ fn document_record_buffer_admits_before_reserving_or_inserting() {
             buffer_limit: limit,
             lower_bound: 0,
             runs: DocumentRuns::default(),
+            records_memory: None,
         };
         let result = analysis.push(
             record("alpha", 0, 1, TokenOccurrence::Repeated, 2),
@@ -483,6 +799,50 @@ fn document_record_buffer_admits_before_reserving_or_inserting() {
         },
     );
     assert_eq!(progress_memory(&pool, "overflow"), u64::MAX);
+}
+
+#[test]
+fn document_record_slots_admit_replacement_overlap_before_mutation() {
+    use skein_core::RuntimeMemoryReservation;
+    let root = TestRoot::new();
+    for short in [0, 1] {
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(64 * 1024, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let mut pool = SpillRuns::new(&root.0, 1, Default::default());
+        let mut analysis = SpillingAnalysis {
+            records: Vec::new(),
+            string_bytes: 0,
+            buffer_limit: 32 * 1024,
+            lower_bound: 0,
+            runs: DocumentRuns::default(),
+            records_memory: Some(memory.retained.reserve(0).unwrap()),
+        };
+        analysis
+            .push(
+                record("alpha", 0, 1, TokenOccurrence::Repeated, 1),
+                &mut pool,
+            )
+            .unwrap();
+        let bytes = std::mem::size_of::<FrequencyRecord>();
+        assert_eq!(analysis.records_memory.as_ref().unwrap().bytes(), bytes);
+        let blocker = memory
+            .input
+            .reserve(64 * 1024 - bytes - 2 * bytes + short)
+            .unwrap();
+        let result = analysis.push(
+            record("beta", 0, 2, TokenOccurrence::Repeated, 1),
+            &mut pool,
+        );
+        assert_eq!(result.is_ok(), short == 0);
+        assert_eq!(analysis.records.len(), if short == 0 { 2 } else { 1 });
+        assert_eq!(
+            analysis.records_memory.as_ref().unwrap().bytes(),
+            if short == 0 { 2 * bytes } else { bytes }
+        );
+        drop((analysis, blocker));
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
 }
 
 struct FaultIo {
