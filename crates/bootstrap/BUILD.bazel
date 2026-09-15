@@ -38,6 +38,21 @@ rust_library(
     visibility = ["//:__pkg__"],
 )
 
+# Matches Cargo feature unification for the root ACL qualification target
+# without linking a second `skein_search` crate with a different feature set.
+rust_library(
+    name = "skein_bootstrap_acl",
+    testonly = True,
+    crate_name = "skein_bootstrap",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:skein_search_acl"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
 rust_test(
     name = "skein_bootstrap_tests",
     crate = ":skein_bootstrap",
