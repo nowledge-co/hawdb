@@ -4,14 +4,13 @@ use super::lexical_projection::{
 };
 use super::{
     checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
-    decode_search_segment_descriptor_text, decode_search_segment_documents_bounded,
-    decode_search_snapshot_text_bounded, decode_string, encode_embedding, encode_metadata,
-    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
-    matched_query_spans_bounded, matched_query_terms, ranked_scores,
-    read_search_segment_descriptor, retriever_candidate_set_report, rrf_child_score,
-    search_document_matches_predicates, search_empty_reason_codes, search_empty_reasons,
-    search_metadata_predicate_pushdown, top_ranked_candidates, top_ranked_ids,
-    validate_search_segment_documents, weighted_rrf_score, window_ranks,
+    decode_search_segment_descriptor_text, decode_search_snapshot_text_bounded, decode_string,
+    encode_embedding, encode_metadata, encode_search_snapshot_text, encode_string,
+    lexical_analyzer_digest, lexical_documents_digest, matched_query_spans_bounded,
+    matched_query_terms, ranked_scores, read_search_segment_descriptor,
+    retriever_candidate_set_report, rrf_child_score, search_document_matches_predicates,
+    search_empty_reason_codes, search_empty_reasons, search_metadata_predicate_pushdown,
+    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, window_ranks,
     CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
     SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
     SearchFieldPruningAccumulator, SearchHit, SearchIndex, SearchMode, SearchPageWindow,
@@ -23,6 +22,8 @@ use super::{
 };
 use crate::bounded_file::read_bounded_file;
 use crate::error::{Result, SkeinError};
+#[cfg(test)]
+use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
 use crate::{RuntimeCapabilities, RuntimeCapability, SearchLexicalTermPolicy};
 use serde::{Deserialize, Serialize};
 use skein_storage::durable_replace_file;
@@ -985,6 +986,7 @@ impl SearchOutOfCoreReader {
         Ok(SearchOutOfCoreHydrationOutput { documents, metrics })
     }
 
+    #[cfg(test)]
     fn visit_documents_in_order(
         &self,
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
@@ -1653,6 +1655,7 @@ impl SearchOutOfCoreReader {
         }
     }
 
+    #[cfg(test)]
     fn read_hydration_segment(
         &self,
         segment: &SearchSegmentDescriptorEntry,
