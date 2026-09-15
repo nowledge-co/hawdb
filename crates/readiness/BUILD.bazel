@@ -21,9 +21,12 @@ rust_library(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
+        "//crates/cypher:skein_cypher",
         "//crates/evidence:skein_evidence",
         "//crates/executor:skein_executor",
+        "//crates/plan-cache:skein_plan_cache",
         "//crates/route-ownership:skein_route_ownership",
+        "//crates/storage:skein_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )

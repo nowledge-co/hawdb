@@ -1137,10 +1137,13 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-core",
+ "skein-cypher",
  "skein-evidence",
  "skein-executor",
+ "skein-plan-cache",
  "skein-route-ownership",
  "skein-search",
+ "skein-storage",
 ]
 
 [[package]]
