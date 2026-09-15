@@ -67,7 +67,10 @@ fn cancelled_or_unadmitted_startup_creates_no_directory() {
 #[test]
 fn input_exhaustion_precedes_spool_append_and_releases_writer_state() {
     let root = test_dir("context_input_admission");
-    let budget = 1024 * 1024;
+    // Preserve the original input working capacity in addition to the newly
+    // admitted mandatory stage-cleanup workspace.
+    let budget =
+        1024 * 1024 + crate::build_memory::directory::stage_removal_bytes(&root).unwrap() as u64;
     let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
         &root,
         Default::default(),
@@ -397,4 +400,104 @@ fn governed_chinese_build_preserves_the_complete_artifact_bytes_and_reopen() {
     drop(reader);
     fs::remove_dir_all(original_root).unwrap();
     fs::remove_dir_all(governed_root).unwrap();
+}
+
+#[test]
+fn deferred_old_generation_cleanup_does_not_fail_a_committed_build() {
+    let root = test_dir("context_deferred_cleanup");
+    for _ in 0..3 {
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        writer.push(document(0)).unwrap();
+        writer.finish().unwrap();
+    }
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+        &root,
+        Default::default(),
+        context(32 * 1024 * 1024),
+    )
+    .unwrap();
+    let memory = writer.memory.clone();
+    writer.push(document(1)).unwrap();
+    // Memory pressure arrives after artifact construction, immediately before
+    // optional cleanup admission. Publication retains a bounded working margin.
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let capture = held.clone();
+    let _gate = crate::generation_cleanup::once::evidence::at(
+        crate::generation_cleanup::once::evidence::Point::BeforeAdmission,
+        move |memory| {
+            let available = 32 * 1024 * 1024 - memory.ledger.snapshot().used_bytes;
+            *capture.borrow_mut() = Some(memory.input.reserve(available - 64 * 1024).unwrap());
+        },
+    );
+    let report = writer.finish().unwrap();
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.cleanup_deleted_files, 0);
+    assert_eq!(report.cleanup_pending_files, 0);
+    assert!(report.cleanup_retry_required);
+    assert!(root.join("search_lexical.2.skein").exists());
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        held.borrow().as_ref().unwrap().bytes()
+    );
+    held.borrow_mut().take();
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.generation(), 4);
+    assert_eq!(
+        reader
+            .hydrate_documents(&[document(1).id])
+            .unwrap()
+            .documents,
+        vec![document(1)]
+    );
+    drop(reader);
+    let mut retry = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    retry.push(document(1)).unwrap();
+    let report = retry.finish().unwrap();
+    assert!(report.cleanup_deleted_files > 0);
+    assert!(!report.cleanup_retry_required);
+    assert!(!root.join("search_lexical.2.skein").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancellation_after_commit_returns_the_published_generation_and_cleanup_retry() {
+    use crate::generation_cleanup::once::evidence::{self, Point};
+    let root = test_dir("context_cancel_after_commit");
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    initial.push(document(0)).unwrap();
+    initial.finish().unwrap();
+    let task = context(32 * 1024 * 1024);
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+        &root,
+        Default::default(),
+        task.clone(),
+    )
+    .unwrap();
+    let memory = writer.memory.clone();
+    writer.push(document(1)).unwrap();
+    let cancel = task.cancellation().clone();
+    let _gate = evidence::at(Point::AfterCommit, move |_| {
+        cancel.cancel();
+    });
+    let report = writer.finish().unwrap();
+    assert!(task.cancellation().is_cancelled());
+    assert_eq!(report.generation, 2);
+    assert!(report.cleanup_retry_required);
+    assert_eq!(report.cleanup_deleted_files, 0);
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.generation(), 2);
+    assert_eq!(
+        reader
+            .hydrate_documents(&[document(1).id])
+            .unwrap()
+            .documents,
+        vec![document(1)]
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
 }

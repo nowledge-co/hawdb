@@ -22,6 +22,7 @@ skein-evidence = { path = "crates/evidence" }
 skein-explain = { path = "crates/explain" }
 skein-executor = { path = "crates/executor" }
 skein-expression = { path = "crates/expression" }
+skein-fuzz-contracts = { path = "crates/fuzz-contracts" }
 skein-integrity = { path = "crates/integrity" }
 skein-optimizer = { path = "crates/optimizer" }
 skein-plan = { path = "crates/plan" }
@@ -76,6 +77,7 @@ members = [
   "crates/explain",
   "crates/executor",
   "crates/expression",
+  "crates/fuzz-contracts",
   "crates/fuzz",
   "crates/cgroup",
   "crates/integrity",

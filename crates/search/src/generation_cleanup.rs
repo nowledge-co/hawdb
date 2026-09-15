@@ -244,15 +244,15 @@ enum CleanupArtifactKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CleanupCandidate {
-    name: String,
+struct CleanupCandidate<S = String> {
+    name: S,
     kind: CleanupArtifactKind,
     generation: u64,
     quarantined: bool,
 }
 
-impl CleanupCandidate {
-    fn parse(name: String) -> Option<Self> {
+impl<S: AsRef<str>> CleanupCandidate<S> {
+    fn parse(name: S) -> Option<Self> {
         const OUT_OF_CORE_PREFIXES: &[&str] = &[
             "search_projection_segments.",
             "search_projection_segment_payloads.",
@@ -260,9 +260,9 @@ impl CleanupCandidate {
             "search_projection_vector_payloads.",
             "search_projection_out_of_core_layout.",
         ];
-        let (artifact_name, quarantined) = match quarantined_artifact_name(&name) {
+        let (artifact_name, quarantined) = match quarantined_artifact_name(name.as_ref()) {
             Some(artifact_name) => (artifact_name, true),
-            None => (name.as_str(), false),
+            None => (name.as_ref(), false),
         };
         if let Some(generation) = parse_generation(artifact_name, "search_lexical.")
             .or_else(|| parse_generation(artifact_name, "search_lexical.manifest."))
@@ -282,13 +282,14 @@ impl CleanupCandidate {
                 quarantined,
             });
         }
-        OUT_OF_CORE_PREFIXES.iter().find_map(|prefix| {
-            parse_generation(artifact_name, prefix).map(|generation| Self {
-                name: name.clone(),
-                kind: CleanupArtifactKind::OutOfCore,
-                generation,
-                quarantined,
-            })
+        let generation = OUT_OF_CORE_PREFIXES
+            .iter()
+            .find_map(|prefix| parse_generation(artifact_name, prefix))?;
+        Some(Self {
+            name,
+            kind: CleanupArtifactKind::OutOfCore,
+            generation,
+            quarantined,
         })
     }
 
@@ -397,3 +398,5 @@ fn io_error_code(error: &io::Error) -> &'static str {
 #[cfg(test)]
 #[path = "generation_cleanup/tests.rs"]
 mod tests;
+
+pub(crate) mod once;

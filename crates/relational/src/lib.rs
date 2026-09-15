@@ -56,6 +56,93 @@ pub mod streaming_projection;
 #[doc(hidden)]
 pub mod physical_plan;
 
+#[doc(hidden)]
+pub mod query;
+
+/// Internal marker for query paths that read only the materialized relational state.
+/// Such paths never consult a caller-selected persistent row or index view.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct RelationalMaterializedReader;
+
+impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader {
+    fn relational_index_probe_statistics(
+        &self,
+        _table: &str,
+        _index: &str,
+        _prefix_len: usize,
+    ) -> Option<skein_storage::relational_index_view::RelationalIndexProbeStatistics> {
+        None
+    }
+
+    fn visit_relational_index_read_view_prefix_entries(
+        &self,
+        _table: &str,
+        _index: &str,
+        _prefix: &skein_storage::RelationalKey,
+        _limits: skein_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+    ) -> Option<
+        std::result::Result<
+            skein_storage::relational_index_view::RelationalIndexReadViewReport,
+            skein_storage::RelationalIndexShadowError,
+        >,
+    > {
+        None
+    }
+
+    fn visit_relational_index_read_view_prefix_entries_many(
+        &self,
+        _table: &str,
+        _index: &str,
+        _prefixes: &[skein_storage::RelationalKey],
+        _limits: skein_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+    ) -> Option<
+        std::result::Result<
+            skein_storage::relational_index_view::RelationalIndexReadViewReport,
+            skein_storage::RelationalIndexShadowError,
+        >,
+    > {
+        None
+    }
+
+    fn visit_relational_index_read_view_range_entries(
+        &self,
+        _table: &str,
+        _index: &str,
+        _scan: &skein_storage::RelationalIndexRangeScan,
+        _limits: skein_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+    ) -> Option<
+        std::result::Result<
+            skein_storage::relational_index_view::RelationalIndexReadViewReport,
+            skein_storage::RelationalIndexShadowError,
+        >,
+    > {
+        None
+    }
+}
+
+impl row_runtime::RelationalRowStoreReader for RelationalMaterializedReader {
+    type TransactionRows = ();
+
+    fn open_relational_row_snapshot_reader(
+        &self,
+    ) -> skein_core::Result<Option<skein_storage::RelationalRowPageSnapshotReader>> {
+        Ok(None)
+    }
+
+    fn open_relational_transaction_row_snapshot_reader(
+        &self,
+        _rows: &Self::TransactionRows,
+    ) -> skein_core::Result<skein_storage::RelationalRowPageSnapshotReader> {
+        Err(skein_core::SkeinError::Execution(
+            "materialized relational reader does not expose transaction rows".to_string(),
+        ))
+    }
+}
+
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
 use skein_storage::{

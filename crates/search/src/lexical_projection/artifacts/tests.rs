@@ -53,6 +53,39 @@ fn used(memory: &BuildMemory) -> usize {
 }
 
 #[test]
+fn retained_artifact_terms_release_merge_progress_after_the_input_drops() {
+    use crate::build_memory::reserved::ReservedMemory;
+    use crate::build_term::Term;
+    let fixture = Fixture::new();
+    let (memory, task) = context();
+    let mut builder = fixture.builder(&memory, &task);
+    let capacity = Term::reserved_bytes(5).unwrap();
+    let progress = ReservedMemory::new(&memory.spool, capacity).unwrap();
+    let term = Term::build_reserved(5, &progress, || Ok("alpha".to_owned())).unwrap();
+    let original = term.as_ptr();
+    let posting = Posting {
+        term,
+        document_id: "document".into(),
+        term_frequency: 2,
+        document_len: 2,
+    };
+    builder.push_posting(&posting).unwrap();
+    assert_ne!(builder.posting_pending[0].term.as_ptr(), original);
+    assert_eq!(builder.posting_strings.bytes(), 5 + 8);
+    assert!(progress.reserve(1).is_err());
+    drop(posting);
+    drop(
+        progress
+            .reserve(capacity)
+            .expect("retained artifact must release all temporary merge grants"),
+    );
+    drop(progress);
+    assert_eq!(builder.posting_pending[0].term.as_str(), "alpha");
+    drop(builder);
+    assert_eq!(used(&memory), 0);
+}
+
+#[test]
 fn writer_buffer_admission_precedes_file_creation() {
     let fixture = Fixture::new();
     let (memory, task) = context();

@@ -9,8 +9,10 @@ license.workspace = true
 serde = "1"
 serde_json = "1"
 skein-core = { path = "../core" }
+skein-cypher = { path = "../cypher" }
 skein-evidence = { path = "../evidence" }
 skein-executor = { path = "../executor" }
+skein-plan-cache = { path = "../plan-cache" }
 skein-route-ownership = { path = "../route-ownership" }
 skein-search = { path = "../search" }
 skein-storage = { path = "../storage" }
