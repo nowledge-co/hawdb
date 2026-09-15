@@ -764,8 +764,10 @@ impl NowledgeMemCutoverControls {
 }
 
 pub use skein_nowledge_contracts::{
+    NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
     NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
-    NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
+    NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+    NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
 };
 
 #[cfg(test)]
@@ -786,6 +788,22 @@ mod storage_lifecycle_facade_tests {
         assert_eq!(
             TypeId::of::<NowledgeMemStorageLifecycleActionKind>(),
             TypeId::of::<skein_nowledge_contracts::NowledgeMemStorageLifecycleActionKind>(),
+        );
+    }
+
+    #[test]
+    fn facade_reexports_read_snapshot_contracts_without_conversion() {
+        assert_eq!(
+            TypeId::of::<NowledgeMemReadSnapshotBudget>(),
+            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotBudget>(),
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemReadSnapshotReport>(),
+            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotReport>(),
+        );
+        assert_eq!(
+            NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+            skein_nowledge_contracts::NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
         );
     }
 }
@@ -933,8 +951,6 @@ pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-ret
 pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-slow-query-report-v1";
 pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
     "skein-nowledge-mem-readiness-dashboard-v1";
-pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
-    "skein-nowledge-mem-read-snapshot-report-v1";
 pub use skein_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
     nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
@@ -3007,50 +3023,6 @@ pub struct NowledgeMemEmbeddedStore {
 #[derive(Debug, Clone)]
 pub struct NowledgeMemEmbeddedStoreHandle {
     inner: Arc<RwLock<NowledgeMemEmbeddedStore>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotBudget {
-    pub max_rows: usize,
-    pub max_payload_bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotReport {
-    pub commit_epoch: u64,
-    pub search_projection_present: bool,
-    pub search_projection_source_graph_commit_epoch: Option<u64>,
-    pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
-    pub max_rows: usize,
-    pub max_payload_bytes: usize,
-    pub cypher_statement_count: usize,
-    pub sql_statement_count: usize,
-    pub vector_seed_execution_count: usize,
-    pub output_rows: usize,
-    pub output_payload_bytes: usize,
-    pub remaining_rows: usize,
-    pub remaining_payload_bytes: usize,
-}
-
-impl NowledgeMemReadSnapshotReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
-            "commit_epoch": self.commit_epoch,
-            "search_projection_present": self.search_projection_present,
-            "search_projection_source_graph_commit_epoch": self.search_projection_source_graph_commit_epoch,
-            "search_projection_durable_source_graph_commit_epoch": self.search_projection_durable_source_graph_commit_epoch,
-            "max_rows": self.max_rows,
-            "max_payload_bytes": self.max_payload_bytes,
-            "cypher_statement_count": self.cypher_statement_count,
-            "sql_statement_count": self.sql_statement_count,
-            "vector_seed_execution_count": self.vector_seed_execution_count,
-            "output_rows": self.output_rows,
-            "output_payload_bytes": self.output_payload_bytes,
-            "remaining_rows": self.remaining_rows,
-            "remaining_payload_bytes": self.remaining_payload_bytes,
-        })
-    }
 }
 
 pub struct NowledgeMemReadSnapshot<'a> {
