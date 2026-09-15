@@ -51,6 +51,57 @@ fn source(seed: u64, content: String) -> SearchDocument {
 }
 
 #[test]
+fn controlled_frame_admits_scratch_and_stops_after_a_bounded_write() {
+    struct CancellingWriter<'a> {
+        bytes: Vec<u8>,
+        task: &'a RuntimeTaskContext,
+    }
+    impl Write for CancellingWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            if self.bytes.len() >= crate::document_encoding::HEX_BUFFER_BYTES {
+                self.task.cancellation().cancel();
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let document = source(0, "body ".repeat(32 * 1024));
+    let encoding = DocumentEncoding::new(&document).unwrap();
+    let mut digest = Crc32cHasher::new();
+    digest.update(b"earlier records");
+    let before = digest.finish();
+    let mut output = CancellingWriter {
+        bytes: Vec::new(),
+        task: &task,
+    };
+    let error =
+        write_frame_with_context(&mut output, &encoding, &mut digest, &memory, &task).unwrap_err();
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert!(output.bytes.len() <= 2 * crate::document_encoding::HEX_BUFFER_BYTES);
+    assert!(output.bytes.len() < encoding.len());
+    assert_eq!(digest.finish(), before);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+
+    let task = RuntimeTaskContext::default().with_memory_reservation(
+        skein_core::RuntimeMemoryReservation::new(
+            crate::document_encoding::HEX_BUFFER_BYTES as u64 - 1,
+            0,
+        ),
+    );
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut output = Vec::new();
+    assert!(write_frame_with_context(&mut output, &encoding, &mut digest, &memory, &task).is_err());
+    assert!(output.is_empty());
+    assert_eq!(digest.finish(), before);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
 fn spool_frame_preserves_wire_and_digest_at_every_failed_write_boundary() {
     let document = source(0, "\u{4e2d}abc\n".into());
     let record = legacy_record(&document);

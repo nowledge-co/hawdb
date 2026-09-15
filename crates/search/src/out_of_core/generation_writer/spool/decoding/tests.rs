@@ -68,6 +68,148 @@ fn decode(record: &[u8]) -> Result<SearchDocument> {
     )
 }
 
+fn admitted_memory(bytes: usize) -> BuildMemory {
+    BuildMemory::new(
+        &RuntimeTaskContext::default()
+            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(bytes as u64, 0)),
+    )
+    .unwrap()
+}
+
+fn decode_admitted(record: &[u8], memory: &BuildMemory) -> Result<AdmittedDocument> {
+    read_frame_admitted(
+        &mut Cursor::new(record),
+        record.len(),
+        checksum_bytes(record),
+        7,
+        memory,
+        256,
+        &RuntimeTaskContext::default(),
+    )
+}
+
+#[test]
+fn streamed_decode_retains_shared_admission_and_checks_exact_growth_peak() {
+    let line = format!("doc\t61\t\t{}\t\t\n", "63".repeat(65_001));
+    let memory = admitted_memory(2 * 1024 * 1024);
+    let other = memory.retained.reserve(17).unwrap();
+    let document = decode_admitted(line.as_bytes(), &memory).unwrap();
+    let retained = crate::build_memory::document_bytes(&document).unwrap();
+    assert_eq!(document.retained_bytes(), retained);
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained + 17);
+    let peak = memory.ledger.snapshot().peak_bytes;
+    assert!(
+        peak > retained + 17,
+        "replacement capacity must overlap its old allocation"
+    );
+    let (document, lease) = document.into_parts();
+    assert_document(document, crate::decode_search_document_line(&line).unwrap());
+    drop(lease);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 17);
+    drop(other);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+
+    for (limit, succeeds) in [(peak, true), (peak - 1, false)] {
+        let memory = admitted_memory(limit);
+        let other = memory.retained.reserve(17).unwrap();
+        let result = decode_admitted(line.as_bytes(), &memory);
+        assert_eq!(result.is_ok(), succeeds, "growth admission at {limit}");
+        drop(result);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 17);
+        assert!(memory.ledger.snapshot().peak_bytes <= limit);
+        drop(other);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn streamed_decode_metadata_admission_counts_duplicate_fields_and_releases_them() {
+    let record = b"doc\t61\t\t\t\t61=6263;61=64\n";
+    let memory = admitted_memory(64 * 1024);
+    let document = decode_admitted(record, &memory).unwrap();
+    assert_eq!(document.metadata["a"], "d");
+    assert_eq!(
+        document.retained_bytes(),
+        crate::build_memory::document_bytes(&document).unwrap()
+    );
+    drop(document);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    let error = read_frame_admitted(
+        &mut Cursor::new(record),
+        record.len(),
+        checksum_bytes(record),
+        0,
+        &memory,
+        1,
+        &RuntimeTaskContext::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("metadata field count"));
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn streamed_decode_denial_preserves_full_frame_checksum_precedence() {
+    let line = format!("doc\t61\t\t{}\t\t\n", "63".repeat(32_768));
+    // The fixed input scratch is admitted before the first frame read. Leave
+    // the same 4 KiB for document growth so denial happens during decoding.
+    let budget = INPUT_BYTES + 4096;
+    let memory = admitted_memory(budget);
+    let mut reader = SplitReader::new(line.as_bytes(), 11);
+    let error = read_frame_admitted(
+        &mut reader,
+        line.len(),
+        checksum_bytes(line.as_bytes()) ^ 1,
+        9,
+        &memory,
+        256,
+        &RuntimeTaskContext::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("checksum mismatch"), "{error}");
+    assert_eq!(reader.position, line.len());
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert!(memory.ledger.snapshot().peak_bytes <= budget);
+}
+
+#[test]
+fn streamed_decode_cancellation_stops_at_a_bounded_input_unit_without_leaking() {
+    struct CancellingReader<'a> {
+        input: Cursor<&'a [u8]>,
+        task: &'a RuntimeTaskContext,
+    }
+    impl Read for CancellingReader<'_> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let count = self.input.read(output)?;
+            self.task.cancellation().cancel();
+            Ok(count)
+        }
+    }
+    let line = format!("doc\t61\t\t{}\t\t\n", "63".repeat(32_768));
+    let task = RuntimeTaskContext::default();
+    let memory = admitted_memory(128 * 1024);
+    let mut reader = CancellingReader {
+        input: Cursor::new(line.as_bytes()),
+        task: &task,
+    };
+    let error = read_frame_admitted(
+        &mut reader,
+        line.len(),
+        checksum_bytes(line.as_bytes()),
+        0,
+        &memory,
+        256,
+        &task,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert!(reader.input.position() <= INPUT_BYTES as u64);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
 #[test]
 fn streamed_spool_decode_matches_legacy_grammar_at_every_split() {
     let records = [
@@ -233,6 +375,20 @@ fn spool_decoding_differential_campaign() {
         assert_eq!(reader.position, record.len(), "case {case}");
         assert!(reader.max_requested <= INPUT_BYTES);
 
+        let memory = admitted_memory(1024 * 1024);
+        let admitted = decode_admitted(record.as_bytes(), &memory).unwrap();
+        assert_eq!(
+            admitted.retained_bytes(),
+            crate::build_memory::document_bytes(&admitted).unwrap()
+        );
+        let (admitted, lease) = admitted.into_parts();
+        assert_document(
+            admitted,
+            crate::decode_search_document_line(record).unwrap(),
+        );
+        drop(lease);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0, "case {case}");
+
         // ASCII mutations are safe for the independent old decoder. Non-ASCII
         // corruption is checked separately, without inheriting its UTF-8 panic.
         let mut mutated = record.as_bytes().to_vec();
@@ -245,6 +401,16 @@ fn spool_decoding_differential_campaign() {
             Ok(expected) => assert_document(actual.unwrap(), expected),
             Err(_) => assert!(actual.is_err(), "case {case}, mutation at {split}"),
         }
+        let admitted = decode_admitted(&mutated, &memory);
+        match crate::decode_search_document_line(text) {
+            Ok(expected) => {
+                let (actual, lease) = admitted.unwrap().into_parts();
+                assert_document(actual, expected);
+                drop(lease);
+            }
+            Err(_) => assert!(admitted.is_err(), "admitted case {case}"),
+        }
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         assert_eq!(reader.position, mutated.len());
         mutated[split] = 0xff;
         assert!(decode(&mutated).is_err(), "non-UTF-8 mutation case {case}");

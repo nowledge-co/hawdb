@@ -1,6 +1,7 @@
 use super::*;
+use std::path::PathBuf;
 
-fn document(id: usize, values: &[(&str, &str)]) -> SearchDocument {
+pub(super) fn document(id: usize, values: &[(&str, &str)]) -> SearchDocument {
     SearchDocument {
         id: format!("document-{id:05}"),
         title: String::new(),
@@ -11,6 +12,42 @@ fn document(id: usize, values: &[(&str, &str)]) -> SearchDocument {
             .map(|(key, value)| ((*key).into(), (*value).into()))
             .collect(),
     }
+}
+
+#[test]
+fn duplicate_normalized_values_release_temporary_capacity() {
+    let mut sizes = Vec::new();
+    for repetitions in [1, 128] {
+        let labels = vec!["ALPHA"; repetitions].join(",");
+        let documents = [document(0, &[("labels", &labels)])];
+        let fields = BTreeSet::from(["labels".into()]);
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let mut retained = memory.retained.reserve(0).unwrap();
+        let (entry, _) = build_with_context(
+            0,
+            &documents,
+            &fields,
+            0,
+            u64::MAX,
+            Admission {
+                memory: &memory,
+                task: &task,
+                retained: &mut retained,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            entry.metadata["labels"].values,
+            BTreeSet::from(["alpha".into()])
+        );
+        sizes.push(retained.bytes());
+        assert_eq!(memory.ledger.snapshot().used_bytes, retained.bytes());
+        drop(entry);
+        drop(retained);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+    assert_eq!(sizes[0], sizes[1]);
 }
 
 fn check(documents: &[SearchDocument], fields: &BTreeSet<String>) {

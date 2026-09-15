@@ -370,3 +370,11 @@ pub use stable_identity::{
     DEFAULT_STABLE_IDENTITY_VALUE_BYTES,
 };
 pub use telemetry::{StorageTelemetrySink, WalAppendTelemetry};
+pub use wal::{
+    WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
+    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
+    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
+    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+};

@@ -1,15 +1,49 @@
 use super::*;
+use skein_executor::QueryMemoryLease;
 use std::collections::BTreeMap;
+
+mod admission;
+use admission::Admission;
 
 const INPUT_BYTES: usize = 8192;
 
 /// Decode an admitted record without retaining its complete encoded payload.
+#[cfg(test)]
 pub(super) fn read_frame(
     reader: &mut impl Read,
     length: usize,
     expected_checksum: u64,
     ordinal: usize,
 ) -> Result<SearchDocument> {
+    decode_frame(reader, length, expected_checksum, ordinal, None).map(|(document, _)| document)
+}
+
+pub(super) fn read_frame_admitted(
+    reader: &mut impl Read,
+    length: usize,
+    expected_checksum: u64,
+    ordinal: usize,
+    memory: &BuildMemory,
+    max_metadata_fields: usize,
+    task: &RuntimeTaskContext,
+) -> Result<AdmittedDocument> {
+    let admission = Admission::new(memory, max_metadata_fields, task)?;
+    let _scratch_memory = memory.spool.reserve(INPUT_BYTES)?;
+    let (document, lease) =
+        decode_frame(reader, length, expected_checksum, ordinal, Some(admission))?;
+    Ok(AdmittedDocument::from_admitted_parts(
+        document,
+        lease.expect("admitted decoding retains its originating lease"),
+    ))
+}
+
+fn decode_frame(
+    reader: &mut impl Read,
+    length: usize,
+    expected_checksum: u64,
+    ordinal: usize,
+    admission: Option<Admission<'_>>,
+) -> Result<(SearchDocument, Option<QueryMemoryLease>)> {
     let mut frame = FrameReader {
         reader,
         unread: length,
@@ -18,6 +52,7 @@ pub(super) fn read_frame(
         filled: 0,
         digest: Crc32cHasher::new(),
         ordinal,
+        admission,
     };
     let document = frame.document();
     // As with the original decoder, validate the whole frame before exposing
@@ -30,7 +65,12 @@ pub(super) fn read_frame(
     if frame.digest.finish() != expected_checksum {
         return Err(frame.invalid("checksum mismatch"));
     }
-    document
+    let document = document?;
+    if let Some(admission) = &mut frame.admission {
+        admission.finish(&document)?;
+    }
+    let lease = frame.admission.take().map(Admission::into_lease);
+    Ok((document, lease))
 }
 
 struct FrameReader<'a, R> {
@@ -41,6 +81,7 @@ struct FrameReader<'a, R> {
     filled: usize,
     digest: Crc32cHasher,
     ordinal: usize,
+    admission: Option<Admission<'a>>,
 }
 
 impl<R: Read> FrameReader<'_, R> {
@@ -57,6 +98,9 @@ impl<R: Read> FrameReader<'_, R> {
         }
         if self.unread == 0 {
             return Ok(false);
+        }
+        if let Some(admission) = &self.admission {
+            admission.checkpoint()?;
         }
         let limit = self.unread.min(INPUT_BYTES);
         let count = loop {
@@ -134,9 +178,7 @@ impl<R: Read> FrameReader<'_, R> {
                 let pair = std::str::from_utf8(&pair).expect("ASCII hex pair");
                 let value = u8::from_str_radix(pair, 16)
                     .map_err(|_| self.invalid("has an invalid hex field"))?;
-                decoded.try_reserve(1).map_err(|error| {
-                    self.invalid(format_args!("cannot allocate a decoded field: {error}"))
-                })?;
+                self.reserve(&mut decoded)?;
                 decoded.push(value);
             } else {
                 first = Some(byte);
@@ -165,11 +207,7 @@ impl<R: Read> FrameReader<'_, R> {
                 match self.next()? {
                     Some(byte @ (b',' | b'\t')) => break byte,
                     Some(byte) => {
-                        token.try_reserve(1).map_err(|error| {
-                            self.invalid(format_args!(
-                                "cannot allocate an embedding token: {error}"
-                            ))
-                        })?;
+                        self.reserve(&mut token)?;
                         token.push(byte);
                     }
                     None => return Err(self.invalid("is missing its metadata field")),
@@ -179,12 +217,15 @@ impl<R: Read> FrameReader<'_, R> {
                 .ok()
                 .and_then(|raw| raw.parse::<f32>().ok())
                 .ok_or_else(|| self.invalid("has an invalid embedding value"))?;
-            values.try_reserve(1).map_err(|error| {
-                self.invalid(format_args!("cannot allocate an embedding: {error}"))
-            })?;
+            self.reserve(&mut values)?;
             values.push(value);
             token.clear();
             if separator == b'\t' {
+                let token_bytes = token.capacity();
+                drop(token);
+                if let Some(admission) = &mut self.admission {
+                    admission.release(token_bytes);
+                }
                 return Ok(Some(values));
             }
         }
@@ -201,13 +242,33 @@ impl<R: Read> FrameReader<'_, R> {
             }
             _ => {}
         }
+        let mut field_count = 0usize;
         loop {
+            if let Some(admission) = &self.admission {
+                admission.admit_field(field_count)?;
+            }
+            field_count += 1;
             let (key, separator) = self.hex(b"=")?;
             if separator != Some(b'=') {
                 return Err(self.invalid("has an invalid metadata pair"));
             }
             let (value, separator) = self.hex(b";\n")?;
-            metadata.insert(key, value);
+            let key_bytes = key.capacity();
+            if metadata.contains_key(&key) {
+                let previous = metadata.insert(key, value).expect("existing metadata key");
+                let released = key_bytes + previous.capacity();
+                drop(previous);
+                if let Some(admission) = &mut self.admission {
+                    admission.release(released);
+                }
+            } else {
+                if !metadata.is_empty()
+                    && let Some(admission) = &mut self.admission
+                {
+                    admission.reserve_entry()?;
+                }
+                metadata.insert(key, value);
+            }
             match separator {
                 Some(b';') => {}
                 Some(b'\n') => {
@@ -225,6 +286,16 @@ impl<R: Read> FrameReader<'_, R> {
             return Err(self.invalid("has trailing bytes after its document line"));
         }
         Ok(())
+    }
+
+    fn reserve<T>(&mut self, values: &mut Vec<T>) -> Result<()> {
+        if let Some(admission) = &mut self.admission {
+            admission.reserve(values)
+        } else {
+            values.try_reserve(1).map_err(|error| {
+                self.invalid(format_args!("cannot allocate a decoded field: {error}"))
+            })
+        }
     }
 }
 

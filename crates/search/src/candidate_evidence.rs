@@ -37,6 +37,9 @@ mod boundaries;
 #[cfg(test)]
 mod differential;
 #[cfg(test)]
+#[path = "candidate_evidence/tests/probe_fixtures.rs"]
+pub(crate) mod probe_fixtures;
+#[cfg(test)]
 mod test_report;
 #[cfg(test)]
 mod tests;
