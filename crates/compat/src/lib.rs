@@ -13,6 +13,7 @@ mod primary;
 pub use primary::{CompatibilityPrimaryEngine, CompatibilityPrimarySession};
 
 mod external_shadow;
+mod external_shadow_smoke;
 mod inventory_gate;
 mod nowledge_fixture;
 #[doc(hidden)]
@@ -30,6 +31,11 @@ pub use external_shadow::{
     ExternalShadowProjectGraphRequest, ExternalShadowProtocolBackend, ExternalShadowProtocolServer,
     ExternalShadowReady, ExternalShadowStatementRequest, ExternalShadowTraceHealth,
     ExternalShadowTraceSummary, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
+};
+#[doc(hidden)]
+pub use external_shadow_smoke::{
+    enforce_external_shadow_adapter_smoke_requirements, external_shadow_adapter_smoke_fixture,
+    external_shadow_adapter_smoke_report_json, is_self_shadow_command, should_run_shadow_ready,
 };
 pub use inventory_gate::{
     assess_compatibility_cypher_migration_gate_bundle,
