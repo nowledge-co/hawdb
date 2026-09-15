@@ -6,10 +6,7 @@ package(default_visibility = ["//visibility:public"])
 filegroup(
     name = "candidate_probe_test_fixtures",
     srcs = ["src/candidate_evidence/tests/probe_fixtures.rs"],
-    visibility = [
-        "//:__pkg__",
-        "//crates/bootstrap:__pkg__",
-    ],
+    visibility = ["//:__pkg__"],
 )
 
 test_suite(
@@ -70,7 +67,10 @@ rust_library(
     aliases = aliases(),
     deps = _SEARCH_BASE_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/bootstrap:__pkg__",
+    ],
 )
 
 # Match Cargo's explicit `skein-search/acl` forwarding without enabling ACL
