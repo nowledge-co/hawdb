@@ -1,5 +1,4 @@
-use super::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
-use crate::error::{Result, SkeinError};
+use skein_core::{Result, SkeinError};
 use skein_executor::{
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryMemoryLedgerSnapshot,
 };
@@ -14,7 +13,49 @@ const STAGE_ORDER: [KnowledgeRetrievalStage; 6] = [
     KnowledgeRetrievalStage::CanonicalHydration,
 ];
 
-pub(super) struct KnowledgeRetrievalPipelineBudget {
+/// Ordered stages of the bounded search-and-graph retrieval pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeRetrievalStage {
+    SearchCandidate,
+    MetadataFilter,
+    AuthorizedGraphExpand,
+    Rerank,
+    TopK,
+    CanonicalHydration,
+}
+
+impl KnowledgeRetrievalStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SearchCandidate => "search_candidate",
+            Self::MetadataFilter => "metadata_filter",
+            Self::AuthorizedGraphExpand => "authorized_graph_expand",
+            Self::Rerank => "rerank",
+            Self::TopK => "top_k",
+            Self::CanonicalHydration => "canonical_hydration",
+        }
+    }
+}
+
+/// Memory and ordering evidence from a bounded retrieval pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeRetrievalPipelineReport {
+    pub stages: Vec<KnowledgeRetrievalStage>,
+    pub graph_snapshot_commit_epoch: u64,
+    pub query_memory_budget_bytes: usize,
+    pub peak_tracked_memory_bytes: usize,
+    pub result_payload_budget_bytes: usize,
+    pub result_payload_bytes: usize,
+    pub canonical_identity_filtered_out_count: usize,
+    pub canonical_output_hydrated_node_count: usize,
+    pub canonical_output_hydrated_candidate_count: usize,
+    pub canonical_output_hydration_after_top_k: bool,
+    pub metadata_filter_authorized_graph_expansion: bool,
+}
+
+/// Internal ownership seam for bounded retrieval memory accounting.
+#[doc(hidden)]
+pub struct KnowledgeRetrievalPipelineBudget {
     ledger: QueryMemoryLedger,
     working: QueryMemoryLease,
     result: QueryMemoryLease,
@@ -24,10 +65,7 @@ pub(super) struct KnowledgeRetrievalPipelineBudget {
 }
 
 impl KnowledgeRetrievalPipelineBudget {
-    pub(super) fn new(
-        query_memory_budget: NonZeroUsize,
-        result_payload_budget: usize,
-    ) -> Result<Self> {
+    pub fn new(query_memory_budget: NonZeroUsize, result_payload_budget: usize) -> Result<Self> {
         if result_payload_budget == 0 {
             return Err(SkeinError::Execution(
                 "knowledge retrieval requires a positive result payload budget".to_string(),
@@ -58,7 +96,7 @@ impl KnowledgeRetrievalPipelineBudget {
         })
     }
 
-    pub(super) fn enter(&mut self, stage: KnowledgeRetrievalStage) -> Result<()> {
+    pub fn enter(&mut self, stage: KnowledgeRetrievalStage) -> Result<()> {
         let expected = STAGE_ORDER.get(self.stages.len()).copied();
         if expected != Some(stage) {
             return Err(SkeinError::Execution(format!(
@@ -71,15 +109,11 @@ impl KnowledgeRetrievalPipelineBudget {
         Ok(())
     }
 
-    pub(super) fn retain_working(&mut self, bytes: usize) -> Result<()> {
+    pub fn retain_working(&mut self, bytes: usize) -> Result<()> {
         self.working.grow(bytes)
     }
 
-    pub(super) fn retain_result(
-        &mut self,
-        memory_bytes: usize,
-        payload_bytes: usize,
-    ) -> Result<()> {
+    pub fn retain_result(&mut self, memory_bytes: usize, payload_bytes: usize) -> Result<()> {
         let next_payload = self
             .result_payload_bytes
             .checked_add(payload_bytes)
@@ -99,7 +133,7 @@ impl KnowledgeRetrievalPipelineBudget {
         Ok(())
     }
 
-    pub(super) fn finish(
+    pub fn finish(
         self,
         graph_snapshot_commit_epoch: u64,
         canonical_identity_filtered_out_count: usize,
@@ -132,5 +166,46 @@ impl KnowledgeRetrievalPipelineBudget {
             canonical_output_hydration_after_top_k: true,
             metadata_filter_authorized_graph_expansion,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KnowledgeRetrievalPipelineBudget, KnowledgeRetrievalStage};
+    use std::num::NonZeroUsize;
+
+    fn budget() -> KnowledgeRetrievalPipelineBudget {
+        KnowledgeRetrievalPipelineBudget::new(NonZeroUsize::new(1024).unwrap(), 128).unwrap()
+    }
+
+    #[test]
+    fn enforces_stage_order_and_complete_delivery() {
+        let mut pipeline = budget();
+        let error = pipeline.enter(KnowledgeRetrievalStage::Rerank).unwrap_err();
+        assert!(error.to_string().contains("expected search_candidate"));
+
+        for stage in [
+            KnowledgeRetrievalStage::SearchCandidate,
+            KnowledgeRetrievalStage::MetadataFilter,
+            KnowledgeRetrievalStage::AuthorizedGraphExpand,
+            KnowledgeRetrievalStage::Rerank,
+            KnowledgeRetrievalStage::TopK,
+            KnowledgeRetrievalStage::CanonicalHydration,
+        ] {
+            pipeline.enter(stage).unwrap();
+        }
+        let report = pipeline.finish(7, 1, 2, 3, true).unwrap();
+        assert_eq!(report.graph_snapshot_commit_epoch, 7);
+        assert_eq!(report.result_payload_bytes, 0);
+        assert!(report.canonical_output_hydration_after_top_k);
+    }
+
+    #[test]
+    fn bounds_result_payload_before_memory_retention() {
+        let mut pipeline = budget();
+        let error = pipeline.retain_result(1, 129).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exceeding max_read_result_payload_bytes 128"));
     }
 }

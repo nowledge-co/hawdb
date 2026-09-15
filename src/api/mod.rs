@@ -90,7 +90,6 @@ mod observability;
 mod plan_cache;
 mod query_runtime;
 mod resource_profile;
-mod retrieval_pipeline;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod source_candidates;
@@ -4368,10 +4367,11 @@ impl KnowledgeRetrievalGraphContext<'_> {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         let graph_commit_epoch = self.store.commit_epoch();
-        let mut pipeline = retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
-            self.query_memory_budget,
-            self.result_payload_budget,
-        )?;
+        let mut pipeline =
+            skein_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
+                self.query_memory_budget,
+                self.result_payload_budget,
+            )?;
         pipeline.enter(KnowledgeRetrievalStage::SearchCandidate)?;
         pipeline.enter(KnowledgeRetrievalStage::MetadataFilter)?;
         let canonical_search_nodes =
