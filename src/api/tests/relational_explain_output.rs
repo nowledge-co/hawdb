@@ -26,7 +26,7 @@ fn migrated_explain_keeps_planner_coverage_and_execution_evidence() {
                 if analyze { "ANALYZE " } else { "" }
             );
             let output = database
-                .query_sql_with_params(&sql, &[parameter.clone()])
+                .query_sql_with_params(&sql, std::slice::from_ref(&parameter))
                 .unwrap();
             assert_eq!(output.rows.iter().any(|row| matches!(row.get("id"), Some(Value::String(id)) if id.contains("logical_selection"))), residual);
             for row in output.rows.iter() {
