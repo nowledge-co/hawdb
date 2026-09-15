@@ -34,7 +34,10 @@ pub use developer_staging::{
     SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 #[doc(hidden)]
-pub use developer_staging_verification::verify_skein_lightning_staging_catalog;
+pub use developer_staging_verification::{
+    read_skein_lightning_staging_artifact_json, verify_skein_lightning_published_manifest,
+    verify_skein_lightning_staging_catalog,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalGraphSnapshotExport {

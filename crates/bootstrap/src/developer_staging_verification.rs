@@ -521,6 +521,171 @@ fn verify_bundle_storage_recovery_evidence(
     }
 }
 
+pub fn verify_skein_lightning_published_manifest(
+    staging_dir: impl AsRef<Path>,
+    publish_dir: impl AsRef<Path>,
+) -> Result<serde_json::Value> {
+    let staging_dir = staging_dir.as_ref();
+    let publish_dir = publish_dir.as_ref();
+    let published_path = publish_dir.join("skein_lightning_published_manifest.json");
+    let published = read_json_file(&published_path)?;
+    let staging_verification = verify_skein_lightning_staging_catalog(staging_dir)?;
+    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+    let catalog_bytes = fs::read(&catalog_path)?;
+    let actual_catalog_checksum = checksum_u64(&catalog_bytes);
+    let actual_catalog_byte_len = catalog_bytes.len() as u64;
+    let expected_catalog_checksum = published
+        .get("staging_catalog")
+        .and_then(|catalog| catalog.get("checksum"))
+        .and_then(serde_json::Value::as_u64);
+    let expected_catalog_byte_len = published
+        .get("staging_catalog")
+        .and_then(|catalog| catalog.get("byte_len"))
+        .and_then(serde_json::Value::as_u64);
+    let catalog_checksum_matches = expected_catalog_checksum == Some(actual_catalog_checksum);
+    let catalog_byte_len_matches = expected_catalog_byte_len == Some(actual_catalog_byte_len);
+    let pointer_state_published =
+        published.get("state").and_then(serde_json::Value::as_str) == Some("PUBLISHED");
+    let staging_ready = staging_verification
+        .get("validation_gate")
+        .and_then(|gate| gate.get("decision"))
+        .and_then(serde_json::Value::as_str)
+        == Some("ready");
+    let storage_recovery_evidence = staging_verification
+        .get("storage_recovery_evidence")
+        .cloned()
+        .unwrap_or_else(default_storage_recovery_evidence);
+    let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
+        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))?;
+    let manifest = read_staging_artifact_json(&catalog, staging_dir, "manifest")?;
+    let pointer_matches_manifest = published.get("database_commit_epoch")
+        == manifest.get("database_commit_epoch")
+        && published.get("graph_commit_epoch") == manifest.get("graph_commit_epoch")
+        && published.get("logical_checksum") == manifest.get("logical_checksum")
+        && published.get("schema_checksum") == manifest.get("schema_checksum")
+        && published.get("graph_stream_checksum") == manifest.get("graph_stream_checksum")
+        && published.get("graph_stream_byte_len") == manifest.get("graph_stream_byte_len")
+        && published.get("relational_stream_checksum")
+            == manifest.get("relational_stream_checksum")
+        && published.get("relational_stream_byte_len")
+            == manifest.get("relational_stream_byte_len")
+        && published.get("relational_table_count") == manifest.get("relational_table_count")
+        && published.get("relational_row_count") == manifest.get("relational_row_count")
+        && published.get("node_count") == manifest.get("node_count")
+        && published.get("relationship_count") == manifest.get("relationship_count");
+    let mut errors = Vec::new();
+    let mut pointer_errors = Vec::new();
+    let mut catalog_errors = Vec::new();
+    let mut staging_errors = Vec::new();
+    if !pointer_state_published {
+        record_error(
+            &mut errors,
+            &mut pointer_errors,
+            "published pointer is not PUBLISHED",
+        );
+    }
+    if !catalog_checksum_matches {
+        record_error(
+            &mut errors,
+            &mut catalog_errors,
+            "published pointer staging catalog checksum mismatch",
+        );
+    }
+    if !catalog_byte_len_matches {
+        record_error(
+            &mut errors,
+            &mut catalog_errors,
+            "published pointer staging catalog byte length mismatch",
+        );
+    }
+    if !staging_ready {
+        record_error(
+            &mut errors,
+            &mut staging_errors,
+            "published staging catalog is not ready",
+        );
+    }
+    if !pointer_matches_manifest {
+        record_error(
+            &mut errors,
+            &mut pointer_errors,
+            "published pointer does not match staged manifest",
+        );
+    }
+    let decision = if errors.is_empty() {
+        "ready"
+    } else {
+        "blocked"
+    };
+    Ok(serde_json::json!({
+        "protocol": "skein-lightning-published-verification",
+        "protocol_version": 1,
+        "pointer_state_published": pointer_state_published,
+        "catalog_checksum_matches": catalog_checksum_matches,
+        "catalog_byte_len_matches": catalog_byte_len_matches,
+        "staging_ready": staging_ready,
+        "pointer_matches_manifest": pointer_matches_manifest,
+        "storage_recovery_evidence": storage_recovery_evidence,
+        "published_manifest": published,
+        "staging_verification": staging_verification,
+        "validation_gate": {
+            "decision": decision,
+            "pointer_errors": pointer_errors.len(),
+            "catalog_errors": catalog_errors.len(),
+            "staging_errors": staging_errors.len(),
+            "pointer_error_messages": pointer_errors,
+            "catalog_error_messages": catalog_errors,
+            "staging_error_messages": staging_errors,
+            "errors": errors,
+        },
+    }))
+}
+
+pub fn read_skein_lightning_staging_artifact_json(
+    catalog: &serde_json::Value,
+    staging_dir: &Path,
+    kind: &str,
+) -> Result<serde_json::Value> {
+    read_staging_artifact_json(catalog, staging_dir, kind)
+}
+
+fn read_staging_artifact_json(
+    catalog: &serde_json::Value,
+    staging_dir: &Path,
+    kind: &str,
+) -> Result<serde_json::Value> {
+    let artifacts = catalog
+        .get("artifacts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            SkeinError::Execution("staging catalog missing artifacts array".to_string())
+        })?;
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.get("kind").and_then(serde_json::Value::as_str) == Some(kind))
+        .ok_or_else(|| SkeinError::Execution(format!("staging catalog missing {kind} artifact")))?;
+    let path = artifact
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| SkeinError::Execution(format!("staging {kind} artifact missing path")))?;
+    if path.contains('/') || path.contains('\\') {
+        return Err(SkeinError::Execution(format!(
+            "staging {kind} artifact uses non-local path {path}"
+        )));
+    }
+    read_json_file(&staging_dir.join(path))
+}
+
+fn default_storage_recovery_evidence() -> serde_json::Value {
+    serde_json::json!({
+        "present": false,
+        "valid": true,
+        "protocol_matches": false,
+        "storage_version_present": false,
+        "recovered_commit_epoch_matches_manifest": false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::verify_skein_lightning_staging_catalog;
