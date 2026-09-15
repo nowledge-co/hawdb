@@ -270,6 +270,12 @@ consumer unavailable and requires explicit reinitialization; ordinary database
 operations retain their existing hard retention behavior. No graph commit waits
 for registry disk I/O just to prune an already over-limit log.
 
+Explicit creation can reinitialize a missing, corrupt or foreign-database registry
+from a complete source snapshot. It preserves available diagnostics until the
+initializer and projection publication succeed. A transient registry I/O failure
+first reloads the durable file, so rebuilding one consumer cannot discard other
+valid registrations. Reinitialization never adopts an existing projection.
+
 If a larger retention limit on restart restores a complete replay window from
 still-present WAL, activation still requires explicit receipt validation; there
 is no promise that a historical invalidation is a permanent revocation. Explicit

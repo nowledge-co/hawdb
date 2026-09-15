@@ -780,3 +780,78 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
         Err(Error::RebuildRequired(Reason::SourceRewound))
     ));
 }
+
+#[test]
+fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
+    let fixture = Fixture::new();
+    let mut source = fixture.database();
+    append(&mut source, 1);
+    let original = source
+        .create_search_projection_consumer(
+            id("main"),
+            fixture.0.join("original"),
+            options(100),
+            initialize,
+        )
+        .unwrap();
+    let source_identity = source.store.search_projection_database_identity();
+    let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
+    append(&mut replacement, 2);
+    drop(replacement);
+    let foreign_bytes =
+        std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
+    let registry = fixture
+        .0
+        .join("replacement-database/projection_consumers.meta");
+    std::fs::write(&registry, &foreign_bytes).unwrap();
+    let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
+    let epoch = replacement.commit_epoch();
+    assert!(matches!(
+        replacement
+            .search_projection_consumer_status(&id("main"))
+            .unwrap()
+            .state,
+        State::RebuildRequired(Reason::DatabaseIdentityMismatch)
+    ));
+    assert!(replacement
+        .create_search_projection_consumer(
+            id("main"),
+            fixture.0.join("failed"),
+            options(100),
+            |_, _| Err(SkeinError::Execution("incomplete mapping".into()))
+        )
+        .is_err());
+    assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);
+    assert!(matches!(
+        replacement
+            .search_projection_consumer_status(&id("main"))
+            .unwrap()
+            .state,
+        State::RebuildRequired(Reason::DatabaseIdentityMismatch)
+    ));
+    let rebuilt = replacement
+        .create_search_projection_consumer(
+            id("main"),
+            fixture.0.join("rebuilt"),
+            options(100),
+            initialize,
+        )
+        .unwrap();
+    assert_eq!(replacement.commit_epoch(), epoch);
+    assert_ne!(
+        replacement.store.search_projection_database_identity(),
+        source_identity
+    );
+    assert!(rebuilt.search_index().document("memory:m2").is_some());
+    assert!(rebuilt.search_index().document("memory:m1").is_none());
+    assert!(matches!(
+        replacement.renew_search_projection_consumer(&original),
+        Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch))
+    ));
+    drop(rebuilt);
+    drop(replacement);
+    let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
+    replacement
+        .open_search_projection_consumer(&id("main"), fixture.0.join("rebuilt"))
+        .unwrap();
+}

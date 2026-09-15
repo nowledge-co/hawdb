@@ -53,7 +53,14 @@ impl Database {
         if !parent.is_dir() {
             return Err(SkeinError::Storage("consumer projection parent must exist".into()).into());
         }
-        if !self.projection_consumers.unavailable {
+        let reinitialize_registry = self.projection_consumers.unavailable
+            || self
+                .projection_consumers
+                .database_uuid
+                .is_some_and(|identity| {
+                    Some(identity) != self.store.search_projection_database_identity()
+                });
+        if !reinitialize_registry {
             if self.projection_consumers.records.contains_key(id.as_str()) {
                 return Err(Error::AlreadyRegistered);
             }
@@ -76,17 +83,6 @@ impl Database {
         };
         // Also retry this checkpoint after an earlier identity publication error.
         self.checkpoint()?;
-        if self.projection_consumers.unavailable {
-            self.projection_consumers = ConsumerRegistry::default();
-        }
-        if self
-            .projection_consumers
-            .database_uuid
-            .is_some_and(|identity| identity != database_uuid)
-        {
-            return Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch));
-        }
-        self.projection_consumers.database_uuid = Some(database_uuid);
         let registration_uuid = generate_uuidv7()?;
         let binding = ConsumerBinding {
             database_uuid,
@@ -122,6 +118,13 @@ impl Database {
             }
         };
         let receipt = projection.receipt();
+        // Invalid foreign/corrupt records have no authority in this database.
+        // Replace them only after explicit initialization actually succeeds.
+        if reinitialize_registry {
+            self.projection_consumers = ConsumerRegistry::default();
+        }
+        self.projection_consumers.database_uuid = Some(database_uuid);
+
         self.projection_consumers.records.insert(
             id.as_str().into(),
             Record {

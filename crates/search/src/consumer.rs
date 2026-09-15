@@ -512,7 +512,14 @@ mod tests {
                     "searchable",
                     None,
                     super::super::SearchMode::Text,
-                    super::super::SearchQueryOptions::default()
+                    super::super::SearchQueryOptions {
+                        limit: 10,
+                        offset: 0,
+                        rank_window: None,
+                        fusion_weights: super::super::SearchFusionWeights::default(),
+                        metadata_filters: Default::default(),
+                        policy_epoch: None,
+                    }
                 ),
                 Err(SkeinError::CapabilityUnavailable {
                     capability: skein_core::RuntimeCapability::FullTextSearch
