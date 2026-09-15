@@ -1,6 +1,6 @@
 //! Storage-neutral query-runtime preflight protocol models.
 
-use skein_core::Value;
+use skein_core::{Result, SkeinError, Value};
 use std::collections::BTreeMap;
 
 /// One bounded query probe supplied to the embedded query-runtime preflight.
@@ -68,6 +68,258 @@ impl NowledgeQueryRuntimePreflightProbe {
     }
 }
 
+/// Parses standalone probes, probe bundles, or graph-route inventories.
+#[doc(hidden)]
+pub fn parse_query_runtime_preflight_probes(
+    value: &serde_json::Value,
+) -> Result<Vec<NowledgeQueryRuntimePreflightProbe>> {
+    if let Some(array) = value.as_array() {
+        return array.iter().map(parse_probe).collect();
+    }
+    if let Some(array) = value.get("probes").and_then(serde_json::Value::as_array) {
+        return array.iter().map(parse_probe).collect();
+    }
+    if let Some(array) = value.get("routes").and_then(serde_json::Value::as_array) {
+        return parse_route_query_inventory_probes(array);
+    }
+    Ok(vec![parse_probe(value)?])
+}
+
+fn parse_route_query_inventory_probes(
+    routes: &[serde_json::Value],
+) -> Result<Vec<NowledgeQueryRuntimePreflightProbe>> {
+    routes
+        .iter()
+        .flat_map(|route| match parse_route_query_probes(route) {
+            Ok(probes) => probes.into_iter().map(Ok).collect::<Vec<_>>(),
+            Err(error) => vec![Err(error)],
+        })
+        .collect()
+}
+
+fn parse_route_query_probes(
+    value: &serde_json::Value,
+) -> Result<Vec<NowledgeQueryRuntimePreflightProbe>> {
+    let object = value.as_object().ok_or_else(|| {
+        SkeinError::Semantic("graph route query inventory route must be a JSON object".to_string())
+    })?;
+    let route = object
+        .get("route")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            SkeinError::Semantic(
+                "graph route query inventory field 'route' must be a string".to_string(),
+            )
+        })?
+        .to_string();
+    if route.trim().is_empty() {
+        return Err(SkeinError::Semantic(
+            "graph route query inventory route must be non-empty".to_string(),
+        ));
+    }
+    let queries = object
+        .get("queries")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            SkeinError::Semantic(
+                "graph route query inventory field 'queries' must be an array".to_string(),
+            )
+        })?;
+    queries
+        .iter()
+        .enumerate()
+        .map(|(query_index, query)| parse_route_query_probe(&route, query, query_index))
+        .collect()
+}
+
+fn parse_route_query_probe(
+    route: &str,
+    value: &serde_json::Value,
+    query_index: usize,
+) -> Result<NowledgeQueryRuntimePreflightProbe> {
+    let object = value.as_object().ok_or_else(|| {
+        SkeinError::Semantic("graph route query inventory query must be a JSON object".to_string())
+    })?;
+    let name =
+        optional_query_name(value).unwrap_or_else(|| format!("{route}:query-{}", query_index + 1));
+    if name.trim().is_empty() {
+        return Err(SkeinError::Semantic(
+            "graph route query inventory query name must be non-empty when provided".to_string(),
+        ));
+    }
+    let cypher = object
+        .get("cypher")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            SkeinError::Semantic(
+                "graph route query inventory field 'cypher' must be a string".to_string(),
+            )
+        })?
+        .to_string();
+    if cypher.trim().is_empty() {
+        return Err(SkeinError::Semantic(
+            "graph route query inventory field 'cypher' must be non-empty".to_string(),
+        ));
+    }
+    let parameters = object
+        .get("parameters")
+        .map(parse_parameters_json)
+        .transpose()?
+        .unwrap_or_default();
+    let min_scan_pruning_reports = optional_usize(object, "min_scan_pruning_reports")?.unwrap_or(1);
+    Ok(NowledgeQueryRuntimePreflightProbe {
+        name,
+        route: Some(route.to_string()),
+        query_family: optional_string(object, "query_family")?,
+        cypher,
+        parameters,
+        require_scan_pruning: optional_bool(object, "require_scan_pruning")?.unwrap_or(false),
+        require_pruned: optional_bool(object, "require_pruned")?.unwrap_or(false),
+        min_scan_pruning_reports,
+        max_output_rows: optional_usize(object, "max_output_rows")?,
+    })
+}
+
+fn parse_probe(value: &serde_json::Value) -> Result<NowledgeQueryRuntimePreflightProbe> {
+    let object = value.as_object().ok_or_else(|| {
+        SkeinError::Semantic("query runtime probe must be a JSON object".to_string())
+    })?;
+    let name = object
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unnamed")
+        .to_string();
+    let cypher = object
+        .get("cypher")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            SkeinError::Semantic("query runtime probe field 'cypher' must be a string".to_string())
+        })?
+        .to_string();
+    let parameters = object
+        .get("parameters")
+        .map(parse_parameters_json)
+        .transpose()?
+        .unwrap_or_default();
+    let min_scan_pruning_reports = optional_usize(object, "min_scan_pruning_reports")?.unwrap_or(1);
+    Ok(NowledgeQueryRuntimePreflightProbe {
+        name,
+        route: optional_string(object, "route")?,
+        query_family: optional_string(object, "query_family")?,
+        cypher,
+        parameters,
+        require_scan_pruning: optional_bool(object, "require_scan_pruning")?.unwrap_or(false),
+        require_pruned: optional_bool(object, "require_pruned")?.unwrap_or(false),
+        min_scan_pruning_reports,
+        max_output_rows: optional_usize(object, "max_output_rows")?,
+    })
+}
+
+fn optional_query_name(value: &serde_json::Value) -> Option<String> {
+    ["name", "query_id", "id"]
+        .iter()
+        .find_map(|field| value.get(*field).and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+}
+
+fn parse_parameters_json(value: &serde_json::Value) -> Result<BTreeMap<String, Value>> {
+    let object = value.as_object().ok_or_else(|| {
+        SkeinError::Semantic("query runtime probe field 'parameters' must be an object".to_string())
+    })?;
+    object
+        .iter()
+        .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
+        .collect()
+}
+
+fn value_from_json(value: &serde_json::Value) -> Result<Value> {
+    match value {
+        serde_json::Value::Null => Ok(Value::Null),
+        serde_json::Value::Bool(value) => Ok(Value::Bool(*value)),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Ok(Value::Int(value))
+            } else if let Some(value) = value.as_f64() {
+                Ok(Value::Float(value))
+            } else {
+                Err(SkeinError::Semantic(
+                    "unsupported JSON number in query runtime probe parameters".to_string(),
+                ))
+            }
+        }
+        serde_json::Value::String(value) => Ok(Value::String(value.clone())),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(value_from_json)
+            .collect::<Result<Vec<_>>>()
+            .map(Value::List),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
+            .collect::<Result<BTreeMap<_, _>>>()
+            .map(Value::Map),
+    }
+}
+
+fn optional_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<String>> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .map(|value| Some(value.to_string()))
+        .ok_or_else(|| {
+            SkeinError::Semantic(format!(
+                "query runtime probe field '{field}' must be a string"
+            ))
+        })
+}
+
+fn optional_bool(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<bool>> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_bool().map(Some).ok_or_else(|| {
+        SkeinError::Semantic(format!(
+            "query runtime probe field '{field}' must be a boolean"
+        ))
+    })
+}
+
+fn optional_usize(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<usize>> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let raw = value.as_u64().ok_or_else(|| {
+        SkeinError::Semantic(format!(
+            "query runtime probe field '{field}' must be an integer"
+        ))
+    })?;
+    usize::try_from(raw).map(Some).map_err(|_| {
+        SkeinError::Semantic(format!(
+            "query runtime probe field '{field}' exceeds usize range"
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +342,61 @@ mod tests {
         assert!(probe.require_pruned);
         assert_eq!(probe.min_scan_pruning_reports, 2);
         assert_eq!(probe.max_output_rows, Some(1));
+    }
+
+    #[test]
+    fn parser_preserves_route_inventory_probe_metadata() {
+        let probes = parse_query_runtime_preflight_probes(&serde_json::json!({
+            "routes": [{
+                "route": "/graph/overview",
+                "queries": [{
+                    "query_id": "overview-by-kind",
+                    "query_family": "graph_overview",
+                    "cypher": "MATCH (m:Memory) WHERE m.kind = $kind RETURN m",
+                    "parameters": {
+                        "kind": "note",
+                        "limits": [1, 2],
+                        "flags": {"strict": true}
+                    },
+                    "require_scan_pruning": true,
+                    "require_pruned": true,
+                    "min_scan_pruning_reports": 2,
+                    "max_output_rows": 3
+                }]
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(probes.len(), 1);
+        let probe = &probes[0];
+        assert_eq!(probe.name, "overview-by-kind");
+        assert_eq!(probe.route.as_deref(), Some("/graph/overview"));
+        assert_eq!(probe.query_family.as_deref(), Some("graph_overview"));
+        assert_eq!(probe.parameters["kind"], Value::String("note".to_string()));
+        assert_eq!(
+            probe.parameters["limits"],
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(
+            probe.parameters["flags"],
+            Value::Map(BTreeMap::from([("strict".to_string(), Value::Bool(true))]))
+        );
+        assert!(probe.require_scan_pruning);
+        assert!(probe.require_pruned);
+        assert_eq!(probe.min_scan_pruning_reports, 2);
+        assert_eq!(probe.max_output_rows, Some(3));
+    }
+
+    #[test]
+    fn parser_rejects_invalid_route_inventory_shape() {
+        let error = parse_query_runtime_preflight_probes(&serde_json::json!({
+            "routes": [{
+                "route": " ",
+                "queries": []
+            }]
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("route must be non-empty"));
     }
 }
