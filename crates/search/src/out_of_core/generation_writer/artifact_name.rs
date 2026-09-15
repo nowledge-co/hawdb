@@ -1,8 +1,6 @@
 //! Generated artifact names retain their capacity through publication.
 
-#[cfg(feature = "vector-search")]
 use crate::{build_control::checkpoint, build_memory::BuildMemory, Result, SkeinError};
-#[cfg(feature = "vector-search")]
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::ops::Deref;
@@ -14,10 +12,45 @@ pub(in super::super) struct Name {
     _memory: QueryMemoryLease,
 }
 
-#[cfg(feature = "vector-search")]
 impl Name {
+    #[cfg(feature = "vector-search")]
     pub(super) fn rabitq(
         generation: u64,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        Self::generated("search_rabitq.", generation, memory, task)
+    }
+
+    pub(super) fn generated(
+        prefix: &'static str,
+        generation: u64,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(task)?;
+        if prefix.len() > 128 - 20 - ".skein".len() {
+            return Err(SkeinError::Execution(
+                "search artifact prefix exceeds preflight capacity".into(),
+            ));
+        }
+        Self::formatted(|| format!("{prefix}{generation}.skein"), memory, task)
+    }
+
+    pub(super) fn temporary_extension(
+        sequence: u64,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        Self::formatted(
+            || format!("tmp.{}.{}", std::process::id(), sequence),
+            memory,
+            task,
+        )
+    }
+
+    fn formatted(
+        format: impl FnOnce() -> String,
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
@@ -26,7 +59,7 @@ impl Name {
         // formatter growth before allocation, then retain the actual capacity.
         let lease = memory.retained.reserve(3 * 128)?;
         let mut name = Self {
-            value: crate::rabitq_artifact_file(generation),
+            value: format(),
             _memory: lease,
         };
         checkpoint(task)?;

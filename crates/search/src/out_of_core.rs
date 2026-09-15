@@ -150,26 +150,26 @@ pub struct SearchOutOfCoreReader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SearchOutOfCoreManifestBody {
-    format: String,
+struct SearchOutOfCoreManifestBody<S = String> {
+    format: S,
     generation: u64,
-    descriptor_file: String,
+    descriptor_file: S,
     descriptor_len: u64,
     descriptor_checksum: u64,
-    payload_file: String,
+    payload_file: S,
     payload_len: u64,
-    metadata_payload_file: String,
+    metadata_payload_file: S,
     metadata_payload_len: u64,
-    vector_payload_file: String,
+    vector_payload_file: S,
     vector_payload_len: u64,
-    layout_file: String,
+    layout_file: S,
     layout_len: u64,
     layout_checksum: u64,
-    lexical_manifest_file: String,
+    lexical_manifest_file: S,
     lexical_manifest_len: u64,
     lexical_manifest_checksum: u64,
     #[serde(default)]
-    rabitq_artifact_file: Option<String>,
+    rabitq_artifact_file: Option<S>,
     #[serde(default)]
     rabitq_artifact_len: Option<u64>,
     #[serde(default)]
@@ -186,8 +186,8 @@ struct SearchOutOfCoreManifestBody {
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
     import_source_graph_commit_epoch: Option<u64>,
-    embedding_model: Option<String>,
-    embedding_version: Option<String>,
+    embedding_model: Option<S>,
+    embedding_version: Option<S>,
     embedding_dimension: Option<usize>,
 }
 
@@ -300,20 +300,22 @@ impl SearchOutOfCoreManifestBody {
         envelope.body.validate_names()?;
         Ok(envelope.body)
     }
+}
 
+impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
     fn validate_names(&self) -> Result<()> {
-        if self.format != OUT_OF_CORE_FORMAT || self.generation == 0 {
+        if self.format.as_ref() != OUT_OF_CORE_FORMAT || self.generation == 0 {
             return Err(SkeinError::Storage(
                 "search out-of-core manifest header is invalid".to_string(),
             ));
         }
         for name in [
-            self.descriptor_file.as_str(),
-            self.payload_file.as_str(),
-            self.metadata_payload_file.as_str(),
-            self.vector_payload_file.as_str(),
-            self.layout_file.as_str(),
-            self.lexical_manifest_file.as_str(),
+            self.descriptor_file.as_ref(),
+            self.payload_file.as_ref(),
+            self.metadata_payload_file.as_ref(),
+            self.vector_payload_file.as_ref(),
+            self.layout_file.as_ref(),
+            self.lexical_manifest_file.as_ref(),
         ] {
             if Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name) {
                 return Err(SkeinError::Storage(
@@ -321,35 +323,36 @@ impl SearchOutOfCoreManifestBody {
                 ));
             }
         }
-        if let Some(name) = self.rabitq_artifact_file.as_deref()
+        if let Some(name) = self.rabitq_artifact_file.as_ref().map(AsRef::as_ref)
             && Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
         {
             return Err(SkeinError::Storage(
                 "search out-of-core manifest contains an invalid RaBitQ artifact name".to_string(),
             ));
         }
-        if self.descriptor_file != format!("search_projection_segments.{}.skein", self.generation)
-            || self.payload_file
+        if self.descriptor_file.as_ref()
+            != format!("search_projection_segments.{}.skein", self.generation)
+            || self.payload_file.as_ref()
                 != format!(
                     "search_projection_segment_payloads.{}.skein",
                     self.generation
                 )
-            || self.metadata_payload_file
+            || self.metadata_payload_file.as_ref()
                 != format!(
                     "search_projection_metadata_payloads.{}.skein",
                     self.generation
                 )
-            || self.vector_payload_file
+            || self.vector_payload_file.as_ref()
                 != format!(
                     "search_projection_vector_payloads.{}.skein",
                     self.generation
                 )
-            || self.layout_file
+            || self.layout_file.as_ref()
                 != format!(
                     "search_projection_out_of_core_layout.{}.skein",
                     self.generation
                 )
-            || self.lexical_manifest_file
+            || self.lexical_manifest_file.as_ref()
                 != format!("search_lexical.manifest.{}.skein", self.generation)
         {
             return Err(SkeinError::Storage(
@@ -373,7 +376,7 @@ impl SearchOutOfCoreManifestBody {
                 "search out-of-core manifest has an incomplete RaBitQ identity".to_string(),
             ));
         }
-        if let Some(name) = self.rabitq_artifact_file.as_deref()
+        if let Some(name) = self.rabitq_artifact_file.as_ref().map(AsRef::as_ref)
             && name != format!("search_rabitq.{}.skein", self.generation)
         {
             return Err(SkeinError::Storage(
@@ -1983,15 +1986,6 @@ pub(super) fn published_generation(
         analyzer_lexicon.clone(),
     )?;
     Ok(Some(reader.generation()))
-}
-
-pub(super) fn active_manifest_generation(root: &Path) -> Result<Option<u64>> {
-    let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
-    if !manifest_path.exists() {
-        return Ok(None);
-    }
-    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
-    SearchOutOfCoreManifestBody::decode(&manifest_bytes).map(|manifest| Some(manifest.generation))
 }
 
 pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -> Result<u64> {

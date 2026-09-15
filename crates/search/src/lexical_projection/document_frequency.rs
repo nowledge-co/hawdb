@@ -122,6 +122,7 @@ struct SpillingAnalysis {
     buffer_limit: u64,
     lower_bound: u64,
     runs: DocumentRuns,
+    records_memory: Option<QueryMemoryLease>,
 }
 
 impl SpillingAnalysis {
@@ -153,11 +154,15 @@ impl SpillingAnalysis {
             ));
         }
         if capacity > self.records.capacity() {
-            self.records
-                .try_reserve_exact(capacity - self.records.len())
-                .map_err(|error| {
-                    SkeinError::Storage(format!("reserve document frequency records: {error}"))
-                })?;
+            if let Some(memory) = &mut self.records_memory {
+                crate::build_memory::reserve_capacity(&mut self.records, capacity, memory)?;
+            } else {
+                self.records
+                    .try_reserve_exact(capacity - self.records.len())
+                    .map_err(|error| {
+                        SkeinError::Storage(format!("reserve document frequency records: {error}"))
+                    })?;
+            }
         }
         self.string_bytes = self.string_bytes.saturating_add(string_bytes);
         self.records.push(record);
@@ -174,6 +179,9 @@ impl SpillingAnalysis {
         let records = std::mem::take(&mut self.records);
         self.string_bytes = 0;
         let run = write_run(records.into_iter().map(Ok), pool, &mut FileSpillIo)?;
+        if let Some(memory) = &mut self.records_memory {
+            memory.reset();
+        }
         self.runs.insert(run, pool)
     }
 
@@ -258,7 +266,9 @@ fn progress_memory(pool: &SpillRuns, document_id: &str) -> u64 {
             ),
         )
         .saturating_add(paths)
-        .saturating_add(std::mem::size_of::<DocumentRuns>() as u64)
+        // Keep the historical logical allowance independent of added physical
+        // ownership handles. The operation ledger admits those separately.
+        .saturating_add(u64::from(usize::BITS) * std::mem::size_of::<(PathBuf, bool)>() as u64)
         .saturating_add(document_id.len() as u64)
         .saturating_add(128)
 }
@@ -271,26 +281,31 @@ pub(super) fn analyze<'a>(
     pending: &mut Vec<Posting>,
     pending_bytes: &mut u64,
 ) -> Result<AnalyzedDocument<'a>> {
-    analyze_with_control(
+    let mut buffer = PendingPostings::new(None)?;
+    buffer.values = std::mem::take(pending);
+    buffer.bytes = *pending_bytes;
+    let result = analyze_with_control(
         document,
         analyzer,
         pool,
-        pending,
-        pending_bytes,
+        &mut buffer,
         crate::analyzer_stream::Control::default(),
-    )
+    );
+    *pending = std::mem::take(&mut buffer.values);
+    *pending_bytes = buffer.bytes;
+    result
 }
 
 pub(super) fn analyze_with_control<'a>(
     document: &'a SearchDocument,
     analyzer: &SearchAnalyzerLexicon,
     pool: &mut SpillRuns,
-    pending: &mut Vec<Posting>,
-    pending_bytes: &mut u64,
+    pending: &mut PendingPostings,
     control: crate::analyzer_stream::Control<'_>,
 ) -> Result<AnalyzedDocument<'a>> {
     let config = pool.config;
     admit_document_source(document, config)?;
+    pool.prepare(0, document.id.len())?;
     let progress = progress_memory(pool, &document.id);
     let base = document.id.len() as u64 + 64;
     let spill_buffer = config
@@ -299,8 +314,8 @@ pub(super) fn analyze_with_control<'a>(
         .checked_sub(progress)
         .filter(|bytes| *bytes >= base);
     let map_limit = spill_buffer.unwrap_or(config.build_memory_bytes.get());
-    if base.saturating_add(*pending_bytes) > map_limit {
-        flush_pending(pool, pending, pending_bytes)?;
+    if base.saturating_add(pending.bytes) > map_limit {
+        pending.flush(pool)?;
     }
     let mut resident = Some(DocumentAnalysis::new_with_memory(
         &document.id,
@@ -329,6 +344,7 @@ pub(super) fn analyze_with_control<'a>(
                         config.max_term_bytes
                     )));
                 }
+                pool.prepare(term.len(), document.id.len())?;
                 if let Some(analysis) = resident.as_ref() {
                     let new_term = !analysis.frequencies.contains_key(&term);
                     let required = analysis.required_map_bytes(
@@ -342,8 +358,8 @@ pub(super) fn analyze_with_control<'a>(
                             .len()
                             .saturating_add(usize::from(new_term)),
                     );
-                    if required.saturating_add(*pending_bytes) > map_limit {
-                        flush_pending(pool, pending, pending_bytes)?;
+                    if required.saturating_add(pending.bytes) > map_limit {
+                        pending.flush(pool)?;
                     }
                     if required > map_limit {
                         let Some(buffer_limit) = spill_buffer else {
@@ -362,6 +378,10 @@ pub(super) fn analyze_with_control<'a>(
                             buffer_limit,
                             lower_bound: u64::from(analysis.document_len),
                             runs: DocumentRuns::default(),
+                            records_memory: control
+                                .memory
+                                .map(|memory| memory.retained.reserve(0))
+                                .transpose()?,
                         };
                         if !analysis.frequencies.is_empty() {
                             let prefix = analysis.frequencies.into_iter().map(|(term, entry)| {
@@ -421,7 +441,12 @@ fn visit_frequencies(
     config: LexicalProjectionConfig,
     mut emit: impl FnMut(Term, u32) -> Result<()>,
 ) -> Result<()> {
-    let mut reader = FrequencyRunReader::open(&run.guard.path, config)?;
+    let mut reader = FrequencyRunReader::open_with_control(
+        &run.guard.path,
+        config,
+        run.progress.as_ref(),
+        run.task.as_ref(),
+    )?;
     let mut current: Option<(Term, u64)> = None;
     while let Some(record) = reader.next()? {
         let frequency = record.summary.frequency()?;
@@ -445,16 +470,36 @@ fn visit_frequencies(
     Ok(())
 }
 
-pub(super) fn flush_pending(
+/// A reduced document is already sorted. Stream it without retaining progress
+/// terms in the corpus posting buffer or allocating one document ID per term.
+pub(super) fn spill_postings(
+    run: FrequencyRun,
+    id: &str,
+    document_len: u32,
     pool: &mut SpillRuns,
-    pending: &mut Vec<Posting>,
-    bytes: &mut u64,
 ) -> Result<()> {
-    if !pending.is_empty() {
-        pool.spill(pending)?;
-    }
-    // Capacity must not stay resident beside the document-local accumulator.
-    *pending = Vec::new();
-    *bytes = 0;
-    Ok(())
+    let guard = pool.next_guard()?;
+    let mut writer = SpillRunWriter::create_with_progress(
+        &guard.path,
+        pool.bytes,
+        pool.config.max_spill_bytes,
+        &mut FileSpillIo,
+        pool.progress.as_ref(),
+        pool.task(),
+    )?;
+    let mut max_posting_bytes = pool.max_posting_bytes;
+    let posting_limit = pool.config.build_memory_bytes.get();
+    visit_frequencies(&run, pool.config, |term, frequency| {
+        let bytes = Posting::resident_bytes(&term, id);
+        if bytes > posting_limit {
+            return Err(SkeinError::Storage(
+                "one lexical posting exceeds the build memory budget".into(),
+            ));
+        }
+        max_posting_bytes = max_posting_bytes.max(bytes);
+        writer.push_parts(&term, id, frequency, document_len)
+    })?;
+    pool.bytes = writer.finish()?;
+    pool.max_posting_bytes = max_posting_bytes;
+    pool.register(guard)
 }

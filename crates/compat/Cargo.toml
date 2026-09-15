@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = "1"
 serde_json = "1"
 skein-analytics = { path = "../analytics" }
 skein-core = { path = "../core" }
