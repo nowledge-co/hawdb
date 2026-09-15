@@ -16,6 +16,7 @@ skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
 skein-evidence = { path = "crates/evidence" }
+skein-explain = { path = "crates/explain" }
 skein-executor = { path = "crates/executor" }
 skein-expression = { path = "crates/expression" }
 skein-integrity = { path = "crates/integrity" }
@@ -33,7 +34,6 @@ skein-sql = { path = "crates/sql" }
 skein-storage = { path = "crates/storage" }
 skein-vector-projection = { path = "crates/vector-projection", optional = true }
 zstd = "0.13"
-unicode-width = "0.2"
 skein-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
@@ -65,6 +65,7 @@ members = [
   "crates/cypher",
   "crates/ddl",
   "crates/evidence",
+  "crates/explain",
   "crates/executor",
   "crates/expression",
   "crates/fuzz",

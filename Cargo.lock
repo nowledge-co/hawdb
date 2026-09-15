@@ -889,6 +889,7 @@ dependencies = [
  "skein-ddl",
  "skein-evidence",
  "skein-executor",
+ "skein-explain",
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
@@ -905,7 +906,6 @@ dependencies = [
  "skein-storage",
  "skein-telemetry",
  "skein-vector-projection",
- "unicode-width",
  "zstd",
 ]
 
@@ -979,6 +979,16 @@ dependencies = [
  "skein-ddl",
  "skein-plan",
  "skein-storage",
+]
+
+[[package]]
+name = "skein-explain"
+version = "0.1.0"
+dependencies = [
+ "skein-executor",
+ "skein-optimizer",
+ "skein-plan",
+ "unicode-width",
 ]
 
 [[package]]
