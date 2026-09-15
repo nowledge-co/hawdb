@@ -56,6 +56,9 @@ pub mod streaming_projection;
 #[doc(hidden)]
 pub mod physical_plan;
 
+#[doc(hidden)]
+pub mod query;
+
 use skein_core::{Result, SkeinError, Value};
 use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
 use skein_storage::{

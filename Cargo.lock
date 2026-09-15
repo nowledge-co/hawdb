@@ -1152,6 +1152,7 @@ dependencies = [
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
+ "skein-plan",
  "skein-sql",
  "skein-storage",
 ]

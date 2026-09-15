@@ -5,16 +5,16 @@ use super::{
     validate_non_aggregate_coalesce_projections, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
     RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalJoinPlanningContext,
-    RelationalQueryLimits, RelationalQueryReadModes, RelationalSqlStageTimings, RelationalState,
-    Result, SelectStatement, SkeinError, Value,
+    RelationalQueryLimits, RelationalQueryReadModes, RelationalQueryStoreReader,
+    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, SkeinError, Value,
 };
-pub(super) use skein_relational::field_plan::resolved_access_order_by;
+pub(super) use crate::field_plan::resolved_access_order_by;
 
 pub(super) fn prepare_relational_select(
     mut select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
     join_planning: RelationalJoinPlanningContext,
     initial_stage_timings: RelationalSqlStageTimings,
@@ -89,7 +89,7 @@ pub(super) fn prepare_syntax_access_plan(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
 ) -> Result<PreparedRelationalAccessPlan> {
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {

@@ -1,28 +1,29 @@
 use super::{
     AdmittedRelationalExecution, QueryMemoryLedger, RelationalQueryReadModes,
-    RelationalQueryResourceContext, RelationalState, Result, SkeinError,
+    RelationalQueryResourceContext, RelationalQueryStoreReader, RelationalState, Result,
+    SkeinError,
 };
 
-pub(super) use skein_relational::physical_plan::*;
+pub(super) use crate::physical_plan::*;
 
 pub(super) trait RelationalExecutionAdmission {
-    fn admit<'state, 'runtime>(
+    fn admit<'state, 'runtime, R: RelationalQueryStoreReader>(
         self,
         state: &'state RelationalState,
-        read_modes: RelationalQueryReadModes<'state>,
+        read_modes: RelationalQueryReadModes<'state, R>,
         resources: RelationalQueryResourceContext<'runtime>,
-    ) -> Result<AdmittedRelationalExecution<'state, 'runtime>>;
+    ) -> Result<AdmittedRelationalExecution<'state, 'runtime, R>>;
 }
 
 impl RelationalExecutionAdmission for PreparedRelationalExecutionDescriptor {
-    fn admit<'state, 'runtime>(
+    fn admit<'state, 'runtime, R: RelationalQueryStoreReader>(
         self,
         state: &'state RelationalState,
-        read_modes: RelationalQueryReadModes<'state>,
+        read_modes: RelationalQueryReadModes<'state, R>,
         resources: RelationalQueryResourceContext<'runtime>,
-    ) -> Result<AdmittedRelationalExecution<'state, 'runtime>> {
+    ) -> Result<AdmittedRelationalExecution<'state, 'runtime, R>> {
         skein_executor::pipeline::runtime_checkpoint(resources.task_context)?;
-        let query_memory_budget = crate::executor::enforced_query_memory_budget(
+        let query_memory_budget = skein_executor::memory::enforced_query_memory_budget(
             resources.execution_memory,
             resources.task_context,
         )?;

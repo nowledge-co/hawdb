@@ -21,7 +21,10 @@ pub(super) fn visit_index_merge_join<'a>(
     profiled_base_binding: BindingId,
     execution: &RelationalPhysicalJoinExecution<'a>,
     pipeline: &RefCell<&mut RelationalPipelineState<'_>>,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {

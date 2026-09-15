@@ -10,7 +10,7 @@ pub(super) fn format_relational_explain(
     analyze: bool,
     limits: RelationalQueryLimits,
 ) -> Result<RelationalQueryOutput> {
-    skein_relational::explain::format_relational_explain(
+    crate::explain::format_relational_explain(
         select,
         parameters,
         output,

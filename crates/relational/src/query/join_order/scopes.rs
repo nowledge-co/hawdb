@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::relational_sql::query) fn bind_from_scopes(
+pub(in crate::query) fn bind_from_scopes(
     select: &mut SelectStatement,
     state: &RelationalState,
 ) -> Result<()> {

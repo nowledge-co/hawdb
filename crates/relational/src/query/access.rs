@@ -1,8 +1,8 @@
+pub(super) use crate::physical_plan::predicate_is_covered_by_access;
 pub(super) use skein_optimizer::relational_sargability::collect_conjunctive_join_equalities;
 use skein_optimizer::relational_sargability::{
     canonical_keyset_values, collect_conjunctive_equalities, predicate_is_covered_by_equalities,
 };
-pub(super) use skein_relational::physical_plan::predicate_is_covered_by_access;
 
 use super::{
     bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
@@ -17,7 +17,7 @@ use super::{
 
 pub(super) struct RelationalBaseAccessPlanning<'a> {
     pub(super) predicate: Option<&'a SqlPredicate>,
-    pub(super) order_by: &'a [crate::sql::SqlOrderItem],
+    pub(super) order_by: &'a [skein_sql::SqlOrderItem],
     pub(super) prefer_ordered_access: bool,
     pub(super) parameters: &'a [Value],
     pub(super) state: &'a RelationalState,
@@ -35,7 +35,7 @@ pub(super) struct RelationalProjectionAccessPlanning {
 }
 
 pub(super) fn projection_access_planning(
-    row_read_mode: RelationalRowReadMode<'_>,
+    row_read_mode: RelationalRowReadMode<'_, impl crate::row_runtime::RelationalRowStoreReader>,
     table: &str,
 ) -> RelationalProjectionAccessPlanning {
     RelationalProjectionAccessPlanning {
@@ -300,7 +300,7 @@ pub(super) fn index_access_candidate(
 }
 
 pub(super) fn index_order_prefix(
-    order_by: &[crate::sql::SqlOrderItem],
+    order_by: &[skein_sql::SqlOrderItem],
     index_columns: &[String],
     equality_prefix_len: usize,
     schema: &RelationalTableSchema,
@@ -387,7 +387,10 @@ pub(super) fn choose_join_access(
     schema: &RelationalTableSchema,
     table: &str,
     qualifier: &str,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    index_read_mode: RelationalIndexReadMode<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     projection: RelationalProjectionAccessPlanning,
 ) -> Result<RelationalJoinAccessCandidate> {
     let mut bound = BTreeMap::<String, SqlColumnRef>::new();
@@ -497,7 +500,10 @@ pub(super) fn join_index_access_candidate(
     bound: &BTreeMap<String, SqlColumnRef>,
     row_count: usize,
     table: &str,
-    index_read_mode: RelationalIndexReadMode<'_>,
+    index_read_mode: RelationalIndexReadMode<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
 ) -> Option<RelationalJoinAccessCandidate> {
     let access_columns = columns
         .iter()
@@ -580,7 +586,10 @@ pub(super) fn bound_join_key(
 
 pub(super) fn visit_join_entries<'a>(
     state: &'a RelationalState,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     planned: &PlannedJoin<'a>,
     row: &BoundRow<'a>,
@@ -616,7 +625,10 @@ pub(super) fn visit_join_entries<'a>(
 
 pub(super) fn visit_base_entries<'a>(
     state: &'a RelationalState,
-    index_runtime: &RelationalIndexRuntime<'_>,
+    index_runtime: &RelationalIndexRuntime<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     table: &str,
     access: &RelationalBaseAccess,

@@ -13,8 +13,8 @@ use super::{
     SkeinError, SortDirection, SortItem, SortKey, SqlColumnRef, SqlNullOrder, SqlOrderDirection,
     SqlPredicate, Value,
 };
-use crate::sql::{Expr, ExprKind};
-pub(super) use skein_relational::query_output::push_relational_output;
+pub(super) use crate::query_output::push_relational_output;
+use skein_sql::{Expr, ExprKind};
 
 pub(super) struct StreamingProjectionOutput {
     pub(super) rows: QueryRows,
@@ -34,7 +34,11 @@ impl ExecutionObserver for RelationalBlockingObserver {
     }
 }
 
-pub(super) struct ProjectedBatchSource<'a, 'pipeline> {
+pub(super) struct ProjectedBatchSource<
+    'a,
+    'pipeline,
+    R: crate::index_runtime::RelationalIndexStoreReader,
+> {
     pub(super) select: &'a SelectStatement,
     pub(super) parameters: &'a [Value],
     pub(super) state: &'a RelationalState,
@@ -44,7 +48,7 @@ pub(super) struct ProjectedBatchSource<'a, 'pipeline> {
     pub(super) joins: &'a [PlannedJoin<'a>],
     pub(super) tree_execution: Option<&'pipeline RelationalPhysicalJoinExecution<'a>>,
     pub(super) pipeline: &'pipeline mut RelationalPipelineState<'a>,
-    pub(super) index_runtime: &'pipeline RelationalIndexRuntime<'a>,
+    pub(super) index_runtime: &'pipeline RelationalIndexRuntime<'a, R>,
     pub(super) row_runtime: &'pipeline RelationalRowRuntime<'a>,
     pub(super) batch_rows: usize,
     pub(super) batch_memory: NonZeroUsize,
@@ -52,7 +56,11 @@ pub(super) struct ProjectedBatchSource<'a, 'pipeline> {
     pub(super) add_order_keys: bool,
 }
 
-pub(super) struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
+pub(super) struct DistinctAggregateValueBatchSource<
+    'a,
+    'pipeline,
+    R: crate::index_runtime::RelationalIndexStoreReader,
+> {
     pub(super) select: &'a SelectStatement,
     pub(super) column: &'a SqlColumnRef,
     pub(super) filter: Option<&'a SqlPredicate>,
@@ -64,14 +72,16 @@ pub(super) struct DistinctAggregateValueBatchSource<'a, 'pipeline> {
     pub(super) joins: &'a [PlannedJoin<'a>],
     pub(super) tree_execution: Option<&'pipeline RelationalPhysicalJoinExecution<'a>>,
     pub(super) pipeline: &'pipeline mut RelationalPipelineState<'a>,
-    pub(super) index_runtime: &'pipeline RelationalIndexRuntime<'a>,
+    pub(super) index_runtime: &'pipeline RelationalIndexRuntime<'a, R>,
     pub(super) row_runtime: &'pipeline RelationalRowRuntime<'a>,
     pub(super) batch_rows: usize,
     pub(super) batch_memory: NonZeroUsize,
     pub(super) memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
-impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
+impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
+    for DistinctAggregateValueBatchSource<'_, '_, R>
+{
     fn execute(
         &mut self,
         _input: &PhysicalPlan,
@@ -122,7 +132,9 @@ impl BindingBatchSource for DistinctAggregateValueBatchSource<'_, '_> {
     }
 }
 
-impl BindingBatchSource for ProjectedBatchSource<'_, '_> {
+impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
+    for ProjectedBatchSource<'_, '_, R>
+{
     fn execute(
         &mut self,
         _input: &PhysicalPlan,
@@ -203,7 +215,7 @@ impl BindingBatchSource for DistinctBatchSource<'_> {
 
 pub(super) struct ProjectedSortKeyBatchSource<'a> {
     pub(super) input: &'a mut dyn BindingBatchSource,
-    pub(super) order_columns: &'a [(String, crate::sql::SqlOrderItem)],
+    pub(super) order_columns: &'a [(String, skein_sql::SqlOrderItem)],
 }
 
 impl BindingBatchSource for ProjectedSortKeyBatchSource<'_> {
@@ -248,7 +260,10 @@ pub(super) fn execute_blocking_projection<'a>(
     joins: &'a [PlannedJoin<'a>],
     tree_execution: Option<&RelationalPhysicalJoinExecution<'a>>,
     pipeline: &mut RelationalPipelineState<'a>,
-    index_runtime: &RelationalIndexRuntime<'a>,
+    index_runtime: &RelationalIndexRuntime<
+        'a,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     memory: &skein_executor::ExecutionMemoryConfig,
@@ -625,7 +640,7 @@ pub(super) fn postgres_sort_key(
 
 pub(super) fn projected_order_columns(
     select: &SelectStatement,
-) -> Result<Vec<(String, crate::sql::SqlOrderItem)>> {
+) -> Result<Vec<(String, skein_sql::SqlOrderItem)>> {
     select
         .order_by
         .iter()
