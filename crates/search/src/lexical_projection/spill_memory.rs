@@ -132,6 +132,11 @@ impl SpillRuns {
             reserve_slots(&mut self.paths, capacity, self.path_slots.as_mut())?;
         }
         if let Some(memory) = &mut guard._memory {
+            if guard.path.capacity() > memory.bytes() {
+                return Err(SkeinError::Execution(
+                    "search spill path allocation exceeded its admitted capacity".into(),
+                ));
+            }
             memory.shrink(memory.bytes() - guard.path.capacity());
         }
         self.paths.push(guard);

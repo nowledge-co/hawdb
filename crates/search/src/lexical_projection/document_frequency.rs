@@ -488,8 +488,15 @@ pub(super) fn spill_postings(
         pool.task(),
     )?;
     let mut max_posting_bytes = pool.max_posting_bytes;
+    let posting_limit = pool.config.build_memory_bytes.get();
     visit_frequencies(&run, pool.config, |term, frequency| {
-        max_posting_bytes = max_posting_bytes.max(Posting::resident_bytes(&term, id));
+        let bytes = Posting::resident_bytes(&term, id);
+        if bytes > posting_limit {
+            return Err(SkeinError::Storage(
+                "one lexical posting exceeds the build memory budget".into(),
+            ));
+        }
+        max_posting_bytes = max_posting_bytes.max(bytes);
         writer.push_parts(&term, id, frequency, document_len)
     })?;
     pool.bytes = writer.finish()?;
