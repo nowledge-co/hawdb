@@ -1076,6 +1076,7 @@ dependencies = [
  "serde_json",
  "skein-core",
  "skein-evidence",
+ "skein-executor",
  "skein-route-ownership",
  "skein-search",
 ]
