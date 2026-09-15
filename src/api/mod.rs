@@ -8,9 +8,8 @@ use crate::optimizer::{
     OptimizerTrace, PhysicalPlan, ResourceHints,
 };
 use crate::qos::{
-    BackgroundWorkDecision, BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy,
-    LocalQosScheduler, LocalQosSnapshot, LocalQosState, QosAdmission, QosAdmissionCode, WorkClass,
-    WorkPriority, WorkRequest,
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
+    QosAdmission, WorkClass, WorkRequest,
 };
 #[cfg(test)]
 use crate::schema::LabelId;
@@ -24,11 +23,10 @@ use crate::search::{
     projection_row_from_node_with_graph_metadata, search_metadata_predicate_pushdown,
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, MetadataRepairOptions,
     MetadataRepairSummary, SearchCandidateSetReport, SearchDerivedArtifactReport,
-    SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights, SearchIndex,
-    SearchMatchedSpan, SearchMode, SearchPredicatePushdownReport, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchRebuildOptions, SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
-    SearchTruncationReasonCode,
+    SearchEmptyReasonCode, SearchFusionWeights, SearchIndex, SearchMatchedSpan,
+    SearchPredicatePushdownReport, SearchProjectionDelta, SearchProjectionDeltaReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary,
+    SearchResultSet, SearchRetrieverCandidateSetReport,
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
@@ -63,6 +61,7 @@ use skein_optimizer::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::Path;
+#[cfg(test)]
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -18502,14 +18501,6 @@ fn adjacency_direction_name(adjacency_direction: AdjacencyDirection) -> &'static
     match adjacency_direction {
         AdjacencyDirection::Outgoing => "outgoing",
         AdjacencyDirection::Incoming => "incoming",
-    }
-}
-
-fn qos_admission_name(admission: &QosAdmission) -> &'static str {
-    match admission {
-        QosAdmission::Admit => "admit",
-        QosAdmission::Defer { .. } => "defer",
-        QosAdmission::Reject { .. } => "reject",
     }
 }
 

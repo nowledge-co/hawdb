@@ -1,0 +1,61 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+_NOWLEDGE_CONTRACTS_BASE_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:skein_core",
+    "//crates/qos:skein_qos",
+]
+
+rust_library(
+    name = "skein_nowledge_contracts",
+    crate_name = "skein_nowledge_contracts",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+# Matches the root facade's no-default-features boundary without linking a
+# second copy of skein_search with incompatible Bazel feature selection.
+rust_library(
+    name = "skein_nowledge_contracts_minimal",
+    crate_name = "skein_nowledge_contracts",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_minimal"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
+# Matches Cargo feature unification for the root ACL qualification target.
+rust_library(
+    name = "skein_nowledge_contracts_acl",
+    testonly = True,
+    crate_name = "skein_nowledge_contracts",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_acl"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
+rust_test(
+    name = "skein_nowledge_contracts_tests",
+    crate = ":skein_nowledge_contracts",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
