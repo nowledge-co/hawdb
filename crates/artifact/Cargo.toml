@@ -7,3 +7,5 @@ license.workspace = true
 
 [dependencies]
 skein-core = { path = "../core" }
+skein-executor = { path = "../executor" }
+skein-qos = { path = "../qos" }

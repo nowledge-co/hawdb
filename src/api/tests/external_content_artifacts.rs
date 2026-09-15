@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn artifact_job_facade_reexports_owner_contracts() {
+    let mut db = Database::new();
+    let owner_job: skein_artifact::DerivedArtifactJob =
+        db.schedule_external_content_artifact_job("source-1", "parse");
+    let facade_job: crate::DerivedArtifactJob = owner_job;
+    assert_eq!(facade_job.status, DerivedArtifactJobStatus::Pending);
+
+    let owner_report: skein_artifact::DerivedArtifactJobReport = db
+        .run_next_external_content_artifact_job_with(|_| {
+            Ok(QueryOutput {
+                rows: Vec::new().into(),
+            })
+        })
+        .unwrap()
+        .unwrap();
+    let facade_report: crate::DerivedArtifactJobReport = owner_report;
+    assert_eq!(
+        facade_report.job.status,
+        DerivedArtifactJobStatus::Succeeded
+    );
+}
+
+#[test]
 fn external_content_artifact_jobs_are_explicitly_outside_graph_kernel() {
     let mut db = Database::new();
     let job = db.schedule_external_content_artifact_job("source-1", "parse");
