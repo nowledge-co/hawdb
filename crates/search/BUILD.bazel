@@ -73,6 +73,7 @@ rust_library(
     visibility = [
         "//:__pkg__",
         "//crates/bootstrap:__pkg__",
+        "//crates/nowledge-contracts:__pkg__",
     ],
 )
 
@@ -92,6 +93,7 @@ rust_library(
     visibility = [
         "//:__pkg__",
         "//crates/bootstrap:__pkg__",
+        "//crates/nowledge-contracts:__pkg__",
     ],
 )
 

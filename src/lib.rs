@@ -364,9 +364,7 @@ pub use qos::{
     WorkPriority, WorkRequest, WORK_CLASS_COUNT,
 };
 pub use query_family_evidence::nowledge_query_family_evidence_json;
-pub use query_runtime_preflight::{
-    parse_query_runtime_preflight_probes, query_runtime_preflight_json,
-};
+pub use query_runtime_preflight::query_runtime_preflight_json;
 pub use replacement_summary::{
     nowledge_graph_route_readiness_summary, nowledge_graph_route_readiness_summary_from_bundle,
     nowledge_replacement_summary_json, nowledge_replacement_summary_json_with_options,
@@ -477,6 +475,7 @@ pub use skein_qos::{
     RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
     StorageMediaKind,
 };
+pub use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
 #[cfg(feature = "tokio-runtime")]
 pub use skein_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,

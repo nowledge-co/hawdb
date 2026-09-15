@@ -11,6 +11,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/artifact",
     "crates/cgroup",
     "crates/compat",
+    "crates/nowledge-contracts",
     "crates/core",
     "crates/cypher",
     "crates/ddl",
@@ -129,11 +130,13 @@ _SKEIN_COMMON_DEPS = [
 
 _SKEIN_FULL_DEPS = _SKEIN_COMMON_DEPS + [
     "//crates/bootstrap:skein_bootstrap",
+    "//crates/nowledge-contracts:skein_nowledge_contracts",
     "//crates/search:skein_search",
 ]
 
 _SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_DEPS + [
     "//crates/bootstrap:skein_bootstrap_minimal",
+    "//crates/nowledge-contracts:skein_nowledge_contracts_minimal",
     "//crates/search:skein_search_minimal",
 ]
 
@@ -425,6 +428,7 @@ rust_test(
     # Unlike `crate = ":skein"`, this selects the ACL-enabled dependency graph.
     deps = _SKEIN_COMMON_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
         "//crates/bootstrap:skein_bootstrap_acl",
+        "//crates/nowledge-contracts:skein_nowledge_contracts_acl",
         "//crates/search:skein_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),

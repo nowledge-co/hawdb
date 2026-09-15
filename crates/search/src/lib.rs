@@ -66,6 +66,7 @@ mod lexical_readiness;
 mod lexical_snapshot_test_gate;
 mod lexical_term_policy;
 mod out_of_core;
+mod projection_catch_up;
 mod projection_delta_contracts;
 #[doc(hidden)]
 pub mod projection_evidence;
@@ -180,6 +181,17 @@ pub use out_of_core::{
     SearchOutOfCoreOutput, SearchOutOfCoreReader,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use projection_catch_up::{
+    run_scheduled_search_projection_catch_up, run_search_projection_catch_up,
+    scheduled_search_projection_catch_up_report, search_projection_catch_up_report,
+    search_projection_durable_epoch, start_search_projection_background_work,
+    validate_search_projection_catch_up_request,
+};
+pub use projection_catch_up::{
+    ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
+    SearchProjectionCatchUpStopReason,
+};
 #[doc(hidden)]
 pub use projection_delta_contracts::{
     SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,

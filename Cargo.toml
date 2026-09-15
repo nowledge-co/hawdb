@@ -14,6 +14,7 @@ skein-core = { path = "crates/core" }
 skein-bootstrap = { path = "crates/bootstrap" }
 skein-artifact = { path = "crates/artifact" }
 skein-compat = { path = "crates/compat" }
+skein-nowledge-contracts = { path = "crates/nowledge-contracts" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
@@ -67,6 +68,7 @@ members = [
   "crates/bootstrap",
   "crates/artifact",
   "crates/compat",
+  "crates/nowledge-contracts",
   "crates/core",
   "crates/cypher",
   "crates/ddl",

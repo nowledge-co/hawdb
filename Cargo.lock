@@ -894,6 +894,7 @@ dependencies = [
  "skein-explain",
  "skein-expression",
  "skein-integrity",
+ "skein-nowledge-contracts",
  "skein-optimizer",
  "skein-plan",
  "skein-plan-cache",
@@ -1041,6 +1042,15 @@ version = "0.1.0"
 dependencies = [
  "crc32c",
  "sha2",
+]
+
+[[package]]
+name = "skein-nowledge-contracts"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-qos",
+ "skein-search",
 ]
 
 [[package]]

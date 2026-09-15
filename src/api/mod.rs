@@ -7,9 +7,8 @@ use crate::optimizer::{
     PhysicalPlan, ResourceHints,
 };
 use crate::qos::{
-    BackgroundWorkDecision, BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy,
-    LocalQosScheduler, LocalQosSnapshot, LocalQosState, QosAdmission, QosAdmissionCode, WorkClass,
-    WorkPriority, WorkRequest,
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
+    QosAdmission, WorkClass, WorkRequest,
 };
 use crate::schema::{Catalog, SchemaObjectState};
 #[cfg(test)]
@@ -23,11 +22,10 @@ use crate::search::{
     projection_row_from_node_with_graph_metadata, search_metadata_predicate_pushdown,
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, MetadataRepairOptions,
     MetadataRepairSummary, SearchCandidateSetReport, SearchDerivedArtifactReport,
-    SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights, SearchIndex,
-    SearchMatchedSpan, SearchMode, SearchPredicatePushdownReport, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchRebuildOptions, SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
-    SearchTruncationReasonCode,
+    SearchEmptyReasonCode, SearchFusionWeights, SearchIndex, SearchMatchedSpan,
+    SearchPredicatePushdownReport, SearchProjectionDelta, SearchProjectionDeltaReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary,
+    SearchResultSet, SearchRetrieverCandidateSetReport,
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
@@ -62,17 +60,10 @@ use skein_optimizer::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KnowledgeNeighborDirection {
-    #[cfg(test)]
-    Outgoing,
-    #[cfg(test)]
-    Incoming,
-    Both,
-}
+#[cfg(not(test))]
+use skein_nowledge_contracts::test_support::graph_read::KnowledgeNeighborDirection;
 use system_variables::{
     apply_set_system_variable, query_statement_variables_for_statement,
     query_work_request_for_statement, reject_system_variable_parameters,
@@ -18493,9 +18484,7 @@ fn adjacency_directions_for_request(
     requested_direction: KnowledgeNeighborDirection,
 ) -> Vec<AdjacencyDirection> {
     match requested_direction {
-        #[cfg(test)]
         KnowledgeNeighborDirection::Outgoing => vec![AdjacencyDirection::Outgoing],
-        #[cfg(test)]
         KnowledgeNeighborDirection::Incoming => vec![AdjacencyDirection::Incoming],
         KnowledgeNeighborDirection::Both => {
             vec![AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming]
@@ -18516,14 +18505,6 @@ fn adjacency_direction_name(adjacency_direction: AdjacencyDirection) -> &'static
     match adjacency_direction {
         AdjacencyDirection::Outgoing => "outgoing",
         AdjacencyDirection::Incoming => "incoming",
-    }
-}
-
-fn qos_admission_name(admission: &QosAdmission) -> &'static str {
-    match admission {
-        QosAdmission::Admit => "admit",
-        QosAdmission::Defer { .. } => "defer",
-        QosAdmission::Reject { .. } => "reject",
     }
 }
 

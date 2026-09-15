@@ -731,6 +731,14 @@ impl BackgroundWorkHint {
 }
 
 impl QosAdmission {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admit => "admit",
+            Self::Defer { .. } => "defer",
+            Self::Reject { .. } => "reject",
+        }
+    }
+
     pub fn code(&self) -> Option<QosAdmissionCode> {
         match self {
             QosAdmission::Admit => None,
@@ -1242,6 +1250,27 @@ mod tests {
             Ok(QosAdmissionCode::TenantBudgetExceeded)
         );
         assert!("background_paused".parse::<QosAdmissionCode>().is_err());
+    }
+
+    #[test]
+    fn qos_admissions_have_stable_string_encodings() {
+        assert_eq!(QosAdmission::Admit.as_str(), "admit");
+        assert_eq!(
+            QosAdmission::Defer {
+                code: QosAdmissionCode::BackgroundDisabled,
+                reason: "disabled".to_string(),
+            }
+            .as_str(),
+            "defer"
+        );
+        assert_eq!(
+            QosAdmission::Reject {
+                code: QosAdmissionCode::TenantBudgetExceeded,
+                reason: "budget".to_string(),
+            }
+            .as_str(),
+            "reject"
+        );
     }
 
     #[test]
