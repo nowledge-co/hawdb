@@ -181,8 +181,8 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
-pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
 pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
+pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
