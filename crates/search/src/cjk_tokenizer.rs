@@ -19,18 +19,44 @@ pub(super) fn chinese_search_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn visit_chinese_search_tokens<'a>(
+pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
     text: &'a str,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
     mut emit: impl FnMut(&'a str) -> super::Result<()>,
 ) -> super::Result<()> {
     if !text.chars().any(is_han_search_char) {
         return Ok(());
     }
-    for token in CHINESE_TOKENIZER.cut_for_search(text, true) {
+    let _scratch = workspace
+        .map(|workspace| workspace.admit(text))
+        .transpose()?;
+    let tokens = CHINESE_TOKENIZER.cut_for_search(text, true);
+    for (index, token) in tokens.into_iter().enumerate() {
+        if index.is_multiple_of(1024)
+            && let Some(workspace) = workspace
+        {
+            workspace.checkpoint()?;
+        }
         if token.word.chars().any(is_han_search_char) {
             emit(token.word)?;
         }
     }
+    if let Some(workspace) = workspace {
+        workspace.checkpoint()?;
+    }
+    Ok(())
+}
+
+pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
+    // An unknown two-Han word forces HMM and its skip regex to initialize on
+    // this worker. The private dictionary is immutable; fail closed if a future
+    // dictionary invalidates the dependency qualification fixture.
+    if CHINESE_TOKENIZER.has_word(text) {
+        return Err(super::SkeinError::Execution(
+            "search analyzer dictionary invalidated workspace initialization".into(),
+        ));
+    }
+    drop(CHINESE_TOKENIZER.cut_for_search(text, true));
     Ok(())
 }
 
@@ -44,7 +70,7 @@ pub(super) fn is_cjk_search_char(ch: char) -> bool {
         )
 }
 
-fn is_han_search_char(ch: char) -> bool {
+pub(super) fn is_han_search_char(ch: char) -> bool {
     matches!(
         ch as u32,
         0x3400..=0x4DBF

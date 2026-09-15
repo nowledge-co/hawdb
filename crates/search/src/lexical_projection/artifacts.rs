@@ -204,7 +204,7 @@ impl ArtifactBuilder {
 
     fn push_posting_inner(&mut self, posting: &Posting) -> Result<()> {
         match self.term_statistics.last_mut() {
-            Some(statistics) if statistics.term == posting.term => {
+            Some(statistics) if statistics.term.as_str() == posting.term.as_str() => {
                 statistics.document_frequency = statistics
                     .document_frequency
                     .checked_add(1)
@@ -212,7 +212,7 @@ impl ArtifactBuilder {
                         SkeinError::Storage("lexical term document frequency exceeds u64".into())
                     })?;
             }
-            Some(statistics) if statistics.term > posting.term => {
+            Some(statistics) if statistics.term.as_str() > posting.term.as_str() => {
                 return Err(SkeinError::Storage(
                     "lexical merge produced unordered term statistics".into(),
                 ));
@@ -226,7 +226,7 @@ impl ArtifactBuilder {
                     .statistics_strings
                     .grow(posting.term.len())?;
                 self.term_statistics.push(TermStatistics {
-                    term: posting.term.clone(),
+                    term: posting.term.as_str().to_owned(),
                     document_frequency: 1,
                 });
             }
@@ -239,8 +239,10 @@ impl ArtifactBuilder {
             self.flush_postings()?;
         }
         grow_slots(&mut self.posting_pending, &mut self.posting_slots)?;
-        self.posting_strings
-            .grow(checked_add(posting.term.len(), posting.document_id.len())?)?;
+        self.posting_strings.grow(checked_add(
+            posting.term.clone_bytes(),
+            posting.document_id.len(),
+        )?)?;
         self.posting_pending.push(posting.clone());
         self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
         Ok(())

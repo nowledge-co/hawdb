@@ -51,9 +51,12 @@ can be ambiguous after rename and before directory sync completes.
 
 ## Remaining contract
 
-Analyzer/Jieba workspace and thread-local lifetime, document-frequency accumulation,
-spill registries, merge heads and progress under combined pressure still require
-integration. Generation discovery, outer manifest publication, delta hydration and
+The opaque Jieba/regex workspace now has operation admission and native-join
+ownership; see [the analyzer contract](SEARCH_ANALYZER_WORKSPACE.md). Source-owned
+token normalization, identifier deduplication and resident frequencies also retain
+their admission through consumers; see [the token contract](SEARCH_TOKEN_OWNERSHIP.md).
+Spill buffers/readers, registries, merge heads and reserved progress under combined
+pressure still require integration. Generation discovery, outer manifest publication, delta hydration and
 the two approved public context constructors also remain separate work. Do not
 describe this foundation as a completed whole-operation limit or cancellation bound.
 

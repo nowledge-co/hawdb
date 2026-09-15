@@ -1,47 +1,21 @@
 use super::{optional_u64_value, optional_usize_value, Database, QueryOutput};
 use crate::error::{Result, SkeinError};
-use crate::executor::Row;
 use crate::qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosState, QosAdmission, WorkClass,
-    WorkRequest,
 };
 use crate::value::Value;
 use std::collections::BTreeMap;
 
-pub use skein_artifact::{
-    DerivedArtifactJobStatus, ExternalContentArtifactJobCompletion,
-    ExternalContentArtifactJobSummary, ExternalContentArtifactRuntimeManifest,
+use skein_artifact::{
+    derived_artifact_job_failure_row, external_content_artifact_completion_output,
+    external_content_runtime_can_claim, is_external_content_artifact_job,
+    summarize_external_content_artifact_job,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DerivedArtifactJob {
-    pub id: u64,
-    pub artifact_type: String,
-    pub name: String,
-    pub action: String,
-    pub payload: BTreeMap<String, Value>,
-    pub status: DerivedArtifactJobStatus,
-    pub attempts: u32,
-    pub last_error: Option<String>,
-    pub last_output: Option<QueryOutput>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DerivedArtifactJobReport {
-    pub job: DerivedArtifactJob,
-    pub output: QueryOutput,
-}
-
-impl DerivedArtifactJob {
-    pub fn background_work_request(&self, estimated_operations: usize) -> WorkRequest {
-        let class = if self.artifact_type == "projected_graph" {
-            WorkClass::Projection
-        } else {
-            WorkClass::Import
-        };
-        WorkRequest::background(class, estimated_operations)
-    }
-}
+pub use skein_artifact::{
+    DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
+    ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
+    ExternalContentArtifactRuntimeManifest,
+};
 
 impl Database {
     pub fn schedule_derived_artifact_rebuild(&mut self) -> DerivedArtifactJob {
@@ -1052,143 +1026,5 @@ impl Database {
             });
         }
         Ok(output)
-    }
-}
-
-fn derived_artifact_job_failure_row(job: &DerivedArtifactJob, error: &str) -> Row {
-    BTreeMap::from([
-        ("job_id".to_string(), Value::Int(job.id as i64)),
-        (
-            "artifact_type".to_string(),
-            Value::String(job.artifact_type.clone()),
-        ),
-        ("name".to_string(), Value::String(job.name.clone())),
-        ("action".to_string(), Value::String(job.action.clone())),
-        ("payload".to_string(), Value::Map(job.payload.clone())),
-        (
-            "status".to_string(),
-            Value::String(job.status.as_str().to_string()),
-        ),
-        ("attempts".to_string(), Value::Int(job.attempts as i64)),
-        ("error".to_string(), Value::String(error.to_string())),
-    ])
-}
-
-fn external_content_artifact_completion_output(
-    job: &DerivedArtifactJob,
-    completion: ExternalContentArtifactJobCompletion,
-) -> QueryOutput {
-    QueryOutput {
-        rows: vec![external_content_artifact_completion_row(job, completion)].into(),
-    }
-}
-
-fn external_content_artifact_completion_row(
-    job: &DerivedArtifactJob,
-    completion: ExternalContentArtifactJobCompletion,
-) -> Row {
-    BTreeMap::from([
-        ("job_id".to_string(), Value::Int(job.id as i64)),
-        (
-            "artifact_type".to_string(),
-            Value::String(job.artifact_type.clone()),
-        ),
-        ("name".to_string(), Value::String(job.name.clone())),
-        ("action".to_string(), Value::String(job.action.clone())),
-        (
-            "runtime_name".to_string(),
-            Value::String(completion.runtime_name),
-        ),
-        (
-            "runtime_version".to_string(),
-            optional_string_value(completion.runtime_version),
-        ),
-        (
-            "input_ref".to_string(),
-            optional_string_value(completion.input_ref),
-        ),
-        (
-            "input_checksum".to_string(),
-            optional_string_value(completion.input_checksum),
-        ),
-        (
-            "output_ref".to_string(),
-            optional_string_value(completion.output_ref),
-        ),
-        (
-            "output_checksum".to_string(),
-            optional_string_value(completion.output_checksum),
-        ),
-        (
-            "projection_kind".to_string(),
-            optional_string_value(completion.projection_kind),
-        ),
-        (
-            "projection_ref".to_string(),
-            optional_string_value(completion.projection_ref),
-        ),
-        (
-            "source_graph_commit_epoch".to_string(),
-            optional_u64_value(completion.source_graph_commit_epoch),
-        ),
-        (
-            "rows_produced".to_string(),
-            optional_usize_value(completion.rows_produced),
-        ),
-        ("metadata".to_string(), Value::Map(completion.metadata)),
-    ])
-}
-
-fn optional_string_value(value: Option<String>) -> Value {
-    value.map(Value::String).unwrap_or(Value::Null)
-}
-
-fn is_external_content_artifact_job(artifact_type: &str) -> bool {
-    matches!(
-        artifact_type,
-        "content_artifact" | "artifact_parse" | "content_parse" | "blob_parse" | "crawler"
-    )
-}
-
-fn external_content_runtime_can_claim(
-    manifest: &ExternalContentArtifactRuntimeManifest,
-    job: &DerivedArtifactJob,
-) -> bool {
-    is_external_content_artifact_job(&job.artifact_type)
-        && manifest.supported_actions.contains(&job.action)
-        && manifest
-            .required_payload_keys
-            .iter()
-            .all(|key| job.payload.contains_key(key))
-}
-
-fn summarize_external_content_artifact_job(
-    summary: &mut ExternalContentArtifactJobSummary,
-    job: &DerivedArtifactJob,
-) {
-    summary.total += 1;
-    match job.status {
-        DerivedArtifactJobStatus::Pending => {
-            summary.pending += 1;
-            *summary
-                .pending_by_action
-                .entry(job.action.clone())
-                .or_default() += 1;
-            summary.next_pending_job_id.get_or_insert(job.id);
-        }
-        DerivedArtifactJobStatus::Running => {
-            summary.running += 1;
-        }
-        DerivedArtifactJobStatus::Succeeded => {
-            summary.succeeded += 1;
-        }
-        DerivedArtifactJobStatus::Failed => {
-            summary.failed += 1;
-            *summary
-                .failed_by_action
-                .entry(job.action.clone())
-                .or_default() += 1;
-            summary.oldest_failed_job_id.get_or_insert(job.id);
-        }
     }
 }

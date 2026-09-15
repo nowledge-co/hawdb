@@ -180,6 +180,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     poisoned: bool,
+    needs_chinese_analyzer: bool,
     task_context: RuntimeTaskContext,
     memory: BuildMemory,
     // Keep charges after the payload fields so data drops before its leases.
@@ -304,6 +305,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             poisoned: false,
+            needs_chinese_analyzer: false,
             task_context,
             memory,
             spool_memory: Some(spool_memory),
@@ -373,7 +375,19 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
-        self.finish_with_artifacts(Self::build_artifacts)
+        self.finish_with_artifacts(|writer, source, generation| {
+            if writer.needs_chinese_analyzer {
+                #[cfg(test)]
+                let read_evidence = spool::read_evidence::capture();
+                crate::analyzer_workspace::run(&writer.memory, &writer.task_context, |workspace| {
+                    #[cfg(test)]
+                    let _read_evidence = read_evidence.install();
+                    writer.build_artifacts_with_workspace(source, generation, Some(workspace))
+                })
+            } else {
+                writer.build_artifacts(source, generation)
+            }
+        })
     }
 
     fn finish_with_artifacts(
@@ -504,6 +518,15 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
+        self.build_artifacts_with_workspace(source, generation, None)
+    }
+
+    fn build_artifacts_with_workspace(
+        &self,
+        source: &SpoolSource,
+        generation: u64,
+        workspace: Option<std::sync::Arc<crate::analyzer_workspace::Workspace>>,
+    ) -> Result<GenerationArtifacts> {
         let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
             generation,
@@ -526,6 +549,7 @@ impl SearchOutOfCoreGenerationWriter {
         };
         let lexical = LexicalProjectionWriter::new(lexical_config)
             .with_context(self.memory.clone(), self.task_context.clone())
+            .with_analyzer_workspace(workspace)
             .write_scanned(
                 &self.stage.path,
                 generation,
@@ -667,6 +691,8 @@ impl SearchOutOfCoreGenerationWriter {
         )?;
         checkpoint(&self.task_context)?;
         self.documents_digest = documents_digest;
+        self.needs_chinese_analyzer |= crate::analyzer_stream::document_token_fields(&document)
+            .any(|(text, _)| text.chars().any(crate::cjk_tokenizer::is_han_search_char));
         self.last_document_id = Some(document.document.id);
         self.document_count = self.document_count.saturating_add(1);
         if document.document.embedding.is_some() {

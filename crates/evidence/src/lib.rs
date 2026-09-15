@@ -6,6 +6,8 @@ pub mod background_maintenance_evidence;
 pub mod blackbox;
 mod crash_recovery;
 #[doc(hidden)]
+pub mod fixture_contract_check;
+#[doc(hidden)]
 pub mod inventory;
 #[doc(hidden)]
 pub mod json_access;

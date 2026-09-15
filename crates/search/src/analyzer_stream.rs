@@ -1,14 +1,18 @@
-//! Fallible field and identifier traversal. Identifier deduplication and opaque
-//! Jieba analysis still retain whole-run state; this is not a bounded-RSS tokenizer.
+//! Fallible traversal with owned token and identifier-dedup admission.
+//! Opaque analysis and downstream spill progress have separate ownership scopes.
 
-use super::cjk_tokenizer::{is_cjk_search_char, visit_chinese_search_tokens};
+use super::cjk_tokenizer::{is_cjk_search_char, visit_chinese_search_tokens_with_workspace};
 use super::identifier::{normalize_part, part_slices, IdentifierParts};
 use super::{
-    normalize_english_suffixes, Result, SearchAnalyzerLexicon, SearchDocument, TokenSequence,
-    TITLE_TERM_FREQUENCY_WEIGHT,
+    Result, SearchAnalyzerLexicon, SearchDocument, TokenSequence, TITLE_TERM_FREQUENCY_WEIGHT,
 };
-use std::borrow::Cow;
-use std::collections::{hash_map::Entry, HashMap};
+mod control;
+mod text;
+use crate::build_term::Term;
+pub(crate) use control::Control;
+use control::Dedup;
+use std::collections::HashMap;
+use text::Text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TokenOccurrence {
@@ -42,18 +46,42 @@ enum TokenScope {
 pub(super) fn visit_token_list(
     text: &str,
     analyzer: &SearchAnalyzerLexicon,
+    emit: impl FnMut(String, TokenOccurrence) -> Result<()>,
+) -> Result<()> {
+    visit_token_list_with_workspace(text, analyzer, None, emit)
+}
+
+pub(super) fn visit_token_list_with_workspace(
+    text: &str,
+    analyzer: &SearchAnalyzerLexicon,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
     mut emit: impl FnMut(String, TokenOccurrence) -> Result<()>,
 ) -> Result<()> {
+    visit_admitted_token_list(
+        text,
+        analyzer,
+        Control {
+            workspace,
+            ..Control::default()
+        },
+        |term, occurrence| emit(term.into_untracked()?, occurrence),
+    )
+}
+
+pub(crate) fn visit_admitted_token_list(
+    text: &str,
+    analyzer: &SearchAnalyzerLexicon,
+    control: Control<'_>,
+    mut emit: impl FnMut(Term, TokenOccurrence) -> Result<()>,
+) -> Result<()> {
     let mut current_scope = None;
-    let mut seen = HashMap::new();
-    visit_token_events(text, analyzer, |token, scope| {
+    let mut seen = Dedup::new();
+    visit_token_events(text, analyzer, control, |token, scope| {
         if current_scope != Some(scope) {
-            seen = HashMap::new();
+            seen = Dedup::new();
             current_scope = Some(scope);
         }
-        if let Entry::Vacant(entry) = seen.entry(token) {
-            let token = entry.key().clone().into_owned();
-            entry.insert(());
+        if let Some(token) = seen.insert(token, control)? {
             emit(
                 token,
                 match scope {
@@ -72,12 +100,12 @@ pub(super) fn collect_token_list(text: &str, analyzer: &SearchAnalyzerLexicon) -
         // Reuse collected token IDs instead of retaining a second identifier
         // hash table. Release these markers before materializing output order.
         let mut last_identifier = Vec::new();
-        visit_token_events(text, analyzer, |token, scope| {
-            let (id, inserted) = if let Some(id) = tokens.token_ids.get(token.as_ref()) {
+        visit_token_events(text, analyzer, Control::default(), |token, scope| {
+            let (id, inserted) = if let Some(id) = tokens.token_ids.get(token.as_str()) {
                 (*id, false)
             } else {
                 let id = tokens.token_ids.len();
-                tokens.token_ids.insert(token.into_owned(), id);
+                tokens.token_ids.insert(token.into_untracked()?, id);
                 last_identifier.push(0);
                 (id, true)
             };
@@ -101,10 +129,11 @@ pub(super) fn collect_token_list(text: &str, analyzer: &SearchAnalyzerLexicon) -
 
 fn visit_token_events<'a>(
     text: &'a str,
-    analyzer: &SearchAnalyzerLexicon,
-    mut emit: impl FnMut(Cow<'a, str>, TokenScope) -> Result<()>,
+    analyzer: &'a SearchAnalyzerLexicon,
+    control: Control<'_>,
+    mut emit: impl FnMut(Text<'a>, TokenScope) -> Result<()>,
 ) -> Result<()> {
-    let mut previous_part = None::<Cow<'_, str>>;
+    let mut previous_part = None::<Text<'_>>;
     let mut identifier = 0;
     for raw in text.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
         if raw.is_empty() {
@@ -117,12 +146,13 @@ fn visit_token_events<'a>(
         if let Some(previous) = previous_part.as_ref()
             && let Some(first) = parts.clone().next()
         {
-            let mut phrase = TokenEmitter::new(analyzer, |token| {
+            let mut phrase = TokenEmitter::new(analyzer, control, |token| {
                 emit(token, TokenScope::Phrase(identifier))
             });
-            phrase.analyzed(Cow::Owned(format!("{previous}_{}", normalized_part(first))))?;
+            let first = Text::lowercase(first, true, control)?;
+            phrase.analyzed(Text::join(previous.as_str(), "_", first.as_str(), control)?)?;
         }
-        if let Some(last) = visit_identifier_tokens(raw, parts, analyzer, |token| {
+        if let Some(last) = visit_identifier_tokens(raw, parts, analyzer, control, |token| {
             emit(token, TokenScope::Identifier(identifier))
         })? {
             previous_part = Some(last);
@@ -137,10 +167,16 @@ pub(super) fn identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> 
         return Vec::new();
     }
     let mut tokens = TokenSequence::default();
-    visit_identifier_tokens(raw, part_slices(raw), analyzer, |token| {
-        tokens.push_unique(token.into_owned());
-        Ok(())
-    })
+    visit_identifier_tokens(
+        raw,
+        part_slices(raw),
+        analyzer,
+        Control::default(),
+        |token| {
+            tokens.push_unique(token.into_untracked()?);
+            Ok(())
+        },
+    )
     .expect("token collection has no fallible admission");
     tokens.into_vec()
 }
@@ -148,17 +184,16 @@ pub(super) fn identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> 
 fn visit_identifier_tokens<'a>(
     raw: &'a str,
     parts: IdentifierParts<'a>,
-    analyzer: &SearchAnalyzerLexicon,
-    emit: impl FnMut(Cow<'a, str>) -> Result<()>,
-) -> Result<Option<Cow<'a, str>>> {
-    let mut tokens = TokenEmitter::new(analyzer, emit);
-    tokens.emit_token(if lowercase_is_identity(raw) {
-        Cow::Borrowed(raw)
-    } else {
-        Cow::Owned(raw.to_lowercase())
-    })?;
+    analyzer: &'a SearchAnalyzerLexicon,
+    control: Control<'_>,
+    emit: impl FnMut(Text<'a>) -> Result<()>,
+) -> Result<Option<Text<'a>>> {
+    let mut tokens = TokenEmitter::new(analyzer, control, emit);
+    tokens.emit_token(Text::lowercase(raw, false, control)?)?;
     // Jieba still owns its whole-run scratch and borrowed token collection.
-    visit_chinese_search_tokens(raw, |token| tokens.analyzed(Cow::Borrowed(token)))?;
+    visit_chinese_search_tokens_with_workspace(raw, control.workspace, |token| {
+        tokens.analyzed(Text::Borrowed(token))
+    })?;
     for run in raw.split(|ch| !is_cjk_search_char(ch)) {
         for width in [2, 3] {
             let mut starts = [0; 3];
@@ -166,21 +201,21 @@ fn visit_identifier_tokens<'a>(
                 starts.copy_within(1..width, 0);
                 starts[width - 1] = offset;
                 if index + 1 >= width {
-                    tokens.emit_token(Cow::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
+                    tokens.emit_token(Text::Borrowed(&run[starts[0]..offset + ch.len_utf8()]))?;
                 }
             }
         }
     }
     for part in parts.clone() {
-        tokens.analyzed(normalized_part(part))?;
+        tokens.analyzed(Text::lowercase(part, true, control)?)?;
     }
     // Replay boundaries to retain the historical parts-before-pairs order
     // without keeping an owned vector of every part.
-    let mut previous = None::<Cow<'_, str>>;
+    let mut previous = None::<Text<'_>>;
     for part in parts {
-        let part = normalized_part(part);
+        let part = Text::lowercase(part, true, control)?;
         if let Some(previous) = previous.as_ref() {
-            tokens.analyzed(Cow::Owned(format!("{previous}_{part}")))?;
+            tokens.analyzed(Text::join(previous.as_str(), "_", part.as_str(), control)?)?;
         }
         previous = Some(part);
     }
@@ -192,38 +227,39 @@ fn lowercase_is_identity(text: &str) -> bool {
         .all(|ch| ch.to_lowercase().eq(std::iter::once(ch)))
 }
 
-fn normalized_part(part: &str) -> Cow<'_, str> {
-    if lowercase_is_identity(part) {
-        Cow::Borrowed(part)
-    } else {
-        Cow::Owned(normalize_part(part))
-    }
-}
-
-struct TokenEmitter<'analyzer, F> {
+struct TokenEmitter<'analyzer, 'control, F> {
     analyzer: &'analyzer SearchAnalyzerLexicon,
+    control: Control<'control>,
     emit: F,
 }
 
-impl<'text, 'analyzer, F: FnMut(Cow<'text, str>) -> Result<()>> TokenEmitter<'analyzer, F> {
-    fn new(analyzer: &'analyzer SearchAnalyzerLexicon, emit: F) -> Self {
-        Self { analyzer, emit }
+impl<'text, 'control, F: FnMut(Text<'text>) -> Result<()>> TokenEmitter<'text, 'control, F> {
+    fn new(analyzer: &'text SearchAnalyzerLexicon, control: Control<'control>, emit: F) -> Self {
+        TokenEmitter {
+            analyzer,
+            control,
+            emit,
+        }
     }
 
-    fn emit_token(&mut self, token: Cow<'text, str>) -> Result<()> {
-        if token.is_empty() || self.analyzer.is_stopword(&token) {
+    fn emit_token(&mut self, token: Text<'text>) -> Result<()> {
+        self.control.check()?;
+        if token.as_str().is_empty() || self.analyzer.is_stopword(token.as_str()) {
             return Ok(());
         }
         (self.emit)(token)
     }
 
-    fn analyzed(&mut self, token: Cow<'text, str>) -> Result<()> {
+    fn analyzed(&mut self, token: Text<'text>) -> Result<()> {
         self.emit_token(token.clone())?;
-        for normalized in normalize_english_suffixes(&token) {
-            self.emit_token(Cow::Owned(normalized))?;
+        for (stem, tail) in crate::english_suffix_parts(token.as_str())
+            .into_iter()
+            .flatten()
+        {
+            self.emit_token(token.suffix(stem.len(), tail, self.control)?)?;
         }
-        for alias in self.analyzer.semantic_aliases(&token) {
-            self.emit_token(Cow::Owned(alias))?;
+        for alias in self.analyzer.semantic_alias_slices(token.as_str()) {
+            self.emit_token(Text::Borrowed(alias))?;
         }
         Ok(())
     }

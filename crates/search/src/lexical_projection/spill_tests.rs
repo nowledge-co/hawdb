@@ -161,7 +161,7 @@ fn reference_run(mut postings: Vec<Posting>) -> Vec<u8> {
     postings.dedup();
     let mut output = b"SKNLEXR1".to_vec();
     for posting in postings {
-        for text in [&posting.term, &posting.document_id] {
+        for text in [posting.term.as_str(), posting.document_id.as_str()] {
             output.extend_from_slice(&(text.len() as u32).to_le_bytes());
             output.extend_from_slice(text.as_bytes());
         }
@@ -390,6 +390,10 @@ fn spill_header_and_checked_arithmetic_boundaries_reject_without_output() {
 }
 
 // The oracle sums literal wire units rather than production size helpers.
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Posting order depends only on immutable values, never on the term lease."
+)]
 fn reference_units(input: &[Posting]) -> Vec<usize> {
     let unique = input.iter().collect::<BTreeSet<_>>();
     std::iter::once(8)

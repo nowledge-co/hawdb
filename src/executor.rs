@@ -99,7 +99,7 @@ pub type ReadExecutionProfile = skein_executor::ReadExecutionProfile<ScanPruning
 pub type ProfiledQueryRows = skein_executor::ProfiledQueryRows<ScanPruningReport>;
 pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningReport>;
 pub(crate) use skein_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
-pub(crate) use skein_executor::numeric::{default_morsel_cpu_ceiling, MAX_MORSEL_PARALLELISM};
+pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
 pub(crate) use skein_executor::result_delivery::StreamDelivery;
 
 pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: &Catalog) -> bool {

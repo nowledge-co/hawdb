@@ -914,6 +914,7 @@ impl GraphStore {
                     initial_import_source_fingerprint: self
                         .initial_import_source_fingerprint
                         .as_deref(),
+                    search_projection_database_identity: self.search_projection_database_identity,
                     relational_checkpoint: relational_checkpoint_artifact,
                 },
                 generation,

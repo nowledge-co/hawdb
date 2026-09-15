@@ -45,7 +45,7 @@ fn run_case(seed: u64, case: usize) {
             let mut postings = Vec::new();
             for _ in 0..random.below(15) {
                 let posting = Posting {
-                    term: terms[random.below(terms.len())].to_string(),
+                    term: terms[random.below(terms.len())].into(),
                     document_id: format!("document-{}", random.below(5)),
                     term_frequency: 1 + random.below(7) as u32,
                     document_len: 24 + random.below(3) as u32,

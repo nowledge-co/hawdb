@@ -1,17 +1,6 @@
 use super::*;
+use crate::lexical_snapshot_test_gate::query_gate;
 use crate::{SearchIndex, SearchMode, SearchQueryOptions};
-use std::time::{Duration, Instant};
-
-fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready() {
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
 
 fn search_options() -> SearchQueryOptions {
     SearchQueryOptions {
@@ -48,36 +37,27 @@ fn checkpoint_query_snapshot(query: &str) {
         expected_ids,
     );
     let old_reader = index.lexical_projection.lock().unwrap().clone().unwrap();
-    let initial_readers = Arc::strong_count(&old_reader);
-    let epoch_guard = index.durable_source_graph_commit_epoch.lock().unwrap();
-    let (captured, published, actual, checkpoint) = std::thread::scope(|scope| {
-        let query = scope.spawn(search);
-        // The query retains its reader before waiting for projection freshness.
-        let captured = wait_until(|| Arc::strong_count(&old_reader) > initial_readers);
-        let checkpoint = scope.spawn(|| index.checkpoint());
-        let published = wait_until(|| {
-            let Ok(reader) = index.lexical_projection.try_lock() else {
-                return false;
-            };
-            let Ok(delta) = index.lexical_delta.try_lock() else {
-                return false;
-            };
-            reader.as_ref().unwrap().generation() != old_reader.generation()
-                && delta.upserts.is_empty()
-                && delta.deletes.is_empty()
-        });
-        // Release both workers even if a synchronization condition timed out.
-        drop(epoch_guard);
-        (
-            captured,
-            published,
-            query.join().unwrap(),
-            checkpoint.join().unwrap(),
-        )
+    let (gate, controller) = query_gate();
+    let actual = std::thread::scope(|scope| {
+        // Own the controller inside the scope so unwind releases the query
+        // before the scope joins its worker.
+        let controller = controller;
+        let query = scope.spawn(|| gate.run(search));
+        controller.wait_until_captured();
+        index.checkpoint().unwrap();
+        {
+            let reader = index.lexical_projection.lock().unwrap();
+            let delta = index.lexical_delta.lock().unwrap();
+            assert_ne!(
+                reader.as_ref().unwrap().generation(),
+                old_reader.generation()
+            );
+            assert!(delta.upserts.is_empty());
+            assert!(delta.deletes.is_empty());
+        }
+        drop(controller);
+        query.join().unwrap()
     });
-    checkpoint.unwrap();
-    assert!(captured, "query did not capture the original reader");
-    assert!(published, "checkpoint did not publish and reset the delta");
     let actual = actual.unwrap();
     assert_eq!(actual.total_hits, expected.total_hits);
     assert_eq!(actual.hits, expected.hits);

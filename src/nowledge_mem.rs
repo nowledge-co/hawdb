@@ -72,6 +72,7 @@ pub use skein_readiness::bounded_read_evidence::{
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
+pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use skein_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
@@ -923,66 +924,6 @@ pub use skein_route_ownership::graph::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeQueryRuntimePreflightProbe {
-    pub name: String,
-    pub route: Option<String>,
-    pub query_family: Option<String>,
-    pub cypher: String,
-    pub parameters: BTreeMap<String, Value>,
-    pub require_scan_pruning: bool,
-    pub require_pruned: bool,
-    pub min_scan_pruning_reports: usize,
-    pub max_output_rows: Option<usize>,
-}
-
-impl NowledgeQueryRuntimePreflightProbe {
-    pub fn new(name: impl Into<String>, cypher: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            route: None,
-            query_family: None,
-            cypher: cypher.into(),
-            parameters: BTreeMap::new(),
-            require_scan_pruning: false,
-            require_pruned: false,
-            min_scan_pruning_reports: 1,
-            max_output_rows: None,
-        }
-    }
-
-    pub fn with_route(mut self, route: impl Into<String>) -> Self {
-        self.route = Some(route.into());
-        self
-    }
-
-    pub fn with_query_family(mut self, query_family: impl Into<String>) -> Self {
-        self.query_family = Some(query_family.into());
-        self
-    }
-
-    pub fn with_parameters(mut self, parameters: BTreeMap<String, Value>) -> Self {
-        self.parameters = parameters;
-        self
-    }
-
-    pub fn require_scan_pruning(mut self, min_scan_pruning_reports: usize) -> Self {
-        self.require_scan_pruning = true;
-        self.min_scan_pruning_reports = min_scan_pruning_reports;
-        self
-    }
-
-    pub fn require_pruned(mut self) -> Self {
-        self.require_pruned = true;
-        self
-    }
-
-    pub fn with_max_output_rows(mut self, max_output_rows: usize) -> Self {
-        self.max_output_rows = Some(max_output_rows);
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeQueryRuntimePreflightReport {
     pub protocol: String,
     pub ready: bool,
@@ -1346,14 +1287,14 @@ pub struct NowledgeMemQueryApiBehavior {
 
 impl NowledgeMemQueryApiBehavior {
     fn from_statement(statement: &cypher::Statement) -> Self {
-        let body = nowledge_statement_body(statement);
+        let shape = skein_cypher::read_route::classify_read_route_shape(statement);
         Self {
             include_metadata_false_strips_metadata: true,
             ordering_contract_recorded: true,
             pagination_contract_recorded: true,
             error_class_stable: true,
-            statement_has_ordering: statement_has_ordering(body),
-            statement_has_pagination: statement_has_pagination(body),
+            statement_has_ordering: shape.has_ordering,
+            statement_has_pagination: shape.has_pagination,
         }
     }
 
@@ -5754,7 +5695,9 @@ struct NowledgeMemQueryReportInput<'a> {
 }
 
 fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
-    let statement_kind = crate::api::statement_kind(nowledge_statement_body(input.statement));
+    let statement_kind = crate::api::statement_kind(
+        skein_cypher::read_route::query_statement_body(input.statement),
+    );
     let decision = nowledge_mem_fast_path_classification(input.statement);
     let slow_log_candidate = input
         .options
@@ -6275,108 +6218,15 @@ impl NowledgeMemPlanCacheReport {
 pub fn nowledge_mem_fast_path_classification(
     statement: &cypher::Statement,
 ) -> NowledgeMemFastPathClassification {
-    let body = nowledge_statement_body(statement);
-    let fast_path_reason = match body {
-        cypher::Statement::MatchReturn(query) if is_simple_node_lookup(query) => {
-            Some("simple_node_lookup")
-        }
-        cypher::Statement::MatchReturn(query) if is_simple_one_hop_expand(query) => {
-            Some("simple_one_hop_expand")
-        }
-        cypher::Statement::MatchNodesReturn(query) if is_simple_two_node_lookup(query) => {
-            Some("simple_two_node_lookup")
-        }
-        cypher::Statement::ShortestPathReturn(_) => Some("bounded_shortest_path"),
-        _ => None,
-    };
+    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
     NowledgeMemFastPathClassification {
-        execution_path: if fast_path_reason.is_some() {
+        execution_path: if shape.is_fast_path() {
             NowledgeMemQueryExecutionPath::FastPath
         } else {
             NowledgeMemQueryExecutionPath::OptimizedPath
         },
-        fast_path_reason,
+        fast_path_reason: shape.fast_path_reason,
     }
-}
-
-fn nowledge_statement_body(statement: &cypher::Statement) -> &cypher::Statement {
-    match statement {
-        cypher::Statement::CypherQuery(query) => &query.statement,
-        _ => statement,
-    }
-}
-
-fn statement_has_ordering(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            !query.order_by.is_empty() || !query.with_order_by.is_empty()
-        }
-        _ => false,
-    }
-}
-
-fn statement_has_pagination(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            query.offset.is_some()
-                || query.limit.is_some()
-                || query.with_offset.is_some()
-                || query.with_limit.is_some()
-        }
-        cypher::Statement::MatchNodesReturn(query) => query.limit.is_some(),
-        _ => false,
-    }
-}
-
-fn is_simple_node_lookup(query: &cypher::MatchReturn) -> bool {
-    !query.properties.is_empty()
-        && query.expand.is_none()
-        && query.post_match_expand.is_none()
-        && query.optional_expand.is_none()
-        && query.optional_with.is_none()
-        && query.collect_with.is_none()
-        && query.distinct_with.is_none()
-        && query.with_projection.is_none()
-        && query.with_order_by.is_empty()
-        && query.with_offset.is_none()
-        && query.with_limit.is_none()
-        && query.aggregate_with.is_none()
-        && query.aggregate_with_filter.is_none()
-        && query.post_with_match.is_none()
-        && query.predicate.is_none()
-        && !query.distinct
-        && query.order_by.is_empty()
-        && query.offset.is_none()
-}
-
-fn is_simple_one_hop_expand(query: &cypher::MatchReturn) -> bool {
-    query.expand.as_ref().is_some_and(|expand| {
-        expand.min_hops == 1
-            && expand.max_hops == 1
-            && !query.properties.is_empty()
-            && query.post_match_expand.is_none()
-            && query.optional_expand.is_none()
-            && query.optional_with.is_none()
-            && query.collect_with.is_none()
-            && query.distinct_with.is_none()
-            && query.with_projection.is_none()
-            && query.with_order_by.is_empty()
-            && query.with_offset.is_none()
-            && query.with_limit.is_none()
-            && query.aggregate_with.is_none()
-            && query.aggregate_with_filter.is_none()
-            && query.post_with_match.is_none()
-            && query.predicate.is_none()
-            && !query.distinct
-            && query.order_by.is_empty()
-            && query.offset.is_none()
-    })
-}
-
-fn is_simple_two_node_lookup(query: &cypher::MatchNodesReturn) -> bool {
-    !query.left_properties.is_empty()
-        && !query.right_properties.is_empty()
-        && query.predicate.is_none()
 }
 
 fn recovery_mode_name(mode: RecoveryMode) -> &'static str {

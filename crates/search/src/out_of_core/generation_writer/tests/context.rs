@@ -147,33 +147,36 @@ fn cancellation_before_finish_preserves_the_complete_active_generation() {
 
 #[test]
 fn cancellation_during_spool_read_drops_all_staged_outputs_and_charges() {
-    let root = test_dir("context_cancel_spool");
-    let mut initial = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
-    initial.push(document(0)).unwrap();
-    initial.finish().unwrap();
-    let before = published_files(&root);
-    let task = context(8 * 1024 * 1024);
-    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
-        &root,
-        Default::default(),
-        task.clone(),
-    )
-    .unwrap();
-    let memory = writer.memory.clone();
-    let mut source = document(1);
-    source.content = "token ".repeat(16 * 1024);
-    writer.push(source).unwrap();
-    spool::read_evidence::take();
-    let _cancel = spool::read_evidence::cancel_after_bytes(0, task.cancellation().clone());
-    let error = writer.finish().unwrap_err();
-    assert!(error.to_string().contains("cancel"), "{error}");
-    let (opens, read_bytes) = spool::read_evidence::take();
-    assert_eq!(opens, 1);
-    assert!(read_bytes <= SPOOL_BUFFER_BYTES as u64);
-    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
-    assert_eq!(stage_directories(&root), 0);
-    assert_eq!(published_files(&root), before);
-    fs::remove_dir_all(root).unwrap();
+    for unit in ["token ", "token \u{9f98}\u{9750} "] {
+        let root = test_dir("context_cancel_spool");
+        let mut initial =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        initial.push(document(0)).unwrap();
+        initial.finish().unwrap();
+        let before = published_files(&root);
+        let task = context(8 * 1024 * 1024);
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+            &root,
+            Default::default(),
+            task.clone(),
+        )
+        .unwrap();
+        let memory = writer.memory.clone();
+        let mut source = document(1);
+        source.content = unit.repeat(16 * 1024);
+        writer.push(source).unwrap();
+        spool::read_evidence::take();
+        let _cancel = spool::read_evidence::cancel_after_bytes(0, task.cancellation().clone());
+        let error = writer.finish().unwrap_err();
+        assert!(error.to_string().contains("cancel"), "{error}");
+        let (opens, read_bytes) = spool::read_evidence::take();
+        assert_eq!(opens, 1);
+        assert!(read_bytes <= SPOOL_BUFFER_BYTES as u64);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        assert_eq!(stage_directories(&root), 0);
+        assert_eq!(published_files(&root), before);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -273,4 +276,125 @@ fn cancellation_after_vector_core_calls_preserves_the_active_generation() {
         drop(reader);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn chinese_analyzer_denial_preserves_the_active_generation_and_cleans_the_stage() {
+    let root = test_dir("context_chinese_analyzer_denial");
+    let previous = document(0);
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    initial.push(previous.clone()).unwrap();
+    let generation = initial.finish().unwrap().generation;
+    let before = published_files(&root);
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+        &root,
+        Default::default(),
+        context(4 * 1024 * 1024),
+    )
+    .unwrap();
+    let memory = writer.memory.clone();
+    let mut next = document(1);
+    next.content = "\u{9f98}\u{9750}\u{9f49}".into();
+    writer.push(next).unwrap();
+    assert!(writer.needs_chinese_analyzer);
+    let error = writer.finish().unwrap_err();
+    assert!(error.to_string().contains("query_memory_bytes"), "{error}");
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(published_files(&root), before);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.generation(), generation);
+    assert_eq!(
+        reader
+            .hydrate_documents(std::slice::from_ref(&previous.id))
+            .unwrap()
+            .documents,
+        vec![previous]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn resident_frequency_denial_stops_analysis_and_preserves_the_active_generation() {
+    let root = test_dir("context_frequency_denial");
+    let previous = document(0);
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    initial.push(previous.clone()).unwrap();
+    let generation = initial.finish().unwrap().generation;
+    let before = published_files(&root);
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
+        &root,
+        Default::default(),
+        context(4 * 1024 * 1024),
+    )
+    .unwrap();
+    let memory = writer.memory.clone();
+    let mut next = document(1);
+    next.embedding = None;
+    next.content = (0..4096).map(|index| format!("token{index:05} ")).collect();
+    writer.push(next).unwrap();
+    assert!(!writer.needs_chinese_analyzer);
+    crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.set(0));
+    let error = writer.finish().unwrap_err();
+    assert!(error.to_string().contains("query_memory_bytes"), "{error}");
+    let visited = crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.get());
+    assert!(visited > 0 && visited < 4096, "analysis visits={visited}");
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(published_files(&root), before);
+    let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.generation(), generation);
+    assert_eq!(
+        reader
+            .hydrate_documents(std::slice::from_ref(&previous.id))
+            .unwrap()
+            .documents,
+        vec![previous]
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn governed_chinese_build_preserves_the_complete_artifact_bytes_and_reopen() {
+    let original_root = test_dir("context_chinese_original");
+    let governed_root = test_dir("context_chinese_governed");
+    let mut documents = vec![document(0), document(1)];
+    documents[0].content =
+        "GraphStorage \u{4e2d}\u{534e}\u{4eba}\u{6c11}\u{5171}\u{548c}\u{56fd}".into();
+    documents[1].content = "\u{9f98}\u{9750}\u{9f49} write_ahead_log \u{20000}\u{20001}".into();
+    for input in &mut documents {
+        input.embedding = None;
+    }
+    let mut original =
+        SearchOutOfCoreGenerationWriter::create(&original_root, Default::default()).unwrap();
+    let mut governed = SearchOutOfCoreGenerationWriter::create_with_context(
+        &governed_root,
+        Default::default(),
+        context(32 * 1024 * 1024),
+    )
+    .unwrap();
+    let memory = governed.memory.clone();
+    for input in &documents {
+        original.push(input.clone()).unwrap();
+        governed.push(input.clone()).unwrap();
+    }
+    original
+        .finish_with_artifacts(SearchOutOfCoreGenerationWriter::build_artifacts)
+        .unwrap();
+    governed.finish().unwrap();
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(
+        published_files(&governed_root),
+        published_files(&original_root)
+    );
+    let reader = crate::SearchOutOfCoreReader::open(&governed_root).unwrap();
+    let ids = documents
+        .iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(reader.hydrate_documents(&ids).unwrap().documents, documents);
+    drop(reader);
+    fs::remove_dir_all(original_root).unwrap();
+    fs::remove_dir_all(governed_root).unwrap();
 }

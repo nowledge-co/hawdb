@@ -29,6 +29,9 @@ pub mod library_readiness;
 pub mod previous_wrapper_preflight;
 
 #[doc(hidden)]
+pub mod query_runtime_preflight;
+
+#[doc(hidden)]
 pub mod graph_route;
 
 #[doc(hidden)]
