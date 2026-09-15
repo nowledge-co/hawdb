@@ -6,7 +6,10 @@ package(default_visibility = ["//visibility:public"])
 filegroup(
     name = "candidate_probe_test_fixtures",
     srcs = ["src/candidate_evidence/tests/probe_fixtures.rs"],
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/bootstrap:__pkg__",
+    ],
 )
 
 test_suite(
