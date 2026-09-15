@@ -230,7 +230,10 @@ struct AdmittedRelationalExecution<'state, 'runtime, R: RelationalQueryStoreRead
     task_context: Option<&'runtime skein_core::RuntimeTaskContext>,
 }
 
-pub struct RelationalQueryReadModes<'a, R: RelationalQueryStoreReader = ()> {
+pub struct RelationalQueryReadModes<
+    'a,
+    R: RelationalQueryStoreReader = crate::RelationalMaterializedReader,
+> {
     index: RelationalIndexReadMode<'a, R>,
     row: RelationalRowReadMode<'a, R>,
 }
@@ -252,7 +255,8 @@ impl<'a, R: RelationalQueryStoreReader> RelationalQueryReadModes<'a, R> {
     }
 }
 
-impl RelationalIndexStoreReader for () {
+#[cfg(any())]
+impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
     fn relational_index_probe_statistics(
         &self,
         _table: &str,
@@ -311,7 +315,8 @@ impl RelationalIndexStoreReader for () {
     }
 }
 
-impl RelationalRowStoreReader for () {
+#[cfg(any())]
+impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
     type TransactionRows = ();
 
     fn open_relational_row_snapshot_reader(
