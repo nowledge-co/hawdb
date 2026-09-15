@@ -16,6 +16,25 @@ pub enum ConsumerMemoryMode {
     DeferredUntilValidated,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDelivery {
+    /// Keep bounded rows query-owned until every output limit is validated.
+    Validated,
+    /// Deliver rows as produced and let the caller surface terminal failures.
+    Incremental,
+}
+
+impl StreamDelivery {
+    pub fn consumer_memory_mode(self, bounded: bool) -> ConsumerMemoryMode {
+        match (self, bounded) {
+            (Self::Validated, true) => ConsumerMemoryMode::DeferredUntilValidated,
+            (Self::Validated, false) | (Self::Incremental, _) => {
+                ConsumerMemoryMode::ReleasedAfterCall
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct OutputLimits {
     pub max_rows: Option<usize>,

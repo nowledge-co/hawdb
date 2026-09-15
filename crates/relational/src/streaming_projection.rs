@@ -1,13 +1,15 @@
-use super::relational_ref_to_value;
-use crate::error::{Result, SkeinError};
-use crate::relational_sql::row_access::RelationalReadRowRef;
-use crate::sql::{Expr, ExprKind, SelectProjection};
-use crate::value::Value;
+//! Borrowed-row streaming projection owned by the relational runtime.
+
+use crate::predicate::bind_streaming_column;
+use crate::query_value::relational_ref_to_value;
+use crate::row_runtime::RelationalReadRowRef;
+use skein_core::{Result, SkeinError, Value};
 use skein_executor::{QueryRowsBuilder, QuerySchema};
-use skein_relational::predicate::bind_streaming_column;
+use skein_sql::{Expr, ExprKind, SelectProjection};
 use skein_storage::RelationalTableSchema;
 
-pub(super) struct BoundStreamingProjection {
+#[doc(hidden)]
+pub struct BoundStreamingProjection {
     columns: Box<[BoundStreamingColumn]>,
     schema: QuerySchema,
     row_name_bytes: usize,
@@ -25,7 +27,7 @@ enum BoundStreamingValue {
 }
 
 impl BoundStreamingProjection {
-    pub(super) fn bind(
+    pub fn bind(
         projection: &[SelectProjection],
         schema: &RelationalTableSchema,
         table: &str,
@@ -104,11 +106,11 @@ impl BoundStreamingProjection {
         })
     }
 
-    pub(super) fn schema(&self) -> &QuerySchema {
+    pub fn schema(&self) -> &QuerySchema {
         &self.schema
     }
 
-    pub(super) fn project_into(
+    pub fn project_into(
         &self,
         row: RelationalReadRowRef<'_>,
         output: &mut QueryRowsBuilder,
@@ -143,72 +145,124 @@ impl BoundStreamingProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::SqlStatement;
-    use skein_relational::predicate::BoundStreamingPredicate;
+    use skein_executor::Row;
+    use skein_sql::SqlStatement;
     use skein_storage::{
         RelationalColumnSchema, RelationalKey, RelationalProjectedField, RelationalProjectedRow,
         RelationalScalarType, RelationalValue,
     };
 
     #[test]
-    fn boolean_short_circuit_does_not_read_the_unneeded_ordinal() {
-        let schema = schema();
+    fn projection_uses_the_schema_once_for_borrowed_rows() {
+        let projection = projection("SELECT id AS external_id, body FROM records");
+        let projection = BoundStreamingProjection::bind(&projection, &schema(), "records", "r")
+            .expect("bind streaming projection");
         let row = RelationalProjectedRow {
             primary_key: RelationalKey(vec![RelationalValue::Text("row-1".to_string())]),
-            fields: vec![RelationalProjectedField {
-                ordinal: 1,
-                value: RelationalValue::Boolean(false),
-            }],
+            fields: vec![
+                RelationalProjectedField {
+                    ordinal: 0,
+                    value: RelationalValue::Text("row-1".to_string()),
+                },
+                RelationalProjectedField {
+                    ordinal: 1,
+                    value: RelationalValue::Text("body".to_string()),
+                },
+            ],
         };
-        let row = RelationalReadRowRef::from_projected(&row);
+        let mut output = QueryRowsBuilder::with_schema(projection.schema().clone(), 1);
+        let mut payload_bytes = 0;
 
-        let and = bind_predicate(
-            "SELECT id FROM logic_rows WHERE flag = TRUE AND body = 'unused'",
-            &schema,
+        projection
+            .project_into(
+                RelationalReadRowRef::from_projected(&row),
+                &mut output,
+                &mut payload_bytes,
+                usize::MAX,
+            )
+            .expect("project borrowed row");
+
+        assert_eq!(
+            output.finish().into_rows(),
+            vec![Row::from([
+                (
+                    "external_id".to_string(),
+                    Value::String("row-1".to_string())
+                ),
+                ("body".to_string(), Value::String("body".to_string())),
+            ])]
         );
         assert_eq!(
-            and.truth_with(&|ordinal| row.value(ordinal)).unwrap(),
-            Some(false)
-        );
-
-        let or = bind_predicate(
-            "SELECT id FROM logic_rows WHERE flag = FALSE OR body = 'unused'",
-            &schema,
-        );
-        assert_eq!(
-            or.truth_with(&|ordinal| row.value(ordinal)).unwrap(),
-            Some(true)
+            payload_bytes,
+            "external_id".len() + "body".len() + "row-1".len() + "body".len()
         );
     }
 
-    fn bind_predicate(sql: &str, schema: &RelationalTableSchema) -> BoundStreamingPredicate {
-        let prepared = skein_sql::prepare_postgres_sql(sql).unwrap();
-        let SqlStatement::Select(select) = prepared.statement else {
-            panic!("expected SELECT")
+    #[test]
+    fn projection_rolls_back_the_payload_counter_when_the_output_budget_is_exceeded() {
+        let projection = projection("SELECT id FROM records");
+        let projection = BoundStreamingProjection::bind(&projection, &schema(), "records", "r")
+            .expect("bind streaming projection");
+        let row = RelationalProjectedRow {
+            primary_key: RelationalKey(vec![RelationalValue::Text("row-1".to_string())]),
+            fields: vec![RelationalProjectedField {
+                ordinal: 0,
+                value: RelationalValue::Text("row-1".to_string()),
+            }],
         };
-        BoundStreamingPredicate::bind(
-            select.selection.as_ref().expect("selection"),
-            &[],
-            schema,
-            "logic_rows",
-            "logic_rows",
-        )
-        .unwrap()
+        let mut output = QueryRowsBuilder::with_schema(projection.schema().clone(), 1);
+        let mut payload_bytes = 0;
+
+        let error = projection
+            .project_into(
+                RelationalReadRowRef::from_projected(&row),
+                &mut output,
+                &mut payload_bytes,
+                1,
+            )
+            .expect_err("payload cap must reject the row");
+
+        assert_eq!(
+            error,
+            SkeinError::Execution(
+                "relational SQL output exceeds max_output_payload_bytes 1".to_string()
+            )
+        );
+        assert_eq!(payload_bytes, 0);
+        assert!(output.finish().is_empty());
+    }
+
+    #[test]
+    fn projection_rejects_duplicate_output_columns() {
+        let projection = projection("SELECT id AS value, body AS value FROM records");
+
+        let error = match BoundStreamingProjection::bind(&projection, &schema(), "records", "r") {
+            Ok(_) => panic!("duplicate output columns must fail during binding"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            SkeinError::Semantic(
+                "relational projection contains duplicate output column value".to_string()
+            )
+        );
+    }
+
+    fn projection(source: &str) -> Vec<SelectProjection> {
+        let prepared = skein_sql::prepare_postgres_sql(source).expect("parse select");
+        let SqlStatement::Select(select) = prepared.statement else {
+            panic!("expected SELECT");
+        };
+        select.projection
     }
 
     fn schema() -> RelationalTableSchema {
         RelationalTableSchema {
-            name: "logic_rows".to_string(),
+            name: "records".to_string(),
             columns: vec![
                 RelationalColumnSchema {
                     name: "id".to_string(),
                     scalar_type: RelationalScalarType::Text,
-                    nullable: false,
-                    default: None,
-                },
-                RelationalColumnSchema {
-                    name: "flag".to_string(),
-                    scalar_type: RelationalScalarType::Boolean,
                     nullable: false,
                     default: None,
                 },

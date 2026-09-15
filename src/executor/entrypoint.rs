@@ -1,59 +1,10 @@
 //! Root execution orchestration and result-accounting lifecycle.
 
 use super::*;
+pub(super) use skein_executor::execution_request::ExecutionRequest;
 use skein_executor::observer::ExecutionProfileBuilder;
 pub(super) use skein_executor::result_delivery::ConsumerMemoryMode;
-use skein_executor::result_delivery::{OutputLimits, QueryOutputAccumulator};
-
-#[derive(Clone, Copy)]
-pub(super) struct ExecutionRequest<'a> {
-    plan: &'a PhysicalPlan,
-    parameters: &'a BTreeMap<String, Value>,
-    output_limits: OutputLimits,
-    memory: &'a ExecutionMemoryConfig,
-    task_context: Option<&'a RuntimeTaskContext>,
-}
-
-impl<'a> ExecutionRequest<'a> {
-    pub(super) fn new(
-        plan: &'a PhysicalPlan,
-        parameters: &'a BTreeMap<String, Value>,
-        memory: &'a ExecutionMemoryConfig,
-    ) -> Self {
-        Self {
-            plan,
-            parameters,
-            output_limits: OutputLimits::default(),
-            memory,
-            task_context: None,
-        }
-    }
-
-    pub(super) fn with_output_limits(
-        mut self,
-        max_rows: Option<usize>,
-        max_payload_bytes: Option<usize>,
-    ) -> Self {
-        self.output_limits = OutputLimits {
-            max_rows,
-            max_payload_bytes,
-        };
-        self
-    }
-
-    pub(super) fn with_optional_task_context(
-        mut self,
-        task_context: Option<&'a RuntimeTaskContext>,
-    ) -> Self {
-        self.task_context = task_context;
-        self
-    }
-
-    pub(super) fn with_task_context(mut self, task_context: &'a RuntimeTaskContext) -> Self {
-        self.task_context = Some(task_context);
-        self
-    }
-}
+use skein_executor::result_delivery::QueryOutputAccumulator;
 
 pub(super) struct ExecutionResources<'a> {
     catalog: &'a mut Catalog,
@@ -128,23 +79,25 @@ pub(super) fn execute_profiled_consumer(
         external,
     } = resources;
     store.ensure_usable()?;
+    let plan = request.plan();
+    let parameters = request.parameters();
+    let output_limits = request.output_limits();
+    let memory = request.memory();
+    let task_context = request.task_context();
 
-    let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(
-        request.memory,
-        request.task_context,
-    )?);
-    let result_memory_budget = enforced_result_memory_budget(request.memory, request.task_context)?;
+    let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(memory, task_context)?);
+    let result_memory_budget = enforced_result_memory_budget(memory, task_context)?;
     let mut output = QueryOutputAccumulator::new(
-        request.output_limits,
+        output_limits,
         result_memory_budget,
         &memory_ledger,
         output_memory,
         consumer,
     )?;
     let process_memory_start = skein_qos::ProcessMemorySnapshot::capture().ok();
-    let execution_limit = ExecutionLimit::from_user_max_rows(request.output_limits.max_rows)?;
-    let profile = ExecutionProfileBuilder::start(request.plan, request.output_limits.max_rows)?;
-    let prepared_plan = PreparedPhysicalPlan::prepare(request.plan, store, request.memory);
+    let execution_limit = ExecutionLimit::from_user_max_rows(output_limits.max_rows)?;
+    let profile = ExecutionProfileBuilder::start(plan, output_limits.max_rows)?;
+    let prepared_plan = PreparedPhysicalPlan::prepare(plan, store, memory);
     debug_assert_eq!(
         prepared_plan.storage_capability(),
         if store.is_out_of_core() {
@@ -155,17 +108,17 @@ pub(super) fn execute_profiled_consumer(
     );
     debug_assert_eq!(
         prepared_plan.required_memory(),
-        estimated_execution_memory(request.plan, request.memory)
+        estimated_execution_memory(plan, memory)
     );
     let batch_plan = prepared_plan.batch();
     let fully_streamed = batch_plan.is_some();
-    let observer = QueryExecutionObserver::new(request.plan);
+    let observer = QueryExecutionObserver::new(plan);
     let mut context = ExecutionContext {
-        parameters: request.parameters,
+        parameters,
         external,
-        memory: request.memory,
+        memory,
         memory_ledger: &memory_ledger,
-        task_context: request.task_context,
+        task_context,
         observer: &observer,
     };
 
@@ -176,9 +129,9 @@ pub(super) fn execute_profiled_consumer(
             store,
             parameters: context.parameters,
             external: &external,
-            memory: request.memory,
+            memory,
             memory_ledger: &memory_ledger,
-            task_context: request.task_context,
+            task_context,
             observer: context.observer,
         };
         execute_prepared_binding_batches(
@@ -193,21 +146,16 @@ pub(super) fn execute_profiled_consumer(
             },
         )?;
     } else {
-        observer.record_operator_start(request.plan);
-        let bindings = execute_bindings_with_limit(
-            request.plan,
-            catalog,
-            store,
-            &mut context,
-            execution_limit,
-        )?;
-        observer.record_operator_output(request.plan, bindings.len());
+        observer.record_operator_start(plan);
+        let bindings =
+            execute_bindings_with_limit(plan, catalog, store, &mut context, execution_limit)?;
+        observer.record_operator_output(plan, bindings.len());
         for binding in bindings {
             output.emit(binding)?;
         }
     }
 
-    output.finish_delivery(request.task_context)?;
+    output.finish_delivery(task_context)?;
     let profile = profile.finish(observer, &memory_ledger, output.metrics(), |report| {
         record_process_memory(report, process_memory_start);
     });

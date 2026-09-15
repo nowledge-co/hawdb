@@ -51,6 +51,9 @@ pub use statement::{
 pub mod row_runtime;
 
 #[doc(hidden)]
+pub mod streaming_projection;
+
+#[doc(hidden)]
 pub mod physical_plan;
 
 use skein_core::{Result, SkeinError, Value};

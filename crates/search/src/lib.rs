@@ -55,8 +55,12 @@ mod document_decoding_tests;
 mod document_encoding;
 mod generation_cleanup;
 mod identifier;
+#[doc(hidden)]
+pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
 mod lexical_readiness;
+#[cfg(all(test, feature = "full-text-search"))]
+mod lexical_snapshot_test_gate;
 mod lexical_term_policy;
 mod out_of_core;
 mod projection_delta_contracts;
@@ -151,6 +155,7 @@ pub use generation_cleanup::{
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 use generation_cleanup::{SearchProjectionCleanupState, SearchProjectionGenerations};
+pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
 use lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, documents_digest as lexical_documents_digest,
     LexicalMiniDelta, LexicalProjectionConfig, LexicalProjectionReader, LexicalProjectionWriter,
@@ -3194,6 +3199,10 @@ impl SearchIndex {
         } else {
             None
         };
+        #[cfg(all(test, feature = "full-text-search"))]
+        if lexical_snapshot.is_some() {
+            lexical_snapshot_test_gate::pause_after_capture();
+        }
         let text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(TextCorpusStats::from_documents(

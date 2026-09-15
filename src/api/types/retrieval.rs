@@ -75,7 +75,8 @@ pub fn nowledge_deep_search_graph_seed_limit(page_end: usize) -> usize {
 }
 
 pub use skein_search::{
-    SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
+    KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage, SearchProjectionChangeBatch,
+    SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,44 +490,6 @@ pub struct KnowledgeRetrievalDiagnostics {
     pub pipeline: KnowledgeRetrievalPipelineReport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KnowledgeRetrievalStage {
-    SearchCandidate,
-    MetadataFilter,
-    AuthorizedGraphExpand,
-    Rerank,
-    TopK,
-    CanonicalHydration,
-}
-
-impl KnowledgeRetrievalStage {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SearchCandidate => "search_candidate",
-            Self::MetadataFilter => "metadata_filter",
-            Self::AuthorizedGraphExpand => "authorized_graph_expand",
-            Self::Rerank => "rerank",
-            Self::TopK => "top_k",
-            Self::CanonicalHydration => "canonical_hydration",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnowledgeRetrievalPipelineReport {
-    pub stages: Vec<KnowledgeRetrievalStage>,
-    pub graph_snapshot_commit_epoch: u64,
-    pub query_memory_budget_bytes: usize,
-    pub peak_tracked_memory_bytes: usize,
-    pub result_payload_budget_bytes: usize,
-    pub result_payload_bytes: usize,
-    pub canonical_identity_filtered_out_count: usize,
-    pub canonical_output_hydrated_node_count: usize,
-    pub canonical_output_hydrated_candidate_count: usize,
-    pub canonical_output_hydration_after_top_k: bool,
-    pub metadata_filter_authorized_graph_expansion: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeFanoutReasonDetail {
     pub code: KnowledgeFanoutReasonCode,
@@ -899,4 +862,26 @@ pub struct KnowledgeEvidence {
     pub text_score: f64,
     pub vector_rank: Option<usize>,
     pub text_rank: Option<usize>,
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
+    use std::any::TypeId;
+
+    #[test]
+    fn pipeline_contract_preserves_search_owner_identity() {
+        assert_eq!(
+            TypeId::of::<KnowledgeRetrievalStage>(),
+            TypeId::of::<skein_search::KnowledgeRetrievalStage>(),
+        );
+        assert_eq!(
+            TypeId::of::<KnowledgeRetrievalPipelineReport>(),
+            TypeId::of::<skein_search::KnowledgeRetrievalPipelineReport>(),
+        );
+        assert_eq!(
+            KnowledgeRetrievalStage::TopK.as_str(),
+            skein_search::KnowledgeRetrievalStage::TopK.as_str(),
+        );
+    }
 }

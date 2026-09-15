@@ -98,38 +98,9 @@ pub type QuerySchema = skein_executor::QuerySchema;
 pub type ReadExecutionProfile = skein_executor::ReadExecutionProfile<ScanPruningReport>;
 pub type ProfiledQueryRows = skein_executor::ProfiledQueryRows<ScanPruningReport>;
 pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningReport>;
-pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
-const DEFAULT_MORSEL_CPU_SHARE_DIVISOR: usize = 4;
-const DEFAULT_MORSEL_MIN_PARALLELISM: usize = 4;
 pub(crate) use skein_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamDelivery {
-    /// Keep bounded rows query-owned until every output limit is validated.
-    Validated,
-    /// Deliver rows as produced and let the caller surface terminal failures.
-    Incremental,
-}
-
-impl StreamDelivery {
-    fn consumer_memory_mode(self, bounded: bool) -> ConsumerMemoryMode {
-        match (self, bounded) {
-            (Self::Validated, true) => ConsumerMemoryMode::DeferredUntilValidated,
-            (Self::Validated, false) | (Self::Incremental, _) => {
-                ConsumerMemoryMode::ReleasedAfterCall
-            }
-        }
-    }
-}
-
-pub(crate) fn default_morsel_cpu_ceiling(effective_cpu_slots: usize) -> usize {
-    let effective_cpu_slots = effective_cpu_slots.max(1);
-    effective_cpu_slots
-        .div_ceil(DEFAULT_MORSEL_CPU_SHARE_DIVISOR)
-        .max(DEFAULT_MORSEL_MIN_PARALLELISM)
-        .min(effective_cpu_slots)
-        .min(MAX_MORSEL_PARALLELISM)
-}
+pub(crate) use skein_executor::numeric::{default_morsel_cpu_ceiling, MAX_MORSEL_PARALLELISM};
+pub(crate) use skein_executor::result_delivery::StreamDelivery;
 
 pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: &Catalog) -> bool {
     columnar::supports_parallel_morsel_execution(plan, catalog)
