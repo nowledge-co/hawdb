@@ -287,8 +287,9 @@ mod tests {
         let evidence = nowledge_search_projection_evidence_json(&probe);
 
         assert_eq!(probe["protocol"], "skein-nowledge-search-projection-probe");
+        let vector_search_enabled = cfg!(feature = "vector-search");
         assert_eq!(
-            evidence["ready"], true,
+            evidence["ready"], vector_search_enabled,
             "probe={probe:#}\nevidence={evidence:#}"
         );
         assert_eq!(evidence["covered_table_count"], 6);
@@ -300,7 +301,16 @@ mod tests {
             true
         );
         assert_eq!(evidence["compressed_vector_projection_required"], true);
-        assert_eq!(evidence["compressed_vector_projection_ready"], true);
+        assert_eq!(
+            evidence["compressed_vector_projection_ready"],
+            vector_search_enabled
+        );
+        if !vector_search_enabled {
+            assert_eq!(
+                probe["compressed_vector_projection"]["blocker_codes"],
+                serde_json::json!(["vector_search_feature_disabled"])
+            );
+        }
         assert_eq!(
             probe["predicate_pushdown"]["supported_ops"],
             serde_json::json!(["eq", "in", "not_in", "gt", "gte", "lt", "lte"])
