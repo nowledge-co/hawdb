@@ -358,6 +358,13 @@ pub use scan::{
 pub use snapshot::{
     SnapshotCommitError, SnapshotCoordinator, SnapshotReadGuard, VersionedSnapshot,
 };
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use source_scan::{
+    render_source_candidate_page, select_source_candidate, validate_source_candidate_scan_request,
+    SourceCandidateCursor, SourceCandidateRow, SourceCandidateScanOrigin,
+    SourceCandidateScanOutput, SourceCandidateScanRequest,
+};
 pub use stable_identity::{
     stable_identity_generation_artifact_path, StableIdentityKey, StableIdentityKind,
     StableIdentityMappingConfig, StableIdentityMappingError, StableIdentityMappingHeader,
