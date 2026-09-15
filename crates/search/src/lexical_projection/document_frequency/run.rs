@@ -2,12 +2,15 @@
 //! in a published generation or interpreted by a public reader.
 
 use super::*;
+use crate::build_memory::reserved::{Grant, ReservedMemory};
 
 const HEADER: &[u8; 8] = b"SKNDOCF1";
 const FOOTER_BYTES: u64 = 16;
 
 pub(in crate::lexical_projection) struct FrequencyRun {
     pub(super) guard: RemoveOnDrop,
+    pub(super) progress: Option<ReservedMemory>,
+    pub(super) task: Option<RuntimeTaskContext>,
 }
 
 struct HashWriter<W> {
@@ -48,6 +51,8 @@ struct RunWriter<W> {
     total_bytes: u64,
     records: u64,
     config: LexicalProjectionConfig,
+    _buffer_memory: Option<Grant>,
+    task: Option<RuntimeTaskContext>,
 }
 
 impl<W: Write> RunWriter<W> {
@@ -63,12 +68,13 @@ impl<W: Write> RunWriter<W> {
             .checked_add(1)
             .ok_or_else(|| SkeinError::Storage("document frequency run count overflow".into()))?;
         let (ordinal, unique_weight) = record.summary.first_event.expect("validated first event");
-        write_string(&mut self.writer, &record.term)?;
-        self.writer.write_all(&[record.field])?;
-        self.writer
-            .write_all(&record.summary.repeated_weight.to_le_bytes())?;
-        self.writer.write_all(&ordinal.to_le_bytes())?;
-        self.writer.write_all(&unique_weight.to_le_bytes())?;
+        let mut writer =
+            crate::build_control::CheckedWriter::new(&mut self.writer, self.task.as_ref());
+        write_string(&mut writer, &record.term)?;
+        writer.write_all(&[record.field])?;
+        writer.write_all(&record.summary.repeated_weight.to_le_bytes())?;
+        writer.write_all(&ordinal.to_le_bytes())?;
+        writer.write_all(&unique_weight.to_le_bytes())?;
         self.total_bytes = bytes;
         self.records = records;
         Ok(())
@@ -77,11 +83,11 @@ impl<W: Write> RunWriter<W> {
     fn finish(mut self) -> Result<u64> {
         // The footer is reserved before creating the file, not after emitting
         // the last record. It commits both count and payload integrity.
-        self.writer.inner.write_all(&self.records.to_le_bytes())?;
-        self.writer
-            .inner
-            .write_all(&self.writer.digest.finish().to_le_bytes())?;
-        self.writer.inner.flush()?;
+        let mut output =
+            crate::build_control::CheckedWriter::new(&mut self.writer.inner, self.task.as_ref());
+        output.write_all(&self.records.to_le_bytes())?;
+        output.write_all(&self.writer.digest.finish().to_le_bytes())?;
+        output.flush()?;
         Ok(self.total_bytes)
     }
 }
@@ -96,20 +102,34 @@ pub(super) fn write_run(
         HEADER.len() as u64 + FOOTER_BYTES,
         pool.config.max_spill_bytes,
     )?;
-    let path = pool.next_path()?;
-    let guard = RemoveOnDrop::new(path.clone());
+    let mut guard = pool.next_guard()?;
+    let buffer_memory = pool
+        .progress
+        .as_ref()
+        .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
+        .transpose()?;
     let mut writer = RunWriter {
         writer: HashWriter {
-            inner: io.create(&path)?,
+            inner: match &pool.progress {
+                Some(progress) => progress.with_scratch(
+                    crate::build_memory::reserved::native_path::bytes(&guard.path)?,
+                    || io.create(&guard.path),
+                )?,
+                None => io.create(&guard.path)?,
+            },
             digest: Digest::new(),
         },
         total_bytes,
         records: 0,
         config: pool.config,
+        _buffer_memory: buffer_memory,
+        task: pool.task().cloned(),
     };
+    pool.check()?;
     writer.writer.write_all(HEADER)?;
     let mut pending: Option<FrequencyRecord> = None;
     for record in records {
+        pool.check()?;
         let record = record?;
         validate(&record, pool.config)?;
         if let Some(previous) = pending.as_mut() {
@@ -132,7 +152,19 @@ pub(super) fn write_run(
         writer.push(&record)?;
     }
     pool.bytes = writer.finish()?;
-    Ok(FrequencyRun { guard })
+    if let Some(memory) = guard._memory.as_mut() {
+        if guard.path.capacity() > memory.bytes() {
+            return Err(SkeinError::Execution(
+                "search spill path allocation exceeded its admitted capacity".into(),
+            ));
+        }
+        memory.shrink(memory.bytes() - guard.path.capacity());
+    }
+    Ok(FrequencyRun {
+        guard,
+        progress: pool.progress.clone(),
+        task: pool.task().cloned(),
+    })
 }
 
 struct HashRead<'a> {
@@ -161,17 +193,49 @@ pub(super) struct FrequencyRunReader {
     finished: bool,
     previous: Option<(Term, u8)>,
     config: LexicalProjectionConfig,
+    progress: Option<ReservedMemory>,
+    _buffer_memory: Option<Grant>,
+    task: Option<RuntimeTaskContext>,
 }
 
 impl FrequencyRunReader {
+    #[cfg(test)]
     pub(super) fn open(path: &Path, config: LexicalProjectionConfig) -> Result<Self> {
-        let file = File::open(path)?;
+        Self::open_with_progress(path, config, None)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_with_progress(
+        path: &Path,
+        config: LexicalProjectionConfig,
+        progress: Option<&ReservedMemory>,
+    ) -> Result<Self> {
+        Self::open_with_control(path, config, progress, None)
+    }
+
+    pub(super) fn open_with_control(
+        path: &Path,
+        config: LexicalProjectionConfig,
+        progress: Option<&ReservedMemory>,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
+        let file = match progress {
+            Some(progress) => progress.with_scratch(
+                crate::build_memory::reserved::native_path::bytes(path)?,
+                || Ok(File::open(path)?),
+            )?,
+            None => File::open(path)?,
+        };
         let length = file.metadata()?.len();
         if length < HEADER.len() as u64 + FOOTER_BYTES || length > config.max_spill_bytes.get() {
             return Err(SkeinError::Storage(
                 "invalid document frequency spill length".into(),
             ));
         }
+        let buffer_memory = progress
+            .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
+            .transpose()?;
         let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
@@ -190,10 +254,14 @@ impl FrequencyRunReader {
             finished: false,
             previous: None,
             config,
+            progress: progress.cloned(),
+            _buffer_memory: buffer_memory,
+            task: task.cloned(),
         })
     }
 
     pub(super) fn next(&mut self) -> Result<Option<FrequencyRecord>> {
+        self.task.as_ref().map_or(Ok(()), checkpoint)?;
         if self.finished {
             return Ok(None);
         }
@@ -213,14 +281,26 @@ impl FrequencyRunReader {
             remaining: &mut self.remaining,
             digest: &mut self.digest,
         };
-        let term = read_string(&mut reader, self.config.max_term_bytes.get())?;
+        let term = if let Some(progress) = &self.progress {
+            let length = read_u32(&mut reader)? as usize;
+            if length as u64 > self.config.max_term_bytes.get() {
+                return Err(SkeinError::Storage(
+                    "lexical spill string exceeds its limit".into(),
+                ));
+            }
+            Term::build_reserved(length, progress, || {
+                spill_memory::read_text(&mut reader, length, self.task.as_ref())
+            })?
+        } else {
+            read_string(&mut reader, self.config.max_term_bytes.get())?.into()
+        };
         let mut field = [0u8; 1];
         reader.read_exact(&mut field)?;
         let repeated_weight = read_u64(&mut reader)?;
         let ordinal = read_u64(&mut reader)?;
         let unique_weight = read_u64(&mut reader)?;
         let record = FrequencyRecord {
-            term: term.into(),
+            term,
             field: field[0],
             summary: PartialFieldFrequency {
                 repeated_weight,
@@ -258,8 +338,18 @@ pub(super) fn merge_pair(
     pool: &mut SpillRuns,
 ) -> Result<FrequencyRun> {
     let merged = {
-        let mut left_reader = FrequencyRunReader::open(&left.guard.path, pool.config)?;
-        let mut right_reader = FrequencyRunReader::open(&right.guard.path, pool.config)?;
+        let mut left_reader = FrequencyRunReader::open_with_control(
+            &left.guard.path,
+            pool.config,
+            pool.progress.as_ref(),
+            pool.task(),
+        )?;
+        let mut right_reader = FrequencyRunReader::open_with_control(
+            &right.guard.path,
+            pool.config,
+            pool.progress.as_ref(),
+            pool.task(),
+        )?;
         let mut left_next = left_reader.next()?;
         let mut right_next = right_reader.next()?;
         let mut failed = false;
@@ -294,9 +384,7 @@ pub(super) fn merge_pair(
     };
     // The reader scope has ended before unlink, including on Windows. Local
     // guards own both sources and the destination if either removal fails.
-    fs::remove_file(&left.guard.path)?;
-    left.guard.disarm();
-    fs::remove_file(&right.guard.path)?;
-    right.guard.disarm();
+    left.guard.remove()?;
+    right.guard.remove()?;
     Ok(merged)
 }

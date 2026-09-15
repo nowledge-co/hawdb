@@ -1,4 +1,5 @@
-use crate::{Result, SearchIndex, SearchProjectionCatchUpReport, SkeinError};
+use crate::{SearchIndex, SearchProjectionCatchUpReport};
+use skein_core::{Result, SkeinError};
 use skein_storage::{SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus};
 use std::fmt;
 use std::num::NonZeroU64;
@@ -45,14 +46,33 @@ impl SearchProjectionConsumerOptions {
 /// while its durable registration remains until explicitly unregistered.
 #[derive(Debug)]
 pub struct SearchProjectionConsumer {
-    pub(super) id: SearchProjectionConsumerId,
-    pub(super) projection: skein_search::consumer::ConsumerProjection,
+    id: SearchProjectionConsumerId,
+    projection: crate::consumer::ConsumerProjection,
 }
 
 impl SearchProjectionConsumer {
+    #[doc(hidden)]
+    pub fn from_projection(
+        id: SearchProjectionConsumerId,
+        projection: crate::consumer::ConsumerProjection,
+    ) -> Self {
+        Self { id, projection }
+    }
+
     pub fn id(&self) -> &SearchProjectionConsumerId {
         &self.id
     }
+
+    #[doc(hidden)]
+    pub fn projection(&self) -> &crate::consumer::ConsumerProjection {
+        &self.projection
+    }
+
+    #[doc(hidden)]
+    pub fn projection_mut(&mut self) -> &mut crate::consumer::ConsumerProjection {
+        &mut self.projection
+    }
+
     pub fn search_index(&self) -> &SearchIndex {
         self.projection.index()
     }
@@ -153,3 +173,25 @@ impl From<SkeinError> for SearchProjectionConsumerError {
 }
 
 pub type SearchProjectionConsumerResult<T> = std::result::Result<T, SearchProjectionConsumerError>;
+
+mod registry;
+
+#[doc(hidden)]
+pub use registry::{ConsumerRegistry, Record, MAX_CONSUMERS};
+
+#[cfg(test)]
+mod tests {
+    use super::{SearchProjectionConsumerId, SearchProjectionConsumerOptions};
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn consumer_contract_keeps_identifier_and_lease_bounds() {
+        assert!(SearchProjectionConsumerId::new("consumer_A-1.v2").is_ok());
+        assert!(SearchProjectionConsumerId::new("bad/id").is_err());
+        assert!(SearchProjectionConsumerId::new("a".repeat(128)).is_ok());
+        assert!(SearchProjectionConsumerId::new("a".repeat(129)).is_err());
+
+        let options = SearchProjectionConsumerOptions::new(NonZeroU64::new(7).unwrap());
+        assert_eq!(options.max_idle_commits().get(), 7);
+    }
+}

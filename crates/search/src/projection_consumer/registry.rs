@@ -1,14 +1,13 @@
-use super::types::*;
-use crate::{Result, SkeinError};
+use super::{SearchProjectionConsumerId, SearchProjectionConsumerState};
 use serde::{Deserialize, Serialize};
-use skein_core::Uuid;
+use skein_core::{Result, SkeinError, Uuid};
 use skein_integrity::IntegrityHasher;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-pub(super) const MAX_CONSUMERS: usize = 64;
+pub const MAX_CONSUMERS: usize = 64;
 const MAX_REGISTRY_BYTES: usize = 64 * 1024;
 const REGISTRY_FILE: &str = "projection_consumers.meta";
 const PROTOCOL: &str = "skein-projection-consumers-v1";
@@ -16,7 +15,7 @@ const PROTOCOL: &str = "skein-projection-consumers-v1";
 // Declaration order is lexicographic for canonical payload serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Record {
+pub struct Record {
     pub checkpoint_uuid: String,
     pub durable_complete_through_epoch: u64,
     pub expires_at_commit_epoch: u64,
@@ -45,11 +44,11 @@ struct Envelope {
 }
 
 #[derive(Debug, Default)]
-pub(in crate::api) struct ConsumerRegistry {
-    pub(super) records: BTreeMap<String, Record>,
-    pub(super) verified: BTreeMap<String, SearchProjectionConsumerState>,
-    pub(super) database_uuid: Option<Uuid>,
-    pub(super) unavailable: bool,
+pub struct ConsumerRegistry {
+    pub records: BTreeMap<String, Record>,
+    pub verified: BTreeMap<String, SearchProjectionConsumerState>,
+    pub database_uuid: Option<Uuid>,
+    pub unavailable: bool,
 }
 
 impl ConsumerRegistry {
@@ -103,7 +102,16 @@ impl ConsumerRegistry {
         }
     }
 
-    pub(super) fn publish(&self, root: &Path) -> Result<()> {
+    pub fn publish<BeforeReplace, AfterReplace>(
+        &self,
+        root: &Path,
+        before_replace: BeforeReplace,
+        after_replace: AfterReplace,
+    ) -> Result<()>
+    where
+        BeforeReplace: FnOnce() -> Result<()>,
+        AfterReplace: FnOnce() -> Result<()>,
+    {
         let identity = self
             .database_uuid
             .ok_or_else(|| invalid("missing database identity"))?;
@@ -141,21 +149,21 @@ impl ConsumerRegistry {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        super::publication_failpoint(super::PublicationStage::BeforeRegistry)?;
+        before_replace()?;
         skein_storage::durable_replace_file(&temporary, &target)?;
         drop(guard);
-        super::publication_failpoint(super::PublicationStage::AfterRegistry)?;
+        after_replace()?;
         Ok(())
     }
 
-    pub(super) fn state(
+    pub fn state(
         &self,
         record: &Record,
         identity: Option<Uuid>,
         epoch: u64,
         floor: u64,
     ) -> SearchProjectionConsumerState {
-        use SearchProjectionConsumerRebuildReason as Reason;
+        use super::SearchProjectionConsumerRebuildReason as Reason;
         use SearchProjectionConsumerState as State;
         let reason = if self.unavailable {
             Some(Reason::RegistryUnavailable)

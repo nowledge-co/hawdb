@@ -104,3 +104,10 @@ pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
 pub(crate) fn live() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
+
+// Serialize the complete lifetime of measured values within one test binary.
+#[allow(dead_code)]
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|error| error.into_inner())
+}

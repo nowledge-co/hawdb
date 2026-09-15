@@ -879,7 +879,6 @@ dependencies = [
  "chrono",
  "getrandom",
  "libc",
- "loom",
  "serde",
  "serde_json",
  "skein-analytics",
@@ -908,6 +907,7 @@ dependencies = [
  "skein-search",
  "skein-sql",
  "skein-storage",
+ "skein-system-sql",
  "skein-telemetry",
  "skein-vector-projection",
  "unicode-width",
@@ -950,6 +950,7 @@ version = "0.1.0"
 name = "skein-compat"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "skein-analytics",
  "skein-core",
@@ -1052,6 +1053,7 @@ dependencies = [
  "skein-core",
  "skein-qos",
  "skein-search",
+ "skein-storage",
 ]
 
 [[package]]
@@ -1228,6 +1230,20 @@ dependencies = [
  "skein-core",
  "skein-integrity",
  "zstd",
+]
+
+[[package]]
+name = "skein-system-sql"
+version = "0.1.0"
+dependencies = [
+ "loom",
+ "serde_json",
+ "skein-core",
+ "skein-executor",
+ "skein-plan-cache",
+ "skein-query",
+ "skein-sql",
+ "skein-storage",
 ]
 
 [[package]]

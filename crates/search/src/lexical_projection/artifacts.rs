@@ -1,8 +1,9 @@
 //! Pending block and retained directory ownership for one lexical build.
 
 use super::{
-    block_encoding, visit_merged_postings, BlockDescriptor, Digest, LexicalProjectionConfig,
-    Posting, Result, SkeinError, TermStatistics, ARTIFACT_HEADER, SPILL_IO_BUFFER_BYTES,
+    block_encoding, visit_merged_postings_with_progress, BlockDescriptor, Digest,
+    LexicalProjectionConfig, Posting, Result, SkeinError, TermStatistics, ARTIFACT_HEADER,
+    SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{checked_add, grow_slots, path::OwnedPath, BuildMemory};
@@ -10,7 +11,9 @@ use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 #[cfg(test)]
 mod tests;
@@ -183,13 +186,27 @@ impl ArtifactBuilder {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn merge_postings(
         &mut self,
         paths: &[PathBuf],
         config: LexicalProjectionConfig,
     ) -> Result<()> {
+        self.merge_postings_with_progress(paths, config, None)
+    }
+
+    pub(super) fn merge_postings_with_progress(
+        &mut self,
+        paths: &[impl AsRef<Path>],
+        config: LexicalProjectionConfig,
+        progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+    ) -> Result<()> {
         self.check()?;
-        let result = visit_merged_postings(paths, config, |posting| self.push_posting(posting))
+        let task = self.task.clone();
+        let result =
+            visit_merged_postings_with_progress(paths, config, progress, Some(&task), |posting| {
+                self.push_posting(posting)
+            })
             .and_then(|()| self.flush_postings());
         self.failed = result.is_err();
         result
@@ -240,10 +257,15 @@ impl ArtifactBuilder {
         }
         grow_slots(&mut self.posting_pending, &mut self.posting_slots)?;
         self.posting_strings.grow(checked_add(
-            posting.term.clone_bytes(),
+            posting.term.retained_clone_bytes(),
             posting.document_id.len(),
         )?)?;
-        self.posting_pending.push(posting.clone());
+        self.posting_pending.push(Posting {
+            term: posting.term.clone_for_retention(),
+            document_id: posting.document_id.clone(),
+            term_frequency: posting.term_frequency,
+            document_len: posting.document_len,
+        });
         self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
         Ok(())
     }
