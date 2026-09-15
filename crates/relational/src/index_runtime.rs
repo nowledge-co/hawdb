@@ -56,7 +56,7 @@ pub trait RelationalIndexStoreReader {
 }
 
 #[derive(Debug)]
-pub enum RelationalIndexReadMode<'a, R> {
+pub enum RelationalIndexReadMode<'a, R = crate::RelationalMaterializedReader> {
     Materialized,
     Shadow(&'a R),
     DemandPaged(&'a R),
@@ -145,7 +145,7 @@ impl RelationalIndexExecutionEvidence {
     }
 }
 
-pub struct RelationalIndexRuntime<'a, R> {
+pub struct RelationalIndexRuntime<'a, R = crate::RelationalMaterializedReader> {
     mode: RelationalIndexReadMode<'a, R>,
     limits: RelationalIndexReadLimits,
     state: RefCell<RelationalIndexRuntimeState>,

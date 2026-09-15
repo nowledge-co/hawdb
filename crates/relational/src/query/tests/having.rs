@@ -4,8 +4,8 @@ use super::*;
 fn having_keeps_input_work_and_cancellation_limits_when_all_groups_are_rejected() {
     let state = batched_index_join_state();
     let read_modes = RelationalQueryReadModes::new(
-        RelationalIndexReadMode::Materialized,
-        RelationalRowReadMode::CanonicalMemory,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
     );
     for sql in [
         "SELECT COUNT(*) FROM batch_outer HAVING FALSE",

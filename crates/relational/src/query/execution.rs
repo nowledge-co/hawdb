@@ -5,8 +5,8 @@ use super::{
     AdmittedRelationalExecution, BindingId, Instant, PlannedJoin, PreparedRelationalExecutionMode,
     PreparedRelationalSelect, QueryRows, RefCell, RelationalIndexRuntime,
     RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
-    RelationalQueryOutput, RelationalRowExecutionEvidence, RelationalSqlStageTimings, Result,
-    SkeinError, Value,
+    RelationalQueryOutput, RelationalQueryStoreReader, RelationalRowExecutionEvidence,
+    RelationalSqlStageTimings, Result, SkeinError, Value,
 };
 
 pub(super) fn explain_select(
@@ -42,7 +42,7 @@ pub(super) fn explain_select(
 pub(super) fn execute_select_timed<'state>(
     prepared: &'state PreparedRelationalSelect,
     parameters: &[Value],
-    execution: AdmittedRelationalExecution<'state, '_>,
+    execution: AdmittedRelationalExecution<'state, '_, impl RelationalQueryStoreReader>,
 ) -> Result<RelationalQueryOutput> {
     let started = Instant::now();
     let mut output = execute_select(prepared, parameters, execution)?;
@@ -54,7 +54,7 @@ pub(super) fn execute_select_timed<'state>(
 pub(super) fn execute_select<'state>(
     prepared: &'state PreparedRelationalSelect,
     parameters: &[Value],
-    execution: AdmittedRelationalExecution<'state, '_>,
+    execution: AdmittedRelationalExecution<'state, '_, impl RelationalQueryStoreReader>,
 ) -> Result<RelationalQueryOutput> {
     let select = &prepared.statement;
     let join_planning = &prepared.join_planning;

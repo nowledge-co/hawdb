@@ -2,8 +2,8 @@ use super::*;
 
 fn read_modes() -> RelationalQueryReadModes<'static> {
     RelationalQueryReadModes::new(
-        RelationalIndexReadMode::Materialized,
-        RelationalRowReadMode::CanonicalMemory,
+        RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
     )
 }
 

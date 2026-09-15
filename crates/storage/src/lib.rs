@@ -84,7 +84,8 @@ pub use append_table::{
 };
 pub use background::{BackgroundWorkAdmission, BackgroundWorkPermit, BackgroundWorkRequest};
 pub use backup::{
-    validate_backup_file_name, BackupFileEntry, BackupManifest, StorageBackupReport,
+    copy_backup_file, copy_file_with_checksum, file_checksum, validate_backup_file_name,
+    validate_new_backup_destination, BackupFileEntry, BackupManifest, StorageBackupReport,
     StorageRestoreReport, StorageScrubReport, BACKUP_HEADER_V1, BACKUP_MANIFEST_FILE,
     STABLE_ID_MAPPING_FILE, STORAGE_MANIFEST_FILE,
 };

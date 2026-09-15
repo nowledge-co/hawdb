@@ -3,7 +3,7 @@ use super::super::physical::{
     merge_join_inputs, RelationalEquiJoinKeys,
 };
 use super::*;
-use crate::relational_sql::index_access::RelationalIndexReadMode;
+use crate::index_runtime::RelationalIndexReadMode;
 use skein_optimizer::{RelationalCsgCmpJoinImplementation, RelationalEquiJoinAlgorithm};
 
 pub(super) struct PreparedJoinImplementation {
@@ -76,7 +76,7 @@ fn physical_relation(
 
 pub(super) fn prepare_join_implementations(
     state: &RelationalState,
-    read_modes: RelationalQueryReadModes<'_>,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     relations: &[BoundRelation<'_>],
     prepared: &[PreparedGraphRelation],
     joins: &BoundJoinInputs,
